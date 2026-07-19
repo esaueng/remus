@@ -96,41 +96,12 @@ jobs:
         with:
           tool: wasm-pack
 
-      - name: Build WASM (bundler target for browsers)
-        run: wasm-pack build crates/wasm --target bundler --release --out-dir pkg
-        env:
-          RUSTFLAGS: "-Dwarnings -C target-feature=+simd128"
+      - name: Build, merge, validate, and smoke-test WASM package
+        run: cargo xtask wasm-build --skip-opt
 
-      - name: Build WASM (nodejs target for Node.js/vitest)
-        run: wasm-pack build crates/wasm --target nodejs --release --out-dir pkg-node
-        env:
-          RUSTFLAGS: "-Dwarnings -C target-feature=+simd128"
-
-      - name: Merge dual targets into single package
-        working-directory: crates/wasm
-        run: |
-          # Rename to .cjs so Node treats it as CommonJS even with "type": "module"
-          cp pkg-node/brepkit_wasm.js pkg/brepkit_wasm_node.cjs
-
-      - name: Set package name and exports
+      - name: Validate npm package contents
         working-directory: crates/wasm/pkg
-        run: |
-          npm pkg set name="brepkit-wasm"
-          node -e '
-            const pkg = require("./package.json");
-            pkg.main = "brepkit_wasm_node.cjs";
-            pkg.module = "brepkit_wasm.js";
-            pkg.exports = {
-              ".": {
-                "node": "./brepkit_wasm_node.cjs",
-                "import": "./brepkit_wasm.js",
-                "default": "./brepkit_wasm.js"
-              },
-              "./brepkit_wasm_bg.wasm": "./brepkit_wasm_bg.wasm"
-            };
-            pkg.files = [...(pkg.files || []), "brepkit_wasm_node.cjs"];
-            require("fs").writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-          '
+        run: npm pack --dry-run
 
       - name: Verify version
         working-directory: crates/wasm/pkg

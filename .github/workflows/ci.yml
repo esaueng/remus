@@ -114,6 +114,9 @@ jobs:
           tool: wasm-pack
       - name: Build and validate WASM
         run: cargo xtask wasm-build --skip-opt
+      - name: Validate npm package contents
+        working-directory: crates/wasm/pkg
+        run: npm pack --dry-run
       - name: Build WASM without optional I/O
         run: cargo check -p brepkit-wasm --target wasm32-unknown-unknown --no-default-features
 
