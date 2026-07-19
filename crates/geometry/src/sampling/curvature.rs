@@ -54,21 +54,22 @@ fn subdivide(
         return;
     }
 
-    // Approximate arc-length of this interval by the chord.
-    let interval_len = chord(p_a, p_b);
+    // Sample the midpoint before deciding whether to stop. Endpoint-only
+    // curvature and a single chord can both be near zero for a strongly bowed
+    // interval, which would incorrectly accept the whole curve as one segment.
+    let t_m = 0.5 * (t_a + t_b);
+    let p_m = curve.evaluate(t_m);
+    let interval_len = chord(p_a, p_m) + chord(p_m, p_b);
 
-    // Average curvature at the two endpoints.
     let kappa_a = curvature_at(curve, t_a);
+    let kappa_m = curvature_at(curve, t_m);
     let kappa_b = curvature_at(curve, t_b);
-    let kappa_avg = 0.5 * (kappa_a + kappa_b);
+    let kappa_max = kappa_a.max(kappa_m).max(kappa_b);
 
-    if kappa_avg * interval_len <= tolerance {
+    if kappa_max * interval_len <= tolerance {
         // Angular change is within tolerance — no further subdivision needed.
         return;
     }
-
-    let t_m = 0.5 * (t_a + t_b);
-    let p_m = curve.evaluate(t_m);
 
     subdivide(curve, t_a, p_a, t_m, p_m, tolerance, depth + 1, out);
     out.push((t_m, p_m));
@@ -161,6 +162,23 @@ mod tests {
         assert_eq!(pts_zero.len(), 2);
         let pts_neg = sample_curvature(&c, 0.0, 1.0, -1.0);
         assert_eq!(pts_neg.len(), 2);
+    }
+
+    #[test]
+    fn recursion_limit_stops_without_appending_points() {
+        let curve = varying_curvature_bezier();
+        let mut out = Vec::new();
+        subdivide(
+            &curve,
+            0.0,
+            curve.evaluate(0.0),
+            1.0,
+            curve.evaluate(1.0),
+            f64::MIN_POSITIVE,
+            MAX_DEPTH,
+            &mut out,
+        );
+        assert!(out.is_empty());
     }
 
     #[test]
