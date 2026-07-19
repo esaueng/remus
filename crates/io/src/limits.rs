@@ -60,14 +60,13 @@ mod tests {
             max_input_bytes: 3,
             ..ImportLimits::default()
         };
-        let err = ensure_input_size(4, limits).unwrap_err();
         assert!(matches!(
-            err,
-            IoError::LimitExceeded {
+            ensure_input_size(4, limits),
+            Err(IoError::LimitExceeded {
                 resource: "input bytes",
                 limit: 3,
                 actual: 4
-            }
+            })
         ));
     }
 }

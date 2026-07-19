@@ -101,28 +101,6 @@ impl BrepKernel {
     }
 }
 
-#[cfg(test)]
-mod batch_limit_tests {
-    use super::*;
-
-    #[test]
-    fn rejects_too_many_operations_before_dispatch() {
-        let mut kernel = BrepKernel::new();
-        let operation = serde_json::json!({"op": "volume", "args": {}});
-        let json = serde_json::Value::Array(vec![operation; MAX_BATCH_OPERATIONS + 1]).to_string();
-        let response = kernel.execute_batch(&json);
-        assert!(response.contains("operation limit"));
-    }
-
-    #[test]
-    fn rejects_oversized_json_before_parsing() {
-        let mut kernel = BrepKernel::new();
-        let json = " ".repeat(MAX_BATCH_JSON_BYTES + 1);
-        let response = kernel.execute_batch(&json);
-        assert!(response.contains("byte limit"));
-    }
-}
-
 /// A `(u_range, v_range)` pair, each `(min, max)`.
 type UvRanges = ((f64, f64), (f64, f64));
 
@@ -1550,5 +1528,27 @@ impl BrepKernel {
             }
             _ => Err(format!("unknown operation: {op}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod batch_limit_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_too_many_operations_before_dispatch() {
+        let mut kernel = BrepKernel::new();
+        let operation = serde_json::json!({"op": "volume", "args": {}});
+        let json = serde_json::Value::Array(vec![operation; MAX_BATCH_OPERATIONS + 1]).to_string();
+        let response = kernel.execute_batch(&json);
+        assert!(response.contains("operation limit"));
+    }
+
+    #[test]
+    fn rejects_oversized_json_before_parsing() {
+        let mut kernel = BrepKernel::new();
+        let json = " ".repeat(MAX_BATCH_JSON_BYTES + 1);
+        let response = kernel.execute_batch(&json);
+        assert!(response.contains("byte limit"));
     }
 }
