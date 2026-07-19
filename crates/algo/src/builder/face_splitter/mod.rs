@@ -3097,6 +3097,23 @@ fn clip_sections_to_outer_region(
 /// If there are no section edges, returns a single sub-face covering
 /// the entire face (pass-through).
 ///
+/// Wraps [`split_face_2d_impl`] to salvage closed-circle *cap* sections on
+/// plane faces. The impl's planar arrangement decomposition
+/// ([`arrangement_regions_from_inputs`]) drops any input whose UV chord is
+/// zero-length, and a closed circle section has `start == end` — so a
+/// coincident planar interface whose opposing solid contributes drilled holes
+/// (the drilled-socket → bin-body fuse: the socket's screw-hole rims land as
+/// closed circle sections on the body's coincident bottom plane) loses the hole
+/// caps and the drilled cylinder rims are left as free edges. The impl only
+/// carves closed circles via its single-closed / all-Line-loop fast path, which
+/// never fires when the circles are *mixed* with open sections (the socket
+/// corner-cone arcs) or when there are two or more of them. Peel the cap
+/// circles off, split the plane by the remaining (open) sections, then carve
+/// each cap circle into the sub-face that geometrically contains it via
+/// [`split_face_with_internal_loops`] (which emits the disc cap plus the holed
+/// remainder). A lone cap circle already routes through the impl's fast path, so
+/// leave that untouched.
+///
 /// # Arguments
 /// - `topo` -- the topology arena (immutable read)
 /// - `face_id` -- the face to split
@@ -3105,9 +3122,268 @@ fn clip_sections_to_outer_region(
 /// - `tol` -- tolerance (`.linear` for 3D matching, UV tol derived internally)
 /// - `frame` -- cached `PlaneFrame` for this face (avoids origin mismatch)
 /// - `info` -- cached `SurfaceInfo` for periodicity flags
-#[allow(clippy::too_many_lines)]
 #[allow(clippy::too_many_arguments)]
 pub fn split_face_2d(
+    topo: &Topology,
+    face_id: FaceId,
+    sections: &[SectionEdge],
+    rank: Rank,
+    tol: &brepkit_math::tolerance::Tolerance,
+    frame: Option<&PlaneFrame>,
+    info: Option<&SurfaceInfo>,
+    edge_images: &std::collections::HashMap<
+        brepkit_topology::edge::EdgeId,
+        Vec<brepkit_topology::edge::EdgeId>,
+        impl std::hash::BuildHasher,
+    >,
+    split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
+) -> Vec<SplitSubFace> {
+    // Closed-circle cap sections are salvaged only on plane faces (curved faces
+    // route closed circles through their own band/internal-loop paths).
+    let Ok(face) = topo.face(face_id) else {
+        return split_face_2d_impl(
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            frame,
+            info,
+            edge_images,
+            split_registry,
+        );
+    };
+    let surface = face.surface().clone();
+    if !matches!(surface, FaceSurface::Plane { .. }) {
+        return split_face_2d_impl(
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            frame,
+            info,
+            edge_images,
+            split_registry,
+        );
+    }
+
+    // Build the face's outer polygon in UV so a *genuine* cap circle (a full
+    // closed circle strictly interior to the face — a drilled hole rim) can be
+    // told apart from the zero-span arc remnants that the FF/pave machinery
+    // leaves at faceted-corner junctions (those sit ON the boundary, share a
+    // point with an open arc section, and their "circle" is the corner cylinder
+    // tangent to the face outline). Only genuine caps are peeled off; everything
+    // else stays in `sections` and reaches the impl unchanged.
+    // The FRAME must be built from the same points (and thus the same
+    // convention) the impl uses, so the sub-face UVs and the projected circle
+    // centres agree. The containment POLYGON, by contrast, must follow wire
+    // TRAVERSAL order — `collect_wire_points` takes every edge's stored
+    // `start()` and ignores the oriented-edge flag, so a wire carrying reversed
+    // edges would come back scrambled and the containment test meaningless.
+    let frame_pts = collect_wire_points(topo, face.outer_wire());
+    let owned_frame;
+    let cap_frame = if let Some(f) = frame {
+        f
+    } else {
+        let normal = extract_plane_normal(&surface);
+        owned_frame = PlaneFrame::from_plane_face(normal, &frame_pts);
+        &owned_frame
+    };
+    let outer_poly: Vec<Point2> = collect_wire_points_oriented(topo, face.outer_wire())
+        .iter()
+        .map(|&p| cap_frame.project(p))
+        .collect();
+
+    // One pass: partition into cap circles (keeping each centre so the carve
+    // step never re-derives it) and everything else.
+    let mut cap_sections: Vec<SectionEdge> = Vec::new();
+    let mut cap_centers: Vec<Point3> = Vec::new();
+    let mut rest_sections: Vec<SectionEdge> = Vec::new();
+    for s in sections {
+        let cap_center = if (s.start - s.end).length() < tol.linear
+            && outer_poly.len() >= 3
+            && let EdgeCurve::Circle(circle) = &s.curve_3d
+        {
+            let center_uv = cap_frame.project(circle.center());
+            (super::classify_2d::point_in_polygon_2d(center_uv, &outer_poly)
+                && super::classify_2d::distance_to_polygon_boundary(center_uv, &outer_poly)
+                    > circle.radius() * CAP_INTERIORITY_MARGIN)
+                .then(|| circle.center())
+        } else {
+            None
+        };
+        match cap_center {
+            Some(c) => {
+                cap_sections.push(s.clone());
+                cap_centers.push(c);
+            }
+            None => rest_sections.push(s.clone()),
+        }
+    }
+
+    // Engage only where the impl would silently drop cap circles: at least one
+    // genuine cap circle AND not the single-closed fast path (exactly one
+    // section, that one circle) which the impl already handles correctly.
+    if cap_sections.is_empty() || (cap_sections.len() == 1 && sections.len() == 1) {
+        return split_face_2d_impl(
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            frame,
+            info,
+            edge_images,
+            split_registry,
+        );
+    }
+
+    // Split by the open (non-cap) sections through the normal path — identical
+    // to today's output for those, since the cap circles were being dropped
+    // anyway.
+    let base = split_face_2d_impl(
+        topo,
+        face_id,
+        &rest_sections,
+        rank,
+        tol,
+        frame,
+        info,
+        edge_images,
+        split_registry,
+    );
+
+    distribute_cap_circles(
+        topo,
+        face_id,
+        base,
+        &cap_sections,
+        &cap_centers,
+        rank,
+        frame,
+    )
+}
+
+/// Slack on the cap-circle interiority test. A genuine drilled-hole rim clears
+/// the face outline by its full radius, while a corner cylinder's section circle
+/// is exactly tangent (centre one radius out); the 5% margin keeps float noise
+/// on such a tangent circle from reading as interior.
+const CAP_INTERIORITY_MARGIN: f64 = 1.05;
+
+/// Wire points in TRAVERSAL order, honouring each oriented edge's direction.
+///
+/// [`collect_wire_points`] pushes every edge's stored `start()` and ignores the
+/// orientation flag, so a wire carrying reversed edges comes back scrambled.
+/// Containment tests need the traversal-ordered outline, so they use this.
+fn collect_wire_points_oriented(
+    topo: &Topology,
+    wire_id: brepkit_topology::wire::WireId,
+) -> Vec<Point3> {
+    let Ok(wire) = topo.wire(wire_id) else {
+        return Vec::new();
+    };
+    let mut pts = Vec::new();
+    for oe in wire.edges() {
+        if let Ok(edge) = topo.edge(oe.edge()) {
+            let vid = if oe.is_forward() {
+                edge.start()
+            } else {
+                edge.end()
+            };
+            if let Ok(v) = topo.vertex(vid) {
+                pts.push(v.point());
+            }
+        }
+    }
+    pts
+}
+
+/// Carve closed cap circles (see [`split_face_2d`]) into the base sub-faces.
+///
+/// Each cap circle is assigned to the base sub-face whose outer boundary
+/// contains the circle's centre in UV, then that sub-face is re-split via
+/// [`split_face_with_internal_loops`] (disc cap + holed remainder). Cap circles
+/// are strictly interior to the parent face by construction, so each lands in
+/// exactly one sub-face; a circle that fails to land anywhere is left out,
+/// matching the pre-salvage behaviour (never worse than baseline).
+fn distribute_cap_circles(
+    topo: &Topology,
+    face_id: FaceId,
+    base: Vec<SplitSubFace>,
+    cap_sections: &[SectionEdge],
+    cap_centers: &[Point3],
+    rank: Rank,
+    frame: Option<&PlaneFrame>,
+) -> Vec<SplitSubFace> {
+    let Ok(face) = topo.face(face_id) else {
+        return base;
+    };
+    let surface = face.surface().clone();
+    if !matches!(surface, FaceSurface::Plane { .. }) {
+        return base;
+    }
+    // Build the containment frame with the SAME convention the impl used so the
+    // sub-faces' stored UVs and the projected circle centres share one frame.
+    let wire_pts = collect_wire_points(topo, face.outer_wire());
+    let owned_frame;
+    let frame = if let Some(f) = frame {
+        f
+    } else {
+        let normal = extract_plane_normal(&surface);
+        owned_frame = PlaneFrame::from_plane_face(normal, &wire_pts);
+        &owned_frame
+    };
+
+    let centers_uv: Vec<Point2> = cap_centers.iter().map(|&c| frame.project(c)).collect();
+
+    let mut assigned = vec![false; cap_sections.len()];
+    let mut result: Vec<SplitSubFace> = Vec::with_capacity(base.len() + cap_sections.len());
+    for sf in base {
+        let poly = sample_wire_loop_uv(&sf.outer_wire);
+        let contained: Vec<SectionEdge> = if poly.len() < 3 {
+            Vec::new()
+        } else {
+            cap_sections
+                .iter()
+                .enumerate()
+                .filter_map(|(i, cs)| {
+                    if assigned[i] || !super::classify_2d::point_in_polygon_2d(centers_uv[i], &poly)
+                    {
+                        return None;
+                    }
+                    assigned[i] = true;
+                    Some(cs.clone())
+                })
+                .collect()
+        };
+        if contained.is_empty() {
+            result.push(sf);
+        } else {
+            let sub_wire_pts: Vec<Point3> = sf
+                .outer_wire
+                .iter()
+                .flat_map(|e| [e.start_3d, e.end_3d])
+                .collect();
+            let carved = split_face_with_internal_loops(
+                &sf.surface,
+                &sf.outer_wire,
+                &sf.inner_wires,
+                &contained,
+                rank,
+                sf.reversed,
+                face_id,
+                &sub_wire_pts,
+            );
+            result.extend(carved);
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
+fn split_face_2d_impl(
     topo: &Topology,
     face_id: FaceId,
     sections: &[SectionEdge],
