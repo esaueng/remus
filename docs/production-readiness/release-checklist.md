@@ -25,6 +25,7 @@ cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo test -p brepkit-operations --features perf-counters scaling_ -- --nocapture
+cargo test --release -p brepkit-operations --test perf_64cut_determinism -- --nocapture
 cargo +1.88.0 check --workspace --all-features
 cargo check -p brepkit-wasm --target wasm32-unknown-unknown
 cargo check -p brepkit-wasm --target wasm32-unknown-unknown --no-default-features
@@ -43,6 +44,10 @@ cargo xtask wasm-build --skip-opt
   tessellates it, and exports STL.
 - [ ] Representative size and deterministic complexity results are compared
   with the prior release; unexplained regressions block release.
+- [ ] Oversized model imports and WASM batches fail with explicit limit errors;
+  stale post-checkpoint handles remain invalid after new allocation.
+- [ ] Boolean fallback and modifier failures return typed errors rather than
+  open, non-manifold, partial, or cavity-dropping success values.
 
 ## CI and artifact gate
 
