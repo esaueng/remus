@@ -32,18 +32,31 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
             continue;
         }
 
-        let Some(wires) = data.face_wires.get(face_id) else {
-            continue;
-        };
+        let wires = data
+            .face_wires
+            .get(face_id)
+            .ok_or_else(|| OffsetError::AssemblyFailed {
+                reason: format!(
+                    "offset face {} has no reconstructed wire loops",
+                    face_id.index()
+                ),
+            })?;
 
         if wires.is_empty() {
-            continue;
+            return Err(OffsetError::AssemblyFailed {
+                reason: format!("offset face {} has an empty wire-loop set", face_id.index()),
+            });
         }
 
         let outer_wire = wires[0];
         let inner_wires = wires[1..].to_vec();
 
-        let face = Face::new(outer_wire, inner_wires, offset_face.surface.clone());
+        let original_reversed = topo.face(offset_face.original)?.is_reversed();
+        let face = if original_reversed {
+            Face::new_reversed(outer_wire, inner_wires, offset_face.surface.clone())
+        } else {
+            Face::new(outer_wire, inner_wires, offset_face.surface.clone())
+        };
         let face_id = topo.add_face(face);
         new_faces.push(face_id);
     }
@@ -68,8 +81,66 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
 
     let solid = Solid::new(shell_id, vec![]);
     let solid_id = topo.add_solid(solid);
+    orient_shell_faces(topo, shell_id)?;
 
     Ok(solid_id)
+}
+
+/// Make adjacent faces traverse every shared edge in opposite directions.
+fn orient_shell_faces(
+    topo: &mut Topology,
+    shell_id: brepkit_topology::shell::ShellId,
+) -> Result<(), OffsetError> {
+    use std::collections::{HashMap, VecDeque};
+
+    let face_ids = topo.shell(shell_id)?.faces().to_vec();
+    let mut edge_faces: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+    let mut face_edges = vec![Vec::new(); face_ids.len()];
+    for (face_index, &face_id) in face_ids.iter().enumerate() {
+        let face = topo.face(face_id)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let edge_index = oriented.edge().index();
+                edge_faces
+                    .entry(edge_index)
+                    .or_default()
+                    .push((face_index, oriented.is_forward()));
+                face_edges[face_index].push((edge_index, oriented.is_forward()));
+            }
+        }
+    }
+
+    let mut visited = vec![false; face_ids.len()];
+    let mut flip = vec![false; face_ids.len()];
+    for start in 0..face_ids.len() {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut queue = VecDeque::from([start]);
+        while let Some(current) = queue.pop_front() {
+            for &(edge_index, current_forward) in &face_edges[current] {
+                let current_effective = current_forward != flip[current];
+                for &(neighbor, neighbor_forward) in &edge_faces[&edge_index] {
+                    if neighbor == current || visited[neighbor] {
+                        continue;
+                    }
+                    visited[neighbor] = true;
+                    flip[neighbor] = current_effective == neighbor_forward;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+    }
+
+    for (face_index, &face_id) in face_ids.iter().enumerate() {
+        if flip[face_index] {
+            let face = topo.face_mut(face_id)?;
+            face.set_reversed(!face.is_reversed());
+        }
+    }
+    Ok(())
 }
 
 /// Build wall faces connecting excluded face edges to offset vertices.
@@ -122,8 +193,12 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
                 | FaceSurface::Sphere(_)
                 | FaceSurface::Torus(_)
                 | FaceSurface::Nurbs(_) => {
-                    // Non-planar excluded faces: wall generation not yet implemented.
-                    continue;
+                    return Err(OffsetError::InvalidInput {
+                        reason: format!(
+                            "wall generation for excluded non-planar face {} is not supported",
+                            excluded_face_id.index()
+                        ),
+                    });
                 }
             };
 
@@ -138,10 +213,15 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
             let q0_id = topo.add_vertex(Vertex::new(q0, tol));
             let q1_id = topo.add_vertex(Vertex::new(q1, tol));
 
-            if let Some(face_id) = make_wall_quad(topo, p0_id, p1_id, q1_id, q0_id, p0, p1, q1, q0)?
-            {
-                wall_faces.push(face_id);
-            }
+            let face_id = make_wall_quad(topo, p0_id, p1_id, q1_id, q0_id, p0, p1, q1, q0)?
+                .ok_or_else(|| OffsetError::AssemblyFailed {
+                    reason: format!(
+                        "degenerate wall quad for excluded face {} edge {}",
+                        excluded_face_id.index(),
+                        edge_id.index()
+                    ),
+                })?;
+            wall_faces.push(face_id);
         }
     }
 

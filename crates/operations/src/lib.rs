@@ -142,4 +142,15 @@ pub enum OperationsError {
     /// A shape-healing operation failed.
     #[error("heal: {0}")]
     Heal(#[from] brepkit_heal::HealError),
+
+    /// An operation completed only a subset of the requested items.
+    #[error("{operation} produced a partial result: {succeeded} succeeded, {failed} failed")]
+    PartialResult {
+        /// Name of the operation.
+        operation: &'static str,
+        /// Number of requested items that succeeded.
+        succeeded: usize,
+        /// Number of requested items that failed.
+        failed: usize,
+    },
 }

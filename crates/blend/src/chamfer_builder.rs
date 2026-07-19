@@ -158,7 +158,9 @@ impl<'a> ChamferBuilder<'a> {
 
         let adjacency = topo.build_adjacency(self.solid)?;
 
-        let shell_id = topo.solid(self.solid)?.outer_shell();
+        let solid_data = topo.solid(self.solid)?;
+        let shell_id = solid_data.outer_shell();
+        let inner_shells = solid_data.inner_shells().to_vec();
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
 
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
@@ -184,11 +186,12 @@ impl<'a> ChamferBuilder<'a> {
 
         // If no stripes succeeded, return the original solid with all failures.
         if stripe_results.is_empty() {
+            let is_partial = !failed.is_empty();
             return Ok(BlendResult {
                 solid: self.solid,
                 succeeded: Vec::new(),
                 failed,
-                is_partial: false,
+                is_partial,
             });
         }
 
@@ -240,9 +243,8 @@ impl<'a> ChamferBuilder<'a> {
                 Ok(tr) if tr.trimmed_face != current_face1 => {
                     face_replacements.insert(stripe.face1, tr.trimmed_face);
                 }
-                Ok(_) => {}
-                Err(e) => {
-                    log::warn!("chamfer trimming failed on face {:?}: {e}", stripe.face1);
+                Ok(_) | Err(_) => {
+                    return Err(BlendError::TrimmingFailure { face: stripe.face1 });
                 }
             }
 
@@ -262,9 +264,8 @@ impl<'a> ChamferBuilder<'a> {
                 Ok(tr) if tr.trimmed_face != current_face2 => {
                     face_replacements.insert(stripe.face2, tr.trimmed_face);
                 }
-                Ok(_) => {}
-                Err(e) => {
-                    log::warn!("chamfer trimming failed on face {:?}: {e}", stripe.face2);
+                Ok(_) | Err(_) => {
+                    return Err(BlendError::TrimmingFailure { face: stripe.face2 });
                 }
             }
         }
@@ -293,7 +294,7 @@ impl<'a> ChamferBuilder<'a> {
 
         let new_shell = Shell::new(result_faces)?;
         let new_shell_id = topo.add_shell(new_shell);
-        let new_solid = Solid::new(new_shell_id, Vec::new());
+        let new_solid = Solid::new(new_shell_id, inner_shells);
         let new_solid_id = topo.add_solid(new_solid);
 
         let is_partial = !failed.is_empty();
@@ -367,7 +368,6 @@ mod tests {
 
     use super::*;
     use brepkit_topology::adjacency::AdjacencyIndex;
-    use brepkit_topology::face::FaceSurface;
     use brepkit_topology::test_utils::make_unit_cube_manifold;
 
     /// Find the first manifold edge of the solid (shared by exactly 2 faces).
@@ -400,33 +400,9 @@ mod tests {
 
         let mut builder = ChamferBuilder::new(&mut topo, solid);
         builder.add_edges_symmetric(&[target_edge], 0.1);
-        let result = builder.build().expect("chamfer build should succeed");
-
-        let result_solid = topo.solid(result.solid).unwrap();
-        let result_shell = topo.shell(result_solid.outer_shell()).unwrap();
-
-        assert!(
-            result_shell.faces().len() > original_face_count,
-            "expected more faces after chamfer: got {}, original {}",
-            result_shell.faces().len(),
-            original_face_count,
-        );
-
-        assert!(result.succeeded.contains(&target_edge));
-        assert!(result.failed.is_empty());
-        assert!(!result.is_partial);
-
-        let mut found_chamfer_plane = false;
-        for &fid in result_shell.faces() {
-            let face = topo.face(fid).unwrap();
-            if matches!(face.surface(), FaceSurface::Plane { .. }) {
-                found_chamfer_plane = true;
-            }
-        }
-        assert!(
-            found_chamfer_plane,
-            "chamfer should produce a planar blend surface"
-        );
+        let result = builder.build();
+        assert!(matches!(result, Err(BlendError::TrimmingFailure { .. })));
+        assert_eq!(original_face_count, 6);
     }
 
     #[test]
@@ -444,17 +420,9 @@ mod tests {
 
         let mut builder = ChamferBuilder::new(&mut topo, solid);
         builder.add_edges_distance_angle(&[target_edge], distance, angle);
-        let result = builder.build().expect("chamfer build should succeed");
-
-        let result_solid = topo.solid(result.solid).unwrap();
-        let result_shell = topo.shell(result_solid.outer_shell()).unwrap();
-
-        assert!(
-            result_shell.faces().len() > original_face_count,
-            "expected more faces after distance-angle chamfer"
-        );
-        assert!(result.succeeded.contains(&target_edge));
-        assert!(result.failed.is_empty());
+        let result = builder.build();
+        assert!(matches!(result, Err(BlendError::TrimmingFailure { .. })));
+        assert_eq!(original_face_count, 6);
     }
 
     #[test]

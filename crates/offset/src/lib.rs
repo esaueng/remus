@@ -87,6 +87,11 @@ pub fn thick_solid(
             reason: "offset distance must be non-zero and finite".into(),
         });
     }
+    if !topo.solid(solid)?.inner_shells().is_empty() {
+        return Err(OffsetError::InvalidInput {
+            reason: "offset of solids with cavity shells is not yet supported".into(),
+        });
+    }
 
     let mut data = OffsetData::new(distance, options, exclude.to_vec());
 
@@ -108,9 +113,17 @@ pub fn thick_solid(
 
     let result = assemble::assemble_solid(topo, &data)?;
 
-    if data.options.remove_self_intersections {
-        return self_int::remove_self_intersections(topo, result);
-    }
-
+    let result = if data.options.remove_self_intersections {
+        self_int::remove_self_intersections(topo, result)?
+    } else {
+        result
+    };
+    validate_offset_result(topo, result)?;
     Ok(result)
+}
+
+fn validate_offset_result(topo: &Topology, solid: SolidId) -> Result<(), OffsetError> {
+    let shell = topo.solid(solid)?.outer_shell();
+    brepkit_topology::validation::validate_shell_closed(topo.shell(shell)?, topo)?;
+    Ok(())
 }

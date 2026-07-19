@@ -9,6 +9,42 @@ use brepkit_topology::solid::SolidId;
 
 use crate::OperationsError;
 
+fn validate_complete_blend(
+    topo: &Topology,
+    operation: &'static str,
+    result: &BlendResult,
+) -> Result<(), OperationsError> {
+    if result.is_partial {
+        return Err(OperationsError::PartialResult {
+            operation,
+            succeeded: result.succeeded.len(),
+            failed: result.failed.len(),
+        });
+    }
+    let report = brepkit_check::validate::validate_solid(
+        topo,
+        result.solid,
+        &brepkit_check::validate::ValidateOptions::default(),
+    )?;
+    if !report.is_valid() {
+        let summary = report
+            .issues
+            .iter()
+            .filter(|issue| issue.severity == brepkit_check::validate::Severity::Error)
+            .take(3)
+            .map(|issue| issue.description.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "{operation} postcondition validation failed with {} error(s): {summary}",
+                report.error_count(),
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Fillet edges with constant radius (v2 walking-based engine).
 ///
 /// # Errors
@@ -32,7 +68,9 @@ pub fn fillet_v2(
     }
     let mut builder = FilletBuilder::new(topo, solid);
     builder.add_edges(edges, radius);
-    Ok(builder.build()?)
+    let result = builder.build()?;
+    validate_complete_blend(topo, "fillet", &result)?;
+    Ok(result)
 }
 
 /// Chamfer edges with two distances (v2 engine).
@@ -59,7 +97,9 @@ pub fn chamfer_v2(
     }
     let mut builder = ChamferBuilder::new(topo, solid);
     builder.add_edges_asymmetric(edges, d1, d2);
-    Ok(builder.build()?)
+    let result = builder.build()?;
+    validate_complete_blend(topo, "chamfer", &result)?;
+    Ok(result)
 }
 
 /// Chamfer edges with distance and angle (v2 engine).
@@ -91,5 +131,39 @@ pub fn chamfer_distance_angle(
     }
     let mut builder = ChamferBuilder::new(topo, solid);
     builder.add_edges_distance_angle(edges, distance, angle);
-    Ok(builder.build()?)
+    let result = builder.build()?;
+    validate_complete_blend(topo, "chamfer", &result)?;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use brepkit_math::vec::Point3;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::vertex::Vertex;
+
+    use super::*;
+
+    #[test]
+    fn fillet_v2_rejects_all_failed_partial_result() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(10.0, 10.0, 10.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(11.0, 10.0, 10.0), 1e-7));
+        let unrelated_edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+
+        let result = fillet_v2(&mut topo, solid, &[unrelated_edge], 0.2);
+        assert!(result.is_err());
+        let Err(error) = result else { return };
+        assert!(matches!(
+            error,
+            OperationsError::PartialResult {
+                operation: "fillet",
+                succeeded: 0,
+                failed: 1,
+            }
+        ));
+    }
 }

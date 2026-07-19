@@ -20,6 +20,35 @@ fn map_offset_error(e: OffsetError) -> OperationsError {
     }
 }
 
+fn validate_offset_postcondition(
+    topo: &Topology,
+    operation: &'static str,
+    solid: SolidId,
+) -> Result<SolidId, OperationsError> {
+    let report = brepkit_check::validate::validate_solid(
+        topo,
+        solid,
+        &brepkit_check::validate::ValidateOptions::default(),
+    )?;
+    if !report.is_valid() {
+        let summary = report
+            .issues
+            .iter()
+            .filter(|issue| issue.severity == brepkit_check::validate::Severity::Error)
+            .take(3)
+            .map(|issue| issue.description.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "{operation} postcondition validation failed with {} error(s): {summary}",
+                report.error_count()
+            ),
+        });
+    }
+    Ok(solid)
+}
+
 /// Offset all faces of a solid (V2 pipeline).
 ///
 /// # Errors
@@ -30,8 +59,9 @@ pub fn offset_solid_v2(
     solid: SolidId,
     distance: f64,
 ) -> Result<SolidId, OperationsError> {
-    brepkit_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
-        .map_err(map_offset_error)
+    let result = brepkit_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
+        .map_err(map_offset_error)?;
+    validate_offset_postcondition(topo, "offset", result)
 }
 
 /// Shell (hollow solid) operation (V2 pipeline).
@@ -45,8 +75,10 @@ pub fn shell_v2(
     thickness: f64,
     exclude: &[FaceId],
 ) -> Result<SolidId, OperationsError> {
-    brepkit_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
-        .map_err(map_offset_error)
+    let result =
+        brepkit_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
+            .map_err(map_offset_error)?;
+    validate_offset_postcondition(topo, "shell", result)
 }
 
 /// Offset with arc joints (V2 pipeline).
@@ -63,7 +95,9 @@ pub fn offset_solid_arc_v2(
         joint: JointType::Arc,
         ..Default::default()
     };
-    brepkit_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)
+    let result =
+        brepkit_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
+    validate_offset_postcondition(topo, "arc offset", result)
 }
 
 #[cfg(test)]
@@ -81,5 +115,22 @@ mod tests {
             .shell(topo.solid(result).unwrap().outer_shell())
             .unwrap();
         assert_eq!(shell.faces().len(), 6);
+    }
+
+    #[test]
+    fn offset_v2_rejects_cavity_without_dropping_it() {
+        let mut topo = Topology::new();
+        let outer = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+        let inner = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let cavity_shell = topo.solid(inner).unwrap().outer_shell();
+        topo.solid_mut(outer).unwrap().add_inner_shell(cavity_shell);
+
+        let error = offset_solid_v2(&mut topo, outer, 0.5).unwrap_err();
+        assert!(matches!(
+            error,
+            OperationsError::InvalidInput { ref reason }
+                if reason.contains("cavity shells")
+        ));
+        assert_eq!(topo.solid(outer).unwrap().inner_shells(), &[cavity_shell]);
     }
 }

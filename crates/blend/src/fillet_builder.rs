@@ -109,7 +109,9 @@ impl<'a> FilletBuilder<'a> {
 
         let adjacency = topo.build_adjacency(self.solid)?;
 
-        let shell_id = topo.solid(self.solid)?.outer_shell();
+        let solid_data = topo.solid(self.solid)?;
+        let shell_id = solid_data.outer_shell();
+        let inner_shells = solid_data.inner_shells().to_vec();
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
 
         // Track which faces are touched (adjacent to a fillet edge).
@@ -135,11 +137,12 @@ impl<'a> FilletBuilder<'a> {
         }
 
         if stripe_results.is_empty() {
+            let is_partial = !failed.is_empty();
             return Ok(BlendResult {
                 solid: self.solid,
                 succeeded: Vec::new(),
                 failed,
-                is_partial: false,
+                is_partial,
             });
         }
 
@@ -169,13 +172,7 @@ impl<'a> FilletBuilder<'a> {
         }
 
         let stripes: Vec<Stripe> = regular_results.iter().map(|sr| sr.stripe.clone()).collect();
-        let corner_results = match corner::compute_corners(topo, &stripes, self.solid) {
-            Ok(results) => results,
-            Err(e) => {
-                log::warn!("corner computation failed: {e}, proceeding without corner patches");
-                Vec::new()
-            }
-        };
+        let corner_results = corner::compute_corners(topo, &stripes, self.solid)?;
 
         let mut corner_face_ids: Vec<FaceId> = Vec::new();
         for cr in &corner_results {
@@ -226,11 +223,8 @@ impl<'a> FilletBuilder<'a> {
                 Ok(tr) if tr.trimmed_face != current_face1 => {
                     face_replacements.insert(stripe.face1, tr.trimmed_face);
                 }
-                Ok(_) => {} // untrimmed (non-planar), keep original
-                Err(e) => {
-                    log::warn!("trimming failed on face {:?}: {e}", stripe.face1);
-                    // Trimming is best-effort in v1. Non-planar faces and complex
-                    // geometries may fail to trim. We continue with the original face.
+                Ok(_) | Err(_) => {
+                    return Err(BlendError::TrimmingFailure { face: stripe.face1 });
                 }
             }
 
@@ -244,9 +238,8 @@ impl<'a> FilletBuilder<'a> {
                 Ok(tr) if tr.trimmed_face != current_face2 => {
                     face_replacements.insert(stripe.face2, tr.trimmed_face);
                 }
-                Ok(_) => {}
-                Err(e) => {
-                    log::warn!("trimming failed on face {:?}: {e}", stripe.face2);
+                Ok(_) | Err(_) => {
+                    return Err(BlendError::TrimmingFailure { face: stripe.face2 });
                 }
             }
         }
@@ -277,7 +270,7 @@ impl<'a> FilletBuilder<'a> {
 
         let new_shell = Shell::new(result_faces)?;
         let new_shell_id = topo.add_shell(new_shell);
-        let new_solid = Solid::new(new_shell_id, Vec::new());
+        let new_solid = Solid::new(new_shell_id, inner_shells);
         let new_solid_id = topo.add_solid(new_solid);
 
         let is_partial = !failed.is_empty();
@@ -1067,6 +1060,7 @@ mod tests {
 
         assert!(result.failed.len() == 1);
         assert_eq!(result.failed[0].0, fake_edge);
+        assert!(result.is_partial);
         // With no successes, the original solid is returned.
         assert_eq!(result.solid, solid);
     }
