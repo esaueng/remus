@@ -12,7 +12,7 @@ blocked on broader domain matrices or independent fork-CI evidence.
 | Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Local blocker cleared: cavity semantics pass; mesh fallback is bounded, deterministic, and fail-closed; the active 64-cut release test passes twice. Fork-CI evidence remains pending. |
 | Booleans | Batch fuse-all | Stable | Blocked: depends on boolean correctness/fallback contract. |
 | Booleans | Torus booleans | Beta | Retained: general torus cases remain limited. |
-| Modifiers | Fillet, chamfer | Stable | Guarded: v2 wrappers reject partial or invalid results and builders preserve cavity shells. Unsupported/no-op trimming now fails explicitly; broader curved-input coverage remains pending. |
+| Modifiers | Fillet, chamfer | Stable / Experimental | Guarded: planar line-edge requests use validated manifold builders. V2 wrappers reject partial or invalid results, preserve cavity shells, and reject closed-edge assembly before mutation; curved analytic geometry remains experimental until watertight solid assembly is implemented. |
 | Modifiers | Shell | Stable | Guarded: offset-engine shell results require closed topology and L3 validation; broader curved and excluded-face matrices remain pending. |
 | Modifiers | Offset, thicken, mirror, pattern | Stable | Guarded: offset no longer skips failed faces/walls, validates closure and orientation, and explicitly rejects unsupported cavity inputs instead of dropping them. |
 | Modifiers | Draft | Beta | Retained: documented planar domain only. |
