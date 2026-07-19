@@ -2,11 +2,11 @@
 
 use brepkit_math::vec::Vec3;
 use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
+use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 use brepkit_topology::face::{Face, FaceId, FaceSurface};
 use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
+use brepkit_topology::vertex::VertexId;
 use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::data::{OffsetData, OffsetStatus};
@@ -26,8 +26,12 @@ use crate::error::OffsetError;
 /// assembled or the shell construction fails.
 pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId, OffsetError> {
     let mut new_faces = Vec::new();
+    let has_openings = !data.excluded_faces.is_empty();
+    let mut offset_face_ids = data.offset_faces.keys().copied().collect::<Vec<_>>();
+    offset_face_ids.sort_by_key(|face_id| face_id.index());
 
-    for (face_id, offset_face) in &data.offset_faces {
+    for face_id in &offset_face_ids {
+        let offset_face = &data.offset_faces[face_id];
         if offset_face.status == OffsetStatus::Excluded {
             continue;
         }
@@ -51,8 +55,10 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
         let outer_wire = wires[0];
         let inner_wires = wires[1..].to_vec();
 
-        let original_reversed = topo.face(offset_face.original)?.is_reversed();
-        let face = if original_reversed {
+        // A thick solid contains the original outer skin and an offset inner
+        // skin, so the offset faces must oppose their source faces.
+        let result_reversed = topo.face(offset_face.original)?.is_reversed() ^ has_openings;
+        let face = if result_reversed {
             Face::new_reversed(outer_wire, inner_wires, offset_face.surface.clone())
         } else {
             Face::new(outer_wire, inner_wires, offset_face.surface.clone())
@@ -61,7 +67,16 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
         new_faces.push(face_id);
     }
 
-    if !data.excluded_faces.is_empty() {
+    if has_openings {
+        // Retain a cloned outer skin for every non-excluded source face. The
+        // clone prevents shell orientation from mutating faces owned by the
+        // caller's original solid while safely reusing its shared edges.
+        for face_id in &offset_face_ids {
+            let offset_face = &data.offset_faces[face_id];
+            if offset_face.status == OffsetStatus::Done {
+                new_faces.push(topo.add_face(topo.face(offset_face.original)?.clone()));
+            }
+        }
         let wall_faces = build_wall_faces(topo, data)?;
         new_faces.extend(wall_faces);
     }
@@ -94,6 +109,10 @@ fn orient_shell_faces(
     use std::collections::{HashMap, VecDeque};
 
     let face_ids = topo.shell(shell_id)?.faces().to_vec();
+    let face_reversed = face_ids
+        .iter()
+        .map(|&face_id| topo.face(face_id).map(Face::is_reversed))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut edge_faces: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
     let mut face_edges = vec![Vec::new(); face_ids.len()];
     for (face_index, &face_id) in face_ids.iter().enumerate() {
@@ -121,13 +140,14 @@ fn orient_shell_faces(
         let mut queue = VecDeque::from([start]);
         while let Some(current) = queue.pop_front() {
             for &(edge_index, current_forward) in &face_edges[current] {
-                let current_effective = current_forward != flip[current];
+                let current_effective = current_forward != (face_reversed[current] ^ flip[current]);
                 for &(neighbor, neighbor_forward) in &edge_faces[&edge_index] {
                     if neighbor == current || visited[neighbor] {
                         continue;
                     }
                     visited[neighbor] = true;
-                    flip[neighbor] = current_effective == neighbor_forward;
+                    let neighbor_effective = neighbor_forward != face_reversed[neighbor];
+                    flip[neighbor] = current_effective == neighbor_effective;
                     queue.push_back(neighbor);
                 }
             }
@@ -150,10 +170,10 @@ fn orient_shell_faces(
 /// create new vertices there, and build a quad wall face connecting
 /// the original edge to the offset positions.
 fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId>, OffsetError> {
-    use brepkit_math::vec::Point3;
+    use std::collections::HashMap;
 
     let mut wall_faces = Vec::new();
-    let tol = data.options.tolerance.linear;
+    let mut connector_edges: HashMap<(usize, usize), EdgeId> = HashMap::new();
 
     for &excluded_face_id in &data.excluded_faces {
         let outer_wire_id = topo.face(excluded_face_id)?.outer_wire();
@@ -162,8 +182,6 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
         for oriented_edge in &wire_edges {
             let edge_id = oriented_edge.edge();
 
-            // Offset each vertex along the face normal by the offset
-            // distance. This works for planar faces.
             let edge = topo.edge(edge_id)?;
             let p0_id = if oriented_edge.is_forward() {
                 edge.start()
@@ -180,14 +198,8 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
             let p1 = topo.vertex(p1_id)?.point();
 
             let excl_face = topo.face(excluded_face_id)?;
-            let excl_normal = match excl_face.surface() {
-                FaceSurface::Plane { normal, .. } => {
-                    if excl_face.is_reversed() {
-                        Vec3::new(-normal.x(), -normal.y(), -normal.z())
-                    } else {
-                        *normal
-                    }
-                }
+            match excl_face.surface() {
+                FaceSurface::Plane { .. } => {}
                 FaceSurface::Cylinder(_)
                 | FaceSurface::Cone(_)
                 | FaceSurface::Sphere(_)
@@ -200,27 +212,76 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
                         ),
                     });
                 }
+            }
+
+            let offset_edges = data
+                .boundary_offset_edges
+                .get(&edge_id.index())
+                .ok_or_else(|| OffsetError::AssemblyFailed {
+                    reason: format!(
+                        "excluded boundary edge {} has no reconstructed offset edge",
+                        edge_id.index()
+                    ),
+                })?;
+            if offset_edges.len() != 1 {
+                return Err(OffsetError::AssemblyFailed {
+                    reason: format!(
+                        "excluded boundary edge {} reconstructed into {} edges; planar wall assembly requires exactly one",
+                        edge_id.index(),
+                        offset_edges.len()
+                    ),
+                });
+            }
+            let offset_edge_id = offset_edges[0];
+            let offset_edge = topo.edge(offset_edge_id)?;
+            let offset_start = offset_edge.start();
+            let offset_end = offset_edge.end();
+            let offset_start_point = topo.vertex(offset_start)?.point();
+            let offset_end_point = topo.vertex(offset_end)?.point();
+
+            // Preserve correspondence along the original boundary direction.
+            // The offset edge may have been created in either orientation.
+            let aligned = point_distance_sq(p0, offset_start_point)
+                + point_distance_sq(p1, offset_end_point)
+                <= point_distance_sq(p0, offset_end_point)
+                    + point_distance_sq(p1, offset_start_point);
+            let (q0_id, q1_id, q0, q1) = if aligned {
+                (
+                    offset_start,
+                    offset_end,
+                    offset_start_point,
+                    offset_end_point,
+                )
+            } else {
+                (
+                    offset_end,
+                    offset_start,
+                    offset_end_point,
+                    offset_start_point,
+                )
             };
 
-            // The wall goes perpendicular to the excluded face normal,
-            // inward by the offset distance. The offset vertices are the
-            // original vertices displaced along the excluded face's inward
-            // normal by |distance|.
-            let disp = excl_normal * (-data.distance);
-            let q0 = Point3::new(p0.x() + disp.x(), p0.y() + disp.y(), p0.z() + disp.z());
-            let q1 = Point3::new(p1.x() + disp.x(), p1.y() + disp.y(), p1.z() + disp.z());
+            let (connector_1, connector_1_forward) =
+                cached_line_edge(topo, &mut connector_edges, p1_id, q1_id)?;
+            let offset_forward = edge_orientation_from(topo, offset_edge_id, q1_id)?;
+            let (connector_0, connector_0_forward) =
+                cached_line_edge(topo, &mut connector_edges, q0_id, p0_id)?;
+            let wall_edges = vec![
+                *oriented_edge,
+                OrientedEdge::new(connector_1, connector_1_forward),
+                OrientedEdge::new(offset_edge_id, offset_forward),
+                OrientedEdge::new(connector_0, connector_0_forward),
+            ];
 
-            let q0_id = topo.add_vertex(Vertex::new(q0, tol));
-            let q1_id = topo.add_vertex(Vertex::new(q1, tol));
-
-            let face_id = make_wall_quad(topo, p0_id, p1_id, q1_id, q0_id, p0, p1, q1, q0)?
-                .ok_or_else(|| OffsetError::AssemblyFailed {
+            let face_id = make_wall_quad(topo, wall_edges, p0, p1, q1, q0)?.ok_or_else(|| {
+                OffsetError::AssemblyFailed {
                     reason: format!(
                         "degenerate wall quad for excluded face {} edge {}",
                         excluded_face_id.index(),
                         edge_id.index()
                     ),
-                })?;
+                }
+            })?;
             wall_faces.push(face_id);
         }
     }
@@ -234,10 +295,7 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
 #[allow(clippy::too_many_arguments)]
 fn make_wall_quad(
     topo: &mut Topology,
-    p0_id: VertexId,
-    p1_id: VertexId,
-    p2_id: VertexId,
-    p3_id: VertexId,
+    wall_edges: Vec<OrientedEdge>,
     p0: brepkit_math::vec::Point3,
     p1: brepkit_math::vec::Point3,
     _p2: brepkit_math::vec::Point3,
@@ -254,23 +312,57 @@ fn make_wall_quad(
     let normal = cross * (1.0 / len);
     let d = normal.dot(Vec3::new(p0.x(), p0.y(), p0.z()));
 
-    let e01 = topo.add_edge(Edge::new(p0_id, p1_id, EdgeCurve::Line));
-    let e12 = topo.add_edge(Edge::new(p1_id, p2_id, EdgeCurve::Line));
-    let e23 = topo.add_edge(Edge::new(p2_id, p3_id, EdgeCurve::Line));
-    let e30 = topo.add_edge(Edge::new(p3_id, p0_id, EdgeCurve::Line));
-
-    let wire = Wire::new(
-        vec![
-            OrientedEdge::new(e01, true),
-            OrientedEdge::new(e12, true),
-            OrientedEdge::new(e23, true),
-            OrientedEdge::new(e30, true),
-        ],
-        true,
-    )?;
+    let wire = Wire::new(wall_edges, true)?;
     let wire_id = topo.add_wire(wire);
     let face = Face::new(wire_id, vec![], FaceSurface::Plane { normal, d });
     Ok(Some(topo.add_face(face)))
+}
+
+fn point_distance_sq(a: brepkit_math::vec::Point3, b: brepkit_math::vec::Point3) -> f64 {
+    let delta = a - b;
+    delta.dot(delta)
+}
+
+fn edge_orientation_from(
+    topo: &Topology,
+    edge_id: EdgeId,
+    from: VertexId,
+) -> Result<bool, OffsetError> {
+    let edge = topo.edge(edge_id)?;
+    if edge.start() == from {
+        Ok(true)
+    } else if edge.end() == from {
+        Ok(false)
+    } else {
+        Err(OffsetError::AssemblyFailed {
+            reason: format!(
+                "vertex {} is not an endpoint of edge {}",
+                from.index(),
+                edge_id.index()
+            ),
+        })
+    }
+}
+
+fn cached_line_edge(
+    topo: &mut Topology,
+    cache: &mut std::collections::HashMap<(usize, usize), EdgeId>,
+    from: VertexId,
+    to: VertexId,
+) -> Result<(EdgeId, bool), OffsetError> {
+    let key = if from.index() < to.index() {
+        (from.index(), to.index())
+    } else {
+        (to.index(), from.index())
+    };
+    let edge_id = if let Some(&existing) = cache.get(&key) {
+        existing
+    } else {
+        let created = topo.add_edge(Edge::new(from, to, EdgeCurve::Line));
+        cache.insert(key, created);
+        created
+    };
+    Ok((edge_id, edge_orientation_from(topo, edge_id, from)?))
 }
 
 #[cfg(test)]

@@ -1,0 +1,18 @@
+# OSV sees every package recorded for every target in Cargo.lock, including
+# build-time and optional desktop-viewer dependencies. Keep these exceptions
+# aligned with deny.toml and expire them so the upstream chains are revisited.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+ignoreUntil = 2026-10-01
+reason = "quick-xml 0.39 is only used by wayland-scanner at build time over trusted vendored protocol XML; runtime 3MF parsing uses patched quick-xml 0.41"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+ignoreUntil = 2026-10-01
+reason = "quick-xml 0.39 is only used by wayland-scanner at build time over trusted vendored protocol XML; runtime 3MF parsing uses patched quick-xml 0.41"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2026-10-01
+reason = "ttf-parser is an optional transitive dependency of the desktop window feature; no patched release exists and the advisory is informational/unmaintained"

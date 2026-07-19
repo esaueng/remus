@@ -175,6 +175,13 @@ pub struct OffsetData {
     /// to include these edges in the non-excluded face's loop.
     pub boundary_edges: HashMap<FaceId, Vec<EdgeId>>,
 
+    /// Trimmed offset edges corresponding to each original boundary edge.
+    ///
+    /// These edges are shared by the inner offset skin and the wall faces of
+    /// a thick solid. A boundary can split into multiple edges, hence the
+    /// vector value even though the common planar case contains one edge.
+    pub boundary_offset_edges: BTreeMap<usize, Vec<EdgeId>>,
+
     // --- Phase 6: arc joints ---
     /// Faces created as rolling-ball arc joints at convex edges.
     pub joint_faces: Vec<FaceId>,
@@ -199,6 +206,7 @@ impl OffsetData {
             intersections: Vec::new(),
             edge_splits: BTreeMap::new(),
             boundary_edges: HashMap::new(),
+            boundary_offset_edges: BTreeMap::new(),
             joint_faces: Vec::new(),
             face_wires: HashMap::new(),
         }

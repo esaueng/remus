@@ -137,6 +137,24 @@ fn offset_box_inward_volume_smaller_than_original() {
     );
 }
 
+#[test]
+fn offset_box_rebuilds_are_manifold_and_exact() {
+    // Regression for randomized HashMap iteration selecting a mix of direct
+    // and independently trimmed face loops. The old path intermittently
+    // produced free edges and, when it happened to pass topology validation,
+    // inconsistent face winding and incorrect volume.
+    for _ in 0..64 {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let result = offset_solid(&mut topo, solid, 0.5, offset_opts()).unwrap();
+        let volume = solid_volume(&topo, result, 0.01).unwrap();
+        assert!(
+            (volume - 27.0).abs() < 1e-9,
+            "offset rebuild volume must remain exact, got {volume}"
+        );
+    }
+}
+
 // ── Cylinder offset tests ──────────────────────────────────────
 
 #[test]
