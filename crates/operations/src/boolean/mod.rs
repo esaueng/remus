@@ -919,9 +919,12 @@ fn box_pair_shortcut(
                 a_max.y().min(b_max.y()),
                 a_max.z().min(b_max.z()),
             );
-            // Empty intersection — let general path return an error.
+            // Empty or sub-tolerance intersection. Returning the kernel's
+            // explicit empty solid keeps the operation fail-safe at the
+            // tolerance boundary instead of sending a zero-thickness box to
+            // the general pipeline, where it can assemble non-manifold faces.
             if hi.x() <= lo.x() + eps || hi.y() <= lo.y() + eps || hi.z() <= lo.z() + eps {
-                return Ok(None);
+                return Ok(Some(topo.add_empty_solid()));
             }
             (lo, hi)
         }
