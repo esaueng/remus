@@ -71,6 +71,12 @@ impl<T> Id<T> {
 #[derive(Debug, Clone)]
 pub struct Arena<T> {
     items: Vec<T>,
+    /// Whether each allocated slot contains a live entity.
+    ///
+    /// Slots may be retired by checkpoint restore. They remain allocated so
+    /// a stale external numeric handle can never alias a newly-created entity.
+    live: Vec<bool>,
+    live_len: usize,
 }
 
 impl<T> Default for Arena<T> {
@@ -83,7 +89,11 @@ impl<T> Arena<T> {
     /// Creates a new, empty arena.
     #[must_use]
     pub const fn new() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            items: Vec::new(),
+            live: Vec::new(),
+            live_len: 0,
+        }
     }
 
     /// Creates a new arena with the given capacity pre-allocated.
@@ -91,18 +101,23 @@ impl<T> Arena<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             items: Vec::with_capacity(capacity),
+            live: Vec::with_capacity(capacity),
+            live_len: 0,
         }
     }
 
     /// Reserves capacity for at least `additional` more entries.
     pub fn reserve(&mut self, additional: usize) {
         self.items.reserve(additional);
+        self.live.reserve(additional);
     }
 
     /// Allocates a new entry in the arena and returns its typed handle.
     pub fn alloc(&mut self, value: T) -> Id<T> {
         let index = self.items.len();
         self.items.push(value);
+        self.live.push(true);
+        self.live_len += 1;
         Id {
             index,
             _marker: PhantomData,
@@ -113,20 +128,28 @@ impl<T> Arena<T> {
     /// is out of bounds.
     #[must_use]
     pub fn get(&self, id: Id<T>) -> Option<&T> {
-        self.items.get(id.index)
+        self.live
+            .get(id.index)
+            .copied()
+            .filter(|is_live| *is_live)
+            .and_then(|_| self.items.get(id.index))
     }
 
     /// Returns a mutable reference to the value at `id`, or `None` if
     /// the id is out of bounds.
     #[must_use]
     pub fn get_mut(&mut self, id: Id<T>) -> Option<&mut T> {
-        self.items.get_mut(id.index)
+        self.live
+            .get(id.index)
+            .copied()
+            .filter(|is_live| *is_live)
+            .and_then(|_| self.items.get_mut(id.index))
     }
 
     /// Returns the number of entries in the arena.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.live_len
     }
 
     /// Returns `true` if the arena contains no entries.
@@ -137,15 +160,19 @@ impl<T> Arena<T> {
 
     /// Returns an iterator over all `(Id<T>, &T)` pairs.
     pub fn iter(&self) -> impl Iterator<Item = (Id<T>, &T)> {
-        self.items.iter().enumerate().map(|(i, v)| {
-            (
-                Id {
-                    index: i,
-                    _marker: PhantomData,
-                },
-                v,
-            )
-        })
+        self.items
+            .iter()
+            .zip(&self.live)
+            .enumerate()
+            .filter_map(|(i, (v, is_live))| {
+                is_live.then_some((
+                    Id {
+                        index: i,
+                        _marker: PhantomData,
+                    },
+                    v,
+                ))
+            })
     }
 
     /// Reconstructs a typed [`Id`] from a raw index, returning `None`
@@ -155,23 +182,54 @@ impl<T> Arena<T> {
     /// are passed as plain integers.
     #[must_use]
     pub fn id_from_index(&self, index: usize) -> Option<Id<T>> {
-        self.items.get(index).map(|_| Id {
-            index,
-            _marker: PhantomData,
-        })
+        self.live
+            .get(index)
+            .copied()
+            .filter(|is_live| *is_live)
+            .map(|_| Id {
+                index,
+                _marker: PhantomData,
+            })
     }
 
     /// Returns a mutable iterator over all `(Id<T>, &mut T)` pairs.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Id<T>, &mut T)> {
-        self.items.iter_mut().enumerate().map(|(i, v)| {
-            (
-                Id {
-                    index: i,
-                    _marker: PhantomData,
-                },
-                v,
-            )
-        })
+        self.items
+            .iter_mut()
+            .zip(&self.live)
+            .enumerate()
+            .filter_map(|(i, (v, is_live))| {
+                is_live.then_some((
+                    Id {
+                        index: i,
+                        _marker: PhantomData,
+                    },
+                    v,
+                ))
+            })
+    }
+}
+
+impl<T: Clone> Arena<T> {
+    /// Restore live entries from `snapshot` without reusing any slot that has
+    /// existed in this arena.
+    ///
+    /// Entries beyond the snapshot's slot range are retained as inaccessible
+    /// tombstones. Future allocations append after those tombstones, ensuring
+    /// stale raw-index handles cannot resolve to unrelated entities.
+    pub(crate) fn restore_preserving_slots(&mut self, snapshot: &Self) {
+        let previous_items = std::mem::take(&mut self.items);
+        let previous_slots = previous_items.len();
+
+        self.items.clone_from(&snapshot.items);
+        self.live.clone_from(&snapshot.live);
+        self.live_len = snapshot.live_len;
+
+        if previous_slots > self.items.len() {
+            self.items
+                .extend_from_slice(&previous_items[self.items.len()..]);
+            self.live.resize(previous_slots, false);
+        }
     }
 }
 
@@ -217,5 +275,25 @@ mod tests {
         let id = arena.alloc("second".into());
         assert_eq!(arena.len(), 2);
         assert_eq!(arena.get(id).unwrap(), "second");
+    }
+
+    #[test]
+    fn restore_retires_post_snapshot_slots_without_reuse() {
+        let mut arena = Arena::new();
+        let original = arena.alloc("original".to_owned());
+        let snapshot = arena.clone();
+        let stale = arena.alloc("stale".to_owned());
+
+        arena.restore_preserving_slots(&snapshot);
+
+        assert_eq!(arena.len(), 1);
+        assert_eq!(arena.get(original).map(String::as_str), Some("original"));
+        assert!(arena.get(stale).is_none());
+        assert!(arena.id_from_index(stale.index()).is_none());
+
+        let fresh = arena.alloc("fresh".to_owned());
+        assert!(fresh.index() > stale.index());
+        assert_eq!(arena.get(fresh).map(String::as_str), Some("fresh"));
+        assert_eq!(arena.len(), 2);
     }
 }

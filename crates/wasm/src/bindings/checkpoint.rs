@@ -45,8 +45,11 @@ impl BrepKernel {
         let cp = self
             .checkpoints
             .get(idx)
-            .ok_or_else(|| JsError::new(&format!("invalid checkpoint id: {checkpoint_id}")))?;
-        self.topo = Rc::clone(&cp.topo);
+            .ok_or_else(|| JsError::new(&format!("invalid checkpoint id: {checkpoint_id}")))?
+            .clone();
+        let snapshot_topo = Rc::clone(&cp.topo);
+        self.topo_mut()
+            .restore_preserving_handle_slots(&snapshot_topo);
         self.assemblies = cp.assemblies.clone();
         self.sketches = cp.sketches.clone();
         // Discard checkpoints created after the restored one
@@ -122,6 +125,24 @@ mod tests {
 
         // box2's handle no longer resolves after restore
         assert!(k.resolve_solid(_box2).is_err());
+    }
+
+    /// A handle retired by restore must not alias the next entity allocated in
+    /// the same arena.
+    #[test]
+    fn restore_never_reuses_post_checkpoint_solid_handle() {
+        let mut k = BrepKernel::new();
+        let original = make_box(&mut k, 2.0, 2.0, 2.0);
+        let cp = k.checkpoint();
+        let stale = make_box(&mut k, 1.0, 1.0, 1.0);
+
+        k.restore(cp).unwrap();
+        let fresh = make_box(&mut k, 3.0, 3.0, 3.0);
+
+        assert!(fresh > stale);
+        assert!(k.resolve_solid(stale).is_err());
+        assert!((volume(&k, original) - 8.0).abs() < 0.05);
+        assert!((volume(&k, fresh) - 27.0).abs() < 0.1);
     }
 
     /// Volume of the original solid is preserved across a restore.
