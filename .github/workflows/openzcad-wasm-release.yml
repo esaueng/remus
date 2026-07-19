@@ -26,6 +26,15 @@ jobs:
       - name: Build and validate WASM package
         run: cargo xtask wasm-build --skip-opt
 
+      - name: Stamp fork provenance
+        working-directory: crates/wasm/pkg
+        run: |
+          npm pkg set \
+            repository.type=git \
+            repository.url=git+https://github.com/esaueng/brepkit.git \
+            homepage=https://github.com/esaueng/brepkit \
+            brepkitSourceCommit="$GITHUB_SHA"
+
       - name: Pack npm-compatible artifact
         id: pack
         working-directory: crates/wasm/pkg
@@ -34,14 +43,47 @@ jobs:
           echo "path=$RUNNER_TEMP/$package_name" >> "$GITHUB_OUTPUT"
           echo "name=$package_name" >> "$GITHUB_OUTPUT"
 
+      - name: Publish git dependency branch
+        env:
+          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
+        run: |
+          dist_dir=$(mktemp -d)
+          tar -xzf "$PACKAGE_PATH" -C "$dist_dir" --strip-components=1
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin openzcad-wasm
+          git switch -C openzcad-wasm origin/openzcad-wasm
+          git rm -r .
+          cp -R "$dist_dir"/. .
+          cat > README.md <<EOF
+          # BrepKit WASM for OpenZCAD
+
+          Generated from \`esaueng/brepkit@$GITHUB_SHA\` by the
+          \`Build OpenZCAD WASM Release\` workflow. Consumers should pin the
+          resulting distribution commit.
+          EOF
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Distribution branch is already current."
+          else
+            git commit -m "Publish OpenZCAD WASM package from ${GITHUB_SHA::12}"
+            git push origin openzcad-wasm
+          fi
+
       - name: Create immutable GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_PATH: ${{ steps.pack.outputs.path }}
         run: |
           release_tag="openzcad-${GITHUB_SHA::12}"
-          gh release create "$release_tag" "$PACKAGE_PATH" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "OpenZCAD WASM ${GITHUB_SHA::12}" \
-            --notes "Browser WASM package built from esaueng/brepkit commit $GITHUB_SHA for reproducible OpenZCAD consumption."
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$release_tag" "$PACKAGE_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$release_tag" "$PACKAGE_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "OpenZCAD WASM ${GITHUB_SHA::12}" \
+              --notes "Browser WASM package built from esaueng/brepkit commit $GITHUB_SHA for reproducible OpenZCAD consumption."
+          fi
