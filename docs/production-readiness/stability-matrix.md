@@ -2,14 +2,14 @@
 
 The README labels below are retained; no feature is promoted by this audit.
 Rows marked **blocked** lack the full production evidence for their advertised
-domain. The P0/P1 defects found by this audit are closed; rows can remain
-blocked on broader domain matrices or independent fork-CI evidence.
+domain. The P0/P1 defects found by this audit are closed and the fork CI gate
+passes; rows can remain blocked on broader domain matrices.
 
 | README category | Feature | Current label | Disposition |
 | --- | --- | --- | --- |
 | Primitives | Box, cylinder, cone, sphere, torus, ellipsoid | Stable | Blocked: native/WASM invalid-input, scale, and full postcondition matrix incomplete. |
 | Primitives | Convex hull, Minkowski sum | Stable | Blocked: degenerate/property coverage incomplete. |
-| Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Local blocker cleared: cavity semantics pass; mesh fallback is bounded, deterministic, and fail-closed; the active 64-cut release test passes twice. Fork-CI evidence remains pending. |
+| Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Guarded: cavity semantics pass; mesh fallback is bounded, deterministic, and fail-closed; the active 64-cut release test and final fork CI pass. Broader domain matrices remain pending. |
 | Booleans | Batch fuse-all | Stable | Blocked: depends on boolean correctness/fallback contract. |
 | Booleans | Torus booleans | Beta | Retained: general torus cases remain limited. |
 | Modifiers | Fillet, chamfer | Stable / Experimental | Guarded: planar line-edge requests use validated manifold builders, and bare cylinder/cone rims use the exact validated toroidal fillet assembler. V2 wrappers reject partial or invalid results and preserve cavity shells. Closed-rim chamfers and other curved assembly remain experimental and fail closed. |

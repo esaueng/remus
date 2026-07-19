@@ -22,7 +22,7 @@ exists in this library workspace, so those review phases are not applicable.
 | Topology and operations | `crates/topology`, `crates/operations`, `crates/offset`, `crates/blend`, `crates/heal`, `crates/check`, `crates/sketch` | Manual review complete for public boolean/classification/modifier paths. Cavity semantics, bounded fail-closed fallback, deterministic repeated cuts, modifier partial-result handling, offset postconditions, and tessellation error propagation are fixed with regressions. |
 | Import/export | `crates/io`, parser tests and fixtures | Reviewed for malformed and oversized input. STL index and IGES UTF-8 panics are fixed; every importer now applies shared byte/entity limits and 3MF applies a separate uncompressed-entry limit. |
 | WASM and JavaScript | `crates/wasm`, TypeScript bindings, `xtask`, smoke script | Reviewed. no-I/O build, checked handle narrowing, checkpoint high-water retirement, batch byte/operation limits, CLI drift, and normal smoke coverage are fixed. |
-| CI and supply chain | `.github/workflows`, Dependabot, action pins | Reviewed. Checked-in lockfiles replace unproven Cargo scan setup. CI and publish now share the validated xtask package path and run npm dry-runs. Workflow permissions are narrow; SBOM/attestation and actual fork runs require follow-up. |
+| CI and supply chain | `.github/workflows`, Dependabot, action pins | Reviewed. Checked-in lockfiles replace unproven Cargo scan setup. CI and publish share the validated xtask package path and run npm dry-runs. Workflow permissions are narrow; the final fork run passed. SBOM/attestation and any actual publish remain follow-up work. |
 | Tests, examples, fixtures, benchmarks, corpus | all tracked test/example/fixture/benchmark directories | Inventory reviewed. Full workspace tests, targeted regressions, deterministic complexity guard, and active 64-cut determinism gate pass. Three slow/diagnostic operations tests remain explicitly ignored and are not release blockers. No standalone fuzz corpus is tracked; adversarial scanning/fuzzing was outside this run mode. |
 | Documentation | README feature matrix and policy docs | Stability and fork ledgers added. Existing feature labels were not promoted. |
 
@@ -34,9 +34,9 @@ exists in this library workspace, so those review phases are not applicable.
 | Default and no-I/O wasm32 checks | Passed after fix. |
 | `npm ci` | Passed after lock repair. |
 | Workspace all-features tests, docs, xtask tests | Passed locally with Cargo's official test runner. CI uses nextest plus a separate doc-test command. |
-| Boundary script | Passed locally. Cargo-deny and RustSec were not invoked because this run explicitly excluded specialized scan workflows; their pinned CI jobs remain the execution gate. |
-| Machete and Taplo | CI definitions reviewed; local tools were unavailable. Fork CI must provide final evidence. |
+| Boundary script | Passed locally and in fork CI. Cargo-deny, RustSec, and OSV also passed on the final PR head. |
+| Machete and Taplo | Passed in fork CI through the unused-dependencies and TOML-format jobs. |
 | MSRV 1.88 | Passed locally. |
 | WASM package build, Node smoke, npm dry-run | Passed with Rust 1.96.0, wasm-pack 0.15.0, and Node 22.22.2. The tarball includes both license texts. |
-| Coverage, benchmark, fuzz/corpus replay | Deterministic complexity and 64-cut release guards passed. The 60% llvm-cov gate remains in CI; no local coverage percentage or fuzz claim is made. |
-| Fork-hosted CI evidence | Pending remote execution; no GitHub settings or release action was changed. |
+| Coverage, benchmark, fuzz/corpus replay | Deterministic complexity, 64-cut release guards, benchmark, and the 60% llvm-cov gate passed. No fuzz/corpus claim is made. |
+| Fork-hosted CI evidence | Passed in run `29672853018`: aggregate CI, tests, coverage, MSRV, WASM builds, docs, boundaries, dependency policy, RustSec, OSV, formatting, unused dependencies, and benchmarks were green. No release or repository setting was changed. |

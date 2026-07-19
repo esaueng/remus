@@ -18,7 +18,7 @@ below are from source inspection and targeted reproductions only.
 | REL-001 | P2 | WASM toolchain | Cargo pinned `wasm-bindgen 0.2.126` while xtask required CLI `0.2.121`. | Compare `Cargo.toml` and `xtask/src/wasm.rs`. | Fixed: xtask now requires `0.2.126`. A remaining improvement is deriving this value from Cargo metadata. |
 | REL-002 | P2 | WASM release validation | Normal `wasm-build` validated files but did not run the Node runtime smoke test. | Inspect `xtask/src/main.rs`. | Fixed: normal builds now run `scripts/test-wasm-smoke.mjs`; CI invokes the command. |
 | REL-003 | P1 | npm artifact licensing | The generated npm tarball omitted both repository license texts even though its manifest declared `MIT OR Apache-2.0`. | Run `npm pack --dry-run` in `crates/wasm/pkg`; the initial six-file listing had no license. | Fixed: xtask copies both root licenses into the generated package, declares them in `files`, and validates their presence before smoke or publish. CI and the publish workflow now run an npm dry-run. |
-| GOV-001 | P2 | dependency scanning | `Cargo.lock` was ignored while OSV referenced it, producing unproven Cargo coverage. | Inspect `.gitignore` and `.github/workflows/osv-scan.yml`. | Fixed locally: root and xtask lockfiles are now source-controlled; RustSec consumes the checked-in lockfile. Fork CI execution remains to be verified remotely. |
+| GOV-001 | P2 | dependency scanning | `Cargo.lock` was ignored while OSV referenced it, producing unproven Cargo coverage. | Inspect `.gitignore` and `.github/workflows/osv-scan.yml`. | Fixed: root and xtask lockfiles are source-controlled; RustSec and OSV consume the checked-in graph and passed on the final PR head. |
 | IO-003 | P0 | hostile-input limits | STEP, IGES, 3MF/ZIP, glTF, PLY, and batch JSON had no complete byte/entity/work budgets. Large inputs could exhaust memory or CPU. | Static audit of parsers and public WASM methods, followed by per-format limit regressions. | Fixed: all model readers use shared `ImportLimits` defaults (128 MiB encoded input, 256 MiB uncompressed 3MF XML entry, and 2,000,000 format-specific entities), expose `*_with_limits` overrides, and check declared counts before allocation where available. WASM batch input is capped at 16 MiB and 10,000 operations. Corpus fuzzing remains desirable defense-in-depth, not an unbounded production path. |
 | WASM-003 | P1 | checkpoint handles | Bare arena indices could alias an entity created after checkpoint restore. | Restore a checkpoint, create entities, then reuse a post-checkpoint handle. | Fixed without changing the public numeric handle format: checkpoint restore retires post-checkpoint slots and preserves each arena's high-water mark. Stale handles remain invalid and new handles append above retired slots. Native arena/topology and WASM regressions cover reuse. |
 | BOOL-001 | P1 | boolean/cavity semantics | Classifiers and some containment fast paths inspected only outer shells, so cavities were classified as material and fuse could discard a body located in a cavity. | Cut a centered box from a larger box, classify the cavity center, then fuse a smaller body into the void. | Fixed: native classifiers traverse all shells, analytic single-region shortcuts defer for cavity solids, and area/volume/center calculations include signed inner-shell contributions. Regressions cover classification, properties, and fuse containment. |
@@ -52,9 +52,9 @@ below are from source inspection and targeted reproductions only.
 
 ## Exit criteria
 
-All P0/P1 defects found by this local audit are closed with regression coverage.
-The branch is a **local production release candidate**, not authorization to
-publish: fork-hosted CI has not yet supplied independent coverage, supply-chain,
-MSRV, WASM, and packaging evidence for the final commit. See the stability
-matrix for feature-level disposition and the release checklist for the
-remaining remote release gate.
+All P0/P1 defects found by this audit are closed with regression coverage. The
+final fork-hosted PR run passed coverage, supply-chain, MSRV, WASM, packaging,
+documentation, and aggregate CI gates. The branch is a **production-hardening
+merge candidate**, not authorization to publish. See the stability matrix for
+feature-level limitations and the release checklist for the separate package
+release approvals and artifact record.
