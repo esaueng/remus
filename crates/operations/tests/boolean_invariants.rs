@@ -329,19 +329,18 @@ fn boolean_3d_euler_genus0() {
 
 #[test]
 fn fuse_edge_on_edge_boxes() {
-    // Two unit cubes sharing only an edge (diagonal contact).
+    // Two unit cubes sharing only an edge (diagonal contact) do not form a
+    // single closed 2-manifold shell.
     let mut topo = Topology::new();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 1.0, 1.0, 0.0);
 
-    let fused = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
-    check_manifold(&topo, fused);
-    // No overlap — fused volume should equal sum of both.
-    let v = vol(&topo, fused);
-    let rel_error = (v - 2.0).abs() / 2.0;
     assert!(
-        rel_error < 0.01,
-        "edge-on-edge fuse: got {v:.6}, expected 2.0"
+        matches!(
+            boolean(&mut topo, BooleanOp::Fuse, a, b),
+            Err(OperationsError::NonManifoldResult)
+        ),
+        "edge-on-edge fuse must fail closed"
     );
 }
 
