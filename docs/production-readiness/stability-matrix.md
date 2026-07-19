@@ -8,7 +8,7 @@ domain or lack the required production evidence.
 | --- | --- | --- | --- |
 | Primitives | Box, cylinder, cone, sphere, torus, ellipsoid | Stable | Blocked: native/WASM invalid-input, scale, and full postcondition matrix incomplete. |
 | Primitives | Convex hull, Minkowski sum | Stable | Blocked: degenerate/property coverage incomplete. |
-| Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Blocked: cavity handling and mesh-fallback quality contract unresolved. |
+| Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Blocked: cavity classification/containment is fixed, but mesh-fallback quality contract remains unresolved. |
 | Booleans | Batch fuse-all | Stable | Blocked: depends on boolean correctness/fallback contract. |
 | Booleans | Torus booleans | Beta | Retained: general torus cases remain limited. |
 | Modifiers | Fillet, chamfer | Stable | Blocked: success paths need watertight/cavity postconditions. |
@@ -21,10 +21,10 @@ domain or lack the required production evidence.
 | Sweeps | Non-planar profiles | Beta | Retained: documented cap and boundary limitations. |
 | Construction | Coons fill, sew, untrim | Stable | Blocked: topology postconditions incomplete. |
 | Sectioning | Cross-section, split by plane | Stable | Blocked: cavity and degeneracy matrix incomplete. |
-| Measurement | Bounding box, area, center of mass | Stable | Blocked: inner-shell correctness review found gaps. |
-| Measurement | Distance and classification | Stable | Blocked: cavity classification is incorrect. |
+| Measurement | Bounding box, area, center of mass | Stable | Evidence pending: inner-shell area, signed volume, and center regressions now pass; curved-cavity and scale matrices remain incomplete. |
+| Measurement | Distance and classification | Stable | Evidence pending: all three cavity classifiers now pass inner-shell regressions; general tolerance/domain matrices remain incomplete. |
 | Drawing | Hidden-line projection | Stable | Evidence pending: public error/performance matrix incomplete. |
-| Geometry | NURBS evaluation and fitting | Stable | Blocked: degree-nine panic and fitting endpoint defect unresolved. |
+| Geometry | NURBS evaluation and fitting | Stable | Evidence pending: degree-nine direct/cached evaluation, derivatives, and curvature sampling are fixed with a depth-limit regression; imported invariant, fitting, and large-degree budget matrices remain incomplete. |
 | Geometry | Analytic intersections | Stable | Evidence pending: tolerance/domain matrix incomplete. |
 | Geometry | Surface-surface intersection | Stable | Evidence pending: hard iteration budgets incomplete. |
 | Geometry | Curve-curve intersection | Stable | Evidence pending: termination/property matrix incomplete. |

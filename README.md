@@ -224,6 +224,13 @@ cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release --no-defau
 cargo doc --workspace --no-deps --open
 ```
 
+Maintainers should use the
+[production-readiness audit](docs/production-readiness/audit.md),
+[stability matrix](docs/production-readiness/stability-matrix.md), and
+[release checklist](docs/production-readiness/release-checklist.md) before
+cutting an artifact. The checklist is validation guidance and does not grant
+authority to publish from a fork.
+
 ## Roadmap
 
 Broad directions, no dates.
