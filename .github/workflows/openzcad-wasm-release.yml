@@ -52,6 +52,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git restore --source=HEAD --staged --worktree .
+          git clean -fdx
           git fetch origin openzcad-wasm
           git switch -C openzcad-wasm origin/openzcad-wasm
           git rm -r .
