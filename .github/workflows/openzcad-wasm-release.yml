@@ -55,6 +55,11 @@ jobs:
           git clean -fdx
           git fetch origin openzcad-wasm
           git switch -C openzcad-wasm origin/openzcad-wasm
+          git merge \
+            --strategy=ours \
+            --allow-unrelated-histories \
+            -m "Track BrepKit source ${GITHUB_SHA::12}" \
+            "$GITHUB_SHA"
           git rm -r .
           cp -R "$dist_dir"/. .
           cat > README.md <<EOF
@@ -69,6 +74,8 @@ jobs:
             echo "Distribution branch is already current."
           else
             git commit -m "Publish OpenZCAD WASM package from ${GITHUB_SHA::12}"
+          fi
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/openzcad-wasm)" ]; then
             git push origin openzcad-wasm
           fi
 
