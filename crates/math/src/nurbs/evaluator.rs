@@ -91,16 +91,30 @@ impl<'a> SurfaceEvaluator<'a> {
         let span_u = self.find_span_u(u);
         let span_v = self.find_span_v(v);
 
-        let mut nu = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
-        let mut nv = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nu_stack = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nu_heap;
+        let nu: &mut [f64] = if pu <= basis::MAX_STACK_OUTPUT {
+            &mut nu_stack[..=pu]
+        } else {
+            nu_heap = vec![0.0; pu + 1];
+            &mut nu_heap
+        };
+        let mut nv_stack = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nv_heap;
+        let nv: &mut [f64] = if pv <= basis::MAX_STACK_OUTPUT {
+            &mut nv_stack[..=pv]
+        } else {
+            nv_heap = vec![0.0; pv + 1];
+            &mut nv_heap
+        };
 
         // SAFETY of indexing: power_u/power_v are guaranteed Some after ensure_power_basis.
         // Using if-let to satisfy no-panic lint.
         if let Some(ref pb_u) = self.power_u {
-            pb_u.horner(span_u, u, &mut nu[..=pu]);
+            pb_u.horner(span_u, u, nu);
         }
         if let Some(ref pb_v) = self.power_v {
-            pb_v.horner(span_v, v, &mut nv[..=pv]);
+            pb_v.horner(span_v, v, nv);
         }
 
         let cps = self.surface.control_points();
@@ -156,16 +170,44 @@ impl<'a> SurfaceEvaluator<'a> {
         let span_u = self.find_span_u(u);
         let span_v = self.find_span_v(v);
 
-        let mut nu = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
-        let mut dnu = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
-        let mut nv = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
-        let mut dnv = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nu_stack = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nu_heap;
+        let nu: &mut [f64] = if pu <= basis::MAX_STACK_OUTPUT {
+            &mut nu_stack[..=pu]
+        } else {
+            nu_heap = vec![0.0; pu + 1];
+            &mut nu_heap
+        };
+        let mut dnu_stack = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut dnu_heap;
+        let dnu: &mut [f64] = if pu <= basis::MAX_STACK_OUTPUT {
+            &mut dnu_stack[..=pu]
+        } else {
+            dnu_heap = vec![0.0; pu + 1];
+            &mut dnu_heap
+        };
+        let mut nv_stack = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nv_heap;
+        let nv: &mut [f64] = if pv <= basis::MAX_STACK_OUTPUT {
+            &mut nv_stack[..=pv]
+        } else {
+            nv_heap = vec![0.0; pv + 1];
+            &mut nv_heap
+        };
+        let mut dnv_stack = [0.0_f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut dnv_heap;
+        let dnv: &mut [f64] = if pv <= basis::MAX_STACK_OUTPUT {
+            &mut dnv_stack[..=pv]
+        } else {
+            dnv_heap = vec![0.0; pv + 1];
+            &mut dnv_heap
+        };
 
         if let Some(ref pb_u) = self.power_u {
-            pb_u.horner_with_derivs(span_u, u, &mut nu[..=pu], &mut dnu[..=pu]);
+            pb_u.horner_with_derivs(span_u, u, nu, dnu);
         }
         if let Some(ref pb_v) = self.power_v {
-            pb_v.horner_with_derivs(span_v, v, &mut nv[..=pv], &mut dnv[..=pv]);
+            pb_v.horner_with_derivs(span_v, v, nv, dnv);
         }
 
         let cps = self.surface.control_points();

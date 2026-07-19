@@ -161,8 +161,15 @@ impl NurbsCurve {
         let p = self.degree;
         let n = self.control_points.len();
         let span = basis::find_span(n, p, u, &self.knots);
-        let mut bf = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
-        basis::basis_funs_into(span, u, p, &self.knots, &mut bf[..=p]);
+        let mut bf_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut bf_heap;
+        let bf: &mut [f64] = if p <= basis::MAX_STACK_OUTPUT {
+            &mut bf_stack[..=p]
+        } else {
+            bf_heap = vec![0.0; p + 1];
+            &mut bf_heap
+        };
+        basis::basis_funs_into(span, u, p, &self.knots, bf);
 
         // Weighted sum in homogeneous coordinates.
         let mut wx = 0.0;
@@ -201,22 +208,23 @@ impl NurbsCurve {
         let span = basis::find_span(n, p, u, &self.knots);
         let du = d.min(p);
         let stride = p + 1;
-        let mut ders_bf_buf =
+        let required = (du + 1) * stride;
+        let mut ders_bf_stack =
             [0.0f64; (basis::MAX_STACK_OUTPUT + 1) * (basis::MAX_STACK_OUTPUT + 1)];
-        basis::ders_basis_funs_into(
-            span,
-            u,
-            p,
-            du,
-            &self.knots,
-            &mut ders_bf_buf[..(du + 1) * stride],
-        );
+        let mut ders_bf_heap;
+        let ders_bf: &mut [f64] = if required <= ders_bf_stack.len() {
+            &mut ders_bf_stack[..required]
+        } else {
+            ders_bf_heap = vec![0.0; required];
+            &mut ders_bf_heap
+        };
+        basis::ders_basis_funs_into(span, u, p, du, &self.knots, ders_bf);
 
         // Compute homogeneous derivatives: Aw[k] = (Aw_x, Aw_y, Aw_z, w) for k-th deriv.
         let mut aw = vec![[0.0f64; 4]; du + 1];
         for (k, aw_k) in aw.iter_mut().enumerate().take(du + 1) {
             for j in 0..=p {
-                let db = ders_bf_buf[k * stride + j];
+                let db = ders_bf[k * stride + j];
                 let idx = span - p + j;
                 let pt = &self.control_points[idx];
                 let w = self.weights[idx];
@@ -292,6 +300,27 @@ mod tests {
             vec![1.0, 1.0, 1.0, 1.0],
         )
         .expect("valid bezier")
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn degree_nine_curve_evaluates_without_panicking() {
+        let degree = 9;
+        let control_points: Vec<_> = (0..=degree)
+            .map(|i| Point3::new(i as f64, 0.0, 0.0))
+            .collect();
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend(std::iter::repeat_n(1.0, degree + 1));
+        let curve = NurbsCurve::new(degree, knots, control_points, vec![1.0; degree + 1])
+            .expect("valid degree-nine Bezier curve");
+
+        let point = curve.evaluate(0.5);
+        let derivatives = curve.derivatives(0.5, degree);
+
+        assert!((point.x() - 4.5).abs() < 1e-12);
+        assert!(derivatives.iter().all(|derivative| {
+            derivative.x().is_finite() && derivative.y().is_finite() && derivative.z().is_finite()
+        }));
     }
 
     /// Quarter circle arc as a rational NURBS (degree 2).

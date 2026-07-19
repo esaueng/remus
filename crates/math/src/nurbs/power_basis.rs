@@ -50,6 +50,19 @@ impl PowerBasis1D {
         // Local-coordinate sample points.
         let mut t_pts = vec![0.0; p + 1];
 
+        if p == 0 {
+            for (si, &t0) in knots.iter().take(n_spans).enumerate() {
+                span_starts.push(t0);
+                coeffs[si] = 1.0;
+            }
+            return Self {
+                degree,
+                n_spans,
+                coeffs,
+                span_starts,
+            };
+        }
+
         for si in 0..n_spans {
             let span = si + p; // actual span index
             let t0 = knots[span];
