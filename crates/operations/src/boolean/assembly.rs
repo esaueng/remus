@@ -5,7 +5,7 @@
 //! sharing. Post-assembly passes refine boundary edges and split non-manifold
 //! edges to ensure a valid manifold result.
 
-use std::collections::{HashMap, HashSet};
+use brepkit_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet, DetState};
 
 use brepkit_math::aabb::Aabb3;
 use brepkit_math::tolerance::Tolerance;
@@ -168,9 +168,9 @@ pub(crate) fn assemble_solid_mixed(
     );
 
     let mut vertex_map: HashMap<(i64, i64, i64), VertexId> =
-        HashMap::with_capacity(face_specs.len() * 4);
+        HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
     let mut edge_map: HashMap<(usize, usize), brepkit_topology::edge::EdgeId> =
-        HashMap::with_capacity(face_specs.len() * 4);
+        HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
 
     let mut face_ids = Vec::with_capacity(face_specs.len());
 
@@ -457,7 +457,7 @@ fn build_manifold_shell(
     }
 
     // Build edge → [(face_index, is_forward_in_wire)] adjacency map.
-    let mut edge_faces: HashMap<EdgeId, Vec<(usize, bool)>> = HashMap::new();
+    let mut edge_faces: HashMap<EdgeId, Vec<(usize, bool)>> = HashMap::default();
     for (fi, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -489,7 +489,7 @@ fn build_manifold_shell(
 
     // For each non-manifold edge at a rim junction, REMOVE the face that
     // opposes the majority — removing the IN face.
-    let mut faces_to_remove: HashSet<usize> = HashSet::new();
+    let mut faces_to_remove: HashSet<usize> = HashSet::default();
     // Note: edge replacements for angular split cases are not currently used.
     // The opposing-normal face removal above handles all known non-manifold cases.
 
@@ -588,7 +588,7 @@ pub(super) fn validate_boolean_result(
     // defects break downstream tessellation and export, so a GFA result
     // carrying them must fail safe to the mesh fallback.
     let mut unclosed_wires = 0usize;
-    let mut edge_uses: HashMap<usize, usize> = HashMap::new();
+    let mut edge_uses: HashMap<usize, usize> = HashMap::default();
     for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -685,7 +685,7 @@ pub(super) fn face_components(topo: &Topology, solid: SolidId) -> Vec<Vec<FaceId
     }
     let n = face_ids.len();
 
-    let mut edge_faces: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut edge_faces: HashMap<usize, Vec<usize>> = HashMap::default();
     for (fi, &fid) in face_ids.iter().enumerate() {
         let Ok(face) = topo.face(fid) else { continue };
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -758,8 +758,8 @@ pub(super) fn refine_boundary_edges(
 ) -> Result<(), crate::OperationsError> {
     // Single-pass: build edge-to-face count AND collect edge vertex pairs.
     // This avoids a second full face→wire→edge→vertex traversal.
-    let mut edge_face_count: HashMap<EdgeId, usize> = HashMap::new();
-    let mut edge_vertices: HashMap<EdgeId, (VertexId, VertexId)> = HashMap::new();
+    let mut edge_face_count: HashMap<EdgeId, usize> = HashMap::default();
+    let mut edge_vertices: HashMap<EdgeId, (VertexId, VertexId)> = HashMap::default();
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -790,7 +790,7 @@ pub(super) fn refine_boundary_edges(
     // Build vertex positions. Use precomputed positions from assembly when
     // available, falling back to topology only for missing vertices
     // (e.g. passthrough faces not in the assembly's vertex_map).
-    let mut extra_positions: HashMap<VertexId, Point3> = HashMap::new();
+    let mut extra_positions: HashMap<VertexId, Point3> = HashMap::default();
     for &(start, end) in edge_vertices.values() {
         for &vid in &[start, end] {
             let in_pre = precomputed_positions.is_some_and(|p| p.contains_key(&vid));
@@ -813,7 +813,7 @@ pub(super) fn refine_boundary_edges(
             .copied()
     };
     // Build vert_list from both sources, deduplicating by VertexId.
-    let mut seen: HashSet<VertexId> = HashSet::new();
+    let mut seen: HashSet<VertexId> = HashSet::default();
     let mut vert_list: Vec<(VertexId, Point3)> = Vec::new();
     if let Some(pre) = precomputed_positions {
         for (&vid, &pos) in pre {
@@ -858,7 +858,7 @@ pub(super) fn refine_boundary_edges(
     let cell_size = (diag / (vert_list.len() as f64).cbrt()).max(tol.linear);
     let inv_cell = 1.0 / cell_size;
 
-    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::default();
     for (i, &(_, pos)) in vert_list.iter().enumerate() {
         let cx = (pos.x() * inv_cell).floor() as i64;
         let cy = (pos.y() * inv_cell).floor() as i64;
@@ -866,7 +866,7 @@ pub(super) fn refine_boundary_edges(
         grid.entry((cx, cy, cz)).or_default().push(i);
     }
 
-    let mut edge_splits: HashMap<EdgeId, Vec<VertexId>> = HashMap::new();
+    let mut edge_splits: HashMap<EdgeId, Vec<VertexId>> = HashMap::default();
 
     for &eid in &boundary_edges {
         let &(start_vid, end_vid) = match edge_vertices.get(&eid) {
@@ -1080,10 +1080,10 @@ pub(super) fn stitch_boundary_edges(
         face_idx: usize,
     }
 
-    let mut edge_face_count: HashMap<EdgeId, usize> = HashMap::new();
-    let mut edge_vertices: HashMap<EdgeId, (VertexId, VertexId)> = HashMap::new();
+    let mut edge_face_count: HashMap<EdgeId, usize> = HashMap::default();
+    let mut edge_vertices: HashMap<EdgeId, (VertexId, VertexId)> = HashMap::default();
     // Track which face and wire own each edge for later rewriting.
-    let mut edge_owner: HashMap<EdgeId, (usize, WireId)> = HashMap::new();
+    let mut edge_owner: HashMap<EdgeId, (usize, WireId)> = HashMap::default();
 
     for (fi, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
@@ -1152,7 +1152,7 @@ pub(super) fn stitch_boundary_edges(
         .max(tol_linear * 10.0);
     let inv_cell = 1.0 / cell_size;
 
-    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::default();
     for (i, be) in boundary_edges.iter().enumerate() {
         let cx = (be.midpoint.x() * inv_cell).floor() as i64;
         let cy = (be.midpoint.y() * inv_cell).floor() as i64;
@@ -1160,11 +1160,11 @@ pub(super) fn stitch_boundary_edges(
         grid.entry((cx, cy, cz)).or_default().push(i);
     }
 
-    let mut stitched: HashSet<EdgeId> = HashSet::new();
+    let mut stitched: HashSet<EdgeId> = HashSet::default();
     // Map: (face_idx, old_edge_id) → replacement_edge_id
-    let mut replacements: HashMap<(usize, EdgeId), EdgeId> = HashMap::new();
+    let mut replacements: HashMap<(usize, EdgeId), EdgeId> = HashMap::default();
     // Map: old_vertex → new_vertex for cascading vertex remaps
-    let mut vertex_remap: HashMap<VertexId, VertexId> = HashMap::new();
+    let mut vertex_remap: HashMap<VertexId, VertexId> = HashMap::default();
     let mut stitch_count = 0;
 
     let tol_sq = tol_linear * tol_linear;
@@ -1267,7 +1267,7 @@ pub(super) fn stitch_boundary_edges(
     );
 
     // Cascade vertex remaps: if A→B and B→C, then A→C.
-    let mut resolved_remap: HashMap<VertexId, VertexId> = HashMap::new();
+    let mut resolved_remap: HashMap<VertexId, VertexId> = HashMap::default();
     for (&from, &to) in &vertex_remap {
         let mut target = to;
         let mut depth = 0;
@@ -1376,7 +1376,7 @@ pub(super) fn split_nonmanifold_edges(
     face_ids: &mut [FaceId],
 ) -> Result<(), crate::OperationsError> {
     // Build edge → [(face_index, is_forward)] map.
-    let mut edge_faces: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+    let mut edge_faces: HashMap<usize, Vec<(usize, bool)>> = HashMap::default();
     for (fi, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -1407,7 +1407,7 @@ pub(super) fn split_nonmanifold_edges(
 
     // For each non-manifold edge, sort faces by angle and create edge copies.
     // Map: (face_index, old_edge_index) → new_edge_id
-    let mut edge_replacements: HashMap<(usize, usize), EdgeId> = HashMap::new();
+    let mut edge_replacements: HashMap<(usize, usize), EdgeId> = HashMap::default();
 
     for (edge_idx, face_refs) in &nonmanifold {
         let edge_id = topo.edge_id_from_index(*edge_idx).ok_or_else(|| {
@@ -1788,7 +1788,7 @@ pub(super) fn build_manifold_shells(
 
     // Only count OUTER wire edges — inner wire edges are internal to the
     // face and don't participate in face-face adjacency for shell building.
-    let mut edge_faces: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+    let mut edge_faces: HashMap<usize, Vec<(usize, bool)>> = HashMap::default();
     for (fi, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
         let wire = topo.wire(face.outer_wire())?;
@@ -1817,7 +1817,7 @@ pub(super) fn build_manifold_shells(
         return Ok(topo.add_solid(Solid::new(shell_id, vec![])));
     }
 
-    let mut added: HashSet<usize> = HashSet::new();
+    let mut added: HashSet<usize> = HashSet::default();
     let mut shells: Vec<Vec<FaceId>> = Vec::new();
 
     for seed_fi in 0..face_ids.len() {
@@ -1828,7 +1828,7 @@ pub(super) fn build_manifold_shells(
 
         let mut shell_faces: Vec<usize> = vec![seed_fi];
         // Track edges within this shell: edge_idx → count of faces using it.
-        let mut shell_edge_count: HashMap<usize, u32> = HashMap::new();
+        let mut shell_edge_count: HashMap<usize, u32> = HashMap::default();
 
         count_face_edges(topo, face_ids[seed_fi], &mut shell_edge_count)?;
 

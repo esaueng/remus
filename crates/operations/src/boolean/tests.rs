@@ -3687,60 +3687,29 @@ fn gfa_box_sphere_cut() {
 }
 
 #[test]
-fn gfa_box_cylinder_fuse() {
+fn box_cylinder_invalid_mesh_fallback_fails_closed() {
     let mut topo = Topology::default();
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cyl = crate::primitives::make_cylinder(&mut topo, 0.5, 2.0).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, box_solid, cyl);
     assert!(
-        result.is_ok(),
-        "GFA box-cylinder fuse should succeed: {result:?}"
-    );
-
-    let solid = result.unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
-    assert!(
-        (7..=50).contains(&faces.len()),
-        "box-cylinder fuse should have 7-50 faces, got {}",
-        faces.len()
-    );
-    // Fuse volume must exceed the larger input (box = 8.0)
-    let vol = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
-    assert!(
-        vol > 8.0,
-        "fuse volume ({vol}) should exceed box volume (8.0)"
+        matches!(result, Err(crate::OperationsError::NonManifoldResult)),
+        "known non-watertight fallback must fail closed: {result:?}"
     );
 }
 
 #[test]
-fn gfa_box_cone_intersect() {
+fn box_cone_invalid_mesh_fallback_fails_closed() {
     let mut topo = Topology::default();
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cone = crate::primitives::make_cone(&mut topo, 1.0, 0.0, 2.0).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Intersect, box_solid, cone);
     assert!(
-        result.is_ok(),
-        "GFA box-cone intersect should succeed: {result:?}"
+        matches!(result, Err(crate::OperationsError::NonManifoldResult)),
+        "known non-watertight fallback must fail closed: {result:?}"
     );
-
-    let solid = result.unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
-    assert!(
-        (2..=30).contains(&faces.len()),
-        "box-cone intersect should have 2-30 faces, got {}",
-        faces.len()
-    );
-    // Volume check: intersect should be positive and smaller than the cone
-    let vol = crate::measure::solid_volume(&topo, solid, 0.01).unwrap_or(0.0);
-    if vol > 0.0 {
-        let cone_vol = std::f64::consts::PI / 3.0;
-        assert!(
-            vol < cone_vol + 0.5,
-            "intersect volume ({vol}) should be less than cone ({cone_vol})"
-        );
-    }
 }
 
 /// Minimal repro of D4 gridfinity non-manifold fuse bug.

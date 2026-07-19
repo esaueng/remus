@@ -1,22 +1,12 @@
-//! Diagnostic harness for the 64-cut perf nondeterminism.
+//! Regression gate for 64-cut boolean determinism.
 //!
-//! Background: HashMap iteration nondeterminism in the GFA boolean
-//! pipeline drives wide per-iter variance on `bench_boolean_64_holes`
-//! (criterion suite "hangs" because some iterations randomly hit a
-//! slow path — typically the mesh-boolean fallback at
-//! `boolean/mod.rs:516` for ~6 min per iter). The two source-side
-//! fixes in this PR (sorted `vv_vertex_seed` + sorted SD pairs) narrow
-//! the variance but don't fully close it; more HashMap iteration sites
-//! likely remain. See `memory/project_64cut-perf-bisect.md` for the
-//! full diagnosis and history.
+//! HashMap iteration nondeterminism in the GFA boolean pipeline previously
+//! drove wide per-iteration variance on `bench_boolean_64_holes`, with unlucky
+//! runs reaching the mesh fallback. Geometry-affecting assembly maps now use
+//! the fixed-seed deterministic hasher, and mesh fallback has bounded work.
 //!
-//! This test is `#[ignore]`d — it's an explicit-only diagnostic for
-//! the next investigator to localize which cut introduces divergence
-//! between two runs.
-//!
-//! Run with:
-//!   cargo test --release -p brepkit-operations \
-//!       --test perf_64cut_determinism -- --ignored --nocapture
+//! Keep this test active: count divergence is a release-blocking signal that
+//! topology construction has become order-dependent again.
 
 #![allow(clippy::unwrap_used, clippy::print_stdout)]
 
@@ -53,16 +43,8 @@ fn run_64_cut_snapshot() -> Vec<(usize, usize, usize)> {
 
 /// Run the 64-cut sequence twice in one process and report the first
 /// cut where the (face, edge, vertex) count snapshots diverge between
-/// runs. Successive HashMap creations in the same thread draw different
-/// random seeds from the thread-local RNG, so cross-run divergence in a
-/// single process is the same kind of nondeterminism that drives the
-/// bench's slow-path occurrence.
-///
-/// After the two source fixes in this PR (sd_pairs sort,
-/// vv_vertex_seed sorted Vec) the divergence still occurs at cut 1;
-/// follow this harness to localize the next site.
+/// runs.
 #[test]
-#[ignore = "diagnostic — explicit-only nondeterminism bisect tool; fails until full determinism is achieved"]
 fn diverge_first_cut() {
     let a = run_64_cut_snapshot();
     let b = run_64_cut_snapshot();
@@ -83,12 +65,7 @@ fn diverge_first_cut() {
             break;
         }
     }
-    // Fail loudly so explicit `--ignored` runs (and any script wrapping
-    // this) get an unambiguous non-zero exit when nondeterminism is
-    // present. Today this assertion fails (the two source-side fixes in
-    // this PR narrow but don't close the variance); when the next round
-    // of HashMap iteration fixes lands, this assertion will start
-    // passing and the test becomes a real determinism gate.
+    // Fail loudly so CI gets an unambiguous signal at the first divergent cut.
     assert!(
         divergence.is_none(),
         "64-cut sequence is nondeterministic — first divergence at cut {} (full trace above)",

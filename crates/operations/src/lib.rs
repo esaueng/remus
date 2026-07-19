@@ -138,4 +138,8 @@ pub enum OperationsError {
     /// A geometry conversion error occurred.
     #[error("geometry: {0}")]
     Geometry(#[from] brepkit_geometry::error::GeomError),
+
+    /// A shape-healing operation failed.
+    #[error("heal: {0}")]
+    Heal(#[from] brepkit_heal::HealError),
 }
