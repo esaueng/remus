@@ -449,9 +449,20 @@ fn assemble_closed_rim(
     let wall_inner = topo.face(current_wall)?.inner_wires().to_vec();
     let wall_oriented: Vec<OrientedEdge> = topo.wire(wall_outer_wire)?.edges().to_vec();
 
+    let torus = match &stripe.surface {
+        FaceSurface::Torus(t) => t.clone(),
+        _ => {
+            return Err(BlendError::TrimmingFailure {
+                face: rim.wall_face,
+            });
+        }
+    };
+
     // Vertices for the two closed contact circles (start == end → degenerate).
-    let plate_v = topo.add_vertex(Vertex::new(rim.plate_circle.evaluate(0.0), TOL));
-    let wall_v = topo.add_vertex(Vertex::new(rim.wall_circle.evaluate(0.0), TOL));
+    let plate_point = rim.plate_circle.evaluate(0.0);
+    let wall_point = rim.wall_circle.evaluate(0.0);
+    let plate_v = topo.add_vertex(Vertex::new(plate_point, TOL));
+    let wall_v = topo.add_vertex(Vertex::new(wall_point, TOL));
 
     // Shared contact-circle edges.
     let plate_edge = topo.add_edge(Edge::new(
@@ -464,9 +475,19 @@ fn assemble_closed_rim(
         wall_v,
         EdgeCurve::Circle(rim.wall_circle.clone()),
     ));
-    // Seam connecting the two circles (degenerate-seam band, as the primitive
-    // cylinder lateral uses).
-    let seam_edge = topo.add_edge(Edge::new(plate_v, wall_v, EdgeCurve::Line));
+    // Exact minor-circle seam connecting the two contacts. A straight chord is
+    // not on the torus and makes paired rim fillets lose volume during surface
+    // integration. Choose the circle normal from the ordered contact vectors
+    // so the edge follows the short blend arc from plate to wall.
+    let axis = torus.z_axis();
+    let radial = wall_point - torus.center();
+    let radial = (radial - axis * axis.dot(radial)).normalize()?;
+    let seam_center = torus.center() + radial * torus.major_radius();
+    let seam_normal = (plate_point - seam_center)
+        .cross(wall_point - seam_center)
+        .normalize()?;
+    let seam_circle = Circle3D::new(seam_center, seam_normal, torus.minor_radius())?;
+    let seam_edge = topo.add_edge(Edge::new(plate_v, wall_v, EdgeCurve::Circle(seam_circle)));
 
     // --- Rebuild the disc cap bounded by the plate-contact circle. ---
     // The cap originally borders the rim via a single closed-circle wire; the
@@ -505,11 +526,11 @@ fn assemble_closed_rim(
     // two copies each become a free edge).
     let mut rebuilt: std::collections::HashMap<EdgeId, EdgeId> = std::collections::HashMap::new();
     let mut new_wall_edges: Vec<OrientedEdge> = Vec::with_capacity(wall_oriented.len());
-    let mut replaced = false;
+    let mut wall_forward = None;
     for oe in &wall_oriented {
         if oe.edge() == rim.rim_edge {
             new_wall_edges.push(OrientedEdge::new(wall_edge, oe.is_forward()));
-            replaced = true;
+            wall_forward = Some(oe.is_forward());
             continue;
         }
         let e = topo.edge(oe.edge())?;
@@ -539,11 +560,11 @@ fn assemble_closed_rim(
             new_wall_edges.push(*oe);
         }
     }
-    if !replaced {
+    let Some(wall_forward) = wall_forward else {
         return Err(BlendError::TrimmingFailure {
             face: rim.wall_face,
         });
-    }
+    };
     let new_wall_wire = Wire::new(new_wall_edges, true)?;
     let new_wall_wire_id = topo.add_wire(new_wall_wire);
     let mut new_wall_face = Face::new(new_wall_wire_id, wall_inner, wall_surf);
@@ -557,19 +578,16 @@ fn assemble_closed_rim(
     // (plate_v → plate_v → wall_v → wall_v → plate_v). The shared circle edges
     // are used opposite to the standard-wound cap and wall, keeping the shell
     // manifold.
-    let torus = match &stripe.surface {
-        FaceSurface::Torus(t) => t.clone(),
-        _ => {
-            return Err(BlendError::TrimmingFailure {
-                face: rim.wall_face,
-            });
-        }
-    };
+    let band_reversed = torus_band_needs_reversal(&torus, rim);
+    let cap_effective_forward = cap_forward != plane_reversed;
+    let wall_effective_forward = wall_forward != wall_reversed;
+    let band_plate_forward = cap_effective_forward == band_reversed;
+    let band_wall_forward = wall_effective_forward == band_reversed;
     let band_wire = Wire::new(
         vec![
-            OrientedEdge::new(plate_edge, true),
+            OrientedEdge::new(plate_edge, band_plate_forward),
             OrientedEdge::new(seam_edge, true),
-            OrientedEdge::new(wall_edge, false),
+            OrientedEdge::new(wall_edge, band_wall_forward),
             OrientedEdge::new(seam_edge, false),
         ],
         true,
@@ -584,7 +602,7 @@ fn assemble_closed_rim(
     // radial) and away from the material along the axis; the torus geometric
     // normal at the mid-arc already has the correct radial sign, so we compare
     // its axial component against the material side.
-    if torus_band_needs_reversal(&torus, rim) {
+    if band_reversed {
         band_face.set_reversed(true);
     }
     let band_face_id = topo.add_face(band_face);

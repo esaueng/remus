@@ -159,22 +159,50 @@ fn assert_closed_edge_rejected(
     );
 }
 
-/// Closed circular fillets have exact analytic surface coverage in
-/// `brepkit-blend`, but validated solid assembly is not implemented yet.
+fn assert_valid_closed_fillet(topo: &Topology, result: &brepkit_blend::BlendResult) {
+    assert!(!result.is_partial);
+    assert_eq!(result.succeeded.len(), 1);
+    assert!(result.failed.is_empty());
+
+    let report = brepkit_check::validate::validate_solid(
+        topo,
+        result.solid,
+        &brepkit_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(report.is_valid(), "{:#?}", report.issues);
+
+    let torus_count = solid_faces(topo, result.solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face_id| {
+            matches!(
+                topo.face(face_id).unwrap().surface(),
+                brepkit_topology::face::FaceSurface::Torus(_)
+            )
+        })
+        .count();
+    assert_eq!(torus_count, 1, "closed-rim fillet must add one torus band");
+}
+
+/// Closed circular fillets use the exact analytic rim assembler and must pass
+/// the same strict solid validation as planar production fillets.
 #[test]
-fn fillet_cylinder_closed_rim_fails_closed() {
+fn fillet_cylinder_closed_rim_is_valid() {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
     let rim = bottom_circle_edge(&topo, solid);
-    assert_closed_edge_rejected(fillet_v2(&mut topo, solid, &[rim], 0.3));
+    let result = fillet_v2(&mut topo, solid, &[rim], 0.3).unwrap();
+    assert_valid_closed_fillet(&topo, &result);
 }
 
 #[test]
-fn fillet_cone_closed_rim_fails_closed() {
+fn fillet_cone_closed_rim_is_valid() {
     let mut topo = Topology::new();
     let solid = make_cone(&mut topo, 3.0, 1.0, 4.0).unwrap();
     let rim = bottom_circle_edge(&topo, solid);
-    assert_closed_edge_rejected(fillet_v2(&mut topo, solid, &[rim], 0.3));
+    let result = fillet_v2(&mut topo, solid, &[rim], 0.3).unwrap();
+    assert_valid_closed_fillet(&topo, &result);
 }
 
 #[test]

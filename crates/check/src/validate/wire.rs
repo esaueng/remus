@@ -213,6 +213,13 @@ pub fn check_wire_self_intersection(
             if j == n_edges - 1 && i == 0 {
                 continue;
             }
+            // Periodic surface bands legitimately reuse one topological seam
+            // edge in opposite directions. That is a topological closure, not
+            // a geometric self-intersection; redundant-edge validation handles
+            // excessive reuse separately.
+            if edges[i].edge() == edges[j].edge() {
+                continue;
+            }
 
             for si in 0..edge_segments[i].len().saturating_sub(1) {
                 let a0 = edge_segments[i][si];

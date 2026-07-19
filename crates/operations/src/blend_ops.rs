@@ -151,7 +151,6 @@ pub fn fillet_v2(
             reason: "no edges specified".into(),
         });
     }
-    reject_closed_edges(topo, edges, "fillet")?;
     if is_planar_line_blend(topo, solid, edges)? {
         return planar_fillet_result(topo, solid, edges, radius);
     }

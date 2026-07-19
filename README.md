@@ -70,7 +70,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Booleans**            | Union, cut, intersect on plane, cylinder, cone, sphere, NURBS                | Stable       |
 | **Booleans**            | Batch fuse-all (disjoint-aware union)                                        | Stable       |
 | **Booleans**            | Torus booleans (box ± torus, coaxial torus)                                  | Beta         |
-| **Modifiers**           | Validated planar fillet/chamfer; curved blend geometry (experimental assembly) | Stable / Experimental |
+| **Modifiers**           | Validated planar fillet/chamfer and axisymmetric closed-rim fillet; other curved blend geometry (experimental assembly) | Stable / Experimental |
 | **Modifiers**           | Shell (hollow solid)                                                         | Stable       |
 | **Modifiers**           | Offset face, offset solid, thicken, mirror, pattern                          | Stable       |
 | **Modifiers**           | Draft (planar faces)                                                         | Beta         |
