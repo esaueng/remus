@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Pinned wasm-bindgen-cli version. Must match `wasm-bindgen = "=0.2.121"` in
+/// Pinned wasm-bindgen-cli version. Must match `wasm-bindgen = "=0.2.126"` in
 /// the workspace Cargo.toml.
-const WASM_BINDGEN_VERSION: &str = "0.2.121";
+const WASM_BINDGEN_VERSION: &str = "0.2.126";
 
 /// Minimum number of exported methods expected in the .d.ts file.
 /// Based on ~185 methods in the current BrepKernel. Update when the API surface
@@ -81,7 +81,7 @@ pub fn check_tools() -> Result<()> {
         let version = run_cmd_output(
             Command::new("wasm-bindgen").arg("--version"),
         )?;
-        // Output is like "wasm-bindgen 0.2.121"
+        // Output is like "wasm-bindgen 0.2.126"
         let installed = version.split_whitespace().last().unwrap_or("");
         if installed != WASM_BINDGEN_VERSION {
             bail!(
@@ -485,6 +485,17 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn wasm_bindgen_cli_version_matches_workspace_dependency() {
+        let cargo_toml = fs::read_to_string(project_root().unwrap().join("Cargo.toml")).unwrap();
+        let expected = format!("wasm-bindgen = \"={WASM_BINDGEN_VERSION}\"");
+
+        assert!(
+            cargo_toml.contains(&expected),
+            "workspace dependency must contain {expected}"
+        );
+    }
 
     // -- patch_package_json tests -----------------------------------------
 

@@ -114,6 +114,8 @@ jobs:
           tool: wasm-pack
       - name: Build and validate WASM
         run: cargo xtask wasm-build --skip-opt
+      - name: Build WASM without optional I/O
+        run: cargo check -p brepkit-wasm --target wasm32-unknown-unknown --no-default-features
 
   wasm-size:
     name: WASM Size Report
@@ -217,8 +219,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      # Cargo.lock is gitignored (library crate), generate it for audit
-      - run: cargo generate-lockfile
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ github.token }}

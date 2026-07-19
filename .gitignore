@@ -1,7 +1,6 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # WASM
 /pkg/
@@ -9,7 +8,6 @@ Cargo.lock
 
 # xtask (standalone crate, has its own target dir)
 /xtask/target/
-/xtask/Cargo.lock
 
 # Node
 node_modules/
