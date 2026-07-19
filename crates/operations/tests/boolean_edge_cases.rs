@@ -16,6 +16,7 @@
 use std::f64::consts::PI;
 
 use brepkit_math::mat::Mat4;
+use brepkit_operations::OperationsError;
 use brepkit_operations::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with_options};
 use brepkit_operations::measure::solid_volume;
 use brepkit_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
@@ -413,22 +414,19 @@ fn test_boolean_cone_cylinder() {
 
 #[test]
 fn test_boolean_shared_edge() {
-    // Box A: (0,0,0)-(1,1,1). Box B: (1,1,0)-(2,2,1). Share edge (1,1,0)-(1,1,1).
+    // Box A: (0,0,0)-(1,1,1). Box B: (1,1,0)-(2,2,1). They share only
+    // edge (1,1,0)-(1,1,1), so their union cannot be represented as one
+    // closed 2-manifold shell.
     let mut topo = Topology::new();
     let a = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     let b = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     transform_solid(&mut topo, b, &Mat4::translation(1.0, 1.0, 0.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, a, b);
-    match result {
-        Ok(fused) => {
-            let v = vol(&topo, fused);
-            let rel = (v - 2.0).abs() / 2.0;
-            assert!(rel < 0.01, "fused volume {v:.4} not near 2.0");
-            check_manifold(&topo, fused);
-        }
-        Err(e) => panic!("shared-edge fuse failed: {e}"),
-    }
+    assert!(
+        matches!(result, Err(OperationsError::NonManifoldResult)),
+        "shared-edge fuse must fail closed instead of returning a non-manifold solid: {result:?}"
+    );
 }
 
 #[test]
