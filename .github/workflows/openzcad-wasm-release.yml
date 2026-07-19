@@ -43,40 +43,16 @@ jobs:
           echo "path=$RUNNER_TEMP/$package_name" >> "$GITHUB_OUTPUT"
           echo "name=$package_name" >> "$GITHUB_OUTPUT"
 
-      - name: Publish git dependency branch
-        env:
-          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
+      - name: Publish WASM package on main
         run: |
-          dist_dir=$(mktemp -d)
-          tar -xzf "$PACKAGE_PATH" -C "$dist_dir" --strip-components=1
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git restore --source=HEAD --staged --worktree .
-          git clean -fdx
-          git fetch origin openzcad-wasm
-          git switch -C openzcad-wasm origin/openzcad-wasm
-          git merge \
-            --strategy=ours \
-            --allow-unrelated-histories \
-            -m "Track BrepKit source ${GITHUB_SHA::12}" \
-            "$GITHUB_SHA"
-          git rm -r .
-          cp -R "$dist_dir"/. .
-          cat > README.md <<EOF
-          # BrepKit WASM for OpenZCAD
-
-          Generated from \`esaueng/brepkit@$GITHUB_SHA\` by the
-          \`Build OpenZCAD WASM Release\` workflow. Consumers should pin the
-          resulting distribution commit.
-          EOF
-          git add -A
+          git add -f crates/wasm/pkg
           if git diff --cached --quiet; then
-            echo "Distribution branch is already current."
+            echo "WASM package on main is already current."
           else
-            git commit -m "Publish OpenZCAD WASM package from ${GITHUB_SHA::12}"
-          fi
-          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/openzcad-wasm)" ]; then
-            git push origin openzcad-wasm
+            git commit -m "Publish WASM package from ${GITHUB_SHA::12}"
+            git push origin HEAD:main
           fi
 
       - name: Create immutable GitHub release

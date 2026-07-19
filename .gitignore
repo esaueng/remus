@@ -5,6 +5,7 @@
 # WASM
 /pkg/
 *.wasm
+!crates/wasm/pkg/brepkit_wasm_bg.wasm
 
 # xtask (standalone crate, has its own target dir)
 /xtask/target/
