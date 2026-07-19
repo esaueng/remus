@@ -25,6 +25,14 @@ use crate::IoError;
 ///
 /// Returns [`IoError`] if the file is malformed or contains unsupported entities.
 pub fn read_iges(input: &str, topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
+    // IGES uses fixed-width ASCII records. Rejecting non-ASCII input before
+    // fixed-column parsing keeps every subsequent byte offset on a UTF-8
+    // character boundary and turns malformed input into a typed error.
+    if !input.is_ascii() {
+        return Err(IoError::ParseError {
+            reason: "IGES input must contain only ASCII fixed-width records".to_string(),
+        });
+    }
     let entities = parse_iges_entities(input)?;
     build_topology(topo, &entities)
 }
@@ -342,5 +350,17 @@ mod tests {
     fn parse_int_field_basic() {
         let val = parse_int_field("     108       1", 0, 8).unwrap();
         assert_eq!(val, 108);
+    }
+
+    #[test]
+    fn non_ascii_fixed_width_input_returns_parse_error() {
+        let mut line = " ".repeat(80);
+        line.replace_range(63..65, "é");
+        let mut topo = Topology::new();
+
+        let result = read_iges(&line, &mut topo);
+
+        assert!(matches!(result, Err(IoError::ParseError { .. })));
+        assert!(topo.vertices().is_empty());
     }
 }

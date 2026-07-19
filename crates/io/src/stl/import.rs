@@ -32,11 +32,7 @@ pub fn import_mesh(
     mesh: &TriangleMesh,
     tolerance: f64,
 ) -> Result<SolidId, IoError> {
-    if mesh.indices.len() < 3 {
-        return Err(IoError::InvalidTopology {
-            reason: "mesh has no triangles".to_string(),
-        });
-    }
+    validate_mesh(mesh, tolerance)?;
 
     let vertex_ids = build_vertex_map(topo, &mesh.positions, tolerance);
 
@@ -112,6 +108,53 @@ pub fn import_mesh(
     let solid_id = topo.add_solid(Solid::new(shell_id, Vec::new()));
 
     Ok(solid_id)
+}
+
+/// Validate mesh data before allocating any topology entities.
+fn validate_mesh(mesh: &TriangleMesh, tolerance: f64) -> Result<(), IoError> {
+    if !tolerance.is_finite() || tolerance <= 0.0 {
+        return Err(IoError::InvalidTopology {
+            reason: "mesh import tolerance must be finite and positive".to_string(),
+        });
+    }
+
+    if mesh.indices.len() < 3 {
+        return Err(IoError::InvalidTopology {
+            reason: "mesh has no triangles".to_string(),
+        });
+    }
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(IoError::InvalidTopology {
+            reason: "mesh index count is not divisible by three".to_string(),
+        });
+    }
+
+    for (index, position) in mesh.positions.iter().enumerate() {
+        if !position.x().is_finite() || !position.y().is_finite() || !position.z().is_finite() {
+            return Err(IoError::InvalidTopology {
+                reason: format!("mesh position {index} is not finite"),
+            });
+        }
+    }
+    for (index, normal) in mesh.normals.iter().enumerate() {
+        if !normal.x().is_finite() || !normal.y().is_finite() || !normal.z().is_finite() {
+            return Err(IoError::InvalidTopology {
+                reason: format!("mesh normal {index} is not finite"),
+            });
+        }
+    }
+    for (index, &vertex_index) in mesh.indices.iter().enumerate() {
+        if (vertex_index as usize) >= mesh.positions.len() {
+            return Err(IoError::InvalidTopology {
+                reason: format!(
+                    "mesh index {index} references vertex {vertex_index}, but the mesh has {} vertices",
+                    mesh.positions.len()
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 /// Build vertex IDs, merging coincident positions.
@@ -411,6 +454,46 @@ mod tests {
         let mut topo = Topology::new();
         let result = import_mesh(&mut topo, &mesh, 1e-7);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_indices_return_error_without_mutating_topology() {
+        let mesh = TriangleMesh {
+            positions: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            normals: Vec::new(),
+            indices: vec![0, 1, 3],
+        };
+        let mut topo = Topology::new();
+
+        let result = import_mesh(&mut topo, &mesh, 1e-7);
+
+        assert!(result.is_err());
+        assert!(topo.vertices().is_empty());
+        assert!(topo.edges().is_empty());
+        assert!(topo.faces().is_empty());
+    }
+
+    #[test]
+    fn non_finite_mesh_data_returns_error_without_mutating_topology() {
+        let mesh = TriangleMesh {
+            positions: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(f64::NAN, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ],
+            normals: Vec::new(),
+            indices: vec![0, 1, 2],
+        };
+        let mut topo = Topology::new();
+
+        let result = import_mesh(&mut topo, &mesh, 1e-7);
+
+        assert!(result.is_err());
+        assert!(topo.vertices().is_empty());
     }
 
     #[test]
