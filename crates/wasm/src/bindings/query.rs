@@ -157,10 +157,21 @@ impl BrepKernel {
     /// Returns an error if the solid handle is invalid.
     #[wasm_bindgen(js_name = "toBREP")]
     pub fn to_brep(&self, solid: u32) -> Result<JsValue, JsError> {
-        let solid_id = self.resolve_solid(solid)?;
-        let step_str = brepkit_io::step::writer::write_step(&self.topo, &[solid_id])
-            .map_err(|e| JsError::new(&e.to_string()))?;
-        Ok(step_str.into())
+        #[cfg(feature = "io")]
+        {
+            let solid_id = self.resolve_solid(solid)?;
+            let step_str = brepkit_io::step::writer::write_step(&self.topo, &[solid_id])
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(step_str.into())
+        }
+
+        #[cfg(not(feature = "io"))]
+        {
+            let _ = solid;
+            Err(JsError::new(
+                "toBREP requires the optional 'io' feature for STEP export",
+            ))
+        }
     }
 
     /// Export a solid as a JSON-encoded BREP representation.
@@ -366,13 +377,23 @@ impl BrepKernel {
             Ok(self.from_brep_impl(data)?)
         } else {
             // STEP format — delegate to STEP import
-            let solids = brepkit_io::step::reader::read_step(data, self.topo_mut())
-                .map_err(|e| JsError::new(&e.to_string()))?;
-            let first = solids
-                .first()
-                .ok_or_else(|| JsError::new("fromBREP: STEP data produced no solids"))?;
-            #[allow(clippy::cast_possible_truncation)]
-            Ok(first.index() as u32)
+            #[cfg(feature = "io")]
+            {
+                let solids = brepkit_io::step::reader::read_step(data, self.topo_mut())
+                    .map_err(|e| JsError::new(&e.to_string()))?;
+                let first = solids
+                    .first()
+                    .ok_or_else(|| JsError::new("fromBREP: STEP data produced no solids"))?;
+                #[allow(clippy::cast_possible_truncation)]
+                return Ok(first.index() as u32);
+            }
+
+            #[cfg(not(feature = "io"))]
+            {
+                Err(JsError::new(
+                    "fromBREP requires the optional 'io' feature for STEP import",
+                ))
+            }
         }
     }
 

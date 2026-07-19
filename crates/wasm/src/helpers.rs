@@ -116,8 +116,10 @@ pub fn get_f64(args: &serde_json::Value, key: &str) -> Result<f64, String> {
 pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, String> {
     args[key]
         .as_u64()
-        .map(|v| v as u32)
         .ok_or_else(|| format!("missing or invalid '{key}'"))
+        .and_then(|value| {
+            u32::try_from(value).map_err(|_| format!("'{key}' exceeds the u32 range"))
+        })
 }
 
 /// Extract a `usize` from a JSON value.
@@ -505,6 +507,21 @@ pub fn segments_intersect_2d(a1: Point2, a2: Point2, b1: Point2, b2: Point2) -> 
 
     ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
         && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+}
+
+#[cfg(test)]
+mod parsing_tests {
+    use super::get_u32;
+
+    #[test]
+    fn get_u32_rejects_values_outside_the_handle_range() {
+        let args = serde_json::json!({ "solid": u64::from(u32::MAX) + 1 });
+
+        assert!(matches!(
+            get_u32(&args, "solid"),
+            Err(error) if error.contains("exceeds the u32 range")
+        ));
+    }
 }
 
 #[cfg(test)]
