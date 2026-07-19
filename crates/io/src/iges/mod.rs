@@ -6,5 +6,5 @@
 pub mod reader;
 pub mod writer;
 
-pub use reader::read_iges;
+pub use reader::{read_iges, read_iges_with_limits};
 pub use writer::write_iges;

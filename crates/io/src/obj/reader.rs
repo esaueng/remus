@@ -1,5 +1,6 @@
 //! OBJ file reader.
 
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::tessellate::TriangleMesh;
 use brepkit_topology::Topology;
@@ -18,6 +19,19 @@ use brepkit_topology::solid::SolidId;
 ///
 /// Returns an error if the file is malformed.
 pub fn read_obj(input: &str) -> Result<TriangleMesh, crate::IoError> {
+    read_obj_with_limits(input, ImportLimits::default())
+}
+
+/// Read an OBJ file with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`crate::IoError`] when a limit is exceeded or the OBJ is malformed.
+pub fn read_obj_with_limits(
+    input: &str,
+    limits: ImportLimits,
+) -> Result<TriangleMesh, crate::IoError> {
+    ensure_input_size(input.len(), limits)?;
     let mut positions: Vec<Point3> = Vec::new();
     let mut normals: Vec<Vec3> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -33,6 +47,7 @@ pub fn read_obj(input: &str) -> Result<TriangleMesh, crate::IoError> {
             Some("v") => {
                 let coords = parse_3_floats(&mut parts, line)?;
                 positions.push(Point3::new(coords[0], coords[1], coords[2]));
+                ensure_limit("OBJ vertices", positions.len(), limits.max_model_entities)?;
             }
             Some("vn") => {
                 let coords = parse_3_floats(&mut parts, line)?;
@@ -52,6 +67,11 @@ pub fn read_obj(input: &str) -> Result<TriangleMesh, crate::IoError> {
                     indices.push(face_indices[i]);
                     indices.push(face_indices[i + 1]);
                 }
+                ensure_limit(
+                    "OBJ triangles",
+                    indices.len() / 3,
+                    limits.max_model_entities,
+                )?;
             }
             _ => {
                 // Ignore unsupported lines (vt, g, mtllib, usemtl, s, etc.)

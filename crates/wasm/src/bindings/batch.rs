@@ -23,6 +23,11 @@ use crate::handles::{
 use crate::helpers::{TOL, classify_to_string, get_f64, get_u32, panic_message, try_fillet};
 use crate::kernel::BrepKernel;
 
+/// Maximum encoded JSON accepted by one `executeBatch` call (16 MiB).
+const MAX_BATCH_JSON_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum operations executed by one `executeBatch` call.
+const MAX_BATCH_OPERATIONS: usize = 10_000;
+
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Batch execution ──────────────────────────────────────────
@@ -52,12 +57,30 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "executeBatch")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn execute_batch(&mut self, json: &str) -> String {
+        if json.len() > MAX_BATCH_JSON_BYTES {
+            return serde_json::json!([{
+                "error": format!(
+                    "batch JSON exceeds {MAX_BATCH_JSON_BYTES} byte limit (got {})",
+                    json.len()
+                )
+            }])
+            .to_string();
+        }
         let ops: Vec<serde_json::Value> = match serde_json::from_str(json) {
             Ok(v) => v,
             Err(e) => {
                 return serde_json::json!([{"error": format!("invalid JSON: {e}")}]).to_string();
             }
         };
+        if ops.len() > MAX_BATCH_OPERATIONS {
+            return serde_json::json!([{
+                "error": format!(
+                    "batch exceeds {MAX_BATCH_OPERATIONS} operation limit (got {})",
+                    ops.len()
+                )
+            }])
+            .to_string();
+        }
 
         let results: Vec<serde_json::Value> = ops
             .iter()
@@ -75,6 +98,28 @@ impl BrepKernel {
             .collect();
 
         serde_json::Value::Array(results).to_string()
+    }
+}
+
+#[cfg(test)]
+mod batch_limit_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_too_many_operations_before_dispatch() {
+        let mut kernel = BrepKernel::new();
+        let operation = serde_json::json!({"op": "volume", "args": {}});
+        let json = serde_json::Value::Array(vec![operation; MAX_BATCH_OPERATIONS + 1]).to_string();
+        let response = kernel.execute_batch(&json);
+        assert!(response.contains("operation limit"));
+    }
+
+    #[test]
+    fn rejects_oversized_json_before_parsing() {
+        let mut kernel = BrepKernel::new();
+        let json = " ".repeat(MAX_BATCH_JSON_BYTES + 1);
+        let response = kernel.execute_batch(&json);
+        assert!(response.contains("byte limit"));
     }
 }
 

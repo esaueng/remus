@@ -17,6 +17,7 @@ use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::IoError;
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 /// Read a STEP file and reconstruct topology.
 ///
@@ -29,7 +30,21 @@ use crate::IoError;
 /// - Required entities are missing or malformed
 /// - Entity references cannot be resolved
 pub fn read_step(input: &str, topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
-    let entities = parse_step_entities(input)?;
+    read_step_with_limits(input, topo, ImportLimits::default())
+}
+
+/// Read a STEP file with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded or the STEP data is invalid.
+pub fn read_step_with_limits(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<Vec<SolidId>, IoError> {
+    ensure_input_size(input.len(), limits)?;
+    let entities = parse_step_entities(input, limits)?;
     let mut builder = StepBuilder::new(topo, &entities);
     builder.build_all_solids()
 }
@@ -44,7 +59,10 @@ struct StepEntity {
 }
 
 /// Parse all entity instances from the DATA section.
-fn parse_step_entities(input: &str) -> Result<HashMap<u64, StepEntity>, IoError> {
+fn parse_step_entities(
+    input: &str,
+    limits: ImportLimits,
+) -> Result<HashMap<u64, StepEntity>, IoError> {
     let mut entities = HashMap::new();
 
     let data_start = input.find("DATA;").ok_or_else(|| IoError::ParseError {
@@ -84,6 +102,7 @@ fn parse_step_entities(input: &str) -> Result<HashMap<u64, StepEntity>, IoError>
                         attrs: attrs.to_string(),
                     },
                 );
+                ensure_limit("STEP entities", entities.len(), limits.max_model_entities)?;
             }
         }
     }
@@ -1029,6 +1048,25 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    #[test]
+    fn rejects_entity_count_above_explicit_limit() {
+        let step = "ISO-10303-21;DATA;#1=POINT();ENDSEC;END-ISO-10303-21;";
+        let mut topo = Topology::new();
+        let limits = ImportLimits {
+            max_model_entities: 0,
+            ..ImportLimits::default()
+        };
+        let err = read_step_with_limits(step, &mut topo, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            IoError::LimitExceeded {
+                resource: "STEP entities",
+                limit: 0,
+                actual: 1
+            }
+        ));
+    }
 
     #[test]
     fn roundtrip_unit_cube() {

@@ -50,8 +50,8 @@ impl BrepKernel {
         let snapshot_topo = Rc::clone(&cp.topo);
         self.topo_mut()
             .restore_preserving_handle_slots(&snapshot_topo);
-        self.assemblies = cp.assemblies.clone();
-        self.sketches = cp.sketches.clone();
+        self.assemblies = cp.assemblies;
+        self.sketches = cp.sketches;
         // Discard checkpoints created after the restored one
         self.checkpoints.truncate(idx + 1);
         Ok(())

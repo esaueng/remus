@@ -4,6 +4,7 @@
 //! Supports multiple meshes/primitives, dynamic accessor indices, and both
 //! uint16 (5123) and uint32 (5125) index component types.
 
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::tessellate::TriangleMesh;
 use brepkit_topology::Topology;
@@ -19,6 +20,20 @@ use brepkit_topology::solid::SolidId;
 /// Returns an error if the file is malformed or uses unsupported features.
 #[allow(clippy::too_many_lines)]
 pub fn read_glb(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+    read_glb_with_limits(data, ImportLimits::default())
+}
+
+/// Read a GLB file with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`crate::IoError`] when a limit is exceeded or the GLB is malformed.
+#[allow(clippy::too_many_lines)]
+pub fn read_glb_with_limits(
+    data: &[u8],
+    limits: ImportLimits,
+) -> Result<TriangleMesh, crate::IoError> {
+    ensure_input_size(data.len(), limits)?;
     if data.len() < 12 {
         return Err(crate::IoError::ParseError {
             reason: "GLB too short for header".into(),
@@ -84,6 +99,19 @@ pub fn read_glb(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
 
     // Simple JSON parsing for the fields we need
     let accessors = parse_accessors(json_str);
+    let declared_accessor_entities = accessors
+        .iter()
+        .try_fold(0usize, |total, accessor| total.checked_add(accessor.count))
+        .ok_or(crate::IoError::LimitExceeded {
+            resource: "GLB accessor entities",
+            limit: limits.max_model_entities,
+            actual: usize::MAX,
+        })?;
+    ensure_limit(
+        "GLB accessor entities",
+        declared_accessor_entities,
+        limits.max_model_entities,
+    )?;
     let buffer_views = parse_buffer_views(json_str);
     let primitives = parse_mesh_primitives(json_str);
 

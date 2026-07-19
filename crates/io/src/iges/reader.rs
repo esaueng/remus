@@ -15,6 +15,7 @@ use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::IoError;
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 /// Read an IGES file and reconstruct topology.
 ///
@@ -25,6 +26,20 @@ use crate::IoError;
 ///
 /// Returns [`IoError`] if the file is malformed or contains unsupported entities.
 pub fn read_iges(input: &str, topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
+    read_iges_with_limits(input, topo, ImportLimits::default())
+}
+
+/// Read an IGES file with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded or the IGES data is invalid.
+pub fn read_iges_with_limits(
+    input: &str,
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<Vec<SolidId>, IoError> {
+    ensure_input_size(input.len(), limits)?;
     // IGES uses fixed-width ASCII records. Rejecting non-ASCII input before
     // fixed-column parsing keeps every subsequent byte offset on a UTF-8
     // character boundary and turns malformed input into a typed error.
@@ -33,7 +48,7 @@ pub fn read_iges(input: &str, topo: &mut Topology) -> Result<Vec<SolidId>, IoErr
             reason: "IGES input must contain only ASCII fixed-width records".to_string(),
         });
     }
-    let entities = parse_iges_entities(input)?;
+    let entities = parse_iges_entities(input, limits)?;
     build_topology(topo, &entities)
 }
 
@@ -54,7 +69,7 @@ struct IgesEntity {
 // ── Parsing ─────────────────────────────────────────────────────────
 
 /// Parse all entities from an IGES file.
-fn parse_iges_entities(input: &str) -> Result<Vec<IgesEntity>, IoError> {
+fn parse_iges_entities(input: &str, limits: ImportLimits) -> Result<Vec<IgesEntity>, IoError> {
     let mut d_lines: Vec<&str> = Vec::new();
     let mut p_lines: Vec<&str> = Vec::new();
 
@@ -68,6 +83,11 @@ fn parse_iges_entities(input: &str) -> Result<Vec<IgesEntity>, IoError> {
             b'P' => p_lines.push(line),
             _ => {} // Skip S, G, T sections.
         }
+        ensure_limit(
+            "IGES records",
+            d_lines.len().saturating_add(p_lines.len()),
+            limits.max_model_entities.saturating_mul(3),
+        )?;
     }
 
     // Parse directory entries (pairs of lines).
@@ -84,6 +104,11 @@ fn parse_iges_entities(input: &str) -> Result<Vec<IgesEntity>, IoError> {
         let de_seq = parse_int_field(line1, 73, 80)?;
 
         dir_entries.push((entity_type, pd_start, de_seq));
+        ensure_limit(
+            "IGES entities",
+            dir_entries.len(),
+            limits.max_model_entities,
+        )?;
         i += 2; // Skip the second line of the DE pair.
     }
 

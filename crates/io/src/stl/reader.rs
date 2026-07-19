@@ -3,6 +3,7 @@
 //! Parses STL files into [`TriangleMesh`] for further processing.
 //! Automatically detects binary vs ASCII format.
 
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::tessellate::TriangleMesh;
 use brepkit_topology::Topology;
@@ -18,10 +19,23 @@ use brepkit_topology::solid::SolidId;
 /// Returns [`IoError::ParseError`](crate::IoError::ParseError) if the
 /// data is malformed or truncated.
 pub fn read_stl(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+    read_stl_with_limits(data, ImportLimits::default())
+}
+
+/// Read an STL file with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`crate::IoError`] when a limit is exceeded or the STL is malformed.
+pub fn read_stl_with_limits(
+    data: &[u8],
+    limits: ImportLimits,
+) -> Result<TriangleMesh, crate::IoError> {
+    ensure_input_size(data.len(), limits)?;
     if is_ascii_stl(data) {
-        read_ascii_stl(data)
+        read_ascii_stl(data, limits)
     } else {
-        read_binary_stl(data)
+        read_binary_stl(data, limits)
     }
 }
 
@@ -61,7 +75,7 @@ fn is_ascii_stl(data: &[u8]) -> bool {
 ///
 /// Format: 80-byte header, 4-byte LE triangle count, then 50 bytes per
 /// triangle (normal + 3 vertices + 2-byte attribute).
-fn read_binary_stl(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+fn read_binary_stl(data: &[u8], limits: ImportLimits) -> Result<TriangleMesh, crate::IoError> {
     if data.len() < 84 {
         return Err(crate::IoError::ParseError {
             reason: format!(
@@ -72,6 +86,7 @@ fn read_binary_stl(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
     }
 
     let tri_count = u32::from_le_bytes([data[80], data[81], data[82], data[83]]) as usize;
+    ensure_limit("STL triangles", tri_count, limits.max_model_entities)?;
 
     let expected_len = 84 + tri_count * 50;
     if data.len() < expected_len {
@@ -118,7 +133,7 @@ fn read_binary_stl(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
 }
 
 /// Read an ASCII STL file.
-fn read_ascii_stl(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+fn read_ascii_stl(data: &[u8], limits: ImportLimits) -> Result<TriangleMesh, crate::IoError> {
     let text = std::str::from_utf8(data).map_err(|e| crate::IoError::ParseError {
         reason: format!("ASCII STL contains invalid UTF-8: {e}"),
     })?;
@@ -138,6 +153,11 @@ fn read_ascii_stl(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
             mesh.normals.push(current_normal);
             mesh.indices.push(vertex_count);
             vertex_count += 1;
+            ensure_limit(
+                "STL vertices",
+                mesh.positions.len(),
+                limits.max_model_entities.saturating_mul(3),
+            )?;
         }
         // Skip: solid, outer loop, endloop, endfacet, endsolid.
     }
@@ -294,7 +314,7 @@ mod tests {
         // Header says 1 triangle but file is too short.
         let mut data = [0u8; 84];
         data[80] = 1; // tri_count = 1
-        let result = read_binary_stl(&data);
+        let result = read_binary_stl(&data, ImportLimits::default());
         assert!(result.is_err());
     }
 
