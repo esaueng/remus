@@ -21,7 +21,7 @@ exists in this library workspace, so those review phases are not applicable.
 | Import/export | `crates/io`, parser tests and fixtures | Reviewed for malformed input. STL index and IGES UTF-8 panics fixed; size/depth/resource budgeting remains open. |
 | WASM and JavaScript | `crates/wasm`, TypeScript bindings, `xtask`, smoke script | Reviewed. no-I/O build, handle narrowing, CLI drift, and normal smoke coverage fixed; stale checkpoint handles and public input budgets remain open. |
 | CI and supply chain | `.github/workflows`, Dependabot, action pins | Reviewed. Checked-in lockfiles replace unproven Cargo scan setup. CI and publish now share the validated xtask package path and run npm dry-runs. Workflow permissions are narrow; SBOM/attestation and actual fork runs require follow-up. |
-| Tests, examples, fixtures, benchmarks, corpus | all tracked test/example/fixture/benchmark directories | Inventory reviewed. Full workspace tests, targeted regressions, and the deterministic complexity guard pass. No standalone fuzz corpus is tracked; adversarial scanning/fuzzing was outside this run mode. |
+| Tests, examples, fixtures, benchmarks, corpus | all tracked test/example/fixture/benchmark directories | Inventory reviewed. Full workspace tests, targeted regressions, and the deterministic complexity guard pass. Four existing operations diagnostics remain explicitly ignored; one preserves the open 64-cut nondeterminism reproducer and three inspect the known box-sphere fallback. No standalone fuzz corpus is tracked; adversarial scanning/fuzzing was outside this run mode. |
 | Documentation | README feature matrix and policy docs | Stability and fork ledgers added. Existing feature labels were not promoted. |
 
 ## Remaining validation matrix

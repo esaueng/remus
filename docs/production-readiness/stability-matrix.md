@@ -8,7 +8,7 @@ domain or lack the required production evidence.
 | --- | --- | --- | --- |
 | Primitives | Box, cylinder, cone, sphere, torus, ellipsoid | Stable | Blocked: native/WASM invalid-input, scale, and full postcondition matrix incomplete. |
 | Primitives | Convex hull, Minkowski sum | Stable | Blocked: degenerate/property coverage incomplete. |
-| Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Blocked: cavity classification/containment is fixed, but mesh-fallback quality contract remains unresolved. |
+| Booleans | Plane/cylinder/cone/sphere/NURBS union, cut, intersect | Stable | Blocked: cavity classification/containment is fixed, but mesh-fallback quality and 64-cut determinism/bounded-latency contracts remain unresolved. |
 | Booleans | Batch fuse-all | Stable | Blocked: depends on boolean correctness/fallback contract. |
 | Booleans | Torus booleans | Beta | Retained: general torus cases remain limited. |
 | Modifiers | Fillet, chamfer | Stable | Blocked: success paths need watertight/cavity postconditions. |
