@@ -22,18 +22,24 @@
 //! cost. The scaling guard enables the feature only for its own test build.
 
 #[cfg(feature = "perf-counters")]
-use core::sync::atomic::{AtomicU64, Ordering};
+use std::cell::Cell;
+
+// Boolean execution is synchronous within one caller thread. Thread-local
+// counters keep the feature deterministic when the Rust test harness runs
+// unrelated boolean tests concurrently with the scaling guard.
+#[cfg(feature = "perf-counters")]
+std::thread_local! {
+    static PAVE_VERTEX_PROBES: Cell<u64> = const { Cell::new(0) };
+    static SD_POLY_CLIPS: Cell<u64> = const { Cell::new(0) };
+    static RAY_GEOM_BUILDS: Cell<u64> = const { Cell::new(0) };
+    static FACE_SPLIT_PROBES: Cell<u64> = const { Cell::new(0) };
+    static LOCAL_VERTEX_INSERTS: Cell<u64> = const { Cell::new(0) };
+}
 
 #[cfg(feature = "perf-counters")]
-static PAVE_VERTEX_PROBES: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-counters")]
-static SD_POLY_CLIPS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-counters")]
-static RAY_GEOM_BUILDS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-counters")]
-static FACE_SPLIT_PROBES: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-counters")]
-static LOCAL_VERTEX_INSERTS: AtomicU64 = AtomicU64::new(0);
+fn increment(counter: &'static std::thread::LocalKey<Cell<u64>>) {
+    counter.with(|value| value.set(value.get().saturating_add(1)));
+}
 
 /// Count one pave-vertex distance comparison (per candidate examined while
 /// snapping an intersection endpoint to a coincident vertex). Crate-internal:
@@ -41,7 +47,7 @@ static LOCAL_VERTEX_INSERTS: AtomicU64 = AtomicU64::new(0);
 #[inline]
 pub(crate) fn bump_pave_vertex_probe() {
     #[cfg(feature = "perf-counters")]
-    PAVE_VERTEX_PROBES.fetch_add(1, Ordering::Relaxed);
+    increment(&PAVE_VERTEX_PROBES);
 }
 
 /// Count one same-domain polygon-intersection clip (the expensive narrow-phase
@@ -49,7 +55,7 @@ pub(crate) fn bump_pave_vertex_probe() {
 #[inline]
 pub(crate) fn bump_sd_poly_clip() {
     #[cfg(feature = "perf-counters")]
-    SD_POLY_CLIPS.fetch_add(1, Ordering::Relaxed);
+    increment(&SD_POLY_CLIPS);
 }
 
 /// Count one ray-cast geometry collection for a solid (`collect_face_geoms`).
@@ -60,7 +66,7 @@ pub(crate) fn bump_sd_poly_clip() {
 #[inline]
 pub(crate) fn bump_ray_geom_build() {
     #[cfg(feature = "perf-counters")]
-    RAY_GEOM_BUILDS.fetch_add(1, Ordering::Relaxed);
+    increment(&RAY_GEOM_BUILDS);
 }
 
 /// Count one unit of face-splitter candidate work — either an endpoint examined
@@ -72,7 +78,7 @@ pub(crate) fn bump_ray_geom_build() {
 #[inline]
 pub(crate) fn bump_face_split_probe() {
     #[cfg(feature = "perf-counters")]
-    FACE_SPLIT_PROBES.fetch_add(1, Ordering::Relaxed);
+    increment(&FACE_SPLIT_PROBES);
 }
 
 /// Count one vertex materialized into a sub-face's local vertex map during
@@ -84,7 +90,7 @@ pub(crate) fn bump_face_split_probe() {
 #[inline]
 pub(crate) fn bump_local_vertex_insert() {
     #[cfg(feature = "perf-counters")]
-    LOCAL_VERTEX_INSERTS.fetch_add(1, Ordering::Relaxed);
+    increment(&LOCAL_VERTEX_INSERTS);
 }
 
 /// A snapshot of every work counter since the last [`reset`]. Only available
@@ -108,11 +114,11 @@ pub struct PerfSnapshot {
 /// Reset all counters to zero. Only available with `perf-counters`.
 #[cfg(feature = "perf-counters")]
 pub fn reset() {
-    PAVE_VERTEX_PROBES.store(0, Ordering::Relaxed);
-    SD_POLY_CLIPS.store(0, Ordering::Relaxed);
-    RAY_GEOM_BUILDS.store(0, Ordering::Relaxed);
-    FACE_SPLIT_PROBES.store(0, Ordering::Relaxed);
-    LOCAL_VERTEX_INSERTS.store(0, Ordering::Relaxed);
+    PAVE_VERTEX_PROBES.set(0);
+    SD_POLY_CLIPS.set(0);
+    RAY_GEOM_BUILDS.set(0);
+    FACE_SPLIT_PROBES.set(0);
+    LOCAL_VERTEX_INSERTS.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -121,10 +127,32 @@ pub fn reset() {
 #[must_use]
 pub fn snapshot() -> PerfSnapshot {
     PerfSnapshot {
-        pave_vertex_probes: PAVE_VERTEX_PROBES.load(Ordering::Relaxed),
-        sd_poly_clips: SD_POLY_CLIPS.load(Ordering::Relaxed),
-        ray_geom_builds: RAY_GEOM_BUILDS.load(Ordering::Relaxed),
-        face_split_probes: FACE_SPLIT_PROBES.load(Ordering::Relaxed),
-        local_vertex_inserts: LOCAL_VERTEX_INSERTS.load(Ordering::Relaxed),
+        pave_vertex_probes: PAVE_VERTEX_PROBES.get(),
+        sd_poly_clips: SD_POLY_CLIPS.get(),
+        ray_geom_builds: RAY_GEOM_BUILDS.get(),
+        face_split_probes: FACE_SPLIT_PROBES.get(),
+        local_vertex_inserts: LOCAL_VERTEX_INSERTS.get(),
+    }
+}
+
+#[cfg(all(test, feature = "perf-counters"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn counters_are_isolated_between_test_threads() {
+        reset();
+        bump_ray_geom_build();
+
+        let worker = std::thread::spawn(|| {
+            reset();
+            bump_ray_geom_build();
+            bump_ray_geom_build();
+            snapshot().ray_geom_builds
+        });
+
+        assert_eq!(worker.join().expect("worker counter test panicked"), 2);
+        assert_eq!(snapshot().ray_geom_builds, 1);
     }
 }
