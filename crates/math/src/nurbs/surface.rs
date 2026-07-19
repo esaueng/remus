@@ -212,10 +212,24 @@ impl NurbsSurface {
 
         let span_u = basis::find_span(n_rows, pu, u, &self.knots_u);
         let span_v = basis::find_span(n_cols, pv, v, &self.knots_v);
-        let mut nu = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
-        basis::basis_funs_into(span_u, u, pu, &self.knots_u, &mut nu[..=pu]);
-        let mut nv = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
-        basis::basis_funs_into(span_v, v, pv, &self.knots_v, &mut nv[..=pv]);
+        let mut nu_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nu_heap;
+        let nu: &mut [f64] = if pu <= basis::MAX_STACK_OUTPUT {
+            &mut nu_stack[..=pu]
+        } else {
+            nu_heap = vec![0.0; pu + 1];
+            &mut nu_heap
+        };
+        basis::basis_funs_into(span_u, u, pu, &self.knots_u, nu);
+        let mut nv_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
+        let mut nv_heap;
+        let nv: &mut [f64] = if pv <= basis::MAX_STACK_OUTPUT {
+            &mut nv_stack[..=pv]
+        } else {
+            nv_heap = vec![0.0; pv + 1];
+            &mut nv_heap
+        };
+        basis::basis_funs_into(span_v, v, pv, &self.knots_v, nv);
 
         // Contract along v first for each relevant u-row, then along u.
         let mut wx = 0.0;
@@ -272,27 +286,29 @@ impl NurbsSurface {
         let du = d.min(pu);
         let dv = d.min(pv);
         let stride_u = pu + 1;
-        let mut ders_u_buf =
+        let required_u = (du + 1) * stride_u;
+        let mut ders_u_stack =
             [0.0f64; (basis::MAX_STACK_OUTPUT + 1) * (basis::MAX_STACK_OUTPUT + 1)];
-        basis::ders_basis_funs_into(
-            span_u,
-            u,
-            pu,
-            du,
-            &self.knots_u,
-            &mut ders_u_buf[..(du + 1) * stride_u],
-        );
+        let mut ders_u_heap;
+        let ders_u: &mut [f64] = if required_u <= ders_u_stack.len() {
+            &mut ders_u_stack[..required_u]
+        } else {
+            ders_u_heap = vec![0.0; required_u];
+            &mut ders_u_heap
+        };
+        basis::ders_basis_funs_into(span_u, u, pu, du, &self.knots_u, ders_u);
         let stride_v = pv + 1;
-        let mut ders_v_buf =
+        let required_v = (dv + 1) * stride_v;
+        let mut ders_v_stack =
             [0.0f64; (basis::MAX_STACK_OUTPUT + 1) * (basis::MAX_STACK_OUTPUT + 1)];
-        basis::ders_basis_funs_into(
-            span_v,
-            v,
-            pv,
-            dv,
-            &self.knots_v,
-            &mut ders_v_buf[..(dv + 1) * stride_v],
-        );
+        let mut ders_v_heap;
+        let ders_v: &mut [f64] = if required_v <= ders_v_stack.len() {
+            &mut ders_v_stack[..required_v]
+        } else {
+            ders_v_heap = vec![0.0; required_v];
+            &mut ders_v_heap
+        };
+        basis::ders_basis_funs_into(span_v, v, pv, dv, &self.knots_v, ders_v);
 
         // Compute homogeneous derivatives Aw[k][l] = (wx, wy, wz, w)
         let mut aw = vec![vec![[0.0f64; 4]; d + 1]; d + 1];
@@ -302,10 +318,10 @@ impl NurbsSurface {
                     continue;
                 }
                 for i in 0..=pu {
-                    let du_ki = ders_u_buf[k * stride_u + i];
+                    let du_ki = ders_u[k * stride_u + i];
                     let u_idx = span_u - pu + i;
                     for j in 0..=pv {
-                        let dv_lj = ders_v_buf[l * stride_v + j];
+                        let dv_lj = ders_v[l * stride_v + j];
                         let v_idx = span_v - pv + j;
                         let pt = &self.control_points[u_idx][v_idx];
                         let w = self.weights[u_idx][v_idx];
@@ -442,6 +458,44 @@ use super::basis::binomial;
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn degree_nine_surface_and_cached_evaluator_do_not_panic() {
+        let degree = 9;
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend(std::iter::repeat_n(1.0, degree + 1));
+        let control_points: Vec<Vec<_>> = (0..=degree)
+            .map(|i| {
+                (0..=degree)
+                    .map(|j| Point3::new(i as f64, j as f64, 0.0))
+                    .collect()
+            })
+            .collect();
+        let surface = NurbsSurface::new(
+            degree,
+            degree,
+            knots.clone(),
+            knots,
+            control_points,
+            vec![vec![1.0; degree + 1]; degree + 1],
+        )
+        .expect("valid degree-nine Bezier surface");
+
+        let direct = surface.evaluate(0.5, 0.5);
+        let derivatives = surface.derivatives(0.5, 0.5, degree);
+        let mut evaluator = surface.evaluator();
+        let cached = evaluator.point(0.5, 0.5);
+        let normal = evaluator.normal(0.5, 0.5);
+
+        assert!((direct.x() - 4.5).abs() < 1e-10);
+        assert!((direct.y() - 4.5).abs() < 1e-10);
+        assert!((cached - direct).length() < 1e-8);
+        assert!(normal.length_squared().is_finite());
+        assert!(derivatives.iter().flatten().all(|derivative| {
+            derivative.x().is_finite() && derivative.y().is_finite() && derivative.z().is_finite()
+        }));
+    }
 
     /// A bilinear surface (degree 1x1): a flat quadrilateral.
     fn bilinear_surface() -> NurbsSurface {

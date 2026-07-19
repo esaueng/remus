@@ -3,9 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Pinned wasm-bindgen-cli version. Must match `wasm-bindgen = "=0.2.121"` in
+/// Pinned wasm-bindgen-cli version. Must match `wasm-bindgen = "=0.2.126"` in
 /// the workspace Cargo.toml.
-const WASM_BINDGEN_VERSION: &str = "0.2.121";
+const WASM_BINDGEN_VERSION: &str = "0.2.126";
 
 /// Minimum number of exported methods expected in the .d.ts file.
 /// Based on ~185 methods in the current BrepKernel. Update when the API surface
@@ -81,7 +81,7 @@ pub fn check_tools() -> Result<()> {
         let version = run_cmd_output(
             Command::new("wasm-bindgen").arg("--version"),
         )?;
-        // Output is like "wasm-bindgen 0.2.121"
+        // Output is like "wasm-bindgen 0.2.126"
         let installed = version.split_whitespace().last().unwrap_or("");
         if installed != WASM_BINDGEN_VERSION {
             bail!(
@@ -179,7 +179,18 @@ pub fn run_wasm_opt() -> Result<()> {
 
 /// Merge nodejs target into bundler package with proper package.json exports.
 pub fn merge_packages() -> Result<()> {
-    merge_at(&pkg_dir()?, &pkg_node_dir()?)
+    let root = project_root()?;
+    let pkg = pkg_dir()?;
+    merge_at(&pkg, &pkg_node_dir()?)?;
+    copy_package_metadata(&root, &pkg)
+}
+
+fn copy_package_metadata(root: &Path, pkg: &Path) -> Result<()> {
+    for name in ["LICENSE-MIT", "LICENSE-APACHE"] {
+        fs::copy(root.join(name), pkg.join(name))
+            .with_context(|| format!("copying {name} into npm package"))?;
+    }
+    Ok(())
 }
 
 /// Core merge logic, parameterised on directories for testability.
@@ -256,9 +267,11 @@ fn patch_package_json(pkg_json: &mut serde_json::Value) -> Result<()> {
         .as_array_mut()
         .context("package.json files is not an array")?;
 
-    let node_entry = serde_json::json!("brepkit_wasm_node.cjs");
-    if !files.contains(&node_entry) {
-        files.push(node_entry);
+    for entry in ["brepkit_wasm_node.cjs", "LICENSE-MIT", "LICENSE-APACHE"] {
+        let entry = serde_json::json!(entry);
+        if !files.contains(&entry) {
+            files.push(entry);
+        }
     }
 
     Ok(())
@@ -282,6 +295,8 @@ fn validate_at(pkg: &Path) -> Result<()> {
         "brepkit_wasm_node.cjs",
         "brepkit_wasm.d.ts",
         "package.json",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
     ];
     for file in &required_files {
         let path = pkg.join(file);
@@ -406,13 +421,12 @@ fn validate_package_json(pkg_json: &serde_json::Value, errors: &mut Vec<String>)
     }
 
     if let Some(files) = pkg_json.get("files").and_then(|v| v.as_array()) {
-        let has_node = files
-            .iter()
-            .any(|v| v.as_str() == Some("brepkit_wasm_node.cjs"));
-        if !has_node {
-            errors.push("files array missing 'brepkit_wasm_node.cjs'".into());
-        } else {
-            println!("  ok files includes brepkit_wasm_node.cjs");
+        for required in ["brepkit_wasm_node.cjs", "LICENSE-MIT", "LICENSE-APACHE"] {
+            if !files.iter().any(|v| v.as_str() == Some(required)) {
+                errors.push(format!("files array missing '{required}'"));
+            } else {
+                println!("  ok files includes {required}");
+            }
         }
     } else {
         errors.push("package.json missing files array".into());
@@ -486,6 +500,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn wasm_bindgen_cli_version_matches_workspace_dependency() {
+        let cargo_toml = fs::read_to_string(project_root().unwrap().join("Cargo.toml")).unwrap();
+        let expected = format!("wasm-bindgen = \"={WASM_BINDGEN_VERSION}\"");
+
+        assert!(
+            cargo_toml.contains(&expected),
+            "workspace dependency must contain {expected}"
+        );
+    }
+
     // -- patch_package_json tests -----------------------------------------
 
     #[test]
@@ -510,6 +535,8 @@ mod tests {
 
         let files = pkg["files"].as_array().unwrap();
         assert!(files.contains(&json!("brepkit_wasm_node.cjs")));
+        assert!(files.contains(&json!("LICENSE-MIT")));
+        assert!(files.contains(&json!("LICENSE-APACHE")));
         // Original files preserved
         assert!(files.contains(&json!("brepkit_wasm_bg.wasm")));
     }
@@ -522,7 +549,7 @@ mod tests {
 
         patch_package_json(&mut pkg).unwrap();
 
-        assert_eq!(pkg["files"].as_array().unwrap().len(), 2);
+        assert_eq!(pkg["files"].as_array().unwrap().len(), 4);
     }
 
     #[test]
@@ -532,7 +559,7 @@ mod tests {
         patch_package_json(&mut pkg).unwrap();
 
         let files = pkg["files"].as_array().unwrap();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 3);
         assert_eq!(files[0], "brepkit_wasm_node.cjs");
     }
 

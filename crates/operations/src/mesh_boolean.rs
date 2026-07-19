@@ -41,6 +41,32 @@ pub struct MeshBooleanResult {
 /// self-check and the downstream dedupe measuring on the same weld grid.
 const SELF_CHECK_GRID: f64 = crate::tessellate::COINCIDENT_DEDUPE_GRID;
 
+/// Work limits for mesh boolean co-refinement.
+///
+/// These deterministic budgets bound the main allocation and O(N*M)
+/// classification phases. They are operation counts, not wall-clock time, so
+/// behavior is consistent across native and WASM runtimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_field_names)]
+pub struct MeshBooleanLimits {
+    /// Maximum triangles in either input mesh.
+    pub max_input_triangles: usize,
+    /// Maximum broad-phase triangle pairs retained for co-refinement.
+    pub max_candidate_pairs: usize,
+    /// Maximum winding-number triangle tests across both split meshes.
+    pub max_classification_tests: usize,
+}
+
+impl Default for MeshBooleanLimits {
+    fn default() -> Self {
+        Self {
+            max_input_triangles: 100_000,
+            max_candidate_pairs: 200_000,
+            max_classification_tests: 25_000_000,
+        }
+    }
+}
+
 /// Perform a mesh boolean operation between two triangle meshes.
 ///
 /// Uses co-refinement: compute exact triangle-triangle intersections,
@@ -63,10 +89,36 @@ pub fn mesh_boolean(
     op: BooleanOp,
     tolerance: f64,
 ) -> Result<MeshBooleanResult, OperationsError> {
+    mesh_boolean_with_limits(mesh_a, mesh_b, op, tolerance, MeshBooleanLimits::default())
+}
+
+/// Perform a mesh boolean with explicit deterministic work limits.
+///
+/// # Errors
+///
+/// Returns an error when a work limit is exceeded, an input is empty, or the
+/// boolean operation cannot produce geometry.
+pub fn mesh_boolean_with_limits(
+    mesh_a: &TriangleMesh,
+    mesh_b: &TriangleMesh,
+    op: BooleanOp,
+    tolerance: f64,
+    limits: MeshBooleanLimits,
+) -> Result<MeshBooleanResult, OperationsError> {
+    let triangles_a = mesh_a.indices.len() / 3;
+    let triangles_b = mesh_b.indices.len() / 3;
+    ensure_work_limit("input triangles A", triangles_a, limits.max_input_triangles)?;
+    ensure_work_limit("input triangles B", triangles_b, limits.max_input_triangles)?;
+    if triangles_a == 0 || triangles_b == 0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "mesh boolean requires two non-empty triangle meshes".into(),
+        });
+    }
+
     // Step 1: BVH broad-phase
     let bvh_a = build_triangle_bvh(mesh_a);
     let bvh_b = build_triangle_bvh(mesh_b);
-    let pairs = find_intersecting_pairs(mesh_a, &bvh_b, tolerance);
+    let pairs = find_intersecting_pairs(mesh_a, &bvh_b, tolerance, limits.max_candidate_pairs)?;
 
     // Step 2: Triangle-triangle intersection segments
     let segments = compute_all_intersections(mesh_a, mesh_b, &pairs, tolerance);
@@ -74,6 +126,24 @@ pub fn mesh_boolean(
     // Step 3: Conforming re-triangulation of both meshes
     let split_a = split_mesh_conforming(mesh_a, &segments, true, tolerance);
     let split_b = split_mesh_conforming(mesh_b, &segments, false, tolerance);
+
+    let classification_tests = split_a
+        .triangles
+        .len()
+        .checked_mul(triangles_b)
+        .and_then(|a_tests| {
+            split_b
+                .triangles
+                .len()
+                .checked_mul(triangles_a)
+                .and_then(|b_tests| a_tests.checked_add(b_tests))
+        })
+        .unwrap_or(usize::MAX);
+    ensure_work_limit(
+        "classification triangle tests",
+        classification_tests,
+        limits.max_classification_tests,
+    )?;
 
     // Step 4: Classify sub-triangles
     let classify_a = classify_split_triangles(&split_a, mesh_b, &bvh_b, tolerance);
@@ -94,6 +164,15 @@ pub fn mesh_boolean(
         boundary_edge_count,
         non_manifold_edge_count,
     })
+}
+
+fn ensure_work_limit(resource: &str, actual: usize, limit: usize) -> Result<(), OperationsError> {
+    if actual > limit {
+        return Err(OperationsError::InvalidInput {
+            reason: format!("mesh boolean work limit exceeded for {resource}: {actual} > {limit}"),
+        });
+    }
+    Ok(())
 }
 
 /// Count boundary and non-manifold edges after welding vertices to a grid.
@@ -142,7 +221,8 @@ fn find_intersecting_pairs(
     mesh_a: &TriangleMesh,
     bvh_b: &Bvh,
     tolerance: f64,
-) -> Vec<(usize, usize)> {
+    max_candidate_pairs: usize,
+) -> Result<Vec<(usize, usize)>, OperationsError> {
     let tri_count_a = mesh_a.indices.len() / 3;
     let mut pairs = Vec::new();
 
@@ -152,10 +232,11 @@ fn find_intersecting_pairs(
         let candidates = bvh_b.query_overlap(&aabb_a);
         for j in candidates {
             pairs.push((i, j));
+            ensure_work_limit("candidate triangle pairs", pairs.len(), max_candidate_pairs)?;
         }
     }
 
-    pairs
+    Ok(pairs)
 }
 
 /// An intersection segment between a triangle of mesh A and one of mesh B.
@@ -1566,6 +1647,34 @@ mod tests {
     /// Create an axis-aligned box mesh centered at a point.
     fn box_mesh(center: Point3, half_size: f64) -> TriangleMesh {
         box_mesh_half_extents(center, Vec3::new(half_size, half_size, half_size))
+    }
+
+    #[test]
+    fn explicit_input_triangle_limit_fails_before_boolean_work() {
+        let a = box_mesh(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let b = box_mesh(Point3::new(0.5, 0.0, 0.0), 1.0);
+        let limits = MeshBooleanLimits {
+            max_input_triangles: 11,
+            ..MeshBooleanLimits::default()
+        };
+
+        let err = mesh_boolean_with_limits(&a, &b, BooleanOp::Fuse, 1e-7, limits).unwrap_err();
+        assert!(matches!(err, OperationsError::InvalidInput { .. }));
+        assert!(err.to_string().contains("input triangles A: 12 > 11"));
+    }
+
+    #[test]
+    fn explicit_candidate_pair_limit_stops_broad_phase() {
+        let a = box_mesh(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let b = box_mesh(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let limits = MeshBooleanLimits {
+            max_candidate_pairs: 0,
+            ..MeshBooleanLimits::default()
+        };
+
+        let err = mesh_boolean_with_limits(&a, &b, BooleanOp::Fuse, 1e-7, limits).unwrap_err();
+        assert!(matches!(err, OperationsError::InvalidInput { .. }));
+        assert!(err.to_string().contains("candidate triangle pairs"));
     }
 
     /// Create an axis-aligned box mesh with per-axis half extents.

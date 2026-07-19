@@ -5,5 +5,5 @@
 pub mod reader;
 pub mod writer;
 
-pub use reader::{read_ply, read_ply_solid};
+pub use reader::{read_ply, read_ply_solid, read_ply_with_limits};
 pub use writer::write_ply;

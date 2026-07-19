@@ -124,22 +124,20 @@ fn concentric_spheres_at_offset_center_fuse() {
 }
 
 #[test]
-fn non_concentric_spheres_fuse_does_not_use_shortcut() {
-    // When centers don't coincide, the shortcut must NOT fire — the result
-    // must include the union geometry (lens-shaped intersection lobe).
-    // Two unit spheres offset by 1 along x: the union has volume
-    //   2·V_sphere(1) - V_lens
-    // where V_lens is the small intersection. Roughly: 2·(4π/3) - small ≈ 8.38 - 0.1 ≈ 8.28.
+fn non_concentric_spheres_fuse_fails_closed_without_shortcut() {
+    // When centers do not coincide, the concentric shortcut must not fire.
+    // The general pipeline cannot yet assemble this lens intersection as a
+    // closed manifold, so the public operation must reject it rather than
+    // return the pipeline's invalid topology.
     let mut topo = Topology::default();
     let a = sphere_at(&mut topo, 0.0, 0.0, 0.0, 1.0);
     let b = sphere_at(&mut topo, 1.0, 0.0, 0.0, 1.0);
-    let r = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
-    let got = vol(&topo, r);
-    let single = sphere_volume(1.0); // ≈ 4.189
-    // The union should be more than one sphere but less than two.
     assert!(
-        got > single * 1.2 && got < single * 2.0,
-        "non-concentric union should be between 1.2× and 2× a single sphere: got {got:.3}"
+        matches!(
+            boolean(&mut topo, BooleanOp::Fuse, a, b),
+            Err(brepkit_operations::OperationsError::NonManifoldResult)
+        ),
+        "non-concentric sphere fuse must fail closed"
     );
 }
 

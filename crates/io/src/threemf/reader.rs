@@ -12,6 +12,7 @@ use brepkit_topology::Topology;
 use brepkit_topology::solid::SolidId;
 
 use crate::IoError;
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 /// Read a 3MF file from raw bytes and return one [`TriangleMesh`] per object.
 ///
@@ -24,31 +25,58 @@ use crate::IoError;
 /// - The archive lacks a `3D/3dmodel.model` entry
 /// - The XML is malformed or missing required elements
 pub fn read_threemf(data: &[u8]) -> Result<Vec<TriangleMesh>, IoError> {
-    let model_xml = extract_model_xml(data)?;
-    parse_model_xml(&model_xml)
+    read_threemf_with_limits(data, ImportLimits::default())
+}
+
+/// Read a 3MF file with explicit compressed-input, uncompressed-entry, and
+/// model-entity limits.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded or the 3MF data is invalid.
+pub fn read_threemf_with_limits(
+    data: &[u8],
+    limits: ImportLimits,
+) -> Result<Vec<TriangleMesh>, IoError> {
+    ensure_input_size(data.len(), limits)?;
+    let model_xml = extract_model_xml(data, limits)?;
+    parse_model_xml(&model_xml, limits)
 }
 
 /// Extract the `3D/3dmodel.model` XML from the ZIP archive.
-fn extract_model_xml(data: &[u8]) -> Result<String, IoError> {
+fn extract_model_xml(data: &[u8], limits: ImportLimits) -> Result<String, IoError> {
     let cursor = Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).map_err(IoError::Zip)?;
 
-    let mut model_file = archive
+    let model_file = archive
         .by_name("3D/3dmodel.model")
         .map_err(|_| IoError::ParseError {
             reason: "3MF archive missing '3D/3dmodel.model' entry".to_string(),
         })?;
 
-    let mut xml_str = String::new();
+    let declared_size = usize::try_from(model_file.size()).unwrap_or(usize::MAX);
+    ensure_limit(
+        "3MF model XML bytes",
+        declared_size,
+        limits.max_archive_entry_bytes,
+    )?;
+
+    let mut xml_str = String::with_capacity(declared_size);
     model_file
+        .take(limits.max_archive_entry_bytes as u64 + 1)
         .read_to_string(&mut xml_str)
         .map_err(IoError::Io)?;
+    ensure_limit(
+        "3MF model XML bytes",
+        xml_str.len(),
+        limits.max_archive_entry_bytes,
+    )?;
 
     Ok(xml_str)
 }
 
 /// Parse the model XML and extract meshes from each `<object>`.
-fn parse_model_xml(xml: &str) -> Result<Vec<TriangleMesh>, IoError> {
+fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>, IoError> {
     let mut reader = quick_xml::Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
@@ -58,6 +86,9 @@ fn parse_model_xml(xml: &str) -> Result<Vec<TriangleMesh>, IoError> {
     let mut in_object = false;
     let mut in_vertices = false;
     let mut in_triangles = false;
+    let mut total_vertices = 0usize;
+    let mut total_triangles = 0usize;
+    let mut total_objects = 0usize;
 
     loop {
         match reader.read_event() {
@@ -68,6 +99,8 @@ fn parse_model_xml(xml: &str) -> Result<Vec<TriangleMesh>, IoError> {
                 match name {
                     "object" => {
                         in_object = true;
+                        total_objects = total_objects.saturating_add(1);
+                        ensure_limit("3MF objects", total_objects, limits.max_model_entities)?;
                         current_vertices.clear();
                         current_indices.clear();
                     }
@@ -84,12 +117,16 @@ fn parse_model_xml(xml: &str) -> Result<Vec<TriangleMesh>, IoError> {
                     "vertex" if in_vertices => {
                         let pt = parse_vertex_attributes(e)?;
                         current_vertices.push(pt);
+                        total_vertices = total_vertices.saturating_add(1);
+                        ensure_limit("3MF vertices", total_vertices, limits.max_model_entities)?;
                     }
                     "triangle" if in_triangles => {
                         let (v1, v2, v3) = parse_triangle_attributes(e)?;
                         current_indices.push(v1);
                         current_indices.push(v2);
                         current_indices.push(v3);
+                        total_triangles = total_triangles.saturating_add(1);
+                        ensure_limit("3MF triangles", total_triangles, limits.max_model_entities)?;
                     }
                     _ => {}
                 }
@@ -277,6 +314,28 @@ pub fn read_threemf_solid(
     crate::stl::import::import_mesh(topo, &mesh, tolerance)
 }
 
+/// Read the first 3MF object as a solid with explicit import limits.
+///
+/// # Errors
+///
+/// Returns [`IoError`] when a limit is exceeded, the 3MF data is invalid, or
+/// the first mesh cannot be converted into a solid.
+pub fn read_threemf_solid_with_limits(
+    topo: &mut Topology,
+    data: &[u8],
+    tolerance: f64,
+    limits: ImportLimits,
+) -> Result<SolidId, IoError> {
+    let meshes = read_threemf_with_limits(data, limits)?;
+    let mesh = meshes
+        .into_iter()
+        .next()
+        .ok_or_else(|| IoError::ParseError {
+            reason: "3MF file contains no objects".to_string(),
+        })?;
+    crate::stl::import::import_mesh(topo, &mesh, tolerance)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -302,6 +361,26 @@ mod tests {
         assert_eq!(mesh.positions.len(), 8);
         // 12 triangles × 3 indices = 36.
         assert_eq!(mesh.indices.len(), 36);
+    }
+
+    #[test]
+    fn rejects_archive_entry_larger_than_explicit_limit() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+        let bytes = writer::write_threemf(&topo, &[solid], 0.1).unwrap();
+        let limits = ImportLimits {
+            max_archive_entry_bytes: 1,
+            ..ImportLimits::default()
+        };
+
+        let err = read_threemf_with_limits(&bytes, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            IoError::LimitExceeded {
+                resource: "3MF model XML bytes",
+                ..
+            }
+        ));
     }
 
     #[test]

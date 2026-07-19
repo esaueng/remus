@@ -46,8 +46,8 @@ fn main() -> anyhow::Result<()> {
             }
             wasm::merge_packages()?;
             wasm::validate_output()?;
-            println!("\n✅ WASM build complete. Run smoke test with:");
-            println!("   node scripts/test-wasm-smoke.mjs");
+            wasm::run_smoke_test()?;
+            println!("\n✅ WASM build and runtime smoke test complete.");
         }
         Command::WasmPublish { dry_run, no_simd } => {
             wasm::check_tools()?;

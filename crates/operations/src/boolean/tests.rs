@@ -1394,6 +1394,43 @@ fn cut_box_by_large_sphere_containment() {
 }
 
 #[test]
+fn fuse_body_inside_cavity_does_not_take_false_containment_shortcut() {
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &brepkit_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let hollow = boolean(&mut topo, BooleanOp::Cut, outer, void).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+
+    let insert = crate::primitives::make_box(&mut topo, 0.5, 0.5, 0.5).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        insert,
+        &brepkit_math::mat::Mat4::translation(1.25, 1.25, 1.25),
+    )
+    .unwrap();
+
+    let hollow_volume = crate::measure::solid_volume(&topo, hollow, 0.01).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Fuse, hollow, insert).unwrap();
+    let result_volume = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        result_volume > hollow_volume + 0.1,
+        "the insert volume must be retained: hollow={hollow_volume}, result={result_volume}"
+    );
+    assert_eq!(
+        crate::classify::classify_point(&topo, result, Point3::new(1.5, 1.5, 1.5), 0.01, 1e-7,)
+            .unwrap(),
+        crate::classify::PointClassification::Inside,
+        "the fused insert must not be discarded as if the cavity were material"
+    );
+}
+
+#[test]
 fn intersect_box_with_containing_sphere() {
     // Sphere (r=50) fully contains the box (10x10x10).
     // Intersect should return the box volume.
@@ -3650,60 +3687,29 @@ fn gfa_box_sphere_cut() {
 }
 
 #[test]
-fn gfa_box_cylinder_fuse() {
+fn box_cylinder_invalid_mesh_fallback_fails_closed() {
     let mut topo = Topology::default();
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cyl = crate::primitives::make_cylinder(&mut topo, 0.5, 2.0).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, box_solid, cyl);
     assert!(
-        result.is_ok(),
-        "GFA box-cylinder fuse should succeed: {result:?}"
-    );
-
-    let solid = result.unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
-    assert!(
-        (7..=50).contains(&faces.len()),
-        "box-cylinder fuse should have 7-50 faces, got {}",
-        faces.len()
-    );
-    // Fuse volume must exceed the larger input (box = 8.0)
-    let vol = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
-    assert!(
-        vol > 8.0,
-        "fuse volume ({vol}) should exceed box volume (8.0)"
+        matches!(result, Err(crate::OperationsError::NonManifoldResult)),
+        "known non-watertight fallback must fail closed: {result:?}"
     );
 }
 
 #[test]
-fn gfa_box_cone_intersect() {
+fn box_cone_invalid_mesh_fallback_fails_closed() {
     let mut topo = Topology::default();
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cone = crate::primitives::make_cone(&mut topo, 1.0, 0.0, 2.0).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Intersect, box_solid, cone);
     assert!(
-        result.is_ok(),
-        "GFA box-cone intersect should succeed: {result:?}"
+        matches!(result, Err(crate::OperationsError::NonManifoldResult)),
+        "known non-watertight fallback must fail closed: {result:?}"
     );
-
-    let solid = result.unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
-    assert!(
-        (2..=30).contains(&faces.len()),
-        "box-cone intersect should have 2-30 faces, got {}",
-        faces.len()
-    );
-    // Volume check: intersect should be positive and smaller than the cone
-    let vol = crate::measure::solid_volume(&topo, solid, 0.01).unwrap_or(0.0);
-    if vol > 0.0 {
-        let cone_vol = std::f64::consts::PI / 3.0;
-        assert!(
-            vol < cone_vol + 0.5,
-            "intersect volume ({vol}) should be less than cone ({cone_vol})"
-        );
-    }
 }
 
 /// Minimal repro of D4 gridfinity non-manifold fuse bug.

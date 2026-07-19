@@ -61,10 +61,9 @@ pub fn classify_point(
     point: Point3,
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
-    if is_on_boundary(topo, shell.faces(), point, options.tolerance)? {
+    if is_on_boundary(topo, &faces, point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
 
@@ -92,7 +91,7 @@ pub fn classify_point(
     let mut outside_votes = 0u32;
 
     for &dir in &base_dirs {
-        let crossings = count_ray_crossings(topo, shell.faces(), point, dir)?;
+        let crossings = count_ray_crossings(topo, &faces, point, dir)?;
         if crossings % 2 == 1 {
             inside_votes += 1;
         } else {
@@ -115,7 +114,7 @@ pub fn classify_point(
         let phi = (seed * std::f64::consts::E).fract() * std::f64::consts::PI;
         let dir = Vec3::new(phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos());
 
-        let crossings = count_ray_crossings(topo, shell.faces(), point, dir)?;
+        let crossings = count_ray_crossings(topo, &faces, point, dir)?;
         if crossings % 2 == 1 {
             inside_votes += 1;
         } else {
@@ -215,9 +214,8 @@ pub fn classify_point_winding(
     point: Point3,
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    if is_on_boundary(topo, shell.faces(), point, options.tolerance)? {
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    if is_on_boundary(topo, &faces, point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
 
@@ -244,9 +242,8 @@ pub fn classify_point_robust(
     point: Point3,
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    if is_on_boundary(topo, shell.faces(), point, options.tolerance)? {
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    if is_on_boundary(topo, &faces, point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
 
@@ -299,7 +296,48 @@ fn count_ray_crossings(
 mod tests {
     use super::winding;
     use super::*;
+    use brepkit_topology::face::FaceSurface;
+    use brepkit_topology::solid::{Solid, SolidId};
     use brepkit_topology::test_utils::make_unit_cube_manifold;
+
+    fn make_hollow_unit_cube(topo: &mut Topology) -> SolidId {
+        let outer = make_unit_cube_manifold(topo);
+        let inner = make_unit_cube_manifold(topo);
+        let inner_shell = topo.solid(inner).unwrap().outer_shell();
+
+        for vertex_id in brepkit_topology::explorer::solid_vertices(topo, inner).unwrap() {
+            let point = topo.vertex(vertex_id).unwrap().point();
+            topo.vertex_mut(vertex_id).unwrap().set_point(Point3::new(
+                0.25 + 0.5 * point.x(),
+                0.25 + 0.5 * point.y(),
+                0.25 + 0.5 * point.z(),
+            ));
+        }
+
+        let inner_faces = topo.shell(inner_shell).unwrap().faces().to_vec();
+        for face_id in inner_faces {
+            let (normal, wire_id) = match topo.face(face_id).unwrap().surface() {
+                FaceSurface::Plane { normal, .. } => {
+                    (*normal, topo.face(face_id).unwrap().outer_wire())
+                }
+                _ => unreachable!("test cube faces are planar"),
+            };
+            let wire = topo.wire(wire_id).unwrap();
+            let oriented_edge = wire.edges()[0];
+            let edge = topo.edge(oriented_edge.edge()).unwrap();
+            let point = topo
+                .vertex(oriented_edge.oriented_start(edge))
+                .unwrap()
+                .point();
+            let d = normal.dot(Vec3::new(point.x(), point.y(), point.z()));
+            let face = topo.face_mut(face_id).unwrap();
+            face.set_surface(FaceSurface::Plane { normal, d });
+            face.set_reversed(true);
+        }
+
+        let outer_shell = topo.solid(outer).unwrap().outer_shell();
+        topo.add_solid(Solid::new(outer_shell, vec![inner_shell]))
+    }
 
     #[test]
     fn point_inside_box() {
@@ -310,6 +348,38 @@ mod tests {
 
         let result = classify_point(&topo, solid, center, &opts).unwrap();
         assert_eq!(result, PointClassification::Inside);
+    }
+
+    #[test]
+    fn hollow_solid_classifiers_subtract_inner_shell() {
+        let mut topo = Topology::new();
+        let solid = make_hollow_unit_cube(&mut topo);
+        let options = ClassifyOptions::default();
+        let cavity = Point3::new(0.5, 0.5, 0.5);
+        let material = Point3::new(0.1, 0.1, 0.1);
+
+        for classify in [
+            classify_point,
+            classify_point_winding,
+            classify_point_robust,
+        ] {
+            assert_eq!(
+                classify(&topo, solid, cavity, &options).unwrap(),
+                PointClassification::Outside
+            );
+            assert_eq!(
+                classify(&topo, solid, material, &options).unwrap(),
+                PointClassification::Inside
+            );
+        }
+
+        let properties_options = crate::properties::PropertiesOptions::default();
+        let volume = crate::properties::solid_volume(&topo, solid, &properties_options).unwrap();
+        let area = crate::properties::solid_area(&topo, solid, &properties_options).unwrap();
+        let center = crate::properties::center_of_mass(&topo, solid, &properties_options).unwrap();
+        assert!((volume - 0.875).abs() < 1e-12, "volume={volume}");
+        assert!((area - 7.5).abs() < 1e-12, "area={area}");
+        assert!((center - Point3::new(0.5, 0.5, 0.5)).length() < 1e-12);
     }
 
     #[test]

@@ -8,15 +8,29 @@
 pub mod arena_io;
 pub mod gltf;
 pub mod iges;
+pub mod limits;
 pub mod obj;
 pub mod ply;
 pub mod step;
 pub mod stl;
 pub mod threemf;
 
+pub use limits::ImportLimits;
+
 /// Errors from data exchange operations.
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
+    /// A configured import resource limit was exceeded.
+    #[error("import limit exceeded for {resource}: {actual} > {limit}")]
+    LimitExceeded {
+        /// The bounded resource (for example, `input bytes` or `mesh entities`).
+        resource: &'static str,
+        /// Configured maximum value.
+        limit: usize,
+        /// Observed or declared value.
+        actual: usize,
+    },
+
     /// The input file format is invalid or malformed.
     #[error("parse error: {reason}")]
     ParseError {

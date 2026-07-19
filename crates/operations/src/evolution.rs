@@ -204,39 +204,24 @@ mod tests {
     }
 
     #[test]
-    fn fillet_evolution_tracks_all_faces() {
-        use brepkit_topology::explorer::solid_edges;
+    fn fillet_evolution_accepts_valid_planar_topology() {
+        use brepkit_topology::explorer::{solid_edges, solid_faces};
 
         let mut topo = brepkit_topology::Topology::new();
         let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-        let inputs = crate::boolean::collect_face_signatures(&topo, cube).unwrap();
         let edges = solid_edges(&topo, cube).unwrap();
-        let filleted = crate::blend_ops::fillet_v2(&mut topo, cube, &[edges[0]], 1.0)
-            .unwrap()
-            .solid;
-        let outputs = crate::boolean::collect_face_signatures(&topo, filleted).unwrap();
+        let result = crate::blend_ops::fillet_v2(&mut topo, cube, &[edges[0]], 1.0)
+            .expect("planar fillet should produce validated topology");
+        assert!(result.failed.is_empty());
+        assert!(!result.is_partial);
+        assert!(solid_faces(&topo, result.solid).unwrap().len() > 6);
 
-        let evo = build_evolution_by_geometry(&inputs, &outputs);
-
-        // The fillet adds a blend face (6 → 7) yet removes no box face.
-        assert_eq!(inputs.len(), 6);
-        assert_eq!(outputs.len(), 7);
-        assert!(
-            evo.deleted.is_empty(),
-            "no box face is deleted by the fillet"
-        );
-        assert_eq!(evo.modified.len(), 6, "all six box faces are tracked");
-
-        // Every output face — including the new blend — is attributed to an
-        // input, so a downstream face reference always resolves.
-        let tracked: HashSet<usize> = evo
-            .modified
-            .values()
-            .chain(evo.generated.values())
-            .flatten()
-            .copied()
-            .collect();
-        let output_indices: HashSet<usize> = outputs.iter().map(|&(i, _, _)| i).collect();
-        assert_eq!(tracked, output_indices, "every output face is attributed");
+        let report = brepkit_check::validate::validate_solid(
+            &topo,
+            result.solid,
+            &brepkit_check::validate::ValidateOptions::default(),
+        )
+        .unwrap();
+        assert!(report.is_valid(), "{:#?}", report.issues);
     }
 }

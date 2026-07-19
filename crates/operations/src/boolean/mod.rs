@@ -27,6 +27,7 @@ pub(super) fn timer_elapsed_ms(_t: ()) -> f64 {
     0.0
 }
 
+use brepkit_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::EdgeCurve;
@@ -709,7 +710,11 @@ pub fn boolean(
             break;
         }
     }
-    Ok(enforce_manifold_shell(topo, result).unwrap_or(result))
+    let result = enforce_manifold_shell(topo, result)?;
+    if !is_closed_manifold(topo, result)? {
+        return Err(crate::OperationsError::NonManifoldResult);
+    }
+    Ok(result)
 }
 
 /// Perform a boolean operation with custom options.
@@ -847,8 +852,7 @@ pub fn boolean_with_evolution(
             // fallback + validation), matching boolean()'s contract.
             if healed_ok && validate_boolean_result(topo, result).is_ok() {
                 let mut evo = crate::evolution::EvolutionMap::new();
-                let mut sourced: std::collections::HashSet<usize> =
-                    std::collections::HashSet::new();
+                let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {
                     if let Some(in_idx) = src {
                         evo.add_modified(in_idx, out_idx);
@@ -915,9 +919,12 @@ fn box_pair_shortcut(
                 a_max.y().min(b_max.y()),
                 a_max.z().min(b_max.z()),
             );
-            // Empty intersection — let general path return an error.
+            // Empty or sub-tolerance intersection. Returning the kernel's
+            // explicit empty solid keeps the operation fail-safe at the
+            // tolerance boundary instead of sending a zero-thickness box to
+            // the general pipeline, where it can assemble non-manifold faces.
             if hi.x() <= lo.x() + eps || hi.y() <= lo.y() + eps || hi.z() <= lo.z() + eps {
-                return Ok(None);
+                return Ok(Some(topo.add_empty_solid()));
             }
             (lo, hi)
         }
@@ -2105,7 +2112,7 @@ fn build_contained_cut_hollow(
     Ok(result)
 }
 
-/// Best-effort mesh boolean fallback for high face-count solids.
+/// Mesh boolean fallback for high face-count solids.
 ///
 /// Tessellates both solids, runs mesh co-refinement, assembles the result,
 /// and applies the same post-processing as the other boolean paths.
@@ -2130,13 +2137,13 @@ fn mesh_boolean_fallback(
 
     let mb_result = crate::mesh_boolean::mesh_boolean(&mesh_a, &mesh_b, op, tol.linear)?;
     if mb_result.boundary_edge_count > 0 || mb_result.non_manifold_edge_count > 0 {
-        log::warn!(
-            "boolean {op:?}: mesh boolean fallback output is NOT a closed 2-manifold \
-             ({} boundary edge(s), {} non-manifold edge(s) after position welding) — \
-             downstream healing may not recover; exported geometry may be broken",
+        log::error!(
+            "boolean {op:?}: rejecting mesh fallback output with {} boundary edge(s) \
+             and {} non-manifold edge(s) after position welding",
             mb_result.boundary_edge_count,
             mb_result.non_manifold_edge_count,
         );
+        return Err(crate::OperationsError::NonManifoldResult);
     }
     let face_specs = mesh_result_to_face_specs(&mb_result);
     if face_specs.is_empty() {
@@ -2158,11 +2165,7 @@ fn mesh_boolean_fallback(
     let collapsed =
         brepkit_heal::upgrade::collapse_collinear_vertices::collapse_collinear_wire_vertices(
             topo, result, tol,
-        )
-        .unwrap_or_else(|e| {
-            log::warn!("boolean {op:?}: collapse_collinear_wire_vertices failed: {e}");
-            0
-        });
+        )?;
     if collapsed > 0 {
         log::info!(
             "boolean {op:?}: collapsed {collapsed} collinear interior wire vertex/vertices post-mesh-assembly",
@@ -2181,11 +2184,7 @@ fn mesh_boolean_fallback(
     let wires_split =
         brepkit_heal::upgrade::split_self_intersecting_wires::split_self_intersecting_inner_wires(
             topo, result,
-        )
-        .unwrap_or_else(|e| {
-            log::warn!("boolean {op:?}: split_self_intersecting_inner_wires failed: {e}");
-            0
-        });
+        )?;
     if wires_split > 0 {
         log::info!(
             "boolean {op:?}: split {wires_split} self-intersecting inner wire(s) post-mesh-assembly",
@@ -2194,7 +2193,10 @@ fn mesh_boolean_fallback(
     if opts.heal_after_boolean {
         let _ = crate::heal::heal_solid(topo, result, tol.linear)?;
     }
-    assembly::validate_boolean_result_lenient(topo, result)?;
+    validate_boolean_result(topo, result)?;
+    if !is_closed_manifold(topo, result)? {
+        return Err(crate::OperationsError::NonManifoldResult);
+    }
     log::info!(
         "boolean {op:?}: mesh boolean path → solid {} ({} faces, surface types lost)",
         result.index(),
@@ -2514,8 +2516,8 @@ const fn euler_balanced(euler: i64, inner_wires: i64) -> bool {
 fn solid_edge_use_counts(
     topo: &Topology,
     solid: SolidId,
-) -> Result<std::collections::HashMap<usize, usize>, crate::OperationsError> {
-    let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+) -> Result<HashMap<usize, usize>, crate::OperationsError> {
+    let mut counts: HashMap<usize, usize> = HashMap::default();
     for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -2555,9 +2557,7 @@ fn shell_is_closed_manifold(
     topo: &Topology,
     shell: &brepkit_topology::shell::Shell,
 ) -> Result<bool, crate::OperationsError> {
-    use std::collections::HashMap;
-
-    let mut counts: HashMap<usize, usize> = HashMap::new();
+    let mut counts: HashMap<usize, usize> = HashMap::default();
     for &fid in shell.faces() {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -2603,7 +2603,7 @@ fn solid_has_flattenable_nurbs(
     use brepkit_topology::edge::EdgeCurve;
     use brepkit_topology::explorer::solid_faces;
 
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::default();
     for fid in solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         if let FaceSurface::Nurbs(nurbs) = face.surface()
@@ -2703,7 +2703,7 @@ fn flatten_planar_nurbs_faces(
 
     // Straighten NURBS edges that are geometrically lines.
     let mut straight_edges: Vec<EdgeId> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::default();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
         for &wid in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
@@ -2751,7 +2751,7 @@ fn merge_result_vertices(
     solid: SolidId,
     tol: brepkit_math::tolerance::Tolerance,
 ) -> Result<(), crate::OperationsError> {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
 
     let shell_id = topo.solid(solid)?.outer_shell();
     let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
@@ -2771,7 +2771,7 @@ fn merge_result_vertices(
     let mut replacements: HashMap<
         brepkit_topology::vertex::VertexId,
         brepkit_topology::vertex::VertexId,
-    > = HashMap::new();
+    > = HashMap::default();
 
     for &fid in &face_ids {
         let face = topo.face(fid)?;
@@ -2804,7 +2804,7 @@ fn merge_result_vertices(
             brepkit_topology::vertex::VertexId,
         ),
         brepkit_topology::edge::EdgeId,
-    > = HashMap::new();
+    > = HashMap::default();
 
     // Snapshot face data, then rebuild with merged vertices
     struct FaceSnap {
@@ -2996,8 +2996,6 @@ fn unify_coincident_boundary_edges(
     use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
     use brepkit_topology::vertex::VertexId;
     use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
-    use std::collections::HashMap;
-
     let shell_id = topo.solid(solid)?.outer_shell();
     let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
 
@@ -3011,7 +3009,7 @@ fn unify_coincident_boundary_edges(
     };
 
     // 1. Canonical vertex per quantized position (first VertexId seen wins).
-    let mut vcanon: HashMap<(i64, i64, i64), VertexId> = HashMap::new();
+    let mut vcanon: HashMap<(i64, i64, i64), VertexId> = HashMap::default();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -3083,7 +3081,7 @@ fn unify_coincident_boundary_edges(
         (i64, i64, i64),
         &'static str,
     );
-    let mut ecanon: HashMap<EdgeKey, (EdgeId, VertexId, VertexId)> = HashMap::new();
+    let mut ecanon: HashMap<EdgeKey, (EdgeId, VertexId, VertexId)> = HashMap::default();
     let mut changed = false;
 
     let canon_vid = |topo: &Topology, vid: VertexId| -> Result<VertexId, crate::OperationsError> {
@@ -3192,13 +3190,13 @@ fn enforce_manifold_shell(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::collections::VecDeque;
 
     let shell_id = topo.solid(solid)?.outer_shell();
     let face_ids = topo.shell(shell_id)?.faces().to_vec();
 
     // Count edges per face.
-    let mut edge_face_count: HashMap<usize, u32> = HashMap::new();
+    let mut edge_face_count: HashMap<usize, u32> = HashMap::default();
     for &fid in &face_ids {
         if let Ok(face) = topo.face(fid) {
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -3228,7 +3226,7 @@ fn enforce_manifold_shell(
 
     // Build vertex-pair → face adjacency for neighbor discovery.
     let mut vpair_faces: HashMap<(usize, usize), Vec<brepkit_topology::face::FaceId>> =
-        HashMap::new();
+        HashMap::default();
     for &fid in &face_ids {
         if let Ok(face) = topo.face(fid) {
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -3249,7 +3247,7 @@ fn enforce_manifold_shell(
 
     // Greedy flood-fill shell construction.
     let available: HashSet<brepkit_topology::face::FaceId> = face_ids.iter().copied().collect();
-    let mut processed: HashSet<brepkit_topology::face::FaceId> = HashSet::new();
+    let mut processed: HashSet<brepkit_topology::face::FaceId> = HashSet::default();
     let mut shells: Vec<Vec<brepkit_topology::face::FaceId>> = Vec::new();
 
     for &start_face in &face_ids {
@@ -3261,7 +3259,7 @@ fn enforce_manifold_shell(
         processed.insert(start_face);
 
         // Track edge-ID usage within this shell.
-        let mut shell_edge_count: HashMap<usize, u32> = HashMap::new();
+        let mut shell_edge_count: HashMap<usize, u32> = HashMap::default();
         if let Ok(face) = topo.face(start_face) {
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {

@@ -234,11 +234,7 @@ pub fn ders_basis_funs_into(
             }
 
             let j1 = if rk >= -1 { 1usize } else { (-rk) as usize };
-            let j2 = if (r as isize - 1) <= pk {
-                k - 1
-            } else {
-                (p as isize - rk) as usize
-            };
+            let j2 = if (r as isize - 1) <= pk { k - 1 } else { p - r };
 
             for j in j1..=j2 {
                 // a[s2][j] = (a[s1][j] - a[s1][j-1]) / ndu[pk+1][rk+j]

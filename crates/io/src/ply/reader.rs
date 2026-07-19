@@ -1,5 +1,6 @@
 //! PLY file reader (ASCII and binary little-endian).
 
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::tessellate::TriangleMesh;
 use brepkit_topology::Topology;
@@ -14,6 +15,19 @@ use brepkit_topology::solid::SolidId;
 ///
 /// Returns an error if the file is malformed.
 pub fn read_ply(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+    read_ply_with_limits(data, ImportLimits::default())
+}
+
+/// Read a PLY file with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`crate::IoError`] when a limit is exceeded or the PLY is malformed.
+pub fn read_ply_with_limits(
+    data: &[u8],
+    limits: ImportLimits,
+) -> Result<TriangleMesh, crate::IoError> {
+    ensure_input_size(data.len(), limits)?;
     let header_end = find_header_end(data)?;
     let header_text =
         std::str::from_utf8(&data[..header_end]).map_err(|_| crate::IoError::ParseError {
@@ -21,6 +35,12 @@ pub fn read_ply(data: &[u8]) -> Result<TriangleMesh, crate::IoError> {
         })?;
 
     let header = parse_header(header_text)?;
+    ensure_limit(
+        "PLY vertices",
+        header.vertex_count,
+        limits.max_model_entities,
+    )?;
+    ensure_limit("PLY faces", header.face_count, limits.max_model_entities)?;
     let body = &data[header_end..];
 
     match header.format {
@@ -342,6 +362,24 @@ mod tests {
         let mesh = read_ply(ply).unwrap();
         assert_eq!(mesh.positions.len(), 3);
         assert_eq!(mesh.indices.len(), 3);
+    }
+
+    #[test]
+    fn rejects_declared_vertex_count_before_allocation() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 0\nend_header\n";
+        let limits = ImportLimits {
+            max_model_entities: 3,
+            ..ImportLimits::default()
+        };
+        let err = read_ply_with_limits(ply, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::IoError::LimitExceeded {
+                resource: "PLY vertices",
+                limit: 3,
+                actual: 4
+            }
+        ));
     }
 
     #[test]

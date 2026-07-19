@@ -70,7 +70,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Booleans**            | Union, cut, intersect on plane, cylinder, cone, sphere, NURBS                | Stable       |
 | **Booleans**            | Batch fuse-all (disjoint-aware union)                                        | Stable       |
 | **Booleans**            | Torus booleans (box ± torus, coaxial torus)                                  | Beta         |
-| **Modifiers**           | Fillet (constant + variable radius), chamfer (walking engine)                | Stable       |
+| **Modifiers**           | Validated planar fillet/chamfer and axisymmetric closed-rim fillet; other curved blend geometry (experimental assembly) | Stable / Experimental |
 | **Modifiers**           | Shell (hollow solid)                                                         | Stable       |
 | **Modifiers**           | Offset face, offset solid, thicken, mirror, pattern                          | Stable       |
 | **Modifiers**           | Draft (planar faces)                                                         | Beta         |
@@ -102,7 +102,8 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 
 A few areas are still maturing. Worth knowing before you build on them:
 
-- **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations fall back to a mesh-based boolean: coincident-face contact, coaxial analytic surfaces, razor-thin geometry, or very high face counts. The fallback returns a usable, non-degenerate solid, but it tessellates the curved faces and is not guaranteed watertight.
+- **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid.
+- **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities.
 - **Torus booleans.** Box-with-torus and coaxial-torus cases work and give correct volumes. General torus-to-torus and torus-with-other-surface intersections have known gaps and may fall back to meshing.
 - **Non-planar profiles.** Loft, sweep, and pipe accept profiles with non-planar surfaces, and close non-planar section boundaries with bilinear caps for four-sided rings (boundaries with more than four edges, or holes on a non-planar section, are not yet supported). Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, but a partial revolution still requires a planar boundary for its caps. The smooth, scaled/guided, and multi-section sweep variants accept non-planar profiles too; only the miter-corner variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
@@ -173,6 +174,14 @@ STEP preserves exact geometry on round-trip. Analytic surfaces (plane, cylinder,
 
 Mesh formats export tessellated triangles. glTF is binary `.glb`, with no materials or scene graph. IGES is experimental, as described in [Known Limitations](#known-limitations).
 
+All Rust importer entry points apply production defaults through
+`ImportLimits`: 128 MiB encoded input, 256 MiB for the uncompressed 3MF model
+XML entry, and 2,000,000 format-specific model entities. Use each format's
+`*_with_limits` reader to choose stricter or application-specific budgets.
+Limit violations return `IoError::LimitExceeded` before avoidable large
+allocations. The WASM batch API separately limits JSON to 16 MiB and 10,000
+operations.
+
 \* PLY import is available in the Rust crate but is not yet exposed in the WASM API.
 
 ## Getting Started
@@ -223,6 +232,13 @@ cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release --no-defau
 # API docs
 cargo doc --workspace --no-deps --open
 ```
+
+Maintainers should use the
+[production-readiness audit](docs/production-readiness/audit.md),
+[stability matrix](docs/production-readiness/stability-matrix.md), and
+[release checklist](docs/production-readiness/release-checklist.md) before
+cutting an artifact. The checklist is validation guidance and does not grant
+authority to publish from a fork.
 
 ## Roadmap
 

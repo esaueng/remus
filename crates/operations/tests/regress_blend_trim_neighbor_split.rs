@@ -13,8 +13,8 @@
 
 use std::collections::HashMap;
 
+use brepkit_blend::fillet_builder::FilletBuilder;
 use brepkit_math::vec::Point3;
-use brepkit_operations::blend_ops::fillet_v2;
 use brepkit_operations::primitives::make_box;
 use brepkit_operations::tessellate::{boundary_edge_count, tessellate_solid_with_tolerance};
 use brepkit_topology::Topology;
@@ -101,7 +101,13 @@ fn fillet_v2_box_edge_propagates_boundary_splits() {
         .collect();
     assert_eq!(split_candidates.len(), 4, "box corner adjacency");
 
-    let result = fillet_v2(&mut topo, solid, &[fillet_edge], 1.0).unwrap();
+    // Exercise the walking builder directly. The production operations API
+    // routes planar line blends through its validated polygon-rebuilding
+    // implementation, while this regression intentionally characterizes the
+    // lower-level walking trimmer and its remaining gaps.
+    let mut builder = FilletBuilder::new(&mut topo, solid);
+    builder.add_edges(&[fillet_edge], 1.0);
+    let result = builder.build().unwrap();
     assert_eq!(result.succeeded, vec![fillet_edge]);
     assert!(result.failed.is_empty());
 

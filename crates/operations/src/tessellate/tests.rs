@@ -8,6 +8,8 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeCurve};
 use brepkit_topology::face::{Face, FaceSurface};
+use brepkit_topology::shell::Shell;
+use brepkit_topology::solid::Solid;
 use brepkit_topology::test_utils::{make_unit_square_face, make_unit_triangle_face};
 use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
@@ -37,6 +39,30 @@ fn tessellate_triangle() {
     assert_eq!(mesh.positions.len(), 3);
     assert_eq!(mesh.normals.len(), 3);
     assert_eq!(mesh.indices.len(), 3);
+}
+
+#[test]
+fn tessellate_solid_propagates_face_failure() {
+    let mut topo = Topology::new();
+    let valid_face = make_unit_square_face(&mut topo);
+    let outer_wire = topo.face(valid_face).unwrap().outer_wire();
+    let v0 = topo.add_vertex(Vertex::new(Point3::new(f64::NAN, 0.25, 0.0), 1e-7));
+    let v1 = topo.add_vertex(Vertex::new(Point3::new(0.75, 0.25, 0.0), 1e-7));
+    let edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+    let malformed_hole =
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+    let face = topo.add_face(Face::new(
+        outer_wire,
+        vec![malformed_hole],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    assert!(tessellate_solid(&topo, solid, 0.1).is_err());
 }
 
 /// Tessellate a simple bilinear NURBS surface (a flat quad as NURBS).

@@ -17,6 +17,8 @@ use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::data::{OffsetData, OffsetStatus, find_or_create_vertex};
 use crate::error::OffsetError;
 
+type LoopBuild = (Vec<WireId>, Vec<(EdgeId, EdgeId)>);
+
 /// Build closed wire loops for each offset face from the trimmed
 /// intersection curves and split edges.
 ///
@@ -30,15 +32,33 @@ use crate::error::OffsetError;
 /// Returns [`OffsetError`] if a wire loop cannot be closed or topology
 /// lookups fail.
 pub fn build_wire_loops(topo: &mut Topology, data: &mut OffsetData) -> Result<(), OffsetError> {
-    let active_faces: Vec<FaceId> = data
+    let mut active_faces: Vec<FaceId> = data
         .offset_faces
         .iter()
         .filter(|(_, of)| of.status == OffsetStatus::Done)
         .map(|(&fid, _)| fid)
         .collect();
+    active_faces.sort_by_key(|face_id| face_id.index());
+
+    // Planar faces reconstruct their corners independently from the same
+    // geometric lines. Keep one tolerance-deduplicated vertex and one
+    // topological edge for every corner pair so adjacent faces form a
+    // manifold shell instead of merely coincident, disconnected polygons.
+    let mut corner_cache: Vec<(Point3, VertexId)> = Vec::new();
+    let mut edge_cache: HashMap<(usize, usize), EdgeId> = HashMap::new();
 
     for face_id in active_faces {
-        let wires = build_loops_for_face(topo, data, face_id)?;
+        let (wires, boundary_edges) =
+            build_loops_for_face(topo, data, face_id, &mut corner_cache, &mut edge_cache)?;
+        for (original_edge, offset_edge) in boundary_edges {
+            let entries = data
+                .boundary_offset_edges
+                .entry(original_edge.index())
+                .or_default();
+            if !entries.contains(&offset_edge) {
+                entries.push(offset_edge);
+            }
+        }
         if !wires.is_empty() {
             data.face_wires.insert(face_id, wires);
         }
@@ -53,6 +73,8 @@ struct LineSeg {
     p0: Point3,
     /// End point of the intersection line.
     p1: Point3,
+    /// Original boundary edge when this line closes a thick-solid opening.
+    boundary_edge: Option<EdgeId>,
 }
 
 /// Build wire loops for a single face.
@@ -70,7 +92,9 @@ fn build_loops_for_face(
     topo: &mut Topology,
     data: &OffsetData,
     face_id: FaceId,
-) -> Result<Vec<WireId>, OffsetError> {
+    corner_cache: &mut Vec<(Point3, VertexId)>,
+    edge_cache: &mut HashMap<(usize, usize), EdgeId>,
+) -> Result<LoopBuild, OffsetError> {
     let mut face_edges: Vec<EdgeId> = Vec::new();
     for intersection in &data.intersections {
         if intersection.face_a != face_id && intersection.face_b != face_id {
@@ -96,22 +120,37 @@ fn build_loops_for_face(
         && let Some(off) = data.offset_faces.get(&face_id)
         && let FaceSurface::Torus(tor) = &off.surface
     {
-        return build_torus_wire(topo, tor, data.options.tolerance.linear);
+        return Ok((
+            build_torus_wire(topo, tor, data.options.tolerance.linear)?,
+            Vec::new(),
+        ));
     }
 
     if face_edges.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     if let Some(wires) = try_circle_seam_wire(topo, &face_edges)? {
-        return Ok(wires);
+        return Ok((wires, Vec::new()));
+    }
+
+    // Planar intersection lines must be clipped with the shared caches below.
+    // Using the direct-chain fast path here makes success depend on whether
+    // oversized line endpoints happen to coincide, which varies with map
+    // iteration order and produced intermittent non-manifold shells.
+    if data
+        .offset_faces
+        .get(&face_id)
+        .is_some_and(|face| matches!(face.surface, FaceSurface::Plane { .. }))
+    {
+        return build_loops_via_line_intersection(topo, data, face_id, corner_cache, edge_cache);
     }
 
     if let Some(wires) = try_direct_chain(topo, &face_edges)? {
-        return Ok(wires);
+        return Ok((wires, Vec::new()));
     }
 
-    build_loops_via_line_intersection(topo, data, face_id)
+    build_loops_via_line_intersection(topo, data, face_id, corner_cache, edge_cache)
 }
 
 /// Build wire from Circle edges and seam edges.
@@ -315,7 +354,9 @@ fn build_loops_via_line_intersection(
     topo: &mut Topology,
     data: &OffsetData,
     face_id: FaceId,
-) -> Result<Vec<WireId>, OffsetError> {
+    corner_cache: &mut Vec<(Point3, VertexId)>,
+    edge_cache: &mut HashMap<(usize, usize), EdgeId>,
+) -> Result<LoopBuild, OffsetError> {
     let mut line_segs: Vec<LineSeg> = Vec::new();
 
     for intersection in &data.intersections {
@@ -326,7 +367,11 @@ fn build_loops_via_line_intersection(
             let edge = topo.edge(eid)?;
             let p0 = topo.vertex(edge.start())?.point();
             let p1 = topo.vertex(edge.end())?.point();
-            line_segs.push(LineSeg { p0, p1 });
+            line_segs.push(LineSeg {
+                p0,
+                p1,
+                boundary_edge: None,
+            });
         }
     }
 
@@ -338,22 +383,25 @@ fn build_loops_via_line_intersection(
             let orig_p0 = topo.vertex(edge.start())?.point();
             let orig_p1 = topo.vertex(edge.end())?.point();
             let (p0, p1) = project_boundary_edge(orig_p0, orig_p1, &offset_face.surface);
-            line_segs.push(LineSeg { p0, p1 });
+            line_segs.push(LineSeg {
+                p0,
+                p1,
+                boundary_edge: Some(eid),
+            });
         }
     }
 
     if line_segs.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let tol = data.options.tolerance.linear;
-    let mut corner_cache: Vec<(Point3, VertexId)> = Vec::new();
     let mut corners_on_line: Vec<Vec<(VertexId, f64)>> = vec![Vec::new(); line_segs.len()];
 
     for i in 0..line_segs.len() {
         for j in (i + 1)..line_segs.len() {
             if let Some((pt, ti, tj)) = line_line_closest_point(&line_segs[i], &line_segs[j], tol) {
-                let vid = find_or_create_vertex(topo, &mut corner_cache, pt, tol);
+                let vid = find_or_create_vertex(topo, corner_cache, pt, tol);
                 corners_on_line[i].push((vid, ti));
                 corners_on_line[j].push((vid, tj));
             }
@@ -361,7 +409,8 @@ fn build_loops_via_line_intersection(
     }
 
     let mut trimmed_edges: Vec<EdgeId> = Vec::new();
-    for corners in &mut corners_on_line {
+    let mut boundary_edges = Vec::new();
+    for (line_index, corners) in corners_on_line.iter_mut().enumerate() {
         if corners.len() < 2 {
             continue;
         }
@@ -372,13 +421,27 @@ fn build_loops_via_line_intersection(
             if v_start == v_end {
                 continue;
             }
-            let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::Line));
+            let key = if v_start.index() < v_end.index() {
+                (v_start.index(), v_end.index())
+            } else {
+                (v_end.index(), v_start.index())
+            };
+            let eid = if let Some(&existing) = edge_cache.get(&key) {
+                existing
+            } else {
+                let created = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::Line));
+                edge_cache.insert(key, created);
+                created
+            };
             trimmed_edges.push(eid);
+            if let Some(original_edge) = line_segs[line_index].boundary_edge {
+                boundary_edges.push((original_edge, eid));
+            }
         }
     }
 
     if trimmed_edges.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let edge_info: Vec<(EdgeId, usize, usize)> = trimmed_edges
@@ -442,12 +505,83 @@ fn build_loops_via_line_intersection(
     }
 
     let mut wire_ids = Vec::with_capacity(all_loops.len());
-    for loop_edges in all_loops {
+    let (surface_normal, original_reversed) = match data.offset_faces.get(&face_id) {
+        Some(offset_face) => match &offset_face.surface {
+            FaceSurface::Plane { normal, .. } => {
+                (*normal, topo.face(offset_face.original)?.is_reversed())
+            }
+            _ => {
+                return Err(OffsetError::AssemblyFailed {
+                    reason: format!(
+                        "line-intersection loop builder received non-planar face {}",
+                        face_id.index()
+                    ),
+                });
+            }
+        },
+        None => {
+            return Err(OffsetError::AssemblyFailed {
+                reason: format!("offset face {} is missing", face_id.index()),
+            });
+        }
+    };
+    let result_reversed = original_reversed ^ !data.excluded_faces.is_empty();
+    let desired_normal = if result_reversed {
+        brepkit_math::vec::Vec3::new(
+            -surface_normal.x(),
+            -surface_normal.y(),
+            -surface_normal.z(),
+        )
+    } else {
+        surface_normal
+    };
+    for mut loop_edges in all_loops {
+        orient_loop_to_normal(topo, &mut loop_edges, desired_normal)?;
         let wire = Wire::new(loop_edges, true)?;
         wire_ids.push(topo.add_wire(wire));
     }
 
-    Ok(wire_ids)
+    Ok((wire_ids, boundary_edges))
+}
+
+/// Orient a planar loop so its geometric winding agrees with `normal`.
+fn orient_loop_to_normal(
+    topo: &Topology,
+    loop_edges: &mut [OrientedEdge],
+    normal: brepkit_math::vec::Vec3,
+) -> Result<(), OffsetError> {
+    let points = loop_edges
+        .iter()
+        .map(|oriented| {
+            let edge = topo.edge(oriented.edge())?;
+            let vertex = if oriented.is_forward() {
+                edge.start()
+            } else {
+                edge.end()
+            };
+            Ok(topo.vertex(vertex)?.point())
+        })
+        .collect::<Result<Vec<_>, OffsetError>>()?;
+
+    // Newell's method is stable for convex and mildly non-convex planar
+    // polygons and avoids selecting an arbitrary nearly-collinear triple.
+    let mut winding = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        winding = brepkit_math::vec::Vec3::new(
+            winding.x() + (current.y() - next.y()) * (current.z() + next.z()),
+            winding.y() + (current.z() - next.z()) * (current.x() + next.x()),
+            winding.z() + (current.x() - next.x()) * (current.y() + next.y()),
+        );
+    }
+    if winding.dot(normal) < 0.0 {
+        loop_edges.reverse();
+        for oriented in loop_edges.iter_mut() {
+            *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
+        }
+    }
+    Ok(())
 }
 
 /// Compute the closest-approach point of two infinite lines, each defined

@@ -71,10 +71,9 @@ pub fn classify_point(
     deflection: f64,
     tolerance: f64,
 ) -> Result<PointClassification, OperationsError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
-    if is_on_boundary(topo, shell.faces(), point, tolerance)? {
+    if is_on_boundary(topo, &faces, point, tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
 
@@ -94,7 +93,7 @@ pub fn classify_point(
 
     let mut inside_votes = 0u32;
     for &dir in &ray_dirs {
-        let crossings = count_ray_crossings(topo, shell.faces(), point, dir, deflection)?;
+        let crossings = count_ray_crossings(topo, &faces, point, dir, deflection)?;
         if crossings % 2 == 1 {
             inside_votes += 1;
         }
@@ -650,16 +649,15 @@ fn compute_winding_number(
     deflection: f64,
     tolerance: f64,
 ) -> Result<(f64, bool), OperationsError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
-    if is_on_boundary(topo, shell.faces(), point, tolerance)? {
+    if is_on_boundary(topo, &faces, point, tolerance)? {
         return Ok((0.0, true));
     }
 
     let direction = Vec3::new(1.0, 0.3, 0.1); // avoid axis-aligned rays
     let mut crossings = 0u32;
-    for &fid in shell.faces() {
+    for &fid in &faces {
         crossings += count_face_ray_crossings(topo, fid, point, direction, deflection)?;
     }
 
@@ -753,6 +751,40 @@ mod tests {
 
         let result = classify_point(&topo, solid, Point3::new(1.0, 1.0, 2.0), 0.1, 1e-3).unwrap();
         assert_eq!(result, PointClassification::OnBoundary);
+    }
+
+    #[test]
+    fn hollow_box_classifiers_treat_cavity_as_outside() {
+        let mut topo = Topology::new();
+        let outer = make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+        let inner = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            inner,
+            &brepkit_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        )
+        .unwrap();
+        let hollow =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, inner)
+                .unwrap();
+        assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+
+        let cavity = Point3::new(1.5, 1.5, 1.5);
+        let material = Point3::new(0.5, 0.5, 0.5);
+        for classify in [
+            classify_point,
+            classify_point_winding,
+            classify_point_robust,
+        ] {
+            assert_eq!(
+                classify(&topo, hollow, cavity, 0.01, 1e-7).unwrap(),
+                PointClassification::Outside
+            );
+            assert_eq!(
+                classify(&topo, hollow, material, 0.01, 1e-7).unwrap(),
+                PointClassification::Inside
+            );
+        }
     }
 
     #[test]

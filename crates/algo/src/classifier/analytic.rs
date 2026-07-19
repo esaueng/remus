@@ -373,6 +373,12 @@ pub fn try_build_analytic_classifier(
     solid: SolidId,
 ) -> Option<AnalyticClassifier> {
     let s = topo.solid(solid).ok()?;
+    // Separate inner shells represent cavities. None of the single-region
+    // analytic classifiers below can subtract those voids, so defer to the
+    // ray-cast path, which traverses every shell.
+    if !s.inner_shells().is_empty() {
+        return None;
+    }
     let shell = topo.shell(s.outer_shell()).ok()?;
     let tol = Tolerance::new();
 

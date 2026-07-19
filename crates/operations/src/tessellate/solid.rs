@@ -551,7 +551,7 @@ fn tessellate_solid_core(
     }
 
     for &fi in &other_face_indices {
-        if let Err(e) = tessellate_face_with_shared_edges(
+        tessellate_face_with_shared_edges(
             topo,
             all_faces[fi],
             deflection,
@@ -560,11 +560,9 @@ fn tessellate_solid_core(
             &edge_global_indices,
             &mut merged,
             &mut point_to_global,
-        ) {
-            log::warn!("skipping face during tessellation: {e}");
-        }
-        // Attribute every triangle appended by this face (even partial output
-        // before an error) so tri_faces stays parallel to the triangle list.
+        )?;
+        // Attribute every triangle appended by this face so `tri_faces` stays
+        // parallel to the triangle list.
         if let Some(tf) = tri_faces.as_mut() {
             #[allow(clippy::cast_possible_truncation)]
             tf.resize(merged.indices.len() / 3, fi as u32);

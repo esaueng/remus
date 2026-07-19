@@ -120,6 +120,25 @@ impl Topology {
         Self::default()
     }
 
+    /// Restore a topology snapshot while permanently retiring arena slots
+    /// allocated after that snapshot.
+    ///
+    /// This is intended for external-handle runtimes such as the WASM kernel.
+    /// Preserving each arena's high-water mark prevents a raw numeric handle
+    /// from aliasing an unrelated entity created after a restore.
+    pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
+        self.vertices.restore_preserving_slots(&snapshot.vertices);
+        self.edges.restore_preserving_slots(&snapshot.edges);
+        self.wires.restore_preserving_slots(&snapshot.wires);
+        self.faces.restore_preserving_slots(&snapshot.faces);
+        self.shells.restore_preserving_slots(&snapshot.shells);
+        self.solids.restore_preserving_slots(&snapshot.solids);
+        self.compounds.restore_preserving_slots(&snapshot.compounds);
+        self.compsolids
+            .restore_preserving_slots(&snapshot.compsolids);
+        self.pcurves.clone_from(&snapshot.pcurves);
+    }
+
     /// Reserves capacity for the given number of additional entities in the
     /// six primary entity arenas (vertices, edges, wires, faces, shells, solids).
     ///
@@ -359,6 +378,24 @@ mod tests {
         assert_eq!(topo.num_vertices(), 1);
         let v = topo.vertex(vid).unwrap();
         assert!((v.point().x() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn restore_preserving_handle_slots_does_not_alias_retired_ids() {
+        let mut topo = Topology::new();
+        let original = topo.add_vertex(Vertex::new(Point3::new(1.0, 2.0, 3.0), 1e-7));
+        let snapshot = topo.clone();
+        let stale = topo.add_vertex(Vertex::new(Point3::new(4.0, 5.0, 6.0), 1e-7));
+
+        topo.restore_preserving_handle_slots(&snapshot);
+        assert!(topo.vertex(stale).is_err());
+        assert_eq!(topo.num_vertices(), 1);
+
+        let fresh = topo.add_vertex(Vertex::new(Point3::new(7.0, 8.0, 9.0), 1e-7));
+        assert!(fresh.index() > stale.index());
+        assert!(topo.vertex(stale).is_err());
+        assert!(topo.vertex(original).is_ok());
+        assert_eq!(topo.num_vertices(), 2);
     }
 
     #[test]
