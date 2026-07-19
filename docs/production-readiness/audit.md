@@ -43,6 +43,7 @@ below are from source inspection and targeted reproductions only.
 | `cargo +1.88.0 check --workspace --all-features` | Passed on the declared MSRV. |
 | `cargo xtask wasm-build --skip-opt` | Passed with Node 22.22.2 and isolated wasm-pack cache; 236 TypeScript methods, 4,563.3 KiB WASM, and runtime smoke flow validated. |
 | `npm pack --dry-run` | Passed after license fix; package 1.7 MB compressed / 5.1 MB unpacked. |
+| `TAG_NAME=v2.126.19 cargo xtask wasm-publish --dry-run` | Passed; rebuilt both targets, validated eight package files and version, repeated the Node smoke flow, and performed an npm dry-run without publishing. |
 | `cargo test -p brepkit-operations --features perf-counters scaling_ -- --nocapture` | Passed; 4x input produced 4.1x face-split probes and 4.0x local-vertex inserts. |
 
 ## Exit criteria
