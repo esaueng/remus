@@ -4,7 +4,7 @@
 
 - [Rust](https://rustup.rs/) (stable, edition 2024)
 - [wasm-bindgen CLI](https://rustwasm.github.io/wasm-bindgen/) for WASM builds
-- [Node.js](https://nodejs.org/) 20+ for TypeScript bindings
+- [Node.js](https://nodejs.org/) 20+ for packaging the WASM module
 
 ## Building
 
@@ -26,15 +26,14 @@ cargo build -p brepkit-wasm --target wasm32-unknown-unknown
 ## Using from TypeScript
 
 ```bash
-cd bindings/ts
-npm install
-npm run build
+npm install brepkit-wasm
 ```
 
 ```typescript
-import { initBrepkit } from '@brepkit/wasm';
+import init, { BrepKernel } from 'brepkit-wasm';
 
-await initBrepkit();
+await init();
+const kernel = new BrepKernel();
 ```
 
 ## Development

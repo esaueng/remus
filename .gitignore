@@ -12,8 +12,6 @@
 
 # Node
 node_modules/
-bindings/ts/dist/
-bindings/ts/pkg/
 
 # IDE
 .idea/

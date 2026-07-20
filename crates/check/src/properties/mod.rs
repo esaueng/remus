@@ -135,6 +135,77 @@ pub fn center_of_mass(
     ))
 }
 
+/// Compute volume, center of mass, and inertia for a uniform-density solid.
+///
+/// The returned mass is the signed enclosed volume (density `1`). The inertia
+/// tensor is expressed about the center of mass in the kernel's global axes.
+/// With the canonical millimetre length unit, mass has units of `mm^3` and
+/// inertia has units of `mm^5`.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity is missing, integration fails, or
+/// the solid has effectively zero volume.
+pub fn solid_properties(
+    topo: &Topology,
+    solid: SolidId,
+    options: &PropertiesOptions,
+) -> Result<GProps, CheckError> {
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+
+    let mut volume = 0.0;
+    let mut mx = 0.0;
+    let mut my = 0.0;
+    let mut mz = 0.0;
+    let mut qxx = 0.0;
+    let mut qyy = 0.0;
+    let mut qzz = 0.0;
+    let mut qxy = 0.0;
+    let mut qxz = 0.0;
+    let mut qyz = 0.0;
+
+    for fid in faces {
+        let contribution = face_integrator::integrate_face(topo, fid, options.gauss_order)?;
+        volume += contribution.volume;
+        mx += contribution.volume_moment_x;
+        my += contribution.volume_moment_y;
+        mz += contribution.volume_moment_z;
+        qxx += contribution.volume_second_x;
+        qyy += contribution.volume_second_y;
+        qzz += contribution.volume_second_z;
+        qxy += contribution.volume_product_xy;
+        qxz += contribution.volume_product_xz;
+        qyz += contribution.volume_product_yz;
+    }
+
+    if volume.abs() < 1e-30 {
+        return Err(CheckError::IntegrationFailed(
+            "solid has zero volume".into(),
+        ));
+    }
+
+    let center = Point3::new(mx / volume, my / volume, mz / volume);
+    let centered_xx = qxx - volume * center.x() * center.x();
+    let centered_yy = qyy - volume * center.y() * center.y();
+    let centered_zz = qzz - volume * center.z() * center.z();
+    let centered_xy = qxy - volume * center.x() * center.y();
+    let centered_xz = qxz - volume * center.x() * center.z();
+    let centered_yz = qyz - volume * center.y() * center.z();
+
+    Ok(GProps {
+        mass: volume,
+        center,
+        inertia: [
+            centered_yy + centered_zz,
+            centered_xx + centered_zz,
+            centered_xx + centered_yy,
+            centered_xy,
+            centered_xz,
+            centered_yz,
+        ],
+    })
+}
+
 /// Compute the v-range for an analytic surface by projecting face wire
 /// vertices onto the given axis.
 ///
@@ -334,6 +405,25 @@ mod tests {
         assert!((com.x() - 0.5).abs() < 1e-10, "com.x = {}", com.x());
         assert!((com.y() - 0.5).abs() < 1e-10, "com.y = {}", com.y());
         assert!((com.z() - 0.5).abs() < 1e-10, "com.z = {}", com.z());
+    }
+
+    #[test]
+    fn integrated_unit_cube_properties_match_analytic() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let integrated = solid_properties(&topo, solid, &PropertiesOptions::default()).unwrap();
+        let expected = analytic::box_props(1.0, 1.0, 1.0);
+
+        assert!((integrated.mass - expected.mass).abs() < 1e-10);
+        assert!((integrated.center.x() - expected.center.x()).abs() < 1e-10);
+        assert!((integrated.center.y() - expected.center.y()).abs() < 1e-10);
+        assert!((integrated.center.z() - expected.center.z()).abs() < 1e-10);
+        for (actual, expected) in integrated.inertia.iter().zip(expected.inertia) {
+            assert!(
+                (actual - expected).abs() < 1e-10,
+                "expected inertia {expected}, got {actual}"
+            );
+        }
     }
 
     #[test]

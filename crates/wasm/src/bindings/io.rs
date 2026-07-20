@@ -159,6 +159,22 @@ impl BrepKernel {
         Ok(solid_id_to_u32(solid_id))
     }
 
+    /// Import a PLY file (ASCII or binary little-endian) and return a solid handle.
+    ///
+    /// Polygon faces are triangulated by the PLY reader, then converted to
+    /// planar B-Rep faces with vertex merging.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PLY data is malformed, empty, or cannot form a
+    /// mesh-backed solid.
+    #[wasm_bindgen(js_name = "importPly")]
+    pub fn import_ply(&mut self, data: &[u8]) -> Result<u32, JsError> {
+        let mesh = brepkit_io::ply::read_ply(data)?;
+        let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     /// Import a 3MF file and return solid handles.
     ///
     /// Returns handles for each object found in the 3MF archive.
@@ -316,5 +332,24 @@ impl BrepKernel {
     pub fn deserialize_solid(&mut self, data: &[u8]) -> Result<u32, JsError> {
         let solid_id = brepkit_io::arena_io::deserialize_solid(data, self.topo_mut())?;
         Ok(solid_id_to_u32(solid_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn imports_ascii_ply_tetrahedron() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 4\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n3 0 2 1\n3 0 1 3\n3 1 2 3\n3 2 0 3\n";
+        let mut kernel = BrepKernel::new();
+
+        let solid = kernel.import_ply(ply).unwrap();
+        let solid_id = kernel.resolve_solid(solid).unwrap();
+        let faces = brepkit_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
+
+        assert_eq!(faces.len(), 4);
     }
 }

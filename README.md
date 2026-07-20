@@ -166,7 +166,7 @@ Booleans preserve analytic surfaces, so face counts stay low across chained oper
 | STL           | Mesh  | ✓       | ✓      |
 | 3MF           | Mesh  | ✓       | ✓      |
 | OBJ           | Mesh  | ✓       | ✓      |
-| PLY           | Mesh  | ✓\*     | ✓      |
+| PLY           | Mesh  | ✓       | ✓      |
 | glTF (`.glb`) | Mesh  | ✓       | ✓      |
 | IGES          | B-Rep | preview | lossy  |
 
@@ -181,8 +181,6 @@ XML entry, and 2,000,000 format-specific model entities. Use each format's
 Limit violations return `IoError::LimitExceeded` before avoidable large
 allocations. The WASM batch API separately limits JSON to 16 MiB and 10,000
 operations.
-
-\* PLY import is available in the Rust crate but is not yet exposed in the WASM API.
 
 ## Getting Started
 

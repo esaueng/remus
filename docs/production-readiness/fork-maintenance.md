@@ -30,6 +30,13 @@ vulnerability intake, signing/provenance, rollback, and yanking authority are
 established. The audit did not change licenses, copyright, CLA text, upstream
 links, or package names.
 
+The manual `Build OpenZCAD WASM Candidate` workflow is validation-only: it
+builds and uploads a short-lived workflow artifact, but cannot push commits or
+create releases. The checked-in `crates/wasm/pkg` directory remains a frozen
+compatibility snapshot while OpenZCAD consumes
+`github:esaueng/brepkit#main&path:/crates/wasm/pkg`. Remove that snapshot only
+after the consumer has migrated to an independently versioned artifact.
+
 Before any independent release:
 
 1. Confirm the branch contains a recorded upstream base and fork-only diff.

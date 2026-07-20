@@ -88,6 +88,28 @@ impl BrepKernel {
         Ok(vec![com.x(), com.y(), com.z()])
     }
 
+    /// Compute the uniform-density inertia tensor about the center of mass.
+    ///
+    /// Returns the symmetric 3x3 matrix in row-major order, expressed in the
+    /// kernel's global axes. Density is `1`; with the canonical millimetre
+    /// length unit, each component has units of `mm^5`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid, integration fails, or
+    /// the solid has effectively zero volume.
+    #[wasm_bindgen(js_name = "inertiaTensor")]
+    pub fn inertia_tensor(&self, solid: u32) -> Result<Vec<f64>, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let properties = brepkit_check::properties::solid_properties(
+            &self.topo,
+            solid_id,
+            &brepkit_check::properties::PropertiesOptions::default(),
+        )?;
+        let matrix = properties.matrix_of_inertia();
+        Ok(matrix.into_iter().flatten().collect())
+    }
+
     /// Classify a point relative to a solid: inside, outside, or on boundary.
     ///
     /// Returns `"inside"`, `"outside"`, or `"boundary"`.
@@ -322,6 +344,22 @@ mod tests {
     fn batch_has_error(result: &str, idx: usize) -> bool {
         let parsed: serde_json::Value = serde_json::from_str(result).unwrap();
         parsed[idx]["error"].is_string()
+    }
+
+    #[test]
+    fn box_inertia_tensor_matches_analytic_result() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let inertia = kernel.inertia_tensor(solid).unwrap();
+        let expected = [50.0, 0.0, 0.0, 0.0, 40.0, 0.0, 0.0, 0.0, 26.0];
+
+        assert_eq!(inertia.len(), expected.len());
+        for (actual, expected) in inertia.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-9,
+                "expected inertia {expected}, got {actual}"
+            );
+        }
     }
 
     // ── Volume ─────────────────────────────────────────────────────

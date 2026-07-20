@@ -27,6 +27,18 @@ pub struct FaceContribution {
     pub volume_moment_y: f64,
     /// Volume-weighted z-moment: (1/2) integral of z^2 * n_z dA (divergence theorem).
     pub volume_moment_z: f64,
+    /// Raw volume integral of `x²` about the global origin.
+    pub volume_second_x: f64,
+    /// Raw volume integral of `y²` about the global origin.
+    pub volume_second_y: f64,
+    /// Raw volume integral of `z²` about the global origin.
+    pub volume_second_z: f64,
+    /// Raw volume integral of `xy` about the global origin.
+    pub volume_product_xy: f64,
+    /// Raw volume integral of `xz` about the global origin.
+    pub volume_product_xz: f64,
+    /// Raw volume integral of `yz` about the global origin.
+    pub volume_product_yz: f64,
     /// Area-weighted centroid x-component (for surface centroid, not solid CoM).
     pub centroid_x: f64,
     /// Area-weighted centroid y-component (for surface centroid, not solid CoM).
@@ -353,6 +365,12 @@ fn integrate_planar_face(
         contrib.volume_moment_x -= h.volume_moment_x;
         contrib.volume_moment_y -= h.volume_moment_y;
         contrib.volume_moment_z -= h.volume_moment_z;
+        contrib.volume_second_x -= h.volume_second_x;
+        contrib.volume_second_y -= h.volume_second_y;
+        contrib.volume_second_z -= h.volume_second_z;
+        contrib.volume_product_xy -= h.volume_product_xy;
+        contrib.volume_product_xz -= h.volume_product_xz;
+        contrib.volume_product_yz -= h.volume_product_yz;
         contrib.centroid_x -= h.centroid_x;
         contrib.centroid_y -= h.centroid_y;
         contrib.centroid_z -= h.centroid_z;
@@ -370,6 +388,12 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
             volume_moment_x: 0.0,
             volume_moment_y: 0.0,
             volume_moment_z: 0.0,
+            volume_second_x: 0.0,
+            volume_second_y: 0.0,
+            volume_second_z: 0.0,
+            volume_product_xy: 0.0,
+            volume_product_xz: 0.0,
+            volume_product_yz: 0.0,
             centroid_x: 0.0,
             centroid_y: 0.0,
             centroid_z: 0.0,
@@ -382,6 +406,12 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
     let mut mx = 0.0;
     let mut my = 0.0;
     let mut mz = 0.0;
+    let mut qxx = 0.0;
+    let mut qyy = 0.0;
+    let mut qzz = 0.0;
+    let mut qxy = 0.0;
+    let mut qxz = 0.0;
+    let mut qyz = 0.0;
     let mut cx = 0.0;
     let mut cy = 0.0;
     let mut cz = 0.0;
@@ -436,6 +466,15 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
         my += 0.5 * avg_y2 * normal.y() * tri_area;
         mz += 0.5 * avg_z2 * normal.z() * tri_area;
 
+        // Raw second moments and products via the divergence theorem. The
+        // four-point Hammer rule used here is exact for the cubic monomials.
+        qxx += normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(3)) / 3.0;
+        qyy += normal.y() * triangle_cubic_integral(a, b, c, |p| p.y().powi(3)) / 3.0;
+        qzz += normal.z() * triangle_cubic_integral(a, b, c, |p| p.z().powi(3)) / 3.0;
+        qxy += normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(2) * p.y()) / 2.0;
+        qxz += normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(2) * p.z()) / 2.0;
+        qyz += normal.y() * triangle_cubic_integral(a, b, c, |p| p.y().powi(2) * p.z()) / 2.0;
+
         cx += centroid.x() * tri_area;
         cy += centroid.y() * tri_area;
         cz += centroid.z() * tri_area;
@@ -447,10 +486,36 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
         volume_moment_x: mx,
         volume_moment_y: my,
         volume_moment_z: mz,
+        volume_second_x: qxx,
+        volume_second_y: qyy,
+        volume_second_z: qzz,
+        volume_product_xy: qxy,
+        volume_product_xz: qxz,
+        volume_product_yz: qyz,
         centroid_x: cx,
         centroid_y: cy,
         centroid_z: cz,
     }
+}
+
+/// Integrate a cubic-or-lower scalar function over a triangle exactly using
+/// the four-point Hammer rule.
+fn triangle_cubic_integral(a: Point3, b: Point3, c: Point3, f: impl Fn(Point3) -> f64) -> f64 {
+    let area = (b - a).cross(c - a).length() * 0.5;
+    let barycentric = |wa: f64, wb: f64, wc: f64| {
+        Point3::new(
+            wa.mul_add(a.x(), wb.mul_add(b.x(), wc * c.x())),
+            wa.mul_add(a.y(), wb.mul_add(b.y(), wc * c.y())),
+            wa.mul_add(a.z(), wb.mul_add(b.z(), wc * c.z())),
+        )
+    };
+    let centroid = barycentric(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    let value = (-27.0 / 48.0) * f(centroid)
+        + (25.0 / 48.0)
+            * (f(barycentric(0.6, 0.2, 0.2))
+                + f(barycentric(0.2, 0.6, 0.2))
+                + f(barycentric(0.2, 0.2, 0.6)));
+    area * value
 }
 
 /// Integrate a parametric surface using Gauss quadrature over the UV domain.
@@ -486,6 +551,12 @@ fn integrate_parametric<S: ParametricSurface>(
     let mut mx = 0.0;
     let mut my = 0.0;
     let mut mz = 0.0;
+    let mut qxx = 0.0;
+    let mut qyy = 0.0;
+    let mut qzz = 0.0;
+    let mut qxy = 0.0;
+    let mut qxz = 0.0;
+    let mut qyz = 0.0;
     let mut cx = 0.0;
     let mut cy = 0.0;
     let mut cz = 0.0;
@@ -525,6 +596,13 @@ fn integrate_parametric<S: ParametricSurface>(
                     my += w * 0.5 * p.y() * p.y() * n.y();
                     mz += w * 0.5 * p.z() * p.z() * n.z();
 
+                    qxx += w * p.x().powi(3) * n.x() / 3.0;
+                    qyy += w * p.y().powi(3) * n.y() / 3.0;
+                    qzz += w * p.z().powi(3) * n.z() / 3.0;
+                    qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
+                    qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
+                    qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
+
                     cx += w * p.x() * n_len;
                     cy += w * p.y() * n_len;
                     cz += w * p.z() * n_len;
@@ -539,6 +617,12 @@ fn integrate_parametric<S: ParametricSurface>(
         volume_moment_x: mx * sign,
         volume_moment_y: my * sign,
         volume_moment_z: mz * sign,
+        volume_second_x: qxx * sign,
+        volume_second_y: qyy * sign,
+        volume_second_z: qzz * sign,
+        volume_product_xy: qxy * sign,
+        volume_product_xz: qxz * sign,
+        volume_product_yz: qyz * sign,
         centroid_x: cx,
         centroid_y: cy,
         centroid_z: cz,
@@ -706,6 +790,12 @@ fn integrate_parametric_trimmed<S: ParametricSurface>(
     let mut mx = 0.0;
     let mut my = 0.0;
     let mut mz = 0.0;
+    let mut qxx = 0.0;
+    let mut qyy = 0.0;
+    let mut qzz = 0.0;
+    let mut qxy = 0.0;
+    let mut qxz = 0.0;
+    let mut qyz = 0.0;
     let mut cx = 0.0;
     let mut cy = 0.0;
     let mut cz = 0.0;
@@ -747,6 +837,13 @@ fn integrate_parametric_trimmed<S: ParametricSurface>(
             my += w * 0.5 * p.y() * p.y() * n.y();
             mz += w * 0.5 * p.z() * p.z() * n.z();
 
+            qxx += w * p.x().powi(3) * n.x() / 3.0;
+            qyy += w * p.y().powi(3) * n.y() / 3.0;
+            qzz += w * p.z().powi(3) * n.z() / 3.0;
+            qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
+            qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
+            qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
+
             cx += w * p.x() * n_len;
             cy += w * p.y() * n_len;
             cz += w * p.z() * n_len;
@@ -759,6 +856,12 @@ fn integrate_parametric_trimmed<S: ParametricSurface>(
         volume_moment_x: mx * sign,
         volume_moment_y: my * sign,
         volume_moment_z: mz * sign,
+        volume_second_x: qxx * sign,
+        volume_second_y: qyy * sign,
+        volume_second_z: qzz * sign,
+        volume_product_xy: qxy * sign,
+        volume_product_xz: qxz * sign,
+        volume_product_yz: qyz * sign,
         centroid_x: cx,
         centroid_y: cy,
         centroid_z: cz,
