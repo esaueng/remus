@@ -31,7 +31,9 @@ impl NurbsCurve {
     /// not equal to `control_points.len() + degree + 1`.
     ///
     /// Returns [`MathError::InvalidWeights`] if the weights vector length does
-    /// not match the number of control points.
+    /// not match the number of control points, or
+    /// [`MathError::InvalidWeightValue`] if a weight is non-finite or
+    /// non-positive.
     pub fn new(
         degree: usize,
         knots: Vec<f64>,
@@ -52,6 +54,7 @@ impl NurbsCurve {
                 got: weights.len(),
             });
         }
+        validate_weight_values(&weights)?;
         Ok(Self {
             degree,
             knots,
@@ -153,6 +156,19 @@ impl NurbsCurve {
         &self.weights
     }
 
+    /// Validate the stored rational weights.
+    ///
+    /// This is useful after deserialization, which reconstructs private fields
+    /// without going through [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MathError::InvalidWeightValue`] for a non-finite or
+    /// non-positive weight.
+    pub fn validate_weights(&self) -> Result<(), MathError> {
+        validate_weight_values(&self.weights)
+    }
+
     /// Evaluate the curve at parameter `u` using De Boor's algorithm.
     ///
     /// For rational curves this performs the perspective divide automatically.
@@ -171,7 +187,15 @@ impl NurbsCurve {
         };
         basis::basis_funs_into(span, u, p, &self.knots, bf);
 
-        // Weighted sum in homogeneous coordinates.
+        // Scale homogeneous terms before summation. NURBS weights are
+        // projective, so this preserves the point while preventing a common
+        // factor such as 1e-300 from making the perspective divide unstable.
+        let scale = bf
+            .iter()
+            .enumerate()
+            .take(p + 1)
+            .map(|(j, &basis_val)| (basis_val * self.weights[span - p + j]).abs())
+            .fold(0.0_f64, f64::max);
         let mut wx = 0.0;
         let mut wy = 0.0;
         let mut wz = 0.0;
@@ -180,18 +204,16 @@ impl NurbsCurve {
             let idx = span - p + j;
             let pt = &self.control_points[idx];
             let w = self.weights[idx];
-            let bw = basis_val * w;
+            let bw = basis_val * w / scale;
             wx += bw * pt.x();
             wy += bw * pt.y();
             wz += bw * pt.z();
             ww += bw;
         }
 
-        if ww == 0.0 {
-            Point3::new(wx, wy, wz)
-        } else {
-            Point3::new(wx / ww, wy / ww, wz / ww)
-        }
+        debug_assert!(scale.is_finite() && scale > 0.0);
+        debug_assert!(ww.is_finite() && ww > 0.0);
+        Point3::new(wx / ww, wy / ww, wz / ww)
     }
 
     /// Compute curve derivatives up to order `d` at parameter `u`.
@@ -222,12 +244,14 @@ impl NurbsCurve {
 
         // Compute homogeneous derivatives: Aw[k] = (Aw_x, Aw_y, Aw_z, w) for k-th deriv.
         let mut aw = vec![[0.0f64; 4]; du + 1];
+        let weight_scale = self.weights.iter().copied().fold(0.0_f64, f64::max);
+        debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
         for (k, aw_k) in aw.iter_mut().enumerate().take(du + 1) {
             for j in 0..=p {
                 let db = ders_bf[k * stride + j];
                 let idx = span - p + j;
                 let pt = &self.control_points[idx];
-                let w = self.weights[idx];
+                let w = self.weights[idx] / weight_scale;
                 aw_k[0] += db * pt.x() * w;
                 aw_k[1] += db * pt.y() * w;
                 aw_k[2] += db * pt.z() * w;
@@ -247,11 +271,8 @@ impl NurbsCurve {
                 v[2] -= bin * aw[i][3] * ck[k - i].z();
             }
             let w0 = aw[0][3];
-            if w0 == 0.0 {
-                ck[k] = Vec3::new(v[0], v[1], v[2]);
-            } else {
-                ck[k] = Vec3::new(v[0] / w0, v[1] / w0, v[2] / w0);
-            }
+            debug_assert!(w0.is_finite() && w0 > 0.0);
+            ck[k] = Vec3::new(v[0] / w0, v[1] / w0, v[2] / w0);
         }
         // Higher derivatives beyond degree are zero (already initialized).
         ck
@@ -279,12 +300,58 @@ impl NurbsCurve {
     }
 }
 
+fn validate_weight_values(weights: &[f64]) -> Result<(), MathError> {
+    for (index, &value) in weights.iter().enumerate() {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(MathError::InvalidWeightValue { index, value });
+        }
+    }
+    Ok(())
+}
+
 use super::basis::binomial;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_nonpositive_and_nonfinite_weights() {
+        let make = |weights| {
+            NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)],
+                weights,
+            )
+        };
+        for weights in [vec![1.0, 0.0], vec![1.0, -1.0], vec![1.0, f64::NAN]] {
+            assert!(matches!(
+                make(weights),
+                Err(MathError::InvalidWeightValue { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn common_tiny_weight_scale_evaluates_stably() {
+        let curve = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)],
+            vec![1e-300, 1e-300],
+        )
+        .expect("tiny positive weights are projectively valid");
+        let point = curve.evaluate(0.5);
+        assert!((point.x() - 1.0).abs() < 1e-12);
+        assert!(
+            curve
+                .derivatives(0.5, 1)
+                .iter()
+                .all(|v| v.x().is_finite() && v.y().is_finite() && v.z().is_finite())
+        );
+    }
 
     /// A cubic Bezier curve (single span): control points form a simple shape.
     fn cubic_bezier() -> NurbsCurve {

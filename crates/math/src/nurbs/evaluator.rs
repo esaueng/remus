@@ -119,8 +119,24 @@ impl<'a> SurfaceEvaluator<'a> {
 
         let cps = self.surface.control_points();
         let ws = self.surface.weights();
+        let weight_scale = ws.iter().flatten().copied().fold(0.0_f64, f64::max);
+        debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
 
-        // Tensor-product contraction: v first per u-row, then u.
+        // Tensor-product contraction: v first per u-row, then u. Scale all
+        // homogeneous terms first so a harmless common weight factor cannot
+        // underflow the perspective divide.
+        let scale = nu
+            .iter()
+            .enumerate()
+            .take(pu + 1)
+            .flat_map(|(i, &nu_i)| {
+                nv.iter().enumerate().take(pv + 1).map(move |(j, &nv_j)| {
+                    let u_idx = span_u - pu + i;
+                    let v_idx = span_v - pv + j;
+                    (nu_i * nv_j * ws[u_idx][v_idx]).abs()
+                })
+            })
+            .fold(0.0_f64, f64::max);
         let mut wx = 0.0;
         let mut wy = 0.0;
         let mut wz = 0.0;
@@ -135,8 +151,8 @@ impl<'a> SurfaceEvaluator<'a> {
             for (j, &nv_j) in nv.iter().enumerate().take(pv + 1) {
                 let v_idx = span_v - pv + j;
                 let pt = &cps[u_idx][v_idx];
-                let w = ws[u_idx][v_idx];
-                let bw = nv_j * w;
+                let w = ws[u_idx][v_idx] / weight_scale;
+                let bw = nv_j * w / scale;
                 row_x += bw * pt.x();
                 row_y += bw * pt.y();
                 row_z += bw * pt.z();
@@ -148,11 +164,9 @@ impl<'a> SurfaceEvaluator<'a> {
             ww += nu_i * row_w;
         }
 
-        if ww == 0.0 {
-            Point3::new(wx, wy, wz)
-        } else {
-            Point3::new(wx / ww, wy / ww, wz / ww)
-        }
+        debug_assert!(scale.is_finite() && scale > 0.0);
+        debug_assert!(ww.is_finite() && ww > 0.0);
+        Point3::new(wx / ww, wy / ww, wz / ww)
     }
 
     /// Evaluate the unit normal at parameters `(u, v)`.
@@ -252,12 +266,7 @@ impl<'a> SurfaceEvaluator<'a> {
         }
 
         // Apply rational quotient rule: d/du = (S_u - W_u * P) / W_0
-        if w0.abs() < f64::MIN_POSITIVE {
-            return self
-                .surface
-                .normal(u, v)
-                .unwrap_or_else(|_| Vec3::new(0.0, 0.0, 1.0));
-        }
+        debug_assert!(w0.is_finite() && w0 > 0.0);
 
         let inv_w0 = 1.0 / w0;
         let px = s0[0] * inv_w0;

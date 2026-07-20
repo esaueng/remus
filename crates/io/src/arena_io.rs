@@ -38,6 +38,7 @@ use brepkit_topology::wire::{OrientedEdge, Wire};
 use serde::{Deserialize, Serialize};
 
 use crate::IoError;
+use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 /// Serialized form of an [`EdgeCurve`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +376,25 @@ pub fn serialize_solid(topo: &Topology, solid_id: SolidId) -> Result<Vec<u8>, Io
 /// Returns [`IoError`] if the buffer is malformed, references an out-of-range
 /// local index, or any entity construction fails.
 pub fn deserialize_solid(bytes: &[u8], topo: &mut Topology) -> Result<SolidId, IoError> {
+    deserialize_solid_with_limits(bytes, topo, ImportLimits::default())
+}
+
+/// Reconstruct a solid with explicit hostile-input resource limits.
+///
+/// Limits are checked before any topology mutation. The encoded byte limit
+/// bounds allocations performed by JSON parsing; model-entity limits bound
+/// the topology allocations that follow.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] when the encoded dump or any entity
+/// collection exceeds the configured budget.
+pub fn deserialize_solid_with_limits(
+    bytes: &[u8],
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<SolidId, IoError> {
+    ensure_input_size(bytes.len(), limits)?;
     let dump: SerializedSolid = serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
         reason: format!("arena deserialization failed: {e}"),
     })?;
@@ -386,6 +406,36 @@ pub fn deserialize_solid(bytes: &[u8], topo: &mut Topology) -> Result<SolidId, I
             ),
         });
     }
+
+    for (resource, actual) in [
+        ("arena vertices", dump.vertices.len()),
+        ("arena edges", dump.edges.len()),
+        ("arena wires", dump.wires.len()),
+        ("arena faces", dump.faces.len()),
+        ("arena shells", dump.shells.len()),
+        ("arena inner shells", dump.inner_shells.len()),
+        ("arena pcurves", dump.pcurves.len()),
+    ] {
+        ensure_limit(resource, actual, limits.max_model_entities)?;
+    }
+    let total_entities = dump
+        .vertices
+        .len()
+        .checked_add(dump.edges.len())
+        .and_then(|n| n.checked_add(dump.wires.len()))
+        .and_then(|n| n.checked_add(dump.faces.len()))
+        .and_then(|n| n.checked_add(dump.shells.len()))
+        .and_then(|n| n.checked_add(dump.pcurves.len()))
+        .ok_or(IoError::LimitExceeded {
+            resource: "arena total entities",
+            limit: limits.max_model_entities,
+            actual: usize::MAX,
+        })?;
+    ensure_limit(
+        "arena total entities",
+        total_entities,
+        limits.max_model_entities,
+    )?;
 
     let mut vertex_ids = Vec::with_capacity(dump.vertices.len());
     for v in dump.vertices {
@@ -400,6 +450,13 @@ pub fn deserialize_solid(bytes: &[u8], topo: &mut Topology) -> Result<SolidId, I
         let end = *vertex_ids
             .get(e.end)
             .ok_or_else(|| index_err("vertex", e.end))?;
+        if let SerEdgeCurve::NurbsCurve(curve) = &e.curve {
+            curve
+                .validate_weights()
+                .map_err(|err| IoError::ParseError {
+                    reason: format!("invalid arena NURBS curve: {err}"),
+                })?;
+        }
         edge_ids.push(topo.add_edge(Edge::with_tolerance(
             start,
             end,
@@ -428,6 +485,13 @@ pub fn deserialize_solid(bytes: &[u8], topo: &mut Topology) -> Result<SolidId, I
         let mut inner = Vec::with_capacity(f.inner_wires.len());
         for iw in f.inner_wires {
             inner.push(*wire_ids.get(iw).ok_or_else(|| index_err("wire", iw))?);
+        }
+        if let SerFaceSurface::Nurbs(surface) = &f.surface {
+            surface
+                .validate_weights()
+                .map_err(|err| IoError::ParseError {
+                    reason: format!("invalid arena NURBS surface: {err}"),
+                })?;
         }
         let mut face = Face::new(outer, inner, f.surface.into_surface());
         face.set_reversed(f.reversed);
@@ -556,6 +620,43 @@ mod tests {
             assert_eq!(a.y().to_bits(), b.y().to_bits(), "y bits differ");
             assert_eq!(a.z().to_bits(), b.z().to_bits(), "z bits differ");
         }
+    }
+
+    #[test]
+    fn deserialize_limits_fail_before_topology_mutation() {
+        let mut source = Topology::new();
+        let solid = make_box(&mut source, 10.0, 20.0, 30.0).unwrap();
+        let bytes = serialize_solid(&source, solid).unwrap();
+        let limits = ImportLimits {
+            max_input_bytes: bytes.len(),
+            max_model_entities: 1,
+            ..ImportLimits::default()
+        };
+        let mut destination = Topology::new();
+        let error = deserialize_solid_with_limits(&bytes, &mut destination, limits).unwrap_err();
+        assert!(matches!(error, IoError::LimitExceeded { .. }));
+        assert_eq!(destination.num_vertices(), 0);
+        assert_eq!(destination.num_edges(), 0);
+        assert_eq!(destination.num_faces(), 0);
+        assert_eq!(destination.num_solids(), 0);
+    }
+
+    #[test]
+    fn deserialize_rejects_oversized_input_before_json_parse() {
+        let limits = ImportLimits {
+            max_input_bytes: 2,
+            ..ImportLimits::default()
+        };
+        let mut topo = Topology::new();
+        let error = deserialize_solid_with_limits(b"{}\n", &mut topo, limits).unwrap_err();
+        assert!(matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "input bytes",
+                ..
+            }
+        ));
+        assert_eq!(topo.num_solids(), 0);
     }
 
     #[test]

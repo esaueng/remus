@@ -26,6 +26,15 @@ pub enum MathError {
         got: usize,
     },
 
+    /// A NURBS weight is non-finite or non-positive.
+    #[error("invalid NURBS weight at index {index}: expected a finite positive value, got {value}")]
+    InvalidWeightValue {
+        /// Flattened index of the invalid weight.
+        index: usize,
+        /// Invalid weight value.
+        value: f64,
+    },
+
     /// Control point grid dimensions are inconsistent.
     #[error(
         "invalid control point grid: expected {expected_rows}x{expected_cols}, got inconsistent dimensions"

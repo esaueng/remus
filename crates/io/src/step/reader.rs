@@ -64,21 +64,21 @@ fn parse_step_entities(
     limits: ImportLimits,
 ) -> Result<HashMap<u64, StepEntity>, IoError> {
     let mut entities = HashMap::new();
+    let mut in_data = false;
+    let mut found_data = false;
 
-    let data_start = input.find("DATA;").ok_or_else(|| IoError::ParseError {
-        reason: "no DATA section found".to_string(),
-    })?;
-    let data_end = input[data_start..]
-        .find("ENDSEC;")
-        .ok_or_else(|| IoError::ParseError {
-            reason: "no ENDSEC after DATA".to_string(),
-        })?;
-
-    let data_section = &input[data_start + 5..data_start + data_end];
-    let joined = data_section.replace(['\n', '\r'], " ");
-
-    for statement in joined.split(';') {
+    for statement in step_statements(input)? {
         let stmt = statement.trim();
+        if !in_data {
+            if stmt.eq_ignore_ascii_case("DATA") {
+                in_data = true;
+                found_data = true;
+            }
+            continue;
+        }
+        if stmt.eq_ignore_ascii_case("ENDSEC") {
+            return Ok(entities);
+        }
         if stmt.is_empty() {
             continue;
         }
@@ -95,19 +95,104 @@ fn parse_step_entities(
                 // E.g., for `TYPE('', (1.0, 2.0))`, attrs = `'', (1.0, 2.0))`
                 let attrs = rest[paren_pos + 1..].trim();
 
-                entities.insert(
+                let previous = entities.insert(
                     id,
                     StepEntity {
                         entity_type,
                         attrs: attrs.to_string(),
                     },
                 );
+                if previous.is_some() {
+                    return Err(IoError::ParseError {
+                        reason: format!("duplicate STEP entity id #{id}"),
+                    });
+                }
                 ensure_limit("STEP entities", entities.len(), limits.max_model_entities)?;
             }
         }
     }
 
-    Ok(entities)
+    if found_data {
+        Err(IoError::ParseError {
+            reason: "no ENDSEC after DATA".to_string(),
+        })
+    } else {
+        Err(IoError::ParseError {
+            reason: "no DATA section found".to_string(),
+        })
+    }
+}
+
+/// Tokenize Part 21 statements without treating semicolons inside strings or
+/// block comments as terminators. STEP escapes a quote inside a string as two
+/// consecutive single quotes.
+fn step_statements(input: &str) -> Result<Vec<String>, IoError> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    let mut in_comment = false;
+
+    while let Some(ch) = chars.next() {
+        if in_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                let _ = chars.next();
+                in_comment = false;
+                current.push(' ');
+            }
+            continue;
+        }
+
+        if in_string {
+            current.push(ch);
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    current.push('\'');
+                    let _ = chars.next();
+                } else {
+                    in_string = false;
+                }
+            }
+            continue;
+        }
+
+        match ch {
+            '/' if chars.peek() == Some(&'*') => {
+                let _ = chars.next();
+                in_comment = true;
+            }
+            '\'' => {
+                current.push(ch);
+                in_string = true;
+            }
+            ';' => {
+                let statement = current.trim();
+                if !statement.is_empty() {
+                    statements.push(statement.to_string());
+                }
+                current.clear();
+            }
+            '\n' | '\r' => current.push(' '),
+            _ => current.push(ch),
+        }
+    }
+
+    if in_string {
+        return Err(IoError::ParseError {
+            reason: "unterminated STEP string literal".to_string(),
+        });
+    }
+    if in_comment {
+        return Err(IoError::ParseError {
+            reason: "unterminated STEP block comment".to_string(),
+        });
+    }
+    if !current.trim().is_empty() {
+        return Err(IoError::ParseError {
+            reason: "unterminated STEP statement".to_string(),
+        });
+    }
+    Ok(statements)
 }
 
 /// Parse `#123` into `123`.
@@ -1066,6 +1151,40 @@ mod tests {
                 actual: 1
             }
         ));
+    }
+
+    #[test]
+    fn statement_scanner_preserves_semicolons_and_escaped_quotes_in_strings() {
+        let step = "ISO-10303-21;HEADER;FILE_NAME('A; O''Brien', '', (), (), '', '', '');ENDSEC;DATA;#1=CARTESIAN_POINT('semi;colon',(1.,2.,3.));ENDSEC;END-ISO-10303-21;";
+        let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities.get(&1).unwrap().attrs, "'semi;colon',(1.,2.,3.))");
+    }
+
+    #[test]
+    fn statement_scanner_ignores_comments_and_section_tokens_inside_them() {
+        let step = "ISO-10303-21;/* DATA; #99=BAD(); ENDSEC; */HEADER;ENDSEC;DATA;#1=CARTESIAN_POINT('',(1.,/* ; ENDSEC; */2.,3.));ENDSEC;END-ISO-10303-21;";
+        let entities = parse_step_entities(step, ImportLimits::default()).unwrap();
+        assert_eq!(entities.len(), 1);
+        assert!(entities.get(&1).unwrap().attrs.contains("1., 2.,3."));
+    }
+
+    #[test]
+    fn statement_scanner_rejects_unterminated_string_comment_and_statement() {
+        for step in [
+            "ISO-10303-21;DATA;#1=NAME('unterminated;ENDSEC;",
+            "ISO-10303-21;DATA;/* unterminated",
+            "ISO-10303-21;DATA;#1=POINT()",
+        ] {
+            assert!(parse_step_entities(step, ImportLimits::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn duplicate_entity_ids_are_rejected() {
+        let step = "ISO-10303-21;DATA;#1=POINT();#1=POINT();ENDSEC;END-ISO-10303-21;";
+        let error = parse_step_entities(step, ImportLimits::default()).unwrap_err();
+        assert!(error.to_string().contains("duplicate STEP entity id #1"));
     }
 
     #[test]

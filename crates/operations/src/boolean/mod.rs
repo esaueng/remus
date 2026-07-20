@@ -101,10 +101,7 @@ pub fn boolean(
             && !a_in_b
             && let Some(classifier) = ca.as_ref()
         {
-            let tool_simple = topo
-                .solid(b)
-                .map(|s| s.inner_shells().is_empty())
-                .unwrap_or(false);
+            let tool_simple = topo.solid(b)?.inner_shells().is_empty();
             if tool_simple
                 && solid_strictly_inside(topo, b, classifier, tol)
                 && let Ok(result) = build_contained_cut_hollow(topo, a, b)
@@ -285,14 +282,9 @@ pub fn boolean(
                 _ => (None, None),
             };
             if let (Some((bmin, bmax)), Some((sc, sr))) = (box_args, sphere_args) {
-                let segs = brepkit_topology::explorer::solid_vertices(topo, a)
-                    .map(|v| v.len())
-                    .unwrap_or(0)
-                    .max(
-                        brepkit_topology::explorer::solid_vertices(topo, b)
-                            .map(|v| v.len())
-                            .unwrap_or(0),
-                    )
+                let segs = brepkit_topology::explorer::solid_vertices(topo, a)?
+                    .len()
+                    .max(brepkit_topology::explorer::solid_vertices(topo, b)?.len())
                     .max(16);
                 if let Some(result) =
                     box_sphere_intersect_shortcut(topo, bmin, bmax, sc, sr, segs, tol)?
@@ -443,9 +435,7 @@ pub fn boolean(
     let gfa_start = timer_now();
     match brepkit_algo::gfa::boolean(topo, algo_op, gfa_a, gfa_b) {
         Ok(result) => {
-            let result_faces = brepkit_topology::explorer::solid_faces(topo, result)
-                .map(|f| f.len())
-                .unwrap_or(0);
+            let result_faces = brepkit_topology::explorer::solid_faces(topo, result)?.len();
             // Narrow-phase empty intersect: overlapping AABBs but the engine
             // selected no faces for the common region (e.g. boxes whose boxes
             // overlap by tolerance but whose interiors do not). This is the
@@ -467,7 +457,7 @@ pub fn boolean(
                 // edges (one per argument) that differ by sub-micron loft noise
                 // → free edges. Merge those coincident duplicates. Gated on the
                 // shell actually being open so clean results keep exact topology.
-                if has_free_edges(topo, result).unwrap_or(false) {
+                if has_free_edges(topo, result)? {
                     // Best-effort: an error here shouldn't abort the boolean,
                     // but it's useful signal on an already-broken shell.
                     if let Err(e) =
@@ -1624,12 +1614,8 @@ fn concentric_sphere_shortcut(
     // `make_sphere(r, n)` allocates exactly `n` equatorial vertices; because
     // sphere primitives are fully describe by (center, radius), all vertices
     // belong to that ring. Floor at 4 to satisfy `make_sphere`'s lower bound.
-    let segments_a = brepkit_topology::explorer::solid_vertices(topo, a)
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let segments_b = brepkit_topology::explorer::solid_vertices(topo, b)
-        .map(|v| v.len())
-        .unwrap_or(0);
+    let segments_a = brepkit_topology::explorer::solid_vertices(topo, a)?.len();
+    let segments_b = brepkit_topology::explorer::solid_vertices(topo, b)?.len();
     let segments = segments_a.max(segments_b).max(4);
 
     let sphere = crate::primitives::make_sphere(topo, r_result, segments)?;
@@ -1688,12 +1674,8 @@ fn coaxial_torus_shortcut(
     // unlike make_sphere torus topology has internal seam vertices that
     // make the relationship less clean. Approximate by the larger vertex
     // count.
-    let segments_a = brepkit_topology::explorer::solid_vertices(topo, a)
-        .map(|v| v.len())
-        .unwrap_or(0);
-    let segments_b = brepkit_topology::explorer::solid_vertices(topo, b)
-        .map(|v| v.len())
-        .unwrap_or(0);
+    let segments_a = brepkit_topology::explorer::solid_vertices(topo, a)?.len();
+    let segments_b = brepkit_topology::explorer::solid_vertices(topo, b)?.len();
     let segments = segments_a.max(segments_b).max(8);
 
     // Build a fresh torus at the origin then transform to the shared

@@ -39,7 +39,9 @@ impl NurbsSurface {
     /// wrong length for the given degree and control point count.
     ///
     /// Returns [`MathError::InvalidWeights`] if the weights grid dimensions
-    /// do not match the control point grid.
+    /// do not match the control point grid, or
+    /// [`MathError::InvalidWeightValue`] if a weight is non-finite or
+    /// non-positive.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         degree_u: usize,
@@ -94,6 +96,7 @@ impl NurbsSurface {
                 });
             }
         }
+        validate_weight_values(&weights)?;
 
         Ok(Self {
             degree_u,
@@ -200,6 +203,17 @@ impl NurbsSurface {
         &self.weights
     }
 
+    /// Validate the stored rational weights after construction or
+    /// deserialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MathError::InvalidWeightValue`] for a non-finite or
+    /// non-positive weight.
+    pub fn validate_weights(&self) -> Result<(), MathError> {
+        validate_weight_values(&self.weights)
+    }
+
     /// Evaluate the surface at parameters `(u, v)`.
     ///
     /// Uses tensor-product basis function evaluation (NURBS Book A3.5).
@@ -232,6 +246,18 @@ impl NurbsSurface {
         basis::basis_funs_into(span_v, v, pv, &self.knots_v, nv);
 
         // Contract along v first for each relevant u-row, then along u.
+        let scale = nu
+            .iter()
+            .enumerate()
+            .take(pu + 1)
+            .flat_map(|(i, &nu_i)| {
+                nv.iter().enumerate().take(pv + 1).map(move |(j, &nv_j)| {
+                    let u_idx = span_u - pu + i;
+                    let v_idx = span_v - pv + j;
+                    (nu_i * nv_j * self.weights[u_idx][v_idx]).abs()
+                })
+            })
+            .fold(0.0_f64, f64::max);
         let mut wx = 0.0;
         let mut wy = 0.0;
         let mut wz = 0.0;
@@ -248,7 +274,7 @@ impl NurbsSurface {
                 let v_idx = span_v - pv + j;
                 let pt = &self.control_points[u_idx][v_idx];
                 let w = self.weights[u_idx][v_idx];
-                let bw = nv_j * w;
+                let bw = nv_j * w / scale;
                 row_x += bw * pt.x();
                 row_y += bw * pt.y();
                 row_z += bw * pt.z();
@@ -260,11 +286,9 @@ impl NurbsSurface {
             ww += nu_i * row_w;
         }
 
-        if ww == 0.0 {
-            Point3::new(wx, wy, wz)
-        } else {
-            Point3::new(wx / ww, wy / ww, wz / ww)
-        }
+        debug_assert!(scale.is_finite() && scale > 0.0);
+        debug_assert!(ww.is_finite() && ww > 0.0);
+        Point3::new(wx / ww, wy / ww, wz / ww)
     }
 
     /// Compute surface derivatives up to order `d` at parameters `(u, v)`.
@@ -312,6 +336,13 @@ impl NurbsSurface {
 
         // Compute homogeneous derivatives Aw[k][l] = (wx, wy, wz, w)
         let mut aw = vec![vec![[0.0f64; 4]; d + 1]; d + 1];
+        let weight_scale = self
+            .weights
+            .iter()
+            .flatten()
+            .copied()
+            .fold(0.0_f64, f64::max);
+        debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
         for k in 0..=du {
             for l in 0..=dv {
                 if k + l > d {
@@ -324,7 +355,7 @@ impl NurbsSurface {
                         let dv_lj = ders_v[l * stride_v + j];
                         let v_idx = span_v - pv + j;
                         let pt = &self.control_points[u_idx][v_idx];
-                        let w = self.weights[u_idx][v_idx];
+                        let w = self.weights[u_idx][v_idx] / weight_scale;
                         let coeff = du_ki * dv_lj;
                         aw[k][l][0] += coeff * pt.x() * w;
                         aw[k][l][1] += coeff * pt.y() * w;
@@ -372,11 +403,8 @@ impl NurbsSurface {
                     v3[2] -= bin * v2[2];
                 }
 
-                if w0 == 0.0 {
-                    skl[k][l] = Vec3::new(v3[0], v3[1], v3[2]);
-                } else {
-                    skl[k][l] = Vec3::new(v3[0] / w0, v3[1] / w0, v3[2] / w0);
-                }
+                debug_assert!(w0.is_finite() && w0 > 0.0);
+                skl[k][l] = Vec3::new(v3[0] / w0, v3[1] / w0, v3[2] / w0);
             }
         }
 
@@ -452,12 +480,77 @@ impl NurbsSurface {
     }
 }
 
+fn validate_weight_values(weights: &[Vec<f64>]) -> Result<(), MathError> {
+    let mut index = 0;
+    for row in weights {
+        for &value in row {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(MathError::InvalidWeightValue { index, value });
+            }
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
 use super::basis::binomial;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_nonpositive_and_nonfinite_weights() {
+        let points = vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ];
+        for bad in [0.0, -1.0, f64::INFINITY] {
+            let mut weights = vec![vec![1.0; 2]; 2];
+            weights[1][1] = bad;
+            assert!(matches!(
+                NurbsSurface::new(
+                    1,
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    points.clone(),
+                    weights,
+                ),
+                Err(MathError::InvalidWeightValue { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn common_tiny_weight_scale_evaluates_stably() {
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1e-300; 2]; 2],
+        )
+        .expect("tiny positive weights are projectively valid");
+        let point = surface.evaluate(0.5, 0.5);
+        let derivatives = surface.derivatives(0.5, 0.5, 1);
+        let mut evaluator = surface.evaluator();
+        let cached = evaluator.point(0.5, 0.5);
+        assert!((point.x() - 0.5).abs() < 1e-12);
+        assert!((point.y() - 0.5).abs() < 1e-12);
+        assert!((cached - point).length() < 1e-12);
+        assert!(
+            derivatives
+                .iter()
+                .flatten()
+                .all(|v| v.x().is_finite() && v.y().is_finite() && v.z().is_finite())
+        );
+    }
 
     #[test]
     #[allow(clippy::cast_precision_loss)]

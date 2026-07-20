@@ -31,6 +31,10 @@ Thumbs.db
 lcov.info
 tarpaulin-report.html
 
+# cargo-fuzz generated output (seed corpora remain tracked)
+/fuzz/target/
+/fuzz/artifacts/
+
 # Benchmark results
 /bench-results/
 

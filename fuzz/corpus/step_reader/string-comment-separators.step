@@ -1,0 +1,9 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('seed; with separator'),'2;1');
+ENDSEC;
+DATA;
+/* comment ; #999=BAD(); */
+#1=CARTESIAN_POINT('O''Brien; seed',(1.,2.,3.));
+ENDSEC;
+END-ISO-10303-21;

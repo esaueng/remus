@@ -1,0 +1,64 @@
+[package]
+name = "brepkit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+brepkit-io = { path = "../crates/io" }
+brepkit-topology = { path = "../crates/topology" }
+
+[[bin]]
+name = "step_reader"
+path = "fuzz_targets/step_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "iges_reader"
+path = "fuzz_targets/iges_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stl_reader"
+path = "fuzz_targets/stl_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "obj_reader"
+path = "fuzz_targets/obj_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ply_reader"
+path = "fuzz_targets/ply_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glb_reader"
+path = "fuzz_targets/glb_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "threemf_reader"
+path = "fuzz_targets/threemf_reader.rs"
+test = false
+doc = false
+bench = false
