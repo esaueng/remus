@@ -36,6 +36,11 @@ tolerance model to handle this:
 
 Tolerances can be configured globally or per-operation.
 
+All lengths are conventionally millimetres and all angles are radians. Values
+remain unitless at the type level: brepkit never guesses or converts units.
+Scale models and every associated linear tolerance together when integrating
+with a metre- or inch-based system. See [Tolerances and Robustness](./tolerances.md).
+
 ## NURBS
 
 Non-Uniform Rational B-Splines (NURBS) are the mathematical foundation

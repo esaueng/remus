@@ -169,7 +169,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
         }
 
         if group.len() >= 2 {
-            let cb_id = arena.create_common_block(group.clone(), tol.linear);
+            let cb_id = arena.create_common_block(group.clone());
             log::debug!(
                 "ForceInterfEE: created CommonBlock {cb_id:?} with {} PaveBlocks",
                 group.len()

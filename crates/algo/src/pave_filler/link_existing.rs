@@ -259,7 +259,7 @@ fn try_link(
         }
         arena.pb_to_cb.insert(section_pb_id, cb_id);
     } else {
-        arena.create_common_block(vec![boundary_pb_id, section_pb_id], tol.linear);
+        arena.create_common_block(vec![boundary_pb_id, section_pb_id]);
     }
 
     log::debug!(

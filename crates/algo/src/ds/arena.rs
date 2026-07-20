@@ -153,28 +153,11 @@ impl GfaArena {
         leaves
     }
 
-    /// Follow the CommonBlock chain to find the canonical PaveBlock.
-    /// If `pb` has no CB, returns `pb` itself.
-    #[must_use]
-    #[allow(dead_code)] // Used by upcoming ForceInterfEE + MakeSplitEdges
-    pub fn real_pave_block(&self, pb: PaveBlockId) -> PaveBlockId {
-        match self.pb_to_cb.get(&pb) {
-            Some(&cb_id) => self
-                .common_blocks
-                .get(cb_id)
-                .and_then(|cb| cb.pave_blocks.first().copied())
-                .unwrap_or(pb),
-            None => pb,
-        }
-    }
-
     /// Create a new CommonBlock grouping the given PaveBlocks.
-    pub fn create_common_block(&mut self, pbs: Vec<PaveBlockId>, tol: f64) -> CommonBlockId {
+    pub fn create_common_block(&mut self, pbs: Vec<PaveBlockId>) -> CommonBlockId {
         let cb = CommonBlock {
             pave_blocks: pbs,
-            faces: Vec::new(),
             split_edge: None,
-            tolerance: tol,
         };
         let cb_id = self.common_blocks.alloc(cb);
         // Register reverse mapping after alloc (pave_blocks moved into CB).
@@ -184,16 +167,6 @@ impl GfaArena {
             }
         }
         cb_id
-    }
-
-    /// Add a face reference to an existing CommonBlock.
-    #[allow(dead_code)] // Used by upcoming ForceInterfEE
-    pub fn add_face_to_cb(&mut self, cb: CommonBlockId, face: FaceId) {
-        if let Some(cb) = self.common_blocks.get_mut(cb)
-            && !cb.faces.contains(&face)
-        {
-            cb.faces.push(face);
-        }
     }
 }
 

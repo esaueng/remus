@@ -2,7 +2,6 @@
 
 use brepkit_topology::arena::Id;
 use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
 use brepkit_topology::vertex::VertexId;
 
 /// A point on an edge, identified by its vertex and curve parameter.
@@ -87,13 +86,7 @@ pub struct CommonBlock {
     /// PaveBlocks representing the same geometric edge segment.
     /// First entry is the "representative" (canonical).
     pub pave_blocks: Vec<PaveBlockId>,
-    /// Faces this common block spans (for EF: edge lies on face boundary).
-    #[allow(dead_code)] // Populated by future Phase EF enhancement
-    pub faces: Vec<FaceId>,
     /// The single split edge created for this group.
     /// Set by `MakeSplitEdges`; `None` until then.
     pub split_edge: Option<EdgeId>,
-    /// Tolerance covering deviation across all grouped pave blocks.
-    #[allow(dead_code)] // Stored for future tolerance-aware edge creation
-    pub tolerance: f64,
 }

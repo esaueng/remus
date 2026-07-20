@@ -26,17 +26,14 @@
 //! representation (3 control points, weights [1, cos(α/2), 1]),
 //! giving mathematically exact G1 continuity with both adjacent faces.
 
-mod g1_chain;
 mod geometry;
 mod helpers;
-mod radius_law;
 mod rolling_ball;
 #[cfg(test)]
 mod tests;
 
-pub use g1_chain::fillet_rolling_ball_propagate_g1;
+pub use brepkit_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 pub(crate) use geometry::face_surface_normal_at;
-pub use radius_law::FilletRadiusLaw;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
 
@@ -53,6 +50,24 @@ use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
 
 use helpers::{FacePolygon, FilletEdgeData, extract_inner_wire_positions, record_fillet_point};
+
+/// Fillet `seed_edges` and all G1-continuous edges connected to them.
+///
+/// [`fillet_rolling_ball`] performs the same shared G1-chain expansion
+/// internally, so this backward-compatible wrapper forwards directly.
+///
+/// # Errors
+///
+/// Returns the same errors as [`fillet_rolling_ball`].
+#[allow(deprecated)]
+pub fn fillet_rolling_ball_propagate_g1(
+    topo: &mut Topology,
+    solid: SolidId,
+    seed_edges: &[EdgeId],
+    radius: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    fillet_rolling_ball(topo, solid, seed_edges, radius)
+}
 
 /// Fillet one or more edges of a solid with a constant radius (flat chamfer).
 ///

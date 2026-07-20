@@ -223,6 +223,8 @@ impl NurbsSurface {
         let pv = self.degree_v;
         let n_rows = self.control_points.len();
         let n_cols = self.control_points[0].len();
+        let u = u.clamp(self.knots_u[pu], self.knots_u[n_rows]);
+        let v = v.clamp(self.knots_v[pv], self.knots_v[n_cols]);
 
         let span_u = basis::find_span(n_rows, pu, u, &self.knots_u);
         let span_v = basis::find_span(n_cols, pv, v, &self.knots_v);
@@ -304,6 +306,8 @@ impl NurbsSurface {
         let pv = self.degree_v;
         let n_rows = self.control_points.len();
         let n_cols = self.control_points[0].len();
+        let u = u.clamp(self.knots_u[pu], self.knots_u[n_rows]);
+        let v = v.clamp(self.knots_v[pv], self.knots_v[n_cols]);
 
         let span_u = basis::find_span(n_rows, pu, u, &self.knots_u);
         let span_v = basis::find_span(n_cols, pv, v, &self.knots_v);

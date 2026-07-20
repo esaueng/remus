@@ -10,11 +10,13 @@ layers below it, never above or sideways.
 
 ```
 ┌─────────────────────────────────────┐
-│  L3: brepkit-wasm                   │  WASM bindings (JS API)
+│  L4: brepkit-wasm                   │  WASM bindings (JS API)
 ├─────────────────┬───────────────────┤
-│  L2: operations │  L2: io           │  Modeling ops / Data exchange
+│  L3: operations │  L3: io/render    │  Modeling, exchange, rendering
 ├─────────────────┴───────────────────┤
-│  L1: topology                       │  B-Rep data structures
+│  L2: algo/blend/check/...           │  Geometry algorithms
+├─────────────────────────────────────┤
+│  L1: topology / geometry            │  B-Rep and geometry ownership
 ├─────────────────────────────────────┤
 │  L0: math                           │  Vectors, NURBS, predicates
 └─────────────────────────────────────┘
@@ -25,12 +27,16 @@ layers below it, never above or sideways.
 | Crate | Layer | Allowed Dependencies |
 |-------|-------|---------------------|
 | `brepkit-math` | L0 | External crates only |
-| `brepkit-topology` | L1 | `brepkit-math` |
-| `brepkit-operations` | L2 | `brepkit-math`, `brepkit-topology` |
-| `brepkit-io` | L2 | `brepkit-math`, `brepkit-topology` |
-| `brepkit-wasm` | L3 | All workspace crates |
+| `brepkit-topology`, `brepkit-geometry` | L1 | `brepkit-math` |
+| `brepkit-algo`, `brepkit-blend`, `brepkit-check`, `brepkit-heal`, `brepkit-offset` | L2 | Lower layers only |
+| `brepkit-operations`, `brepkit-io`, `brepkit-render` | L3 | Lower layers only |
+| `brepkit-wasm` | L4 | All workspace crates except render |
 
 These rules are enforced by `scripts/check-boundaries.sh`.
+
+`brepkit-render` is an optional native wgpu consumer. It supports offscreen
+RGBA rendering and face-ID picking; it is not included in the browser WASM
+package.
 
 ## Arena-Based Topology
 

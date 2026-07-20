@@ -102,6 +102,3 @@ pub mod surfaces;
 pub mod tolerance;
 pub mod traits;
 pub mod vec;
-
-#[cfg(feature = "simd")]
-pub mod simd;

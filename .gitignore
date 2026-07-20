@@ -35,6 +35,7 @@ tarpaulin-report.html
 
 # Benchmark results
 /bench-results/
+/mutants-output/
 
 # mdBook
 /book/book/

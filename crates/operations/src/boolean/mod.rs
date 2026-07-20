@@ -11,6 +11,13 @@ use assembly::validate_boolean_result;
 pub(crate) use assembly::{assemble_solid, assemble_solid_mixed};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
+/// Minimum distance used when healing coincident result boundaries, in mm.
+const COINCIDENT_BOUNDARY_FLOOR_MM: f64 = 1e-6;
+/// Strict overlap margin used by the disjoint-component shortcut, in mm.
+const COMPONENT_OVERLAP_MARGIN_MM: f64 = 1e-7;
+/// Endpoint distance below which a sampled curve is treated as closed, in mm.
+const CLOSED_CURVE_ENDPOINT_TOL_MM: f64 = 1e-6;
+
 // WASM-compatible timer: `std::time::Instant` panics on wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn timer_now() -> std::time::Instant {
@@ -21,9 +28,11 @@ pub(super) fn timer_elapsed_ms(t: std::time::Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
 }
 #[cfg(target_arch = "wasm32")]
-pub(super) fn timer_now() -> () {}
+pub(super) fn timer_now() -> f64 {
+    0.0
+}
 #[cfg(target_arch = "wasm32")]
-pub(super) fn timer_elapsed_ms(_t: ()) -> f64 {
+pub(super) fn timer_elapsed_ms(_t: f64) -> f64 {
     0.0
 }
 
@@ -460,9 +469,11 @@ pub fn boolean(
                 if has_free_edges(topo, result)? {
                     // Best-effort: an error here shouldn't abort the boolean,
                     // but it's useful signal on an already-broken shell.
-                    if let Err(e) =
-                        unify_coincident_boundary_edges(topo, result, (tol.linear * 10.0).max(1e-6))
-                    {
+                    if let Err(e) = unify_coincident_boundary_edges(
+                        topo,
+                        result,
+                        (tol.linear * 10.0).max(COINCIDENT_BOUNDARY_FLOOR_MM),
+                    ) {
                         log::debug!("unify_coincident_boundary_edges failed: {e}");
                     }
                 }
@@ -2313,7 +2324,7 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
         })
         .collect();
 
-    let eps = 1e-7;
+    let eps = COMPONENT_OVERLAP_MARGIN_MM;
     for i in 0..aabbs.len() {
         for j in (i + 1)..aabbs.len() {
             let (i_min, i_max) = aabbs[i];
@@ -3405,10 +3416,9 @@ pub(crate) fn sample_edge_curve(curve: &EdgeCurve, n: usize) -> Vec<Point3> {
             // duplicating the first point at t=u_max.
             let start_pt = nc.evaluate(u0);
             let end_pt = nc.evaluate(u1);
-            // 1e-6 m: closure detection threshold — if start and end points are
-            // within 1 micron, treat the NURBS curve as closed to avoid
+            // A 1e-6 mm endpoint gap is treated as closed to avoid
             // duplicating the first point at t=u_max.
-            let is_closed = (start_pt - end_pt).length() < 1e-6;
+            let is_closed = (start_pt - end_pt).length() < CLOSED_CURVE_ENDPOINT_TOL_MM;
             let divisor = if is_closed { n } else { n - 1 };
             (0..n)
                 .map(|i| {

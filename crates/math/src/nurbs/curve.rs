@@ -176,6 +176,7 @@ impl NurbsCurve {
     pub fn evaluate(&self, u: f64) -> Point3 {
         let p = self.degree;
         let n = self.control_points.len();
+        let u = u.clamp(self.knots[p], self.knots[n]);
         let span = basis::find_span(n, p, u, &self.knots);
         let mut bf_stack = [0.0f64; basis::MAX_STACK_OUTPUT + 1];
         let mut bf_heap;
@@ -227,6 +228,7 @@ impl NurbsCurve {
     pub fn derivatives(&self, u: f64, d: usize) -> Vec<Vec3> {
         let p = self.degree;
         let n = self.control_points.len();
+        let u = u.clamp(self.knots[p], self.knots[n]);
         let span = basis::find_span(n, p, u, &self.knots);
         let du = d.min(p);
         let stride = p + 1;

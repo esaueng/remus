@@ -9,5 +9,5 @@ title = "brepkit"
 build-dir = "book"
 
 [output.html]
-edit-url-template = "https://github.com/andymai/brepkit/edit/main/book/{path}"
-git-repository-url = "https://github.com/andymai/brepkit"
+edit-url-template = "https://github.com/esaueng/brepkit/edit/main/book/{path}"
+git-repository-url = "https://github.com/esaueng/brepkit"

@@ -19,7 +19,6 @@ proptest.workspace = true
 [features]
 default = []
 serde = ["dep:serde"]
-simd = []
 
 [lints]
 workspace = true

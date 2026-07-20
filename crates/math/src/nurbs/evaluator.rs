@@ -88,6 +88,10 @@ impl<'a> SurfaceEvaluator<'a> {
 
         let pu = self.surface.degree_u();
         let pv = self.surface.degree_v();
+        let u_domain = self.surface.domain_u();
+        let v_domain = self.surface.domain_v();
+        let u = u.clamp(u_domain.0, u_domain.1);
+        let v = v.clamp(v_domain.0, v_domain.1);
         let span_u = self.find_span_u(u);
         let span_v = self.find_span_v(v);
 

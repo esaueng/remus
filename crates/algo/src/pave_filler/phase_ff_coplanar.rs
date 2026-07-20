@@ -291,7 +291,7 @@ fn process_coplanar_pair(
             && si == ei
         {
             let a_eid = edges_a[si].0;
-            create_coplanar_common_block(arena, a_eid, b_eid, tol.linear);
+            create_coplanar_common_block(arena, a_eid, b_eid);
         }
     }
 
@@ -545,7 +545,6 @@ fn create_coplanar_common_block(
     arena: &mut GfaArena,
     a_edge: brepkit_topology::edge::EdgeId,
     b_edge: brepkit_topology::edge::EdgeId,
-    tol: f64,
 ) {
     let get_leaves = |edge: brepkit_topology::edge::EdgeId| -> Vec<PaveBlockId> {
         arena
@@ -583,7 +582,7 @@ fn create_coplanar_common_block(
             return;
         }
 
-        arena.create_common_block(vec![a_pb, b_pb], tol);
+        arena.create_common_block(vec![a_pb, b_pb]);
 
         log::debug!("coplanar CommonBlock: edge {a_edge:?} + {b_edge:?} (PBs {a_pb:?} + {b_pb:?})");
     }

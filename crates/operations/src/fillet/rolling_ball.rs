@@ -14,7 +14,6 @@ use brepkit_topology::solid::SolidId;
 use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
 
-use super::g1_chain::expand_g1_chain;
 use super::geometry::{
     edge_v_samples, face_surface_normal_at, sample_edge_point, sample_edge_tangent,
 };
@@ -175,7 +174,7 @@ pub fn fillet_rolling_ball(
 
     // Phase 2a: G1 chain propagation — automatically expand the edge set to
     // include all G1-continuous neighbors sharing the same face pair.
-    let filtered_edges = expand_g1_chain(topo, solid, &user_edges, tol)?;
+    let filtered_edges = brepkit_blend::g1_chain::expand_g1_chain(topo, solid, &user_edges, tol)?;
     if filtered_edges.len() > user_edges.len() {
         log::info!(
             "G1 chain: expanded {} edges to {} edges",

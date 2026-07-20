@@ -167,7 +167,7 @@ impl BrepKernel {
 
         #[cfg(not(feature = "io"))]
         {
-            let _ = solid;
+            let _ = self.resolve_solid(solid)?;
             Err(JsError::new(
                 "toBREP requires the optional 'io' feature for STEP export",
             ))

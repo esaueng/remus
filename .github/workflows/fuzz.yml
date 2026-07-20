@@ -1,0 +1,29 @@
+name: Fuzz Smoke
+
+on:
+  schedule:
+    - cron: "30 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readers:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [step_reader, iges_reader, stl_reader, obj_reader, ply_reader, glb_reader, threemf_reader]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@c93f4f9c67595668add93d3d6895795ce52d8c2d # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+      - name: Run bounded smoke fuzzing
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=120 -rss_limit_mb=2048

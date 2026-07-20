@@ -27,6 +27,12 @@ const MIN_RADIAL_LEN: f64 = 1e-12;
 /// A partial-revolve profile boundary is treated as planar when its deviation
 /// from the best-fit plane is below this fraction of the boundary's size.
 const PLANARITY_REL_TOL: f64 = 1e-6;
+/// Linear classification threshold for analytic revolution bands, in mm.
+const ANALYTIC_BAND_TOL_MM: f64 = 1e-9;
+/// Dimensionless dot-product threshold for axis-in-plane checks.
+const AXIS_IN_PLANE_DOT_TOL: f64 = 1e-9;
+/// Scale-relative threshold for rejecting zero-area profile polygons.
+const DEGENERATE_PROFILE_AREA_REL_TOL: f64 = 1e-9;
 
 /// Rotate a point around an axis (origin + unit direction) by angle θ.
 ///
@@ -202,7 +208,7 @@ fn revolution_band_surface(
         return Ok((FaceSurface::Nurbs(nurbs), false));
     }
 
-    let tol = 1e-9;
+    let tol = ANALYTIC_BAND_TOL_MM;
     // The profile edge runs `p0_start → p1_start` (vertex i to vertex i+1 on the
     // SAME segment ring); `p0_start → p0_end` is the swept-arc direction. Decompose
     // both edge endpoints into (radial, axial) coordinates about the axis.
@@ -334,7 +340,7 @@ fn revolution_torus_band(
     nurbs: &NurbsSurface,
     seg_angle: f64,
 ) -> Result<Option<(FaceSurface, bool)>, brepkit_math::MathError> {
-    let tol = 1e-9;
+    let tol = ANALYTIC_BAND_TOL_MM;
     // Decompose the arc centre into its axial position and radial offset.
     let to_center = arc_center - axis_origin;
     let axial = axis * to_center.dot(axis);
@@ -520,7 +526,7 @@ fn try_analytic_full_revolution(
         FaceSurface::Plane { normal, .. } => *normal,
         _ => return Ok(None),
     };
-    if normal.dot(axis).abs() > 1e-9 {
+    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL {
         return Ok(None);
     }
 
@@ -627,7 +633,7 @@ fn try_analytic_full_revolution(
         area2 += x0.mul_add(y1, -(x1 * y0));
         scale = scale.max(x0.abs()).max(y0.abs());
     }
-    if area2.abs() <= scale * scale * 1e-9 {
+    if area2.abs() <= scale * scale * DEGENERATE_PROFILE_AREA_REL_TOL {
         return Ok(None); // degenerate (zero-area) profile — defer
     }
     let ccw = area2 > 0.0;
@@ -905,7 +911,7 @@ fn try_circle_revolution_torus(
     let tol = Tolerance::new();
     // The axis must lie in the profile plane (perpendicular to its normal),
     // else the swept surface is not a torus of revolution.
-    if normal.dot(axis).abs() > 1e-9 {
+    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL {
         return Ok(None);
     }
 

@@ -220,12 +220,11 @@ fn tessellate_solid_core(
     let mut edge_points: DetHashMap<usize, Vec<Point3>> = {
         let mut map = DetHashMap::default();
         for &edge_idx in &edge_indices {
-            if let Some(edge_id) = topo.edge_id_from_index(edge_idx) {
-                if let Ok(edge_data) = topo.edge(edge_id) {
-                    let points =
-                        sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
-                    map.insert(edge_idx, points);
-                }
+            if let Some(edge_id) = topo.edge_id_from_index(edge_idx)
+                && let Ok(edge_data) = topo.edge(edge_id)
+            {
+                let points = sample_edge(topo, edge_data, deflection, angular_tol, circle_floor)?;
+                map.insert(edge_idx, points);
             }
         }
         map

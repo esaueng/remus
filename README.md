@@ -4,10 +4,9 @@
 
 Solid modeling kernel for Rust and WebAssembly.
 
-[![CI](https://github.com/andymai/brepkit/actions/workflows/ci.yml/badge.svg)](https://github.com/andymai/brepkit/actions/workflows/ci.yml)
+[![CI](https://github.com/esaueng/brepkit/actions/workflows/ci.yml/badge.svg)](https://github.com/esaueng/brepkit/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/brepkit-wasm)](https://www.npmjs.com/package/brepkit-wasm)
-[![Last release](https://img.shields.io/github/release-date/andymai/brepkit?label=last%20release)](https://github.com/andymai/brepkit/releases)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/andymai/brepkit?label=commits%2Fmonth)](https://github.com/andymai/brepkit/commits/main)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/esaueng/brepkit?label=commits%2Fmonth)](https://github.com/esaueng/brepkit/commits/main)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/) [![unsafe denied](https://img.shields.io/badge/unsafe-denied-success.svg)](#why-a-cad-kernel)
 
@@ -59,6 +58,12 @@ It grew out of building [gridfinitylayouttool.com](https://gridfinitylayouttool.
 
 The geometry is exact. Booleans run on analytic and NURBS surfaces and keep those surfaces through the operation, so a cylinder stays a cylinder instead of becoming a bag of triangles. That keeps face counts low and round-trips lossless.
 
+brepkit's canonical modeling convention is **millimetres for length** and
+**radians for angle**. The kernel does not attach units to scalar values or
+silently convert them; applications using another length unit must scale all
+coordinates, dimensions, deflections, and linear tolerances consistently at
+their boundary. See the [tolerance and robustness guide](book/src/tolerances.md).
+
 ## Status
 
 brepkit is in active development. Core modeling is solid. Each feature below is marked stable, beta, planned, or experimental, and [Known Limitations](#known-limitations) covers the gaps.
@@ -80,7 +85,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Beta         |
 | **Construction**        | Coons-patch face fill, sew, untrim                                           | Stable       |
 | **Sectioning**          | Cross-section faces, split by plane                                          | Stable       |
-| **Measurement**         | Bounding box, area, volume, center of mass                                   | Stable       |
+| **Measurement**         | Bounding box, area, volume, center of mass, inertia tensor                   | Stable       |
 | **Measurement**         | Point-to-solid, solid-to-solid distance, point classification                | Stable       |
 | **Drawing**             | Hidden-line edge projection                                                  | Stable       |
 | **Geometry**            | NURBS evaluation, derivatives, knot ops, fitting, projection                 | Stable       |
@@ -88,6 +93,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Geometry**            | Surface-surface intersection (analytic + marching)                           | Stable       |
 | **Geometry**            | Curve-curve intersection (Bezier clipping)                                   | Stable       |
 | **Tessellation**        | Adaptive deflection, CDT, analytic-surface optimization                      | Stable       |
+| **Rendering**           | wgpu offscreen rendering and face-ID picking                                 | Beta         |
 | **Repair**              | Shape healing (wire, face, shell fixes), sewing, validation                  | Stable       |
 | **I/O**                 | STEP import/export (analytic-preserving round-trip)                          | Stable       |
 | **I/O**                 | STL, 3MF, OBJ, PLY, glTF (`.glb`) import/export                              | Stable       |
@@ -205,10 +211,10 @@ Not yet published to crates.io. Use git dependencies for now:
 
 ```toml
 [dependencies]
-brepkit-math = { git = "https://github.com/andymai/brepkit" }
-brepkit-topology = { git = "https://github.com/andymai/brepkit" }
-brepkit-operations = { git = "https://github.com/andymai/brepkit" }
-brepkit-io = { git = "https://github.com/andymai/brepkit" }        # optional
+brepkit-math = { git = "https://github.com/esaueng/brepkit" }
+brepkit-topology = { git = "https://github.com/esaueng/brepkit" }
+brepkit-operations = { git = "https://github.com/esaueng/brepkit" }
+brepkit-io = { git = "https://github.com/esaueng/brepkit" }        # optional
 ```
 
 ### Building from source
@@ -247,14 +253,14 @@ Broad directions, no dates.
 - **Parallel tessellation in WASM.** Native builds already parallelize per-face meshing. Bring it to the WASM target via threads.
 - **Assembly metadata.** Colors, layers, materials, and PMI for richer data exchange.
 - **Lossless IGES.** Real B-Rep import and analytic-surface export.
-- **Documentation.** API reference, tutorials, and architectural guides.
+- **Documentation.** Expand task-oriented tutorials and advanced algorithm guides.
 
 ## Projects Using brepkit
 
 - [brepjs](https://github.com/andymai/brepjs), CAD modeling for JavaScript.
 - [Gridfinity Layout Tool](https://github.com/andymai/gridfinity-layout-tool), a web-based Gridfinity storage layout generator.
 
-[Open a PR](https://github.com/andymai/brepkit/pulls) to add your project.
+[Open a PR](https://github.com/esaueng/brepkit/pulls) to add your project.
 
 ## License
 

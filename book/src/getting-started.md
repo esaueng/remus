@@ -10,7 +10,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/andymai/brepkit.git
+git clone https://github.com/esaueng/brepkit.git
 cd brepkit
 
 # Build all Rust crates

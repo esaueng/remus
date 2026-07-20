@@ -23,7 +23,7 @@ jobs:
         with:
           tool: nextest
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        run: cargo install cargo-mutants --version 27.0.0 --locked
       - name: Run mutation testing on critical modules
         run: |
           cargo mutants \
@@ -35,6 +35,26 @@ jobs:
             -e 'benches/**' \
             -e 'examples/**' \
             --output=mutants-output
+      - name: Publish mutation summary
+        if: always()
+        run: |
+          {
+            echo "## Mutation testing"
+            echo
+            echo "| Outcome | Count |"
+            echo "| --- | ---: |"
+            for outcome in caught missed timeout unviable; do
+              file="mutants-output/${outcome}.txt"
+              if [ -f "$file" ]; then
+                count=$(wc -l < "$file" | tr -d ' ')
+              else
+                count=0
+              fi
+              echo "| ${outcome} | ${count} |"
+            done
+            echo
+            echo "Missed and timed-out mutants fail the cargo-mutants step and must be reviewed in the attached report."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
