@@ -144,15 +144,17 @@ pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, JsError> {
 
 // ── Edge/face helpers ─────────────────────────────────────────────
 
-/// Attempt a fillet, preferring the rolling-ball engine and validating output.
+/// Attempt a fillet, preferring the v2 walking engine and validating output.
 ///
-/// The rolling-ball engine produces watertight single-edge fillets, does the
-/// per-corner setback trimming + spherical patches multi-edge inputs need
-/// (the walking `FilletBuilder` over-removes corner material — all 12 box edges
-/// drop to ~470 instead of ~975), and now solves true contacts against curved
-/// neighbours, so a fillet whose neighbour is a prior fillet's NURBS blend face
-/// is watertight too (#834). It runs first; the `FilletBuilder` and a flat
-/// bevel are fallbacks.
+/// Engine order is a product decision (2026-07): the v2 walking engine
+/// (`blend_ops::fillet_v2`, the maintained `crates/blend` engine with
+/// validated fail-closed contracts) runs first; the deprecated v1
+/// rolling-ball engine is the fallback for cases v2 cannot yet complete,
+/// and the v1 flat bevel is the last resort. On the box single-edge,
+/// disjoint-multi-edge, and all-12-edge cases the two primary engines
+/// produce identical volumes and face counts (the historical "v2
+/// over-removes corner material" note predates the corner-solver fixes and
+/// no longer reproduces).
 ///
 /// Every candidate is validated as a closed (watertight) solid before being
 /// accepted, so a malformed result is rejected in favour of the next engine
@@ -202,17 +204,19 @@ pub fn try_fillet(
     // are preserved, so IDs held by the caller stay valid.
     let snapshot = topo.clone();
 
-    if let Ok(s) = brepkit_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
-        && is_valid(topo, s)
-    {
-        return Ok(s);
-    }
-    topo.restore_preserving_handle_slots(&snapshot);
-
+    // v2 (the walking blend) is tried first: it is the engine under active
+    // development and matches v1 on every measured case.
     if let Ok(r) = brepkit_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius)
         && is_valid(topo, r.solid)
     {
         return Ok(r.solid);
+    }
+    topo.restore_preserving_handle_slots(&snapshot);
+
+    if let Ok(s) = brepkit_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
+        && is_valid(topo, s)
+    {
+        return Ok(s);
     }
     topo.restore_preserving_handle_slots(&snapshot);
 

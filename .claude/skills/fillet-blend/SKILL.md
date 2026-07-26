@@ -26,17 +26,17 @@ You are working on `fillet`, `chamfer`, `filletV2`, `chamferV2`, `chamferDistanc
 
 ## Step 1: Identify the engine (there are three fillet paths, not two)
 
-The default `fillet` binding does NOT map to one engine. `fillet_solid` (`crates/wasm/src/bindings/operations.rs`) calls `try_fillet` (`crates/wasm/src/helpers.rs`), which tries three engines in order and accepts the first whose outer shell passes `validate_shell_closed`:
+The default `fillet` binding does NOT map to one engine. `fillet_solid` (`crates/wasm/src/bindings/operations.rs`) calls `try_fillet` (`crates/wasm/src/helpers.rs`), which tries three engines in order and accepts the first whose outer shell passes `validate_shell_closed` (order flipped to v2-first by product decision, 2026-07):
 
-1. `fillet::fillet_rolling_ball` (v1 rolling-ball, real rounded blend faces)
-2. `blend_ops::fillet_v2` (v2 walking engine, `crates/blend`)
+1. `blend_ops::fillet_v2` (v2 walking engine, `crates/blend` — the maintained default)
+2. `fillet::fillet_rolling_ball` (v1 rolling-ball fallback, real rounded blend faces)
 3. `fillet::fillet` (v1 flat-bevel, last resort, planar neighbors only)
 
 Map from a bug report to code:
 
 | JS binding | Engine |
 |---|---|
-| `fillet`, `filletWithEvolution`, batch `fillet` | `try_fillet` chain: rolling-ball → v2 → bevel |
+| `fillet`, `filletWithEvolution`, batch `fillet` | `try_fillet` chain: v2 → rolling-ball → bevel |
 | `filletV2` | pure v2 `blend_ops::fillet_v2` |
 | `chamferV2`, `chamferDistanceAngle` | pure v2 `blend_ops::chamfer_v2` / `chamfer_distance_angle` |
 | `chamfer` | flat-bevel engine `chamfer::chamfer` (planar-only, separate code) |
@@ -75,7 +75,7 @@ Both v1 fillet functions carry `#[deprecated]` AND are still wired into the live
 
 Internal callers suppress the warning with `#[allow(deprecated)]` (the attribute lives on `try_fillet` in `helpers.rs`, plus benches, tests, and a re-export in `fillet/mod.rs`).
 
-Removing or auto-migrating v1 is a BEHAVIOR and public-API change, not safe cleanup: it changes what the actively-used rolling-ball fillet ships to JS. This was left for a product decision.
+Removing v1 outright is still a BEHAVIOR and public-API change. The product decision (2026-07) flipped the default order to v2-first with the v1 engines as fallbacks; the v1 code stays because it still backs the fallback path and `filletVariable`.
 
 - Safe: improving `crates/blend`, adding tests, fixing bugs inside an engine, editing comments.
 - Not safe without a product decision: deleting either deprecated fn, reordering or removing engines in `try_fillet`, changing which engine a binding resolves to.

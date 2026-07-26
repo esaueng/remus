@@ -1069,6 +1069,9 @@ casualties, unconfirmed. Never quote the raw failure count as a defect count.
 - **heal, offset, and sketch have no distilled campaign knowledge.** They follow the
   same `debugging-doctrine`, but no skill covers their internals. Treat any diagnosis
   there as first-of-kind and write findings down (a test comment or a new note).
+- **The v1 fillet default was flipped to v2-first (2026-07, product decision):**
+  `try_fillet` now tries `blend_ops::fillet_v2` first, rolling-ball second,
+  bevel last. The v1 engines remain as fallbacks and behind `filletVariable`.
 - **The v1 fillet deprecations are entangled with the public wasm API.**
   `operations/src/fillet/mod.rs::fillet` and `fillet/rolling_ball.rs::fillet_rolling_ball`
   are `#[deprecated]` yet still reached through the wasm `fillet` binding, via
