@@ -543,7 +543,29 @@ pub fn boolean(
                 } else {
                     None
                 };
-                let needs_unify = !euler_balanced_pre || manifold_pre == Some(false);
+                // Multi-component operands (e.g. the lite base's 16 disjoint
+                // feet before their web joins them) balance at 2*N, which the
+                // single-component check above can never see — without this,
+                // `unify_faces` runs on a perfectly clean N-piece result and
+                // its edits break the manifold it was meant to repair.
+                let (multi_balanced_pre, manifold_pre) = if euler_balanced_pre {
+                    (false, manifold_pre)
+                } else {
+                    let comps = crate::boolean::assembly::face_components(topo, result);
+                    #[allow(clippy::cast_possible_wrap)]
+                    let expected = (comps.len() as i64) * 2;
+                    if comps.len() >= 2
+                        && euler_pre2 - inner_shell_surplus - inner_wire_count_pre == expected
+                        && components_are_disjoint_pieces(topo, &comps)
+                    {
+                        let m = is_closed_manifold(topo, result)?;
+                        (m, Some(m))
+                    } else {
+                        (false, None)
+                    }
+                };
+                let needs_unify =
+                    !(euler_balanced_pre || multi_balanced_pre) || manifold_pre == Some(false);
                 let mut unified = false;
                 if needs_unify {
                     for _ in 0..3 {
@@ -623,10 +645,20 @@ pub fn boolean(
                 // distinguishes a "cut into N pieces" from a hollow solid
                 // (outer surface + cavity surface — same number of
                 // components, same Euler relation, but AABBs overlap).
+                // N closed manifolds satisfy `V - E + F - inner_wires =
+                // 2 * (N - genus)`, which this gate pins at the genus-0 case
+                // `... = 2 * N` (as it always has — a handled piece is left to
+                // the mesh fallback). The hole term, however, is NOT optional:
+                // a piece carrying a blind pocket (a face with an inner wire)
+                // shifts raw Euler away from 2*N even at genus 0, so comparing
+                // raw Euler here rejected every pocketed piece. This mirrors the
+                // `euler_balanced(euler_eff, inner_wire_count)` correction the
+                // single-component gate above applies.
                 let components_vec = crate::boolean::assembly::face_components(topo, result);
                 let components = components_vec.len();
                 #[allow(clippy::cast_possible_wrap)]
                 let expected_euler = (components as i64) * 2;
+                let euler_corrected = euler - inner_wire_count;
                 // For Cut, also verify no component is a "B-interior piece" —
                 // GFA can produce N closed manifolds where one of them is the
                 // tool's interior (sphere - cylinder example: 3 pieces =
@@ -641,11 +673,48 @@ pub fn boolean(
                         .is_none_or(|cls_b| {
                             all_component_centers_outside(topo, &components_vec, cls_b, tol)
                         });
-                if op == BooleanOp::Cut
+                // Intersect's mirror hazard: GFA could emit a piece that is not
+                // part of A∩B at all. Reject when any component's AABB-centre
+                // sample classifies OUTSIDE either operand — an intersection
+                // piece must lie inside both. The winding-number classifier
+                // (unlike the analytic one) handles multi-piece operands, the
+                // very case this acceptance exists for; a classification error
+                // rejects (this acceptance is purely an optimization, so
+                // unclassifiable geometry keeps the old fallback behaviour).
+                // `OnBoundary` passes — thin clip pieces legitimately touch
+                // the operand boundaries. The centre need not be interior to a
+                // concave piece, but that failure direction only REJECTS a
+                // valid result into the mesh fallback (the status quo), the
+                // same posture `cut_safe` already accepts.
+                let intersect_safe = op != BooleanOp::Intersect
+                    || components_vec.iter().all(|comp| {
+                        let Some(centre) = component_aabb_centre(topo, comp) else {
+                            return true;
+                        };
+                        [a, b].iter().all(|&operand| {
+                            !matches!(
+                                crate::classify::classify_point_robust(
+                                    topo, operand, centre, 0.1, tol.linear,
+                                ),
+                                Ok(crate::classify::PointClassification::Outside) | Err(_)
+                            )
+                        })
+                    });
+                // Fuse shares this gate: fusing a tool into ONE piece of a
+                // multi-component operand (the lite base's 16 disjoint feet
+                // before their web joins them) legitimately leaves N disjoint
+                // closed manifolds, which the single-component Euler gate above
+                // can never accept. The same conditions apply; `cut_safe`'s
+                // B-interior probe is Cut-specific and passes vacuously here.
+                // Intersect joins for the same reason: clipping a multi-piece
+                // operand (the lite void against a divider-column prism)
+                // legitimately yields N disjoint chunks.
+                if matches!(op, BooleanOp::Cut | BooleanOp::Fuse | BooleanOp::Intersect)
                     && components >= 2
-                    && euler == expected_euler
+                    && euler_corrected == expected_euler
                     && components_are_disjoint_pieces(topo, &components_vec)
                     && cut_safe
+                    && intersect_safe
                     // Reuse the `closed_manifold` computed above: nothing between
                     // it and here mutates the result (only read-only component
                     // and classifier queries run in between).
@@ -660,8 +729,10 @@ pub fn boolean(
                 }
             }
             log::warn!(
-                "GFA result failed validation in {:.1}ms (faces={result_faces}), falling back",
-                timer_elapsed_ms(gfa_start)
+                "GFA result not accepted in {:.1}ms (faces={result_faces}, \
+                 validate={:?}), falling back",
+                timer_elapsed_ms(gfa_start),
+                validate_boolean_result(topo, result).err()
             );
         }
         Err(e) => {
@@ -683,6 +754,23 @@ pub fn boolean(
         if components.len() >= 2
             && components_are_disjoint_pieces(topo, &components)
             && let Ok(result) = cut_multi_region_input(topo, a, b, components.len())
+        {
+            return Ok(result);
+        }
+    }
+
+    // A Fuse whose TOOL carries many disjoint pieces (the lite base's 64
+    // magnet pads arrive as one 64-component union) also defeats the
+    // pavefiller when fed whole. Fuse distributes over a disjoint-union
+    // tool, so fold the pieces in one at a time — each per-piece fuse is
+    // the configuration the engine handles analytically.
+    // Gated to tools WITHOUT inner (cavity) shells: `face_components` walks
+    // the outer shell only, so a hollow piece would silently lose its cavity.
+    if op == BooleanOp::Fuse && topo.solid(b).is_ok_and(|s| s.inner_shells().is_empty()) {
+        let tool_components = crate::boolean::assembly::face_components(topo, b);
+        if tool_components.len() >= 2
+            && components_are_disjoint_pieces(topo, &tool_components)
+            && let Ok(result) = fuse_multi_component_tool(topo, a, tool_components)
         {
             return Ok(result);
         }
@@ -760,9 +848,51 @@ pub fn compound_cut(
     tools: &[SolidId],
     opts: BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
+    // Batched fast path: merge the tools into one multi-piece solid and cut
+    // ONCE. Sequential cutting re-runs the full boolean pipeline against the
+    // whole target per tool — O(target × tools); the lite magnet-drill pass
+    // was 8.4s sequential vs 0.75s batched for the exact same result volume.
+    // A ∖ (T₁ ∪ T₂ ∪ …) ≡ (A ∖ T₁) ∖ T₂ ∖ …, so the batch is semantically
+    // identical. Tools are first grouped into AABB-overlap clusters
+    // (union-find): tools in one cluster get a real fuse (the coaxial
+    // magnet+screw drill pair), while the pairwise-disjoint cluster
+    // representatives merge via the free disjoint-shell shortcut.
+    //
+    // A SINGLE cluster batches too. That case used to fall through to the
+    // sequential loop on the assumption that fusing one overlapping blob costs
+    // more than it saves, but a connected lattice of many small tools refutes
+    // it — fusing scales with the tools, while the sequential loop re-cuts the
+    // whole target once per tool, and the target only grows more fragmented.
+    // Measured on the kumiko wall lattice (180 strut prisms, one cluster):
+    // batching is comfortably faster for an identical result. Replay it with
+    // the captured operands under `kumiko-goma` in the parity-capture cache.
+    // Any failure falls back to the sequential loop.
     let mut result = target;
-    for &tool in tools {
-        result = boolean(topo, BooleanOp::Cut, result, tool)?;
+    let mut batched = false;
+    if tools.len() >= 2
+        && let Some(clusters) = cluster_tools_by_aabb(topo, tools)
+        && !clusters.is_empty()
+    {
+        let merged = clusters.iter().try_fold(None::<SolidId>, |acc, cluster| {
+            let fused = fuse_cluster(topo, cluster)?;
+            match acc {
+                None => Ok(Some(fused)),
+                Some(prev) => boolean(topo, BooleanOp::Fuse, prev, fused).map(Some),
+            }
+        });
+        if let Ok(Some(tool)) = merged
+            && let Ok(cut) = boolean(topo, BooleanOp::Cut, target, tool)
+        {
+            result = cut;
+            batched = true;
+        } else {
+            log::debug!("compound_cut: batched tool path failed, using sequential cuts");
+        }
+    }
+    if !batched {
+        for &tool in tools {
+            result = boolean(topo, BooleanOp::Cut, result, tool)?;
+        }
     }
     if opts.unify_faces {
         let unify_opts = brepkit_heal::upgrade::unify_same_domain::UnifyOptions::default();
@@ -773,6 +903,71 @@ pub fn compound_cut(
         }
     }
     Ok(result)
+}
+
+/// Fuse one AABB-overlap cluster into a single solid.
+///
+/// For a cluster of 3+ interpenetrating/touching tools, tries the single-pass
+/// N-way GFA fuse (`brepkit_algo::gfa::fuse_n`) — one arrangement over all tools
+/// instead of the sequential pairwise fuse's O(n²) re-processing of a growing
+/// accumulator. Falls back to the sequential fuse when the N-way path errors
+/// (e.g. a non-planar coincident contact it does not yet handle) or yields an
+/// invalid result. Clusters of 1–2 tools go straight to the sequential path,
+/// where the N-way arrangement has nothing to save. The cluster must be
+/// non-empty.
+pub(crate) fn fuse_cluster(
+    topo: &mut Topology,
+    cluster: &[SolidId],
+) -> Result<SolidId, crate::OperationsError> {
+    let Some((&first, rest)) = cluster.split_first() else {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "fuse_cluster requires a non-empty cluster".into(),
+        });
+    };
+    if cluster.len() >= 3
+        && let Ok(fused) = brepkit_algo::gfa::fuse_n(topo, cluster)
+        && validate_boolean_result(topo, fused).is_ok()
+    {
+        return Ok(fused);
+    }
+    rest.iter()
+        .try_fold(first, |a, &t| boolean(topo, BooleanOp::Fuse, a, t))
+}
+
+/// Group tools into AABB-overlap clusters (union-find over tolerance-
+/// expanded boxes). Tools within a cluster may interpenetrate; distinct
+/// clusters are pairwise disjoint. `None` when any AABB is unavailable.
+fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<SolidId>>> {
+    fn find(parent: &mut Vec<usize>, i: usize) -> usize {
+        if parent[i] != i {
+            let root = find(parent, parent[i]);
+            parent[i] = root;
+        }
+        parent[i]
+    }
+    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+    let mut boxes = Vec::with_capacity(tools.len());
+    for &t in tools {
+        boxes.push(crate::measure::solid_bounding_box(topo, t).ok()?);
+    }
+    let mut parent: Vec<usize> = (0..tools.len()).collect();
+    for i in 0..boxes.len() {
+        for j in (i + 1)..boxes.len() {
+            if boxes[i].expanded(tol).intersects(boxes[j]) {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+    let mut clusters: std::collections::BTreeMap<usize, Vec<SolidId>> =
+        std::collections::BTreeMap::new();
+    for i in 0..tools.len() {
+        let root = find(&mut parent, i);
+        clusters.entry(root).or_default().push(tools[i]);
+    }
+    Some(clusters.into_values().collect())
 }
 
 /// Perform a boolean operation and return an [`crate::evolution::EvolutionMap`]
@@ -2282,6 +2477,40 @@ fn all_component_centers_outside(
     true
 }
 
+/// Centre of a face component's vertex AABB, or `None` for an empty component.
+fn component_aabb_centre(topo: &Topology, comp: &[FaceId]) -> Option<Point3> {
+    let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &fid in comp {
+        let Ok(face) = topo.face(fid) else { continue };
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let Ok(wire) = topo.wire(wid) else { continue };
+            for oe in wire.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                for vid in [edge.start(), edge.end()] {
+                    if let Ok(v) = topo.vertex(vid) {
+                        let p = v.point();
+                        min =
+                            Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
+                        max =
+                            Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
+                    }
+                }
+            }
+        }
+    }
+    if min.x() > max.x() {
+        return None;
+    }
+    Some(Point3::new(
+        (min.x() + max.x()) * 0.5,
+        (min.y() + max.y()) * 0.5,
+        (min.z() + max.z()) * 0.5,
+    ))
+}
+
 fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -> bool {
     let aabbs: Vec<(Point3, Point3)> = components
         .iter()
@@ -2340,8 +2569,30 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
     true
 }
 
-/// Merge duplicate vertices in a solid's shell by position.
+/// Fuse a multi-component TOOL by folding its disjoint pieces into the
+/// target one at a time.
 ///
+/// Each piece is copied into a fresh connected solid (the pavefiller
+/// stumbles on shared vertex IDs across what it considers one "solid B")
+/// and fused via the full `boolean` entry, so every per-piece fuse gets the
+/// analytic path, gates, and fallbacks. Fuse distributes over a
+/// disjoint-union tool, so the fold is exact. Recursion terminates: each
+/// piece is single-component, so the recursive call never re-enters this
+/// path.
+fn fuse_multi_component_tool(
+    topo: &mut Topology,
+    a: SolidId,
+    b_components: Vec<Vec<brepkit_topology::face::FaceId>>,
+) -> Result<SolidId, crate::OperationsError> {
+    let mut result = a;
+    for comp_faces in b_components {
+        let comp_solid_raw = make_solid_from_face_subset(topo, &comp_faces)?;
+        let comp_solid = crate::copy::copy_solid(topo, comp_solid_raw)?;
+        result = boolean(topo, BooleanOp::Fuse, result, comp_solid)?;
+    }
+    Ok(result)
+}
+
 /// Cut a multi-region input solid: split the components, cut each
 /// against `b` independently, then combine the per-component results
 /// back into a single multi-region solid.

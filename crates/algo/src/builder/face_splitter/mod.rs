@@ -24,7 +24,10 @@ use super::pcurve_compute::{
 };
 use super::plane_frame::PlaneFrame;
 use super::split_types::{OrientedPCurveEdge, SectionEdge, SplitSubFace, SurfaceInfo};
-use super::wire_builder::{build_wire_loops, build_wire_loops_with_winding};
+use super::wire_builder::{build_wire_loops, build_wire_loops_dcel, build_wire_loops_with_winding};
+
+/// Quantized 3D endpoint pair key for loop-geometry equality tests.
+type QKey3 = ((i64, i64, i64), (i64, i64, i64));
 use crate::ds::Rank;
 
 use containment::{find_point_outside_holes, is_inside_any_hole};
@@ -33,13 +36,14 @@ use conversion::{
     uv_endpoints_from_pcurve,
 };
 use edge_splitting::{
-    find_splits_on_ellipse, find_splits_on_line, find_splits_on_nurbs_section,
-    find_splits_on_section_arc, split_boundary_edges_at_3d_points,
+    find_splits_on_line, find_splits_on_nurbs_section, find_splits_on_section_arc,
+    find_splits_on_section_ellipse, split_boundary_edges_at_3d_points,
 };
-use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic};
+use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic, sample_wire_loop_uv_via_frame};
 use special_cases::{
     split_face_with_internal_loops, split_noseam_face_direct, split_periodic_face_into_bands,
-    split_torus_band_by_arrangement, try_split_crossing_plane_face, try_split_disk_by_chords,
+    split_periodic_face_into_sectors, split_torus_band_by_arrangement,
+    try_split_crossing_plane_face, try_split_disk_by_chords,
 };
 
 /// Number of probe points (plus one for the closing sample) walked along a
@@ -229,16 +233,15 @@ fn split_sections_at_t_junctions(
             // corners), so scan the full endpoint set for them; the
             // O(sections²) pressure comes from the many Line sections, which the
             // grid prunes. `find_splits_on_*` exclude the edge's own endpoints.
-            // Circle sections use the shorter-arc parameterization: each is
-            // pushed as a forward/reverse PAIR, and the CCW-domain convention
-            // returns the long complement span for the reverse twin (phantom
-            // interior splits from points outside the arc — see
-            // `find_splits_on_section_arc`). Circle sections are ≤ π by
-            // construction (the FF closed-circle emitter splits longer spans);
-            // ellipse sections carry no such guarantee, so they keep the
-            // domain-based splitter.
+            // Circle AND ellipse sections use the shorter-arc
+            // parameterization: each is pushed as a forward/reverse PAIR, and
+            // the CCW-domain convention returns the long complement span for
+            // the reverse twin (phantom interior splits from points outside
+            // the arc — see `find_splits_on_section_arc` /
+            // `find_splits_on_section_ellipse`). The shorter-arc convention
+            // matches `evaluate_edge_at_t`, which both twins share.
             EdgeCurve::Circle(_) => find_splits_on_section_arc(&edge, &endpoints, tol),
-            EdgeCurve::Ellipse(ellipse) => find_splits_on_ellipse(ellipse, &edge, &endpoints, tol),
+            EdgeCurve::Ellipse(_) => find_splits_on_section_ellipse(&edge, &endpoints, tol),
             // A marched-NURBS section (a plane×cone conic) bulges past its
             // chord like an arc — a junction endpoint mid-curve is invisible
             // to the chord-based search, so use sampled point-to-curve
@@ -922,6 +925,62 @@ fn wire_loops_have_degenerate_area(loops: &[Vec<OrientedPCurveEdge>], tol: f64) 
         }
         area.abs() <= perimeter * tol
     })
+}
+
+/// Split a wire loop at UV vertices it visits more than once (a "pinch"): a
+/// grand-tour trace that absorbed a sub-region as an excursion is separated
+/// into the sub-cycle and the rest, recursively. Pure out-and-back excursions
+/// separate into zero-area remnants, which are dropped (their edges' other
+/// orientation still lives in the sibling region's loop). Comparison is on
+/// the raw (unwrapped) UV, so a full-period band's two seam copies — one
+/// period apart — never read as a pinch.
+fn split_loop_at_pinch_vertices(
+    wire: &[OrientedPCurveEdge],
+    tol: f64,
+) -> Vec<Vec<OrientedPCurveEdge>> {
+    if wire.len() < 4 {
+        return vec![wire.to_vec()];
+    }
+    let qscale = 1.0 / tol.max(1e-12);
+    #[allow(clippy::cast_possible_truncation)]
+    let qkey = |p: brepkit_math::vec::Point2| -> (i64, i64) {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+        )
+    };
+    let mut seen: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
+    let mut pinch: Option<(usize, usize)> = None;
+    for (i, e) in wire.iter().enumerate() {
+        if let Some(&j) = seen.get(&qkey(e.start_uv)) {
+            pinch = Some((j, i));
+            break;
+        }
+        seen.insert(qkey(e.start_uv), i);
+    }
+    let Some((j, i)) = pinch else {
+        return vec![wire.to_vec()];
+    };
+    let sub: Vec<OrientedPCurveEdge> = wire[j..i].to_vec();
+    let mut rest: Vec<OrientedPCurveEdge> = wire[..j].to_vec();
+    rest.extend_from_slice(&wire[i..]);
+    let keep = |lp: Vec<OrientedPCurveEdge>| -> Vec<Vec<OrientedPCurveEdge>> {
+        if lp.is_empty() {
+            return Vec::new();
+        }
+        let pts = sample_wire_loop_uv(&lp);
+        let mut perimeter: f64 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+            perimeter += (*last - *first).length();
+        }
+        if signed_area_2d(&pts).abs() <= perimeter * tol {
+            return Vec::new(); // out-and-back remnant
+        }
+        split_loop_at_pinch_vertices(&lp, tol)
+    };
+    let mut out = keep(sub);
+    out.extend(keep(rest));
+    out
 }
 
 /// True when any wire loop revisits a UV vertex — the signature of a
@@ -3092,27 +3151,54 @@ fn clip_sections_to_outer_region(
     (kept, anchors)
 }
 
+/// Whether any greedy loop contains an out-and-back spur: an edge immediately
+/// followed (cyclically) by its exact UV reverse. The angular walker emits
+/// this signature only when it has woven twin section edges into one loop
+/// instead of closing a region between them; a clean partition never does.
+///
+/// Loops of two edges are exempt: consecutive edges always share a vertex, so
+/// for `n == 2` closure alone forces the reverse pattern and every lens region
+/// (an arc plus its co-endpoint chord) matches. Only at three or more edges
+/// does the pattern actually mean the walker doubled back — at two it fired on
+/// the honeycomb cap arrangement's legitimate lens and cost `pcut3` its zero
+/// free-edge pin.
+fn loops_have_out_and_back(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bool {
+    for lp in loops {
+        let n = lp.len();
+        if n < 3 {
+            continue;
+        }
+        for i in 0..n {
+            let a = &lp[i];
+            let b = &lp[(i + 1) % n];
+            if (a.start_uv - a.end_uv).length() > tol
+                && (a.start_uv - b.end_uv).length() < tol
+                && (a.end_uv - b.start_uv).length() < tol
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Split a face by its section edges, producing sub-faces.
 ///
 /// If there are no section edges, returns a single sub-face covering
 /// the entire face (pass-through).
 ///
 /// Wraps [`split_face_2d_impl`] to salvage closed-circle *cap* sections on
-/// plane faces. The impl's planar arrangement decomposition
-/// ([`arrangement_regions_from_inputs`]) drops any input whose UV chord is
-/// zero-length, and a closed circle section has `start == end` — so a
-/// coincident planar interface whose opposing solid contributes drilled holes
-/// (the drilled-socket → bin-body fuse: the socket's screw-hole rims land as
-/// closed circle sections on the body's coincident bottom plane) loses the hole
-/// caps and the drilled cylinder rims are left as free edges. The impl only
-/// carves closed circles via its single-closed / all-Line-loop fast path, which
-/// never fires when the circles are *mixed* with open sections (the socket
-/// corner-cone arcs) or when there are two or more of them. Peel the cap
-/// circles off, split the plane by the remaining (open) sections, then carve
-/// each cap circle into the sub-face that geometrically contains it via
-/// [`split_face_with_internal_loops`] (which emits the disc cap plus the holed
-/// remainder). A lone cap circle already routes through the impl's fast path, so
-/// leave that untouched.
+/// plane faces (the drilled-socket → bin-body fuse: the socket's screw-hole
+/// rims land as closed circle sections on the body's coincident bottom plane).
+/// The impl drops closed circles in both its arrangement path
+/// ([`arrangement_regions_from_inputs`] discards any input whose UV chord is
+/// zero-length, and a closed circle has `start == end`) and its wire-builder
+/// fallback, leaving the drilled cylinder rims as free edges; the only impl
+/// path that carves a closed circle is the single-closed fast path (exactly
+/// one section, closed), which never fires when the circle is mixed with open
+/// sections or when there are two or more circles. Peel the cap circles off,
+/// split the plane by the remaining sections, then carve each cap circle into
+/// the sub-face that contains it ([`distribute_cap_circles`]).
 ///
 /// # Arguments
 /// - `topo` -- the topology arena (immutable read)
@@ -3138,34 +3224,37 @@ pub fn split_face_2d(
     >,
     split_registry: Option<&mut std::collections::HashMap<usize, Vec<Point3>>>,
 ) -> Vec<SplitSubFace> {
-    // Closed-circle cap sections are salvaged only on plane faces (curved faces
-    // route closed circles through their own band/internal-loop paths).
-    let Ok(face) = topo.face(face_id) else {
-        return split_face_2d_impl(
+    let run_impl = move |secs: &[SectionEdge]| {
+        split_face_2d_impl(
             topo,
             face_id,
-            sections,
+            secs,
             rank,
             tol,
             frame,
             info,
             edge_images,
             split_registry,
-        );
+        )
+    };
+
+    // Cheap gate for the common case: no closed-circle section, nothing to
+    // salvage — skip all frame and polygon work below.
+    let any_closed_circle = sections.iter().any(|s| {
+        (s.start - s.end).length() < tol.linear && matches!(s.curve_3d, EdgeCurve::Circle(_))
+    });
+    if !any_closed_circle {
+        return run_impl(sections);
+    }
+
+    // Salvage applies only to plane faces (curved faces route closed circles
+    // through their own band/internal-loop paths).
+    let Ok(face) = topo.face(face_id) else {
+        return run_impl(sections);
     };
     let surface = face.surface().clone();
     if !matches!(surface, FaceSurface::Plane { .. }) {
-        return split_face_2d_impl(
-            topo,
-            face_id,
-            sections,
-            rank,
-            tol,
-            frame,
-            info,
-            edge_images,
-            split_registry,
-        );
+        return run_impl(sections);
     }
 
     // Build the face's outer polygon in UV so a *genuine* cap circle (a full
@@ -3175,12 +3264,10 @@ pub fn split_face_2d(
     // point with an open arc section, and their "circle" is the corner cylinder
     // tangent to the face outline). Only genuine caps are peeled off; everything
     // else stays in `sections` and reaches the impl unchanged.
-    // The FRAME must be built from the same points (and thus the same
-    // convention) the impl uses, so the sub-face UVs and the projected circle
-    // centres agree. The containment POLYGON, by contrast, must follow wire
-    // TRAVERSAL order — `collect_wire_points` takes every edge's stored
-    // `start()` and ignores the oriented-edge flag, so a wire carrying reversed
-    // edges would come back scrambled and the containment test meaningless.
+    // The frame must be built from the same points the impl uses, so the
+    // sub-face UVs and the projected circle centres agree; the containment
+    // polygon must follow wire traversal order (see
+    // [`collect_wire_points_oriented`]).
     let frame_pts = collect_wire_points(topo, face.outer_wire());
     let owned_frame;
     let cap_frame = if let Some(f) = frame {
@@ -3195,8 +3282,6 @@ pub fn split_face_2d(
         .map(|&p| cap_frame.project(p))
         .collect();
 
-    // One pass: partition into cap circles (keeping each centre so the carve
-    // step never re-derives it) and everything else.
     let mut cap_sections: Vec<SectionEdge> = Vec::new();
     let mut cap_centers: Vec<Point3> = Vec::new();
     let mut rest_sections: Vec<SectionEdge> = Vec::new();
@@ -3226,33 +3311,13 @@ pub fn split_face_2d(
     // genuine cap circle AND not the single-closed fast path (exactly one
     // section, that one circle) which the impl already handles correctly.
     if cap_sections.is_empty() || (cap_sections.len() == 1 && sections.len() == 1) {
-        return split_face_2d_impl(
-            topo,
-            face_id,
-            sections,
-            rank,
-            tol,
-            frame,
-            info,
-            edge_images,
-            split_registry,
-        );
+        return run_impl(sections);
     }
 
-    // Split by the open (non-cap) sections through the normal path — identical
-    // to today's output for those, since the cap circles were being dropped
-    // anyway.
-    let base = split_face_2d_impl(
-        topo,
-        face_id,
-        &rest_sections,
-        rank,
-        tol,
-        frame,
-        info,
-        edge_images,
-        split_registry,
-    );
+    // The impl ignores closed circles on plane faces outside its single-closed
+    // fast path, so withholding the caps does not change how the remaining
+    // sections split.
+    let base = run_impl(&rest_sections);
 
     distribute_cap_circles(
         topo,
@@ -3265,10 +3330,10 @@ pub fn split_face_2d(
     )
 }
 
-/// Slack on the cap-circle interiority test. A genuine drilled-hole rim clears
-/// the face outline by its full radius, while a corner cylinder's section circle
-/// is exactly tangent (centre one radius out); the 5% margin keeps float noise
-/// on such a tangent circle from reading as interior.
+/// Slack on the cap-circle interiority test. A genuine drilled hole's centre
+/// clears the face outline by more than its radius, while a corner cylinder's
+/// section circle is exactly tangent (centre exactly one radius out); the 5%
+/// margin keeps float noise on such a tangent circle from reading as interior.
 const CAP_INTERIORITY_MARGIN: f64 = 1.05;
 
 /// Wire points in TRAVERSAL order, honouring each oriented edge's direction.
@@ -3301,12 +3366,13 @@ fn collect_wire_points_oriented(
 
 /// Carve closed cap circles (see [`split_face_2d`]) into the base sub-faces.
 ///
-/// Each cap circle is assigned to the base sub-face whose outer boundary
+/// Each cap circle is assigned to the first base sub-face whose outer boundary
 /// contains the circle's centre in UV, then that sub-face is re-split via
-/// [`split_face_with_internal_loops`] (disc cap + holed remainder). Cap circles
-/// are strictly interior to the parent face by construction, so each lands in
-/// exactly one sub-face; a circle that fails to land anywhere is left out,
-/// matching the pre-salvage behaviour (never worse than baseline).
+/// [`split_face_with_internal_loops`] (disc cap + holed remainder). A circle
+/// whose centre lies inside a sub-face hole is air — the rim of a drill
+/// emerging inside an existing opening — and a circle contained by no sub-face
+/// has no home; both are dropped, exactly as the impl's air filter and
+/// arrangement paths drop them.
 fn distribute_cap_circles(
     topo: &Topology,
     face_id: FaceId,
@@ -3323,8 +3389,7 @@ fn distribute_cap_circles(
     if !matches!(surface, FaceSurface::Plane { .. }) {
         return base;
     }
-    // Build the containment frame with the SAME convention the impl used so the
-    // sub-faces' stored UVs and the projected circle centres share one frame.
+    // Same frame convention as the impl (see [`split_face_2d`]).
     let wire_pts = collect_wire_points(topo, face.outer_wire());
     let owned_frame;
     let frame = if let Some(f) = frame {
@@ -3340,7 +3405,10 @@ fn distribute_cap_circles(
     let mut assigned = vec![false; cap_sections.len()];
     let mut result: Vec<SplitSubFace> = Vec::with_capacity(base.len() + cap_sections.len());
     for sf in base {
-        let poly = sample_wire_loop_uv(&sf.outer_wire);
+        // The frame-based sampler is orientation-unambiguous; the stored-pcurve
+        // sampler can fold a loop carrying reversed arc sections into a
+        // self-crossing polygon (see [`sample_wire_loop_uv_via_frame`]).
+        let poly = sample_wire_loop_uv_via_frame(&sf.outer_wire, frame);
         let contained: Vec<SectionEdge> = if poly.len() < 3 {
             Vec::new()
         } else {
@@ -3348,7 +3416,9 @@ fn distribute_cap_circles(
                 .iter()
                 .enumerate()
                 .filter_map(|(i, cs)| {
-                    if assigned[i] || !super::classify_2d::point_in_polygon_2d(centers_uv[i], &poly)
+                    if assigned[i]
+                        || !super::classify_2d::point_in_polygon_2d(centers_uv[i], &poly)
+                        || is_inside_any_hole(&centers_uv[i], &sf.inner_wires)
                     {
                         return None;
                     }
@@ -4572,6 +4642,44 @@ fn split_face_2d_impl(
         }
     }
 
+    // Snap section UV endpoints onto 3D-coincident boundary UV copies. The
+    // wire graph keys junctions on UV quantized at the exact tolerance, but a
+    // section endpoint's UV comes from its own pcurve evaluation while the
+    // boundary split's UV comes from span interpolation — the same exact 3D
+    // junction can carry UV copies ~1e-6 apart (the fit-error class), which
+    // lands them in different graph cells and the section reads as pendant.
+    // Adopting the boundary's UV copy is a sub-weld no-op in 3D.
+    {
+        let (bnd, secs) = all_edges.split_at_mut(n_boundary_edges);
+        let mut anchors: Vec<(Point3, Point2)> = bnd
+            .iter()
+            .flat_map(|e| [(e.start_3d, e.start_uv), (e.end_3d, e.end_uv)])
+            .collect();
+        for e in secs {
+            for pick_start in [true, false] {
+                let (p3, uv) = if pick_start {
+                    (e.start_3d, e.start_uv)
+                } else {
+                    (e.end_3d, e.end_uv)
+                };
+                let snapped = anchors
+                    .iter()
+                    .filter(|(a3, auv)| {
+                        (*a3 - p3).length() < tol.linear && (*auv - uv).length() < 1e-2
+                    })
+                    .min_by(|(_, a), (_, b)| (*a - uv).length().total_cmp(&(*b - uv).length()))
+                    .map(|(_, auv)| *auv);
+                let final_uv = snapped.unwrap_or(uv);
+                if pick_start {
+                    e.start_uv = final_uv;
+                } else {
+                    e.end_uv = final_uv;
+                }
+                anchors.push((p3, final_uv));
+            }
+        }
+    }
+
     // Drop pendant section edges that dangle into the face interior — left
     // in, the traversal walks out and back along them, spuriously
     // over-splitting the face (boundary edges are never removed, so the
@@ -4584,7 +4692,17 @@ fn split_face_2d_impl(
     // endpoint mints them); a self-loop edge derails the angular walker into
     // degenerate single-edge sub-faces.
     let all_edges: Vec<OrientedPCurveEdge> = if is_plane {
+        // Plane frames are isometric, so a sub-weld 3D chord IS a degenerate
+        // piece (a self-split remnant ~fit-error long); real sliver edges
+        // (corner lenses) are orders of magnitude longer.
+        let n_b = n_boundary_edges;
+        let weld = tol.linear * 100.0;
         all_edges
+            .into_iter()
+            .enumerate()
+            .filter(|(i, e)| *i < n_b || (e.start_3d - e.end_3d).length() >= weld)
+            .map(|(_, e)| e)
+            .collect()
     } else {
         let n_b = n_boundary_edges;
         all_edges
@@ -4601,6 +4719,50 @@ fn split_face_2d_impl(
             })
             .map(|(_, e)| e)
             .collect()
+    };
+
+    // Drop boundary-collinear section edges on plane faces: a section whose
+    // whole UV image lies ON the boundary polyline cannot partition the face
+    // interior (its endpoints already split the boundary edges), but its twin
+    // pair double-covers the boundary segment and derails the angular walker
+    // (the pad bottom-cap chord riding the inset wall's bottom edge left the
+    // wall unsplit at both true crossings).
+    let all_edges: Vec<OrientedPCurveEdge> = if is_plane && !u_periodic && !v_periodic {
+        // Via-frame sampling: stored pcurves fold on reversed boundary arcs
+        // (two orientation conventions coexist), which would corrupt the
+        // polygon and mis-measure every distance below.
+        let boundary_poly = sample_wire_loop_uv_via_frame(&all_edges[..n_boundary_edges], frame);
+        let eps = tol.linear * 10.0;
+        let n_b = n_boundary_edges;
+        all_edges
+            .into_iter()
+            .enumerate()
+            .filter(|(i, e)| {
+                if *i < n_b {
+                    return true;
+                }
+                // Only straight (Line-pcurve) sections can be fully
+                // boundary-collinear without interior evidence; arcs bulge
+                // and are kept. Probe nine points along the chord — a
+                // splitter across a concave region keeps interior evidence
+                // at some interior fraction.
+                if !matches!(e.pcurve, brepkit_math::curves2d::Curve2D::Line(_)) {
+                    return true;
+                }
+                let (s, t) = (e.start_uv, e.end_uv);
+                !(0..=8).all(|k| {
+                    let f = f64::from(k) / 8.0;
+                    let p = Point2::new(
+                        f.mul_add(t.x() - s.x(), s.x()),
+                        f.mul_add(t.y() - s.y(), s.y()),
+                    );
+                    super::classify_2d::distance_to_polygon_boundary(p, &boundary_poly) <= eps
+                })
+            })
+            .map(|(_, e)| e)
+            .collect()
+    } else {
+        all_edges
     };
 
     // Build wire loops via angular-sorting traversal.
@@ -4680,9 +4842,22 @@ fn split_face_2d_impl(
     } else {
         &all_edges
     };
+    // Third entry condition: the angular walker demonstrably WOVE the greedy
+    // loops — some loop contains an edge immediately followed by its exact
+    // reverse (an out-and-back spur, the label-tab corner-crescent weave where
+    // both twins of a salvaged corner chord ride one loop instead of closing
+    // the crescent). A clean partition never produces that signature, so this
+    // trigger cannot demote a correctly-split single-hole cap; it only engages
+    // the arrangement where the calibrated wire-builder path has already
+    // failed.
+    let woven_spur = is_plane
+        && holes_integrated
+        && !woven_inner_wires.is_empty()
+        && loops_have_out_and_back(&loops, tol.linear);
     if is_plane
         && ((holes_integrated && original_inner_wires.len() >= 2 && !woven_inner_wires.is_empty())
-            || bay_mouth_arrangement)
+            || bay_mouth_arrangement
+            || woven_spur)
         && let Some(mut result) = arrangement_regions_from_combined(
             &surface,
             arr_input,
@@ -4798,14 +4973,40 @@ fn split_face_2d_impl(
     // loops are already broken, so it never changes a face the greedy handles.
     // (A face is either a plane disc or a cylinder band, so this never overlaps
     // the disc-chord / plane-arrangement paths above.)
+    let greedy_broken = wire_loops_self_cross(&loops, tol.linear)
+        || greedy_outer_loops_nested(&loops, cw_loops)
+        || wire_loops_have_degenerate_area(&loops, tol.linear);
+    // Sector rescue for an UNDER-split u-periodic lateral: one full-height
+    // ruling plus the glued seam should sector the strip, but to the glued
+    // walker an annulus cut once is a single wrapped region (the mid-wall
+    // pad whose second wall crossing rides the seam). Fires only when the
+    // greedy produced no split at all, so configs the greedy handles (all
+    // rulings in-face) never take this path.
+    if u_periodic
+        && !v_periodic
+        && loops.len() <= 1
+        && !sections.is_empty()
+        && matches!(&surface, FaceSurface::Cylinder(_))
+        && original_inner_wires.is_empty()
+        && let Some(sectors) = split_periodic_face_into_sectors(
+            &surface,
+            &all_edges[..n_boundary_edges],
+            sections,
+            rank,
+            reversed,
+            face_id,
+            tol.linear,
+        )
+    {
+        return sectors;
+    }
     if u_periodic
         && !v_periodic
         && !sections.is_empty()
         && matches!(&surface, FaceSurface::Cylinder(_))
-        && (wire_loops_self_cross(&loops, tol.linear)
-            || greedy_outer_loops_nested(&loops, cw_loops)
-            || wire_loops_have_degenerate_area(&loops, tol.linear))
-        && let Some(result) = split_cylinder_band_by_arrangement(
+        && greedy_broken
+    {
+        if let Some(result) = split_cylinder_band_by_arrangement(
             &surface,
             &all_edges,
             n_boundary_edges,
@@ -4813,9 +5014,109 @@ fn split_face_2d_impl(
             reversed,
             face_id,
             tol.linear,
-        )
+        ) {
+            return result;
+        }
+        // Oblique cuts (ellipse/conic sections — e.g. a socket profile biting
+        // a pad wall) are outside the rectilinear arrangement's domain. The
+        // greedy walker's `used` filter makes its successor ORDER-DEPENDENT
+        // (an early loop steals edges from later regions — the grand tour);
+        // the DCEL trace's successor is a pure function of the graph, so try
+        // it first and adopt when strictly healthier.
+        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, u_periodic, v_periodic);
+        // No pinch-split on the DCEL result: this branch is u-periodic by its
+        // gate, and on a full-period face the band orbit legitimately
+        // revisits the glued seam node with both visits stored at the same
+        // period copy — the pinch splitter would shear the band there into
+        // wrong fragments (three over-shared wall sub-faces on the lite
+        // diagonal-pad fuse).
+        let dcel_adopted = !wire_loops_have_degenerate_area(&dcel, tol.linear)
+            && (!wire_loops_self_cross(&dcel, tol.linear)
+                || wire_loops_self_cross(&loops, tol.linear))
+            && (!greedy_outer_loops_nested(&dcel, cw_loops)
+                || greedy_outer_loops_nested(&loops, cw_loops))
+            && (dcel.len() > loops.len() || wire_loops_have_degenerate_area(&loops, tol.linear));
+        if dcel_adopted {
+            loops = dcel;
+        } else {
+            // The mirrored turn rule as a legacy fallback: adopt the retry only
+            // when it is strictly healthier — more loops and none of the broken
+            // signatures.
+            let retry =
+                build_wire_loops_with_winding(&all_edges, tol.linear, u_periodic, v_periodic, true);
+            // Adoption bar: zero degenerate areas, NO NEW broken flags relative to
+            // the greedy result, and a strict improvement — either the greedy had
+            // degenerate loops (which the retry cleared) or the retry partitions
+            // into more loops. `wire_loops_self_cross` is not periodic-aware — a
+            // full-period band loop legitimately visits the seam vertex at both
+            // unwrapped copies — so it may stay set on both sides; what matters is
+            // the retry does not introduce it.
+            if !wire_loops_have_degenerate_area(&retry, tol.linear)
+                && (!wire_loops_self_cross(&retry, tol.linear)
+                    || wire_loops_self_cross(&loops, tol.linear))
+                && (!greedy_outer_loops_nested(&retry, cw_loops)
+                    || greedy_outer_loops_nested(&loops, cw_loops))
+                && (retry.len() > loops.len()
+                    || wire_loops_have_degenerate_area(&loops, tol.linear))
+            {
+                loops = retry;
+            }
+        }
+        // Pinch resolution: a grand-tour loop that revisits a UV vertex is
+        // two (or more) regions traced as one — split it there, whichever
+        // GREEDY-family builder produced the winning loops. Working in the
+        // UNWRAPPED uv keeps the legitimate seam double-visit out (its two
+        // copies differ by a period). Zero-area remnants (pure out-and-back
+        // excursions) are dropped; the sliver guard below would misclassify
+        // them as holes. An ADOPTED DCEL result is exempt: it is already the
+        // true subdivision, and its band orbit can revisit the glued seam
+        // node at the SAME stored period copy — pinch-shearing there
+        // recreates the over-shared wall fragments the trace fixed.
+        if !dcel_adopted && wire_loops_self_cross(&loops, tol.linear) {
+            let resolved: Vec<Vec<OrientedPCurveEdge>> = loops
+                .iter()
+                .flat_map(|lp| split_loop_at_pinch_vertices(lp, tol.linear))
+                .collect();
+            // Adopt only when the split UNCOVERED a region (strictly more
+            // loops) and the self-cross cleared. Equal-count adoption (shed
+            // remnant only) was tried and REFUTED: an out-and-back remnant
+            // can be load-bearing — dropping it on the straight-graze pad
+            // wall regressed the lite_pad_graze_fuse fixture to mesh
+            // fallback. Downstream reconciliation consumes those remnants.
+            if resolved.len() > loops.len() && !wire_loops_self_cross(&resolved, tol.linear) {
+                loops = resolved;
+            }
+        }
+    } else if u_periodic
+        && !v_periodic
+        && !sections.is_empty()
+        && matches!(&surface, FaceSurface::Cylinder(_))
     {
-        return result;
+        // UNDER-split rescue: a greedy trace can merge regions that the
+        // section chains fully separate WITHOUT tripping any broken-loop
+        // signature (the lite pad's B-side wall folded its socket-notch strip
+        // into the buried band — 2 clean-looking loops where the graph
+        // carries 4 regions — and the merged piece then classified as one,
+        // deleting the notch strip). The DCEL face trace enumerates the true
+        // subdivision; adopt it only when it strictly refines the greedy
+        // partition and is clean by every loop-health signature.
+        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, u_periodic, v_periodic);
+        // This branch is u-periodic by its gate: the pinch splitter is
+        // unsafe on the glued seam graph (see the DCEL consult above), so
+        // the trace is used as-is. The broken-loop flags are RELATIVE to the
+        // greedy result, not absolute — `wire_loops_self_cross` is not
+        // periodic-aware, so a valid winding band orbit revisiting the
+        // quantized seam vertex would fail an absolute gate and the refined
+        // partition (the separated strip) would be rejected.
+        if dcel.len() > loops.len()
+            && !wire_loops_have_degenerate_area(&dcel, tol.linear)
+            && (!wire_loops_self_cross(&dcel, tol.linear)
+                || wire_loops_self_cross(&loops, tol.linear))
+            && (!greedy_outer_loops_nested(&dcel, cw_loops)
+                || greedy_outer_loops_nested(&loops, cw_loops))
+        {
+            loops = dcel;
+        }
     }
 
     // Classify each loop as outer (positive area) or hole (negative).
@@ -4928,7 +5229,14 @@ fn split_face_2d_impl(
         }
     }
 
-    // If all loops are CW (negative area), the winding is reversed.
+    // If all loops are CW (negative area), the winding is reversed. Promote
+    // the LARGEST-area loop as the outer — promoting whichever loop the wire
+    // builder happened to trace first is order-dependent: when a down-facing
+    // annulus (a lip's base ring) traces throat-first, the throat became the
+    // "outer", the outline was then separately promoted by the nesting pass,
+    // and the throat was never re-attached as a hole — two hole-less regions
+    // whose spurious full disc capped the bin interior (the mid-cell-dividers
+    // lip fuse: 3-way shared ring edge → open hole shell → mesh fallback).
     if !use_structural_classification && outers.is_empty() && !holes.is_empty() {
         for hole in &mut holes {
             hole.reverse();
@@ -4938,9 +5246,21 @@ fn split_face_2d_impl(
                 edge.forward = !edge.forward;
             }
         }
-        let pts: Vec<Point2> = holes[0].iter().map(|e| e.start_uv).collect();
-        let area = signed_area_2d(&pts);
-        outers.push((holes.remove(0), area));
+        let areas: Vec<f64> = holes
+            .iter()
+            .map(|h| signed_area_2d(&sample_wire_loop_uv_periodic(h, u_per_opt, v_per_opt)))
+            .collect();
+        let largest = areas
+            .iter()
+            .enumerate()
+            .max_by(|a, b| {
+                a.1.abs()
+                    .partial_cmp(&b.1.abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map_or(0, |(i, _)| i);
+        let area = areas[largest];
+        outers.push((holes.remove(largest), area));
     }
 
     // A negative-area loop is only a true hole if it is geometrically NESTED
@@ -4961,11 +5281,23 @@ fn split_face_2d_impl(
     // holes so the matching below threads their edges through the split — the
     // shelled-cup lip fuse regresses if they become regions or are dropped.
     if !use_structural_classification && !outers.is_empty() && !holes.is_empty() {
-        let outer_uv: Vec<Vec<Point2>> =
-            outers.iter().map(|(w, _)| sample_wire_loop_uv(w)).collect();
+        // Plane faces: arc-true via-frame polygons. The pcurve sampler chords
+        // Circle2D arcs (and can fold reversed-boundary arcs), so a hole whose
+        // corner arcs poke past the outer's chord-approximated corners read as
+        // "outside" and got promoted — a lip base annulus lost its throat hole
+        // and the spurious full disc capped the bin interior (the
+        // mid-cell-dividers lip fuse).
+        let sample_loop = |wl: &[OrientedPCurveEdge]| -> Vec<Point2> {
+            if is_plane {
+                sampling::sample_wire_loop_uv_via_frame(wl, frame)
+            } else {
+                sample_wire_loop_uv(wl)
+            }
+        };
+        let outer_uv: Vec<Vec<Point2>> = outers.iter().map(|(w, _)| sample_loop(w)).collect();
         let mut promoted: Vec<Vec<OrientedPCurveEdge>> = Vec::new();
         holes.retain(|hole| {
-            let hole_pts = sample_wire_loop_uv(hole);
+            let hole_pts = sample_loop(hole);
             if hole_pts.len() < 3 {
                 return true;
             }
@@ -5016,10 +5348,45 @@ fn split_face_2d_impl(
     // dropping such holes were each tried; all three regress
     // gridfinity_d4_full_1x1_bin). The first-vertex probe lands those loops in
     // the surrounding region, threading their edges through the rebuild.
+    let qscale = 1.0 / tol.linear;
+    let loop_key = move |wl: &[OrientedPCurveEdge]| -> Vec<QKey3> {
+        let q = |p: Point3| -> (i64, i64, i64) {
+            (
+                (p.x() * qscale).round() as i64,
+                (p.y() * qscale).round() as i64,
+                (p.z() * qscale).round() as i64,
+            )
+        };
+        let mut keys: Vec<_> = wl
+            .iter()
+            .map(|e| {
+                let (a, b) = (q(e.start_3d), q(e.end_3d));
+                if a <= b { (a, b) } else { (b, a) }
+            })
+            .collect();
+        keys.sort_unstable();
+        keys
+    };
     for hole in holes {
         if let Some(first_pt) = hole.first().map(|e| e.start_uv) {
+            let hole_key = loop_key(&hole);
             let mut assigned = false;
-            for sf in &mut sub_faces {
+            let mut fallback_idx: Option<usize> = None;
+            for (i, sf) in sub_faces.iter_mut().enumerate() {
+                // Never attach a hole to the sub-face whose outer wire IS the
+                // hole's own geometry (the reversed twin of a section loop):
+                // the first-vertex probe sits exactly ON that boundary and
+                // float jitter in the strict ray-cast can land it "inside",
+                // pairing the outline with itself as a zero-area bubble (the
+                // custom-shape lip ring lost its cap this way). Skipping the
+                // twin sends the hole to the true enclosing region, which is
+                // the documented intent of the first-vertex probe.
+                if loop_key(&sf.outer_wire) == hole_key {
+                    continue;
+                }
+                if fallback_idx.is_none() {
+                    fallback_idx = Some(i);
+                }
                 let outer_pts = sample_wire_loop_uv(&sf.outer_wire);
                 if super::classify_2d::point_in_polygon_2d(first_pt, &outer_pts) {
                     sf.inner_wires.push(hole.clone());
@@ -5027,8 +5394,8 @@ fn split_face_2d_impl(
                     break;
                 }
             }
-            if !assigned && let Some(sf) = sub_faces.first_mut() {
-                sf.inner_wires.push(hole);
+            if !assigned && let Some(i) = fallback_idx {
+                sub_faces[i].inner_wires.push(hole);
             }
         }
     }
@@ -5871,5 +6238,185 @@ mod tests {
             .is_none(),
             "a non-axis-aligned section must defer to the greedy path"
         );
+    }
+
+    /// A cap circle whose centre lies inside a sub-face hole is air (the rim
+    /// of a drill emerging inside an existing opening) and must be dropped,
+    /// while a genuine cap over material is carved into disc + remainder.
+    #[test]
+    fn distribute_cap_circles_drops_caps_inside_holes() {
+        use brepkit_math::curves::Circle3D;
+        use brepkit_math::curves2d::{Circle2D, Curve2D};
+
+        let mut topo = Topology::new();
+        let face_id = make_unit_square_face(&mut topo);
+        let face = topo.face(face_id).unwrap();
+        let surface = face.surface().clone();
+        let wire_pts = collect_wire_points(&topo, face.outer_wire());
+        let normal = extract_plane_normal(&surface);
+        let frame = PlaneFrame::from_plane_face(normal, &wire_pts);
+        let boundary =
+            boundary_edges_to_pcurve(&topo, face.outer_wire(), &surface, &wire_pts, Some(&frame));
+
+        // Square hole around (0.3, 0.3). All UVs must come from the same
+        // frame projection the boundary and cap centres use.
+        let hole_corners = [
+            Point3::new(0.15, 0.15, 0.0),
+            Point3::new(0.45, 0.15, 0.0),
+            Point3::new(0.45, 0.45, 0.0),
+            Point3::new(0.15, 0.45, 0.0),
+        ];
+        let hole: Vec<OrientedPCurveEdge> = (0..4)
+            .map(|i| {
+                let (a, b) = (hole_corners[i], hole_corners[(i + 1) % 4]);
+                OrientedPCurveEdge {
+                    curve_3d: EdgeCurve::Line,
+                    pcurve: dummy_pcurve(),
+                    start_uv: frame.project(a),
+                    end_uv: frame.project(b),
+                    start_3d: a,
+                    end_3d: b,
+                    forward: true,
+                    source_edge_idx: None,
+                    pave_block_id: None,
+                }
+            })
+            .collect();
+
+        let base = SplitSubFace {
+            surface,
+            outer_wire: boundary,
+            inner_wires: vec![hole],
+            reversed: false,
+            parent: face_id,
+            rank: Rank::A,
+            precomputed_interior: None,
+        };
+
+        let cap = |cx: f64, cy: f64| -> SectionEdge {
+            let r = 0.05;
+            let circle =
+                Circle3D::new(Point3::new(cx, cy, 0.0), Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+            let rim3 = Point3::new(cx + r, cy, 0.0);
+            let rim_uv = frame.project(rim3);
+            let pcurve =
+                Curve2D::Circle(Circle2D::new(frame.project(Point3::new(cx, cy, 0.0)), r).unwrap());
+            SectionEdge {
+                curve_3d: EdgeCurve::Circle(circle),
+                pcurve_a: pcurve.clone(),
+                pcurve_b: pcurve,
+                start: rim3,
+                end: rim3,
+                start_uv_a: Some(rim_uv),
+                end_uv_a: Some(rim_uv),
+                start_uv_b: Some(rim_uv),
+                end_uv_b: Some(rim_uv),
+                target_face: None,
+                pave_block_id: None,
+            }
+        };
+        let in_hole = cap(0.3, 0.3);
+        let genuine = cap(0.7, 0.7);
+        let centers = [Point3::new(0.3, 0.3, 0.0), Point3::new(0.7, 0.7, 0.0)];
+
+        let result = distribute_cap_circles(
+            &topo,
+            face_id,
+            vec![base],
+            &[in_hole, genuine],
+            &centers,
+            Rank::A,
+            Some(&frame),
+        );
+
+        assert_eq!(
+            result.len(),
+            2,
+            "genuine cap carves disc + remainder; in-hole cap must be dropped"
+        );
+        let discs: Vec<&SplitSubFace> = result
+            .iter()
+            .filter(|sf| {
+                sf.outer_wire.len() == 1
+                    && matches!(sf.outer_wire[0].curve_3d, EdgeCurve::Circle(_))
+            })
+            .collect();
+        assert_eq!(discs.len(), 1, "exactly one cap disc must be carved");
+        let EdgeCurve::Circle(c) = &discs[0].outer_wire[0].curve_3d else {
+            unreachable!();
+        };
+        assert!(
+            (c.center() - Point3::new(0.7, 0.7, 0.0)).length() < 1e-9,
+            "the carved disc must be the genuine cap, not the in-hole one"
+        );
+    }
+
+    fn uv_line_edge(a: Point2, b: Point2) -> OrientedPCurveEdge {
+        OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            pcurve: dummy_pcurve(),
+            start_uv: a,
+            end_uv: b,
+            start_3d: Point3::new(a.x(), a.y(), 0.0),
+            end_3d: Point3::new(b.x(), b.y(), 0.0),
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+        }
+    }
+
+    #[test]
+    fn pinch_split_separates_figure_eight_into_two_squares() {
+        let p = |x: f64, y: f64| Point2::new(x, y);
+        let wire = vec![
+            uv_line_edge(p(0.0, 0.0), p(1.0, 0.0)),
+            uv_line_edge(p(1.0, 0.0), p(1.0, 1.0)),
+            uv_line_edge(p(1.0, 1.0), p(2.0, 1.0)),
+            uv_line_edge(p(2.0, 1.0), p(2.0, 2.0)),
+            uv_line_edge(p(2.0, 2.0), p(1.0, 2.0)),
+            uv_line_edge(p(1.0, 2.0), p(1.0, 1.0)),
+            uv_line_edge(p(1.0, 1.0), p(0.0, 1.0)),
+            uv_line_edge(p(0.0, 1.0), p(0.0, 0.0)),
+        ];
+        let out = split_loop_at_pinch_vertices(&wire, 1e-7);
+        assert_eq!(out.len(), 2, "figure-eight must split into its two cycles");
+        for lp in &out {
+            assert_eq!(lp.len(), 4);
+            let pts = sample_wire_loop_uv(lp);
+            assert!((signed_area_2d(&pts).abs() - 1.0).abs() < 1e-9);
+        }
+        assert!(!wire_loops_self_cross(&out, 1e-7));
+    }
+
+    #[test]
+    fn pinch_split_drops_pure_out_and_back_excursion() {
+        let p = |x: f64, y: f64| Point2::new(x, y);
+        let wire = vec![
+            uv_line_edge(p(0.0, 0.0), p(1.0, 0.0)),
+            uv_line_edge(p(1.0, 0.0), p(1.0, 1.0)),
+            uv_line_edge(p(1.0, 1.0), p(2.0, 1.0)),
+            uv_line_edge(p(2.0, 1.0), p(1.0, 1.0)),
+            uv_line_edge(p(1.0, 1.0), p(0.0, 1.0)),
+            uv_line_edge(p(0.0, 1.0), p(0.0, 0.0)),
+        ];
+        let out = split_loop_at_pinch_vertices(&wire, 1e-7);
+        assert_eq!(out.len(), 1, "the zero-area excursion must be dropped");
+        assert_eq!(out[0].len(), 4);
+        let pts = sample_wire_loop_uv(&out[0]);
+        assert!((signed_area_2d(&pts).abs() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pinch_split_keeps_simple_loop_whole() {
+        let p = |x: f64, y: f64| Point2::new(x, y);
+        let wire = vec![
+            uv_line_edge(p(0.0, 0.0), p(1.0, 0.0)),
+            uv_line_edge(p(1.0, 0.0), p(1.0, 1.0)),
+            uv_line_edge(p(1.0, 1.0), p(0.0, 1.0)),
+            uv_line_edge(p(0.0, 1.0), p(0.0, 0.0)),
+        ];
+        let out = split_loop_at_pinch_vertices(&wire, 1e-7);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].len(), 4);
     }
 }

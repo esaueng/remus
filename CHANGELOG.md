@@ -1,5 +1,299 @@
 # Changelog
 
+## [2.128.5](https://github.com/andymai/brepkit/compare/v2.128.4...v2.128.5) (2026-07-25)
+
+
+### Bug Fixes
+
+* **algo:** clip straight FF sections to the mutual AABB exactly ([#1224](https://github.com/andymai/brepkit/issues/1224)) ([84e445b](https://github.com/andymai/brepkit/commit/84e445b236c5f1e7868d89666b5de85546eb16e2))
+
+## [2.128.4](https://github.com/andymai/brepkit/compare/v2.128.3...v2.128.4) (2026-07-24)
+
+
+### Bug Fixes
+
+* **operations:** tessellate nested inner wires by even-odd nesting depth ([#1212](https://github.com/andymai/brepkit/issues/1212)) ([8126072](https://github.com/andymai/brepkit/commit/8126072ccd0ff5add6eeb409a0506ac6397fb375))
+
+## [2.128.3](https://github.com/andymai/brepkit/compare/v2.128.2...v2.128.3) (2026-07-24)
+
+
+### Bug Fixes
+
+* **algo:** classify thin coincident-band ring by absolute-nudge probe ([#1209](https://github.com/andymai/brepkit/issues/1209)) ([0e09413](https://github.com/andymai/brepkit/commit/0e09413d5e3f4c8e7c037fbee66bff32cb88ba90))
+
+## [2.128.2](https://github.com/andymai/brepkit/compare/v2.128.1...v2.128.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **operations:** guard fuse_cluster against empty input ([#1207](https://github.com/andymai/brepkit/issues/1207)) ([4625701](https://github.com/andymai/brepkit/commit/4625701129b132bbeb8f51c8526f12f2e0f2b009))
+
+## [2.128.1](https://github.com/andymai/brepkit/compare/v2.128.0...v2.128.1) (2026-07-24)
+
+
+### Performance
+
+* **operations:** fuse_all uses the N-way fuse for connected clusters ([#1205](https://github.com/andymai/brepkit/issues/1205)) ([59c7dec](https://github.com/andymai/brepkit/commit/59c7decbe929ace9d44e17765b3aa96755f802a2))
+
+## [2.128.0](https://github.com/andymai/brepkit/compare/v2.127.33...v2.128.0) (2026-07-24)
+
+
+### Features
+
+* N-way GFA fuse — 3.9x faster kumiko compound_cut ([#1202](https://github.com/andymai/brepkit/issues/1202)) ([679f9de](https://github.com/andymai/brepkit/commit/679f9de5bb58bf42cdafa872eb90e6065829471a))
+
+## [2.127.33](https://github.com/andymai/brepkit/compare/v2.127.32...v2.127.33) (2026-07-24)
+
+
+### Performance
+
+* **algo:** reject coplanar-but-disjoint SD pairs with an oriented box ([#1200](https://github.com/andymai/brepkit/issues/1200)) ([6e28fce](https://github.com/andymai/brepkit/commit/6e28fce6832276bbb1e842e2eaaa888860897bd8))
+
+## [2.127.32](https://github.com/andymai/brepkit/compare/v2.127.31...v2.127.32) (2026-07-24)
+
+
+### Performance
+
+* **operations:** batch compound_cut when the tools form one cluster ([#1198](https://github.com/andymai/brepkit/issues/1198)) ([a795086](https://github.com/andymai/brepkit/commit/a79508646899b472a4e79091de0f8b0e96a7c717))
+
+## [2.127.31](https://github.com/andymai/brepkit/compare/v2.127.30...v2.127.31) (2026-07-23)
+
+
+### Bug Fixes
+
+* **algo:** assemble the label-tab attach fuse analytically ([#1194](https://github.com/andymai/brepkit/issues/1194)) ([c775c0e](https://github.com/andymai/brepkit/commit/c775c0e6bddf6a8d03127c6de0278dc0a117f4db))
+
+## [2.127.30](https://github.com/andymai/brepkit/compare/v2.127.29...v2.127.30) (2026-07-23)
+
+
+### Bug Fixes
+
+* **operations:** hard-fail free boundary edges in the strict boolean gate ([#1192](https://github.com/andymai/brepkit/issues/1192)) ([69fd392](https://github.com/andymai/brepkit/commit/69fd392066f6d342ee4b5570ded2ac1ae9f4df0b))
+
+## [2.127.29](https://github.com/andymai/brepkit/compare/v2.127.28...v2.127.29) (2026-07-23)
+
+
+### Bug Fixes
+
+* **algo:** prefer deeper interior samples on plane faces ([#1189](https://github.com/andymai/brepkit/issues/1189)) ([03c0a9a](https://github.com/andymai/brepkit/commit/03c0a9aa9559b7714d82eade829cf39f825264c7))
+
+## [2.127.28](https://github.com/andymai/brepkit/compare/v2.127.27...v2.127.28) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** excise out-and-back spurs and slit faces before assembly ([#1187](https://github.com/andymai/brepkit/issues/1187)) ([83ca006](https://github.com/andymai/brepkit/commit/83ca006154e0d0b9f7ae1bf108dc6a30aae0f33e))
+
+## [2.127.27](https://github.com/andymai/brepkit/compare/v2.127.26...v2.127.27) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** never attach a hole to its own reversed-twin outline ([#1185](https://github.com/andymai/brepkit/issues/1185)) ([9bf9d1f](https://github.com/andymai/brepkit/commit/9bf9d1f30f3e4a71cc03c9331d9b5a79448ed8b2))
+
+## [2.127.26](https://github.com/andymai/brepkit/compare/v2.127.25...v2.127.26) (2026-07-22)
+
+
+### Bug Fixes
+
+* **geometry:** document the per-segment span invariant on arc conversion ([#1183](https://github.com/andymai/brepkit/issues/1183)) ([cd8b757](https://github.com/andymai/brepkit/commit/cd8b7576a2ad466693727abca7d9a6716e16e905))
+
+## [2.127.25](https://github.com/andymai/brepkit/compare/v2.127.24...v2.127.25) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** SD midpoint discriminator + sector rescue for under-split periodic strips ([#1178](https://github.com/andymai/brepkit/issues/1178)) ([2c18ac7](https://github.com/andymai/brepkit/commit/2c18ac79e7c93f8e11bcaa0a31c61b29b375575d))
+
+## [2.127.24](https://github.com/andymai/brepkit/compare/v2.127.23...v2.127.24) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** keep chord crossings at a closed rim's seam angle ([#1176](https://github.com/andymai/brepkit/issues/1176)) ([b7abf6b](https://github.com/andymai/brepkit/commit/b7abf6bbd72298e3e6ce434b66a798fa53b57033))
+
+## [2.127.23](https://github.com/andymai/brepkit/compare/v2.127.22...v2.127.23) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** drop boundary-collinear line sections on plane faces ([#1174](https://github.com/andymai/brepkit/issues/1174)) ([f39e843](https://github.com/andymai/brepkit/commit/f39e8430f28b2659e4224619789277c85703e1d5))
+
+## [2.127.22](https://github.com/andymai/brepkit/compare/v2.127.21...v2.127.22) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** skip point-tangency sections instead of aborting the boolean ([#1172](https://github.com/andymai/brepkit/issues/1172)) ([1105412](https://github.com/andymai/brepkit/commit/11054124f54e3692ca1fd07e090e7fb52e405d41))
+
+## [2.127.21](https://github.com/andymai/brepkit/compare/v2.127.20...v2.127.21) (2026-07-22)
+
+
+### Performance
+
+* **operations:** cluster-batch overlapping compound_cut tools ([#1170](https://github.com/andymai/brepkit/issues/1170)) ([c577faa](https://github.com/andymai/brepkit/commit/c577faab5c02c5dacb4aab6257f426e5c9afee8b))
+
+## [2.127.20](https://github.com/andymai/brepkit/compare/v2.127.19...v2.127.20) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** gate EF-IN pave blocks on surface deviation vs chord ([#1168](https://github.com/andymai/brepkit/issues/1168)) ([0535912](https://github.com/andymai/brepkit/commit/0535912c844f3d11e2e6a6885eb0238d5c60f8d6))
+
+## [2.127.19](https://github.com/andymai/brepkit/compare/v2.127.18...v2.127.19) (2026-07-22)
+
+
+### Bug Fixes
+
+* **algo:** refine closed circle rims at mate-partition vertices in assembly ([#1166](https://github.com/andymai/brepkit/issues/1166)) ([d222c85](https://github.com/andymai/brepkit/commit/d222c85cf90632c20122910cdb3daf5e08f85980))
+
+## [2.127.18](https://github.com/andymai/brepkit/compare/v2.127.17...v2.127.18) (2026-07-22)
+
+
+### Performance
+
+* **operations:** batch pairwise-disjoint compound_cut tools into one cut ([#1164](https://github.com/andymai/brepkit/issues/1164)) ([7c7a49f](https://github.com/andymai/brepkit/commit/7c7a49ffb781b3361b939a3f2f9681d04d1bf1b9))
+
+## [2.127.17](https://github.com/andymai/brepkit/compare/v2.127.16...v2.127.17) (2026-07-22)
+
+
+### Bug Fixes
+
+* **operations:** imprint grazing edge contacts in the mesh boolean co-refinement ([#1162](https://github.com/andymai/brepkit/issues/1162)) ([8eafbe0](https://github.com/andymai/brepkit/commit/8eafbe0966ef3ff3526cf15f8cdf4f4f198ea825))
+
+## [2.127.16](https://github.com/andymai/brepkit/compare/v2.127.15...v2.127.16) (2026-07-22)
+
+
+### Performance
+
+* **algo:** batch edge sampler for the same-domain polygon builders ([#1160](https://github.com/andymai/brepkit/issues/1160)) ([b517d4f](https://github.com/andymai/brepkit/commit/b517d4fca52269806eff552460c266f66130fa50))
+
+## [2.127.15](https://github.com/andymai/brepkit/compare/v2.127.14...v2.127.15) (2026-07-21)
+
+
+### Performance
+
+* **algo:** hoist the NURBS section domain out of the split-finder eval loop ([#1158](https://github.com/andymai/brepkit/issues/1158)) ([51d7d8f](https://github.com/andymai/brepkit/commit/51d7d8f9965ebe213895b6a2352ed3135a0258f1))
+
+## [2.127.14](https://github.com/andymai/brepkit/compare/v2.127.13...v2.127.14) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** arc-true hole-promotion containment on plane faces ([#1156](https://github.com/andymai/brepkit/issues/1156)) ([936c007](https://github.com/andymai/brepkit/commit/936c0073ab8556f621dbd439c67a5f46a7e3b358))
+
+## [2.127.13](https://github.com/andymai/brepkit/compare/v2.127.12...v2.127.13) (2026-07-21)
+
+
+### Bug Fixes
+
+* **operations:** admit Intersect to the multi-region acceptance gate ([#1154](https://github.com/andymai/brepkit/issues/1154)) ([5345412](https://github.com/andymai/brepkit/commit/5345412600776fbaf8273c1e3f725688989aac21))
+
+## [2.127.12](https://github.com/andymai/brepkit/compare/v2.127.11...v2.127.12) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** trace full-period cylinder partitions with the seam-glued DCEL ([#1152](https://github.com/andymai/brepkit/issues/1152)) ([f253b52](https://github.com/andymai/brepkit/commit/f253b52ad6cb5db7e3f94de1ee4651acd52c8fd3))
+
+## [2.127.11](https://github.com/andymai/brepkit/compare/v2.127.10...v2.127.11) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** split ellipse sections with the shorter-arc convention on both twins ([#1150](https://github.com/andymai/brepkit/issues/1150)) ([a5e35d3](https://github.com/andymai/brepkit/commit/a5e35d36b8252a9cc737963b6eccb19e8e96b62b))
+
+## [2.127.10](https://github.com/andymai/brepkit/compare/v2.127.9...v2.127.10) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** trim closed-section windows against the margin-free face window ([#1148](https://github.com/andymai/brepkit/issues/1148)) ([bd8cfb9](https://github.com/andymai/brepkit/commit/bd8cfb965c1fe826e84989e8af00072bd49663bf))
+
+## [2.127.9](https://github.com/andymai/brepkit/compare/v2.127.8...v2.127.9) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** never silently drop a non-trivial open growth shell ([#1146](https://github.com/andymai/brepkit/issues/1146)) ([8326473](https://github.com/andymai/brepkit/commit/83264739a97dbb5d98563aae9029374c278db732))
+
+## [2.127.8](https://github.com/andymai/brepkit/compare/v2.127.7...v2.127.8) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** emit every in-face window of a closed section curve ([#1144](https://github.com/andymai/brepkit/issues/1144)) ([b2f062e](https://github.com/andymai/brepkit/commit/b2f062efb4b2c04df10cb6ca308743d89c3838ad))
+
+## [2.127.7](https://github.com/andymai/brepkit/compare/v2.127.6...v2.127.7) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** sample a closed rim circle's full period in the line-clip polygon ([#1142](https://github.com/andymai/brepkit/issues/1142)) ([f50ac30](https://github.com/andymai/brepkit/commit/f50ac308888fad9c6ab9974a74bd9f90ff5013bd))
+
+## [2.127.6](https://github.com/andymai/brepkit/compare/v2.127.5...v2.127.6) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** split grand-tour cylinder loops at pinch vertices ([#1140](https://github.com/andymai/brepkit/issues/1140)) ([3221f79](https://github.com/andymai/brepkit/commit/3221f7978347c2d375829dd619b49a521fbc4472))
+
+## [2.127.5](https://github.com/andymai/brepkit/compare/v2.127.4...v2.127.5) (2026-07-21)
+
+
+### Bug Fixes
+
+* **operations:** fold a multi-component fuse tool in piece by piece ([#1138](https://github.com/andymai/brepkit/issues/1138)) ([f5ef4df](https://github.com/andymai/brepkit/commit/f5ef4df7f3490bdfb993e3024c1220409c7282b6))
+
+## [2.127.4](https://github.com/andymai/brepkit/compare/v2.127.3...v2.127.4) (2026-07-21)
+
+
+### Bug Fixes
+
+* **algo:** rescue corner-window cone-cylinder sections and accept multi-piece fuses ([#1136](https://github.com/andymai/brepkit/issues/1136)) ([8d626c7](https://github.com/andymai/brepkit/commit/8d626c74e46c118800ac826e7ce8cc4ed04a93bd))
+
+## [2.127.3](https://github.com/andymai/brepkit/compare/v2.127.2...v2.127.3) (2026-07-20)
+
+
+### Bug Fixes
+
+* **heal:** revert a unify pass that would orphan edges ([#1131](https://github.com/andymai/brepkit/issues/1131)) ([dd47ed2](https://github.com/andymai/brepkit/commit/dd47ed29ffa2b520de99981de0223e35198a3226))
+
+## [2.127.2](https://github.com/andymai/brepkit/compare/v2.127.1...v2.127.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* **heal:** stop unify_same_domain discarding closed-curve boundary loops ([#1129](https://github.com/andymai/brepkit/issues/1129)) ([d9a0400](https://github.com/andymai/brepkit/commit/d9a0400b8101152ce1fa8bc21f60f1691bcb6d0f))
+
+## [2.127.1](https://github.com/andymai/brepkit/compare/v2.127.0...v2.127.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **operations:** apply the hole correction in the multi-region boolean gate ([#1127](https://github.com/andymai/brepkit/issues/1127)) ([3f8d1c2](https://github.com/andymai/brepkit/commit/3f8d1c2d7fee700181a678010e5de68c9cb067c1))
+
+## [2.127.0](https://github.com/andymai/brepkit/compare/v2.126.22...v2.127.0) (2026-07-19)
+
+
+### Features
+
+* **math:** solve parallel-axis cone × cylinder in closed form ([#1125](https://github.com/andymai/brepkit/issues/1125)) ([8dd92c4](https://github.com/andymai/brepkit/commit/8dd92c47453437f700bebd8bad7e852550719d9f))
+
+## [2.126.22](https://github.com/andymai/brepkit/compare/v2.126.21...v2.126.22) (2026-07-19)
+
+
+### Bug Fixes
+
+* **algo:** anchor closed-rim splits at the edge's own start angle ([#1123](https://github.com/andymai/brepkit/issues/1123)) ([6dc0388](https://github.com/andymai/brepkit/commit/6dc03885deb64240bb0ae2ead1c2146aa8c5228b))
+
+## [2.126.21](https://github.com/andymai/brepkit/compare/v2.126.20...v2.126.21) (2026-07-19)
+
+
+### Bug Fixes
+
+* **algo:** drop cap circles emerging inside holes; gate salvage early ([#1121](https://github.com/andymai/brepkit/issues/1121)) ([2599a0d](https://github.com/andymai/brepkit/commit/2599a0d4e68fa86d2792f208d14a32659d16a171))
+
 ## [2.126.20](https://github.com/andymai/brepkit/compare/v2.126.19...v2.126.20) (2026-07-19)
 
 

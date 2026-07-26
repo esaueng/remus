@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
+use brepkit_topology::edge::EdgeId;
 use brepkit_topology::face::{Face, FaceId, FaceSurface};
 use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
@@ -153,6 +154,14 @@ pub fn build_solid_with_origins(
     // coincident faces with one identical boundary cancel.
     remove_doubled_faces(topo, &mut face_ids, &mut sources);
 
+    // Step 0b3: Excise out-and-back spurs — the same edge traversed forward
+    // then immediately backward is a zero-width excursion contributing two
+    // uses of one edge to a single face (a coincident-ring re-trace woven
+    // through a wall's wire at a concave corner). Removing the pair never
+    // changes the enclosed region. A face whose outer wire collapses below
+    // 3 edges was ONLY the excursion (a slit) and is dropped entirely.
+    excise_out_and_back_spurs(topo, &mut face_ids, &mut sources);
+
     if face_ids.is_empty() {
         return Err(AlgoError::AssemblyFailed(
             "all faces avoided (all have free edges)".into(),
@@ -193,7 +202,7 @@ pub fn build_solid_with_origins(
     }
 
     // Phase 4: Assemble
-    let solid_id = assemble(topo, growth, holes)?;
+    let solid_id = assemble(topo, growth, holes, &face_source)?;
     let origins = brepkit_topology::explorer::solid_faces(topo, solid_id)?
         .into_iter()
         .map(|f| (f, face_source.get(&f).copied().flatten()))
@@ -669,6 +678,23 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
             // Multi-shell: a negative shell is the tool's interior cavity (hole).
             false
         };
+        if std::env::var("BK_AREAS").is_ok() {
+            let mut mix: HashMap<&str, usize> = HashMap::new();
+            for &fid in shell {
+                if let Ok(f) = topo.face(fid) {
+                    *mix.entry(f.surface().type_tag()).or_default() += 1;
+                }
+            }
+            let mut mix: Vec<_> = mix.into_iter().collect();
+            mix.sort_unstable();
+            log::debug!(
+                "growth shell AREAS shell faces={} mix={mix:?} signed_vol={signed_vol:.6} lone={} outward={:?} -> {}",
+                shell.len(),
+                shells.len() == 1,
+                shell_is_outward_oriented(topo, shell),
+                if is_growth { "growth" } else { "hole" }
+            );
+        }
         if is_growth {
             growth.push(shell.clone());
         } else {
@@ -837,6 +863,105 @@ fn has_repeated_oriented_edge(oes: &[OrientedEdge]) -> bool {
         }
     }
     false
+}
+
+/// Remove cyclically-adjacent (edge, +dir)/(edge, -dir) pairs from every
+/// face wire; drop faces whose outer wire collapses below 3 edges and inner
+/// wires that collapse entirely.
+fn excise_out_and_back_spurs(
+    topo: &mut Topology,
+    face_ids: &mut Vec<FaceId>,
+    sources: &mut Vec<Option<FaceId>>,
+) {
+    let excise = |oes: &mut Vec<OrientedEdge>| -> bool {
+        let mut changed = false;
+        loop {
+            let n = oes.len();
+            if n < 2 {
+                return changed;
+            }
+            let mut removed = false;
+            for i in 0..n {
+                let j = (i + 1) % n;
+                if i != j
+                    && oes[i].edge() == oes[j].edge()
+                    && oes[i].is_forward() != oes[j].is_forward()
+                {
+                    let (hi, lo) = if i > j { (i, j) } else { (j, i) };
+                    oes.remove(hi);
+                    oes.remove(lo);
+                    removed = true;
+                    changed = true;
+                    break;
+                }
+            }
+            if !removed {
+                return changed;
+            }
+        }
+    };
+
+    let mut drop: Vec<usize> = Vec::new();
+    for (fi, &fid) in face_ids.iter().enumerate() {
+        let Ok(face) = topo.face(fid) else { continue };
+        let outer_wid = face.outer_wire();
+        let inner_wids: Vec<WireId> = face.inner_wires().to_vec();
+
+        let mut outer = match topo.wire(outer_wid) {
+            Ok(w) => w.edges().to_vec(),
+            Err(_) => continue,
+        };
+        if excise(&mut outer) {
+            if outer.len() < 3 {
+                drop.push(fi);
+                continue;
+            }
+            let closed = oriented_edges_form_closed_loop(topo, &outer);
+            if let (Ok(new_wire), Ok(slot)) = (
+                brepkit_topology::wire::Wire::new(outer, closed),
+                topo.wire_mut(outer_wid),
+            ) {
+                *slot = new_wire;
+            }
+        }
+        let mut kept_inners: Vec<WireId> = Vec::with_capacity(inner_wids.len());
+        let mut inners_changed = false;
+        for wid in inner_wids {
+            let Ok(inner_wire) = topo.wire(wid) else {
+                kept_inners.push(wid);
+                continue;
+            };
+            let mut inner = inner_wire.edges().to_vec();
+            if excise(&mut inner) {
+                if inner.len() < 3 {
+                    // The hole WAS the excursion (a zero-width slit): dropping
+                    // it entirely is the only consistent outcome — writing the
+                    // shrunken (or original) wire back would leave the spur.
+                    inners_changed = true;
+                    continue;
+                }
+                let closed = oriented_edges_form_closed_loop(topo, &inner);
+                if let (Ok(new_wire), Ok(slot)) = (
+                    brepkit_topology::wire::Wire::new(inner, closed),
+                    topo.wire_mut(wid),
+                ) {
+                    *slot = new_wire;
+                }
+            }
+            kept_inners.push(wid);
+        }
+        if inners_changed && let Ok(f) = topo.face_mut(fid) {
+            *f.inner_wires_mut() = kept_inners;
+        }
+    }
+    for &fi in drop.iter().rev() {
+        log::debug!(
+            "excise_out_and_back_spurs: dropping slit face {:?}",
+            face_ids[fi]
+        );
+        face_ids.remove(fi);
+        sources.remove(fi);
+    }
 }
 
 /// Iteratively remove edges that cannot belong to any closed loop: in a
@@ -1025,10 +1150,192 @@ fn normalize_face_wires(topo: &mut Topology, fid: FaceId) {
 }
 
 /// Final assembly: build Solid from growth + hole shells.
+/// `BK_OPEN_SHELL=1`: describe an open growth shell before the assembly aborts.
+///
+/// The abort message carries only a face count, which says nothing about WHY
+/// the lump failed to pair. This prints each face's surface kind and a
+/// representative point, then every unpaired edge with its curve kind and
+/// endpoints — enough to tell a stray sliver from a real chunk, and to spot
+/// near-duplicate junction vertices.
+fn log_open_growth_shell(
+    topo: &Topology,
+    gs: &[FaceId],
+    all: &[FaceId],
+    face_source: &HashMap<FaceId, Option<FaceId>>,
+) {
+    if std::env::var("BK_OPEN_SHELL").is_err() {
+        return;
+    }
+    let in_lump: HashSet<FaceId> = gs.iter().copied().collect();
+    let mut uses: HashMap<EdgeId, usize> = HashMap::new();
+    for &fid in gs {
+        let Ok(f) = topo.face(fid) else { continue };
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            let Ok(w) = topo.wire(wid) else { continue };
+            for oe in w.edges() {
+                *uses.entry(oe.edge()).or_default() += 1;
+            }
+        }
+    }
+    log::debug!(
+        "growth shell OPENSHELL faces={} signed_volume={:.6}",
+        gs.len(),
+        signed_volume_of_shell(topo, gs)
+    );
+    for &fid in gs {
+        let Ok(f) = topo.face(fid) else { continue };
+        let p = topo.wire(f.outer_wire()).ok().and_then(|w| {
+            let e = topo.edge(w.edges().first()?.edge()).ok()?;
+            Some(topo.vertex(e.start()).ok()?.point())
+        });
+        let src = face_source.get(&fid).copied().flatten();
+        match p {
+            Some(p) => log::debug!(
+                "growth shell OPENSHELL face {fid:?} {} src={src:?} at ({:.3},{:.3},{:.3})",
+                f.surface().type_tag(),
+                p.x(),
+                p.y(),
+                p.z()
+            ),
+            None => log::debug!(
+                "growth shell OPENSHELL face {fid:?} {} at ?",
+                f.surface().type_tag()
+            ),
+        }
+    }
+    // What else was SELECTED near the lump? If the missing partners are base
+    // faces that were never created, nothing of the base appears here; if they
+    // exist but were not walked in, they show up.
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for &fid in gs {
+        let Ok(f) = topo.face(fid) else { continue };
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            let Ok(w) = topo.wire(wid) else { continue };
+            for oe in w.edges() {
+                let Ok(e) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                for vid in [e.start(), e.end()] {
+                    let Ok(v) = topo.vertex(vid) else { continue };
+                    let p = v.point();
+                    for (k, c) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+                        lo[k] = lo[k].min(c);
+                        hi[k] = hi[k].max(c);
+                    }
+                }
+            }
+        }
+    }
+    log::debug!(
+        "growth shell OPENSHELL bbox x[{:.3},{:.3}] y[{:.3},{:.3}] z[{:.3},{:.3}]",
+        lo[0],
+        hi[0],
+        lo[1],
+        hi[1],
+        lo[2],
+        hi[2]
+    );
+    let mut allmix: HashMap<&str, usize> = HashMap::new();
+    for &ofid in all {
+        if let Ok(f) = topo.face(ofid) {
+            *allmix.entry(f.surface().type_tag()).or_default() += 1;
+        }
+    }
+    let mut allmix: Vec<_> = allmix.into_iter().collect();
+    allmix.sort_unstable();
+    log::debug!("growth shell OPENSHELL selected-total {allmix:?}");
+    let pad = 0.5;
+    for &ofid in all {
+        if in_lump.contains(&ofid) {
+            continue;
+        }
+        let Ok(of) = topo.face(ofid) else { continue };
+        let Ok(w) = topo.wire(of.outer_wire()) else {
+            continue;
+        };
+        let inside = w.edges().iter().any(|oe| {
+            let Ok(e) = topo.edge(oe.edge()) else {
+                return false;
+            };
+            [e.start(), e.end()].into_iter().any(|vid| {
+                topo.vertex(vid).is_ok_and(|v| {
+                    let p = v.point();
+                    [p.x(), p.y(), p.z()]
+                        .into_iter()
+                        .enumerate()
+                        .all(|(k, c)| c >= lo[k] - pad && c <= hi[k] + pad)
+                })
+            })
+        });
+        if inside {
+            let src = face_source.get(&ofid).copied().flatten();
+            log::debug!(
+                "growth shell OPENSHELL near {ofid:?} {} src={src:?}",
+                of.surface().type_tag()
+            );
+        }
+    }
+    for (eid, count) in &uses {
+        if *count != 1 {
+            continue;
+        }
+        let Ok(e) = topo.edge(*eid) else { continue };
+        let (Ok(a), Ok(b)) = (topo.vertex(e.start()), topo.vertex(e.end())) else {
+            continue;
+        };
+        let (a, b) = (a.point(), b.point());
+        // Is the partner MISSING, or does it exist under a different edge id?
+        // "same id elsewhere" means the lump simply was not walked into the
+        // main shell; a position-coincident DIFFERENT id means the junction was
+        // minted twice and the two copies never merged. Those need opposite
+        // fixes, so the distinction is the whole point of this probe.
+        let mut same_id_outside = 0usize;
+        let mut coincident_other_id = 0usize;
+        let near = |p: Point3, q: Point3| (p - q).length() < 1e-4;
+        for &ofid in all {
+            if in_lump.contains(&ofid) {
+                continue;
+            }
+            let Ok(of) = topo.face(ofid) else { continue };
+            for wid in std::iter::once(of.outer_wire()).chain(of.inner_wires().iter().copied()) {
+                let Ok(w) = topo.wire(wid) else { continue };
+                for oe in w.edges() {
+                    if oe.edge() == *eid {
+                        same_id_outside += 1;
+                        continue;
+                    }
+                    let Ok(oe2) = topo.edge(oe.edge()) else {
+                        continue;
+                    };
+                    let (Ok(c), Ok(d)) = (topo.vertex(oe2.start()), topo.vertex(oe2.end())) else {
+                        continue;
+                    };
+                    let (c, d) = (c.point(), d.point());
+                    if (near(a, c) && near(b, d)) || (near(a, d) && near(b, c)) {
+                        coincident_other_id += 1;
+                    }
+                }
+            }
+        }
+        log::debug!(
+            "growth shell OPENSHELL free {} ({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3}) same_id_outside={same_id_outside} coincident_other_id={coincident_other_id}",
+            e.curve().type_tag(),
+            a.x(),
+            a.y(),
+            a.z(),
+            b.x(),
+            b.y(),
+            b.z()
+        );
+    }
+}
+
 fn assemble(
     topo: &mut Topology,
     growth_shells: Vec<Vec<FaceId>>,
     hole_shells: Vec<Vec<FaceId>>,
+    face_source: &HashMap<FaceId, Option<FaceId>>,
 ) -> Result<SolidId, AlgoError> {
     let all_faces: Vec<FaceId> = growth_shells
         .iter()
@@ -1036,7 +1343,7 @@ fn assemble(
         .flatten()
         .copied()
         .collect();
-    for fid in all_faces {
+    for &fid in &all_faces {
         normalize_face_wires(topo, fid);
     }
 
@@ -1071,6 +1378,26 @@ fn assemble(
         }
         if shell_is_closed(topo, gs) {
             outer_faces.extend_from_slice(gs);
+        } else if gs.len() >= 4 {
+            // An OPEN growth shell of real size is not a fragmentation
+            // sliver — it is a genuine solid lump whose selection left
+            // unpaired junction edges. Silently discarding it deletes its
+            // whole volume from a watertight-looking result (the lite
+            // fused-foot: 72 faces, ~2700 units^3, invisible to every
+            // edge-pairing gate). Fail the analytic assembly instead so the
+            // boolean falls back to the volume-correct mesh path. Note the
+            // OUTER shell is never subjected to this test, so which lump
+            // dodges it historically depended on volume-ordering luck.
+            log_open_growth_shell(topo, gs, &all_faces, face_source);
+            return Err(AlgoError::AssemblyFailed(format!(
+                "open growth shell with {} faces would be dropped; aborting analytic assembly",
+                gs.len()
+            )));
+        } else {
+            log::debug!(
+                "BuilderSolid: dropping open {}-face growth sliver",
+                gs.len()
+            );
         }
     }
     let outer_shell = Shell::new(outer_faces)
@@ -1085,6 +1412,16 @@ fn assemble(
     let mut inner_ids = Vec::new();
     for hole in &hole_shells {
         if !shell_is_closed(topo, hole) {
+            if hole.len() >= 4 {
+                // Same fail-safe as the growth side: a sizeable open "hole"
+                // is a mis-signed or mis-selected LUMP, not a cavity sliver —
+                // silently discarding it deletes real material or cavity
+                // boundary from a watertight-looking result.
+                return Err(AlgoError::AssemblyFailed(format!(
+                    "open hole shell with {} faces would be dropped; aborting analytic assembly",
+                    hole.len()
+                )));
+            }
             log::debug!(
                 "BuilderSolid: dropping open {}-face hole-shell fragment",
                 hole.len()
@@ -1825,11 +2162,14 @@ fn split_arc_edges_at_collinear_vertices(
 
     let mut replacements: HashMap<EdgeId, Vec<OrientedEdge>> = HashMap::new();
     for (eid, sv, ev, sp, ep, curve) in arc_edges {
-        // Skip closed (full) arcs: start ≈ end means the whole circle/ellipse,
-        // which has no proper interior to cut and is handled elsewhere.
-        if (ep - sp).length() < snap {
-            continue;
-        }
+        // A closed (full) circle/ellipse CAN be refined — at global vertices
+        // that lie on it — but only into 3+ sub-arcs. With a single interior
+        // cut the two halves share BOTH endpoints, and the endpoint-keyed
+        // duplicate merge below would conflate them into one arc. The mate
+        // side of a full rim is typically already split at the crossing
+        // vertices (e.g. a pad bore poking through inset walls), so matching
+        // its partition here is what lets the flood-fill pair the shells.
+        let is_closed = (ep - sp).length() < snap;
         // `snap` is a LINEAR tolerance (model units); the span / branch tests
         // below are in the curve's ANGULAR domain (radians). Convert via the
         // curve's radius scale (arc length ≈ radius·angle) so the angular guard
@@ -1848,8 +2188,18 @@ fn split_arc_edges_at_collinear_vertices(
             continue;
         }
         let angular_eps = snap / radius_scale;
-        // The arc's CCW angular span [a0, a1] with a1 > a0.
-        let (a0, a1) = curve.domain_with_endpoints(sp, ep);
+        // The arc's CCW angular span [a0, a1] with a1 > a0. For a CLOSED edge
+        // the endpoint-derived domain is the curve's intrinsic 0..TAU, but the
+        // replacement chain below starts at the edge's seam vertex — anchor
+        // the span at the seam's angle instead, or cuts sort in the intrinsic
+        // frame and the sub-arcs overlap past one revolution (seam at pi with
+        // cuts at pi/2 and 3pi/2 would sweep 4pi total).
+        let (a0, a1) = if is_closed {
+            let seam = project_angle_on_curve(&curve, sp);
+            (seam, seam + std::f64::consts::TAU)
+        } else {
+            curve.domain_with_endpoints(sp, ep)
+        };
         let span = a1 - a0;
         if span < angular_eps {
             continue;
@@ -1906,7 +2256,7 @@ fn split_arc_edges_at_collinear_vertices(
             }
             cuts.push((a_branch, vid));
         }
-        if cuts.is_empty() {
+        if cuts.is_empty() || (is_closed && cuts.len() < 2) {
             continue;
         }
         // Total order: angle then vertex index (the `vert_at` HashMap iteration
@@ -2601,6 +2951,241 @@ mod tests {
     }
 
     #[test]
+    fn closed_circle_splits_at_matching_mate_vertices() {
+        // A full-circle rim on one face vs the SAME circle split into three
+        // arcs on the mate face (a pad bore whose rim crosses other faces).
+        // The refinement must split the full circle at the mate's vertices so
+        // the duplicate merge can pair the two partitions.
+        use brepkit_math::curves::Circle3D;
+        use brepkit_topology::edge::{Edge, EdgeCurve};
+        use brepkit_topology::face::{Face, FaceSurface};
+        use brepkit_topology::wire::Wire;
+
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+
+        // Face A: disc bounded by the full circle (one closed edge).
+        let seam = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(0.0),
+            1e-7,
+        ));
+        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+        let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
+        let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
+
+        // Face B: the same circle as three arcs split at 0, 2π/3, 4π/3.
+        let thirds = std::f64::consts::TAU / 3.0;
+        let v0 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(0.0),
+            1e-7,
+        ));
+        let v1 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(thirds),
+            1e-7,
+        ));
+        let v2 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(2.0 * thirds),
+            1e-7,
+        ));
+        let mut oes = Vec::new();
+        for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
+            let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+            oes.push(OrientedEdge::new(e, true));
+        }
+        let wire_b = topo.add_wire(Wire::new(oes, true).unwrap());
+        let face_b = topo.add_face(Face::new(wire_b, vec![], plane));
+
+        let mut face_ids = vec![face_a, face_b];
+        split_arc_edges_at_collinear_vertices(&mut topo, &mut face_ids).unwrap();
+        merge_duplicate_edges(&mut topo, &mut face_ids).unwrap();
+
+        let keys_a = face_edge_keys(&topo, face_ids[0]).unwrap();
+        let keys_b = face_edge_keys(&topo, face_ids[1]).unwrap();
+        assert_eq!(keys_a.len(), 3, "full circle must split into 3 arcs");
+        let mut ka = keys_a;
+        let mut kb = keys_b;
+        ka.sort_unstable();
+        kb.sort_unstable();
+        assert_eq!(ka, kb, "the two partitions must pair edge-for-edge");
+    }
+
+    #[test]
+    fn closed_circle_with_single_cut_vertex_stays_whole() {
+        // One interior cut would produce two arcs sharing BOTH endpoints —
+        // the endpoint-keyed merge would conflate them. The refinement must
+        // leave the circle whole in that case.
+        use brepkit_math::curves::Circle3D;
+        use brepkit_topology::edge::{Edge, EdgeCurve};
+        use brepkit_topology::face::{Face, FaceSurface};
+        use brepkit_topology::wire::Wire;
+
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let seam = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(0.0),
+            1e-7,
+        ));
+        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+        let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
+        let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
+
+        // A lone vertex on the circle, referenced by an unrelated line edge.
+        let v_on = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(std::f64::consts::PI),
+            1e-7,
+        ));
+        let v_off = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            Point3::new(5.0, 5.0, 0.0),
+            1e-7,
+        ));
+        let line = topo.add_edge(Edge::new(v_on, v_off, EdgeCurve::Line));
+        let back = topo.add_edge(Edge::new(v_off, v_on, EdgeCurve::Line));
+        let wire_b = topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(line, true), OrientedEdge::new(back, true)],
+                true,
+            )
+            .unwrap(),
+        );
+        let face_b = topo.add_face(Face::new(wire_b, vec![], plane));
+
+        let mut face_ids = vec![face_a, face_b];
+        split_arc_edges_at_collinear_vertices(&mut topo, &mut face_ids).unwrap();
+
+        let keys_a = face_edge_keys(&topo, face_ids[0]).unwrap();
+        assert_eq!(keys_a.len(), 1, "single-cut circle must stay whole");
+    }
+
+    #[test]
+    fn closed_circle_with_offset_seam_splits_into_single_revolution() {
+        // Seam at pi, cuts at pi/2 and 3pi/2: the sub-arc spans must be
+        // anchored at the seam, or they overlap past one revolution. The
+        // three arcs must partition the rim exactly (total sweep TAU) and
+        // pair with the mate's partition, which shares the seam vertex.
+        use brepkit_math::curves::Circle3D;
+        use brepkit_topology::edge::{Edge, EdgeCurve};
+        use brepkit_topology::face::{Face, FaceSurface};
+        use brepkit_topology::wire::Wire;
+
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let pi = std::f64::consts::PI;
+        let seam = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(pi),
+            1e-7,
+        ));
+        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+        let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
+        let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
+
+        let vs = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(pi),
+            1e-7,
+        ));
+        let v1 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(pi / 2.0),
+            1e-7,
+        ));
+        let v2 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            circle.evaluate(3.0 * pi / 2.0),
+            1e-7,
+        ));
+        let mut oes = Vec::new();
+        for (a, b) in [(vs, v2), (v2, v1), (v1, vs)] {
+            let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+            oes.push(OrientedEdge::new(e, true));
+        }
+        let wire_b = topo.add_wire(Wire::new(oes, true).unwrap());
+        let face_b = topo.add_face(Face::new(wire_b, vec![], plane));
+
+        let mut face_ids = vec![face_a, face_b];
+        split_arc_edges_at_collinear_vertices(&mut topo, &mut face_ids).unwrap();
+        merge_duplicate_edges(&mut topo, &mut face_ids).unwrap();
+
+        let mut ka = face_edge_keys(&topo, face_ids[0]).unwrap();
+        let mut kb = face_edge_keys(&topo, face_ids[1]).unwrap();
+        assert_eq!(ka.len(), 3, "offset-seam circle must split into 3 arcs");
+        ka.sort_unstable();
+        kb.sort_unstable();
+        assert_eq!(ka, kb, "seam-anchored partitions must pair edge-for-edge");
+    }
+
+    #[test]
+    fn closed_ellipse_splits_at_matching_mate_vertices() {
+        use brepkit_math::curves::Ellipse3D;
+        use brepkit_topology::edge::{Edge, EdgeCurve};
+        use brepkit_topology::face::{Face, FaceSurface};
+        use brepkit_topology::wire::Wire;
+
+        let mut topo = Topology::new();
+        let ellipse = Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            1.5,
+        )
+        .unwrap();
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let seam = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            ellipse.evaluate(0.0),
+            1e-7,
+        ));
+        let full = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Ellipse(ellipse.clone())));
+        let wire_a = topo.add_wire(Wire::new(vec![OrientedEdge::new(full, true)], true).unwrap());
+        let face_a = topo.add_face(Face::new(wire_a, vec![], plane.clone()));
+
+        let thirds = std::f64::consts::TAU / 3.0;
+        let v0 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            ellipse.evaluate(0.0),
+            1e-7,
+        ));
+        let v1 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            ellipse.evaluate(thirds),
+            1e-7,
+        ));
+        let v2 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+            ellipse.evaluate(2.0 * thirds),
+            1e-7,
+        ));
+        let mut oes = Vec::new();
+        for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
+            let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Ellipse(ellipse.clone())));
+            oes.push(OrientedEdge::new(e, true));
+        }
+        let wire_b = topo.add_wire(Wire::new(oes, true).unwrap());
+        let face_b = topo.add_face(Face::new(wire_b, vec![], plane));
+
+        let mut face_ids = vec![face_a, face_b];
+        split_arc_edges_at_collinear_vertices(&mut topo, &mut face_ids).unwrap();
+        merge_duplicate_edges(&mut topo, &mut face_ids).unwrap();
+
+        let mut ka = face_edge_keys(&topo, face_ids[0]).unwrap();
+        let mut kb = face_edge_keys(&topo, face_ids[1]).unwrap();
+        assert_eq!(ka.len(), 3, "full ellipse must split into 3 arcs");
+        ka.sort_unstable();
+        kb.sort_unstable();
+        assert_eq!(ka, kb, "ellipse partitions must pair edge-for-edge");
+    }
+
+    #[test]
     fn shell_outward_orientation_inward_cube_is_rejected() {
         // A single INWARD shell (every face reversed, normals point in — the
         // "Cut leaving only a cavity" case Greptile flagged) must NOT read as
@@ -2668,5 +3253,85 @@ mod tests {
 
         let angle = angle_with_ref(d1, d2, d_ref);
         assert!(angle.abs() < 1e-10, "0° between X and X: got {angle}");
+    }
+
+    #[test]
+    fn open_growth_shell_aborts_assembly_instead_of_vanishing() {
+        // Outer lump: a closed unit cube. Second lump: a translated cube with
+        // one face REMOVED — a 5-face OPEN shell. Depending on which face is
+        // omitted, the corner-fan volume signs it growth or hole; BOTH silent
+        // discard paths deleted its material from a result that still read
+        // watertight to every edge-pairing gate (the lite fused-foot). The
+        // assembler must abort in every open >=4-face case so the boolean
+        // falls back to the mesh path. Exercise each omission to cover both
+        // branches.
+        for omit in 0..6 {
+            let mut topo = Topology::new();
+            let outer = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+            let second = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+            let ids: Vec<_> = brepkit_topology::explorer::solid_faces(&topo, second).unwrap();
+            let mut moved: std::collections::HashSet<brepkit_topology::vertex::VertexId> =
+                std::collections::HashSet::new();
+            for &fid in &ids {
+                let face = topo.face(fid).unwrap();
+                let wires: Vec<_> = std::iter::once(face.outer_wire())
+                    .chain(face.inner_wires().iter().copied())
+                    .collect();
+                for wid in wires {
+                    let oes: Vec<_> = topo.wire(wid).unwrap().edges().to_vec();
+                    for oe in oes {
+                        let e = topo.edge(oe.edge()).unwrap();
+                        for vid in [e.start(), e.end()] {
+                            if moved.insert(vid) {
+                                let pnt = topo.vertex(vid).unwrap().point();
+                                topo.vertex_mut(vid).unwrap().set_point(Point3::new(
+                                    pnt.x() + 10.0,
+                                    pnt.y(),
+                                    pnt.z(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            let mut selected: Vec<SelectedFace> = Vec::new();
+            for &fid in &brepkit_topology::explorer::solid_faces(&topo, outer).unwrap() {
+                selected.push(SelectedFace {
+                    face_id: fid,
+                    source_face: fid,
+                    reversed: false,
+                });
+            }
+            for (i, &fid) in ids.iter().enumerate() {
+                if i == omit {
+                    continue;
+                }
+                selected.push(SelectedFace {
+                    face_id: fid,
+                    source_face: fid,
+                    reversed: false,
+                });
+            }
+            // An open shell whose fan volume WINS the outer selection is the
+            // sanctioned-lenient open-outer case (Cut/Fuse keep "best
+            // available" open results); the fail-safe covers NON-outer lumps
+            // only. Skip omissions where the open group becomes the outer.
+            let face_ids: Vec<_> = selected.iter().map(|sf| sf.face_id).collect();
+            let shells = perform_loops(&topo, &face_ids).unwrap();
+            let (growth, _) = perform_areas(&topo, &shells);
+            let outer_is_open = growth
+                .iter()
+                .map(|g| (signed_volume_of_shell(&topo, g), g))
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+                .is_some_and(|(_, g)| !shell_is_closed(&topo, g));
+            if outer_is_open {
+                continue;
+            }
+            let err = build_solid(&mut topo, &selected, &[]);
+            assert!(
+                matches!(err, Err(AlgoError::AssemblyFailed(_))),
+                "omit={omit}: a 5-face open shell must abort assembly, got {err:?}"
+            );
+        }
     }
 }

@@ -19,6 +19,7 @@ use std::hash::BuildHasher;
 
 use super::SubFace;
 use crate::ds::{GfaArena, Rank};
+use crate::error::AlgoError;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_topology::Topology;
 use brepkit_topology::face::{FaceId, FaceSurface};
@@ -104,7 +105,14 @@ type QVert = (i64, i64, i64);
 ///
 /// Each edge is stored as a sorted quantized vertex pair `(min, max)`.
 /// The set of pairs is sorted for deterministic comparison.
-type EdgeSet = Vec<(QVert, QVert)>;
+// Endpoint pair + weld-quantized curve midpoint. The midpoint discriminates
+// co-endpoint edges with different geometry: the two halves of a chord-split
+// cap disc share BOTH vertices (chord + arc), and endpoint-only sets made
+// them false within-rank duplicates — the outside half was silently dropped
+// as "SD residue". The midpoint bucket is 100x coarser than the endpoint
+// bucket so marched/fitted geometry (~1e-6 off exact) cannot split a true
+// duplicate pair across buckets.
+type EdgeSet = Vec<(QVert, QVert, QVert)>;
 
 /// Detect same-domain face pairs using edge-set hashing.
 ///
@@ -117,16 +125,33 @@ type EdgeSet = Vec<(QVert, QVert)>;
 /// Returns a list of SD pairs WITHOUT modifying sub-face classifications.
 /// The BOP selector uses these pairs for operation-specific handling.
 #[allow(clippy::too_many_lines)]
-pub fn detect_same_domain<S: BuildHasher>(
+/// Coincidence grouping shared by the 2-operand and N-way SD emissions.
+///
+/// `sd_groups` maps each union-find root to the coincident sub-face indices in
+/// that group; `pair_data` maps a directly-unioned `(min, max)` pair to whether
+/// the two faces share outward orientation; `geometric_overlap_groups` holds the
+/// roots whose union came from the geometric-containment pass. The grouping is
+/// rank-agnostic — the emission step interprets it per boolean operation.
+struct SdGrouping {
+    sd_groups: HashMap<usize, Vec<usize>>,
+    pair_data: HashMap<(usize, usize), bool>,
+    geometric_overlap_groups: HashSet<usize>,
+}
+
+/// Detect and union all coincident (same-domain) sub-faces.
+fn build_sd_grouping(
     topo: &Topology,
     arena: &GfaArena,
     sub_faces: &[SubFace],
-    _face_ranks: &HashMap<FaceId, Rank, S>,
     tol: Tolerance,
-) -> SameDomainResult {
+) -> SdGrouping {
     let n = sub_faces.len();
     if n < 2 {
-        return SameDomainResult::default();
+        return SdGrouping {
+            sd_groups: HashMap::new(),
+            pair_data: HashMap::new(),
+            geometric_overlap_groups: HashSet::new(),
+        };
     }
 
     // Use quantized vertex positions (not VertexId) so that VV-merged
@@ -237,13 +262,32 @@ pub fn detect_same_domain<S: BuildHasher>(
     // patches that rarely accumulate residue, and a 2D containment test on
     // their parametric domains needs surface-specific handling.
     {
+        // Per planar face, from one outer-wire sampling: an AABB (drives the
+        // grid broad-phase) and a tol-expanded OBB (tighter oriented reject in
+        // the pair loop below). `planar_obbs` is indexed directly by sub-face
+        // index — dense and hasher-free in the hot loop; an entry is `Some`
+        // exactly for the faces that also entered `planar_aabbs`.
         let mut planar_aabbs: Vec<(usize, brepkit_math::aabb::Aabb3)> = Vec::new();
+        let mut planar_obbs: Vec<Option<brepkit_math::obb::Obb3>> = vec![None; n];
         for (idx, surf) in surfaces.iter().enumerate() {
-            if matches!(surf, Some(FaceSurface::Plane { .. }))
-                && let Some(bb) = face_outer_aabb(topo, sub_faces[idx].face_id)
-            {
-                planar_aabbs.push((idx, bb));
+            let Some(FaceSurface::Plane { normal, .. }) = surf else {
+                continue;
+            };
+            let pts = face_outer_wire_points(topo, sub_faces[idx].face_id);
+            if pts.len() < 3 {
+                continue;
             }
+            // Thickness axis pinned to the plane normal, in-plane axes from PCA,
+            // expanded by tol so a boundary-coincident pair still passes.
+            let mut obb = brepkit_math::obb::Obb3::from_slice_with_normal(&pts, *normal);
+            for e in &mut obb.half_extents {
+                *e += tol.linear;
+            }
+            let Some(aabb) = brepkit_math::aabb::Aabb3::try_from_points(pts) else {
+                continue;
+            };
+            planar_aabbs.push((idx, aabb));
+            planar_obbs[idx] = Some(obb);
         }
         // Broad-phase: only test pairs whose AABBs overlap. Two planar faces
         // that don't share 3D space (expanded by tol for boundary-coincident
@@ -259,6 +303,20 @@ pub fn detect_same_domain<S: BuildHasher>(
                 _ => None,
             };
             let Some(same_dir) = same_dir else { continue };
+            // Oriented-bound reject: an OBB conservatively contains its face
+            // (both are tol-expanded), so OBB-disjoint means the faces cannot
+            // share any point — no interior point of one can lie in the other,
+            // so `planar_faces_overlap` would return false. Skipping the pair
+            // is result-preserving and prunes the coplanar-but-disjoint lattice
+            // pairs the axis-aligned box admits — a thin diagonal strut's AABB
+            // is a large square overlapping every lattice member it crosses,
+            // while its OBB hugs the strut. Both `i` and `j` come from
+            // `planar_aabbs`, so their OBB entries are always `Some`.
+            if let (Some(oi), Some(oj)) = (&planar_obbs[i], &planar_obbs[j])
+                && !oi.intersects(oj)
+            {
+                continue;
+            }
             // Complementary partition regions of one split (same source, distinct
             // interiors) are not overlapping duplicates; a coincident same-source
             // duplicate (same interior) still reaches `planar_faces_overlap`.
@@ -345,6 +403,29 @@ pub fn detect_same_domain<S: BuildHasher>(
             sd_groups.entry(root).or_default().push(idx);
         }
     }
+
+    SdGrouping {
+        sd_groups,
+        pair_data,
+        geometric_overlap_groups,
+    }
+}
+
+/// Two-operand same-domain detection: split each coincident group into a
+/// cross-rank [`SameDomainPair`] plus within-rank duplicates for the BOP
+/// selector. Behaviour is unchanged from before the grouping was extracted.
+pub fn detect_same_domain<S: BuildHasher>(
+    topo: &Topology,
+    arena: &GfaArena,
+    sub_faces: &[SubFace],
+    _face_ranks: &HashMap<FaceId, Rank, S>,
+    tol: Tolerance,
+) -> SameDomainResult {
+    let SdGrouping {
+        sd_groups,
+        pair_data,
+        geometric_overlap_groups,
+    } = build_sd_grouping(topo, arena, sub_faces, tol);
 
     let mut pairs = Vec::new();
     let mut within_rank_dups = Vec::new();
@@ -461,6 +542,90 @@ pub fn detect_same_domain<S: BuildHasher>(
     }
 }
 
+/// N-way FUSE same-domain decisions over coincident face groups.
+pub struct FuseNSameDomain {
+    /// Every sub-face that belongs to a coincident group. These are handled
+    /// here and excluded from the caller's normal inside/outside classification.
+    pub grouped: HashSet<usize>,
+    /// For each SAME-oriented (shared-exterior) group, its single kept
+    /// representative paired with the set of source indices in that group. The
+    /// caller keeps the representative only if it is also outside every source
+    /// NOT in the group (a third solid could still cover it). Opposite-oriented
+    /// (internal-interface) groups contribute members to `grouped` only — all
+    /// dropped.
+    pub keep_reprs: Vec<(usize, HashSet<usize>)>,
+}
+
+/// Resolve coincident faces for an N-way FUSE.
+///
+/// Reuses the rank-agnostic [`build_sd_grouping`] and decides each group by the
+/// effective outward normals of its members (planar only):
+///
+/// - **All aligned** — the faces bound the union on the same side; it is an
+///   exterior boundary, so keep exactly one (the lowest-indexed member) and drop
+///   the coincident duplicates.
+/// - **Mixed** — material lies on both sides of the shared plane, so the region
+///   is interior to the union; drop every member.
+///
+/// `source[i]` is the global source index of sub-face `i`.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] on a coincident group with a non-planar member, whose
+/// orientation is not a single vector — the caller should fall back to the
+/// sequential path.
+pub fn detect_same_domain_fuse_n(
+    topo: &Topology,
+    arena: &GfaArena,
+    sub_faces: &[SubFace],
+    source: &[usize],
+    tol: Tolerance,
+) -> Result<FuseNSameDomain, AlgoError> {
+    let SdGrouping { sd_groups, .. } = build_sd_grouping(topo, arena, sub_faces, tol);
+
+    let mut grouped = HashSet::new();
+    let mut keep_reprs = Vec::new();
+
+    for members in sd_groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+
+        let mut normals = Vec::with_capacity(members.len());
+        for &m in members {
+            let normal = topo
+                .face(sub_faces[m].face_id)?
+                .effective_plane_normal()
+                .ok_or_else(|| {
+                    AlgoError::AssemblyFailed(
+                        "N-way fuse: non-planar coincident face; sequential fallback".into(),
+                    )
+                })?;
+            normals.push(normal);
+        }
+
+        for &m in members {
+            grouped.insert(m);
+        }
+
+        let reference = normals[0];
+        let all_aligned = normals.iter().all(|n| n.dot(reference) > 0.0);
+        if all_aligned {
+            // Shared exterior boundary — keep exactly one representative.
+            let repr = members.iter().copied().min().unwrap_or(members[0]);
+            let group_sources: HashSet<usize> = members.iter().map(|&m| source[m]).collect();
+            keep_reprs.push((repr, group_sources));
+        }
+        // Mixed orientation → interior interface → drop all (members already in
+        // `grouped`, none pushed to `keep_reprs`).
+    }
+
+    Ok(FuseNSameDomain {
+        grouped,
+        keep_reprs,
+    })
+}
+
 /// Compute the canonical edge set for a face using quantized vertex positions.
 ///
 /// Each edge in the outer wire is represented as a sorted pair of quantized
@@ -483,7 +648,7 @@ fn compute_edge_set_quantized(
     let face = topo.face(face_id).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
 
-    let mut pairs: Vec<(QVert, QVert)> = Vec::with_capacity(wire.edges().len());
+    let mut pairs: Vec<(QVert, QVert, QVert)> = Vec::with_capacity(wire.edges().len());
 
     // Cache resolved vertex positions to avoid redundant resolve_vertex() calls
     // when the same vertex appears in multiple edges.
@@ -505,8 +670,29 @@ fn compute_edge_set_quantized(
         let qs = resolve_and_quantize(edge.start())?;
         let qe = resolve_and_quantize(edge.end())?;
 
+        let sp = topo
+            .vertex(arena.resolve_vertex(edge.start()))
+            .ok()?
+            .point();
+        let ep = topo.vertex(arena.resolve_vertex(edge.end())).ok()?.point();
+        // The midpoint is evaluated in STORED order deliberately: arcs
+        // follow the CCW start-to-end convention, so (A,B) and (B,A) are
+        // complementary arcs — different geometry that must hash apart
+        // (they are exactly the two halves this discriminator separates).
+        // Identical geometry always stores identical direction under that
+        // convention, so a true duplicate pair cannot hash apart here.
+        let mid = crate::builder::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, 0.5);
+        // quantize_point MULTIPLIES by the scale, so the 100x-coarser
+        // midpoint bucket (fit-error tolerance for marched geometry) needs
+        // scale / 100, not scale * 100.
+        let qmid = quantize_point(mid, scale / 100.0);
+
         // Canonical ordering: smaller first
-        let pair = if qs <= qe { (qs, qe) } else { (qe, qs) };
+        let pair = if qs <= qe {
+            (qs, qe, qmid)
+        } else {
+            (qe, qs, qmid)
+        };
         pairs.push(pair);
     }
 
@@ -571,17 +757,14 @@ fn planar_faces_overlap(
             // parameterization, and domain-based sampling would then trace
             // the complementary (long-way) arc, corrupting the polygon used
             // for the containment tests below.
-            for k in 0..samples_per_edge {
-                #[allow(clippy::cast_precision_loss)]
-                let frac = k as f64 / samples_per_edge as f64;
-                let frac = if oe.is_forward() { frac } else { 1.0 - frac };
-                pts.push(super::pcurve_compute::evaluate_edge_at_t(
-                    edge.curve(),
-                    sp,
-                    ep,
-                    frac,
-                ));
-            }
+            super::pcurve_compute::sample_edge_uniform(
+                edge.curve(),
+                sp,
+                ep,
+                samples_per_edge,
+                oe.is_forward(),
+                &mut pts,
+            );
         }
         pts
     };
@@ -791,17 +974,14 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
         let (sp, ep) = (sv.point(), ev.point());
         // Sample each edge so arc boundaries contribute their true swept area,
         // mirroring `planar_faces_overlap`'s shorter-arc sampling.
-        for k in 0..SD_EDGE_SAMPLES {
-            #[allow(clippy::cast_precision_loss)]
-            let frac = k as f64 / SD_EDGE_SAMPLES as f64;
-            let frac = if oe.is_forward() { frac } else { 1.0 - frac };
-            pts.push(super::pcurve_compute::evaluate_edge_at_t(
-                edge.curve(),
-                sp,
-                ep,
-                frac,
-            ));
-        }
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            sp,
+            ep,
+            SD_EDGE_SAMPLES,
+            oe.is_forward(),
+            &mut pts,
+        );
     }
     if pts.len() < 3 {
         return None;
@@ -836,17 +1016,14 @@ fn wire_points_3d(topo: &Topology, face_id: FaceId) -> Option<Vec<brepkit_math::
         let sv = topo.vertex(edge.start()).ok()?;
         let ev = topo.vertex(edge.end()).ok()?;
         let (sp, ep) = (sv.point(), ev.point());
-        for k in 0..SD_EDGE_SAMPLES {
-            #[allow(clippy::cast_precision_loss)]
-            let frac = k as f64 / SD_EDGE_SAMPLES as f64;
-            let frac = if oe.is_forward() { frac } else { 1.0 - frac };
-            pts.push(super::pcurve_compute::evaluate_edge_at_t(
-                edge.curve(),
-                sp,
-                ep,
-                frac,
-            ));
-        }
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            sp,
+            ep,
+            SD_EDGE_SAMPLES,
+            oe.is_forward(),
+            &mut pts,
+        );
     }
     if pts.len() < 3 {
         return None;
@@ -1129,9 +1306,21 @@ fn repr_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
 /// `true` when the two faces share real 3D area, which requires their AABBs
 /// (expanded by tolerance for boundary-coincident cases) to intersect.
 fn face_outer_aabb(topo: &Topology, face_id: FaceId) -> Option<brepkit_math::aabb::Aabb3> {
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
-    let mut pts: Vec<brepkit_math::vec::Point3> = Vec::new();
+    brepkit_math::aabb::Aabb3::try_from_points(face_outer_wire_points(topo, face_id))
+}
+
+/// Sample a face's outer wire at [`SD_EDGE_SAMPLES`] points per edge, matching
+/// the polygons the overlap tests build. Samples `0..SD_EDGE_SAMPLES` (not
+/// `..=`) so each shared vertex is covered once, by the next edge's `frac=0`.
+fn face_outer_wire_points(topo: &Topology, face_id: FaceId) -> Vec<brepkit_math::vec::Point3> {
+    let Ok(face) = topo.face(face_id) else {
+        return Vec::new();
+    };
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return Vec::new();
+    };
+    let mut pts: Vec<brepkit_math::vec::Point3> =
+        Vec::with_capacity(wire.edges().len() * SD_EDGE_SAMPLES);
     for oe in wire.edges() {
         let Ok(edge) = topo.edge(oe.edge()) else {
             continue;
@@ -1139,24 +1328,16 @@ fn face_outer_aabb(topo: &Topology, face_id: FaceId) -> Option<brepkit_math::aab
         let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
             continue;
         };
-        let (sp, ep) = (sv.point(), ev.point());
-        // Sample `0..SD_EDGE_SAMPLES` (not `..=`) to match the
-        // `planar_faces_overlap` / `planar_face_area` polygons exactly: the next
-        // edge's `frac=0` already covers each shared vertex, so this drops the
-        // redundant per-vertex duplicate without changing the AABB.
-        for k in 0..SD_EDGE_SAMPLES {
-            #[allow(clippy::cast_precision_loss)]
-            let frac = k as f64 / SD_EDGE_SAMPLES as f64;
-            let frac = if oe.is_forward() { frac } else { 1.0 - frac };
-            pts.push(super::pcurve_compute::evaluate_edge_at_t(
-                edge.curve(),
-                sp,
-                ep,
-                frac,
-            ));
-        }
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            sv.point(),
+            ev.point(),
+            SD_EDGE_SAMPLES,
+            oe.is_forward(),
+            &mut pts,
+        );
     }
-    brepkit_math::aabb::Aabb3::try_from_points(pts)
+    pts
 }
 
 /// Generate the spatially-overlapping candidate pairs among `indices` using a

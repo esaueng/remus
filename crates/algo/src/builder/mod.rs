@@ -64,6 +64,80 @@ pub struct SubFace {
     pub interior_point: Option<Point3>,
 }
 
+/// `BK_SUBFACE_BOX=x0,x1,y0,y1,z0,z1`: report every sub-face whose vertices
+/// touch that box, with its surface kind, classification and selection.
+///
+/// The decisive probe for a missing result face: it separates "the splitter
+/// never produced a sub-face here" from "it did, and selection dropped it".
+/// Those need opposite fixes, so guessing between them wastes a whole dig.
+fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::SelectedFace]) {
+    let Ok(spec) = std::env::var("BK_SUBFACE_BOX") else {
+        return;
+    };
+    let v: Vec<f64> = spec
+        .split(',')
+        .filter_map(|t| t.trim().parse().ok())
+        .collect();
+    if v.len() != 6 {
+        log::debug!("BK_SUBFACE_BOX needs x0,x1,y0,y1,z0,z1");
+        return;
+    }
+    let (lo, hi) = ([v[0], v[2], v[4]], [v[1], v[3], v[5]]);
+    let chosen: std::collections::HashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
+    for sf in subs {
+        let Ok(f) = topo.face(sf.face_id) else {
+            continue;
+        };
+        let mut touches = false;
+        let mut flo = [f64::MAX; 3];
+        let mut fhi = [f64::MIN; 3];
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            let Ok(w) = topo.wire(wid) else { continue };
+            for oe in w.edges() {
+                let Ok(e) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                for vid in [e.start(), e.end()] {
+                    let Ok(vtx) = topo.vertex(vid) else { continue };
+                    let p = vtx.point();
+                    let c = [p.x(), p.y(), p.z()];
+                    for k in 0..3 {
+                        flo[k] = flo[k].min(c[k]);
+                        fhi[k] = fhi[k].max(c[k]);
+                    }
+                    if c.into_iter()
+                        .enumerate()
+                        .all(|(k, v)| v >= lo[k] && v <= hi[k])
+                    {
+                        touches = true;
+                    }
+                }
+            }
+        }
+        if touches {
+            log::debug!(
+                "SUBFACE {:?} {} src={:?} class={:?} rank={:?} selected={} ip={} x[{:.3},{:.3}] y[{:.3},{:.3}] z[{:.3},{:.3}]",
+                sf.face_id,
+                f.surface().type_tag(),
+                sf.source_face,
+                sf.classification,
+                sf.rank,
+                chosen.contains(&sf.face_id),
+                sf.interior_point.map_or_else(
+                    || "none".to_string(),
+                    |p| format!("({:.3},{:.3},{:.3})", p.x(), p.y(), p.z())
+                ),
+                flo[0],
+                fhi[0],
+                flo[1],
+                fhi[1],
+                flo[2],
+                fhi[2]
+            );
+        }
+    }
+}
+
 /// Builder — orchestrates face splitting and classification.
 ///
 /// Owns both the `Topology` and `GfaArena`, mutating them as needed.
@@ -142,6 +216,7 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
         let solid_id = assemble::assemble_solid(&mut self.topo, &selected, &cap_planes)?;
         Ok((self.topo, solid_id))
@@ -161,6 +236,7 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
         let (solid_id, origins) =
             assemble::assemble_solid_with_origins(&mut self.topo, &selected, &cap_planes)?;
@@ -419,6 +495,130 @@ impl Builder {
     }
 }
 
+/// Build an N-way FUSE result from the shared arena of an N-way pave filler.
+///
+/// Reuses the two-solid Builder machinery, generalized to N sources:
+///
+/// - **Splitting** — sections are stored face-relative (`pcurve_a == pcurve_b`),
+///   so the face splitter is rank-invariant; every face is split with a
+///   constant `Rank::A`. A sub-face's *global* source is tracked separately via
+///   `face_source` (original input face → source index).
+/// - **Classification** — each sub-face is kept iff its interior sample is
+///   OUTSIDE every OTHER source (the union boundary). One `RayCastGeoms` is
+///   built per source and reused across all sub-faces of that source's rivals.
+/// - **Assembly** — the kept faces feed the standard solid assembler.
+///
+/// This slice handles the interpenetrating case (no coincident faces). If a
+/// sub-face classifies `On` against another source — the signature of a
+/// coincident/flush contact that needs cross-source same-domain resolution —
+/// the fuse bails with an error so the caller can fall back to the sequential
+/// path. Coincident-face support is the next increment.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if a coincident contact is detected, a sub-face cannot
+/// be sampled or classified, or assembly fails.
+pub fn build_fuse_n<S: std::hash::BuildHasher>(
+    mut topo: Topology,
+    arena: GfaArena,
+    sources: &[SolidId],
+    face_source: &HashMap<FaceId, usize, S>,
+    tol: Tolerance,
+) -> Result<(Topology, SolidId), AlgoError> {
+    // Split every source face. Sections are face-relative, so a constant rank
+    // is correct for all of them (see the doc comment).
+    let edge_images = fill_images::fill_edge_images(&arena);
+    let all_a_ranks: HashMap<FaceId, Rank> = face_source.keys().map(|&f| (f, Rank::A)).collect();
+    let sub_faces =
+        fill_images_faces::fill_images_faces(&mut topo, &arena, &edge_images, &all_a_ranks, tol);
+
+    // The global source of each sub-face is its parent input face's source.
+    let sub_source: Vec<usize> = sub_faces
+        .iter()
+        .map(|sf| {
+            face_source.get(&sf.source_face).copied().ok_or_else(|| {
+                AlgoError::AssemblyFailed(format!(
+                    "sub-face parent {:?} has no source index",
+                    sf.source_face
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    // Resolve coincident faces across sources first: opposite-oriented groups
+    // are interior interfaces (all dropped); same-oriented groups keep one
+    // representative (still verified against sources outside the group). The
+    // remaining sub-faces are classified by inside/outside as usual.
+    let sd = same_domain::detect_same_domain_fuse_n(&topo, &arena, &sub_faces, &sub_source, tol)?;
+    let keep_reprs: HashMap<usize, std::collections::HashSet<usize>> =
+        sd.keep_reprs.into_iter().collect();
+
+    // One ray-cast geometry per source, reused across every rival sub-face.
+    let geoms: Vec<Option<classifier::RayCastGeoms>> = sources
+        .iter()
+        .map(|&s| classifier::RayCastGeoms::new(&topo, s).ok())
+        .collect();
+
+    // Keep a sub-face iff its interior sample is outside every source in
+    // `others`. A coincident `On` against a non-coincident source means the
+    // same-domain pass missed a coincidence — bail to the sequential fallback.
+    let keep_if_outside = |topo: &Topology,
+                           sample: Point3,
+                           own: usize,
+                           others: &dyn Fn(usize) -> bool|
+     -> Result<bool, AlgoError> {
+        for (j, &other) in sources.iter().enumerate() {
+            if j == own || !others(j) {
+                continue;
+            }
+            match classifier::classify_point_cached(topo, other, geoms[j].as_ref(), sample)? {
+                FaceClass::Inside => return Ok(false),
+                FaceClass::On | FaceClass::CoplanarSame | FaceClass::CoplanarOpposite => {
+                    return Err(AlgoError::AssemblyFailed(
+                        "N-way fuse: unresolved coincident face; sequential fallback".into(),
+                    ));
+                }
+                FaceClass::Outside | FaceClass::Unknown => {}
+            }
+        }
+        Ok(true)
+    };
+
+    let mut selected = Vec::new();
+    for (idx, sf) in sub_faces.iter().enumerate() {
+        let own = sub_source[idx];
+        let sample = match sf.interior_point {
+            Some(pt) => pt,
+            None => sample_face_interior(&topo, sf.face_id, tol)?,
+        };
+
+        let keep = if sd.grouped.contains(&idx) {
+            // A coincident face: kept only if it is this group's same-oriented
+            // representative AND outside every source not in the group.
+            match keep_reprs.get(&idx) {
+                Some(group_sources) => {
+                    keep_if_outside(&topo, sample, own, &|j| !group_sources.contains(&j))?
+                }
+                None => false,
+            }
+        } else {
+            // A normal sub-face: kept iff outside every other source.
+            keep_if_outside(&topo, sample, own, &|_| true)?
+        };
+
+        if keep {
+            selected.push(bop::SelectedFace {
+                face_id: sf.face_id,
+                source_face: sf.source_face,
+                reversed: false,
+            });
+        }
+    }
+
+    let solid_id = assemble::assemble_solid(&mut topo, &selected, &[])?;
+    Ok((topo, solid_id))
+}
+
 /// Sample a point in the interior of a face.
 ///
 /// Uses the midpoint of the first boundary edge, then offsets slightly
@@ -589,12 +789,20 @@ fn sample_face_interior(
             let frame = plane_frame::PlaneFrame::from_plane_face(*normal, &poly);
             let poly2d: Vec<_> = poly.iter().map(|p| frame.project(*p)).collect();
             let eps = classify_2d::boundary_eps(&poly2d);
-            // Halve the offset until a candidate lands strictly inside. 24
-            // halvings reach scale ~6e-8 (min offset ~diag·6e-12), below any
-            // physically meaningful strip width, so the loop only exits to the
-            // fallback for a near-zero-area (degenerate) face.
-            let mut scale = 1.0_f64;
-            for _ in 0..24 {
+            // Try LARGE offsets first, then shrink. The base offset is
+            // diag·1e-4 — a sample that close to the boundary edge can hug a
+            // coincident interface plane of the opposing solid (a frustum
+            // wall's longest edge lies ON the coincident bottom cap), where
+            // the ray-cast classifier turns unstable and mirror-image walls
+            // classify differently. A deeper sample is strictly better
+            // whenever the polygon containment check admits it; thin slivers
+            // reject the large candidates and fall through to the fine
+            // scales. 28 halvings from 64 reach scale ~2.4e-7 (min offset
+            // ~diag·2.4e-11), below any physically meaningful strip width,
+            // so the loop only exits to the fallback for a near-zero-area
+            // (degenerate) face.
+            let mut scale = 64.0_f64;
+            for _ in 0..28 {
                 for sign in [1.0_f64, -1.0] {
                     let cand = mid_pt + base_offset * (sign * scale);
                     let c2 = frame.project(cand);

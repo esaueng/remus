@@ -1400,6 +1400,17 @@ fn build_section_edges(
                     Some((start, end)),
                     tol,
                 ) {
+                    // Salvage the parts of a straight section that extend past
+                    // the collinear boundary edge it rides — see the PaveBlock
+                    // arm below for the full rationale (label-tab corner
+                    // crescents).
+                    if matches!(curve_ds.curve, EdgeCurve::Line) {
+                        for (es, ee) in
+                            line_section_boundary_extensions(topo, face_id, start, end, tol)
+                        {
+                            push_plain_line_section(&mut sections, face, es, ee);
+                        }
+                    }
                     continue;
                 }
 
@@ -1599,7 +1610,11 @@ fn build_section_edges(
                     } else {
                         vec![(raw_start, raw_end)]
                     };
-                for (start, end) in intervals {
+                let mut work: Vec<(Point3, Point3)> = intervals;
+                let mut work_i = 0;
+                while work_i < work.len() {
+                    let (start, end) = work[work_i];
+                    work_i += 1;
                     // Skip a degenerate curved section: a Circle/Ellipse PaveBlock
                     // fragment whose arc has collapsed to a point (3D chord below
                     // tolerance AND a near-zero parametric span). A coincident-edge
@@ -1654,6 +1669,23 @@ fn build_section_edges(
                         Some((start, end)),
                         tol,
                     ) {
+                        // A straight section can ride a collinear boundary edge
+                        // for most of its span yet extend past it at one or both
+                        // ends (the label-tab corner: the tab's back-plane chord
+                        // rides the cavity's back line but juts 2.55mm into each
+                        // rounded-corner crescent). The interior samples all land
+                        // on the covered middle, so the whole section reads as a
+                        // re-trace and the crescent is never split off. Salvage
+                        // the uncovered extensions — they carry the genuine
+                        // interior split. Exact interval math, not sampling: the
+                        // extension fraction can be arbitrarily small.
+                        if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                            for ext in
+                                line_section_boundary_extensions(topo, face_id, start, end, tol)
+                            {
+                                work.push(ext);
+                            }
+                        }
                         continue;
                     }
 
@@ -2046,8 +2078,8 @@ fn sample_curve_interior(curve_ds: &crate::ds::IntersectionCurveDS) -> Vec<Point
 /// For these types, `evaluate_with_endpoints` ignores the start/end reference
 /// points entirely — they dispatch to `ParametricCurve::evaluate(t)`.
 fn curve_endpoints(
-    _topo: &Topology,
-    _arena: &GfaArena,
+    topo: &Topology,
+    arena: &GfaArena,
     curve_ds: &crate::ds::IntersectionCurveDS,
 ) -> (Option<Point3>, Option<Point3>) {
     use brepkit_math::vec::Point3;
@@ -2058,7 +2090,138 @@ fn curve_endpoints(
     let dummy = Point3::new(0.0, 0.0, 0.0);
     let start_3d = curve_ds.curve.evaluate_with_endpoints(t0, dummy, dummy);
     let end_3d = curve_ds.curve.evaluate_with_endpoints(t1, dummy, dummy);
+    // A marched/fitted curve evaluates ~1e-6 off the exact junction its mint
+    // snapped the pave vertices to (boundary-foot anchors); downstream boundary
+    // splitters gate on the exact 1e-7 tolerance, so hand back the VERTEX
+    // positions when they are the same endpoints (within the weld band) —
+    // never a repositioning, only the exact-snap variant of the same point.
+    if curve_ds.pave_blocks.len() == 1
+        && !matches!(curve_ds.curve, brepkit_topology::edge::EdgeCurve::Line)
+        && let Some(pb) = arena.pave_blocks.get(curve_ds.pave_blocks[0])
+        && let (Ok(sv), Ok(ev)) = (topo.vertex(pb.start.vertex), topo.vertex(pb.end.vertex))
+    {
+        let weld = 1e-5;
+        let (svp, evp) = (sv.point(), ev.point());
+        if (svp - start_3d).length() <= weld && (evp - end_3d).length() <= weld {
+            return (Some(svp), Some(evp));
+        }
+    }
     (Some(start_3d), Some(end_3d))
+}
+
+/// Sub-intervals of the straight section `start..end` NOT covered by any
+/// collinear boundary Line edge of `face_id` (outer or inner wires).
+///
+/// A section flagged as a boundary re-trace can still extend past the edge it
+/// rides at one or both ends; those extensions are genuine interior splitters
+/// (the label-tab back-plane chord riding the cavity back line but jutting
+/// into each rounded-corner crescent). Coverage is computed with exact
+/// interval arithmetic so an arbitrarily small extension survives. Extensions
+/// shorter than the weld band (100·tol) are noise and skipped.
+fn line_section_boundary_extensions(
+    topo: &Topology,
+    face_id: FaceId,
+    start: Point3,
+    end: Point3,
+    tol: f64,
+) -> Vec<(Point3, Point3)> {
+    let weld = tol * 100.0;
+    let dir = end - start;
+    let len = dir.length();
+    if len <= weld {
+        return Vec::new();
+    }
+    let u = dir * (1.0 / len);
+    let Ok(face) = topo.face(face_id) else {
+        return Vec::new();
+    };
+    let mut cover: Vec<(f64, f64)> = Vec::new();
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else { continue };
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                continue;
+            }
+            let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                continue;
+            };
+            let (bs, be) = (sv.point(), ev.point());
+            let off0 = ((bs - start) - u * (bs - start).dot(u)).length();
+            let off1 = ((be - start) - u * (be - start).dot(u)).length();
+            if off0 > weld || off1 > weld {
+                continue;
+            }
+            let t0 = (bs - start).dot(u);
+            let t1 = (be - start).dot(u);
+            let (lo, hi) = (t0.min(t1).max(0.0), t0.max(t1).min(len));
+            if hi - lo > tol {
+                cover.push((lo, hi));
+            }
+        }
+    }
+    if cover.is_empty() {
+        return Vec::new();
+    }
+    cover.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut exts = Vec::new();
+    let mut cur = 0.0_f64;
+    for &(lo, hi) in &cover {
+        if lo > cur + weld {
+            exts.push((cur, lo));
+        }
+        cur = cur.max(hi);
+    }
+    if len > cur + weld {
+        exts.push((cur, len));
+    }
+    exts.into_iter()
+        .map(|(a, b)| (start + u * a, start + u * b))
+        .collect()
+}
+
+/// Push a plain straight section with a Line2D pcurve (the PaveBlock-arm
+/// construction) — used for salvaged boundary-extension segments.
+fn push_plain_line_section(
+    sections: &mut Vec<SectionEdge>,
+    face: &brepkit_topology::face::Face,
+    start: Point3,
+    end: Point3,
+) {
+    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use brepkit_math::vec::{Point2, Vec2};
+
+    let start_uv = face.surface().project_point(start);
+    let end_uv = face.surface().project_point(end);
+    let s2 = start_uv.map_or(Point2::new(0.0, 0.0), |(u, v)| Point2::new(u, v));
+    let e2 = end_uv.map_or(Point2::new(1.0, 0.0), |(u, v)| Point2::new(u, v));
+    let d = e2 - s2;
+    let dl = d.length();
+    let direction = if dl > 1e-12 {
+        Vec2::new(d.x() / dl, d.y() / dl)
+    } else {
+        Vec2::new(1.0, 0.0)
+    };
+    let Ok(line) = Line2D::new(s2, direction).or_else(|_| Line2D::new(s2, Vec2::new(1.0, 0.0)))
+    else {
+        return;
+    };
+    let pcurve = Curve2D::Line(line);
+    sections.push(SectionEdge {
+        curve_3d: brepkit_topology::edge::EdgeCurve::Line,
+        pcurve_a: pcurve.clone(),
+        pcurve_b: pcurve,
+        start,
+        end,
+        start_uv_a: start_uv.map(|(u, v)| Point2::new(u, v)),
+        end_uv_a: end_uv.map(|(u, v)| Point2::new(u, v)),
+        start_uv_b: start_uv.map(|(u, v)| Point2::new(u, v)),
+        end_uv_b: end_uv.map(|(u, v)| Point2::new(u, v)),
+        target_face: None,
+        pave_block_id: None,
+    });
 }
 
 /// Remove section edges that are subsets of longer collinear edges.
@@ -2171,6 +2334,7 @@ fn arc_segment_crossings(
     curve: &EdgeCurve,
     edge_start: Point3,
     edge_end: Point3,
+    closed: bool,
     line_start: Point3,
     line_end: Point3,
     tol: f64,
@@ -2200,6 +2364,14 @@ fn arc_segment_crossings(
         d.min(std::f64::consts::TAU - d)
     };
     let span = ang_dist(a_start, a_end);
+    // A CLOSED rim edge (vertex identity, per the caller) covers the whole
+    // circle: every hit is on the arc. Without this, the major-arc
+    // complement filter below excludes a hit that lands exactly at the seam
+    // angle (dsa + dae = 0), losing one of a cap disc's two chord crossings
+    // and with it the cap's half-disc split.
+    if closed {
+        return hits;
+    }
     // `a` is on the arc iff dist(start,a)+dist(a,end) ≈ the arc span that
     // contains the midpoint. Validate the midpoint satisfies this first so a
     // degenerate (near-full) circle doesn't admit everything.
@@ -2242,7 +2414,8 @@ fn clip_line_to_face_boundary(
     // clipped to the TRUE arc rather than its chord.
     let edges = wire.edges();
     let mut boundary_segments: Vec<(Point3, Point3)> = Vec::with_capacity(edges.len());
-    let mut boundary_arcs: Vec<Option<(EdgeCurve, Point3, Point3)>> =
+    // (curve, oriented start/end points, closed-by-vertex-identity)
+    let mut boundary_arcs: Vec<Option<(EdgeCurve, Point3, Point3, bool)>> =
         Vec::with_capacity(edges.len());
     for oe in edges {
         let edge = topo.edge(oe.edge()).ok()?;
@@ -2251,7 +2424,8 @@ fn clip_line_to_face_boundary(
         boundary_segments.push((sp, ep));
         match edge.curve() {
             EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
-                boundary_arcs.push(Some((edge.curve().clone(), sp, ep)));
+                let closed = oe.oriented_start(edge) == oe.oriented_end(edge);
+                boundary_arcs.push(Some((edge.curve().clone(), sp, ep, closed)));
             }
             // A straight edge already equals its chord, and a NURBS boundary edge
             // has no analytic arc to clip against, so neither contributes a
@@ -2282,7 +2456,7 @@ fn clip_line_to_face_boundary(
         // chord crossing the existing cases rely on — it only reaches farther
         // out when the arc genuinely does. Arcs the line misses contribute
         // nothing (the lip-cut sections that graze a corner chord keep working).
-        if let Some((curve, asp, aep)) = &boundary_arcs[seg_idx] {
+        if let Some((curve, asp, aep, closed)) = &boundary_arcs[seg_idx] {
             // Intersect the arc with the EXTENDED line, not just the segment: a
             // section whose FF-clipped endpoint lies in the sliver between a
             // convex arc and its chord (the slot walls crossing a socket-edge
@@ -2293,7 +2467,8 @@ fn clip_line_to_face_boundary(
             // original segment, so extension can never grow the section.
             let ext_start = line_start - line_dir;
             let ext_end = line_end + line_dir;
-            let arc_hits = arc_segment_crossings(curve, *asp, *aep, ext_start, ext_end, tol);
+            let arc_hits =
+                arc_segment_crossings(curve, *asp, *aep, *closed, ext_start, ext_end, tol);
             for (p, _) in arc_hits {
                 let t = (p - line_start).dot(line_dir) / (line_len * line_len);
                 crossings_ext.push(t);
@@ -2401,15 +2576,38 @@ fn clip_line_to_face_boundary(
         let mut poly = Vec::new();
         for (seg_idx, (sp, ep)) in boundary_segments.iter().enumerate() {
             poly.push(frame.project(*sp));
-            if let Some((curve, asp, aep)) = &boundary_arcs[seg_idx] {
+            if let Some((curve, asp, aep, closed)) = &boundary_arcs[seg_idx] {
                 // Dense sampling: at 12 samples an r=4 quarter-arc's chord
                 // sagitta is ~0.14 — larger than the ~0.1 mm groove-mouth
                 // slivers this polygon must classify. 96 samples keep the
                 // polygon error well under the features decided by it.
-                for k in 1..96 {
-                    let f = f64::from(k) / 96.0;
-                    let p3 = super::pcurve_compute::evaluate_edge_at_t(curve, *asp, *aep, f);
-                    poly.push(frame.project(p3));
+                //
+                // A CLOSED rim edge (a disc rim: the same seam vertex at both
+                // ends) has a degenerate endpoint span — `evaluate_edge_at_t`
+                // would collapse every sample to the seam and the polygon to
+                // a point, so everything but the seam neighbourhood
+                // classified outside (the lite pad top-disc's wall chords).
+                // Sample its full period from the seam angle instead.
+                // Closedness is vertex IDENTITY, so a genuine open arc with
+                // near-coincident endpoints keeps the span sampling.
+                if *closed && let EdgeCurve::Circle(c) = curve {
+                    let a_seam = c.project(*asp);
+                    for k in 1..96 {
+                        let a = std::f64::consts::TAU.mul_add(f64::from(k) / 96.0, a_seam);
+                        poly.push(frame.project(c.evaluate(a)));
+                    }
+                } else if *closed && let EdgeCurve::Ellipse(el) = curve {
+                    let a_seam = el.project(*asp);
+                    for k in 1..96 {
+                        let a = std::f64::consts::TAU.mul_add(f64::from(k) / 96.0, a_seam);
+                        poly.push(frame.project(el.evaluate(a)));
+                    }
+                } else {
+                    for k in 1..96 {
+                        let f = f64::from(k) / 96.0;
+                        let p3 = super::pcurve_compute::evaluate_edge_at_t(curve, *asp, *aep, f);
+                        poly.push(frame.project(p3));
+                    }
                 }
             }
             let _ = ep;
@@ -3050,6 +3248,33 @@ mod clip_tests {
     }
 
     #[test]
+    fn through_chord_far_from_seam_clips_to_rim_crossings() {
+        // A chord crossing the disc well away from its seam vertex (the seam
+        // sits at (+r, 0)). The rim is ONE closed circle edge; sampling it
+        // through the endpoint span collapses every polygon vertex to the
+        // seam, so the in-face interval's midpoint classified outside and the
+        // whole chord was dropped (the lite pad top-disc's north wall chord —
+        // its east twin only survived by passing within the boundary band of
+        // the degenerate seam-point polygon).
+        let mut topo = Topology::new();
+        let face = disc_face(&mut topo, 4.45);
+        let out = clip_line_to_face_boundary(
+            &topo,
+            face,
+            Point3::new(-20.0, 4.4, 0.0),
+            Point3::new(20.0, 4.4, 0.0),
+            1e-7,
+        );
+        let segs = out.expect("a through-chord far from the seam must be kept");
+        assert_eq!(segs.len(), 1);
+        let (a, b) = segs[0];
+        let half = (4.45_f64 * 4.45 - 4.4 * 4.4).sqrt();
+        assert!((a.x().abs() - half).abs() < 1e-6, "start {a:?}");
+        assert!((b.x().abs() - half).abs() < 1e-6, "end {b:?}");
+        assert!((a.y() - 4.4).abs() < 1e-6 && (b.y() - 4.4).abs() < 1e-6);
+    }
+
+    #[test]
     fn single_crossing_interior_endpoint_chord_is_kept() {
         // A chord from an interior point out past the rim crosses the disc's
         // boundary circle exactly once. It must clip to [interior, rim], not be
@@ -3091,5 +3316,40 @@ mod clip_tests {
             1e-7,
         );
         assert!(out.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::vec::Vec3;
+
+    #[test]
+    fn closed_rim_chord_crossing_keeps_seam_angle_hit() {
+        // A diameter chord of a closed cap rim crosses it twice; one of the
+        // crossings lands exactly at the rim's seam angle. The closed-rim
+        // path must keep BOTH (the major-arc complement filter used to drop
+        // the seam-angle hit, costing the cap its half-disc split).
+        let circle =
+            Circle3D::new(Point3::new(10.0, 10.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0).unwrap();
+        let seam = brepkit_math::traits::ParametricCurve::evaluate(&circle, 0.0);
+        let hits = arc_segment_crossings(
+            &EdgeCurve::Circle(circle),
+            seam,
+            seam,
+            true,
+            Point3::new(20.0, 10.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            1e-7,
+        );
+        assert_eq!(hits.len(), 2, "both chord crossings must survive");
+        let xs: Vec<f64> = hits.iter().map(|(p, _)| p.x()).collect();
+        assert!(
+            xs.iter().any(|&x| (x - 13.0).abs() < 1e-6)
+                && xs.iter().any(|&x| (x - 7.0).abs() < 1e-6),
+            "expected crossings at x=7 and x=13, got {xs:?}"
+        );
     }
 }

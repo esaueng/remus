@@ -43,6 +43,139 @@ fn fuse_disjoint_cubes() {
 }
 
 #[test]
+fn intersect_multi_piece_operand_keeps_disjoint_chunks() {
+    // The lite divider clip: intersecting a multi-piece solid (two disjoint
+    // cylinders merged into one solid) with a bar that crosses both
+    // legitimately yields two disjoint chunks. The multi-region acceptance
+    // gate must admit the analytic Intersect result instead of rejecting it
+    // on the single-component Euler check (which forced a mesh fallback whose
+    // open output poisoned the whole lite export chain). Cylinders, not
+    // boxes: a box fallback re-merges its coplanar facets back to a handful
+    // of planes, so only the curved-wall census discriminates the paths.
+    use crate::measure::solid_volume;
+    use crate::transform::transform_solid;
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let cyl_a = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
+    let cyl_b = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
+    transform_solid(&mut topo, cyl_b, &Mat4::translation(6.0, 0.0, 0.0)).unwrap();
+    let two_cyls = boolean(&mut topo, BooleanOp::Fuse, cyl_a, cyl_b).unwrap();
+    let bar = crate::primitives::make_box(&mut topo, 12.0, 4.0, 1.0).unwrap();
+    transform_solid(&mut topo, bar, &Mat4::translation(-3.0, -2.0, 1.5)).unwrap();
+
+    let result = boolean(&mut topo, BooleanOp::Intersect, two_cyls, bar).unwrap();
+    let n_faces = check_result(&topo, result);
+    // The curved walls are the fallback tell: a mesh fallback re-emits the
+    // chunks as all-plane facets, the analytic path keeps the cylinders.
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let cylinders = faces
+        .iter()
+        .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
+        .count();
+    assert!(
+        cylinders >= 2,
+        "analytic chunks must keep their cylinder walls, got {cylinders} of {n_faces} faces"
+    );
+    let vol = solid_volume(&topo, result, 0.05).unwrap();
+    let expected = 2.0 * std::f64::consts::PI; // two r=1 disc slabs of height 1
+    assert!(
+        (vol - expected).abs() < 0.05,
+        "two disc slabs expected (vol {expected:.3}), got {vol}"
+    );
+    let components = crate::boolean::assembly::face_components(&topo, result);
+    assert_eq!(
+        components.len(),
+        2,
+        "the two chunks must stay disjoint components"
+    );
+}
+
+#[test]
+fn compound_cut_disjoint_drills_matches_sequential() {
+    // The magnet-drill pattern: many disjoint cylindrical tools cut from one
+    // base. The batched path (merge tools, cut once) must produce the same
+    // volume as the sequential loop and keep the drilled walls analytic.
+    use crate::measure::solid_volume;
+    use crate::transform::transform_solid;
+    use brepkit_math::mat::Mat4;
+
+    let make = |topo: &mut Topology| -> (SolidId, Vec<SolidId>) {
+        let base = crate::primitives::make_box(topo, 20.0, 20.0, 5.0).unwrap();
+        let mut drills = Vec::new();
+        for (x, y) in [(4.0, 4.0), (16.0, 4.0), (4.0, 16.0), (16.0, 16.0)] {
+            let d = crate::primitives::make_cylinder(topo, 1.5, 3.0).unwrap();
+            transform_solid(topo, d, &Mat4::translation(x, y, -1.0)).unwrap();
+            drills.push(d);
+        }
+        (base, drills)
+    };
+
+    let mut topo_seq = Topology::new();
+    let (base, drills) = make(&mut topo_seq);
+    let mut seq = base;
+    for &d in &drills {
+        seq = boolean(&mut topo_seq, BooleanOp::Cut, seq, d).unwrap();
+    }
+    let vol_seq = solid_volume(&topo_seq, seq, 0.05).unwrap();
+
+    // unify_faces off so the differential compares the raw cut paths, not
+    // the trailing unification pass.
+    let opts = BooleanOptions {
+        unify_faces: false,
+        ..BooleanOptions::default()
+    };
+    let mut topo = Topology::new();
+    let (base, drills) = make(&mut topo);
+    let result = crate::boolean::compound_cut(&mut topo, base, &drills, opts).unwrap();
+
+    let vol = solid_volume(&topo, result, 0.05).unwrap();
+    assert!(
+        (vol - vol_seq).abs() < 0.05,
+        "batched volume {vol} must match sequential {vol_seq}"
+    );
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let cylinders = faces
+        .iter()
+        .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
+        .count();
+    assert!(
+        cylinders >= 4,
+        "each drilled bore must keep its cylinder wall, got {cylinders}"
+    );
+}
+
+#[test]
+fn compound_cut_overlapping_tools_match_union_cut_volume() {
+    // Two tools that overlap EACH OTHER form ONE AABB cluster, so this exercises
+    // the batched path — though the batch falls back to the sequential loop on
+    // any failure, so the invariant asserted here is the one that holds either
+    // way: the result equals the volume of cutting their union.
+    use crate::measure::solid_volume;
+    use crate::transform::transform_solid;
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let base = crate::primitives::make_box(&mut topo, 10.0, 10.0, 4.0).unwrap();
+    let t1 = crate::primitives::make_box(&mut topo, 4.0, 4.0, 6.0).unwrap();
+    transform_solid(&mut topo, t1, &Mat4::translation(2.0, 2.0, -1.0)).unwrap();
+    let t2 = crate::primitives::make_box(&mut topo, 4.0, 4.0, 6.0).unwrap();
+    transform_solid(&mut topo, t2, &Mat4::translation(4.0, 4.0, -1.0)).unwrap();
+
+    let result =
+        crate::boolean::compound_cut(&mut topo, base, &[t1, t2], BooleanOptions::default())
+            .unwrap();
+    let vol = solid_volume(&topo, result, 0.05).unwrap();
+    // Union of the two 4×4 pockets overlapping in a 2×2 square: 16+16-4 = 28
+    // removed from the 10×10×4 slab (pockets span full height inside).
+    let expected = 400.0 - 28.0 * 4.0;
+    assert!(
+        (vol - expected).abs() < 0.1,
+        "expected {expected}, got {vol}"
+    );
+}
+
+#[test]
 fn fuse_six_disjoint_boxes_2x3_grid() {
     // Mirrors brepjs's `rectangularPattern() > creates a 2x3 grid` test:
     // 6 boxes of 5×5×5 at (col*10, row*10, 0), fused pairwise via
@@ -338,6 +471,16 @@ fn empty_intersect_survives_measure_and_tessellate() {
     assert!(
         mesh.indices.is_empty(),
         "empty solid should tessellate to no triangles"
+    );
+}
+
+#[test]
+fn fuse_cluster_empty_errors_not_panics() {
+    let mut topo = Topology::new();
+    let err = super::fuse_cluster(&mut topo, &[]);
+    assert!(
+        matches!(err, Err(crate::OperationsError::InvalidInput { .. })),
+        "empty cluster must return InvalidInput, not panic"
     );
 }
 
@@ -3687,15 +3830,28 @@ fn gfa_box_sphere_cut() {
 }
 
 #[test]
-fn box_cylinder_invalid_mesh_fallback_fails_closed() {
+fn box_cylinder_fuse_returns_manifold_result() {
     let mut topo = Topology::default();
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cyl = crate::primitives::make_cylinder(&mut topo, 0.5, 2.0).unwrap();
 
-    let result = boolean(&mut topo, BooleanOp::Fuse, box_solid, cyl);
+    let solid = boolean(&mut topo, BooleanOp::Fuse, box_solid, cyl)
+        .expect("box-cylinder fuse should return the now-valid analytic result");
+    let shell = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
     assert!(
-        matches!(result, Err(crate::OperationsError::NonManifoldResult)),
-        "known non-watertight fallback must fail closed: {result:?}"
+        brepkit_topology::validation::validate_shell_manifold(shell, &topo).is_ok(),
+        "box-cylinder fuse must be manifold"
+    );
+
+    // The box occupies the positive x/y quadrant, so one quarter of the
+    // cylinder overlaps it and three quarters extend the union.
+    let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    let expected = 8.0 + 0.75 * std::f64::consts::PI * 0.5_f64.powi(2) * 2.0;
+    assert!(
+        (volume - expected).abs() < 1e-3,
+        "box-cylinder fuse volume {volume} differs from {expected}"
     );
 }
 
@@ -4470,6 +4626,23 @@ fn count_cylinder_faces(topo: &Topology, solid: SolidId) -> usize {
             )
         })
         .count()
+}
+
+/// Count edges not used exactly twice across all face wires of `solid` — zero
+/// for a watertight manifold, and each free (once-used) edge is a rim the
+/// splitter failed to cap.
+fn count_non_manifold_edges(topo: &Topology, solid: SolidId) -> usize {
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let mut edge_use: std::collections::HashMap<EdgeId, usize> = std::collections::HashMap::new();
+    for &fid in &faces {
+        let face = topo.face(fid).unwrap();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                *edge_use.entry(oe.edge()).or_default() += 1;
+            }
+        }
+    }
+    edge_use.values().filter(|&&u| u != 2).count()
 }
 
 #[test]
@@ -5650,13 +5823,12 @@ fn cut_cylinder_by_box_slot_perpendicular_walls_is_watertight() {
 /// The capping plane (the plain top slab's bottom face, coincident with the
 /// drilled slab's top face) receives one closed circle FF section per hole from
 /// the drilled cylinder walls. With two or more such circles they route through
-/// the planar arrangement decomposition, which dropped every zero-UV-chord
-/// (closed circle) input — so the drilled cylinder rims were left as free edges
-/// and the fuse mesh-fell-back to hundreds of planar faces. `split_face_2d` now
-/// peels the genuine interior cap circles off and carves each into the sub-face
-/// that contains it (disc cap + holed remainder). A single-hole interface never
-/// exercised the bug (it hit the impl's single-closed fast path), so use TWO
-/// holes here.
+/// the planar arrangement decomposition, which drops every zero-UV-chord
+/// (closed circle) input — without the cap-circle salvage in `split_face_2d`,
+/// the drilled cylinder rims are left as free edges and the fuse falls back to
+/// a mesh of planar faces. A single hole routes through the impl's
+/// single-closed fast path and never exercises the salvage, so this test
+/// drills TWO.
 #[test]
 fn fuse_capping_slab_preserves_drilled_hole_caps() {
     use brepkit_math::mat::Mat4;
@@ -5678,19 +5850,9 @@ fn fuse_capping_slab_preserves_drilled_hole_caps() {
 
     let fused = boolean(&mut topo, BooleanOp::Fuse, bottom, top).unwrap();
 
-    // Watertight: every edge of every wire is used exactly twice. Without the
-    // cap-circle salvage the two hole rims at z = 5 are free (used once).
-    let faces = brepkit_topology::explorer::solid_faces(&topo, fused).unwrap();
-    let mut edge_use: std::collections::HashMap<EdgeId, usize> = std::collections::HashMap::new();
-    for &fid in &faces {
-        let face = topo.face(fid).unwrap();
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            for oe in topo.wire(wid).unwrap().edges() {
-                *edge_use.entry(oe.edge()).or_default() += 1;
-            }
-        }
-    }
-    let bad_edges = edge_use.values().filter(|&&u| u != 2).count();
+    // Watertight: without the cap-circle salvage the two hole rims at z = 5
+    // are free (used once).
+    let bad_edges = count_non_manifold_edges(&topo, fused);
     assert_eq!(
         bad_edges, 0,
         "fused result must be a watertight manifold (every edge used twice), got {bad_edges} bad edges"
@@ -5698,23 +5860,21 @@ fn fuse_capping_slab_preserves_drilled_hole_caps() {
 
     // Analytic, not a mesh fallback: a compact face count, and BOTH drilled
     // cylinder walls survive as analytic cylinders.
+    let faces = brepkit_topology::explorer::solid_faces(&topo, fused).unwrap();
     assert!(
         faces.len() < 30,
         "expected a compact analytic fuse, got {} faces (mesh fallback?)",
         faces.len()
     );
-    let cyl_faces = faces
-        .iter()
-        .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
-        .count();
     assert_eq!(
-        cyl_faces, 2,
+        count_cylinder_faces(&topo, fused),
+        2,
         "both drilled-hole cylinder walls must survive the fuse"
     );
 
     // The caps exist and are correctly oriented: over each hole, material caps
     // the top (Inside above z = 5) while the through-hole stays open below it
-    // (Outside below z = 5). Verified with the robust ray-cast classifier.
+    // (Outside below z = 5).
     for &(cx, cy) in &holes {
         let above = Point3::new(cx, cy, 7.0);
         let below = Point3::new(cx, cy, 2.5);
@@ -5732,5 +5892,667 @@ fn fuse_capping_slab_preserves_drilled_hole_caps() {
             ),
             "the through-hole must stay open below z=5 at ({cx}, {cy})"
         );
+    }
+}
+
+/// Cap circles mixed with open sections: the receiving plane is also crossed
+/// by a wall of the opposing solid, so the base split yields multiple
+/// sub-faces and the caps must be carved into the one that contains them.
+///
+/// The top block is embedded 2 deep into a wider bottom slab, so the slab's
+/// top face receives one open Line section (the block's x = 20 wall) plus two
+/// closed circle sections (the block's drilled holes crossing z = 5). This is
+/// the mixed route through `split_face_2d`'s salvage that the coincident-slab
+/// test above (empty base split) never reaches.
+#[test]
+fn fuse_embedded_drilled_block_carves_caps_across_split_sub_faces() {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+
+    // Wide plain slab z in [0, 5].
+    let slab = crate::primitives::make_box(&mut topo, 30.0, 20.0, 5.0).unwrap();
+
+    // Narrower block z in [3, 8] with two through-holes (r = 1.5), overlapping
+    // the slab by 2 in z.
+    let holes = [(6.0, 10.0), (14.0, 10.0)];
+    let mut block = crate::primitives::make_box(&mut topo, 20.0, 20.0, 5.0).unwrap();
+    crate::transform::transform_solid(&mut topo, block, &Mat4::translation(0.0, 0.0, 3.0)).unwrap();
+    for &(cx, cy) in &holes {
+        let drill = crate::primitives::make_cylinder(&mut topo, 1.5, 20.0).unwrap();
+        crate::transform::transform_solid(&mut topo, drill, &Mat4::translation(cx, cy, 0.0))
+            .unwrap();
+        block = boolean(&mut topo, BooleanOp::Cut, block, drill).unwrap();
+    }
+
+    let fused = boolean(&mut topo, BooleanOp::Fuse, slab, block).unwrap();
+
+    let bad_edges = count_non_manifold_edges(&topo, fused);
+    assert_eq!(
+        bad_edges, 0,
+        "fused result must be a watertight manifold (every edge used twice), got {bad_edges} bad edges"
+    );
+    assert_eq!(
+        count_cylinder_faces(&topo, fused),
+        2,
+        "both drilled-hole cylinder walls must survive the fuse"
+    );
+
+    // Slab material floors each hole (the carved cap discs at z = 5); the
+    // holes stay open above the slab.
+    for &(cx, cy) in &holes {
+        let below = Point3::new(cx, cy, 4.0);
+        let inside_hole = Point3::new(cx, cy, 6.5);
+        assert!(
+            matches!(
+                crate::classify::classify_point(&topo, fused, below, 0.01, 1e-7).unwrap(),
+                crate::classify::PointClassification::Inside
+            ),
+            "slab material must floor the hole below z=5 at ({cx}, {cy})"
+        );
+        assert!(
+            matches!(
+                crate::classify::classify_point(&topo, fused, inside_hole, 0.01, 1e-7).unwrap(),
+                crate::classify::PointClassification::Outside
+            ),
+            "the hole must stay open above z=5 at ({cx}, {cy})"
+        );
+    }
+    // The slab's exposed shelf beyond the block is solid.
+    assert!(matches!(
+        crate::classify::classify_point(&topo, fused, Point3::new(25.0, 10.0, 2.5), 0.01, 1e-7)
+            .unwrap(),
+        crate::classify::PointClassification::Inside
+    ));
+}
+
+/// Closed circles landing inside an existing hole of the receiving plane are
+/// air, not caps: the drilled rims emerge inside the top slab's counterbore
+/// opening, where the top slab has no material to carve.
+/// `distribute_cap_circles` must drop them rather than emit free-floating
+/// discs across the opening (the drop itself is pinned down by
+/// `distribute_cap_circles_drops_caps_inside_holes` in `brepkit-algo`).
+///
+/// The GFA path currently fails post-assembly validation on this interface
+/// and the fuse falls back to the mesh boolean, so this test asserts the
+/// solid-level contract that survives the fallback: watertight, correct
+/// volume, correct in/out classification.
+// TODO: assert analytic cylinder faces once the counterbore interface
+// passes GFA validation.
+#[test]
+fn fuse_counterbore_drops_drill_rims_inside_opening() {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+
+    // Bottom slab z in [0, 5] with two small through-holes (r = 1.5).
+    let holes = [(6.0, 10.0), (14.0, 10.0)];
+    let mut bottom = crate::primitives::make_box(&mut topo, 20.0, 20.0, 5.0).unwrap();
+    for &(cx, cy) in &holes {
+        let drill = crate::primitives::make_cylinder(&mut topo, 1.5, 20.0).unwrap();
+        crate::transform::transform_solid(&mut topo, drill, &Mat4::translation(cx, cy, -5.0))
+            .unwrap();
+        bottom = boolean(&mut topo, BooleanOp::Cut, bottom, drill).unwrap();
+    }
+
+    // Top slab z in [5, 10] with one wide through-hole (r = 6) covering both
+    // small drill rims.
+    let mut top = crate::primitives::make_box(&mut topo, 20.0, 20.0, 5.0).unwrap();
+    crate::transform::transform_solid(&mut topo, top, &Mat4::translation(0.0, 0.0, 5.0)).unwrap();
+    let bore = crate::primitives::make_cylinder(&mut topo, 6.0, 20.0).unwrap();
+    crate::transform::transform_solid(&mut topo, bore, &Mat4::translation(10.0, 10.0, 0.0))
+        .unwrap();
+    top = boolean(&mut topo, BooleanOp::Cut, top, bore).unwrap();
+
+    let fused = boolean(&mut topo, BooleanOp::Fuse, bottom, top).unwrap();
+
+    let bad_edges = count_non_manifold_edges(&topo, fused);
+    assert_eq!(
+        bad_edges, 0,
+        "fused result must be a watertight manifold (every edge used twice), got {bad_edges} bad edges"
+    );
+    // Box minus counterbore minus the two small drills (2% slack covers the
+    // mesh fallback's faceted cylinders).
+    let expected = 20.0 * 20.0 * 10.0
+        - std::f64::consts::PI * 6.0 * 6.0 * 5.0
+        - 2.0 * std::f64::consts::PI * 1.5 * 1.5 * 5.0;
+    assert_volume_near(&topo, fused, expected, 0.02);
+
+    // Slab material is solid, the counterbore is open above its floor, and
+    // the small holes are open below it. The material probe sits in the slab
+    // corner: the fallback mesh misclassifies points directly under the bore
+    // as Outside even though the volume above proves the material exists
+    // (same pre-existing artifact as the failed GFA validation).
+    let slab =
+        crate::classify::classify_point(&topo, fused, Point3::new(2.0, 2.0, 2.5), 0.01, 1e-7)
+            .unwrap();
+    assert!(
+        matches!(slab, crate::classify::PointClassification::Inside),
+        "slab material must be Inside, got {slab:?}"
+    );
+    let bore =
+        crate::classify::classify_point(&topo, fused, Point3::new(10.0, 7.3, 7.0), 0.01, 1e-7)
+            .unwrap();
+    assert!(
+        matches!(bore, crate::classify::PointClassification::Outside),
+        "the counterbore must stay open above the floor, got {bore:?}"
+    );
+    for &(cx, cy) in &holes {
+        let hole = crate::classify::classify_point(
+            &topo,
+            fused,
+            Point3::new(cx + 0.4, cy + 0.3, 2.5),
+            0.01,
+            1e-7,
+        )
+        .unwrap();
+        assert!(
+            matches!(hole, crate::classify::PointClassification::Outside),
+            "the small through-hole must stay open below z=5 near ({cx}, {cy}), got {hole:?}"
+        );
+    }
+}
+
+#[test]
+fn severing_cut_keeps_pocketed_pieces_analytic() {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+
+    // Bar 20 x 6 x 3 with two blind pockets (r = 1.5, depth 1.5). Blind pockets
+    // keep each piece genus-0 while giving its top face an inner wire — the
+    // combination that made the multi-region gate's raw-Euler comparison fail
+    // (raw euler 6 != 2*components 4, while the hole-corrected 6 - 2 == 4).
+    let pockets = [4.0_f64, 16.0];
+    let mut bar = crate::primitives::make_box(&mut topo, 20.0, 6.0, 3.0).unwrap();
+    for &cx in &pockets {
+        let drill = crate::primitives::make_cylinder(&mut topo, 1.5, 2.0).unwrap();
+        crate::transform::transform_solid(&mut topo, drill, &Mat4::translation(cx, 3.0, 1.5))
+            .unwrap();
+        bar = boolean(&mut topo, BooleanOp::Cut, bar, drill).unwrap();
+    }
+
+    // Sever the bar between the pockets into two spatially disjoint pieces.
+    let slab = crate::primitives::make_box(&mut topo, 2.0, 8.0, 5.0).unwrap();
+    crate::transform::transform_solid(&mut topo, slab, &Mat4::translation(9.0, -1.0, -1.0))
+        .unwrap();
+    let severed = boolean(&mut topo, BooleanOp::Cut, bar, slab).unwrap();
+
+    // Analytic, not a mesh fallback. The fallback for this shape is ~114
+    // all-planar faces and is itself watertight, valid, and correct-volume —
+    // the face census is the only signal that separates the two.
+    let faces = brepkit_topology::explorer::solid_faces(&topo, severed).unwrap();
+    assert!(
+        faces.len() < 30,
+        "expected a compact analytic result, got {} faces (mesh fallback?)",
+        faces.len()
+    );
+    assert_eq!(
+        count_cylinder_faces(&topo, severed),
+        2,
+        "both pocket walls must survive the severing cut as analytic cylinders"
+    );
+
+    let bad_edges = count_non_manifold_edges(&topo, severed);
+    assert_eq!(
+        bad_edges, 0,
+        "severed result must be a watertight manifold, got {bad_edges} bad edges"
+    );
+
+    // Exact analytic volume: bar 360, less two pockets (pi * 1.5^2 * 1.5 each),
+    // less the 2 x 6 x 3 severed slab. Pins that both pockets are still void,
+    // the gap is really cut, and the two pieces were not merged or skinned over.
+    let expected =
+        20.0 * 6.0 * 3.0 - 2.0 * std::f64::consts::PI * 1.5 * 1.5 * 1.5 - 2.0 * 6.0 * 3.0;
+    let volume = crate::measure::solid_volume(&topo, severed, 0.01).unwrap();
+    assert!(
+        (volume - expected).abs() < 0.05,
+        "severed volume {volume:.3} should match analytic {expected:.3}"
+    );
+}
+
+#[test]
+fn compound_cut_unify_keeps_bore_opening() {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+
+    // A plate with a pad column standing on it: the pad's bottom disc ends up
+    // COPLANAR with the plate's bottom face, so `unify_same_domain` groups the
+    // two for merging.
+    let plate = crate::primitives::make_box(&mut topo, 20.0, 20.0, 2.0).unwrap();
+    let pad = crate::primitives::make_cylinder(&mut topo, 3.0, 8.0).unwrap();
+    crate::transform::transform_solid(&mut topo, pad, &Mat4::translation(10.0, 10.0, 0.0)).unwrap();
+    let fused = boolean(&mut topo, BooleanOp::Fuse, plate, pad).unwrap();
+
+    // Bore through the pad. The bottom disc becomes an annulus whose inner wire
+    // is a single CLOSED circle edge (start == end, zero chord) — which the
+    // merge's degenerate-sliver filter used to discard, erasing the opening and
+    // leaving the bore rim used once.
+    let drill = crate::primitives::make_cylinder(&mut topo, 1.0, 30.0).unwrap();
+    crate::transform::transform_solid(&mut topo, drill, &Mat4::translation(10.0, 10.0, -5.0))
+        .unwrap();
+
+    let opts = BooleanOptions {
+        unify_faces: true,
+        ..BooleanOptions::default()
+    };
+    let result = compound_cut(&mut topo, fused, &[drill], opts).unwrap();
+
+    let bad_edges = count_non_manifold_edges(&topo, result);
+    assert_eq!(
+        bad_edges, 0,
+        "the bore opening must survive the unify pass (got {bad_edges} unpaired/over-shared edges)"
+    );
+
+    // Both bore walls (pad column outer + drilled inner) stay analytic, and the
+    // pad's annular bottom face is still present rather than merged away.
+    assert_eq!(
+        count_cylinder_faces(&topo, result),
+        2,
+        "both cylindrical walls must survive"
+    );
+}
+
+#[test]
+fn compound_cut_unify_still_merges_normally() {
+    use brepkit_math::mat::Mat4;
+
+    // The unify pass rolls itself back when a merge would orphan edges. That
+    // guard must not fire on healthy geometry, or every boolean result keeps
+    // its split faces forever. Asserted DIFFERENTIALLY against the same cut
+    // with unify off: an absolute bound alone would still pass if the guard
+    // suppressed every merge and the raw count happened to sit under it.
+    // An L-shaped fuse with two corner cuts: the cuts split faces the fuse left
+    // coplanar, and the trailing unify merges them back (22 faces -> 16).
+    let build = |topo: &mut Topology| {
+        let a = crate::primitives::make_box(topo, 20.0, 8.0, 8.0).unwrap();
+        let b = crate::primitives::make_box(topo, 8.0, 20.0, 8.0).unwrap();
+        let l = boolean(topo, BooleanOp::Fuse, a, b).unwrap();
+        let mut tools = Vec::new();
+        for (x, y) in [(14.0_f64, 2.0_f64), (2.0, 14.0)] {
+            let t = crate::primitives::make_box(topo, 4.0, 4.0, 10.0).unwrap();
+            crate::transform::transform_solid(topo, t, &Mat4::translation(x, y, -1.0)).unwrap();
+            tools.push(t);
+        }
+        (l, tools)
+    };
+
+    let mut topo = Topology::new();
+    let (solid_a, tools_a) = build(&mut topo);
+    let unified = compound_cut(
+        &mut topo,
+        solid_a,
+        &tools_a,
+        BooleanOptions {
+            unify_faces: true,
+            ..BooleanOptions::default()
+        },
+    )
+    .unwrap();
+    let unified_faces = brepkit_topology::explorer::solid_faces(&topo, unified)
+        .unwrap()
+        .len();
+
+    let (solid_b, tools_b) = build(&mut topo);
+    let raw = compound_cut(
+        &mut topo,
+        solid_b,
+        &tools_b,
+        BooleanOptions {
+            unify_faces: false,
+            ..BooleanOptions::default()
+        },
+    )
+    .unwrap();
+    let raw_faces = brepkit_topology::explorer::solid_faces(&topo, raw)
+        .unwrap()
+        .len();
+
+    assert!(
+        unified_faces < raw_faces,
+        "unify must still merge coplanar fragments on healthy geometry: {unified_faces} faces with unify vs {raw_faces} without"
+    );
+    assert_eq!(
+        count_non_manifold_edges(&topo, unified),
+        0,
+        "the unified result must stay watertight"
+    );
+}
+
+#[test]
+fn fuse_multi_component_tool_folds_each_piece() {
+    use crate::measure::solid_volume;
+    // Target 10x10x2 slab; tool = two disjoint 2x2x4 posts overlapping it,
+    // assembled into ONE two-component solid (the multi-piece tool shape a
+    // pad-union fuse delivers). The fold must merge BOTH posts.
+    let mut topo = Topology::new();
+    let base = crate::primitives::make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
+    let p1 = crate::primitives::make_box(&mut topo, 2.0, 2.0, 4.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        p1,
+        &brepkit_math::mat::Mat4::translation(1.0, 1.0, 0.0),
+    )
+    .unwrap();
+    let p2 = crate::primitives::make_box(&mut topo, 2.0, 2.0, 4.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        p2,
+        &brepkit_math::mat::Mat4::translation(7.0, 7.0, 0.0),
+    )
+    .unwrap();
+    let mut tool_faces = brepkit_topology::explorer::solid_faces(&topo, p1).unwrap();
+    tool_faces.extend(brepkit_topology::explorer::solid_faces(&topo, p2).unwrap());
+    let tool_shell = topo.add_shell(brepkit_topology::shell::Shell::new(tool_faces).unwrap());
+    let tool = topo.add_solid(brepkit_topology::solid::Solid::new(tool_shell, Vec::new()));
+    let components = super::assembly::face_components(&topo, tool);
+    assert_eq!(components.len(), 2, "tool must split into two pieces");
+
+    let result = super::fuse_multi_component_tool(&mut topo, base, components).unwrap();
+
+    let vol = solid_volume(&topo, result, 0.05).unwrap();
+    // 10*10*2 + 2 posts' above-slab parts (2*2*2 each).
+    assert!(
+        (vol - 216.0).abs() < 0.5,
+        "folded fuse volume {vol}, expected 216"
+    );
+    assert_eq!(count_non_manifold_edges(&topo, result), 0);
+}
+
+#[test]
+fn fuse_corner_poking_cylinder_stays_analytic() {
+    // A cylinder overlapping a box corner: its cap rims cross both wall
+    // planes, and phase EF used to plant the crossing-adjacent rim arcs as
+    // "IN" pave blocks on the walls. Those off-surface sections (their
+    // pcurves collapse onto the wall boundary) broke one wall's greedy
+    // trace and the fuse fell back to the mesh path (all planes).
+    use crate::measure::solid_volume;
+    use crate::transform::transform_solid;
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let plate = crate::primitives::make_box(&mut topo, 10.0, 10.0, 5.0).unwrap();
+    let pad = crate::primitives::make_cylinder(&mut topo, 3.0, 5.0).unwrap();
+    transform_solid(&mut topo, pad, &Mat4::translation(9.0, 9.0, 0.0)).unwrap();
+    let fused = boolean(&mut topo, BooleanOp::Fuse, plate, pad).unwrap();
+
+    let faces = brepkit_topology::explorer::solid_faces(&topo, fused).unwrap();
+    let curved = faces
+        .iter()
+        .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
+        .count();
+    assert!(
+        curved >= 2,
+        "the pad wall must stay a cylinder, got {curved} curved of {} faces",
+        faces.len()
+    );
+    let vol = solid_volume(&topo, fused, 0.05).unwrap();
+    // 500 (box) + the cylinder volume outside the box; analytic reference.
+    assert!(
+        (vol - 571.58).abs() < 0.5,
+        "union volume out of band: got {vol}"
+    );
+    assert_eq!(count_non_manifold_edges(&topo, fused), 0);
+}
+
+#[test]
+fn compound_cut_coaxial_pair_clusters_match_sequential() {
+    // The magnet+screw drill pattern: per position a wide shallow bore and a
+    // narrow through bore share an axis (they interpenetrate), and the four
+    // positions are disjoint from each other. The cluster-batched path must
+    // fuse each coaxial pair, cut once, and match the sequential volume with
+    // analytic bores.
+    use crate::measure::solid_volume;
+    use crate::transform::transform_solid;
+    use brepkit_math::mat::Mat4;
+
+    let make = |topo: &mut Topology| -> (SolidId, Vec<SolidId>) {
+        let base = crate::primitives::make_box(topo, 20.0, 20.0, 6.0).unwrap();
+        let mut drills = Vec::new();
+        for (x, y) in [(4.0, 4.0), (16.0, 4.0), (4.0, 16.0), (16.0, 16.0)] {
+            let magnet = crate::primitives::make_cylinder(topo, 2.0, 3.0).unwrap();
+            transform_solid(topo, magnet, &Mat4::translation(x, y, -1.0)).unwrap();
+            drills.push(magnet);
+            let screw = crate::primitives::make_cylinder(topo, 0.8, 8.0).unwrap();
+            transform_solid(topo, screw, &Mat4::translation(x, y, -1.0)).unwrap();
+            drills.push(screw);
+        }
+        (base, drills)
+    };
+
+    let mut topo_seq = Topology::new();
+    let (base, drills) = make(&mut topo_seq);
+    let mut seq = base;
+    for &d in &drills {
+        seq = boolean(&mut topo_seq, BooleanOp::Cut, seq, d).unwrap();
+    }
+    let vol_seq = solid_volume(&topo_seq, seq, 0.05).unwrap();
+
+    let opts = BooleanOptions {
+        unify_faces: false,
+        ..BooleanOptions::default()
+    };
+    let mut topo = Topology::new();
+    let (base, drills) = make(&mut topo);
+    let result = crate::boolean::compound_cut(&mut topo, base, &drills, opts).unwrap();
+    let vol = solid_volume(&topo, result, 0.05).unwrap();
+    assert!(
+        (vol - vol_seq).abs() < 0.05,
+        "cluster-batched volume {vol} must match sequential {vol_seq}"
+    );
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let cylinders = faces
+        .iter()
+        .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
+        .count();
+    assert!(
+        cylinders >= 8,
+        "each stepped bore keeps both cylinder walls, got {cylinders}"
+    );
+    assert_eq!(count_non_manifold_edges(&topo, result), 0);
+}
+
+/// Ready-repro for the `cone ∪ box` GFA rejection — the only remaining
+/// primitive-boolean mesh fallback in `approx_census`.
+///
+/// `make_cone(6, 2, 12)` has radius exactly 4 at z=6, where the 8×8 box's
+/// bottom face sits, so the section circle is INSCRIBED in the box square and
+/// TANGENT to all four walls — the recurring tangential-contact class.
+///
+/// Raw GFA very nearly succeeds: F=10, 1 cone + 9 planes, zero free edges. The
+/// box side of the split is CORRECT — the pinched square-minus-inscribed-circle
+/// region becomes 4 curvilinear-triangle faces, and each wall splits at its
+/// tangency point. Two things go wrong on the cone side:
+///
+///   1. Both of the cone solid's PLANE faces vanish. The z=12 top disc is
+///      correctly absorbed (it lies inside the box), but the z=0 base disc
+///      (r=6, nowhere near the box) must survive and does not — all 9 result
+///      planes are box-derived.
+///   2. The cone lateral keeps the z=6 rim TWICE: its outer wire is the four
+///      z=6 arcs and its single inner wire is those same four edge ids, rather
+///      than the z=0 base rim. That is what makes each arc used 3× (twice by
+///      the cone, once by its corner plane) and trips the non-manifold gate.
+///
+/// Both point at the same missing piece — the z=0 base rim — so the cone
+/// remainder is being closed by duplicating the wrong rim.
+#[test]
+#[ignore = "ready-repro — cone∪box falls back to mesh; see doc comment"]
+fn cone_union_box_should_be_analytic() {
+    use brepkit_math::mat::Mat4;
+    let mut topo = Topology::new();
+    let cone = crate::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
+    let b = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+    crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-4.0, -4.0, 6.0)).unwrap();
+
+    let result =
+        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
+
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let z0_discs = faces
+        .iter()
+        .filter(|&&fid| {
+            let f = topo.face(fid).unwrap();
+            f.surface().type_tag() == "plane"
+                && topo.wire(f.outer_wire()).unwrap().edges().iter().all(|oe| {
+                    let e = topo.edge(oe.edge()).unwrap();
+                    topo.vertex(e.start()).unwrap().point().z().abs() < 1e-9
+                        && topo.vertex(e.end()).unwrap().point().z().abs() < 1e-9
+                })
+        })
+        .count();
+    assert_eq!(
+        z0_discs, 1,
+        "the cone's z=0 base disc must survive the fuse"
+    );
+    assert_eq!(count_non_manifold_edges(&topo, result), 0);
+}
+
+#[test]
+#[ignore = "diagnostic — how wide is the tangency failure band?"]
+fn diag_tangency_epsilon_band() {
+    use brepkit_math::mat::Mat4;
+    for &eps in &[-1e-3f64, -1e-5, -1e-7, -1e-9, 0.0, 1e-9, 1e-7, 1e-5, 1e-3] {
+        let d = 8.0 + 2.0 * eps; // half-width 4+eps vs cylinder r=4
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, d, d, 8.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            b,
+            &Mat4::translation(-d / 2.0, -d / 2.0, 6.0),
+        )
+        .unwrap();
+        let msg =
+            match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b)
+            {
+                Ok(r) => {
+                    let n = brepkit_topology::explorer::solid_faces(&topo, r)
+                        .unwrap()
+                        .len();
+                    match super::assembly::validate_boolean_result(&topo, r) {
+                        Ok(()) => format!("F={n:3} CLEAN"),
+                        Err(e) => format!("F={n:3} {e}"),
+                    }
+                }
+                Err(e) => format!("GFA ERR {e}"),
+            };
+        eprintln!("eps={eps:+.0e} half={:.9}: {msg}", d / 2.0);
+    }
+}
+
+#[test]
+#[ignore = "diagnostic — is a tangent section circle broken for cylinders too?"]
+fn diag_cylinder_box_tangency() {
+    use brepkit_math::mat::Mat4;
+    // Cylinder r=4: a d=8 box is tangent to it on all four walls; d=10 is clear.
+    for &(label, d) in &[("cyl tangent  d=8", 8.0), ("cyl clear    d=10", 10.0)] {
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, d, d, 8.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            b,
+            &Mat4::translation(-d / 2.0, -d / 2.0, 6.0),
+        )
+        .unwrap();
+        match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b) {
+            Ok(r) => {
+                let faces = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+                eprintln!(
+                    "{label}: F={:3} validate={:?}",
+                    faces.len(),
+                    super::assembly::validate_boolean_result(&topo, r)
+                        .err()
+                        .map(|e| e.to_string())
+                );
+            }
+            Err(e) => eprintln!("{label}: GFA ERR {e}"),
+        }
+    }
+}
+
+#[test]
+#[ignore = "diagnostic — is the cone-box fallback caused by the tangency?"]
+fn diag_cone_box_tangency_sweep() {
+    use brepkit_math::mat::Mat4;
+    // cone r=6@z0 -> r=2@z12, so radius at z is 6 - z/3.
+    // Box is d x d centred on the axis, bottom at zb. Tangency iff d/2 == r(zb).
+    for &(label, d, zb) in &[
+        ("tangent      d=8  zb=6", 8.0, 6.0),
+        ("circle inside d=10 zb=6", 10.0, 6.0),
+        ("circle outside d=6 zb=6", 6.0, 6.0),
+        ("tangent      d=6  zb=9", 6.0, 9.0),
+        ("circle inside d=8  zb=9", 8.0, 9.0),
+    ] {
+        let mut topo = Topology::new();
+        let cone = crate::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, d, d, 8.0).unwrap();
+        crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-d / 2.0, -d / 2.0, zb))
+            .unwrap();
+        match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b) {
+            Ok(r) => {
+                let faces = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+                let z0 = faces
+                    .iter()
+                    .filter(|&&fid| {
+                        let f = topo.face(fid).unwrap();
+                        f.surface().type_tag() == "plane"
+                            && topo.wire(f.outer_wire()).unwrap().edges().iter().all(|oe| {
+                                let e = topo.edge(oe.edge()).unwrap();
+                                topo.vertex(e.start()).unwrap().point().z().abs() < 1e-9
+                                    && topo.vertex(e.end()).unwrap().point().z().abs() < 1e-9
+                            })
+                    })
+                    .count();
+                eprintln!(
+                    "{label}: F={:3} z0_discs={z0} validate={:?}",
+                    faces.len(),
+                    super::assembly::validate_boolean_result(&topo, r)
+                        .err()
+                        .map(|e| e.to_string())
+                );
+            }
+            Err(e) => eprintln!("{label}: GFA ERR {e}"),
+        }
+    }
+}
+
+/// How many tangency points does it take to break the section circle?
+///
+/// One touch-split leaves the closed circle a single closed edge (P->P) and is
+/// handled; two or more split it into a CHAIN of arcs that the quadric side
+/// fails to close — open at 2 walls, over-shared at 4.
+#[test]
+#[ignore = "diagnostic — how many tangency points break the section circle?"]
+fn diag_tangency_count() {
+    use brepkit_math::mat::Mat4;
+    // Cylinder r=4 on the z axis, z 0..12. Box top-face z range 6..14 always.
+    // Vary how many of the box's four walls are tangent to the r=4 circle.
+    for &(label, xlo, xhi, ylo, yhi) in &[
+        ("4 tangent walls", -4.0, 4.0, -4.0, 4.0),
+        ("2 tangent walls (x only)", -4.0, 4.0, -9.0, 9.0),
+        ("1 tangent wall  (x=+4)", -9.0, 4.0, -9.0, 9.0),
+        ("0 tangent walls", -9.0, 9.0, -9.0, 9.0),
+    ] {
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, xhi - xlo, yhi - ylo, 8.0).unwrap();
+        crate::transform::transform_solid(&mut topo, b, &Mat4::translation(xlo, ylo, 6.0)).unwrap();
+        let msg =
+            match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b)
+            {
+                Ok(r) => {
+                    let n = brepkit_topology::explorer::solid_faces(&topo, r)
+                        .unwrap()
+                        .len();
+                    match super::assembly::validate_boolean_result(&topo, r) {
+                        Ok(()) => format!("F={n:3} CLEAN"),
+                        Err(e) => format!("F={n:3} {e}"),
+                    }
+                }
+                Err(e) => format!("GFA ERR {e}"),
+            };
+        eprintln!("{label}: {msg}");
     }
 }
