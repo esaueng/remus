@@ -1,6 +1,28 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Per-step entry in a `HealPipelineResult`.
+ */
+export interface HealStepResult {
+    /**
+     * Operator name that ran.
+     */
+    step: string;
+    /**
+     * Number of individual repair actions taken.
+     */
+    actionsTaken: number;
+    /**
+     * At least one fix was applied.
+     */
+    done: boolean;
+    /**
+     * At least one fix could not be applied.
+     */
+    failed: boolean;
+}
+
+/**
  * Typed result for `boundingBox`.
  */
 export interface BoundingBoxResult {
@@ -10,6 +32,134 @@ export interface BoundingBoxResult {
     max_x: number;
     max_y: number;
     max_z: number;
+}
+
+/**
+ * Typed result for `fixShapeWithConfig`.
+ */
+export interface HealFixResult {
+    /**
+     * Handle of the healed solid (may differ from the input).
+     */
+    solid: number;
+    /**
+     * Number of individual repair actions taken.
+     */
+    actionsTaken: number;
+    /**
+     * At least one fix was applied.
+     */
+    done: boolean;
+    /**
+     * At least one fix could not be applied.
+     */
+    failed: boolean;
+}
+
+/**
+ * Typed result for `gcsDof`.
+ */
+export interface GcsDofResult {
+    /**
+     * Degrees of freedom remaining (under-constrained dimensions).
+     */
+    dof: number;
+    /**
+     * Rank of the constraint Jacobian.
+     */
+    rank: number;
+    /**
+     * Total solver parameters.
+     */
+    numParams: number;
+    /**
+     * Total constraint equations.
+     */
+    numEquations: number;
+}
+
+/**
+ * Typed result for `gcsSolve`.
+ */
+export interface GcsSolveResult {
+    /**
+     * Whether the solver converged within tolerance.
+     */
+    converged: boolean;
+    /**
+     * Number of DogLeg iterations used.
+     */
+    iterations: number;
+    /**
+     * Maximum absolute residual after solving.
+     */
+    maxResidual: number;
+}
+
+/**
+ * Typed result for `massProperties`.
+ */
+export interface MassPropertiesResult {
+    /**
+     * Solid volume (mass at unit density).
+     */
+    volume: number;
+    /**
+     * Center of mass `[x, y, z]`.
+     */
+    centerOfMass: number[];
+    /**
+     * Inertia tensor about the center of mass, global axes:
+     * `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` (unit density).
+     */
+    inertia: number[];
+    /**
+     * Principal moments of inertia, ascending.
+     */
+    principalMoments: number[];
+    /**
+     * Principal axes as three unit vectors, row-major
+     * `[x0, y0, z0, x1, y1, z1, x2, y2, z2]`, matching `principalMoments`.
+     */
+    principalAxes: number[];
+}
+
+/**
+ * Typed result for `meshQuality`.
+ */
+export interface MeshQualityResult {
+    /**
+     * Edges used by exactly one triangle after position welding (0 for a
+     * watertight mesh).
+     */
+    boundaryEdges: number;
+    /**
+     * Edges used by more than two triangles after position welding.
+     */
+    nonManifoldEdges: number;
+    /**
+     * Euler characteristic `V - E + F` of the welded mesh (2 for a single
+     * closed genus-0 shell).
+     */
+    eulerCharacteristic: number;
+    /**
+     * True when the welded mesh has no boundary and no non-manifold edges.
+     */
+    isWatertight: boolean;
+}
+
+/**
+ * Typed result for `runHealPipeline`.
+ */
+export interface HealPipelineResult {
+    /**
+     * Handle of the healed solid (may differ from the input).
+     */
+    solid: number;
+    /**
+     * One entry per executed step, in order.
+     */
+    steps: HealStepResult[];
 }
 
 /**
@@ -383,6 +533,18 @@ export class BrepKernel {
      */
     cutWithEvolution(a: number, b: number): any;
     /**
+     * Cut (subtract) solid `b` from solid `a` with post-processing options.
+     *
+     * See [`fuse_with_options`](Self::fuse_with_options) for the
+     * `unifyFaces` semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     */
+    cutWithOptions(a: number, b: number, unify_faces?: boolean | null): number;
+    /**
      * Remove specified faces from a solid (defeaturing).
      *
      * `face_handles` is an array of face handles to remove.
@@ -681,6 +843,26 @@ export class BrepKernel {
      */
     fixFaceOrientations(solid: number): number;
     /**
+     * Heal a solid with a per-fix configuration instead of the fixed
+     * [`healSolid`](Self::heal_solid) recipe.
+     *
+     * `configJson` is `{ "tolerance"?: number, "fixes"?: { <name>: mode } }`
+     * where every mode is `"off"`, `"auto"` (apply when analysis detects the
+     * issue — the default), or `"on"` (always attempt). Unknown fix names
+     * error rather than silently running with defaults. Fix names:
+     * `reorder`, `connectivity`, `closure`, `smallEdges`, `selfIntersection`,
+     * `degenerateEdges`, `gaps2d`, `gaps3d`, `lacking`, `notched`, `tail`,
+     * `intersectingEdges`, `wireOrientation`, `addNaturalBound`,
+     * `missingSeam`, `smallArea`, `duplicateFaces`, `intersectingWires`,
+     * `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
+     * `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
+     *
+     * Returns a JSON string `{ solid, actionsTaken, done, failed }` (see the
+     * `HealFixResult` TypeScript type); `solid` is the healed solid's handle
+     * and may differ from the input.
+     */
+    fixShapeWithConfig(solid: number, config_json: string): any;
+    /**
      * Reconstruct a solid from a BREP string.
      *
      * Accepts both STEP format (from `toBREP`) and JSON format (from
@@ -732,6 +914,97 @@ export class BrepKernel {
      * produces an empty or non-manifold result.
      */
     fuseWithEvolution(a: number, b: number): any;
+    /**
+     * Fuse (union) two solids with post-processing options.
+     *
+     * `unifyFaces` (default `true`) merges adjacent result faces that lie
+     * on the same underlying surface, which keeps face counts low across
+     * chained booleans (e.g. 2871 → ~106 faces on sequential curved-surface
+     * booleans). Pass `false` to keep the raw fragment layout.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     */
+    fuseWithOptions(a: number, b: number, unify_faces?: boolean | null): number;
+    /**
+     * Add an arc defined by a center point and start/end points on the arc.
+     * The radius is implicit (`dist(center, start)`); an internal constraint
+     * keeps start and end equidistant from the center. Returns an arc handle.
+     */
+    gcsAddArc(sketch: number, center: number, start: number, end: number): number;
+    /**
+     * Add a circle with a center point and radius (the radius is a solver
+     * parameter). Returns a circle handle.
+     */
+    gcsAddCircle(sketch: number, center: number, radius: number): number;
+    /**
+     * Add a constraint from a JSON object string and return a constraint
+     * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
+     *
+     * All 19 constraint types are supported. Entity fields are `u32`
+     * handles from the `gcsAdd*` calls. Types and fields:
+     * `coincident{a,b}`, `distance{a,b,value}`,
+     * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
+     * `fixY{point,value}`, `horizontal{line}`, `vertical{line}`,
+     * `angle{l1,l2,value}`, `perpendicular{l1,l2}`, `parallel{l1,l2}`,
+     * `pointOnCircle{point,circle}`, `pointOnArc{point,arc}`,
+     * `tangentLineArc{line,arc,point}`, `tangentArcArc{arc1,arc2,point}`,
+     * `equalRadiusArcArc{arc1,arc2}`, `equalRadiusArcCircle{arc,circle}`,
+     * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
+     * `concentricArcCircle{arc,circle}`.
+     */
+    gcsAddConstraint(sketch: number, json: string): number;
+    /**
+     * Add a line through two existing points. Returns a line handle.
+     */
+    gcsAddLine(sketch: number, p1: number, p2: number): number;
+    /**
+     * Add a point at `(x, y)`. `fixed` points are not moved by the solver.
+     * Returns a point handle.
+     */
+    gcsAddPoint(sketch: number, x: number, y: number, fixed: boolean): number;
+    /**
+     * Current radius of a circle.
+     */
+    gcsCircleRadius(sketch: number, circle: number): number;
+    /**
+     * Degrees-of-freedom analysis via QR rank detection. Returns a JSON
+     * string `{ dof, rank, numParams, numEquations }` (see the
+     * `GcsDofResult` TypeScript type).
+     */
+    gcsDof(sketch: number): any;
+    /**
+     * Create a new typed GCS sketch. Returns a sketch handle.
+     *
+     * This is the successor to the legacy `sketch*` API: the constraint
+     * system persists across calls, entities are typed handles, all 19
+     * constraint types are available, and constraints can be removed.
+     */
+    gcsNew(): number;
+    /**
+     * Current position of a point as `[x, y]`.
+     */
+    gcsPointPosition(sketch: number, point: number): Float64Array;
+    /**
+     * Remove a constraint by handle. The handle becomes stale; the solver
+     * no longer enforces the constraint.
+     */
+    gcsRemoveConstraint(sketch: number, constraint: number): void;
+    /**
+     * Move a point to `(x, y)` without solving (e.g. while dragging).
+     */
+    gcsSetPoint(sketch: number, point: number, x: number, y: number): void;
+    /**
+     * Solve the constraint system in place with the DogLeg trust-region
+     * solver. Returns a JSON string
+     * `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
+     * TypeScript type). Read solved geometry back with
+     * [`gcs_point_position`](Self::gcs_point_position) and
+     * [`gcs_circle_radius`](Self::gcs_circle_radius).
+     */
+    gcsSolve(sketch: number, max_iterations: number, tolerance: number): any;
     /**
      * Get the analytic surface parameters of a face.
      *
@@ -985,6 +1258,11 @@ export class BrepKernel {
      */
     guidedSweep(face: number, spine_degree: number, spine_knots: Float64Array, spine_control_points: Float64Array, spine_weights: Float64Array, aux_degree: number, aux_knots: Float64Array, aux_control_points: Float64Array, aux_weights: Float64Array): number;
     /**
+     * Names of the built-in healing pipeline operators accepted by
+     * [`run_heal_pipeline`](Self::run_heal_pipeline).
+     */
+    healPipelineSteps(): string[];
+    /**
      * Heal a solid topology.
      *
      * Returns the number of issues fixed.
@@ -1005,28 +1283,39 @@ export class BrepKernel {
      * Import a 3MF file and return solid handles.
      *
      * Returns handles for each object found in the 3MF archive.
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
      *
      * # Errors
      *
-     * Returns an error if the 3MF data is malformed.
+     * Returns an error if the 3MF data is malformed or exceeds a resource
+     * limit.
      */
-    import3mf(data: Uint8Array): Uint32Array;
+    import3mf(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint32Array;
     /**
      * Import a GLB (glTF binary) file and return a solid handle.
      *
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
+     *
      * # Errors
      *
-     * Returns an error if the file is malformed or mesh import fails.
+     * Returns an error if the file is malformed, exceeds a resource limit,
+     * or mesh import fails.
      */
-    importGlb(data: Uint8Array): number;
+    importGlb(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): number;
     /**
      * Import an IGES file and return solid handles.
      *
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
+     *
      * # Errors
      *
-     * Returns an error if the IGES data is malformed.
+     * Returns an error if the IGES data is malformed or exceeds a resource
+     * limit.
      */
-    importIges(data: Uint8Array): Uint32Array;
+    importIges(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint32Array;
     /**
      * Import a triangle mesh from flat vertex/index arrays.
      *
@@ -1042,32 +1331,71 @@ export class BrepKernel {
     /**
      * Import an OBJ file and return a solid handle.
      *
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets below the production defaults (128 MiB / 2,000,000
+     * model entities); exceeding a budget returns an error before large
+     * allocations.
+     *
      * # Errors
      *
-     * Returns an error if the file is malformed or mesh import fails.
+     * Returns an error if the file is malformed, exceeds a resource limit,
+     * or mesh import fails.
      */
-    importObj(data: Uint8Array): number;
+    importObj(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): number;
+    /**
+     * Import a PLY file (ASCII or binary little-endian) and return a solid handle.
+     *
+     * Polygon faces are triangulated by the PLY reader, then converted to
+     * planar B-Rep faces with vertex merging. `maxInputBytes` /
+     * `maxEntities` optionally tighten the hostile-input resource budgets
+     * (see [`import_obj`](Self::import_obj)).
+     *
+     * # Errors
+     *
+     * Returns an error if the PLY data is malformed, empty, exceeds a
+     * resource limit, or cannot form a mesh-backed solid.
+     */
+    importPly(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): number;
     /**
      * Import a STEP file and return solid handles.
      *
      * Returns handles for each solid found in the STEP file.
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
      *
      * # Errors
      *
-     * Returns an error if the STEP data is malformed.
+     * Returns an error if the STEP data is malformed or exceeds a resource
+     * limit.
      */
-    importStep(data: Uint8Array): Uint32Array;
+    importStep(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint32Array;
     /**
      * Import an STL file (binary or ASCII) and return a solid handle.
      *
      * The mesh triangles are converted to planar B-Rep faces with
-     * vertex merging.
+     * vertex merging. `maxInputBytes` / `maxEntities` optionally tighten
+     * the hostile-input resource budgets (see
+     * [`import_obj`](Self::import_obj)).
      *
      * # Errors
      *
-     * Returns an error if the STL data is malformed or empty.
+     * Returns an error if the STL data is malformed, exceeds a resource
+     * limit, or is empty.
      */
-    importStl(data: Uint8Array): number;
+    importStl(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): number;
+    /**
+     * Compute the uniform-density inertia tensor about the center of mass.
+     *
+     * Returns the symmetric 3x3 matrix in row-major order, expressed in the
+     * kernel's global axes. Density is `1`; with the canonical millimetre
+     * length unit, each component has units of `mm^5`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, integration fails, or
+     * the solid has effectively zero volume.
+     */
+    inertiaTensor(solid: number): Float64Array;
     /**
      * Interpolate a NURBS curve through points and create an edge.
      *
@@ -1114,6 +1442,18 @@ export class BrepKernel {
      * produces an empty result.
      */
     intersectWithEvolution(a: number, b: number): any;
+    /**
+     * Intersect two solids with post-processing options.
+     *
+     * See [`fuse_with_options`](Self::fuse_with_options) for the
+     * `unifyFaces` semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     */
+    intersectWithOptions(a: number, b: number, unify_faces?: boolean | null): number;
     /**
      * Check if an edge is forward-oriented in a given wire.
      *
@@ -1469,6 +1809,26 @@ export class BrepKernel {
      */
     makeWire(edge_handles: Uint32Array, closed: boolean): number;
     /**
+     * Compute the full mass properties of a solid (unit density).
+     *
+     * Returns a JSON string containing
+     * `{ volume, centerOfMass, inertia, principalMoments, principalAxes }`
+     * (see the `MassPropertiesResult` TypeScript type). The inertia tensor
+     * `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` is taken about the center of mass in
+     * the global axis directions; `principalAxes` is row-major, one unit
+     * vector per ascending principal moment. For just the 3x3 matrix, see
+     * [`inertia_tensor`](Self::inertia_tensor).
+     *
+     * Integration runs on the exact face geometry (analytic and NURBS
+     * surfaces, no tessellation), so there is no deflection parameter.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, integration fails,
+     * or the solid has zero volume.
+     */
+    massProperties(solid: number): any;
+    /**
      * Measure curvature of an edge curve at parameter `t`.
      *
      * Returns `[curvature, tangent_x, tangent_y, tangent_z, normal_x, normal_y, normal_z]`.
@@ -1512,6 +1872,20 @@ export class BrepKernel {
      * Useful for debugging topology.
      */
     meshEdgesAll(solid: number, deflection: number, angular_tolerance?: number | null): JsEdgeLines;
+    /**
+     * Tessellate a solid and report position-welded mesh quality metrics.
+     *
+     * Returns a JSON string containing
+     * `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+     * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
+     * 1 µm grid before counting, so position-duplicate vertices cannot mask
+     * a leak. Use before export to verify the mesh is watertight.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     */
+    meshQuality(solid: number, deflection: number): any;
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
      *
@@ -1771,6 +2145,21 @@ export class BrepKernel {
      */
     revolve(face: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, angle_degrees: number): number;
     /**
+     * Run a custom sequence of healing operators on a solid.
+     *
+     * `steps` names built-in operators, executed in order: `fix_shape`,
+     * `unify_same_domain`, `direct_faces`, `same_parameter`,
+     * `merge_vertices`, `drop_small_edges`, `drop_small_faces`,
+     * `remove_internal_wires`, `sew_shells`, `split_common_vertex`,
+     * `convert_to_bspline`, `convert_to_elementary`, `fix_wireframe`
+     * (see [`heal_pipeline_steps`](Self::heal_pipeline_steps)). An unknown
+     * step name fails the whole run before any mutation of later steps.
+     *
+     * Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
+     * failed}] }` (see the `HealPipelineResult` TypeScript type).
+     */
+    runHealPipeline(solid: number, steps: string[]): any;
+    /**
      * Section a solid with a plane, returning cross-section face handles.
      *
      * Returns an array of face handles (`u32[]`).
@@ -1857,6 +2246,12 @@ export class BrepKernel {
     sketchDof(sketch: number): string;
     /**
      * Create a new empty sketch. Returns a sketch index.
+     *
+     * **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
+     * `gcsAddConstraint`, …), which holds a persistent constraint system,
+     * supports all 19 constraint types with explicit line entities, and
+     * allows constraint removal. The `sketch*` methods remain for
+     * backward compatibility.
      */
     sketchNew(): number;
     /**

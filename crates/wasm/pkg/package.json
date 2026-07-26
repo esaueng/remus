@@ -13,9 +13,9 @@
     "brepkit_wasm.js",
     "brepkit_wasm_bg.js",
     "brepkit_wasm.d.ts",
-    "brepkit_wasm_node.cjs",
     "LICENSE-MIT",
-    "LICENSE-APACHE"
+    "LICENSE-APACHE",
+    "brepkit_wasm_node.cjs"
   ],
   "keywords": [
     "cad",
@@ -38,7 +38,6 @@
   ],
   "type": "module",
   "types": "brepkit_wasm.d.ts",
-  "version": "2.126.20",
-  "homepage": "https://github.com/esaueng/brepkit",
-  "brepkitSourceCommit": "4bbf7716db6bf1b765bec3526e59393a69b51323"
+  "version": "2.128.5",
+  "homepage": "https://github.com/esaueng/brepkit"
 }

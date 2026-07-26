@@ -801,6 +801,28 @@ export class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Cut (subtract) solid `b` from solid `a` with post-processing options.
+     *
+     * See [`fuse_with_options`](Self::fuse_with_options) for the
+     * `unifyFaces` semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [unify_faces]
+     * @returns {number}
+     */
+    cutWithOptions(a, b, unify_faces) {
+        const ret = wasm.brepkernel_cutWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Remove specified faces from a solid (defeaturing).
      *
      * `face_handles` is an array of face handles to remove.
@@ -1470,6 +1492,37 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Heal a solid with a per-fix configuration instead of the fixed
+     * [`healSolid`](Self::heal_solid) recipe.
+     *
+     * `configJson` is `{ "tolerance"?: number, "fixes"?: { <name>: mode } }`
+     * where every mode is `"off"`, `"auto"` (apply when analysis detects the
+     * issue — the default), or `"on"` (always attempt). Unknown fix names
+     * error rather than silently running with defaults. Fix names:
+     * `reorder`, `connectivity`, `closure`, `smallEdges`, `selfIntersection`,
+     * `degenerateEdges`, `gaps2d`, `gaps3d`, `lacking`, `notched`, `tail`,
+     * `intersectingEdges`, `wireOrientation`, `addNaturalBound`,
+     * `missingSeam`, `smallArea`, `duplicateFaces`, `intersectingWires`,
+     * `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
+     * `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
+     *
+     * Returns a JSON string `{ solid, actionsTaken, done, failed }` (see the
+     * `HealFixResult` TypeScript type); `solid` is the healed solid's handle
+     * and may differ from the input.
+     * @param {number} solid
+     * @param {string} config_json
+     * @returns {any}
+     */
+    fixShapeWithConfig(solid, config_json) {
+        const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_fixShapeWithConfig(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Reconstruct a solid from a BREP string.
      *
      * Accepts both STEP format (from `toBREP`) and JSON format (from
@@ -1554,6 +1607,218 @@ export class BrepKernel {
      */
     fuseWithEvolution(a, b) {
         const ret = wasm.brepkernel_fuseWithEvolution(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Fuse (union) two solids with post-processing options.
+     *
+     * `unifyFaces` (default `true`) merges adjacent result faces that lie
+     * on the same underlying surface, which keeps face counts low across
+     * chained booleans (e.g. 2871 → ~106 faces on sequential curved-surface
+     * booleans). Pass `false` to keep the raw fragment layout.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [unify_faces]
+     * @returns {number}
+     */
+    fuseWithOptions(a, b, unify_faces) {
+        const ret = wasm.brepkernel_fuseWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add an arc defined by a center point and start/end points on the arc.
+     * The radius is implicit (`dist(center, start)`); an internal constraint
+     * keeps start and end equidistant from the center. Returns an arc handle.
+     * @param {number} sketch
+     * @param {number} center
+     * @param {number} start
+     * @param {number} end
+     * @returns {number}
+     */
+    gcsAddArc(sketch, center, start, end) {
+        const ret = wasm.brepkernel_gcsAddArc(this.__wbg_ptr, sketch, center, start, end);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a circle with a center point and radius (the radius is a solver
+     * parameter). Returns a circle handle.
+     * @param {number} sketch
+     * @param {number} center
+     * @param {number} radius
+     * @returns {number}
+     */
+    gcsAddCircle(sketch, center, radius) {
+        const ret = wasm.brepkernel_gcsAddCircle(this.__wbg_ptr, sketch, center, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a constraint from a JSON object string and return a constraint
+     * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
+     *
+     * All 19 constraint types are supported. Entity fields are `u32`
+     * handles from the `gcsAdd*` calls. Types and fields:
+     * `coincident{a,b}`, `distance{a,b,value}`,
+     * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
+     * `fixY{point,value}`, `horizontal{line}`, `vertical{line}`,
+     * `angle{l1,l2,value}`, `perpendicular{l1,l2}`, `parallel{l1,l2}`,
+     * `pointOnCircle{point,circle}`, `pointOnArc{point,arc}`,
+     * `tangentLineArc{line,arc,point}`, `tangentArcArc{arc1,arc2,point}`,
+     * `equalRadiusArcArc{arc1,arc2}`, `equalRadiusArcCircle{arc,circle}`,
+     * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
+     * `concentricArcCircle{arc,circle}`.
+     * @param {number} sketch
+     * @param {string} json
+     * @returns {number}
+     */
+    gcsAddConstraint(sketch, json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_gcsAddConstraint(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a line through two existing points. Returns a line handle.
+     * @param {number} sketch
+     * @param {number} p1
+     * @param {number} p2
+     * @returns {number}
+     */
+    gcsAddLine(sketch, p1, p2) {
+        const ret = wasm.brepkernel_gcsAddLine(this.__wbg_ptr, sketch, p1, p2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a point at `(x, y)`. `fixed` points are not moved by the solver.
+     * Returns a point handle.
+     * @param {number} sketch
+     * @param {number} x
+     * @param {number} y
+     * @param {boolean} fixed
+     * @returns {number}
+     */
+    gcsAddPoint(sketch, x, y, fixed) {
+        const ret = wasm.brepkernel_gcsAddPoint(this.__wbg_ptr, sketch, x, y, fixed);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Current radius of a circle.
+     * @param {number} sketch
+     * @param {number} circle
+     * @returns {number}
+     */
+    gcsCircleRadius(sketch, circle) {
+        const ret = wasm.brepkernel_gcsCircleRadius(this.__wbg_ptr, sketch, circle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Degrees-of-freedom analysis via QR rank detection. Returns a JSON
+     * string `{ dof, rank, numParams, numEquations }` (see the
+     * `GcsDofResult` TypeScript type).
+     * @param {number} sketch
+     * @returns {any}
+     */
+    gcsDof(sketch) {
+        const ret = wasm.brepkernel_gcsDof(this.__wbg_ptr, sketch);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Create a new typed GCS sketch. Returns a sketch handle.
+     *
+     * This is the successor to the legacy `sketch*` API: the constraint
+     * system persists across calls, entities are typed handles, all 19
+     * constraint types are available, and constraints can be removed.
+     * @returns {number}
+     */
+    gcsNew() {
+        const ret = wasm.brepkernel_gcsNew(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Current position of a point as `[x, y]`.
+     * @param {number} sketch
+     * @param {number} point
+     * @returns {Float64Array}
+     */
+    gcsPointPosition(sketch, point) {
+        const ret = wasm.brepkernel_gcsPointPosition(this.__wbg_ptr, sketch, point);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Remove a constraint by handle. The handle becomes stale; the solver
+     * no longer enforces the constraint.
+     * @param {number} sketch
+     * @param {number} constraint
+     */
+    gcsRemoveConstraint(sketch, constraint) {
+        const ret = wasm.brepkernel_gcsRemoveConstraint(this.__wbg_ptr, sketch, constraint);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Move a point to `(x, y)` without solving (e.g. while dragging).
+     * @param {number} sketch
+     * @param {number} point
+     * @param {number} x
+     * @param {number} y
+     */
+    gcsSetPoint(sketch, point, x, y) {
+        const ret = wasm.brepkernel_gcsSetPoint(this.__wbg_ptr, sketch, point, x, y);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Solve the constraint system in place with the DogLeg trust-region
+     * solver. Returns a JSON string
+     * `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
+     * TypeScript type). Read solved geometry back with
+     * [`gcs_point_position`](Self::gcs_point_position) and
+     * [`gcs_circle_radius`](Self::gcs_circle_radius).
+     * @param {number} sketch
+     * @param {number} max_iterations
+     * @param {number} tolerance
+     * @returns {any}
+     */
+    gcsSolve(sketch, max_iterations, tolerance) {
+        const ret = wasm.brepkernel_gcsSolve(this.__wbg_ptr, sketch, max_iterations, tolerance);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2171,6 +2436,17 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Names of the built-in healing pipeline operators accepted by
+     * [`run_heal_pipeline`](Self::run_heal_pipeline).
+     * @returns {string[]}
+     */
+    healPipelineSteps() {
+        const ret = wasm.brepkernel_healPipelineSteps(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Heal a solid topology.
      *
      * Returns the number of issues fixed.
@@ -2216,17 +2492,22 @@ export class BrepKernel {
      * Import a 3MF file and return solid handles.
      *
      * Returns handles for each object found in the 3MF archive.
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
      *
      * # Errors
      *
-     * Returns an error if the 3MF data is malformed.
+     * Returns an error if the 3MF data is malformed or exceeds a resource
+     * limit.
      * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
      * @returns {Uint32Array}
      */
-    import3mf(data) {
+    import3mf(data, max_input_bytes, max_entities) {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_import3mf(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.brepkernel_import3mf(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -2237,16 +2518,22 @@ export class BrepKernel {
     /**
      * Import a GLB (glTF binary) file and return a solid handle.
      *
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
+     *
      * # Errors
      *
-     * Returns an error if the file is malformed or mesh import fails.
+     * Returns an error if the file is malformed, exceeds a resource limit,
+     * or mesh import fails.
      * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
      * @returns {number}
      */
-    importGlb(data) {
+    importGlb(data, max_input_bytes, max_entities) {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_importGlb(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.brepkernel_importGlb(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2255,16 +2542,22 @@ export class BrepKernel {
     /**
      * Import an IGES file and return solid handles.
      *
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
+     *
      * # Errors
      *
-     * Returns an error if the IGES data is malformed.
+     * Returns an error if the IGES data is malformed or exceeds a resource
+     * limit.
      * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
      * @returns {Uint32Array}
      */
-    importIges(data) {
+    importIges(data, max_input_bytes, max_entities) {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_importIges(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.brepkernel_importIges(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -2300,16 +2593,50 @@ export class BrepKernel {
     /**
      * Import an OBJ file and return a solid handle.
      *
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets below the production defaults (128 MiB / 2,000,000
+     * model entities); exceeding a budget returns an error before large
+     * allocations.
+     *
      * # Errors
      *
-     * Returns an error if the file is malformed or mesh import fails.
+     * Returns an error if the file is malformed, exceeds a resource limit,
+     * or mesh import fails.
      * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
      * @returns {number}
      */
-    importObj(data) {
+    importObj(data, max_input_bytes, max_entities) {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_importObj(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.brepkernel_importObj(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Import a PLY file (ASCII or binary little-endian) and return a solid handle.
+     *
+     * Polygon faces are triangulated by the PLY reader, then converted to
+     * planar B-Rep faces with vertex merging. `maxInputBytes` /
+     * `maxEntities` optionally tighten the hostile-input resource budgets
+     * (see [`import_obj`](Self::import_obj)).
+     *
+     * # Errors
+     *
+     * Returns an error if the PLY data is malformed, empty, exceeds a
+     * resource limit, or cannot form a mesh-backed solid.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {number}
+     */
+    importPly(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_importPly(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2319,17 +2646,22 @@ export class BrepKernel {
      * Import a STEP file and return solid handles.
      *
      * Returns handles for each solid found in the STEP file.
+     * `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+     * resource budgets (see [`import_obj`](Self::import_obj)).
      *
      * # Errors
      *
-     * Returns an error if the STEP data is malformed.
+     * Returns an error if the STEP data is malformed or exceeds a resource
+     * limit.
      * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
      * @returns {Uint32Array}
      */
-    importStep(data) {
+    importStep(data, max_input_bytes, max_entities) {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_importStep(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.brepkernel_importStep(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -2341,22 +2673,50 @@ export class BrepKernel {
      * Import an STL file (binary or ASCII) and return a solid handle.
      *
      * The mesh triangles are converted to planar B-Rep faces with
-     * vertex merging.
+     * vertex merging. `maxInputBytes` / `maxEntities` optionally tighten
+     * the hostile-input resource budgets (see
+     * [`import_obj`](Self::import_obj)).
      *
      * # Errors
      *
-     * Returns an error if the STL data is malformed or empty.
+     * Returns an error if the STL data is malformed, exceeds a resource
+     * limit, or is empty.
      * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
      * @returns {number}
      */
-    importStl(data) {
+    importStl(data, max_input_bytes, max_entities) {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_importStl(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.brepkernel_importStl(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Compute the uniform-density inertia tensor about the center of mass.
+     *
+     * Returns the symmetric 3x3 matrix in row-major order, expressed in the
+     * kernel's global axes. Density is `1`; with the canonical millimetre
+     * length unit, each component has units of `mm^5`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, integration fails, or
+     * the solid has effectively zero volume.
+     * @param {number} solid
+     * @returns {Float64Array}
+     */
+    inertiaTensor(solid) {
+        const ret = wasm.brepkernel_inertiaTensor(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
     }
     /**
      * Interpolate a NURBS curve through points and create an edge.
@@ -2461,6 +2821,28 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Intersect two solids with post-processing options.
+     *
+     * See [`fuse_with_options`](Self::fuse_with_options) for the
+     * `unifyFaces` semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [unify_faces]
+     * @returns {number}
+     */
+    intersectWithOptions(a, b, unify_faces) {
+        const ret = wasm.brepkernel_intersectWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Check if an edge is forward-oriented in a given wire.
@@ -3232,6 +3614,34 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Compute the full mass properties of a solid (unit density).
+     *
+     * Returns a JSON string containing
+     * `{ volume, centerOfMass, inertia, principalMoments, principalAxes }`
+     * (see the `MassPropertiesResult` TypeScript type). The inertia tensor
+     * `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` is taken about the center of mass in
+     * the global axis directions; `principalAxes` is row-major, one unit
+     * vector per ascending principal moment. For just the 3x3 matrix, see
+     * [`inertia_tensor`](Self::inertia_tensor).
+     *
+     * Integration runs on the exact face geometry (analytic and NURBS
+     * surfaces, no tessellation), so there is no deflection parameter.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, integration fails,
+     * or the solid has zero volume.
+     * @param {number} solid
+     * @returns {any}
+     */
+    massProperties(solid) {
+        const ret = wasm.brepkernel_massProperties(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Measure curvature of an edge curve at parameter `t`.
      *
      * Returns `[curvature, tangent_x, tangent_y, tangent_z, normal_x, normal_y, normal_z]`.
@@ -3349,6 +3759,29 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return JsEdgeLines.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate a solid and report position-welded mesh quality metrics.
+     *
+     * Returns a JSON string containing
+     * `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+     * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
+     * 1 µm grid before counting, so position-duplicate vertices cannot mask
+     * a leak. Use before export to verify the mesh is watertight.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @returns {any}
+     */
+    meshQuality(solid, deflection) {
+        const ret = wasm.brepkernel_meshQuality(this.__wbg_ptr, solid, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
@@ -3924,6 +4357,32 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Run a custom sequence of healing operators on a solid.
+     *
+     * `steps` names built-in operators, executed in order: `fix_shape`,
+     * `unify_same_domain`, `direct_faces`, `same_parameter`,
+     * `merge_vertices`, `drop_small_edges`, `drop_small_faces`,
+     * `remove_internal_wires`, `sew_shells`, `split_common_vertex`,
+     * `convert_to_bspline`, `convert_to_elementary`, `fix_wireframe`
+     * (see [`heal_pipeline_steps`](Self::heal_pipeline_steps)). An unknown
+     * step name fails the whole run before any mutation of later steps.
+     *
+     * Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
+     * failed}] }` (see the `HealPipelineResult` TypeScript type).
+     * @param {number} solid
+     * @param {string[]} steps
+     * @returns {any}
+     */
+    runHealPipeline(solid, steps) {
+        const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_runHealPipeline(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Section a solid with a plane, returning cross-section face handles.
      *
      * Returns an array of face handles (`u32[]`).
@@ -4130,6 +4589,12 @@ export class BrepKernel {
     }
     /**
      * Create a new empty sketch. Returns a sketch index.
+     *
+     * **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
+     * `gcsAddConstraint`, …), which holds a persistent constraint system,
+     * supports all 19 constraint types with explicit line entities, and
+     * allows constraint removal. The `sketch*` methods remain for
+     * backward compatibility.
      * @returns {number}
      */
     sketchNew() {
@@ -5199,16 +5664,24 @@ export function __wbg___wbindgen_debug_string_c25d447a39f5578f(arg0, arg1) {
     getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
     getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
 }
+export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
+    const obj = arg1;
+    const ret = typeof(obj) === 'string' ? obj : undefined;
+    var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    var len1 = WASM_VECTOR_LEN;
+    getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+    getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+}
 export function __wbg___wbindgen_throw_344f42d3211c4765(arg0, arg1) {
     throw new Error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_error_d6c12c1ea3adcacc(arg0, arg1) {
+export function __wbg_error_316990aa90f6d367(arg0, arg1) {
     console.error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_log_ff35c67a841d35e8(arg0, arg1) {
+export function __wbg_log_00056f7fb97a1270(arg0, arg1) {
     console.log(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_warn_9d453c4b9cf22d2b(arg0, arg1) {
+export function __wbg_warn_75e489d51dd63657(arg0, arg1) {
     console.warn(getStringFromWasm0(arg0, arg1));
 }
 export function __wbindgen_cast_0000000000000001(arg0, arg1) {
@@ -5243,6 +5716,12 @@ const JsPoint3Finalization = (typeof FinalizationRegistry === 'undefined')
 const JsVec3Finalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jsvec3_free(ptr, 1));
+
+function addToExternrefTable0(obj) {
+    const idx = wasm.__externref_table_alloc();
+    wasm.__wbindgen_externrefs.set(idx, obj);
+    return idx;
+}
 
 function debugString(val) {
     // primitive types
@@ -5317,6 +5796,17 @@ function getArrayF32FromWasm0(ptr, len) {
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
 }
 
 function getArrayU32FromWasm0(ptr, len) {
@@ -5395,6 +5885,16 @@ function passArrayF64ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 8, 8) >>> 0;
     getFloat64ArrayMemory0().set(arg, ptr / 8);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 
