@@ -442,10 +442,16 @@ fn bezier_clip_recurse(
         return;
     }
 
-    // AABB check for early exit.
+    // AABB check for early exit. The boxes are built from sampled curve
+    // points at clipped parameters, so both carry ULP-level rounding; when a
+    // clip collapses an interval to zero width the box degenerates to a
+    // single point and an exact test can reject a true intersection whose
+    // boxes are one ULP apart. Pad by the intersection tolerance so a branch
+    // is only discarded when the curves are provably farther apart than the
+    // tolerance at which hits are reported.
     let aabb_a = sub_aabb(seg_a, u_a_lo, u_a_hi);
     let aabb_b = sub_aabb(seg_b, u_b_lo, u_b_hi);
-    if !aabb_a.intersects(aabb_b) {
+    if !aabb_a.expanded(tolerance).intersects(aabb_b) {
         return;
     }
 
