@@ -383,6 +383,29 @@ mod tests {
         assert!(batch_has_ok(&r, 0), "cut must return ok: {r}");
     }
 
+    /// README first example: cylinder axis exactly coincident with the box's
+    /// vertical corner edge (tangential-contact class). Must cut cleanly.
+    #[test]
+    fn cut_corner_coincident_cylinder_readme_example() {
+        let mut k = BrepKernel::new();
+        let setup = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 30, "height": 20, "depth": 10}},
+                {"op": "makeCylinder", "args": {"radius": 5, "height": 15}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&setup).unwrap();
+        let a = parsed[0]["ok"].as_u64().unwrap();
+        let b = parsed[1]["ok"].as_u64().unwrap();
+        let r = k.execute_batch(&format!(
+            r#"[{{"op": "cut", "args": {{"solidA": {a}, "solidB": {b}}}}}]"#
+        ));
+        assert!(
+            batch_has_ok(&r, 0),
+            "corner-coincident cut must return ok: {r}"
+        );
+    }
+
     #[test]
     fn cut_invalid_target_errors() {
         let (mut k, setup) = two_boxes_batch();

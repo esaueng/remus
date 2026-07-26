@@ -626,6 +626,33 @@ CLOSED, do not re-open as deferred: honeycomb wall-pattern cut (#925/#928,
 top-face (#932, `extrude_half_*_reversed_edge_volume` pass), multi-arc hemisphere gap
 (#1006).
 
+README first-example axis-on-corner-edge cut (box 30×20×10 ∪cut cylinder r=5 h=15,
+axis = z through the origin = the box's vertical corner edge) — a report of
+`NonManifoldResult` on current main does NOT reproduce at f383a1e: deterministic
+analytic pass (7 faces = 6 planes + 1 cylinder, ray-cast verified, analytic STEP
+round-trip) across 220+ processes, native + wasm batch, debug + release. Pinned by
+`crates/io/tests/readme_example.rs` and the wasm contract test
+`cut_corner_coincident_cylinder_readme_example`; if either regresses, that is the
+tangential-contact class — start at the boolean-debugging skill.
+
+DO NOT "restore" out-of-domain NURBS extrapolation to fix a caller (2026-07-26,
+refuted mid-session): chasing the CI-red `sweep_miter_l_shaped_volume_correct`, one
+pass diagnosed the fork-sync's `u.clamp(domain)` in `NurbsCurve::evaluate` as the
+root — the L-sweep loses exactly one leg (volume 5.0) — and removed the clamp,
+which does make the test pass. That diagnosis was WRONG at the layer. #6 showed
+`sweep_miter`'s `compute_frames` samples `t = k/num_segments` literally against
+sub-curves that KEEP the parent parameterization, so it was evaluating out of
+domain by accident; the extrapolated garbage merely happened to land inside a loose
+volume window. The clamp exposed a real sweep bug rather than causing one, and the
+fix belongs in `compute_frames` (sample across `path.domain()`) plus the profile-basis
+and kink-transport fixes in that PR. Same session, same shape: the bezier-clip
+line-line crossing loss is owned by the degenerate-AABB early exit
+(`aabb_a.expanded(tolerance)`, #7/#9), NOT by the weight-normalization rounding in
+`evaluate` that makes it observable — a kernel-wide numerical change to silence one
+predicate is the wrong altitude. When a fork-sync reddens a math-adjacent test,
+bisect the fork-local commits (`git log e4f8792..ff80688` shape) to LOCATE it, then
+fix at the layer that owns the artifact.
+
 Export-integrity matrix baseline (2026-07-24, `binGenerator.scenario.export-integrity`, 408 tests
 asserting zero boundary edges + bounded non-manifold on the exported STL — the tool's own version of
 the STL edge-use oracle). Published 2.128.2: **43 failed / 365 passed**. Local main (T-lip #1209 +
