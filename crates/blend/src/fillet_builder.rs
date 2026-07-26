@@ -13,7 +13,7 @@ use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 use brepkit_topology::face::{Face, FaceId, FaceSurface};
 use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
+use brepkit_topology::vertex::{Vertex, VertexId};
 use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic;
@@ -174,6 +174,10 @@ impl<'a> FilletBuilder<'a> {
         let stripes: Vec<Stripe> = regular_results.iter().map(|sr| sr.stripe.clone()).collect();
         let corner_results = corner::compute_corners(topo, &stripes, self.solid)?;
 
+        // Trim results per regular stripe, kept so the blend faces can share
+        // the trimmer's contact edges instead of minting duplicates.
+        let mut trim_pairs: Vec<(trimmer::TrimResult, trimmer::TrimResult)> = Vec::new();
+
         let mut corner_face_ids: Vec<FaceId> = Vec::new();
         for cr in &corner_results {
             corner_face_ids.push(cr.face_id);
@@ -217,37 +221,64 @@ impl<'a> FilletBuilder<'a> {
                 .get(&stripe.face1)
                 .copied()
                 .unwrap_or(stripe.face1);
-            let trim1 = trimmer::trim_face_general(topo, current_face1, &contact1_pts, keep_side1);
+            let trim1 = trimmer::trim_face_general(
+                topo,
+                current_face1,
+                &contact1_pts,
+                keep_side1,
+                stripe.spine.edges(),
+            );
 
-            match trim1 {
+            let tr1 = match trim1 {
                 Ok(tr) if tr.trimmed_face != current_face1 => {
                     face_replacements.insert(stripe.face1, tr.trimmed_face);
+                    tr
                 }
                 Ok(_) | Err(_) => {
                     return Err(BlendError::TrimmingFailure { face: stripe.face1 });
                 }
-            }
+            };
 
             let current_face2 = face_replacements
                 .get(&stripe.face2)
                 .copied()
                 .unwrap_or(stripe.face2);
-            let trim2 = trimmer::trim_face_general(topo, current_face2, &contact2_pts, keep_side2);
+            let trim2 = trimmer::trim_face_general(
+                topo,
+                current_face2,
+                &contact2_pts,
+                keep_side2,
+                stripe.spine.edges(),
+            );
 
-            match trim2 {
+            let tr2 = match trim2 {
                 Ok(tr) if tr.trimmed_face != current_face2 => {
                     face_replacements.insert(stripe.face2, tr.trimmed_face);
+                    tr
                 }
                 Ok(_) | Err(_) => {
                     return Err(BlendError::TrimmingFailure { face: stripe.face2 });
                 }
-            }
+            };
+            trim_pairs.push((tr1, tr2));
         }
 
-        for sr in &regular_results {
+        for (sr, (tr1, tr2)) in regular_results.iter().zip(&trim_pairs) {
             let stripe = &sr.stripe;
 
-            // For v1, we create a minimal wire from the contact curve endpoints.
+            // Stitched path: reuse the trimmer's contact edges and close the
+            // spine ends against the cap faces, producing a watertight blend.
+            // Falls back to the legacy detached quad when not applicable.
+            match stitch_planar_blend(topo, stripe, tr1, tr2, &face_replacements) {
+                Ok(Some(mut faces)) => {
+                    blend_face_ids.append(&mut faces);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!("stitched blend assembly failed ({e}); using detached blend face");
+                }
+            }
             let blend_face_id = create_blend_face(topo, stripe)?;
             blend_face_ids.push(blend_face_id);
         }
@@ -281,6 +312,426 @@ impl<'a> FilletBuilder<'a> {
             is_partial,
         })
     }
+}
+
+/// Find how `edge` is traversed (forward flag) in `face`'s outer wire.
+fn wire_traversal_of(topo: &Topology, face: FaceId, edge: EdgeId) -> Option<bool> {
+    let wire_id = topo.face(face).ok()?.outer_wire();
+    let wire = topo.wire(wire_id).ok()?;
+    wire.edges()
+        .iter()
+        .find(|oe| oe.edge() == edge)
+        .map(OrientedEdge::is_forward)
+}
+
+/// Create the circular end-arc edge of a straight-spine fillet, ordered so
+/// the CCW span from the edge's start vertex traces the quarter arc nearest
+/// the removed corner vertex `v_pt` (Circle edges sample the CCW span from
+/// start to end around the circle normal).
+fn make_end_arc(
+    topo: &mut Topology,
+    c_a: VertexId,
+    c_b: VertexId,
+    center: Point3,
+    axis: Vec3,
+    radius: f64,
+    v_pt: Point3,
+) -> Result<Option<EdgeId>, BlendError> {
+    use brepkit_math::traits::ParametricCurve;
+    const TAU: f64 = std::f64::consts::TAU;
+
+    let pa = topo.vertex(c_a)?.point();
+    let pb = topo.vertex(c_b)?.point();
+    let Ok(circle) = Circle3D::new(center, axis, radius) else {
+        return Ok(None);
+    };
+    let mid_of = |from: Point3, to: Point3| -> Point3 {
+        let a0 = circle.project(from);
+        let delta = (circle.project(to) - a0).rem_euclid(TAU);
+        let delta = if delta < 1e-12 { TAU } else { delta };
+        ParametricCurve::evaluate(&circle, a0 + delta / 2.0)
+    };
+    let (start, end) = if (mid_of(pa, pb) - v_pt).length() <= (mid_of(pb, pa) - v_pt).length() {
+        (c_a, c_b)
+    } else {
+        (c_b, c_a)
+    };
+    Ok(Some(topo.add_edge(Edge::new(
+        start,
+        end,
+        EdgeCurve::Circle(circle),
+    ))))
+}
+
+/// Close one spine end of a straight-edge fillet against the surrounding
+/// faces.
+///
+/// After the two side faces are trimmed, the corner vertex `v_id` survives
+/// only in the wires of end faces. Two configurations occur:
+///
+/// - **Cap trim**: one wire holds both sub-edges `c → v → c'` (a
+///   perpendicular cap face, e.g. the bottom of a plate). The pair is
+///   replaced in place by the end arc.
+/// - **Corner patch**: the sub-edges live in two different wires (coplanar
+///   neighbor faces continuing past the spine end, e.g. a wall seated on the
+///   plate). A new planar patch face `arc → sub → v → sub` is created,
+///   reusing the existing sub-edges so the shell stays manifold. Its outward
+///   normal is `cap_normal` (pointing back along the spine, into the removed
+///   corner column).
+///
+/// Returns a newly created patch face, if any. Logs and returns `Ok(None)`
+/// without mutation when neither pattern matches.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
+fn stitch_end(
+    topo: &mut Topology,
+    spine_edge: EdgeId,
+    v_id: VertexId,
+    arc: EdgeId,
+    arc_blend_from: VertexId,
+    c1: VertexId,
+    c2: VertexId,
+    cap_normal: Vec3,
+) -> Result<Option<FaceId>, BlendError> {
+    // --- Case A: a single wire traverses c → v → c' consecutively. ---
+    let wire_ids: Vec<_> = topo.wires().iter().map(|(id, _)| id).collect();
+    let mut case_a: Option<(
+        brepkit_topology::wire::WireId,
+        usize,
+        usize,
+        VertexId,
+        VertexId,
+    )> = None;
+    'outer: for &wid in &wire_ids {
+        let wire = topo.wire(wid)?;
+        let oes = wire.edges();
+        if oes
+            .iter()
+            .any(|oe| oe.edge() == spine_edge || oe.edge() == arc)
+        {
+            continue;
+        }
+        let n = oes.len();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let ei = topo.edge(oes[i].edge())?;
+            let ej = topo.edge(oes[j].edge())?;
+            if oes[i].oriented_end(ei) == v_id && oes[j].oriented_start(ej) == v_id {
+                let xa = oes[i].oriented_start(ei);
+                let yb = oes[j].oriented_end(ej);
+                if (xa == c1 && yb == c2) || (xa == c2 && yb == c1) {
+                    case_a = Some((wid, i, j, xa, yb));
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    if let Some((wid, i, j, xa, _yb)) = case_a {
+        let arc_forward = topo.edge(arc)?.start() == xa;
+        let oes = topo.wire(wid)?.edges().to_vec();
+        let mut new_edges = Vec::with_capacity(oes.len() - 1);
+        for (pos, oe) in oes.iter().enumerate() {
+            if pos == i {
+                new_edges.push(OrientedEdge::new(arc, arc_forward));
+            } else if pos == j {
+                // consumed by the arc
+            } else {
+                new_edges.push(*oe);
+            }
+        }
+        *topo.wire_mut(wid)? = Wire::new(new_edges, true)?;
+        return Ok(None);
+    }
+
+    // --- Case B: the sub-edges live in two separate live wires. ---
+    let mut sub1: Option<EdgeId> = None;
+    let mut sub2: Option<EdgeId> = None;
+    for &wid in &wire_ids {
+        let wire = topo.wire(wid)?;
+        let oes = wire.edges();
+        if oes
+            .iter()
+            .any(|oe| oe.edge() == spine_edge || oe.edge() == arc)
+        {
+            continue;
+        }
+        for oe in oes {
+            let e = topo.edge(oe.edge())?;
+            let ends = (e.start(), e.end());
+            if ends == (v_id, c1) || ends == (c1, v_id) {
+                sub1 = Some(oe.edge());
+            } else if ends == (v_id, c2) || ends == (c2, v_id) {
+                sub2 = Some(oe.edge());
+            }
+        }
+    }
+    let (Some(sub1), Some(sub2)) = (sub1, sub2) else {
+        log::warn!("fillet end stitch: no cap pattern found at spine end vertex {v_id:?}");
+        return Ok(None);
+    };
+
+    // Traverse the arc opposite to the blend face; then chain through v_id.
+    let cap_from = if arc_blend_from == c1 { c2 } else { c1 };
+    let cap_to = if cap_from == c1 { c2 } else { c1 };
+    let arc_e = topo.edge(arc)?;
+    let arc_forward = arc_e.start() == cap_from;
+
+    let (first_sub, second_sub) = if cap_to == c1 {
+        (sub1, sub2)
+    } else {
+        (sub2, sub1)
+    };
+    let fs = topo.edge(first_sub)?;
+    let first_forward = fs.start() == cap_to && fs.end() == v_id;
+    let ss = topo.edge(second_sub)?;
+    let second_forward = ss.start() == v_id && ss.end() == cap_from;
+
+    let wire = Wire::new(
+        vec![
+            OrientedEdge::new(arc, arc_forward),
+            OrientedEdge::new(first_sub, first_forward),
+            OrientedEdge::new(second_sub, second_forward),
+        ],
+        true,
+    )?;
+    let wire_id = topo.add_wire(wire);
+    let d = {
+        let p = topo.vertex(v_id)?.point();
+        cap_normal.dot(Vec3::new(p.x(), p.y(), p.z()))
+    };
+    let face = Face::new(
+        wire_id,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: cap_normal,
+            d,
+        },
+    );
+    Ok(Some(topo.add_face(face)))
+}
+
+/// Watertight assembly for a finite straight-edge fillet: reuse the
+/// trimmer's contact edges as the blend wall's long boundaries, close the
+/// two spine ends with exact circular arcs, and stitch those arcs into the
+/// surrounding cap faces.
+///
+/// Returns `Ok(None)` (caller falls back to the detached quad) when the
+/// stripe is not a single open line-edge spine or the topology does not
+/// match the expected pattern. Only mutates after all applicability checks
+/// pass.
+#[allow(clippy::too_many_lines)]
+#[allow(clippy::similar_names)]
+fn stitch_planar_blend(
+    topo: &mut Topology,
+    stripe: &Stripe,
+    tr1: &trimmer::TrimResult,
+    tr2: &trimmer::TrimResult,
+    face_replacements: &std::collections::HashMap<FaceId, FaceId>,
+) -> Result<Option<Vec<FaceId>>, BlendError> {
+    let spine_edges = stripe.spine.edges();
+    if spine_edges.len() != 1 {
+        return Ok(None);
+    }
+    let spine_edge = spine_edges[0];
+    let (v0, v1) = {
+        let e = topo.edge(spine_edge)?;
+        if e.start() == e.end() || !matches!(e.curve(), EdgeCurve::Line) {
+            return Ok(None);
+        }
+        (e.start(), e.end())
+    };
+    let (Some(ce1), Some(ce2)) = (tr1.contact_edge, tr2.contact_edge) else {
+        return Ok(None);
+    };
+    if stripe.sections.is_empty() {
+        return Ok(None);
+    }
+
+    let p0 = topo.vertex(v0)?.point();
+    let p1 = topo.vertex(v1)?.point();
+    let Ok(dir) = (p1 - p0).normalize() else {
+        return Ok(None);
+    };
+
+    // Classify each contact-edge endpoint to a spine end by axial position.
+    let classify = |topo: &Topology, ce: EdgeId| -> Result<[VertexId; 2], BlendError> {
+        let e = topo.edge(ce)?;
+        let (s, t) = (e.start(), e.end());
+        let ps = topo.vertex(s)?.point();
+        let pt = topo.vertex(t)?.point();
+        Ok(if dir.dot(ps - p0) <= dir.dot(pt - p0) {
+            [s, t]
+        } else {
+            [t, s]
+        })
+    };
+    let c1 = classify(topo, ce1)?;
+    let c2 = classify(topo, ce2)?;
+    if c1[0] == c2[0] || c1[1] == c2[1] {
+        return Ok(None);
+    }
+
+    // Pick the walker section nearest each spine end for the arc centers.
+    let (Some(sec_first), Some(sec_last)) = (stripe.sections.first(), stripe.sections.last())
+    else {
+        return Ok(None);
+    };
+    let (sec0, sec1) =
+        if (dir.dot(sec_first.center - p0)).abs() <= (dir.dot(sec_last.center - p0)).abs() {
+            (sec_first, sec_last)
+        } else {
+            (sec_last, sec_first)
+        };
+
+    // Blend wall traverses each contact edge opposite to its trimmed face.
+    let f1_now = face_replacements
+        .get(&stripe.face1)
+        .copied()
+        .unwrap_or(tr1.trimmed_face);
+    let f2_now = face_replacements
+        .get(&stripe.face2)
+        .copied()
+        .unwrap_or(tr2.trimmed_face);
+    let (Some(f1_fwd), Some(f2_fwd)) = (
+        wire_traversal_of(topo, f1_now, ce1),
+        wire_traversal_of(topo, f2_now, ce2),
+    ) else {
+        return Ok(None);
+    };
+
+    let ce1_e = topo.edge(ce1)?;
+    let ce2_e = topo.edge(ce2)?;
+    let ce1_pair = (ce1_e.start(), ce1_e.end());
+    let ce2_pair = (ce2_e.start(), ce2_e.end());
+    // Traversal start/end of ce1 in the blend wire.
+    let (b1_from, b1_to) = if f1_fwd {
+        (ce1_pair.1, ce1_pair.0)
+    } else {
+        ce1_pair
+    };
+    let (b2_from, b2_to) = if f2_fwd {
+        (ce2_pair.1, ce2_pair.0)
+    } else {
+        ce2_pair
+    };
+    // The loop ce1 → arc → ce2 → arc must alternate ends: after traversing
+    // ce1 to its end-k vertex, ce2 must start from ITS end-k vertex.
+    let end_of = |v: VertexId| -> Option<usize> {
+        if v == c1[0] || v == c2[0] {
+            Some(0)
+        } else if v == c1[1] || v == c2[1] {
+            Some(1)
+        } else {
+            None
+        }
+    };
+    let (Some(k1), Some(k2)) = (end_of(b1_to), end_of(b2_from)) else {
+        return Ok(None);
+    };
+    if k1 != k2 {
+        // The two trimmed faces traverse their contact edges in a pattern
+        // that cannot close a quad loop; leave to the fallback.
+        log::warn!("fillet stitch: contact edge traversals do not alternate; skipping");
+        return Ok(None);
+    }
+
+    // Arcs at both ends (created before any wire mutation).
+    let radius0 = sec0.radius;
+    let radius1 = sec1.radius;
+    let Some(arc_at_k1) = make_end_arc(
+        topo,
+        b1_to,
+        b2_from,
+        if k1 == 0 { sec0.center } else { sec1.center },
+        dir,
+        if k1 == 0 { radius0 } else { radius1 },
+        if k1 == 0 { p0 } else { p1 },
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(arc_at_other) = make_end_arc(
+        topo,
+        b2_to,
+        b1_from,
+        if k1 == 0 { sec1.center } else { sec0.center },
+        dir,
+        if k1 == 0 { radius1 } else { radius0 },
+        if k1 == 0 { p1 } else { p0 },
+    )?
+    else {
+        return Ok(None);
+    };
+
+    // Blend wall wire: ce1, arc, ce2, arc.
+    let fwd_between = |topo: &Topology, e: EdgeId, from: VertexId| -> Result<bool, BlendError> {
+        Ok(topo.edge(e)?.start() == from)
+    };
+    let wire = Wire::new(
+        vec![
+            OrientedEdge::new(ce1, !f1_fwd),
+            OrientedEdge::new(arc_at_k1, fwd_between(topo, arc_at_k1, b1_to)?),
+            OrientedEdge::new(ce2, !f2_fwd),
+            OrientedEdge::new(arc_at_other, fwd_between(topo, arc_at_other, b2_to)?),
+        ],
+        true,
+    )?;
+    let wire_id = topo.add_wire(wire);
+
+    // Orient the blend wall: outward is radially away from the ball center
+    // for a convex edge, toward it for a concave edge.
+    let secm = &stripe.sections[stripe.sections.len() / 2];
+    let f1_face = topo.face(stripe.face1)?;
+    let n1_stored = f1_face.surface().normal(0.0, 0.0);
+    let n1_out = if f1_face.is_reversed() {
+        -n1_stored
+    } else {
+        n1_stored
+    };
+    let convex = n1_out.dot(secm.center - secm.p1) < 0.0;
+    let Ok(radial) = (secm.p1 - secm.center).normalize() else {
+        return Ok(None);
+    };
+    let desired = if convex { radial } else { -radial };
+    let reversed = match stripe.surface.project_point(secm.p1) {
+        Some((u, v)) => stripe.surface.normal(u, v).dot(desired) < 0.0,
+        None => false,
+    };
+
+    let mut blend_face = Face::new(wire_id, Vec::new(), stripe.surface.clone());
+    blend_face.set_reversed(reversed);
+    let blend_face_id = topo.add_face(blend_face);
+
+    let mut faces = vec![blend_face_id];
+
+    // Close both spine ends. Arc endpoints at end k: c1[k] / c2[k]; the
+    // blend traverses arc_at_k1 from b1_to, and arc_at_other from b2_to.
+    let ends = [
+        (
+            if k1 == 0 { v0 } else { v1 },
+            arc_at_k1,
+            b1_to,
+            if k1 == 0 { dir } else { -dir },
+            k1,
+        ),
+        (
+            if k1 == 0 { v1 } else { v0 },
+            arc_at_other,
+            b2_to,
+            if k1 == 0 { -dir } else { dir },
+            1 - k1,
+        ),
+    ];
+    for &(v_end, arc, arc_from, cap_normal, k) in &ends {
+        if let Some(patch) = stitch_end(
+            topo, spine_edge, v_end, arc, arc_from, c1[k], c2[k], cap_normal,
+        )? {
+            faces.push(patch);
+        }
+    }
+
+    Ok(Some(faces))
 }
 
 /// Geometry of a full-revolution rim fillet (a closed circular edge between a

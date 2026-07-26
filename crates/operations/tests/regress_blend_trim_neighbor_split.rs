@@ -102,9 +102,9 @@ fn fillet_v2_box_edge_propagates_boundary_splits() {
     assert_eq!(split_candidates.len(), 4, "box corner adjacency");
 
     // Exercise the walking builder directly. The production operations API
-    // routes planar line blends through its validated polygon-rebuilding
-    // implementation, while this regression intentionally characterizes the
-    // lower-level walking trimmer and its remaining gaps.
+    // tries its polygon-rebuilding implementation first for planar line
+    // blends, so driving the builder here pins the walking trimmer and its
+    // stitched assembly on their own.
     let mut builder = FilletBuilder::new(&mut topo, solid);
     builder.add_edges(&[fillet_edge], 1.0);
     let result = builder.build().unwrap();
@@ -135,9 +135,16 @@ fn fillet_v2_box_edge_propagates_boundary_splits() {
         assert_wire_connected(&topo, fid);
     }
 
-    // The two end faces (planes x=0 and x=10) each gained both split
-    // vertices: (x, 1, 10) from the top-face trim and (x, 0, 9) from the
-    // front-face trim, growing from 4 to 6 boundary edges.
+    // Each end face (planes x=0 and x=10) gained both split vertices —
+    // (x, 1, 10) from the top-face trim and (x, 0, 9) from the front-face
+    // trim — and lost the sharp corner (x, 0, 10) to the fillet's end arc.
+    // Net: 4 boundary edges become 5 (two splits add two, the arc replaces
+    // the two sub-edges that met at the corner).
+    //
+    // The end-face notch used to be left open here: the splits landed but
+    // nothing closed the wedge between them, so the shell had a hole at each
+    // end. The stitched assembly now replaces that sub-edge pair in place
+    // with the exact quarter-arc the blend wall terminates on.
     for x in [0.0, 10.0] {
         let end_face = faces
             .iter()
@@ -155,7 +162,7 @@ fn fillet_v2_box_edge_propagates_boundary_splits() {
             .unwrap()
             .edges()
             .len();
-        assert_eq!(n_edges, 6, "end face at x={x} should gain 2 edges");
+        assert_eq!(n_edges, 5, "end face at x={x} should gain a net edge");
         assert!(
             wire_has_vertex_at(&topo, end_face, Point3::new(x, 1.0, 10.0)),
             "end face at x={x} missing top-trim split vertex"
@@ -164,19 +171,28 @@ fn fillet_v2_box_edge_propagates_boundary_splits() {
             wire_has_vertex_at(&topo, end_face, Point3::new(x, 0.0, 9.0)),
             "end face at x={x} missing front-trim split vertex"
         );
+        assert!(
+            !wire_has_vertex_at(&topo, end_face, Point3::new(x, 0.0, 10.0)),
+            "end face at x={x} still carries the corner the fillet removed"
+        );
     }
+
+    // Six box faces plus one blend wall — no stray patches.
+    assert_eq!(faces.len(), 7, "expected 6 box faces + 1 blend wall");
 
     // Export-tolerance mesh (0.01 mm / 5 deg). Pre-fix this configuration
     // produced 28 boundary mesh edges: the shared spans tessellated as
-    // unwelded T-junction cracks on both sides. The remaining openings are
-    // the characterized separate v2 gaps (untrimmed end-face notches,
-    // trimmed-face/blend contact edges built as duplicate edge ids, and the
-    // keep-side selection defect), not the propagation defect.
+    // unwelded T-junction cracks on both sides. With split propagation AND
+    // the stitched end closure the mesh is fully watertight.
     let mesh =
         tessellate_solid_with_tolerance(&topo, result.solid, 0.01, 5.0_f64.to_radians()).unwrap();
     let bnd = boundary_edge_count(&mesh);
+    assert_eq!(bnd, 0, "filleted box mesh must be watertight; bnd = {bnd}");
+
+    // A rolled convex edge removes exactly (1 - pi/4)·r²·L = 2.146 mm³.
+    let vol = brepkit_operations::measure::solid_volume(&topo, result.solid, 0.01).unwrap();
     assert!(
-        bnd < 28,
-        "T-junction cracks along propagated splits should be gone; bnd = {bnd}"
+        (vol - 997.854).abs() < 0.01,
+        "expected the exact quarter-round volume 997.854, got {vol}"
     );
 }

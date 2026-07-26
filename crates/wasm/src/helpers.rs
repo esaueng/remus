@@ -188,24 +188,42 @@ pub fn try_fillet(
                 .unwrap_or(false)
         };
 
-    // Try engines in preference order; accept the first valid result.
+    // Every engine mutates the shared arena in place (the trimmer's
+    // `propagate_split` rewrites the wires of each face touching a split
+    // edge; the rolling-ball rebuild rewrites cap wires). A rejected attempt
+    // therefore leaves the INPUT solid partly filleted — rounded corners plus
+    // free edges where a split was applied but never closed. Since this
+    // function reports failure by returning the input handle, the caller then
+    // ships that corrupted body: the OpenZCAD demo bracket meshed with 42
+    // boundary edges even though its fillet had "failed".
+    //
+    // Snapshot once, roll back after every rejected attempt so the next
+    // engine starts clean and a total failure is a true no-op. Handle slots
+    // are preserved, so IDs held by the caller stay valid.
+    let snapshot = topo.clone();
+
     if let Ok(s) = brepkit_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
         && is_valid(topo, s)
     {
         return Ok(s);
     }
+    topo.restore_preserving_handle_slots(&snapshot);
+
     if let Ok(r) = brepkit_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius)
         && is_valid(topo, r.solid)
     {
         return Ok(r.solid);
     }
+    topo.restore_preserving_handle_slots(&snapshot);
+
     if let Ok(s) = brepkit_operations::fillet::fillet(topo, solid_id, edges, radius)
         && is_valid(topo, s)
     {
         return Ok(s);
     }
+    topo.restore_preserving_handle_slots(&snapshot);
 
-    // No engine produced a valid solid — leave the input unchanged.
+    // No engine produced a valid solid — the input is unchanged.
     Ok(solid_id)
 }
 
@@ -551,6 +569,127 @@ mod fillet_tests {
             }
         }
         edges
+    }
+
+    // A rejected fillet must be a true no-op. Every engine mutates the arena
+    // in place, so a partly-applied attempt used to leave the INPUT solid
+    // rounded at some corners and split-but-unclosed at others — and since
+    // `try_fillet` signals failure by returning the input handle, the caller
+    // kept using that corrupted body (the OpenZCAD bracket meshed with 42
+    // boundary edges despite reporting "fillet could not be created").
+    // A radius far too large for the box guarantees every engine fails.
+    #[test]
+    fn try_fillet_failure_leaves_the_input_untouched() {
+        let mut topo = Topology::new();
+        let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edge_ids(&topo, cube);
+        let before =
+            brepkit_topology::explorer::solid_entity_counts(&topo, cube).expect("counts before");
+        let vol_before = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+
+        // r = 20 on a 10³ box: no engine can produce a valid solid.
+        let result = try_fillet(&mut topo, cube, &edges, 20.0).expect("try_fillet");
+        assert_eq!(result, cube, "a failed fillet must return the input handle");
+
+        let after =
+            brepkit_topology::explorer::solid_entity_counts(&topo, cube).expect("counts after");
+        assert_eq!(before, after, "failed fillet mutated the input topology");
+        let vol_after = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+        assert!(
+            (vol_before - vol_after).abs() < 1e-9,
+            "failed fillet changed the input volume: {vol_before} -> {vol_after}"
+        );
+        let shell = topo.shell(topo.solid(cube).unwrap().outer_shell()).unwrap();
+        brepkit_topology::validation::validate_shell_closed(shell, &topo)
+            .expect("input must still be watertight after a failed fillet");
+    }
+
+    // The OpenZCAD demo bracket: an L-blank (base plate + wall seated 0.5 mm
+    // into it) with a boss, a bore, and two mount holes; the demo's Rev C
+    // fillets the four vertical base-plate corners at r=3. The kernel used to
+    // report "Fillet could not be created on 4 selected edges" — the
+    // rolling-ball engine left an open shell and the walking engine failed to
+    // trim, so `try_fillet` returned the input unchanged (the silent no-op).
+    // The walking builder now handles it, so the consumer path must round the
+    // corners: ≈60 mm³ removed, watertight, more faces than it started with.
+    #[test]
+    fn try_fillet_openzcad_bracket_corners() {
+        use brepkit_math::mat::Mat4;
+        use brepkit_operations::boolean::{BooleanOp, boolean};
+        use brepkit_operations::primitives::{make_box, make_cylinder};
+        use brepkit_operations::transform::transform_solid;
+
+        let rot_x90_at = |tx: f64, ty: f64, tz: f64| {
+            Mat4::translation(tx, ty, tz) * Mat4::rotation_x(std::f64::consts::FRAC_PI_2)
+        };
+
+        let mut topo = Topology::new();
+        let base = make_box(&mut topo, 80.0, 40.0, 8.0).unwrap();
+        let wall = make_box(&mut topo, 80.0, 8.0, 32.0).unwrap();
+        transform_solid(&mut topo, wall, &Mat4::translation(0.0, 32.0, 7.5)).unwrap();
+        let l_blank = boolean(&mut topo, BooleanOp::Fuse, base, wall).unwrap();
+
+        let boss = make_cylinder(&mut topo, 10.0, 12.0).unwrap();
+        transform_solid(&mut topo, boss, &rot_x90_at(40.0, 34.0, 24.0)).unwrap();
+        let with_boss = boolean(&mut topo, BooleanOp::Fuse, l_blank, boss).unwrap();
+
+        let bore = make_cylinder(&mut topo, 4.0, 48.0).unwrap();
+        transform_solid(&mut topo, bore, &rot_x90_at(40.0, 48.0, 24.0)).unwrap();
+        let bored = boolean(&mut topo, BooleanOp::Cut, with_boss, bore).unwrap();
+
+        let mount_a = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+        transform_solid(&mut topo, mount_a, &Mat4::translation(16.0, 20.0, -2.0)).unwrap();
+        let cut_a = boolean(&mut topo, BooleanOp::Cut, bored, mount_a).unwrap();
+        let mount_b = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+        transform_solid(&mut topo, mount_b, &Mat4::translation(64.0, 20.0, -2.0)).unwrap();
+        let bracket = boolean(&mut topo, BooleanOp::Cut, cut_a, mount_b).unwrap();
+
+        // The four z-spanning corner edges of the base plate.
+        let near = |a: f64, b: f64| (a - b).abs() < 0.1;
+        let corners: Vec<EdgeId> = solid_edge_ids(&topo, bracket)
+            .into_iter()
+            .filter(|&eid| {
+                let e = topo.edge(eid).expect("edge");
+                let a = topo.vertex(e.start()).expect("v").point();
+                let b = topo.vertex(e.end()).expect("v").point();
+                let at_corner = |x: f64, y: f64| {
+                    (near(x, 0.0) || near(x, 80.0)) && (near(y, 0.0) || near(y, 40.0))
+                };
+                at_corner(a.x(), a.y())
+                    && at_corner(b.x(), b.y())
+                    && (-0.1..=8.1).contains(&a.z())
+                    && (-0.1..=8.1).contains(&b.z())
+                    && (a.z() - b.z()).abs() >= 4.0
+            })
+            .collect();
+        assert_eq!(corners.len(), 4, "expected 4 base-plate corner edges");
+
+        let before_faces = topo
+            .shell(topo.solid(bracket).unwrap().outer_shell())
+            .unwrap()
+            .faces()
+            .len();
+        let vol_before = brepkit_operations::measure::solid_volume(&topo, bracket, 0.1).unwrap();
+
+        let result = try_fillet(&mut topo, bracket, &corners, 3.0).expect("bracket corner fillet");
+        assert_ne!(result, bracket, "try_fillet returned the input unchanged");
+
+        let vol_after = brepkit_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
+        let removed = vol_before - vol_after;
+        assert!(
+            (50.0..=70.0).contains(&removed),
+            "expected ≈60 mm³ removed by the 4 corner fillets, got {removed:.3}"
+        );
+
+        let shell = topo
+            .shell(topo.solid(result).unwrap().outer_shell())
+            .unwrap();
+        assert!(
+            shell.faces().len() > before_faces,
+            "fillet must add blend faces"
+        );
+        brepkit_topology::validation::validate_shell_closed(shell, &topo)
+            .expect("filleted bracket must be watertight");
     }
 
     // The wasm `fillet` binding (and its batch sibling) route through

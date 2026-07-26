@@ -237,6 +237,7 @@ impl<'a> ChamferBuilder<'a> {
                 &contact1_pts,
                 &[(0.0, 0.0), (1.0, 0.0)],
                 keep_side1,
+                stripe.spine.edges(),
             );
 
             match trim1 {
@@ -258,6 +259,7 @@ impl<'a> ChamferBuilder<'a> {
                 &contact2_pts,
                 &[(0.0, 0.0), (1.0, 0.0)],
                 keep_side2,
+                stripe.spine.edges(),
             );
 
             match trim2 {

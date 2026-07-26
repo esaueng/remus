@@ -10,9 +10,193 @@ use brepkit_topology::solid::SolidId;
 
 use crate::OperationsError;
 
+/// Run a blend attempt transactionally: on any failure, roll the arena back
+/// to its pre-attempt state.
+///
+/// The blend engines mutate shared topology in place — `trim_face`'s
+/// `propagate_split` rewrites the wires of every face referencing a split
+/// edge, and the stitched assembly rewrites cap wires. A failure partway
+/// through therefore leaves the INPUT solid mutated: trimmed side faces,
+/// arcs where sharp corners were, and free edges from half-applied splits.
+/// A caller that reports the failure and keeps using its original solid
+/// handle (as the OpenZCAD adapter does) then ships a corrupted body that
+/// meshes with holes. Snapshot/restore makes a failed blend a true no-op.
+///
+/// Handle slots are preserved so IDs handed out before the attempt stay
+/// valid after a rollback.
+fn transactional<T>(
+    topo: &mut Topology,
+    attempt: impl FnOnce(&mut Topology) -> Result<T, OperationsError>,
+) -> Result<T, OperationsError> {
+    let snapshot = topo.clone();
+    match attempt(topo) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            topo.restore_preserving_handle_slots(&snapshot);
+            Err(e)
+        }
+    }
+}
+
+/// Classify a blended edge as convex (material on the inside of the dihedral)
+/// or concave, by testing a point just inside the inward normal bisector.
+///
+/// Returns `None` when the edge's neighbourhood cannot be classified
+/// (non-manifold edge, degenerate normals, on-boundary sample).
+fn edge_is_convex(topo: &Topology, solid: SolidId, edge: EdgeId, probe: f64) -> Option<bool> {
+    let adjacency = topo.build_adjacency(solid).ok()?;
+    let faces = adjacency.faces_for_edge(edge);
+    if faces.len() != 2 {
+        return None;
+    }
+    let e = topo.edge(edge).ok()?;
+    let start = topo.vertex(e.start()).ok()?.point();
+    let end = topo.vertex(e.end()).ok()?.point();
+    let mid = e.curve().evaluate_with_endpoints(
+        match e.curve() {
+            EdgeCurve::Line => 0.5,
+            other => {
+                let (t0, t1) = other.domain_with_endpoints(start, end);
+                f64::midpoint(t0, t1)
+            }
+        },
+        start,
+        end,
+    );
+
+    let outward = |fid: brepkit_topology::face::FaceId| {
+        let face = topo.face(fid).ok()?;
+        let (u, v) = face.surface().project_point(mid)?;
+        let n = face.surface().normal(u, v);
+        let n = if face.is_reversed() { -n } else { n };
+        n.normalize().ok()
+    };
+    let n1 = outward(faces[0])?;
+    let n2 = outward(faces[1])?;
+    let bisector = (n1 + n2).normalize().ok()?;
+
+    // Step inward along the bisector. Inside the material ⇒ convex edge.
+    let sample = mid - bisector * probe;
+    match crate::classify::classify_point_robust(topo, solid, sample, 0.01, 1e-7).ok()? {
+        crate::classify::PointClassification::Inside => Some(true),
+        crate::classify::PointClassification::Outside => Some(false),
+        crate::classify::PointClassification::OnBoundary => None,
+    }
+}
+
+/// Reject a blend whose volume change is geometrically impossible.
+///
+/// A blend only moves material inside a tube of radius `size` around each
+/// blended edge, so `|Δvolume|` is bounded by `size²·length` per edge plus
+/// `2·size³` of end effects. And the sign is fixed by convexity: rounding a
+/// convex edge cuts material away, a concave one fills it in. A result that
+/// breaks either rule is wrong even when it is a topologically valid closed
+/// solid — the failure mode a wrong-side trim produces, which the shell and
+/// Euler checks alone accept.
+fn validate_blend_volume(
+    topo: &Topology,
+    operation: &'static str,
+    input_solid: SolidId,
+    result_solid: SolidId,
+    edges: &[EdgeId],
+    size: f64,
+) -> Result<(), OperationsError> {
+    let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
+    let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
+    let delta = after - before;
+
+    let mut budget = 0.0;
+    for &edge in edges {
+        let e = topo.edge(edge)?;
+        let start = topo.vertex(e.start())?.point();
+        let end = topo.vertex(e.end())?.point();
+        let length = if e.start() == e.end() {
+            // Closed edge: use the curve's own extent.
+            let (t0, t1) = e.curve().domain_with_endpoints(start, end);
+            let mut len = 0.0;
+            let mut prev = e.curve().evaluate_with_endpoints(t0, start, end);
+            for i in 1..=32 {
+                let t = t0 + (t1 - t0) * f64::from(i) / 32.0;
+                let p = e.curve().evaluate_with_endpoints(t, start, end);
+                len += (p - prev).length();
+                prev = p;
+            }
+            len
+        } else {
+            (end - start).length()
+        };
+        budget += size * size * length + 2.0 * size * size * size;
+    }
+
+    if delta.abs() > budget {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "{operation} changed volume by {delta:+.3}, beyond the {budget:.3} \
+                 a blend of this size can move — the result is geometrically wrong"
+            ),
+        });
+    }
+
+    // Sign rule, applied only when every blended edge shares one convexity
+    // (a mixed set can legitimately net out either way).
+    let convexities: Vec<bool> = edges
+        .iter()
+        .filter_map(|&e| edge_is_convex(topo, input_solid, e, size * 0.25))
+        .collect();
+    if convexities.len() == edges.len() && !convexities.is_empty() {
+        let all_convex = convexities.iter().all(|&c| c);
+        let all_concave = convexities.iter().all(|&c| !c);
+        // Allow a hair of tessellation noise either way.
+        let noise = budget * 1e-3;
+        if all_convex && delta > noise {
+            return Err(OperationsError::InvalidInput {
+                reason: format!(
+                    "{operation} on convex edges added {delta:+.3} of material; \
+                     rounding a convex edge must remove it"
+                ),
+            });
+        }
+        if all_concave && delta < -noise {
+            return Err(OperationsError::InvalidInput {
+                reason: format!(
+                    "{operation} on concave edges removed {:.3} of material; \
+                     rounding a concave edge must add it",
+                    -delta
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Per-check error magnitudes of a solid's validation report: the summed
+/// deviation (or 1 per issue when absent) of Error-severity issues.
+fn error_magnitudes(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<std::collections::HashMap<brepkit_check::validate::CheckId, f64>, OperationsError> {
+    let report = brepkit_check::validate::validate_solid(
+        topo,
+        solid,
+        &brepkit_check::validate::ValidateOptions::default(),
+    )?;
+    let mut map = std::collections::HashMap::new();
+    for issue in &report.issues {
+        if issue.severity == brepkit_check::validate::Severity::Error {
+            *map.entry(issue.check).or_insert(0.0) += issue.deviation.unwrap_or(1.0);
+        }
+    }
+    Ok(map)
+}
+
+/// Validate the blend result against the INPUT solid as a baseline: defects
+/// already present in the input (e.g. boolean-inherited orientation quirks
+/// on closed circle edges) do not fail the blend; only regressions do.
 fn validate_complete_blend(
     topo: &Topology,
     operation: &'static str,
+    input_solid: SolidId,
     result: &BlendResult,
 ) -> Result<(), OperationsError> {
     if result.is_partial {
@@ -27,7 +211,23 @@ fn validate_complete_blend(
         result.solid,
         &brepkit_check::validate::ValidateOptions::default(),
     )?;
-    if !report.is_valid() {
+    if report.is_valid() {
+        return Ok(());
+    }
+    let after = {
+        let mut map = std::collections::HashMap::new();
+        for issue in &report.issues {
+            if issue.severity == brepkit_check::validate::Severity::Error {
+                *map.entry(issue.check).or_insert(0.0) += issue.deviation.unwrap_or(1.0);
+            }
+        }
+        map
+    };
+    let before = error_magnitudes(topo, input_solid)?;
+    let regressed = after
+        .iter()
+        .any(|(check, &mag)| mag > before.get(check).copied().unwrap_or(0.0));
+    if regressed {
         let summary = report
             .issues
             .iter()
@@ -108,7 +308,7 @@ fn planar_chamfer_result(
         failed: Vec::new(),
         is_partial: false,
     };
-    validate_complete_blend(topo, "chamfer", &result)?;
+    validate_complete_blend(topo, "chamfer", solid, &result)?;
     Ok(result)
 }
 
@@ -126,7 +326,7 @@ fn planar_fillet_result(
         failed: Vec::new(),
         is_partial: false,
     };
-    validate_complete_blend(topo, "fillet", &result)?;
+    validate_complete_blend(topo, "fillet", solid, &result)?;
     Ok(result)
 }
 
@@ -152,13 +352,27 @@ pub fn fillet_v2(
         });
     }
     if is_planar_line_blend(topo, solid, edges)? {
-        return planar_fillet_result(topo, solid, edges, radius);
+        // The rolling-ball rebuild handles the validated planar classes
+        // (simple prisms) and closes multi-edge corner patches. On richer
+        // topology (L-shaped side faces, coplanar slivers, holed caps) it
+        // emits an open shell; fall through to the walking builder, whose
+        // stitched planar assembly handles those shapes. Each attempt is
+        // transactional, so the fall-through starts from a clean arena.
+        match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("planar fillet fast path failed ({e}); falling back to walking builder");
+            }
+        }
     }
-    let mut builder = FilletBuilder::new(topo, solid);
-    builder.add_edges(edges, radius);
-    let result = builder.build()?;
-    validate_complete_blend(topo, "fillet", &result)?;
-    Ok(result)
+    transactional(topo, |t| {
+        let mut builder = FilletBuilder::new(t, solid);
+        builder.add_edges(edges, radius);
+        let result = builder.build()?;
+        validate_complete_blend(t, "fillet", solid, &result)?;
+        validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
+        Ok(result)
+    })
 }
 
 /// Chamfer edges with two distances (v2 engine).
@@ -185,13 +399,16 @@ pub fn chamfer_v2(
     }
     reject_closed_edges(topo, edges, "chamfer")?;
     if is_planar_line_blend(topo, solid, edges)? {
-        return planar_chamfer_result(topo, solid, edges, d1, d2);
+        return transactional(topo, |t| planar_chamfer_result(t, solid, edges, d1, d2));
     }
-    let mut builder = ChamferBuilder::new(topo, solid);
-    builder.add_edges_asymmetric(edges, d1, d2);
-    let result = builder.build()?;
-    validate_complete_blend(topo, "chamfer", &result)?;
-    Ok(result)
+    transactional(topo, |t| {
+        let mut builder = ChamferBuilder::new(t, solid);
+        builder.add_edges_asymmetric(edges, d1, d2);
+        let result = builder.build()?;
+        validate_complete_blend(t, "chamfer", solid, &result)?;
+        validate_blend_volume(t, "chamfer", solid, result.solid, edges, d1.max(d2))?;
+        Ok(result)
+    })
 }
 
 /// Chamfer edges with distance and angle (v2 engine).
@@ -224,13 +441,18 @@ pub fn chamfer_distance_angle(
     reject_closed_edges(topo, edges, "chamfer")?;
     let d2 = distance * angle.tan();
     if is_planar_line_blend(topo, solid, edges)? {
-        return planar_chamfer_result(topo, solid, edges, distance, d2);
+        return transactional(topo, |t| {
+            planar_chamfer_result(t, solid, edges, distance, d2)
+        });
     }
-    let mut builder = ChamferBuilder::new(topo, solid);
-    builder.add_edges_distance_angle(edges, distance, angle);
-    let result = builder.build()?;
-    validate_complete_blend(topo, "chamfer", &result)?;
-    Ok(result)
+    transactional(topo, |t| {
+        let mut builder = ChamferBuilder::new(t, solid);
+        builder.add_edges_distance_angle(edges, distance, angle);
+        let result = builder.build()?;
+        validate_complete_blend(t, "chamfer", solid, &result)?;
+        validate_blend_volume(t, "chamfer", solid, result.solid, edges, distance.max(d2))?;
+        Ok(result)
+    })
 }
 
 #[cfg(test)]
