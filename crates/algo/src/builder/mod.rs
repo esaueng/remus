@@ -444,6 +444,7 @@ impl Builder {
                                 sf.face_id,
                                 *normal,
                                 *d,
+                                Some(point),
                                 self.tol,
                             )?
                         } else {
@@ -628,6 +629,110 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
 ///
 /// The offset distance is scaled relative to the face's bounding box
 /// diagonal to handle both very small and very large faces correctly.
+/// Sample a planar face that has holes, as deep into the material as possible.
+///
+/// Returns the candidate whose smallest distance to ANY rim (outer or hole) is
+/// greatest — the middle of the annulus on a bored cap, rather than a point
+/// hugging one of the rims where every containment test against a polygonised
+/// opposing hole is a coin flip.
+///
+/// Candidates are the midpoints between each outer-rim sample and its nearest
+/// hole-rim sample (which is exactly mid-material for an annulus), plus the
+/// centroid. Returns `None` if none of them lands in the material, leaving the
+/// caller's generic path in charge.
+fn sample_holed_face_interior(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: brepkit_math::vec::Vec3,
+) -> Result<Option<Point3>, AlgoError> {
+    const CURVE_SAMPLES: u32 = 16;
+
+    let face = topo.face(face_id)?;
+    let sample_wire = |wid: brepkit_topology::wire::WireId| -> Result<Vec<Point3>, AlgoError> {
+        let wire = topo.wire(wid)?;
+        let mut pts = Vec::new();
+        for oe in wire.edges() {
+            let e = topo.edge(oe.edge())?;
+            let sp = topo.vertex(e.start())?.point();
+            let ep = topo.vertex(e.end())?.point();
+            pts.push(sp);
+            if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+                for k in 1..CURVE_SAMPLES {
+                    let t = f64::from(k).mul_add((t1 - t0) / f64::from(CURVE_SAMPLES), t0);
+                    pts.push(e.curve().evaluate_with_endpoints(t, sp, ep));
+                }
+            }
+        }
+        Ok(pts)
+    };
+
+    let outer_pts = sample_wire(face.outer_wire())?;
+    let mut hole_polys = Vec::new();
+    for &iw in face.inner_wires() {
+        let pts = sample_wire(iw)?;
+        if pts.len() >= 3 {
+            hole_polys.push(pts);
+        }
+    }
+    if outer_pts.len() < 3 || hole_polys.is_empty() {
+        return Ok(None);
+    }
+
+    let frame = plane_frame::PlaneFrame::from_plane_face(normal, &outer_pts);
+    let outer2d: Vec<_> = outer_pts.iter().map(|p| frame.project(*p)).collect();
+    let holes2d: Vec<Vec<_>> = hole_polys
+        .iter()
+        .map(|h| h.iter().map(|p| frame.project(*p)).collect::<Vec<_>>())
+        .collect();
+
+    let mut candidates: Vec<brepkit_math::vec::Point2> = Vec::new();
+    for &o in &outer2d {
+        if let Some(nearest) = holes2d
+            .iter()
+            .flatten()
+            .min_by(|a, b| {
+                (**a - o)
+                    .length()
+                    .partial_cmp(&(**b - o).length())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .copied()
+        {
+            candidates.push(brepkit_math::vec::Point2::new(
+                f64::midpoint(o.x(), nearest.x()),
+                f64::midpoint(o.y(), nearest.y()),
+            ));
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let inv = 1.0 / outer2d.len() as f64;
+    candidates.push(brepkit_math::vec::Point2::new(
+        outer2d.iter().map(|p| p.x()).sum::<f64>() * inv,
+        outer2d.iter().map(|p| p.y()).sum::<f64>() * inv,
+    ));
+
+    let mut best: Option<(f64, brepkit_math::vec::Point2)> = None;
+    for c in candidates {
+        if !classify_2d::point_in_polygon_2d(c, &outer2d)
+            || holes2d
+                .iter()
+                .any(|h| classify_2d::point_in_polygon_2d(c, h))
+        {
+            continue;
+        }
+        let clearance = std::iter::once(&outer2d)
+            .chain(holes2d.iter())
+            .map(|poly| classify_2d::distance_to_polygon_boundary(c, poly))
+            .fold(f64::INFINITY, f64::min);
+        if best.is_none_or(|(b, _)| clearance > b) {
+            best = Some((clearance, c));
+        }
+    }
+
+    Ok(best.map(|(_, c)| frame.evaluate(c.x(), c.y())))
+}
+
 fn sample_face_interior(
     topo: &Topology,
     face_id: FaceId,
@@ -693,7 +798,21 @@ fn sample_face_interior(
         let e = topo.edge(oe.edge())?;
         let sp = topo.vertex(e.start())?.point();
         let ep = topo.vertex(e.end())?.point();
-        for p in [sp, ep] {
+        // Sample ALONG each curved edge, not just its endpoints. A wire that
+        // is one closed circle (an annular cap's outer rim, a disc) has
+        // start == end, so an endpoint-only box collapses to a single point
+        // and `offset_scale` degenerates to the linear tolerance — placing
+        // the sample ~1e-7 off its own boundary, right on top of any
+        // coincident wall, where the ray cast is a coin flip.
+        let mut pts = vec![sp, ep];
+        if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+            for k in 1..4 {
+                let t = f64::from(k).mul_add((t1 - t0) / 4.0, t0);
+                pts.push(e.curve().evaluate_with_endpoints(t, sp, ep));
+            }
+        }
+        for p in pts {
             min_pt = Point3::new(
                 min_pt.x().min(p.x()),
                 min_pt.y().min(p.y()),
@@ -776,6 +895,17 @@ fn sample_face_interior(
     // thin sliver. Project the boundary, then pick the offset sign (shrinking
     // the magnitude for strips thinner than the offset) that lands inside.
     if let brepkit_topology::face::FaceSurface::Plane { normal, .. } = surface {
+        // A face with holes needs a sample in the MATERIAL, well clear of both
+        // rims. Offsetting inward from the outer boundary is not enough: on an
+        // annular cap it lands a hair inside its own rim, and the opposing
+        // solid's matching hole is polygonised as an inscribed polygon, so a
+        // point that close to the true circle reads as outside the hole and
+        // the face is classified against the wrong region.
+        if !face.inner_wires().is_empty()
+            && let Some(pt) = sample_holed_face_interior(topo, face_id, *normal)?
+        {
+            return Ok(pt);
+        }
         let mut poly = Vec::with_capacity(edges.len());
         for oe in edges {
             let e = topo.edge(oe.edge())?;

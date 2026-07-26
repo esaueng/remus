@@ -88,6 +88,57 @@ if (typeof kernel.importPly === "function") {
   console.log(`ok - PLY round trip: volume=${vol2}`);
 } else {
   console.log("skip - importPly not available (io feature not enabled)");
+
+}
+
+// 9. Direct face editing: push/pull a planar face.
+{
+  const block = kernel.makeBox(10, 10, 10);
+  const faces = Array.from(kernel.getSolidFaces(block));
+  let topFace = null;
+  for (const f of faces) {
+    if (kernel.getSurfaceType(f) !== "plane") continue;
+    const n = kernel.getFaceNormal(f);
+    if (Math.abs(n[2] - 1) < 1e-6) {
+      topFace = f;
+      break;
+    }
+  }
+  assert.ok(topFace !== null, "expected a +Z planar face on the box");
+  const pulled = kernel.pushPullFace(block, topFace, 5);
+  const pulledVol = kernel.volume(pulled, DEFLECTION);
+  assert.ok(
+    Math.abs(pulledVol - 1500) < 1,
+    `pushPullFace volume=${pulledVol}, expected ~1500`,
+  );
+  console.log(`ok - pushPullFace(+5) -> volume ${pulledVol}`);
+}
+
+// 10. Direct face editing: resize a cylindrical bore.
+{
+  const block = kernel.makeBox(40, 40, 10);
+  const drill = kernel.copyAndTransformSolid(kernel.makeCylinder(3, 10), [
+    1, 0, 0, 20, 0, 1, 0, 20, 0, 0, 1, 0, 0, 0, 0, 1,
+  ]);
+  const drilled = kernel.cut(block, drill);
+  const bore = Array.from(kernel.getSolidFaces(drilled)).find(
+    (f) => kernel.getSurfaceType(f) === "cylinder",
+  );
+  assert.ok(bore !== undefined, "expected a cylindrical bore face");
+  const widened = kernel.resizeCylindricalFace(drilled, bore, 5);
+  const widenedVol = kernel.volume(widened, DEFLECTION);
+  const expected = 40 * 40 * 10 - Math.PI * 25 * 10;
+  assert.ok(
+    Math.abs(widenedVol - expected) < 5,
+    `resizeCylindricalFace volume=${widenedVol}, expected ~${expected}`,
+  );
+  console.log(`ok - resizeCylindricalFace(5) -> volume ${widenedVol}`);
+
+  if (typeof kernel.exportStep === "function") {
+    const step = kernel.exportStep(widened);
+    assert.ok(step.length > 0, "STEP export of the resized bore should not be empty");
+    console.log(`ok - resized bore STEP export: ${step.length} bytes`);
+  }
 }
 
 console.log("\nAll smoke tests passed");

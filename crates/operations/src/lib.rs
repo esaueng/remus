@@ -13,6 +13,7 @@
 //! | **Boolean** | [`boolean`], [`mesh_boolean`] | Set operations |
 //! | **Blend** | [`fillet`], [`chamfer`], [`blend_ops`] | Edge smoothing |
 //! | **Offset** | [`offset_face`], [`offset_trim`], [`offset_v2`], [`offset_wire`] | Wall thickness |
+//! | **Direct edit** | [`push_pull`] | Move a face of an existing solid |
 //! | **Surface** | [`fill_face`], [`thicken`], [`shell_op`], [`draft`], [`section`], [`split`] | Surface/solid modification |
 //! | **Repair** | [`heal`], [`defeature`], [`sew`], [`untrim`] | Shape fixing |
 //! | **Analysis** | [`measure`], [`distance`], [`classify`], [`validate`], [`query`], [`feature_recognition`] | Interrogation |
@@ -46,6 +47,7 @@ pub mod offset_face;
 pub mod offset_trim;
 pub mod offset_v2;
 pub mod offset_wire;
+pub mod push_pull;
 
 pub mod draft;
 pub mod fill_face;

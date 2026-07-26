@@ -1611,6 +1611,12 @@ pub(super) fn split_face_with_internal_loops(
     // the hole plus the hole pieces inside the loop.
     let mut consumed_holes: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut union_hole_by_loop: Vec<Option<Vec<OrientedPCurveEdge>>> = vec![None; loops.len()];
+    // Pre-existing holes that lie ENTIRELY inside an internal loop, per loop.
+    let mut nested_holes_by_loop: Vec<Vec<usize>> = vec![Vec::new(); loops.len()];
+    let mut nested_holes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // Interior probe for a disc sub-face that owns nested holes (its centroid
+    // would land in the hole, not on the surviving annulus).
+    let mut nested_interior_by_loop: Vec<Option<Point3>> = vec![None; loops.len()];
     if let FaceSurface::Plane { normal, .. } = surface {
         // Stored UVs on hole wires can be fitted in a foreign frame; build ONE
         // local frame and project every 3D endpoint through it for all 2D
@@ -1641,6 +1647,58 @@ pub(super) fn split_face_with_internal_loops(
                 *loop_edges = disc;
                 union_hole_by_loop[li] = Some(union_hole);
                 consumed_holes.insert(hi);
+            }
+        }
+
+        // Re-bored opening: a pre-existing hole can sit ENTIRELY inside a new
+        // internal loop (widening a bore from r=3 to r=5 puts the old rim
+        // circle strictly inside the new one). Such a hole belongs to the
+        // region the loop carves out, not to the surrounding remainder —
+        // it is the inner boundary of the annulus being removed.
+        //
+        // Keeping it on the remainder strands the old rim on a single face:
+        // the cylindrical wall that used to pair with it is gone, so the shell
+        // is no longer closed. Volume and relaxed validation both miss this
+        // (the old disc is contained in the new one, so the redundant hole
+        // subtracts no area), but the exported solid is not watertight.
+        //
+        // The union pass above only handles PARTIAL overlap and is Line-only,
+        // so a circular rim never reaches it. This containment test is
+        // arc-true: loops are sampled through the face frame, so a hole
+        // bounded by a single closed circle is compared against its real
+        // outline rather than its degenerate start/end chord.
+        for (li, loop_edges) in loops.iter().enumerate() {
+            let lp = super::sampling::sample_wire_loop_uv_via_frame(loop_edges, &frame);
+            if lp.len() < 3 {
+                continue;
+            }
+            for (hi, hole) in original_inner_wires.iter().enumerate() {
+                if consumed_holes.contains(&hi) || nested_holes.contains(&hi) {
+                    continue;
+                }
+                let hp = super::sampling::sample_wire_loop_uv_via_frame(hole, &frame);
+                if hp.len() < 3 {
+                    continue;
+                }
+                // Every sampled point inside — a hole merely touching or
+                // straddling the loop is left to the existing behaviour.
+                if hp
+                    .iter()
+                    .all(|&p| super::super::classify_2d::point_in_polygon_2d(p, &lp))
+                {
+                    nested_holes_by_loop[li].push(hi);
+                    nested_holes.insert(hi);
+                }
+            }
+            if !nested_holes_by_loop[li].is_empty() {
+                nested_interior_by_loop[li] = annulus_interior_3d(
+                    loop_edges,
+                    &nested_holes_by_loop[li]
+                        .iter()
+                        .map(|&hi| &original_inner_wires[hi])
+                        .collect::<Vec<_>>(),
+                    &frame,
+                );
             }
         }
     }
@@ -1727,6 +1785,9 @@ pub(super) fn split_face_with_internal_loops(
                 sum.y() / count as f64,
                 sum.z() / count as f64,
             );
+            // With nested holes the sub-face is an annulus, and the loop
+            // centroid falls in the hole rather than on the kept material.
+            let centroid = nested_interior_by_loop[li].unwrap_or(centroid);
             // Offset along the face normal by a small amount to ensure
             // the point is clearly inside the opposing solid (not on the
             // coplanar boundary). Use the surface normal direction.
@@ -1745,11 +1806,15 @@ pub(super) fn split_face_with_internal_loops(
             )
         };
 
-        // The loop as outer wire of the inside sub-face.
+        // The loop as outer wire of the inside sub-face, carrying any
+        // pre-existing holes it encloses (a re-bored opening's old rim).
         result.push(SplitSubFace {
             surface: surface.clone(),
             outer_wire: loop_edges.clone(),
-            inner_wires: Vec::new(),
+            inner_wires: nested_holes_by_loop[li]
+                .iter()
+                .map(|&hi| original_inner_wires[hi].clone())
+                .collect(),
             reversed,
             parent: face_id,
             rank,
@@ -1850,11 +1915,12 @@ pub(super) fn split_face_with_internal_loops(
     // outside sub-face — dropping them would leave the faces ringing those
     // holes with free edges. Holes consumed by a deepened-opening union are
     // already represented by their union outline.
+    // Holes nested inside an internal loop have moved to that loop's sub-face.
     all_holes.extend(
         original_inner_wires
             .iter()
             .enumerate()
-            .filter(|(hi, _)| !consumed_holes.contains(hi))
+            .filter(|(hi, _)| !consumed_holes.contains(hi) && !nested_holes.contains(hi))
             .map(|(_, h)| h.clone()),
     );
     let remainder = SplitSubFace {
@@ -1896,6 +1962,76 @@ pub(super) fn split_face_with_internal_loops(
 /// all-Line, in UV) overlap: a proper edge crossing, a vertex of one strictly
 /// inside the other, or a collinear edge-overlap span. Disjoint pairs return
 /// false and keep the independent-wires behavior.
+/// Pick a 3D point on the annulus between an internal loop and the holes
+/// nested inside it.
+///
+/// The loop's centroid is not usable here — for a re-bored opening it lands
+/// inside the nested hole, and classification would then read the wrong
+/// region. Walk the loop's own outline instead: for each sampled boundary
+/// point take the midpoint toward the nearest nested-hole sample, which lies
+/// across the annulus, and keep the first candidate that is genuinely inside
+/// the loop and outside every hole.
+///
+/// Returns `None` when no candidate qualifies, leaving the caller's centroid
+/// in place rather than inventing a probe.
+fn annulus_interior_3d(
+    loop_edges: &[OrientedPCurveEdge],
+    holes: &[&Vec<OrientedPCurveEdge>],
+    frame: &PlaneFrame,
+) -> Option<Point3> {
+    const SAMPLES: usize = 24;
+    let sample_3d = |edges: &[OrientedPCurveEdge]| -> Vec<Point3> {
+        let mut pts = Vec::new();
+        for e in edges {
+            let (s3, e3) = if e.forward {
+                (e.start_3d, e.end_3d)
+            } else {
+                (e.end_3d, e.start_3d)
+            };
+            let (t0, t1) = e.curve_3d.domain_with_endpoints(s3, e3);
+            for k in 0..SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let t = (t1 - t0).mul_add(k as f64 / SAMPLES as f64, t0);
+                pts.push(e.curve_3d.evaluate_with_endpoints(t, s3, e3));
+            }
+        }
+        pts
+    };
+
+    let loop_pts = sample_3d(loop_edges);
+    let hole_pts: Vec<Point3> = holes.iter().flat_map(|h| sample_3d(h)).collect();
+    if loop_pts.is_empty() || hole_pts.is_empty() {
+        return None;
+    }
+
+    let loop_uv = super::sampling::sample_wire_loop_uv_via_frame(loop_edges, frame);
+    let hole_uvs: Vec<Vec<Point2>> = holes
+        .iter()
+        .map(|h| super::sampling::sample_wire_loop_uv_via_frame(h, frame))
+        .collect();
+
+    for p in &loop_pts {
+        let Some(q) = hole_pts.iter().min_by(|a, b| {
+            (**a - *p)
+                .length()
+                .partial_cmp(&(**b - *p).length())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
+            continue;
+        };
+        let mid = *p + (*q - *p) * 0.5;
+        let uv = frame.project(mid);
+        if super::super::classify_2d::point_in_polygon_2d(uv, &loop_uv)
+            && !hole_uvs
+                .iter()
+                .any(|hp| super::super::classify_2d::point_in_polygon_2d(uv, hp))
+        {
+            return Some(mid);
+        }
+    }
+    None
+}
+
 fn internal_loop_hole_interact(
     loop_edges: &[OrientedPCurveEdge],
     hole: &[OrientedPCurveEdge],

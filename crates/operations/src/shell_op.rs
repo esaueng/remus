@@ -439,6 +439,13 @@ pub fn shell(
             boundary_edge_ids.push(eid);
         }
     }
+    // `edge_face_map` is a HashMap, so this collection order is seed-dependent.
+    // It decides where `sort_edges_into_loops` starts each chain, and a
+    // different starting edge splits the rim into a different NUMBER of loops
+    // — the cup's rim came back with two or three inner wires depending on the
+    // process, which moved its measured volume by hundreds of units. Sort so
+    // the rim is decomposed the same way every run.
+    boundary_edge_ids.sort_unstable_by_key(|e| e.index());
 
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).

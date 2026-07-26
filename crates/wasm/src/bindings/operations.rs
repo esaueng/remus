@@ -24,6 +24,7 @@ use crate::kernel::BrepKernel;
 
 use brepkit_operations::extrude::extrude;
 use brepkit_operations::offset_wire::JoinType;
+use brepkit_operations::push_pull::{push_pull_face, resize_cylindrical_face};
 use brepkit_operations::revolve::revolve;
 use brepkit_operations::sweep::sweep;
 
@@ -354,6 +355,52 @@ impl BrepKernel {
     }
 
     // ── Operations ─────────────────────────────────────────────────
+
+    /// Move a planar face of a solid along its outward normal.
+    ///
+    /// A positive `distance` adds material, a negative one removes it.
+    /// Returns a new solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handles are invalid, the face is not planar or
+    /// not part of the solid, or the edit does not produce a valid solid.
+    #[wasm_bindgen(js_name = "pushPullFace")]
+    pub fn push_pull_face_binding(
+        &mut self,
+        solid: u32,
+        face: u32,
+        distance: f64,
+    ) -> Result<u32, JsError> {
+        validate_finite(distance, "distance")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let face_id = self.resolve_face(face)?;
+        let result = push_pull_face(self.topo_mut(), solid_id, face_id, distance)?;
+        Ok(solid_id_to_u32(result))
+    }
+
+    /// Change the radius of a cylindrical face of a solid.
+    ///
+    /// Handles both bores and bosses. Returns a new solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handles are invalid, the face is not
+    /// cylindrical or not part of the solid, `new_radius` is not positive, or
+    /// the edit does not produce a valid solid.
+    #[wasm_bindgen(js_name = "resizeCylindricalFace")]
+    pub fn resize_cylindrical_face_binding(
+        &mut self,
+        solid: u32,
+        face: u32,
+        new_radius: f64,
+    ) -> Result<u32, JsError> {
+        validate_positive(new_radius, "new_radius")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let face_id = self.resolve_face(face)?;
+        let result = resize_cylindrical_face(self.topo_mut(), solid_id, face_id, new_radius)?;
+        Ok(solid_id_to_u32(result))
+    }
 
     /// Extrude a planar face along a direction vector to create a solid.
     ///

@@ -11,6 +11,7 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::boolean::{self, BooleanOp, boolean};
 use brepkit_operations::extrude::extrude;
 use brepkit_operations::measure;
+use brepkit_operations::push_pull::{push_pull_face, resize_cylindrical_face};
 use brepkit_operations::revolve::revolve;
 use brepkit_operations::sweep::sweep;
 use brepkit_operations::transform::transform_solid;
@@ -678,6 +679,26 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(copy)))
             }
             // ── Batch 8: new batch-dispatched operations ──────────────
+            "pushPullFace" => {
+                let s = get_u32(args, "solid")?;
+                let f = get_u32(args, "face")?;
+                let distance = get_f64(args, "distance")?;
+                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let result = push_pull_face(self.topo_mut(), solid_id, face_id, distance)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "resizeCylindricalFace" => {
+                let s = get_u32(args, "solid")?;
+                let f = get_u32(args, "face")?;
+                let radius = get_f64(args, "radius")?;
+                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let result = resize_cylindrical_face(self.topo_mut(), solid_id, face_id, radius)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
             "extrude" => {
                 let f = get_u32(args, "face")?;
                 let dx = get_f64(args, "dx").unwrap_or(0.0);

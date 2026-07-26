@@ -2044,6 +2044,10 @@ struct TrivialRelation {
 /// mis-splits (coincident walls dropped into an open shell whose
 /// position-duplicate free edges slip past the by-edge-id validation gate), so
 /// the evolution path must route them through [`boolean`]'s shortcuts instead.
+/// How many of `inner`'s boundary vertices are probed when disproving a
+/// containment shortcut. Bounds the added ray-casts on dense imported solids.
+const CONTAINMENT_PROBES: usize = 32;
+
 fn detect_trivial_relation(
     topo: &Topology,
     a: SolidId,
@@ -2111,30 +2115,82 @@ fn detect_trivial_relation(
     // `outer`. By the containment lemma (inner ⊆ outer ⇒ every point
     // of inner is in outer), that witness can only occur for genuine
     // non-containment, so it never rejects a true containment.
+    // The AABB centre alone is a weak witness, and it misses exactly the case
+    // where `inner` is a coaxial tool grown around a feature `outer` already
+    // has. Widening a boss from r=5 to r=8 gives a tool whose AABB nests
+    // inside the solid's and whose centre sits on the axis — inside the OLD
+    // boss — so containment reads true and Fuse silently returns the
+    // unmodified solid. `inner`'s own boundary vertices are the witnesses that
+    // catch it: the r=8 rim level with the boss top is provably in air.
+    //
+    // Sampling is sound in the same way the centre test is: a point of `inner`
+    // proven outside `outer` disproves containment outright, so extra probes
+    // can only reject a FALSE containment, never a true one. The cap keeps the
+    // added ray-casts bounded on dense imported solids.
+    // Each probe is tagged with whether it is KNOWN to belong to `inner`.
+    // A vertex of `inner` is on `inner`'s boundary by construction, so it needs
+    // no classification; only the AABB centre — which can fall in a concavity —
+    // has to be tested.
+    let witness_points = |topo: &Topology, inner: SolidId, bb: &Option<(Point3, Point3)>| {
+        let mut pts: Vec<(Point3, bool)> = Vec::with_capacity(CONTAINMENT_PROBES + 1);
+        if let Some((lo, hi)) = *bb {
+            pts.push((
+                Point3::new(
+                    0.5 * (lo.x() + hi.x()),
+                    0.5 * (lo.y() + hi.y()),
+                    0.5 * (lo.z() + hi.z()),
+                ),
+                false,
+            ));
+        }
+        if let Ok(vids) = brepkit_topology::explorer::solid_vertices(topo, inner) {
+            let step = (vids.len() / CONTAINMENT_PROBES).max(1);
+            for vid in vids.iter().step_by(step).take(CONTAINMENT_PROBES) {
+                if let Ok(v) = topo.vertex(*vid) {
+                    pts.push((v.point(), true));
+                }
+            }
+        }
+        pts
+    };
     let center_outside =
         |topo: &Topology, inner: SolidId, outer: SolidId, bb: &Option<(Point3, Point3)>| -> bool {
             let Some((lo, hi)) = *bb else { return false };
-            let c = Point3::new(
-                0.5 * (lo.x() + hi.x()),
-                0.5 * (lo.y() + hi.y()),
-                0.5 * (lo.z() + hi.z()),
-            );
             let (dx, dy, dz) = (hi.x() - lo.x(), hi.y() - lo.y(), hi.z() - lo.z());
             let defl = (dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt() * 0.01).max(1e-6);
-            // Conservative by design: when the AABB center falls in `inner`'s own
-            // concavity (a C/U-shaped solid), `inside_inner` is false and the
-            // witness is disabled, so a false-positive containment could still
-            // slip through. That only ever fails to *reject* — it never rejects a
-            // true containment — so the shortcut stays sound, just not complete.
-            let inside_inner = matches!(
-                crate::classify::classify_point(topo, inner, c, defl, tol.linear),
-                Ok(crate::classify::PointClassification::Inside)
-            );
-            let outside_outer = matches!(
-                crate::classify::classify_point(topo, outer, c, defl, tol.linear),
-                Ok(crate::classify::PointClassification::Outside)
-            );
-            inside_inner && outside_outer
+            for (c, from_inner_boundary) in witness_points(topo, inner, bb) {
+                // Conservative by design: when the AABB centre falls in `inner`'s own
+                // concavity (a C/U-shaped solid), `on_inner` is false and that probe
+                // is skipped, so a false-positive containment could still slip
+                // through. That only ever fails to *reject* — it never rejects a true
+                // containment — so the shortcut stays sound, just not complete.
+                //
+                // Do NOT re-classify a vertex of `inner` against `inner`: it is on
+                // that boundary by construction, and `classify_point` reports a
+                // boundary vertex as Outside, which would discard every vertex
+                // witness and silently disable the check.
+                let on_inner = from_inner_boundary
+                    || matches!(
+                        crate::classify::classify_point(topo, inner, c, defl, tol.linear),
+                        Ok(crate::classify::PointClassification::Inside
+                            | crate::classify::PointClassification::OnBoundary)
+                    );
+                // `classify_point` reports a point ON `outer`'s boundary as
+                // Outside, so "not inside" is NOT a disproof: for identical
+                // solids every vertex of `inner` rides `outer`'s boundary and
+                // would spuriously refute a containment that genuinely holds.
+                // Require the witness to stand CLEAR of that boundary before
+                // its verdict counts.
+                let outside_outer = matches!(
+                    crate::classify::classify_point(topo, outer, c, defl, tol.linear),
+                    Ok(crate::classify::PointClassification::Outside)
+                ) && crate::distance::point_to_solid_distance(topo, c, outer)
+                    .is_ok_and(|d| d.distance > tol.linear * 100.0);
+                if on_inner && outside_outer {
+                    return true;
+                }
+            }
+            false
         };
 
     // Bidirectional vertex check via the analytic classifier — the

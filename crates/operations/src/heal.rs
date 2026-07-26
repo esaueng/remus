@@ -1331,7 +1331,14 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
         let mut internal_edges: HashSet<usize> = HashSet::new();
 
         for (edge_idx, faces) in &edge_face_map {
+            // Two face-uses from the SAME face is a seam, not a shared edge:
+            // `edge_to_face_map` records a seam twice because it appears twice
+            // in one face's wire. Dropping it as internal deletes the seam of
+            // every cylinder/cone/sphere in the group — two stacked coaxial
+            // bore bands then merge into a pair of disjoint rim circles, which
+            // reassemble as an outer wire plus a bogus inner wire.
             if faces.len() == 2
+                && faces[0] != faces[1]
                 && group_set.contains(&faces[0].index())
                 && group_set.contains(&faces[1].index())
             {
@@ -1471,6 +1478,15 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
             .collect();
 
         let mut loops = order_edges_into_loops(topo, &replaced_edges)?;
+        // A seam-bearing band's boundary is one loop that the position-walk
+        // cannot trace, because each closed rim looks like a finished loop on
+        // its own. Rebuild it explicitly rather than accept the split.
+        if loops.len() > 1
+            && !gd.surface.is_planar()
+            && let Some(band) = assemble_seam_band_loop(topo, &replaced_edges)?
+        {
+            loops = vec![band];
+        }
 
         if loops.is_empty() {
             continue;
@@ -1605,6 +1621,115 @@ struct EdgeInfo {
 /// Returns a `Vec<Vec<OrientedEdge>>` where each inner vec is a closed
 /// loop with edges chained end-to-start. Empty if edges can't form any
 /// valid loop.
+/// Reassemble the boundary of a merged seam-bearing band into one loop.
+///
+/// Two stacked coaxial bands (a bore re-drilled deeper, a boss grown in two
+/// steps) merge into a band whose boundary is a closed rim circle at each end
+/// plus the seam edges running between them. A rim's start and end vertex are
+/// the same point, so the generic position-walk closes a loop the moment it
+/// steps onto one and hands back three loops — an outer wire and two bogus
+/// inner wires — instead of the single loop the band really has.
+///
+/// The band's wire is `[low rim, seam chain up, high rim, seam chain back
+/// down]`, matching what `make_cylinder` builds. Each rim keeps the
+/// orientation it had in its own band so the merged face's normal convention
+/// is unchanged.
+///
+/// Returns `None` unless the edge multiset is exactly that shape (two distinct
+/// closed rims used once each, every other edge used once forward and once
+/// reversed, chaining between the two rim vertices), so any other non-planar
+/// group falls through to the generic walker.
+fn assemble_seam_band_loop(
+    topo: &Topology,
+    edges: &[OrientedEdge],
+) -> Result<Option<Vec<OrientedEdge>>, crate::OperationsError> {
+    let mut rims: Vec<OrientedEdge> = Vec::new();
+    let mut seam_dirs: HashMap<usize, (bool, bool)> = HashMap::new();
+    let mut seam_edges: Vec<OrientedEdge> = Vec::new();
+
+    for oe in edges {
+        let edge = topo.edge(oe.edge())?;
+        let sp = quantize_vertex(topo.vertex(edge.start())?.point());
+        let ep = quantize_vertex(topo.vertex(edge.end())?.point());
+        if sp == ep {
+            rims.push(*oe);
+            continue;
+        }
+        let slot = seam_dirs.entry(oe.edge().index()).or_insert((false, false));
+        if oe.is_forward() {
+            if slot.0 {
+                return Ok(None); // same direction twice: not a seam
+            }
+            slot.0 = true;
+        } else {
+            if slot.1 {
+                return Ok(None);
+            }
+            slot.1 = true;
+        }
+        if seam_edges.iter().all(|e| e.edge() != oe.edge()) {
+            seam_edges.push(*oe);
+        }
+    }
+
+    if rims.len() != 2 || rims[0].edge() == rims[1].edge() || seam_edges.is_empty() {
+        return Ok(None);
+    }
+    if !seam_dirs.values().all(|&(f, r)| f && r) {
+        return Ok(None);
+    }
+
+    // Chain the seam edges into a path between the two rim vertices.
+    let rim_pos = |oe: &OrientedEdge| -> Result<QVPos, crate::OperationsError> {
+        let e = topo.edge(oe.edge())?;
+        Ok(quantize_vertex(topo.vertex(e.start())?.point()))
+    };
+    let (pos_a, pos_b) = (rim_pos(&rims[0])?, rim_pos(&rims[1])?);
+
+    let mut remaining: Vec<OrientedEdge> = seam_edges;
+    let mut chain: Vec<OrientedEdge> = Vec::with_capacity(remaining.len());
+    let mut cursor = pos_a;
+    while !remaining.is_empty() {
+        let mut advanced = false;
+        for i in 0..remaining.len() {
+            let edge = topo.edge(remaining[i].edge())?;
+            let sp = quantize_vertex(topo.vertex(edge.start())?.point());
+            let ep = quantize_vertex(topo.vertex(edge.end())?.point());
+            // Orient the edge so it leads away from the cursor.
+            let forward = if sp == cursor {
+                true
+            } else if ep == cursor {
+                false
+            } else {
+                continue;
+            };
+            cursor = if forward { ep } else { sp };
+            chain.push(OrientedEdge::new(remaining[i].edge(), forward));
+            remaining.remove(i);
+            advanced = true;
+            break;
+        }
+        if !advanced {
+            return Ok(None); // seam edges do not form a single path
+        }
+    }
+    if cursor != pos_b {
+        return Ok(None); // path does not reach the far rim
+    }
+
+    let mut loop_edges = Vec::with_capacity(chain.len() * 2 + 2);
+    loop_edges.push(rims[0]);
+    loop_edges.extend(chain.iter().copied());
+    loop_edges.push(rims[1]);
+    loop_edges.extend(
+        chain
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward())),
+    );
+    Ok(Some(loop_edges))
+}
+
 fn order_edges_into_loops(
     topo: &Topology,
     edges: &[OrientedEdge],

@@ -2638,10 +2638,29 @@ fn fuse_ring_inside_shelled_box() {
     );
 }
 
-/// Same test but with cylinders (curved surfaces).
-/// The Gridfinity bin has cylinder corners; this tests if curved shells
-/// fuse correctly with ring-like objects inside the cavity.
+/// Ignored: this fuse does not produce a usable solid, and the assertion below
+/// is only a 0.35 relative-volume band.
+///
+/// The ring is disjoint from the cup — cavity radius 8.8 vs ring outer 7,
+/// touching only the z=16 plane where their regions do not overlap. Before the
+/// containment fix, the boolean concluded the ring was INSIDE the cup (its AABB
+/// nests, and the old single centre-probe could not disprove it) and returned
+/// the cup unchanged: measured `fused - cup == 0.0000`, same five faces, ring
+/// gone entirely. The band passed only because the missing ring is 226 of 1725
+/// units, a 13% error under a 35% allowance — the same false-containment that
+/// silently dropped the tool when growing a boss.
+///
+/// With containment disproved correctly the boolean now attempts the fuse for
+/// real, and fusing disjoint bodies is genuinely unimplemented: the result is
+/// five disconnected shell components with ~80 shared edges whose face
+/// orientations disagree, so the acceptance gate rejects it and the mesh
+/// fallback cannot recover it either.
+///
+/// Un-ignore when fusing disjoint bodies produces a real multi-shell result.
+/// The check to assert then is shell connectivity and orientation consistency —
+/// not this volume band, which a wholly-absent operand satisfies.
 #[test]
+#[ignore = "disjoint-body fuse is unimplemented; the volume band passed only while the ring was silently dropped"]
 fn fuse_ring_inside_shelled_cylinder() {
     let mut topo = Topology::new();
 

@@ -105,6 +105,7 @@ pub fn classify_point_cached(
 /// # Errors
 ///
 /// Returns [`AlgoError`] on a topology lookup failure.
+#[allow(clippy::too_many_arguments)]
 pub fn classify_coincident_coplanar(
     topo: &Topology,
     opposing_solid: SolidId,
@@ -112,6 +113,7 @@ pub fn classify_coincident_coplanar(
     sub_face_id: brepkit_topology::face::FaceId,
     sub_normal: Vec3,
     sub_d: f64,
+    interior_hint: Option<Point3>,
     tol: brepkit_math::tolerance::Tolerance,
 ) -> Result<Option<FaceClass>, AlgoError> {
     let plane_tol = tol.linear.max(1e-7);
@@ -148,19 +150,93 @@ pub fn classify_coincident_coplanar(
         // is neither strictly inside nor strictly outside. Track the deepest
         // strictly-outside vertex (farthest from the opposing boundary) — that
         // is the wedge tip, the most reliable place to probe.
+        // A hole rim is polygonised as an inscribed polygon, so a vertex lying
+        // on the TRUE arc sits up to the sagitta inside that polygon. Widen the
+        // "on the boundary" band for holes to the polygon's own chord length,
+        // which bounds the sagitta — otherwise an annular cap dropped into a
+        // matching bore reports every rim vertex as strictly inside the
+        // opposing region and the straddler guard defers a face that does not
+        // overlap it at all. The band only ever demotes a vertex to "on", and
+        // the decision still rests on the interior probe below.
+        let hole_bands: Vec<f64> = holes
+            .iter()
+            .map(|h| {
+                let n = h.len();
+                let max_chord = (0..n)
+                    .map(|i| (h[(i + 1) % n] - h[i]).length())
+                    .fold(0.0_f64, f64::max);
+                // Sagitta of the widest chord: how far inside the inscribed
+                // polygon a point on the true arc can sit. Bound it from the
+                // polygon alone via c^2 / 8R, taking R as the mean centroid
+                // distance (exact for a circular rim). The chord ITSELF is far
+                // too wide a band — on a r=8.8 rim it is 4.6mm, which would
+                // swallow genuinely-interior vertices metres from the arc.
+                #[allow(clippy::cast_precision_loss)]
+                let inv_n = 1.0 / n as f64;
+                let cx = h.iter().map(|p| p.x()).sum::<f64>() * inv_n;
+                let cy = h.iter().map(|p| p.y()).sum::<f64>() * inv_n;
+                let cz = h.iter().map(|p| p.z()).sum::<f64>() * inv_n;
+                let centroid = Point3::new(cx, cy, cz);
+                let radius = h.iter().map(|p| (*p - centroid).length()).sum::<f64>() * inv_n;
+                if radius <= plane_tol {
+                    return plane_tol;
+                }
+                // 1.5x for polygons that are not exactly circular.
+                1.5 * max_chord * max_chord / (8.0 * radius)
+            })
+            .collect();
+        let near_hole_rim = |p: Point3| -> bool {
+            holes.iter().zip(&hole_bands).any(|(h, &band)| {
+                dist_to_polygon_boundary(p, h, &region_normal) <= band.max(plane_tol)
+            })
+        };
+
         let mut any_strictly_inside = false;
         let mut deepest_outside: Option<(f64, Point3)> = None;
+        let mut all_verts_on_rim = true;
         for &v in &sub_verts {
             let dist = dist_to_polygon_boundary(v, &outer, &region_normal);
             if dist <= plane_tol {
                 continue;
             }
+            if near_hole_rim(v) {
+                continue;
+            }
+            all_verts_on_rim = false;
             if point_in_planar_region(v, &outer, &holes, &region_normal) {
                 any_strictly_inside = true;
             } else if deepest_outside.is_none_or(|(d, _)| dist > d) {
                 deepest_outside = Some((dist, v));
             }
         }
+
+        // A sub-face whose whole boundary runs along the opposing region's rim
+        // yields no wedge tip: an annular cap dropped into a matching bore has
+        // every rim vertex ON the shared circle, and the opposing hole is
+        // polygonised as an inscribed polygon, so those vertices read as inside
+        // the region by up to the sagitta. Its interior point settles it — it
+        // sits mid-material, far from either rim, where containment is not a
+        // near-tie.
+        let mut tip_is_interior = false;
+        let deepest_outside = deepest_outside.or_else(|| {
+            // Only for the flush-rim signature: EVERY boundary vertex rides the
+            // opposing region's rim, so the sub-face abuts it without crossing
+            // it. A sub-face with vertices genuinely off the rim is a different
+            // configuration and stays with the wedge logic.
+            if !all_verts_on_rim {
+                return None;
+            }
+            let hint = interior_hint?;
+            if point_in_planar_region(hint, &outer, &holes, &region_normal) {
+                return None;
+            }
+            let clearance = std::iter::once(&outer)
+                .chain(holes.iter())
+                .map(|poly| dist_to_polygon_boundary(hint, poly, &region_normal))
+                .fold(f64::INFINITY, f64::min);
+            tip_is_interior = clearance > plane_tol;
+            tip_is_interior.then_some((clearance, hint))
+        });
 
         // Wholly-exterior wedge: outside-or-on everywhere, with real exterior
         // extent. A straddler (any strictly-inside vertex) is deferred.
@@ -196,7 +272,6 @@ pub fn classify_coincident_coplanar(
         let inv = 1.0 / sub_verts.len() as f64;
         let centroid = Point3::new(cx * inv, cy * inv, cz * inv);
         let probe = (100.0 * plane_tol).max(1e-3);
-
         // Candidate probe locations along tip → centroid. The centroid fractions
         // cover the wedge from rim to interior (a partially-internal coincident
         // plane can persist at either end — the honeycomb's stacked cap persists
@@ -206,7 +281,14 @@ pub fn classify_coincident_coplanar(
         // where every centroid fraction jumps clear across the band into the hole
         // (the opposing 2D region) and is rejected — without them the band face
         // found no valid probe and was dropped.
-        let mut candidates: Vec<Point3> = Vec::with_capacity(6);
+        let mut candidates: Vec<Point3> = Vec::with_capacity(7);
+        // A tip taken from the sub-face's OWN interior (the flush-rim case: an
+        // annular cap dropped into a matching bore) already sits mid-material,
+        // clear of both rims — probe it where it stands. A wedge corner does
+        // not, and still needs the nudges below.
+        if tip_is_interior {
+            candidates.push(tip);
+        }
         for frac in [0.25_f64, 0.4, 0.55] {
             candidates.push(tip + (centroid - tip) * frac);
         }
@@ -292,6 +374,21 @@ fn sub_face_outer_vertices(
     for oe in wire.edges() {
         let e = topo.edge(oe.edge())?;
         verts.push(topo.vertex(e.start())?.point());
+        // Walk curved edges. A boundary that is ONE closed circle — an annular
+        // cap's rim, a disc — has start == end, so endpoints alone give two
+        // coincident points and the caller gives up on a face that is
+        // perfectly classifiable. Sampling the arc yields a real polygon, and
+        // its centroid is the circle centre, which is what the wedge probe
+        // needs to step inward from the rim.
+        if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            let sp = topo.vertex(e.start())?.point();
+            let ep = topo.vertex(e.end())?.point();
+            let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+            for k in 1..CURVE_SAMPLES {
+                let t = f64::from(k).mul_add((t1 - t0) / f64::from(CURVE_SAMPLES), t0);
+                verts.push(e.curve().evaluate_with_endpoints(t, sp, ep));
+            }
+        }
         verts.push(topo.vertex(e.end())?.point());
     }
     if verts.len() < 3 {
@@ -299,3 +396,6 @@ fn sub_face_outer_vertices(
     }
     Ok(Some(verts))
 }
+
+/// Points used to polygonise a curved boundary edge.
+const CURVE_SAMPLES: u32 = 12;
