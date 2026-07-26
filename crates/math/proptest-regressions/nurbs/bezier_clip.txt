@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 6000b035029c478aed9c6377b9e6982f15524c25dd99017684c9bfaacbbd9e01 # shrinks to u_param = 0.39985989638118474
+cc 93127cf8c2cddd9e0bd026c3d6bdffab02f343f1ff476a922b7eee7f4fa66793 # shrinks to u_param = 0.2484656653399068
