@@ -2477,37 +2477,28 @@ fn all_component_centers_outside(
     true
 }
 
-/// Centre of a face component's vertex AABB, or `None` for an empty component.
+/// Centre of a face component's AABB, or `None` for an empty component.
+///
+/// Uses `check::util::face_aabb`, which expands for curved-edge extent and
+/// surface curvature. Vertex positions alone are NOT enough: a cylindrical
+/// chunk's only vertices are its two seam points, so a vertex-only box
+/// collapses in x and y onto the seam and the "centre" lands exactly ON the
+/// wall rather than inside the piece. Callers sample this point to ask whether
+/// the component is interior to an operand, and a surface point makes that
+/// question a coin flip.
 fn component_aabb_centre(topo: &Topology, comp: &[FaceId]) -> Option<Point3> {
-    let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-    let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut acc: Option<brepkit_math::aabb::Aabb3> = None;
     for &fid in comp {
-        let Ok(face) = topo.face(fid) else { continue };
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let Ok(wire) = topo.wire(wid) else { continue };
-            for oe in wire.edges() {
-                let Ok(edge) = topo.edge(oe.edge()) else {
-                    continue;
-                };
-                for vid in [edge.start(), edge.end()] {
-                    if let Ok(v) = topo.vertex(vid) {
-                        let p = v.point();
-                        min =
-                            Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
-                        max =
-                            Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
-                    }
-                }
-            }
-        }
+        let Ok(aabb) = brepkit_check::util::face_aabb(topo, fid) else {
+            continue;
+        };
+        acc = Some(acc.map_or(aabb, |a| a.union(aabb)));
     }
-    if min.x() > max.x() {
-        return None;
-    }
+    let aabb = acc?;
     Some(Point3::new(
-        (min.x() + max.x()) * 0.5,
-        (min.y() + max.y()) * 0.5,
-        (min.z() + max.z()) * 0.5,
+        (aabb.min.x() + aabb.max.x()) * 0.5,
+        (aabb.min.y() + aabb.max.y()) * 0.5,
+        (aabb.min.z() + aabb.max.z()) * 0.5,
     ))
 }
 

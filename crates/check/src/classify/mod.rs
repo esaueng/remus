@@ -206,11 +206,44 @@ fn is_on_boundary(
     Ok(false)
 }
 
+/// Test whether `point` lies within `tolerance` of the solid's boundary.
+///
+/// Exposed so higher layers can reuse the same boundary test [`classify_point`]
+/// applies, instead of duplicating the per-surface distance logic. In
+/// particular `brepkit-operations` needs it for its tessellation-based winding
+/// classifier, which cannot live in this crate (tessellation is L3).
+///
+/// # Errors
+///
+/// Returns an error if the solid or its faces contain invalid topology references.
+pub fn is_point_on_boundary(
+    topo: &Topology,
+    solid: SolidId,
+    point: Point3,
+    tolerance: f64,
+) -> Result<bool, CheckError> {
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    is_on_boundary(topo, &faces, point, tolerance)
+}
+
 /// Classify a point relative to a solid using generalized winding numbers.
 ///
-/// More robust than ray casting for imperfect geometry (small gaps,
-/// T-junctions). Sums the signed solid angles of triangulated faces and
-/// classifies based on the resulting winding number.
+/// Sums the signed solid angles of each face's boundary-loop fan
+/// triangulation, with holes subtracted.
+///
+/// # Accuracy
+///
+/// **Exact only for planar faces.** The fan is built from a face's *boundary
+/// loop*, which equals the face itself only when the face is planar. For a
+/// cylindrical face the loop is `bottom rim -> seam -> top rim -> seam`, whose
+/// fan is not the tube, so the solid-angle sum is wrong for curved geometry —
+/// interior points of a cylinder can read `Outside`. Subtracting holes (which
+/// this does) does not change that.
+///
+/// For curved solids use [`classify_point`] (analytic ray casting, exact for
+/// every supported surface type), or
+/// `brepkit_operations::classify::classify_point_winding`, which sums solid
+/// angles over a real watertight tessellation.
 ///
 /// # Errors
 ///
@@ -237,8 +270,14 @@ pub fn classify_point_winding(
 /// Robust classification combining winding numbers and ray casting.
 ///
 /// Uses winding numbers first, falling back to ray casting when the
-/// winding number is ambiguous (between 0.4 and 0.6). This provides the
-/// best accuracy for both clean and imperfect geometry.
+/// winding number is ambiguous (between 0.4 and 0.6).
+///
+/// # Accuracy
+///
+/// Inherits the curved-face limitation of [`classify_point_winding`]: a
+/// confidently-wrong winding number (outside the 0.4..0.6 band) is returned
+/// without ever consulting the ray caster. On curved solids prefer
+/// [`classify_point`].
 ///
 /// # Errors
 ///
