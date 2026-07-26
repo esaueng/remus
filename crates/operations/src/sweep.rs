@@ -30,11 +30,13 @@ struct Frame {
 
 /// Compute rotation-minimizing frames along a NURBS path.
 ///
-/// Samples the path at evenly-spaced parameter values and propagates the
-/// initial up-vector using the double-reflection method to produce smooth,
-/// twist-free frames. For open paths, produces `num_segments + 1` frames
-/// (t=0 through t=1). For closed paths, produces `num_segments` frames
-/// (t=0 through t=(N-1)/N), omitting t=1 since it duplicates t=0.
+/// Samples the path at evenly-spaced parameter values across its domain and
+/// propagates the initial up-vector using the double-reflection method to
+/// produce smooth, twist-free frames. For open paths, produces
+/// `num_segments + 1` frames (domain start through domain end). For closed
+/// paths, produces `num_segments` frames, omitting the last since it
+/// duplicates the first. The path's domain need not be [0, 1] — sub-curves
+/// from `curve_split` keep the parent parameterization.
 fn compute_frames(
     path: &NurbsCurve,
     num_segments: usize,
@@ -48,11 +50,12 @@ fn compute_frames(
     };
     let mut frames = Vec::with_capacity(frame_count);
 
-    let t0 = path.tangent(0.0)?;
+    let (u0, u1) = path.domain();
+    let t0 = path.tangent(u0)?;
     let up0 = orthogonalize(initial_up, t0);
     let right0 = t0.cross(up0);
     frames.push(Frame {
-        origin: path.evaluate(0.0),
+        origin: path.evaluate(u0),
         tangent: t0,
         up: up0,
         right: right0,
@@ -70,7 +73,7 @@ fn compute_frames(
     };
     for k in 1..=last_k {
         #[allow(clippy::cast_precision_loss)]
-        let t_param = (k as f64) / (num_segments as f64);
+        let t_param = u0 + (u1 - u0) * (k as f64) / (num_segments as f64);
 
         let origin = path.evaluate(t_param);
         let tangent = path.tangent(t_param)?;
@@ -1657,13 +1660,40 @@ fn sweep_miter(
     // so we can connect them via miter faces.
     let mut prev_end_ring: Option<Vec<VertexId>> = None;
     let mut prev_end_ring_edges: Option<Vec<brepkit_topology::edge::EdgeId>> = None;
+    // The previous segment's end frame (tangent, up), used to transport the
+    // frame orientation through each kink so ring corner `i` on both sides of
+    // a miter is the image of the same profile corner.
+    let mut prev_end_frame: Option<(Vec3, Vec3)> = None;
 
     for (seg_idx, sub_path) in sub_paths.iter().enumerate() {
         let is_first = seg_idx == 0;
         let is_last = seg_idx == sub_paths.len() - 1;
 
         let sub_tangent_0 = sub_path.tangent(sub_path.domain().0)?;
-        let up_hint = orthogonalize(input_normal, sub_tangent_0);
+        // For the first segment, seed the frame up from the profile normal.
+        // For later segments, transport the previous end frame's up through
+        // the kink by the proper rotation taking the incoming tangent to the
+        // outgoing one (Rodrigues about their cross product); re-deriving up
+        // from the profile normal would rotate the cross-section relative to
+        // the previous segment and break the miter-ring corner
+        // correspondence.
+        let up_hint = match prev_end_frame {
+            None => orthogonalize(input_normal, sub_tangent_0),
+            Some((prev_tangent, prev_up)) => {
+                let transported = match prev_tangent.cross(sub_tangent_0).normalize() {
+                    Ok(axis) => {
+                        let angle = prev_tangent.dot(sub_tangent_0).clamp(-1.0, 1.0).acos();
+                        let (sin_a, cos_a) = angle.sin_cos();
+                        prev_up * cos_a
+                            + axis.cross(prev_up) * sin_a
+                            + axis * (axis.dot(prev_up) * (1.0 - cos_a))
+                    }
+                    // Parallel tangents: no rotation at the kink.
+                    Err(_) => prev_up,
+                };
+                orthogonalize(transported, sub_tangent_0)
+            }
+        };
 
         let num_segments = if options.segments > 0 {
             options.segments
@@ -1710,9 +1740,11 @@ fn sweep_miter(
                 .collect(),
         };
 
-        let initial_right = sub_frames[0].right;
-        let initial_up = sub_frames[0].up;
-        let initial_tangent = sub_frames[0].tangent;
+        // Decompose profile offsets in the profile's own basis (as the other
+        // sweep variants do), not the segment frame's basis: a segment whose
+        // tangent is not parallel to the profile normal would otherwise map
+        // the profile edge-on and collapse the ring to a flat ribbon.
+        let (initial_right, initial_up, initial_tangent) = profile_basis(input_normal);
 
         // Create ring vertices for this segment.
         let mut ring_verts: Vec<Vec<VertexId>> = Vec::with_capacity(num_segments + 1);
@@ -1734,131 +1766,53 @@ fn sweep_miter(
             ring_verts.push(ring);
         }
 
-        // If we have a previous segment's end ring, replace this segment's
-        // start ring with the miter ring (computed from bisector plane).
-        #[allow(clippy::useless_let_if_seq)]
-        let mut miter_ring_edges_for_reuse: Option<Vec<brepkit_topology::edge::EdgeId>> = None;
-        if let Some(ref prev_ring) = prev_end_ring {
-            // The kink point is where the previous segment ended / this one starts.
-            let kink_idx = seg_idx - 1;
-            let kink_u = kinks[kink_idx];
+        // If the previous segment ended on a miter ring, this segment starts
+        // from that same ring: replace the freshly built start ring and reuse
+        // the miter ring's edges so both segments' side faces share the same
+        // edge entities.
+        let miter_ring_edges_for_reuse: Option<Vec<brepkit_topology::edge::EdgeId>> =
+            if let Some(prev_ring) = prev_end_ring.take() {
+                ring_verts[0] = prev_ring;
+                prev_end_ring_edges.take()
+            } else {
+                None
+            };
+
+        // If another segment follows, trim this segment at the kink: project
+        // each end-ring vertex along this segment's end tangent onto the
+        // bisector plane. The next segment starts from the same projected
+        // ring, so the join is the true miter cross-section and needs no
+        // transition faces. (A transition band from an untrimmed end ring to
+        // the miter ring would fold into self-intersecting bowtie quads on
+        // the sides parallel to both tangents, since the miter plane crosses
+        // the end ring at the kink point.)
+        if !is_last {
+            let kink_u = kinks[seg_idx];
             let eps = 1e-8;
 
-            // Get tangents on either side of the kink.
+            // Tangents on either side of the kink; the bisector plane's
+            // normal is their average.
             let t_before = path.tangent(kink_u - eps)?;
             let t_after = path.tangent(kink_u + eps)?;
-
-            // Bisector direction: average of the two tangent directions.
             let bisector = (t_before + t_after).normalize().unwrap_or(t_before);
-
-            // Miter plane: passes through the kink point with normal = bisector.
             let kink_point = path.evaluate(kink_u);
 
-            // Project the profile ring onto the miter plane.
-            // For each profile vertex, find where the line from the previous
-            // segment's end position to the current segment's start position
-            // intersects the bisector plane.
-            let miter_ring: Vec<VertexId> = (0..n)
-                .map(|i| {
-                    let prev_pos = topo
-                        .vertex(prev_ring[i])
-                        .map(brepkit_topology::vertex::Vertex::point)
-                        .unwrap_or(kink_point);
-                    let curr_pos = topo
-                        .vertex(ring_verts[0][i])
-                        .map(brepkit_topology::vertex::Vertex::point)
-                        .unwrap_or(kink_point);
-
-                    // Ray-plane intersection: find t where
-                    // prev_pos + t*(curr_pos - prev_pos) lies on the bisector plane.
-                    let ray_dir = curr_pos - prev_pos;
-                    let denom = bisector.dot(ray_dir);
-                    let miter_pos = if denom.abs() > tol.linear {
-                        let d = bisector.dot(Vec3::new(
-                            kink_point.x() - prev_pos.x(),
-                            kink_point.y() - prev_pos.y(),
-                            kink_point.z() - prev_pos.z(),
-                        ));
-                        let t_intersect = d / denom;
-                        prev_pos + ray_dir * t_intersect
-                    } else {
-                        // Ray parallel to plane — use midpoint.
-                        Point3::new(
-                            (prev_pos.x() + curr_pos.x()) * 0.5,
-                            (prev_pos.y() + curr_pos.y()) * 0.5,
-                            (prev_pos.z() + curr_pos.z()) * 0.5,
-                        )
-                    };
-                    topo.add_vertex(Vertex::new(miter_pos, tol.linear))
-                })
-                .collect();
-
-            let miter_ring_edges: Vec<brepkit_topology::edge::EdgeId> = (0..n)
-                .map(|i| {
-                    let next = (i + 1) % n;
-                    topo.add_edge(Edge::new(miter_ring[i], miter_ring[next], EdgeCurve::Line))
-                })
-                .collect();
-
-            // Build miter face connecting the previous segment's end to
-            // the miter ring. The miter face is on the bisector plane.
-            let prev_ring_edges = prev_end_ring_edges.as_ref().ok_or_else(|| {
-                crate::OperationsError::InvalidInput {
-                    reason: "internal error: missing previous ring edges".into(),
+            let denom = bisector.dot(t_before);
+            for vid in &mut ring_verts[num_segments] {
+                let pos = topo.vertex(*vid)?.point();
+                // Line-plane intersection along the end tangent. If the
+                // tangent is parallel to the plane (a near-reversal), leave
+                // the vertex untrimmed rather than collapsing it.
+                if denom.abs() > tol.linear {
+                    let d = bisector.dot(kink_point - pos);
+                    let miter_pos = pos + t_before * (d / denom);
+                    *vid = topo.add_vertex(Vertex::new(miter_pos, tol.linear));
                 }
-            })?;
-
-            let prev_to_miter_path_edges: Vec<brepkit_topology::edge::EdgeId> = (0..n)
-                .map(|i| topo.add_edge(Edge::new(prev_ring[i], miter_ring[i], EdgeCurve::Line)))
-                .collect();
-
-            for i in 0..n {
-                let next_i = (i + 1) % n;
-
-                let p0 = topo.vertex(prev_ring[i])?.point();
-                let p1 = topo.vertex(prev_ring[next_i])?.point();
-                let p_next = topo.vertex(miter_ring[i])?.point();
-                let edge_dir = p1 - p0;
-                let path_dir = p_next - p0;
-                let side_normal = edge_dir
-                    .cross(path_dir)
-                    .normalize()
-                    .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-                let side_d = dot_normal_point(side_normal, p0);
-
-                let side_wire = Wire::new(
-                    vec![
-                        OrientedEdge::new(prev_ring_edges[i], true),
-                        OrientedEdge::new(prev_to_miter_path_edges[next_i], true),
-                        OrientedEdge::new(miter_ring_edges[i], false),
-                        OrientedEdge::new(prev_to_miter_path_edges[i], false),
-                    ],
-                    true,
-                )
-                .map_err(crate::OperationsError::Topology)?;
-
-                let side_wire_id = topo.add_wire(side_wire);
-                all_faces.push(topo.add_face(Face::new(
-                    side_wire_id,
-                    vec![],
-                    FaceSurface::Plane {
-                        normal: side_normal,
-                        d: side_d,
-                    },
-                )));
             }
-
-            // Replace this segment's start ring with the miter ring so the
-            // next segment's side faces connect miter→ring[1]. No separate
-            // miter cap faces are needed — the transition quad faces already
-            // connect prev_end_ring→miter_ring.
-            ring_verts[0] = miter_ring;
-            miter_ring_edges_for_reuse = Some(miter_ring_edges);
         }
 
-        // Create ring edges. If the start ring was replaced by a miter ring,
-        // reuse the miter_ring_edges so both the miter transition faces and
-        // this segment's side faces reference the same edge entities.
+        // Create ring edges. If the start ring was carried over from the
+        // previous segment's miter, reuse its edges.
         let mut ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> =
             Vec::with_capacity(num_segments + 1);
         for (ring_idx, ring) in ring_verts.iter().enumerate() {
@@ -2004,9 +1958,13 @@ fn sweep_miter(
             )));
         }
 
-        // Save the end ring for the next segment's miter connection.
+        // Save the end ring and frame for the next segment's miter connection.
         prev_end_ring = Some(ring_verts[num_segments].clone());
         prev_end_ring_edges = Some(ring_edges[num_segments].clone());
+        prev_end_frame = Some((
+            sub_frames[num_segments].tangent,
+            sub_frames[num_segments].up,
+        ));
     }
 
     let shell = Shell::new(all_faces).map_err(crate::OperationsError::Topology)?;

@@ -1012,8 +1012,9 @@ fn sweep_miter_l_shaped_path() {
 fn sweep_miter_l_shaped_volume_correct() {
     // L-shaped path: (0,0,0)→(0,0,5)→(5,0,5) with 1×1 square profile.
     // With miter, the volume is two rectangular prisms joined at a 45-degree
-    // miter plane. Each leg has length ~5, profile area ~1, so total is
-    // roughly 10 (minus/plus the miter overlap which approximately cancels).
+    // miter plane: each leg trimmed at the bisector plane contributes exactly
+    // 5, so the total is exactly 10. A loose bound here once let a broken
+    // construction (one leg swept flat, volume 5.625) pass for months.
     let mut topo = Topology::new();
     let profile = make_unit_square_face(&mut topo);
     let path = l_shaped_path();
@@ -1025,12 +1026,22 @@ fn sweep_miter_l_shaped_volume_correct() {
     let solid = sweep_with_options(&mut topo, profile, &path, &options).unwrap();
 
     let vol = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
-
-    // The exact volume depends on the miter geometry, but should be
-    // in a reasonable range for a 1×1 profile swept along two 5-unit legs.
     assert!(
-        vol > 5.0 && vol < 15.0,
-        "L-sweep volume should be roughly 10 (two 5-unit legs), got {vol}"
+        (vol - 10.0).abs() < 0.1,
+        "L-sweep volume should be 10 (two 5-unit mitered legs), got {vol}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.1).unwrap();
+    assert!(
+        crate::tessellate::is_watertight(&mesh),
+        "L-sweep mesh should be watertight ({} boundary edges)",
+        crate::tessellate::boundary_edge_count(&mesh)
+    );
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(
+        report.issues.is_empty(),
+        "L-sweep should validate cleanly, got {:?}",
+        report.issues
     );
 }
 
@@ -1062,8 +1073,15 @@ fn sweep_miter_u_shaped_path() {
 
     let vol = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
     assert!(
-        vol > 0.0,
-        "U-shaped miter sweep should have positive volume, got {vol}"
+        (vol - 15.0).abs() < 0.1,
+        "U-sweep volume should be 15 (three 5-unit mitered legs), got {vol}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.1).unwrap();
+    assert!(
+        crate::tessellate::is_watertight(&mesh),
+        "U-sweep mesh should be watertight ({} boundary edges)",
+        crate::tessellate::boundary_edge_count(&mesh)
     );
 }
 
