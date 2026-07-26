@@ -92,3 +92,44 @@ pub struct SketchSolveResult {
     pub points: Vec<f64>,
     pub residual: f64,
 }
+
+/// Per-step entry in a `HealPipelineResult`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct HealStepResult {
+    /// Operator name that ran.
+    pub step: String,
+    /// Number of individual repair actions taken.
+    pub actions_taken: u32,
+    /// At least one fix was applied.
+    pub done: bool,
+    /// At least one fix could not be applied.
+    pub failed: bool,
+}
+
+/// Typed result for `fixShapeWithConfig`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct HealFixResult {
+    /// Handle of the healed solid (may differ from the input).
+    pub solid: u32,
+    /// Number of individual repair actions taken.
+    pub actions_taken: u32,
+    /// At least one fix was applied.
+    pub done: bool,
+    /// At least one fix could not be applied.
+    pub failed: bool,
+}
+
+/// Typed result for `runHealPipeline`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct HealPipelineResult {
+    /// Handle of the healed solid (may differ from the input).
+    pub solid: u32,
+    /// One entry per executed step, in order.
+    pub steps: Vec<HealStepResult>,
+}
