@@ -278,25 +278,42 @@ fn convex_hull_clip(pts: &[(f64, f64)], d_min: f64, d_max: f64) -> Option<(f64, 
     let upper = upper_hull(pts);
     let lower = lower_hull(pts);
 
-    // Find the t-range where the hull is between d_min and d_max.
-    // The upper hull must be >= d_min and the lower hull must be <= d_max
-    // for there to be overlap.
-    let t_min_from_upper = intersect_hull_with_line(&upper, d_min, true);
-    let t_min_from_lower = intersect_hull_with_line(&lower, d_min, true);
-    let t_max_from_upper = intersect_hull_with_line(&upper, d_max, false);
-    let t_max_from_lower = intersect_hull_with_line(&lower, d_max, false);
+    // The feasible region is { t : hull column at t overlaps [d_min, d_max] }.
+    // For a convex hull it is a single interval whose endpoints are either
+    // hull-edge crossings with the band boundaries or hull vertices lying
+    // inside the band. A vertex counts only if it is inside the FULL band:
+    // testing a single bound here once let a vertex far above d_max extend
+    // t_lo to the start of the interval, turning every clip against a
+    // zero-thickness fat line into a no-op.
+    let mut t_lo = f64::INFINITY;
+    let mut t_hi = f64::NEG_INFINITY;
 
-    let t_lo = match (t_min_from_upper, t_min_from_lower) {
-        (Some(a), Some(b)) => a.min(b),
-        (Some(a), None) | (None, Some(a)) => a,
-        (None, None) => return None,
-    };
-
-    let t_hi = match (t_max_from_upper, t_max_from_lower) {
-        (Some(a), Some(b)) => a.max(b),
-        (Some(a), None) | (None, Some(a)) => a,
-        (None, None) => return None,
-    };
+    for hull in [&upper, &lower] {
+        for window in hull.windows(2) {
+            let (t0, d0) = window[0];
+            let (t1, d1) = window[1];
+            for d in [d_min, d_max] {
+                if (d0 - d) * (d1 - d) <= 0.0 {
+                    let dd = d1 - d0;
+                    if dd.abs() < 1e-30 {
+                        // Edge lies on the line: its whole t-range is feasible.
+                        t_lo = t_lo.min(t0.min(t1));
+                        t_hi = t_hi.max(t0.max(t1));
+                    } else {
+                        let t = t0 + (d - d0) * (t1 - t0) / dd;
+                        t_lo = t_lo.min(t);
+                        t_hi = t_hi.max(t);
+                    }
+                }
+            }
+        }
+        for &(t, di) in hull {
+            if di >= d_min && di <= d_max {
+                t_lo = t_lo.min(t);
+                t_hi = t_hi.max(t);
+            }
+        }
+    }
 
     if t_lo > t_hi {
         return None;
@@ -332,49 +349,6 @@ fn lower_hull(pts: &[(f64, f64)]) -> Vec<(f64, f64)> {
 /// 2D cross product for convex hull computation.
 fn cross_2d(o: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     (a.0 - o.0).mul_add(b.1 - o.1, -((a.1 - o.1) * (b.0 - o.0)))
-}
-
-/// Find the first (or last) t where the hull crosses a horizontal line at `d`.
-///
-/// If `find_min` is true, returns the smallest t where the hull enters the
-/// feasible region. If false, returns the largest t.
-fn intersect_hull_with_line(hull: &[(f64, f64)], d: f64, find_min: bool) -> Option<f64> {
-    if hull.is_empty() {
-        return None;
-    }
-
-    let mut result: Option<f64> = None;
-
-    // Check each edge of the hull for intersection with the line y = d.
-    for window in hull.windows(2) {
-        let (t0, d0) = window[0];
-        let (t1, d1) = window[1];
-
-        // Does this edge cross d?
-        if (d0 - d) * (d1 - d) <= 0.0 {
-            let dd = d1 - d0;
-            let t = if dd.abs() < 1e-30 {
-                if find_min { t0.min(t1) } else { t0.max(t1) }
-            } else {
-                t0 + (d - d0) * (t1 - t0) / dd
-            };
-
-            result =
-                Some(result.map_or(t, |prev| if find_min { prev.min(t) } else { prev.max(t) }));
-        }
-    }
-
-    // Also check individual hull points that lie exactly in the band.
-    for &(t, di) in hull {
-        if find_min && di >= d {
-            result = Some(result.map_or(t, |prev| prev.min(t)));
-        }
-        if !find_min && di <= d {
-            result = Some(result.map_or(t, |prev| prev.max(t)));
-        }
-    }
-
-    result
 }
 
 /// Recursion depth at which we start checking for overlap instead of
@@ -919,6 +893,34 @@ mod tests {
 
         let hits = curve_curve_intersect(&c1, &c2, 1e-10).expect("no error");
         assert!(hits.is_empty(), "expected no hits for parallel lines");
+    }
+
+    #[test]
+    fn perpendicular_lines_dense_scan() {
+        // Regression: the convex-hull clip once admitted hull vertices that
+        // satisfied only one band bound, so clips against a zero-thickness
+        // fat line never shrank the interval and the fallback bisection
+        // pruned the true hit on 1-ulp point-AABB mismatches. Roughly 2.6%
+        // of crossing positions returned zero hits, including the proptest
+        // seeds 0.2484656653399068 and 0.46366748772885985.
+        let mut u_values: Vec<f64> = (0..=800)
+            .map(|i| 0.1 + 0.8 * f64::from(i) / 800.0)
+            .collect();
+        u_values.push(0.248_465_665_339_906_8);
+        u_values.push(0.463_667_487_728_859_85);
+        for u in u_values {
+            let c1 = make_line(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0));
+            let target = c1.evaluate(u);
+            let c2 = make_line(
+                Point3::new(target.x(), -1.0, 0.0),
+                Point3::new(target.x(), 1.0, 0.0),
+            );
+            let hits = curve_curve_intersect(&c1, &c2, 1e-8).expect("no error");
+            assert!(
+                hits.iter().any(|h| (h.point - target).length() < 1e-4),
+                "no hit near target for u={u}, hits: {hits:?}"
+            );
+        }
     }
 
     use proptest::prelude::*;
