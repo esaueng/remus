@@ -24,6 +24,7 @@ brepkit-heal.workspace = true
 brepkit-io = {workspace = true, optional = true}
 brepkit-math.workspace = true
 brepkit-operations.workspace = true
+brepkit-sketch.workspace = true
 brepkit-topology.workspace = true
 log.workspace = true
 serde.workspace = true

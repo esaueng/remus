@@ -133,3 +133,31 @@ pub struct HealPipelineResult {
     /// One entry per executed step, in order.
     pub steps: Vec<HealStepResult>,
 }
+
+/// Typed result for `gcsSolve`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct GcsSolveResult {
+    /// Whether the solver converged within tolerance.
+    pub converged: bool,
+    /// Number of DogLeg iterations used.
+    pub iterations: u32,
+    /// Maximum absolute residual after solving.
+    pub max_residual: f64,
+}
+
+/// Typed result for `gcsDof`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct GcsDofResult {
+    /// Degrees of freedom remaining (under-constrained dimensions).
+    pub dof: u32,
+    /// Rank of the constraint Jacobian.
+    pub rank: u32,
+    /// Total solver parameters.
+    pub num_params: u32,
+    /// Total constraint equations.
+    pub num_equations: u32,
+}

@@ -33,7 +33,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::{WasmError, validate_finite};
 use crate::handles::{edge_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
-use crate::state::{Checkpoint, SketchState};
+use crate::state::{Checkpoint, GcsSketchState, SketchState};
 
 /// The B-Rep modeling kernel.
 ///
@@ -44,6 +44,7 @@ pub struct BrepKernel {
     pub(crate) topo: Rc<Topology>,
     pub(crate) assemblies: Vec<brepkit_operations::assembly::Assembly>,
     pub(crate) sketches: Vec<SketchState>,
+    pub(crate) gcs_sketches: Vec<GcsSketchState>,
     pub(crate) checkpoints: Vec<Checkpoint>,
     pub(crate) poisoned: bool,
 }
@@ -59,6 +60,7 @@ impl BrepKernel {
             topo: Rc::new(Topology::new()),
             assemblies: Vec::new(),
             sketches: Vec::new(),
+            gcs_sketches: Vec::new(),
             checkpoints: Vec::new(),
             poisoned: false,
         }

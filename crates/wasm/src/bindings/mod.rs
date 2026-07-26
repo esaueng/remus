@@ -8,6 +8,7 @@ pub mod assembly;
 pub mod batch;
 pub mod booleans;
 pub mod checkpoint;
+pub mod gcs_sketch;
 pub mod heal;
 #[cfg(feature = "io")]
 pub mod io;

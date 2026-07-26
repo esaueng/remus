@@ -412,6 +412,7 @@ dependencies = [
  "brepkit-io",
  "brepkit-math",
  "brepkit-operations",
+ "brepkit-sketch",
  "brepkit-topology",
  "log",
  "serde",

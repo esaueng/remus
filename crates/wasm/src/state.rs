@@ -10,6 +10,30 @@ pub struct Checkpoint {
     pub topo: Rc<Topology>,
     pub assemblies: Vec<brepkit_operations::assembly::Assembly>,
     pub sketches: Vec<SketchState>,
+    pub gcs_sketches: Vec<GcsSketchState>,
+}
+
+/// State for one sketch in the typed GCS API (`gcs*` bindings).
+///
+/// Holds a persistent [`brepkit_sketch::GcsSystem`] plus the handle
+/// tables that map the opaque `u32` values held by JS onto the system's
+/// generational handles. Removed entities leave a stale entry in their
+/// table; the generational arena rejects stale handles, so reuse after
+/// removal surfaces as a typed error instead of aliasing.
+#[derive(Default, Clone)]
+pub struct GcsSketchState {
+    /// The persistent constraint system.
+    pub sys: brepkit_sketch::GcsSystem,
+    /// JS handle → point id.
+    pub points: Vec<brepkit_sketch::PointId>,
+    /// JS handle → line id.
+    pub lines: Vec<brepkit_sketch::LineId>,
+    /// JS handle → circle id.
+    pub circles: Vec<brepkit_sketch::CircleId>,
+    /// JS handle → arc id.
+    pub arcs: Vec<brepkit_sketch::ArcId>,
+    /// JS handle → constraint id.
+    pub constraints: Vec<brepkit_sketch::ConstraintId>,
 }
 
 /// Internal state for an in-progress sketch.

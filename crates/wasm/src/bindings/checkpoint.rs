@@ -23,6 +23,7 @@ impl BrepKernel {
             topo: Rc::clone(&self.topo),
             assemblies: self.assemblies.clone(),
             sketches: self.sketches.clone(),
+            gcs_sketches: self.gcs_sketches.clone(),
         });
         #[allow(clippy::cast_possible_truncation)]
         {
@@ -52,6 +53,7 @@ impl BrepKernel {
             .restore_preserving_handle_slots(&snapshot_topo);
         self.assemblies = cp.assemblies;
         self.sketches = cp.sketches;
+        self.gcs_sketches = cp.gcs_sketches;
         // Discard checkpoints created after the restored one
         self.checkpoints.truncate(idx + 1);
         Ok(())

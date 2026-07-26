@@ -317,6 +317,12 @@ fn resolve_deferred_constraint(
 #[wasm_bindgen]
 impl BrepKernel {
     /// Create a new empty sketch. Returns a sketch index.
+    ///
+    /// **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
+    /// `gcsAddConstraint`, …), which holds a persistent constraint system,
+    /// supports all 19 constraint types with explicit line entities, and
+    /// allows constraint removal. The `sketch*` methods remain for
+    /// backward compatibility.
     #[wasm_bindgen(js_name = "sketchNew")]
     pub fn sketch_new(&mut self) -> u32 {
         self.sketches.push(SketchState::default());
