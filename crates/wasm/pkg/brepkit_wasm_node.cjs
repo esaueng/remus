@@ -4220,6 +4220,28 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Move a planar face of a solid along its outward normal.
+     *
+     * A positive `distance` adds material, a negative one removes it.
+     * Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the handles are invalid, the face is not planar or
+     * not part of the solid, or the edit does not produce a valid solid.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} distance
+     * @returns {number}
+     */
+    pushPullFace(solid, face, distance) {
+        const ret = wasm.brepkernel_pushPullFace(this.__wbg_ptr, solid, face, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Recognize geometric features in a solid.
      *
      * Returns a JSON string describing the recognized features.
@@ -4286,6 +4308,28 @@ class BrepKernel {
      */
     repairSolid(solid) {
         const ret = wasm.brepkernel_repairSolid(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Change the radius of a cylindrical face of a solid.
+     *
+     * Handles both bores and bosses. Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the handles are invalid, the face is not
+     * cylindrical or not part of the solid, `new_radius` is not positive, or
+     * the edit does not produce a valid solid.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} new_radius
+     * @returns {number}
+     */
+    resizeCylindricalFace(solid, face, new_radius) {
+        const ret = wasm.brepkernel_resizeCylindricalFace(this.__wbg_ptr, solid, face, new_radius);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

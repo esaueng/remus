@@ -2080,6 +2080,18 @@ export class BrepKernel {
      */
     projectPointOnSurface(face: number, px: number, py: number, pz: number): Float64Array;
     /**
+     * Move a planar face of a solid along its outward normal.
+     *
+     * A positive `distance` adds material, a negative one removes it.
+     * Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the handles are invalid, the face is not planar or
+     * not part of the solid, or the edit does not produce a valid solid.
+     */
+    pushPullFace(solid: number, face: number, distance: number): number;
+    /**
      * Recognize geometric features in a solid.
      *
      * Returns a JSON string describing the recognized features.
@@ -2106,6 +2118,18 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid.
      */
     repairSolid(solid: number): number;
+    /**
+     * Change the radius of a cylindrical face of a solid.
+     *
+     * Handles both bores and bosses. Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the handles are invalid, the face is not
+     * cylindrical or not part of the solid, `new_radius` is not positive, or
+     * the edit does not produce a valid solid.
+     */
+    resizeCylindricalFace(solid: number, face: number, new_radius: number): number;
     /**
      * Restore the kernel to a previously saved checkpoint.
      *

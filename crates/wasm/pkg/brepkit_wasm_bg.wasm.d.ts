@@ -207,10 +207,12 @@ export const brepkernel_pointToSolidDistance: (a: number, b: number, c: number, 
 export const brepkernel_polygonsIntersect2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_projectEdges: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
 export const brepkernel_projectPointOnSurface: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const brepkernel_pushPullFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_recognizeFeatures: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_removeDegenerateEdges: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_removeHolesFromFace: (a: number, b: number) => [number, number, number];
 export const brepkernel_repairSolid: (a: number, b: number) => [number, number, number];
+export const brepkernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_restore: (a: number, b: number) => [number, number];
 export const brepkernel_reverseShape: (a: number, b: number) => [number, number, number];
 export const brepkernel_revolve: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
