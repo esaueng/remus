@@ -85,7 +85,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Beta         |
 | **Construction**        | Coons-patch face fill, sew, untrim                                           | Stable       |
 | **Sectioning**          | Cross-section faces, split by plane                                          | Stable       |
-| **Measurement**         | Bounding box, area, volume, center of mass, inertia tensor                   | Stable       |
+| **Measurement**         | Bounding box, area, volume, center of mass, inertia tensor + principal axes  | Stable       |
 | **Measurement**         | Point-to-solid, solid-to-solid distance, point classification                | Stable       |
 | **Drawing**             | Hidden-line edge projection                                                  | Stable       |
 | **Geometry**            | NURBS evaluation, derivatives, knot ops, fitting, projection                 | Stable       |
@@ -113,7 +113,6 @@ A few areas are still maturing. Worth knowing before you build on them:
 - **Torus booleans.** Box-with-torus and coaxial-torus cases work and give correct volumes. General torus-to-torus and torus-with-other-surface intersections have known gaps and may fall back to meshing.
 - **Non-planar profiles.** Loft, sweep, and pipe accept profiles with non-planar surfaces, and close non-planar section boundaries with bilinear caps for four-sided rings (boundaries with more than four edges, or holes on a non-planar section, are not yet supported). Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, but a partial revolution still requires a planar boundary for its caps. The smooth, scaled/guided, and multi-section sweep variants accept non-planar profiles too; only the miter-corner variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
-- **Inertia tensor.** Volume, area, bounding box, and center of mass are computed for any solid. A full inertia tensor exists only as closed-form formulas for analytic primitives and is not exposed through the modeling or WASM API.
 - **Beta subsystems.** Feature recognition, assemblies, evolution tracking, and defeaturing work but are still maturing. Defeaturing handles planar faces only.
 
 ## Scope
@@ -183,10 +182,11 @@ Mesh formats export tessellated triangles. glTF is binary `.glb`, with no materi
 All Rust importer entry points apply production defaults through
 `ImportLimits`: 128 MiB encoded input, 256 MiB for the uncompressed 3MF model
 XML entry, and 2,000,000 format-specific model entities. Use each format's
-`*_with_limits` reader to choose stricter or application-specific budgets.
-Limit violations return `IoError::LimitExceeded` before avoidable large
-allocations. The WASM batch API separately limits JSON to 16 MiB and 10,000
-operations.
+`*_with_limits` reader to choose stricter or application-specific budgets; the
+WASM importers accept optional `maxInputBytes` / `maxEntities` arguments for
+the same purpose. Limit violations return `IoError::LimitExceeded` before
+avoidable large allocations. The WASM batch API separately limits JSON to
+16 MiB and 10,000 operations.
 
 ## Getting Started
 

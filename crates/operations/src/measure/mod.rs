@@ -11,7 +11,7 @@ pub use area::{face_area, solid_surface_area};
 pub(crate) use bounding_box::face_set_bounding_box;
 pub use bounding_box::solid_bounding_box;
 pub use edge_length::{edge_length, face_perimeter, wire_length};
-pub use volume::{solid_center_of_mass, solid_volume, solid_volume_from_faces};
+pub use volume::{mass_properties, solid_center_of_mass, solid_volume, solid_volume_from_faces};
 
 #[cfg(test)]
 mod tests {
@@ -98,6 +98,60 @@ mod tests {
         assert!(tol.approx_eq(aabb.max.x(), 1.0));
         assert!(tol.approx_eq(aabb.max.y(), 1.0));
         assert!(tol.approx_eq(aabb.max.z(), 1.0));
+    }
+
+    /// Cylinder inertia must match the closed form: about its axis
+    /// Izz = m r²/2; transverse (through CoM) Ixx = Iyy = m(3r² + h²)/12.
+    /// Exercises the parametric (curved-surface) second-moment quadrature.
+    #[test]
+    fn cylinder_mass_properties_match_closed_form() {
+        use crate::primitives::make_cylinder;
+
+        let (r, h) = (3.0_f64, 10.0_f64);
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, r, h).unwrap();
+
+        let props = mass_properties(&topo, solid).unwrap();
+        let m = std::f64::consts::PI * r * r * h;
+        assert_rel(props.mass, m, 1e-8, "cylinder volume");
+        assert_rel(props.center.z(), h / 2.0, 1e-8, "cylinder CoM z");
+
+        let izz = m * r * r / 2.0;
+        let ixx = m * (3.0 * r * r + h * h) / 12.0;
+        assert_rel(props.inertia[0], ixx, 1e-8, "cylinder Ixx");
+        assert_rel(props.inertia[1], ixx, 1e-8, "cylinder Iyy");
+        assert_rel(props.inertia[2], izz, 1e-8, "cylinder Izz");
+        for k in 3..6 {
+            assert!(
+                props.inertia[k].abs() < 1e-8 * izz,
+                "cylinder product of inertia [{k}] should vanish, got {}",
+                props.inertia[k]
+            );
+        }
+    }
+
+    /// Sphere inertia: I = 2/5 m r² about any axis through the center.
+    #[test]
+    fn sphere_mass_properties_match_closed_form() {
+        use crate::primitives::make_sphere;
+
+        let r = 5.0_f64;
+        let mut topo = Topology::new();
+        let solid = make_sphere(&mut topo, r, 8).unwrap();
+
+        let props = mass_properties(&topo, solid).unwrap();
+        let m = 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+        assert_rel(props.mass, m, 1e-8, "sphere volume");
+
+        let i = 0.4 * m * r * r;
+        assert_rel(props.inertia[0], i, 1e-8, "sphere Ixx");
+        assert_rel(props.inertia[1], i, 1e-8, "sphere Iyy");
+        assert_rel(props.inertia[2], i, 1e-8, "sphere Izz");
+
+        // Principal moments of a sphere are all equal.
+        let (moments, _) = props.principal_inertia();
+        assert_rel(moments[0], i, 1e-8, "sphere principal min");
+        assert_rel(moments[2], i, 1e-8, "sphere principal max");
     }
 
     /// AABB for a sphere must include the full radius extent in all axes.

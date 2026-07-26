@@ -427,6 +427,41 @@ mod tests {
     }
 
     #[test]
+    fn principal_inertia_of_diagonal_tensor_is_sorted_identity() {
+        let mut props = GProps::new();
+        props.inertia = [30.0, 10.0, 20.0, 0.0, 0.0, 0.0];
+        let (moments, axes) = props.principal_inertia();
+        assert!((moments[0] - 10.0).abs() < 1e-12);
+        assert!((moments[1] - 20.0).abs() < 1e-12);
+        assert!((moments[2] - 30.0).abs() < 1e-12);
+        // Axis for the smallest moment (10 = Iyy) is ±y.
+        assert!(axes[0][1].abs() > 0.999, "axes[0] = {:?}", axes[0]);
+        // Each axis is unit length.
+        for axis in &axes {
+            let len2: f64 = axis.iter().map(|c| c * c).sum();
+            assert!((len2 - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn principal_inertia_recovers_rotated_tensor() {
+        // A tensor with off-diagonal terms: rotate diag(1, 2, 3) by 30° about z.
+        // I' = R D R^T; principal moments must recover {1, 2, 3}.
+        let (s, c) = (30.0_f64.to_radians()).sin_cos();
+        let d = [1.0, 2.0, 3.0];
+        let ixx = c * c * d[0] + s * s * d[1];
+        let iyy = s * s * d[0] + c * c * d[1];
+        let ixy_signed = c * s * (d[0] - d[1]); // entry (0,1) of R D R^T
+        let mut props = GProps::new();
+        // matrix_of_inertia negates the stored products, so store -entry.
+        props.inertia = [ixx, iyy, d[2], -ixy_signed, 0.0, 0.0];
+        let (moments, _) = props.principal_inertia();
+        assert!((moments[0] - 1.0).abs() < 1e-12, "moments = {moments:?}");
+        assert!((moments[1] - 2.0).abs() < 1e-12);
+        assert!((moments[2] - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn accumulator_default_is_zero() {
         let props = GProps::default();
         assert!((props.mass).abs() < 1e-15);

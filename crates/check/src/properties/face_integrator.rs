@@ -352,6 +352,14 @@ fn integrate_planar_face(
     face_id: FaceId,
     normal: Vec3,
 ) -> Result<FaceContribution, CheckError> {
+    // Faces whose wires consist only of line and circular-arc edges take an
+    // exact Green's-theorem boundary-integral path — a chord polygon
+    // undercounts a circular cap by the sagitta area (~0.2% at the default
+    // discretization), far above the accuracy of the parametric quadrature
+    // the curved faces get.
+    if let Some(contrib) = integrate_planar_face_exact(topo, face_id, normal)? {
+        return Ok(contrib);
+    }
     let polygon = crate::util::face_polygon(topo, face_id)?;
     let mut contrib = integrate_planar_polygon(&polygon, normal);
 
@@ -516,6 +524,301 @@ fn triangle_cubic_integral(a: Point3, b: Point3, c: Point3, f: impl Fn(Point3) -
                 + f(barycentric(0.2, 0.6, 0.2))
                 + f(barycentric(0.2, 0.2, 0.6)));
     area * value
+}
+
+/// Monomial basis for degree-≤3 polynomials in the in-plane coordinates
+/// `(s, t)`: `[1, s, t, s², st, t², s³, s²t, st², t³]`.
+type Poly2 = [f64; 10];
+
+/// Multiply a degree-≤2 polynomial by the linear form `l₀ + l₁s + l₂t`.
+///
+/// The caller must ensure `p` has no cubic terms (indices 6..10 zero);
+/// products above degree 3 are not representable and are silently dropped.
+fn poly2_mul_linear(p: &Poly2, l: [f64; 3]) -> Poly2 {
+    // Shift tables: monomial index k multiplied by s (resp. t).
+    const S_SHIFT: [usize; 6] = [1, 3, 4, 6, 7, 8];
+    const T_SHIFT: [usize; 6] = [2, 4, 5, 7, 8, 9];
+    let mut out = [0.0; 10];
+    for k in 0..10 {
+        out[k] += l[0] * p[k];
+    }
+    for k in 0..6 {
+        out[S_SHIFT[k]] += l[1] * p[k];
+        out[T_SHIFT[k]] += l[2] * p[k];
+    }
+    out
+}
+
+/// Dot a polynomial's coefficients with the region's monomial moments.
+fn poly2_integrate(p: &Poly2, moments: &[f64; 10]) -> f64 {
+    p.iter().zip(moments.iter()).map(|(c, m)| c * m).sum()
+}
+
+/// Region monomial moments `∫∫ sⁱtʲ ds dt` of one wire's enclosed planar
+/// region via Green's theorem: `M_ij = ∮ s^{i+1}/(i+1) · tʲ dt`.
+///
+/// Returns `None` if the wire contains any edge that is not a line or a
+/// circular arc (the exact path only handles those); the caller falls back
+/// to chord-polygon integration. The result is winding-aligned so that the
+/// area moment `M₀₀` is positive.
+fn planar_wire_monomial_moments(
+    topo: &Topology,
+    wire_id: brepkit_topology::wire::WireId,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) -> Result<Option<[f64; 10]>, CheckError> {
+    let wire = topo.wire(wire_id)?;
+    let mut moments = [0.0; 10];
+    let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
+
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let start_vid = edge.start();
+        let end_vid = edge.end();
+        // Wires store edges in loop order, but per-edge orientation flags are
+        // not guaranteed to chain head-to-tail; re-derive traversal direction
+        // from vertex connectivity with the previous edge (same convention as
+        // `util::wire_polygon`).
+        let forward = match prev_end {
+            Some(pe) if start_vid == pe && end_vid != pe => true,
+            Some(pe) if end_vid == pe && start_vid != pe => false,
+            _ => oe.is_forward(),
+        };
+        prev_end = Some(if forward { end_vid } else { start_vid });
+
+        let start = topo.vertex(start_vid)?.point();
+        let end = topo.vertex(end_vid)?.point();
+        let dir_sign = if forward { 1.0 } else { -1.0 };
+
+        match edge.curve() {
+            EdgeCurve::Line => {
+                // P(u) = start + (end - start)·u, u ∈ [0, 1].
+                let d = end - start;
+                accumulate_green_segment(
+                    &mut moments,
+                    (0.0, 1.0),
+                    8,
+                    dir_sign,
+                    |u| (start + d * u, d),
+                    origin,
+                    e1,
+                    e2,
+                );
+            }
+            EdgeCurve::Circle(c) => {
+                // Angular arc span from the edge's own endpoints; the
+                // derivative magnitude is the radius.
+                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                let r = c.radius();
+                // Split the span so each chunk is ≤ π/2; 16-point Gauss on
+                // a ≤ π/2 trig span of frequency ≤ 5 is exact to machine
+                // precision.
+                let chunks =
+                    (((t1 - t0).abs() / std::f64::consts::FRAC_PI_2).ceil() as usize).clamp(1, 8);
+                let dt = (t1 - t0) / chunks as f64;
+                for i in 0..chunks {
+                    let a = dt.mul_add(i as f64, t0);
+                    accumulate_green_segment(
+                        &mut moments,
+                        (a, a + dt),
+                        16,
+                        dir_sign,
+                        |u| (c.evaluate(u), c.tangent(u) * r),
+                        origin,
+                        e1,
+                        e2,
+                    );
+                }
+            }
+            EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return Ok(None),
+        }
+    }
+
+    // Align winding so the enclosed area is positive.
+    if moments[0] < 0.0 {
+        for m in &mut moments {
+            *m = -*m;
+        }
+    }
+    Ok(Some(moments))
+}
+
+/// Accumulate one boundary segment's Green's-theorem contribution to the
+/// region monomial moments with Gauss-Legendre quadrature.
+///
+/// `eval(u)` returns the curve point and its derivative `dP/du`; the
+/// integrand for `M_ij` is `s^{i+1}/(i+1) · tʲ · t'(u)` with
+/// `s = (P - origin)·e1`, `t = (P - origin)·e2`.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_green_segment<F>(
+    moments: &mut [f64; 10],
+    range: (f64, f64),
+    gauss_order: usize,
+    dir_sign: f64,
+    eval: F,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) where
+    F: Fn(f64) -> (Point3, Vec3),
+{
+    // Monomial exponents (i, j) matching the `Poly2` basis order.
+    const EXPONENTS: [(i32, i32); 10] = [
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (2, 0),
+        (1, 1),
+        (0, 2),
+        (3, 0),
+        (2, 1),
+        (1, 2),
+        (0, 3),
+    ];
+
+    let scale = (range.1 - range.0) / 2.0;
+    let mid = f64::midpoint(range.0, range.1);
+    for gp in gauss_legendre_points(gauss_order) {
+        let u = scale.mul_add(gp.x, mid);
+        let (p, dp) = eval(u);
+        let rel = p - origin;
+        let s = rel.dot(e1);
+        let t = rel.dot(e2);
+        let dt_du = dp.dot(e2);
+        let w = gp.w * scale * dir_sign * dt_du;
+        for (k, &(i, j)) in EXPONENTS.iter().enumerate() {
+            moments[k] += w * s.powi(i + 1) / f64::from(i + 1) * t.powi(j);
+        }
+    }
+}
+
+/// Newell normal of a wire's boundary, sampled densely enough that a wire
+/// consisting of a single closed circle (one vertex) still determines its
+/// plane. Returns `None` when the boundary is degenerate (collapsed to a
+/// point or line) or contains an edge type the exact path does not handle.
+fn wire_newell_normal(
+    topo: &Topology,
+    wire_id: brepkit_topology::wire::WireId,
+) -> Result<Option<Vec3>, CheckError> {
+    let wire = topo.wire(wire_id)?;
+    let mut pts: Vec<Point3> = Vec::new();
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        match edge.curve() {
+            EdgeCurve::Line => pts.push(start),
+            EdgeCurve::Circle(c) => {
+                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                for k in 0..4 {
+                    pts.push(c.evaluate(t0 + (t1 - t0) * f64::from(k) / 4.0));
+                }
+            }
+            EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return Ok(None),
+        }
+    }
+    if pts.len() < 3 {
+        return Ok(None);
+    }
+    let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
+    for i in 0..pts.len() {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        nx += (a.y() - b.y()) * (a.z() + b.z());
+        ny += (a.z() - b.z()) * (a.x() + b.x());
+        nz += (a.x() - b.x()) * (a.y() + b.y());
+    }
+    let n = Vec3::new(nx, ny, nz);
+    if n.length() < 1e-12 {
+        return Ok(None);
+    }
+    Ok(Some(n))
+}
+
+/// Exact planar-face integration via Green's-theorem boundary integrals.
+///
+/// Returns `Ok(None)` when any wire contains an edge type the exact path
+/// does not handle (ellipse or NURBS), or when the boundary is too
+/// degenerate to determine its plane; the caller then falls back to the
+/// chord-polygon fan path for the whole face.
+fn integrate_planar_face_exact(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: Vec3,
+) -> Result<Option<FaceContribution>, CheckError> {
+    let face = topo.face(face_id)?;
+    let outer_wire = face.outer_wire();
+    let inner: Vec<_> = face.inner_wires().to_vec();
+
+    // In-plane frame anchored at the first boundary vertex. The frame's
+    // normal is derived from the boundary geometry itself (Newell), NOT the
+    // face's stored plane normal: a malformed face whose stored normal is
+    // inconsistent with its boundary would otherwise project to a collapsed
+    // (zero-area) region, where the chord-polygon fan path still measures
+    // the true geometric area. The flux terms below keep using the passed
+    // `normal`, exactly like the fan path.
+    let wire = topo.wire(outer_wire)?;
+    let Some(first_edge) = wire.edges().first() else {
+        return Ok(None);
+    };
+    let origin = topo.vertex(topo.edge(first_edge.edge())?.start())?.point();
+    let Some(boundary_normal) = wire_newell_normal(topo, outer_wire)? else {
+        return Ok(None);
+    };
+    let Ok(frame) = brepkit_math::frame::Frame3::from_normal(origin, boundary_normal) else {
+        return Ok(None);
+    };
+    let (e1, e2) = (frame.x, frame.y);
+
+    let Some(mut moments) = planar_wire_monomial_moments(topo, outer_wire, origin, e1, e2)? else {
+        return Ok(None);
+    };
+    for wid in inner {
+        let Some(hole) = planar_wire_monomial_moments(topo, wid, origin, e1, e2)? else {
+            return Ok(None);
+        };
+        for k in 0..10 {
+            moments[k] -= hole[k];
+        }
+    }
+
+    // Linear forms of the global coordinates in the in-plane basis:
+    // x = origin.x + e1.x·s + e2.x·t, etc.
+    let lx = [origin.x(), e1.x(), e2.x()];
+    let ly = [origin.y(), e1.y(), e2.y()];
+    let lz = [origin.z(), e1.z(), e2.z()];
+    let lin = |l: [f64; 3]| -> Poly2 {
+        let mut p = [0.0; 10];
+        p[0] = l[0];
+        p[1] = l[1];
+        p[2] = l[2];
+        p
+    };
+    let (px, py, pz) = (lin(lx), lin(ly), lin(lz));
+    let x2 = poly2_mul_linear(&px, lx);
+    let y2 = poly2_mul_linear(&py, ly);
+    let z2 = poly2_mul_linear(&pz, lz);
+    let ig = |p: &Poly2| poly2_integrate(p, &moments);
+
+    let area = moments[0];
+    let (ix, iy, iz) = (ig(&px), ig(&py), ig(&pz));
+    Ok(Some(FaceContribution {
+        area,
+        volume: (normal.x() * ix + normal.y() * iy + normal.z() * iz) / 3.0,
+        volume_moment_x: 0.5 * normal.x() * ig(&x2),
+        volume_moment_y: 0.5 * normal.y() * ig(&y2),
+        volume_moment_z: 0.5 * normal.z() * ig(&z2),
+        volume_second_x: normal.x() * ig(&poly2_mul_linear(&x2, lx)) / 3.0,
+        volume_second_y: normal.y() * ig(&poly2_mul_linear(&y2, ly)) / 3.0,
+        volume_second_z: normal.z() * ig(&poly2_mul_linear(&z2, lz)) / 3.0,
+        volume_product_xy: 0.5 * normal.x() * ig(&poly2_mul_linear(&x2, ly)),
+        volume_product_xz: 0.5 * normal.x() * ig(&poly2_mul_linear(&x2, lz)),
+        volume_product_yz: 0.5 * normal.y() * ig(&poly2_mul_linear(&y2, lz)),
+        centroid_x: ix,
+        centroid_y: iy,
+        centroid_z: iz,
+    }))
 }
 
 /// Integrate a parametric surface using Gauss quadrature over the UV domain.
@@ -760,11 +1063,20 @@ fn integrate_parametric_trimmed<S: ParametricSurface>(
     use brepkit_math::predicates::point_in_polygon;
     use brepkit_math::vec::Point2;
 
+    // Composite quadrature over patches no larger than ~PI/4, mirroring
+    // `integrate_parametric`: one Gauss rule over a full 2*PI period badly
+    // under-resolves trigonometric moment integrands (a cylinder wall's
+    // second moments were ~5% off with a single order-5 grid).
+    const MAX_PATCHES: usize = 16;
+
     let gauss_pts = gauss_legendre_points(gauss_order);
-    let u_scale = (u_range.1 - u_range.0) / 2.0;
-    let u_mid = f64::midpoint(u_range.0, u_range.1);
-    let v_scale = (v_range.1 - v_range.0) / 2.0;
-    let v_mid = f64::midpoint(v_range.0, v_range.1);
+    let patch = std::f64::consts::FRAC_PI_4;
+    let nu = (((u_range.1 - u_range.0).abs() / patch).ceil() as usize).clamp(1, MAX_PATCHES);
+    let nv = (((v_range.1 - v_range.0).abs() / patch).ceil() as usize).clamp(1, MAX_PATCHES);
+    let du_patch = (u_range.1 - u_range.0) / nu as f64;
+    let dv_patch = (v_range.1 - v_range.0) / nv as f64;
+    let u_scale = du_patch / 2.0;
+    let v_scale = dv_patch / 2.0;
 
     let uv_poly: Vec<Point2> = uv_boundary
         .iter()
@@ -800,53 +1112,59 @@ fn integrate_parametric_trimmed<S: ParametricSurface>(
     let mut cy = 0.0;
     let mut cz = 0.0;
 
-    for gpu in gauss_pts {
-        let u = u_scale.mul_add(gpu.x, u_mid);
-        for gpv in gauss_pts {
-            let v = v_scale.mul_add(gpv.x, v_mid);
+    for iu in 0..nu {
+        let u_mid = du_patch.mul_add(iu as f64, u_range.0) + u_scale;
+        for iv in 0..nv {
+            let v_mid = dv_patch.mul_add(iv as f64, v_range.0) + v_scale;
+            for gpu in gauss_pts {
+                let u = u_scale.mul_add(gpu.x, u_mid);
+                for gpv in gauss_pts {
+                    let v = v_scale.mul_add(gpv.x, v_mid);
 
-            let test_u = if u_periodic {
-                let tau = std::f64::consts::TAU;
-                let diff = u - u_bcenter;
-                u_bcenter + diff - tau * ((diff + std::f64::consts::PI) / tau).floor()
-            } else {
-                u
-            };
+                    let test_u = if u_periodic {
+                        let tau = std::f64::consts::TAU;
+                        let diff = u - u_bcenter;
+                        u_bcenter + diff - tau * ((diff + std::f64::consts::PI) / tau).floor()
+                    } else {
+                        u
+                    };
 
-            if !point_in_polygon(Point2::new(test_u, v), &uv_poly) {
-                continue;
+                    if !point_in_polygon(Point2::new(test_u, v), &uv_poly) {
+                        continue;
+                    }
+
+                    let w = gpu.w * gpv.w * u_scale * v_scale;
+                    let p = surface.evaluate(u, v);
+                    let du = surface.partial_u(u, v);
+                    let dv = surface.partial_v(u, v);
+                    let n = Vec3::new(
+                        du.y() * dv.z() - du.z() * dv.y(),
+                        du.z() * dv.x() - du.x() * dv.z(),
+                        du.x() * dv.y() - du.y() * dv.x(),
+                    );
+                    let n_len = n.length();
+
+                    area += w * n_len;
+
+                    let pv = Vec3::new(p.x(), p.y(), p.z());
+                    vol += w * pv.dot(n) / 3.0;
+
+                    mx += w * 0.5 * p.x() * p.x() * n.x();
+                    my += w * 0.5 * p.y() * p.y() * n.y();
+                    mz += w * 0.5 * p.z() * p.z() * n.z();
+
+                    qxx += w * p.x().powi(3) * n.x() / 3.0;
+                    qyy += w * p.y().powi(3) * n.y() / 3.0;
+                    qzz += w * p.z().powi(3) * n.z() / 3.0;
+                    qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
+                    qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
+                    qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
+
+                    cx += w * p.x() * n_len;
+                    cy += w * p.y() * n_len;
+                    cz += w * p.z() * n_len;
+                }
             }
-
-            let w = gpu.w * gpv.w * u_scale * v_scale;
-            let p = surface.evaluate(u, v);
-            let du = surface.partial_u(u, v);
-            let dv = surface.partial_v(u, v);
-            let n = Vec3::new(
-                du.y() * dv.z() - du.z() * dv.y(),
-                du.z() * dv.x() - du.x() * dv.z(),
-                du.x() * dv.y() - du.y() * dv.x(),
-            );
-            let n_len = n.length();
-
-            area += w * n_len;
-
-            let pv = Vec3::new(p.x(), p.y(), p.z());
-            vol += w * pv.dot(n) / 3.0;
-
-            mx += w * 0.5 * p.x() * p.x() * n.x();
-            my += w * 0.5 * p.y() * p.y() * n.y();
-            mz += w * 0.5 * p.z() * p.z() * n.z();
-
-            qxx += w * p.x().powi(3) * n.x() / 3.0;
-            qyy += w * p.y().powi(3) * n.y() / 3.0;
-            qzz += w * p.z().powi(3) * n.z() / 3.0;
-            qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
-            qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
-            qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
-
-            cx += w * p.x() * n_len;
-            cy += w * p.y() * n_len;
-            cz += w * p.z() * n_len;
         }
     }
 

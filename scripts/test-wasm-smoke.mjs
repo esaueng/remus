@@ -48,13 +48,46 @@ console.log(
   `ok - tessellation: ${mesh.positions.length / 3} verts, ${mesh.indices.length / 3} tris`,
 );
 
-// 5. STL export (only if io feature is compiled in)
+// 5. Mass properties
+const props = JSON.parse(kernel.massProperties(boxId));
+assert.ok(
+  Math.abs(props.volume - 6000) < 1e-6,
+  `massProperties.volume=${props.volume}, expected ~6000`,
+);
+// 10x20x30 box about its CoM: Ixx = m/12 * (20^2 + 30^2) = 650000.
+assert.ok(
+  Math.abs(props.inertia[0] - 650000) < 1e-3,
+  `Ixx=${props.inertia[0]}, expected ~650000`,
+);
+assert.equal(props.principalAxes.length, 9, "principalAxes should have 9 entries");
+console.log(`ok - massProperties: volume=${props.volume}, Ixx=${props.inertia[0]}`);
+
+// 6. Mesh quality
+const quality = JSON.parse(kernel.meshQuality(boxId, DEFLECTION));
+assert.equal(quality.boundaryEdges, 0, "box mesh should have no boundary edges");
+assert.equal(quality.isWatertight, true, "box mesh should be watertight");
+console.log(
+  `ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`,
+);
+
+// 7. STL export (only if io feature is compiled in)
 if (typeof kernel.exportStl === "function") {
   const stl = kernel.exportStl(boxId, DEFLECTION);
   assert.ok(stl.length > 0, "STL export should not be empty");
   console.log(`ok - STL export: ${stl.length} bytes`);
 } else {
   console.log("skip - exportStl not available (io feature not enabled)");
+}
+
+// 8. PLY round trip (only if io feature is compiled in)
+if (typeof kernel.importPly === "function") {
+  const ply = kernel.exportPly(boxId, DEFLECTION);
+  const reimported = kernel.importPly(ply);
+  const vol2 = kernel.volume(reimported, DEFLECTION);
+  assert.ok(Math.abs(vol2 - 6000) < 60, `PLY round-trip volume=${vol2}`);
+  console.log(`ok - PLY round trip: volume=${vol2}`);
+} else {
+  console.log("skip - importPly not available (io feature not enabled)");
 }
 
 console.log("\nAll smoke tests passed");

@@ -10,6 +10,33 @@ use crate::handles::solid_id_to_u32;
 use crate::helpers::TOL;
 use crate::kernel::BrepKernel;
 
+/// Build [`brepkit_io::ImportLimits`] from optional JS overrides.
+///
+/// `max_input_bytes` bounds the encoded input size; `max_entities` bounds
+/// format-specific model records (vertices, faces, triangles, STEP entities).
+/// Absent values keep the production defaults (128 MiB / 2,000,000).
+fn import_limits_from(
+    max_input_bytes: Option<f64>,
+    max_entities: Option<f64>,
+) -> Result<brepkit_io::ImportLimits, JsError> {
+    let mut limits = brepkit_io::ImportLimits::default();
+    if let Some(b) = max_input_bytes {
+        validate_positive(b, "maxInputBytes")?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            limits.max_input_bytes = b as usize;
+        }
+    }
+    if let Some(n) = max_entities {
+        validate_positive(n, "maxEntities")?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            limits.max_model_entities = n as usize;
+        }
+    }
+    Ok(limits)
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Export ─────────────────────────────────────────────────────
@@ -117,15 +144,27 @@ impl BrepKernel {
 
     /// Import an OBJ file and return a solid handle.
     ///
+    /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+    /// resource budgets below the production defaults (128 MiB / 2,000,000
+    /// model entities); exceeding a budget returns an error before large
+    /// allocations.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the file is malformed or mesh import fails.
+    /// Returns an error if the file is malformed, exceeds a resource limit,
+    /// or mesh import fails.
     #[wasm_bindgen(js_name = "importObj")]
-    pub fn import_obj(&mut self, data: &[u8]) -> Result<u32, JsError> {
+    pub fn import_obj(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<u32, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
         let text = std::str::from_utf8(data).map_err(|e| WasmError::InvalidInput {
             reason: format!("OBJ must be valid UTF-8: {e}"),
         })?;
-        let mesh = brepkit_io::obj::read_obj(text)?;
+        let mesh = brepkit_io::obj::read_obj_with_limits(text, limits)?;
         let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, 1e-7)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(solid_id.index() as u32)
@@ -133,12 +172,22 @@ impl BrepKernel {
 
     /// Import a GLB (glTF binary) file and return a solid handle.
     ///
+    /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+    /// resource budgets (see [`import_obj`](Self::import_obj)).
+    ///
     /// # Errors
     ///
-    /// Returns an error if the file is malformed or mesh import fails.
+    /// Returns an error if the file is malformed, exceeds a resource limit,
+    /// or mesh import fails.
     #[wasm_bindgen(js_name = "importGlb")]
-    pub fn import_glb(&mut self, data: &[u8]) -> Result<u32, JsError> {
-        let mesh = brepkit_io::gltf::read_glb(data)?;
+    pub fn import_glb(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<u32, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let mesh = brepkit_io::gltf::read_glb_with_limits(data, limits)?;
         let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, 1e-7)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(solid_id.index() as u32)
@@ -147,14 +196,23 @@ impl BrepKernel {
     /// Import an STL file (binary or ASCII) and return a solid handle.
     ///
     /// The mesh triangles are converted to planar B-Rep faces with
-    /// vertex merging.
+    /// vertex merging. `maxInputBytes` / `maxEntities` optionally tighten
+    /// the hostile-input resource budgets (see
+    /// [`import_obj`](Self::import_obj)).
     ///
     /// # Errors
     ///
-    /// Returns an error if the STL data is malformed or empty.
+    /// Returns an error if the STL data is malformed, exceeds a resource
+    /// limit, or is empty.
     #[wasm_bindgen(js_name = "importStl")]
-    pub fn import_stl(&mut self, data: &[u8]) -> Result<u32, JsError> {
-        let mesh = brepkit_io::stl::reader::read_stl(data)?;
+    pub fn import_stl(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<u32, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let mesh = brepkit_io::stl::reader::read_stl_with_limits(data, limits)?;
         let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -162,15 +220,23 @@ impl BrepKernel {
     /// Import a PLY file (ASCII or binary little-endian) and return a solid handle.
     ///
     /// Polygon faces are triangulated by the PLY reader, then converted to
-    /// planar B-Rep faces with vertex merging.
+    /// planar B-Rep faces with vertex merging. `maxInputBytes` /
+    /// `maxEntities` optionally tighten the hostile-input resource budgets
+    /// (see [`import_obj`](Self::import_obj)).
     ///
     /// # Errors
     ///
-    /// Returns an error if the PLY data is malformed, empty, or cannot form a
-    /// mesh-backed solid.
+    /// Returns an error if the PLY data is malformed, empty, exceeds a
+    /// resource limit, or cannot form a mesh-backed solid.
     #[wasm_bindgen(js_name = "importPly")]
-    pub fn import_ply(&mut self, data: &[u8]) -> Result<u32, JsError> {
-        let mesh = brepkit_io::ply::read_ply(data)?;
+    pub fn import_ply(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<u32, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let mesh = brepkit_io::ply::read_ply_with_limits(data, limits)?;
         let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -178,13 +244,22 @@ impl BrepKernel {
     /// Import a 3MF file and return solid handles.
     ///
     /// Returns handles for each object found in the 3MF archive.
+    /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+    /// resource budgets (see [`import_obj`](Self::import_obj)).
     ///
     /// # Errors
     ///
-    /// Returns an error if the 3MF data is malformed.
+    /// Returns an error if the 3MF data is malformed or exceeds a resource
+    /// limit.
     #[wasm_bindgen(js_name = "import3mf")]
-    pub fn import_3mf(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
-        let meshes = brepkit_io::threemf::reader::read_threemf(data)?;
+    pub fn import_3mf(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u32>, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let meshes = brepkit_io::threemf::reader::read_threemf_with_limits(data, limits)?;
         let mut handles = Vec::new();
         for mesh in &meshes {
             let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), mesh, TOL)?;
@@ -259,15 +334,25 @@ impl BrepKernel {
     /// Import a STEP file and return solid handles.
     ///
     /// Returns handles for each solid found in the STEP file.
+    /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+    /// resource budgets (see [`import_obj`](Self::import_obj)).
     ///
     /// # Errors
     ///
-    /// Returns an error if the STEP data is malformed.
+    /// Returns an error if the STEP data is malformed or exceeds a resource
+    /// limit.
     #[wasm_bindgen(js_name = "importStep")]
-    pub fn import_step(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+    pub fn import_step(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u32>, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
         let text = std::str::from_utf8(data)
             .map_err(|e| JsError::new(&format!("STEP data is not valid UTF-8: {e}")))?;
-        let solid_ids = brepkit_io::step::reader::read_step(text, self.topo_mut())?;
+        let solid_ids =
+            brepkit_io::step::reader::read_step_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
     }
 
@@ -289,14 +374,25 @@ impl BrepKernel {
 
     /// Import an IGES file and return solid handles.
     ///
+    /// `maxInputBytes` / `maxEntities` optionally tighten the hostile-input
+    /// resource budgets (see [`import_obj`](Self::import_obj)).
+    ///
     /// # Errors
     ///
-    /// Returns an error if the IGES data is malformed.
+    /// Returns an error if the IGES data is malformed or exceeds a resource
+    /// limit.
     #[wasm_bindgen(js_name = "importIges")]
-    pub fn import_iges(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+    pub fn import_iges(
+        &mut self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u32>, JsError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
         let text = std::str::from_utf8(data)
             .map_err(|e| JsError::new(&format!("IGES data is not valid UTF-8: {e}")))?;
-        let solid_ids = brepkit_io::iges::reader::read_iges(text, self.topo_mut())?;
+        let solid_ids =
+            brepkit_io::iges::reader::read_iges_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
     }
 
@@ -346,10 +442,55 @@ mod tests {
         let ply = b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 4\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n3 0 2 1\n3 0 1 3\n3 1 2 3\n3 2 0 3\n";
         let mut kernel = BrepKernel::new();
 
-        let solid = kernel.import_ply(ply).unwrap();
+        let solid = kernel.import_ply(ply, None, None).unwrap();
         let solid_id = kernel.resolve_solid(solid).unwrap();
         let faces = brepkit_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
 
         assert_eq!(faces.len(), 4);
+    }
+
+    #[test]
+    fn ply_round_trip_preserves_mesh() {
+        // Happy-path direct calls are safe under native `cargo test` because
+        // `JsError` is only constructed on error paths.
+        let mut k = BrepKernel::new();
+        let solid = {
+            let r = k.execute_batch(
+                r#"[{"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 4}}]"#,
+            );
+            let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+            u32::try_from(parsed[0]["ok"].as_u64().unwrap()).unwrap()
+        };
+
+        let ply = k.export_ply(solid, 0.1).unwrap();
+        assert!(!ply.is_empty(), "PLY export produced no bytes");
+
+        let imported = k.import_ply(&ply, None, None).unwrap();
+        let r = k.execute_batch(&format!(
+            r#"[{{"op": "volume", "args": {{"solid": {imported}}}}}]"#
+        ));
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let vol = parsed[0]["ok"].as_f64().unwrap();
+        assert!(
+            (vol - 24.0).abs() < 0.1,
+            "round-tripped box volume should be ~24, got {vol}"
+        );
+    }
+
+    #[test]
+    fn import_limit_violation_reports_limit_error() {
+        // Exceeding maxInputBytes must fail before parsing. Route through the
+        // io crate's typed error (constructing a JsError would panic on the
+        // native test target).
+        let limits = brepkit_io::ImportLimits {
+            max_input_bytes: 4,
+            ..Default::default()
+        };
+        let data = b"solid tiny\nendsolid tiny\n";
+        let result = brepkit_io::stl::reader::read_stl_with_limits(data, limits);
+        assert!(
+            matches!(result, Err(brepkit_io::IoError::LimitExceeded { .. })),
+            "expected LimitExceeded, got {result:?}"
+        );
     }
 }

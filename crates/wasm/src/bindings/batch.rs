@@ -432,6 +432,31 @@ impl BrepKernel {
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
+            "fuseWithOptions" | "cutWithOptions" | "intersectWithOptions" => {
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                let unify_faces = args["unifyFaces"].as_bool();
+                let bool_op = match op {
+                    "fuseWithOptions" => BooleanOp::Fuse,
+                    "cutWithOptions" => BooleanOp::Cut,
+                    _ => BooleanOp::Intersect,
+                };
+                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
+                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let opts = brepkit_operations::boolean::BooleanOptions {
+                    unify_faces: unify_faces.unwrap_or(true),
+                    ..Default::default()
+                };
+                let result = brepkit_operations::boolean::boolean_with_options(
+                    self.topo_mut(),
+                    bool_op,
+                    a_id,
+                    b_id,
+                    opts,
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
             "detectCoincidentFaces" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
@@ -558,6 +583,36 @@ impl BrepKernel {
                 let com = measure::solid_center_of_mass(&self.topo, solid_id, deflection)
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!([com.x(), com.y(), com.z()]))
+            }
+            "massProperties" => {
+                let s = get_u32(args, "solid")?;
+                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let props =
+                    measure::mass_properties(&self.topo, solid_id).map_err(|e| e.to_string())?;
+                let (moments, axes) = props.principal_inertia();
+                Ok(serde_json::json!({
+                    "volume": props.mass,
+                    "centerOfMass": [props.center.x(), props.center.y(), props.center.z()],
+                    "inertia": props.inertia,
+                    "principalMoments": moments,
+                    "principalAxes": axes.iter().flatten().copied().collect::<Vec<f64>>(),
+                }))
+            }
+            "meshQuality" => {
+                let s = get_u32(args, "solid")?;
+                let deflection = get_f64(args, "deflection").unwrap_or(0.1);
+                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let mesh = brepkit_operations::tessellate::tessellate_solid(
+                    &self.topo, solid_id, deflection,
+                )
+                .map_err(|e| e.to_string())?;
+                let quality = brepkit_operations::tessellate::welded_mesh_quality(&mesh);
+                Ok(serde_json::json!({
+                    "boundaryEdges": quality.boundary_edges,
+                    "nonManifoldEdges": quality.non_manifold_edges,
+                    "eulerCharacteristic": quality.euler_characteristic,
+                    "isWatertight": quality.is_watertight(),
+                }))
             }
             "solidEdges" => {
                 let s = get_u32(args, "solid")?;

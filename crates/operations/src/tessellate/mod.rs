@@ -37,8 +37,8 @@ use brepkit_topology::face::FaceId;
 pub use face::{tessellate_with_uvs, tessellate_with_uvs_a};
 pub(crate) use mesh_ops::COINCIDENT_DEDUPE_GRID;
 pub use mesh_ops::{
-    EdgeLines, boundary_edge_count, is_watertight, non_manifold_edge_count, sample_solid_edges,
-    sample_solid_edges_filtered,
+    EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
+    sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
 };
 pub use solid::{
     tessellate_solid, tessellate_solid_for_boolean, tessellate_solid_grouped_with_tolerance,

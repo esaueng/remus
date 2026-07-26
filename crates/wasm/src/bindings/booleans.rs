@@ -150,6 +150,67 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    // ── Boolean operations with options ────────────────────────────
+
+    /// Fuse (union) two solids with post-processing options.
+    ///
+    /// `unifyFaces` (default `true`) merges adjacent result faces that lie
+    /// on the same underlying surface, which keeps face counts low across
+    /// chained booleans (e.g. 2871 → ~106 faces on sequential curved-surface
+    /// booleans). Pass `false` to keep the raw fragment layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either solid handle is invalid or the operation
+    /// produces an empty or non-manifold result.
+    #[wasm_bindgen(js_name = "fuseWithOptions")]
+    pub fn fuse_with_options(
+        &mut self,
+        a: u32,
+        b: u32,
+        unify_faces: Option<bool>,
+    ) -> Result<u32, JsError> {
+        self.boolean_with_options_impl(BooleanOp::Fuse, a, b, unify_faces)
+    }
+
+    /// Cut (subtract) solid `b` from solid `a` with post-processing options.
+    ///
+    /// See [`fuse_with_options`](Self::fuse_with_options) for the
+    /// `unifyFaces` semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either solid handle is invalid or the operation
+    /// produces an empty or non-manifold result.
+    #[wasm_bindgen(js_name = "cutWithOptions")]
+    pub fn cut_with_options(
+        &mut self,
+        a: u32,
+        b: u32,
+        unify_faces: Option<bool>,
+    ) -> Result<u32, JsError> {
+        self.boolean_with_options_impl(BooleanOp::Cut, a, b, unify_faces)
+    }
+
+    /// Intersect two solids with post-processing options.
+    ///
+    /// See [`fuse_with_options`](Self::fuse_with_options) for the
+    /// `unifyFaces` semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either solid handle is invalid or the operation
+    /// produces an empty or non-manifold result.
+    #[wasm_bindgen(js_name = "intersectWithOptions")]
+    pub fn intersect_with_options(
+        &mut self,
+        a: u32,
+        b: u32,
+        unify_faces: Option<bool>,
+    ) -> Result<u32, JsError> {
+        self.boolean_with_options_impl(BooleanOp::Intersect, a, b, unify_faces)
+    }
+
     // ── Boolean operations with evolution tracking ─────────────────
 
     /// Fuse (union) two solids and return evolution tracking data.
@@ -301,6 +362,33 @@ impl BrepKernel {
                 Err(JsError::new(&panic_message(&panic_info, "compoundCut")))
             }
         }
+    }
+}
+
+// Private helpers (not exported to JS).
+impl BrepKernel {
+    /// Shared body of the `*WithOptions` boolean bindings.
+    fn boolean_with_options_impl(
+        &mut self,
+        op: BooleanOp,
+        a: u32,
+        b: u32,
+        unify_faces: Option<bool>,
+    ) -> Result<u32, JsError> {
+        let a_id = self.resolve_solid(a)?;
+        let b_id = self.resolve_solid(b)?;
+        let opts = brepkit_operations::boolean::BooleanOptions {
+            unify_faces: unify_faces.unwrap_or(true),
+            ..Default::default()
+        };
+        let result = brepkit_operations::boolean::boolean_with_options(
+            self.topo_mut(),
+            op,
+            a_id,
+            b_id,
+            opts,
+        )?;
+        Ok(solid_id_to_u32(result))
     }
 }
 
@@ -641,6 +729,65 @@ mod tests {
             vol_after < vol_before,
             "cut must reduce volume: {vol_before} -> {vol_after}"
         );
+    }
+
+    // ── booleans with options ────────────────────────────────────────
+
+    #[test]
+    fn cut_with_options_preserves_volume() {
+        // Corner-notch cut through the unifyFaces post-pass: the result must
+        // survive unification with the exact expected volume.
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 4, "height": 4, "depth": 4}},
+                {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
+                {"op": "cutWithOptions", "args": {"solidA": 0, "solidB": 1, "unifyFaces": true}},
+                {"op": "volume", "args": {"solid": 2}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        assert!(
+            parsed[2]["ok"].is_number(),
+            "cutWithOptions failed: {}",
+            parsed[2]
+        );
+        let vol = parsed[3]["ok"].as_f64().unwrap();
+        assert!(
+            (vol - 56.0).abs() < 0.1,
+            "notched box volume should be ~56, got {vol}"
+        );
+    }
+
+    #[test]
+    fn fuse_with_options_defaults_and_explicit_false_both_work() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
+                {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
+                {"op": "fuseWithOptions", "args": {"solidA": 0, "solidB": 1}},
+                {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
+                {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
+                {"op": "fuseWithOptions", "args": {"solidA": 3, "solidB": 4, "unifyFaces": false}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        assert!(parsed[2]["ok"].is_number(), "default fuse: {}", parsed[2]);
+        assert!(
+            parsed[5]["ok"].is_number(),
+            "unifyFaces=false fuse: {}",
+            parsed[5]
+        );
+    }
+
+    #[test]
+    fn intersect_with_options_invalid_handle_is_error() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[{"op": "intersectWithOptions", "args": {"solidA": 9999, "solidB": 9998}}]"#,
+        );
+        assert!(batch_has_error(&r, 0));
     }
 
     // ── compound_cut volume regression ───────────────────────────────

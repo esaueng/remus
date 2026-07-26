@@ -110,6 +110,70 @@ impl BrepKernel {
         Ok(matrix.into_iter().flatten().collect())
     }
 
+    /// Compute the full mass properties of a solid (unit density).
+    ///
+    /// Returns a JSON string containing
+    /// `{ volume, centerOfMass, inertia, principalMoments, principalAxes }`
+    /// (see the `MassPropertiesResult` TypeScript type). The inertia tensor
+    /// `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` is taken about the center of mass in
+    /// the global axis directions; `principalAxes` is row-major, one unit
+    /// vector per ascending principal moment. For just the 3x3 matrix, see
+    /// [`inertia_tensor`](Self::inertia_tensor).
+    ///
+    /// Integration runs on the exact face geometry (analytic and NURBS
+    /// surfaces, no tessellation), so there is no deflection parameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid, integration fails,
+    /// or the solid has zero volume.
+    #[wasm_bindgen(js_name = "massProperties")]
+    pub fn mass_properties(&self, solid: u32) -> Result<JsValue, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let props = measure::mass_properties(&self.topo, solid_id)?;
+        let (moments, axes) = props.principal_inertia();
+        let result = crate::types::MassPropertiesResult {
+            volume: props.mass,
+            center_of_mass: vec![props.center.x(), props.center.y(), props.center.z()],
+            inertia: props.inertia.to_vec(),
+            principal_moments: moments.to_vec(),
+            principal_axes: axes.iter().flatten().copied().collect(),
+        };
+        Ok(serde_json::to_string(&result)
+            .map_err(|e| JsError::new(&e.to_string()))?
+            .into())
+    }
+
+    /// Tessellate a solid and report position-welded mesh quality metrics.
+    ///
+    /// Returns a JSON string containing
+    /// `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+    /// (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
+    /// 1 µm grid before counting, so position-duplicate vertices cannot mask
+    /// a leak. Use before export to verify the mesh is watertight.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid or tessellation fails.
+    #[wasm_bindgen(js_name = "meshQuality")]
+    pub fn mesh_quality(&self, solid: u32, deflection: f64) -> Result<JsValue, JsError> {
+        validate_positive(deflection, "deflection")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let mesh =
+            brepkit_operations::tessellate::tessellate_solid(&self.topo, solid_id, deflection)?;
+        let quality = brepkit_operations::tessellate::welded_mesh_quality(&mesh);
+        #[allow(clippy::cast_possible_truncation)]
+        let result = crate::types::MeshQualityResult {
+            boundary_edges: quality.boundary_edges as u32,
+            non_manifold_edges: quality.non_manifold_edges as u32,
+            euler_characteristic: quality.euler_characteristic as i32,
+            is_watertight: quality.is_watertight(),
+        };
+        Ok(serde_json::to_string(&result)
+            .map_err(|e| JsError::new(&e.to_string()))?
+            .into())
+    }
+
     /// Classify a point relative to a solid: inside, outside, or on boundary.
     ///
     /// Returns `"inside"`, `"outside"`, or `"boundary"`.
@@ -510,6 +574,139 @@ mod tests {
             "CoM z should be ~{}, got {cz}",
             d / 2.0
         );
+    }
+
+    // ── Mass properties ────────────────────────────────────────────
+
+    #[test]
+    fn box_mass_properties_match_closed_form() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 4}},
+                {"op": "massProperties", "args": {"solid": 0}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let props = &parsed[1]["ok"];
+        let volume = props["volume"].as_f64().unwrap();
+        assert!((volume - 24.0).abs() < 1e-9, "volume = {volume}");
+
+        let com = props["centerOfMass"].as_array().unwrap();
+        assert!((com[0].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!((com[1].as_f64().unwrap() - 1.5).abs() < 1e-9);
+        assert!((com[2].as_f64().unwrap() - 2.0).abs() < 1e-9);
+
+        // Box about CoM: Ixx = m/12 (h² + d²), etc.; products vanish.
+        let inertia = props["inertia"].as_array().unwrap();
+        let m = 24.0;
+        let expected = [
+            m / 12.0 * (9.0 + 16.0),
+            m / 12.0 * (4.0 + 16.0),
+            m / 12.0 * (4.0 + 9.0),
+        ];
+        for (k_idx, exp) in expected.iter().enumerate() {
+            let got = inertia[k_idx].as_f64().unwrap();
+            assert!(
+                (got - exp).abs() < 1e-9,
+                "inertia[{k_idx}] = {got}, expected {exp}"
+            );
+        }
+        for k_idx in 3..6 {
+            assert!(inertia[k_idx].as_f64().unwrap().abs() < 1e-9);
+        }
+
+        // Principal moments of an axis-aligned box are the sorted diagonal.
+        let moments = props["principalMoments"].as_array().unwrap();
+        let mut sorted = expected;
+        sorted.sort_by(f64::total_cmp);
+        for (k_idx, exp) in sorted.iter().enumerate() {
+            let got = moments[k_idx].as_f64().unwrap();
+            assert!((got - exp).abs() < 1e-9, "principal[{k_idx}] = {got}");
+        }
+        assert_eq!(props["principalAxes"].as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn cylinder_mass_properties_match_closed_form() {
+        // Exercises the curved-surface (patch-tiled trimmed quadrature) and
+        // exact circular-cap (Green's theorem) paths end to end.
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeCylinder", "args": {"radius": 3, "height": 10}},
+                {"op": "massProperties", "args": {"solid": 0}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let props = &parsed[1]["ok"];
+        let m = std::f64::consts::PI * 90.0;
+        let volume = props["volume"].as_f64().unwrap();
+        assert!(
+            ((volume - m) / m).abs() < 1e-8,
+            "volume = {volume}, expected {m}"
+        );
+        let inertia = props["inertia"].as_array().unwrap();
+        let izz = m * 9.0 / 2.0;
+        let ixx = m * 9.0f64.mul_add(3.0, 100.0) / 12.0;
+        assert!(
+            ((inertia[0].as_f64().unwrap() - ixx) / ixx).abs() < 1e-8,
+            "Ixx = {}, expected {ixx}",
+            inertia[0]
+        );
+        assert!(
+            ((inertia[2].as_f64().unwrap() - izz) / izz).abs() < 1e-8,
+            "Izz = {}, expected {izz}",
+            inertia[2]
+        );
+    }
+
+    #[test]
+    fn mass_properties_invalid_handle_is_error() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(r#"[{"op": "massProperties", "args": {"solid": 9999}}]"#);
+        assert!(batch_has_error(&r, 0));
+    }
+
+    // ── Mesh quality ───────────────────────────────────────────────
+
+    #[test]
+    fn box_mesh_quality_is_watertight() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
+                {"op": "meshQuality", "args": {"solid": 0, "deflection": 0.1}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let q = &parsed[1]["ok"];
+        assert_eq!(q["boundaryEdges"].as_u64().unwrap(), 0);
+        assert_eq!(q["nonManifoldEdges"].as_u64().unwrap(), 0);
+        assert_eq!(q["eulerCharacteristic"].as_i64().unwrap(), 2);
+        assert!(q["isWatertight"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn cylinder_mesh_quality_is_watertight_genus0() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(
+            r#"[
+                {"op": "makeCylinder", "args": {"radius": 3, "height": 10}},
+                {"op": "meshQuality", "args": {"solid": 0, "deflection": 0.05}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let q = &parsed[1]["ok"];
+        assert!(q["isWatertight"].as_bool().unwrap(), "quality = {q}");
+        assert_eq!(q["eulerCharacteristic"].as_i64().unwrap(), 2);
+    }
+
+    #[test]
+    fn mesh_quality_invalid_handle_is_error() {
+        let mut k = BrepKernel::new();
+        let r = k.execute_batch(r#"[{"op": "meshQuality", "args": {"solid": 9999}}]"#);
+        assert!(batch_has_error(&r, 0));
     }
 
     // ── Edge length ────────────────────────────────────────────────

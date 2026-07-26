@@ -2137,6 +2137,33 @@ pub fn solid_volume_from_faces(
     }
 }
 
+/// Compute the full mass properties of a solid, assuming uniform density.
+///
+/// Returns volume, center of mass, and the inertia tensor about the center
+/// of mass, integrated on the exact face geometry (Gauss quadrature over
+/// analytic and NURBS surfaces — no tessellation, so no deflection
+/// parameter). Cavity shells contribute with reversed orientation.
+///
+/// # Errors
+///
+/// Returns an error if the solid handle is invalid, integration fails, or
+/// the solid has zero volume.
+pub fn mass_properties(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<brepkit_check::properties::GProps, crate::OperationsError> {
+    // The cubic second-moment integrands carry one polynomial degree more
+    // than the volume/CoM terms; order 8 keeps curved-surface inertia at
+    // ~1e-9 relative where the default order 5 leaves ~3e-8.
+    let options = brepkit_check::properties::PropertiesOptions {
+        gauss_order: 8,
+        ..Default::default()
+    };
+    Ok(brepkit_check::properties::solid_properties(
+        topo, solid, &options,
+    )?)
+}
+
 /// Compute the center of mass of a solid, assuming uniform density.
 ///
 /// Uses the same signed-tetrahedra decomposition as `solid_volume`,

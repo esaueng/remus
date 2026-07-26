@@ -72,6 +72,78 @@ pub fn non_manifold_edge_count(mesh: &TriangleMesh) -> usize {
     edge_count.values().filter(|&&c| c > 2).count()
 }
 
+/// Position-welded mesh quality metrics.
+///
+/// Unlike the index-based [`boundary_edge_count`] / [`non_manifold_edge_count`],
+/// these are computed after quantizing vertex positions to
+/// the 1 µm coincident-dedupe grid, so position-duplicate vertices (distinct indices
+/// at coincident coordinates) cannot mask a leak or fake a boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct WeldedMeshQuality {
+    /// Edges used by exactly one triangle (0 for a watertight mesh).
+    pub boundary_edges: usize,
+    /// Edges used by three or more triangles.
+    pub non_manifold_edges: usize,
+    /// Euler characteristic `V - E + F` of the welded mesh (2 for a single
+    /// closed genus-0 shell).
+    pub euler_characteristic: i64,
+}
+
+impl WeldedMeshQuality {
+    /// True when the welded mesh has no boundary and no non-manifold edges.
+    #[must_use]
+    pub const fn is_watertight(&self) -> bool {
+        self.boundary_edges == 0 && self.non_manifold_edges == 0
+    }
+}
+
+/// Compute position-welded boundary/non-manifold edge counts and the Euler
+/// characteristic of a mesh.
+///
+/// Vertices are quantized to the coincident-dedupe grid (1 µm) so that
+/// coincident-but-distinct indices weld together; degenerate (collapsed)
+/// triangles are skipped.
+#[must_use]
+pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
+    type Q = (i64, i64, i64);
+    let s = 1.0 / COINCIDENT_DEDUPE_GRID;
+    #[allow(clippy::cast_possible_truncation)]
+    let q = |p: Point3| -> Q {
+        (
+            (p.x() * s).round() as i64,
+            (p.y() * s).round() as i64,
+            (p.z() * s).round() as i64,
+        )
+    };
+
+    let mut verts: DetHashSet<Q> = DetHashSet::default();
+    let mut edges: DetHashMap<(Q, Q), u32> = DetHashMap::default();
+    let mut face_count: i64 = 0;
+    for tri in mesh.indices.chunks_exact(3) {
+        let a = q(mesh.positions[tri[0] as usize]);
+        let b = q(mesh.positions[tri[1] as usize]);
+        let c = q(mesh.positions[tri[2] as usize]);
+        if a == b || b == c || a == c {
+            continue;
+        }
+        face_count += 1;
+        for v in [a, b, c] {
+            verts.insert(v);
+        }
+        for (p, r) in [(a, b), (b, c), (c, a)] {
+            let key = if p <= r { (p, r) } else { (r, p) };
+            *edges.entry(key).or_default() += 1;
+        }
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    WeldedMeshQuality {
+        boundary_edges: edges.values().filter(|&&c| c == 1).count(),
+        non_manifold_edges: edges.values().filter(|&&c| c > 2).count(),
+        euler_characteristic: verts.len() as i64 - edges.len() as i64 + face_count,
+    }
+}
+
 /// Remove duplicate triangles, cancelling opposing pairs and dedup same-winding pairs.
 ///
 /// Workaround for issue #696: when a boolean leaves overlapping coplanar faces
