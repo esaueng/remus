@@ -17,7 +17,7 @@ use brepkit_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
 use crate::classify::ray_surface;
-use crate::util::{face_polygon, point_in_polygon_3d};
+use crate::util::{face_hole_polygons, face_polygon, point_in_polygon_3d};
 
 /// Minimum positive ray parameter to count as a forward hit.
 const RAY_T_MIN: f64 = 1e-12;
@@ -118,6 +118,37 @@ pub fn polygon_normal(verts: &[Point3]) -> Vec3 {
     crate::util::polygon_normal(verts)
 }
 
+/// Build the UV boundary of every hole (inner wire) of a face.
+fn hole_uv_boundaries<F>(
+    topo: &Topology,
+    face_id: FaceId,
+    project: &F,
+    v_periodic: bool,
+) -> Result<Vec<Vec<(f64, f64)>>, CheckError>
+where
+    F: Fn(Point3) -> (f64, f64),
+{
+    Ok(face_hole_polygons(topo, face_id)?
+        .iter()
+        .map(|poly| build_uv_boundary(poly, project, v_periodic))
+        .collect())
+}
+
+/// True when a hit lands in one of the face's holes, where the trimmed face
+/// has no material and therefore no crossing.
+fn hit_in_hole_uv(holes: &[Vec<(f64, f64)>], hit_u: f64, hit_v: f64, v_periodic: bool) -> bool {
+    holes
+        .iter()
+        .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, v_periodic))
+}
+
+/// True when a hit lands in one of the face's holes (3D polygon variant).
+fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
+    holes
+        .iter()
+        .any(|hole| point_in_polygon_3d(&hit, hole, &normal))
+}
+
 /// Count crossings for analytic (non-planar) faces using UV containment.
 ///
 /// Given ray parameter roots (where the ray hits the infinite surface),
@@ -149,19 +180,15 @@ where
     let verts = face_polygon(topo, face_id)?;
 
     // Detect degenerate boundary: a "full-surface" face whose wire has fewer
-    // than 3 distinct vertices. Every positive-t root is a crossing.
+    // than 3 distinct vertices. Every positive-t root outside a hole counts.
     let is_full_surface = verts.len() < 3 || {
         let ref_pt = verts[0];
         verts
             .iter()
             .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
     };
-    if is_full_surface {
-        #[allow(clippy::cast_possible_truncation)]
-        return Ok(roots.iter().filter(|&&t| t > RAY_T_MIN).count() as u32);
-    }
-
-    let uv_boundary = build_uv_boundary(&verts, &project, v_periodic);
+    let uv_boundary = (!is_full_surface).then(|| build_uv_boundary(&verts, &project, v_periodic));
+    let holes = hole_uv_boundaries(topo, face_id, &project, v_periodic)?;
 
     let mut crossings = 0u32;
     for &t in roots {
@@ -171,9 +198,16 @@ where
         let hit = origin + direction * t;
         let (hit_u, hit_v) = project(hit);
 
-        if point_in_uv_boundary(hit_u, hit_v, &uv_boundary, v_periodic) {
-            crossings += 1;
+        if let Some(boundary) = &uv_boundary
+            && !point_in_uv_boundary(hit_u, hit_v, boundary, v_periodic)
+        {
+            continue;
         }
+        // The trimmed face carries no material inside its inner wires.
+        if hit_in_hole_uv(&holes, hit_u, hit_v, v_periodic) {
+            continue;
+        }
+        crossings += 1;
     }
 
     Ok(crossings)
@@ -212,6 +246,7 @@ fn count_3d_polygon_crossings(
         normal = -normal;
     }
     let ref_pt = verts[0];
+    let holes = face_hole_polygons(topo, face_id)?;
 
     let mut crossings = 0u32;
     for &t in roots {
@@ -226,7 +261,7 @@ fn count_3d_polygon_crossings(
             continue;
         }
 
-        if point_in_polygon_3d(&hit, &verts, &normal) {
+        if point_in_polygon_3d(&hit, &verts, &normal) && !hit_in_hole_3d(&holes, hit, normal) {
             crossings += 1;
         }
     }
@@ -328,11 +363,16 @@ fn ray_plane_crossings(
         return Ok(0);
     }
 
-    if point_in_polygon_3d(&hit, &verts, &normal) {
-        Ok(1)
-    } else {
-        Ok(0)
+    if !point_in_polygon_3d(&hit, &verts, &normal) {
+        return Ok(0);
     }
+    // A ray through a hole (bolt hole, absorbed hub circle) passes through
+    // empty space, not material — the face contributes no crossing there.
+    let holes = face_hole_polygons(topo, face_id)?;
+    if hit_in_hole_3d(&holes, hit, normal) {
+        return Ok(0);
+    }
+    Ok(1)
 }
 
 /// Count ray crossings for a NURBS face using ray-surface intersection.
@@ -349,20 +389,23 @@ fn ray_crossings_nurbs(
     }
 
     let verts = face_polygon(topo, face_id)?;
-    if verts.len() < 3 {
-        // Full-surface face — every forward hit is a crossing.
-        #[allow(clippy::cast_possible_truncation)]
-        return Ok(hits.len() as u32);
-    }
-
     let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
-    let uv_boundary = build_uv_boundary(&verts, &project, false);
+    // A full-surface face (fewer than 3 boundary points) counts every forward
+    // hit that does not land in a hole.
+    let uv_boundary = (verts.len() >= 3).then(|| build_uv_boundary(&verts, &project, false));
+    let holes = hole_uv_boundaries(topo, face_id, &project, false)?;
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in &hits {
-        if point_in_uv_boundary(*hit_u, *hit_v, &uv_boundary, false) {
-            crossings += 1;
+        if let Some(boundary) = &uv_boundary
+            && !point_in_uv_boundary(*hit_u, *hit_v, boundary, false)
+        {
+            continue;
         }
+        if hit_in_hole_uv(&holes, *hit_u, *hit_v, false) {
+            continue;
+        }
+        crossings += 1;
     }
 
     Ok(crossings)

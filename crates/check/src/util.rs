@@ -181,6 +181,30 @@ pub fn wire_polygon(
     Ok(pts)
 }
 
+/// Build a polygon for each inner wire (hole boundary) of a face.
+///
+/// A trimmed face is bounded by its outer wire *minus* every inner wire, so
+/// containment tests that ignore these polygons treat holes as material.
+/// Wires that sample to fewer than 3 points carry no area and are skipped.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the face is missing.
+pub fn face_hole_polygons(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Vec<Vec<Point3>>, CheckError> {
+    let face = topo.face(face_id)?;
+    let mut holes = Vec::with_capacity(face.inner_wires().len());
+    for &wire_id in face.inner_wires() {
+        let poly = wire_polygon(topo, wire_id)?;
+        if poly.len() >= 3 {
+            holes.push(poly);
+        }
+    }
+    Ok(holes)
+}
+
 /// Expand an AABB to account for surface curvature that may extend beyond
 /// the wire vertices.
 ///

@@ -188,7 +188,14 @@ fn is_on_boundary(
             if polygon.len() >= 3 {
                 let normal = boundary::polygon_normal(&polygon);
                 if crate::util::point_in_polygon_3d(&point, &polygon, &normal) {
-                    return Ok(true);
+                    // A point in one of the face's holes lies in open space,
+                    // not on the trimmed face.
+                    let in_hole = crate::util::face_hole_polygons(topo, fid)?
+                        .iter()
+                        .any(|hole| crate::util::point_in_polygon_3d(&point, hole, &normal));
+                    if !in_hole {
+                        return Ok(true);
+                    }
                 }
             } else {
                 // Full-surface face (like torus with seam edges only).
@@ -476,6 +483,206 @@ mod tests {
 
         let result = classify_point(&topo, solid, neg, &opts).unwrap();
         assert_eq!(result, PointClassification::Outside);
+    }
+
+    /// Add a planar face whose plane normal is taken from the loop's own
+    /// winding, so every wire orientation stays consistent with the outward
+    /// normal it implies.
+    fn add_planar_face(
+        topo: &mut Topology,
+        outer: &[Point3],
+        holes: &[Vec<Point3>],
+        tol: f64,
+    ) -> brepkit_topology::face::FaceId {
+        use brepkit_topology::builder::make_polygon_wire;
+        use brepkit_topology::face::Face;
+
+        let normal = crate::util::polygon_normal(outer);
+        let p0 = outer[0];
+        let d = normal.dot(Vec3::new(p0.x(), p0.y(), p0.z()));
+        let outer_wire = make_polygon_wire(topo, outer, tol).unwrap();
+        let inner_wires = holes
+            .iter()
+            .map(|h| make_polygon_wire(topo, h, tol).unwrap())
+            .collect();
+        topo.add_face(Face::new(
+            outer_wire,
+            inner_wires,
+            FaceSurface::Plane { normal, d },
+        ))
+    }
+
+    /// Build a square slab (x,y in `[0,4]`, z in `[0,1]`) pierced by a square
+    /// through-hole (x,y in `[1,3]`).
+    ///
+    /// The z=0 and z=1 caps each carry the hole as an inner wire — the shape
+    /// a boolean cut leaves behind, and the one a classifier that reads only
+    /// outer wires gets wrong. The hole is wide relative to the slab so the
+    /// classifier's fixed ray directions actually travel up it instead of
+    /// leaving through a side wall first.
+    fn make_slab_with_square_hole(topo: &mut Topology) -> SolidId {
+        use brepkit_topology::shell::Shell;
+
+        const TOL: f64 = 1e-7;
+        const Z0: f64 = 0.0;
+        const Z1: f64 = 1.0;
+        let (lo, hi) = (1.0_f64, 3.0_f64);
+
+        // Square ring, counter-clockwise seen from +z.
+        let ccw = |z: f64, a: f64, b: f64| {
+            vec![
+                Point3::new(a, a, z),
+                Point3::new(b, a, z),
+                Point3::new(b, b, z),
+                Point3::new(a, b, z),
+            ]
+        };
+        let cw = |z: f64, a: f64, b: f64| {
+            let mut r = ccw(z, a, b);
+            r.reverse();
+            r
+        };
+
+        let mut faces = Vec::new();
+        // Bottom cap: outer clockwise (normal -z), hole wound the other way.
+        faces.push(add_planar_face(
+            topo,
+            &cw(Z0, 0.0, 4.0),
+            &[ccw(Z0, lo, hi)],
+            TOL,
+        ));
+        // Top cap: outer counter-clockwise (normal +z), hole reversed.
+        faces.push(add_planar_face(
+            topo,
+            &ccw(Z1, 0.0, 4.0),
+            &[cw(Z1, lo, hi)],
+            TOL,
+        ));
+
+        // Walls. Traversing the base counter-clockwise then rising gives a
+        // Newell normal of (dy, -dx) — outward for the slab rim. The hole
+        // ring is walked clockwise so its walls face into the hole, i.e.
+        // away from material in both cases.
+        for ring in [ccw(Z0, 0.0, 4.0), cw(Z0, lo, hi)] {
+            for i in 0..4 {
+                let a = ring[i];
+                let b = ring[(i + 1) % 4];
+                faces.push(add_planar_face(
+                    topo,
+                    &[
+                        Point3::new(a.x(), a.y(), Z0),
+                        Point3::new(b.x(), b.y(), Z0),
+                        Point3::new(b.x(), b.y(), Z1),
+                        Point3::new(a.x(), a.y(), Z1),
+                    ],
+                    &[],
+                    TOL,
+                ));
+            }
+        }
+
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    /// The fixture itself must be a well-formed solid: every wall and cap
+    /// normal points away from material, and the volume is the slab minus
+    /// the through-hole.
+    #[test]
+    fn slab_with_square_hole_fixture_is_well_formed() {
+        let mut topo = Topology::new();
+        let solid = make_slab_with_square_hole(&mut topo);
+        let opts = crate::properties::PropertiesOptions::default();
+        let volume = crate::properties::solid_volume(&topo, solid, &opts).unwrap();
+        assert!(
+            (volume - 12.0).abs() < 1e-9,
+            "4x4x1 slab minus a 2x2x1 hole should be 12, got {volume}"
+        );
+    }
+
+    /// Regression: a ray passing through a face's hole must not be counted as
+    /// a crossing. `face_polygon` returns only the outer wire, so a holed cap
+    /// reported a crossing for rays travelling up the through-hole, flipping
+    /// the parity and classifying exterior points as Inside.
+    #[test]
+    fn holed_face_does_not_count_crossings_through_the_hole() {
+        let mut topo = Topology::new();
+        let solid = make_slab_with_square_hole(&mut topo);
+        let opts = ClassifyOptions::default();
+
+        // Just below the bottom cap, under the hole: every ray crosses the
+        // z=0 plane inside the hole, which is open space, not material.
+        // Likewise just under the top cap, and mid-hole.
+        let outside = [
+            Point3::new(2.0, 2.0, -0.05),
+            Point3::new(1.6, 2.3, -0.05),
+            Point3::new(2.4, 1.7, -0.02),
+            Point3::new(2.0, 2.0, 0.95),
+            Point3::new(2.0, 2.0, 0.5),
+            Point3::new(2.0, 2.0, 1.05),
+        ];
+        for p in outside {
+            assert_eq!(
+                classify_point(&topo, solid, p, &opts).unwrap(),
+                PointClassification::Outside,
+                "probe {p:?}"
+            );
+        }
+
+        // Material away from the hole must still read Inside.
+        let inside = [
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(3.5, 2.0, 0.5),
+            Point3::new(2.0, 0.5, 0.5),
+            Point3::new(0.5, 3.5, 0.25),
+            Point3::new(3.5, 3.5, 0.75),
+        ];
+        for p in inside {
+            assert_eq!(
+                classify_point(&topo, solid, p, &opts).unwrap(),
+                PointClassification::Inside,
+                "probe {p:?}"
+            );
+        }
+    }
+
+    /// A point sitting in the open space of a through-hole is not "on" the
+    /// cap face whose plane it happens to share.
+    #[test]
+    fn point_in_hole_is_not_on_boundary() {
+        let mut topo = Topology::new();
+        let solid = make_slab_with_square_hole(&mut topo);
+        let opts = ClassifyOptions::default();
+
+        assert_eq!(
+            classify_point(&topo, solid, Point3::new(2.0, 2.0, 0.0), &opts).unwrap(),
+            PointClassification::Outside,
+            "hole centre on the z=0 cap plane is open space"
+        );
+        // The cap itself, away from the hole, is still boundary.
+        assert_eq!(
+            classify_point(&topo, solid, Point3::new(0.5, 0.5, 0.0), &opts).unwrap(),
+            PointClassification::OnBoundary
+        );
+    }
+
+    /// The winding classifier subtracts holes too.
+    #[test]
+    fn winding_number_subtracts_face_holes() {
+        let mut topo = Topology::new();
+        let solid = make_slab_with_square_hole(&mut topo);
+
+        let in_hole = winding::winding_number(&topo, solid, Point3::new(2.0, 2.0, 0.5)).unwrap();
+        assert!(
+            in_hole < 0.5,
+            "through-hole interior should be out: {in_hole}"
+        );
+        let in_material =
+            winding::winding_number(&topo, solid, Point3::new(0.5, 0.5, 0.5)).unwrap();
+        assert!(
+            in_material > 0.5,
+            "slab material should be in: {in_material}"
+        );
     }
 
     /// Build the 3-face solid a partial-turn circle revolve produces: one

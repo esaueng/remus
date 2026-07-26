@@ -40,8 +40,10 @@ pub fn winding_number(topo: &Topology, solid: SolidId, point: Point3) -> Result<
 /// Compute the winding contribution of a single face.
 ///
 /// Triangulates the face via fan triangulation from its wire polygon and
-/// sums solid angles. The face orientation (`is_reversed`) determines the
-/// sign of the contribution.
+/// sums solid angles. Each hole (inner wire) is fan-triangulated too and
+/// subtracted, since the fan of the outer wire covers the whole untrimmed
+/// region. The face orientation (`is_reversed`) determines the sign of the
+/// total.
 fn face_winding_contribution(
     topo: &Topology,
     face_id: FaceId,
@@ -54,13 +56,35 @@ fn face_winding_contribution(
         return Ok(0.0);
     }
 
-    let mut contribution = 0.0;
-    for i in 1..polygon.len() - 1 {
-        let omega = solid_angle(point, polygon[0], polygon[i], polygon[i + 1]);
-        contribution += if reversed { -omega } else { omega };
+    let mut contribution = fan_solid_angle(point, &polygon);
+
+    // Holes must contribute with the orientation opposite to the outer loop.
+    // A hole wire already stored in reverse traversal order carries that sign
+    // in its own fan, so only same-facing loops get negated.
+    let outer_normal = crate::util::polygon_normal(&polygon);
+    for hole in crate::util::face_hole_polygons(topo, face_id)? {
+        let omega = fan_solid_angle(point, &hole);
+        if crate::util::polygon_normal(&hole).dot(outer_normal) > 0.0 {
+            contribution -= omega;
+        } else {
+            contribution += omega;
+        }
     }
 
-    Ok(contribution)
+    Ok(if reversed {
+        -contribution
+    } else {
+        contribution
+    })
+}
+
+/// Sum the signed solid angles of a fan triangulation of `polygon` at `point`.
+fn fan_solid_angle(point: Point3, polygon: &[Point3]) -> f64 {
+    let mut total = 0.0;
+    for i in 1..polygon.len() - 1 {
+        total += solid_angle(point, polygon[0], polygon[i], polygon[i + 1]);
+    }
+    total
 }
 
 /// Compute the signed solid angle subtended by triangle (a, b, c) at point p.
