@@ -795,7 +795,7 @@ fn merge_overlaps(overlaps: &mut Vec<CurveCurveOverlap>, tolerance: f64) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -893,6 +893,123 @@ mod tests {
 
         let hits = curve_curve_intersect(&c1, &c2, 1e-10).expect("no error");
         assert!(hits.is_empty(), "expected no hits for parallel lines");
+    }
+
+    /// Evaluate a hull's piecewise-linear envelope at `t`, or `None` if `t`
+    /// lies outside the hull's parameter span.
+    fn envelope_at(hull: &[(f64, f64)], t: f64) -> Option<f64> {
+        for w in hull.windows(2) {
+            let (t0, d0) = w[0];
+            let (t1, d1) = w[1];
+            if t >= t0 && t <= t1 {
+                if (t1 - t0).abs() < 1e-30 {
+                    return Some(d0.max(d1));
+                }
+                return Some(d0 + (d1 - d0) * (t - t0) / (t1 - t0));
+            }
+        }
+        None
+    }
+
+    /// Brute-force the feasible interval: the t-range where the hull's
+    /// column overlaps the band.
+    fn brute_force_feasible(pts: &[(f64, f64)], d_min: f64, d_max: f64) -> Option<(f64, f64)> {
+        const N: usize = 20_001;
+        let upper = upper_hull(pts);
+        let lower = lower_hull(pts);
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for i in 0..N {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f64 / (N - 1) as f64;
+            let (Some(u), Some(l)) = (envelope_at(&upper, t), envelope_at(&lower, t)) else {
+                continue;
+            };
+            if l.max(u) >= d_min && l.min(u) <= d_max {
+                lo = lo.min(t);
+                hi = hi.max(t);
+            }
+        }
+        (lo <= hi).then_some((lo, hi))
+    }
+
+    #[test]
+    fn hull_clip_matches_brute_force() {
+        // `convex_hull_clip` must return EXACTLY the t-interval where the
+        // hull column overlaps [d_min, d_max]:
+        //
+        //   - too narrow silently drops real intersections;
+        //   - too wide is a no-op clip, which degrades Sederberg-Nishita to
+        //     plain bisection (the defect fixed in #8: the vertex test
+        //     checked one band bound, so a vertex above d_max extended t_lo
+        //     back to the start of the interval).
+        //
+        // `perpendicular_lines_dense_scan` pins the end-to-end symptom for
+        // straight lines; this pins the clip primitive itself over arbitrary
+        // hull geometry.
+
+        // Sampling resolution is 5e-5; allow a comfortable margin.
+        const TOL: f64 = 1e-3;
+
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next_unit = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss)]
+            let v = (seed >> 33) as f64 / f64::from(1u32 << 31);
+            v - 1.0
+        };
+
+        let mut checked = 0_usize;
+        for n_pts in 2..=6_u32 {
+            for trial in 0..400 {
+                let pts: Vec<(f64, f64)> = (0..n_pts)
+                    .map(|i| (f64::from(i) / f64::from(n_pts - 1), next_unit() * 2.0))
+                    .collect();
+                // The band always straddles 0, matching fat_line's bounds.
+                let half = next_unit().abs() * 1.5;
+                let d_min = if trial % 2 == 0 { -half } else { 0.0 };
+                let (d_min, d_max) = (d_min, half);
+
+                let got = convex_hull_clip(&pts, d_min, d_max);
+                let expected = brute_force_feasible(&pts, d_min, d_max);
+                checked += 1;
+
+                match (got, expected) {
+                    (_, None) => {
+                        // Nothing feasible at sample resolution: any interval
+                        // returned must be a sub-sample sliver.
+                        if let Some((lo, hi)) = got {
+                            assert!(
+                                hi - lo < TOL,
+                                "clip returned [{lo}, {hi}] where none is feasible; \
+                                 pts={pts:?} band=[{d_min}, {d_max}]"
+                            );
+                        }
+                    }
+                    (None, Some((lo, hi))) => panic!(
+                        "clip returned None but [{lo}, {hi}] is feasible; \
+                         pts={pts:?} band=[{d_min}, {d_max}]"
+                    ),
+                    (Some((got_lo, got_hi)), Some((exp_lo, exp_hi))) => {
+                        assert!(
+                            got_lo <= exp_lo + TOL && got_hi >= exp_hi - TOL,
+                            "clip [{got_lo}, {got_hi}] is NARROWER than feasible \
+                             [{exp_lo}, {exp_hi}] (drops intersections); \
+                             pts={pts:?} band=[{d_min}, {d_max}]"
+                        );
+                        assert!(
+                            got_lo >= exp_lo - TOL && got_hi <= exp_hi + TOL,
+                            "clip [{got_lo}, {got_hi}] is LOOSER than feasible \
+                             [{exp_lo}, {exp_hi}] (no-op clip, degrades to bisection); \
+                             pts={pts:?} band=[{d_min}, {d_max}]"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(checked >= 2000, "expected a full sweep, checked={checked}");
     }
 
     #[test]
