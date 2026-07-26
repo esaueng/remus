@@ -1350,7 +1350,28 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
                 representative_surface = Some(face.surface().clone());
                 representative_reversed = face.is_reversed();
             }
-            all_inner_wires.extend_from_slice(face.inner_wires());
+            // An inner wire containing an edge shared with another face in
+            // this group is a hole boundary absorbed by the merge (e.g. an
+            // annulus merged with the disc that fills its hole). Dissolve it
+            // into the boundary pool so its internal edges drop out; carrying
+            // it over verbatim would leave a hole wire whose region is no
+            // longer missing, producing an open shell with free edges.
+            for &wid in face.inner_wires() {
+                let wire = topo.wire(wid)?;
+                let has_internal = wire
+                    .edges()
+                    .iter()
+                    .any(|oe| internal_edges.contains(&oe.edge().index()));
+                if has_internal {
+                    for oe in wire.edges() {
+                        if !internal_edges.contains(&oe.edge().index()) {
+                            boundary_edges.push(*oe);
+                        }
+                    }
+                } else {
+                    all_inner_wires.push(wid);
+                }
+            }
 
             let wire = topo.wire(face.outer_wire())?;
             for oe in wire.edges() {
@@ -1520,22 +1541,32 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
 
 /// Compute the enclosed 3D area of a loop of oriented edges using Newell's method.
 ///
-/// Returns 0.0 if any vertex lookup fails (defensive fallback).
+/// Samples along each edge's curve rather than using endpoint vertices only:
+/// a full-circle edge has coincident endpoints, so an endpoint-only polygon
+/// degenerates (< 3 distinct points) and reads as area 0, which breaks
+/// outer-loop selection for merged faces bounded by whole circles.
+///
+/// Returns 0.0 if any topology lookup fails (defensive fallback).
 fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
-    let mut positions: Vec<Point3> = Vec::with_capacity(loop_edges.len());
+    const SAMPLES_PER_EDGE: usize = 8;
+    let mut positions: Vec<Point3> = Vec::with_capacity(loop_edges.len() * SAMPLES_PER_EDGE);
     for oe in loop_edges {
         let edge = match topo.edge(oe.edge()) {
             Ok(e) => e,
             Err(_) => return 0.0,
         };
-        let vid = if oe.is_forward() {
-            edge.start()
-        } else {
-            edge.end()
+        let (sp, ep) = match (topo.vertex(edge.start()), topo.vertex(edge.end())) {
+            (Ok(s), Ok(e)) => (s.point(), e.point()),
+            _ => return 0.0,
         };
-        match topo.vertex(vid) {
-            Ok(v) => positions.push(v.point()),
-            Err(_) => return 0.0,
+        let (t_min, t_max) = edge.curve().domain_with_endpoints(sp, ep);
+        // Sample the edge from its oriented start, excluding the final
+        // endpoint (the next edge in the loop supplies it).
+        for i in 0..SAMPLES_PER_EDGE {
+            let frac = i as f64 / SAMPLES_PER_EDGE as f64;
+            let frac = if oe.is_forward() { frac } else { 1.0 - frac };
+            let t = t_min + (t_max - t_min) * frac;
+            positions.push(edge.curve().evaluate_with_endpoints(t, sp, ep));
         }
     }
     if positions.len() < 3 {
