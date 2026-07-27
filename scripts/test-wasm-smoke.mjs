@@ -141,4 +141,105 @@ if (typeof kernel.importPly === "function") {
   }
 }
 
+// 11. Analytic preservation through a boolean, checked on the SHIPPED package.
+//
+// Fusing two coaxial revolved annuli that share an exact cylindrical wall —
+// the OpenZCAD flange demo's "Union flange blank": a rim (r24..45, t10)
+// against a hub (r12..24, h26), both walls exactly r24 and overlapping in z.
+// The fuse must resolve that coincident cylindrical face pair and stay
+// analytic. It regressed to a ~1031-face all-plane mesh fallback, fixed in
+// #21 (canonical same-domain key for closed edges).
+//
+// #21 already carries the native regression test, which is the primary guard.
+// This is deliberately a SECOND, different guard: it runs the built, bundled
+// wasm package rather than the Rust library. That gap is not theoretical —
+// the committed `crates/wasm/pkg` is what OpenZCAD installs, and it shipped
+// as 2.129.0 built from a pre-fix commit, so consumers hit a ~2789-face
+// flange body with 873 boundary edges while `cargo test` was green. A
+// package-level assertion is what catches that class.
+//
+// Nothing else in this smoke test asserts a boolean keeps curved surfaces,
+// and face count is the only reliable signal: a mesh fallback is watertight,
+// valid, and close on volume, so none of those expose it.
+//
+// Narrowed by varying one thing at a time:
+//   shared r24 wall + in contact          -> fallback
+//   shared r24 wall, tops not coplanar    -> fallback  (coplanarity is not it)
+//   inner radius 23 instead of 24         -> analytic  (needs EXACT coincidence)
+//   shared r24 wall but z-disjoint        -> analytic  (needs real contact)
+//   primitive coaxial cylinders           -> analytic  (no coincident wall pair)
+//
+// Verified fail-before/pass-after by reverting only same_domain.rs and
+// rebuilding: 1031 faces without the fix, 7 with it. Do NOT relax this into
+// a pin — a suppressed assertion here is the green-looking blindfold that let
+// the stale package ship.
+{
+  /** Revolve an axial rectangle (x = radius, z = height) a full turn about +Z. */
+  const revolveAnnulus = (r0, r1, z0, z1) => {
+    const pts = [
+      [r0, 0, z0],
+      [r1, 0, z0],
+      [r1, 0, z1],
+      [r0, 0, z1],
+    ];
+    const edges = pts.map((p, i) => {
+      const n = pts[(i + 1) % pts.length];
+      return kernel.makeLineEdge(p[0], p[1], p[2], n[0], n[1], n[2]);
+    });
+    const wire = kernel.makeWire(Uint32Array.from(edges), true);
+    const face = kernel.makePlanarFaceFromWire(wire);
+    return kernel.revolve(face, 0, 0, 0, 0, 0, 1, 360);
+  };
+
+  const rim = revolveAnnulus(24, 45, -10, 0);
+  const hub = revolveAnnulus(12, 24, -26, 0);
+
+  // Both operands must be analytic going in, or the assertion below proves
+  // nothing about the boolean.
+  for (const [label, solid] of [
+    ["rim", rim],
+    ["hub", hub],
+  ]) {
+    const kinds = Array.from(kernel.getSolidFaces(solid)).map((f) =>
+      kernel.getSurfaceType(f),
+    );
+    assert.equal(
+      kinds.filter((t) => t === "cylinder").length,
+      2,
+      `${label} operand should have 2 cylindrical walls, got ${JSON.stringify(kinds)}`,
+    );
+  }
+
+  const fused = kernel.fuse(rim, hub);
+  const faceKinds = Array.from(kernel.getSolidFaces(fused)).map((f) =>
+    kernel.getSurfaceType(f),
+  );
+  const cylinders = faceKinds.filter((t) => t === "cylinder").length;
+
+  // Face count is the only reliable fallback signal: the mesh fallback is
+  // watertight and valid, and its volume is close, so neither exposes it.
+  assert.ok(
+    faceKinds.length <= 12,
+    `coaxial annulus fuse mesh-fell-back: ${faceKinds.length} faces ` +
+      `(expected <= 12; native gives 7)`,
+  );
+  assert.ok(
+    cylinders >= 3,
+    `coaxial annulus fuse lost its cylindrical walls: ${cylinders} cylinder ` +
+      `faces of ${faceKinds.length} (expected >= 3)`,
+  );
+
+  const fusedVol = kernel.volume(fused, DEFLECTION);
+  const expectedVol =
+    Math.PI * ((45 * 45 - 24 * 24) * 10 + (24 * 24 - 12 * 12) * 26);
+  assert.ok(
+    Math.abs(fusedVol - expectedVol) < 50,
+    `coaxial annulus fuse volume=${fusedVol}, expected ~${expectedVol}`,
+  );
+  console.log(
+    `ok - coaxial annulus fuse stayed analytic: ${faceKinds.length} faces, ` +
+      `${cylinders} cylindrical`,
+  );
+}
+
 console.log("\nAll smoke tests passed");
