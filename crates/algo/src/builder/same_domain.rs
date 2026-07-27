@@ -675,17 +675,39 @@ fn compute_edge_set_quantized(
             .ok()?
             .point();
         let ep = topo.vertex(arena.resolve_vertex(edge.end())).ok()?.point();
-        // The midpoint is evaluated in STORED order deliberately: arcs
-        // follow the CCW start-to-end convention, so (A,B) and (B,A) are
-        // complementary arcs — different geometry that must hash apart
-        // (they are exactly the two halves this discriminator separates).
-        // Identical geometry always stores identical direction under that
-        // convention, so a true duplicate pair cannot hash apart here.
-        let mid = crate::builder::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, 0.5);
+        // Third slot: a discriminator that separates two different curves
+        // sharing the same endpoint pair. OPEN and CLOSED edges need
+        // different ones, because the closed case breaks the open case's
+        // premise.
+        //
+        // Open edge — the midpoint in STORED order. Arcs follow the CCW
+        // start-to-end convention, so (A,B) and (B,A) are complementary
+        // arcs: different geometry that must hash apart (they are exactly
+        // the two halves this discriminator separates). Identical geometry
+        // always stores identical direction under that convention, so a
+        // true duplicate pair cannot hash apart.
+        //
+        // Closed edge (start == end) — that premise does NOT hold. A full
+        // circle has no complementary arc, and two instances of the SAME
+        // circle can carry different parameterizations (a revolve seam and
+        // a coincident wall rim start at different angles), so their stored
+        // midpoints land a quarter-turn apart and a true duplicate hashes
+        // apart. That is the coincident-face pair the fuse then fails to
+        // recognize. Use the centroid of samples taken uniformly over the
+        // whole period instead: for a circle the equally-spaced offsets
+        // cancel exactly, so it is the centre regardless of where the
+        // parameterization starts or which way it runs. Combined with the
+        // shared endpoint (which fixes the radius) it discriminates as well
+        // as the midpoint did, and it is canonical.
+        let disc = if qs == qe {
+            closed_edge_centroid(edge.curve(), sp, ep)
+        } else {
+            crate::builder::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, 0.5)
+        };
         // quantize_point MULTIPLIES by the scale, so the 100x-coarser
-        // midpoint bucket (fit-error tolerance for marched geometry) needs
-        // scale / 100, not scale * 100.
-        let qmid = quantize_point(mid, scale / 100.0);
+        // discriminator bucket (fit-error tolerance for marched geometry)
+        // needs scale / 100, not scale * 100.
+        let qmid = quantize_point(disc, scale / 100.0);
 
         // Canonical ordering: smaller first
         let pair = if qs <= qe {
@@ -698,6 +720,39 @@ fn compute_edge_set_quantized(
 
     pairs.sort_unstable();
     Some(pairs)
+}
+
+/// Number of samples used for the closed-edge centroid discriminator.
+///
+/// Any `N >= 2` makes the equally-spaced offsets of a circle cancel exactly;
+/// 16 keeps the estimate stable for non-circular closed curves too.
+const CLOSED_EDGE_SAMPLES: usize = 16;
+
+/// Parameterization-independent point identifying a CLOSED edge.
+///
+/// Samples uniformly over the whole period and averages. The endpoint is
+/// deliberately excluded (it duplicates the start on a closed curve and
+/// would bias the average toward it). For a circle the sampled offsets sum
+/// to zero whatever the start angle or direction, so this returns the exact
+/// centre — which is what makes two differently-parameterized instances of
+/// one circle hash together.
+fn closed_edge_centroid(
+    curve: &brepkit_topology::edge::EdgeCurve,
+    sp: brepkit_math::vec::Point3,
+    ep: brepkit_math::vec::Point3,
+) -> brepkit_math::vec::Point3 {
+    let (mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0);
+    for k in 0..CLOSED_EDGE_SAMPLES {
+        #[allow(clippy::cast_precision_loss)]
+        let t = k as f64 / CLOSED_EDGE_SAMPLES as f64;
+        let p = crate::builder::pcurve_compute::evaluate_edge_at_t(curve, sp, ep, t);
+        sx += p.x();
+        sy += p.y();
+        sz += p.z();
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = CLOSED_EDGE_SAMPLES as f64;
+    brepkit_math::vec::Point3::new(sx / n, sy / n, sz / n)
 }
 
 /// Test whether two planar sub-faces are geometrically coincident or one
