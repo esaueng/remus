@@ -467,14 +467,13 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         _ => return Ok(None),
     };
 
-    // The annular rebuild replaces the cap's whole outer wire with the plate
-    // contact, so it only applies when the cap is a bare disc whose sole
-    // boundary is this rim. A more complex cap falls back to the trim path.
+    // The annular rebuild replaces the cap's OUTER wire with the plate contact,
+    // so it applies whenever that outer wire is exactly this rim. The cap may
+    // still carry holes — the drilled flange's rim cap is an annulus with a
+    // central opening plus six bolt holes — and those are preserved verbatim
+    // below. Anything else falls back to the trim path.
     {
         let cap = topo.face(plane_face)?;
-        if !cap.inner_wires().is_empty() {
-            return Ok(None);
-        }
         let cap_wire = topo.wire(cap.outer_wire())?;
         let cap_edges = cap_wire.edges();
         if cap_edges.len() != 1 || cap_edges[0].edge() != rim_edge {
@@ -510,6 +509,43 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
 
     let plate_circle = Circle3D::new(plate_center, axis, plate_radius)?;
     let wall_circle = Circle3D::new(wall_center, axis, wall_radius)?;
+
+    // The cap's holes survive the rebuild unchanged, which is only correct if
+    // the shrinking outer boundary still clears them. A setback big enough to
+    // reach a bolt hole would need the hole and the chamfer to merge — real
+    // geometry the annular rebuild cannot express — so defer to the trim path
+    // rather than emit a cap whose outer wire crosses its own hole.
+    {
+        let cap = topo.face(plane_face)?;
+        for &hole_wid in cap.inner_wires() {
+            for oe in topo.wire(hole_wid)?.edges() {
+                let e = topo.edge(oe.edge())?;
+                for v in [e.start(), e.end()] {
+                    let p = topo.vertex(v)?.point();
+                    if radial_distance(p, axis_origin, axis) >= plate_radius {
+                        return Ok(None);
+                    }
+                }
+                // Endpoints alone miss a closed circle's far side, so sample
+                // the curve too.
+                let (t0, t1) = e.curve().domain_with_endpoints(
+                    topo.vertex(e.start())?.point(),
+                    topo.vertex(e.end())?.point(),
+                );
+                for k in 0..8 {
+                    let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+                    let p = e.curve().evaluate_with_endpoints(
+                        t,
+                        topo.vertex(e.start())?.point(),
+                        topo.vertex(e.end())?.point(),
+                    );
+                    if radial_distance(p, axis_origin, axis) >= plate_radius {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
 
     Ok(Some(ClosedRimInfo {
         plane_face,
@@ -584,9 +620,14 @@ fn assemble_closed_rim(
         .iter()
         .find(|oe| oe.edge() == rim.rim_edge)
         .is_some_and(OrientedEdge::is_forward);
+    // Carry the cap's holes through. Handing the rebuilt face an empty
+    // inner-wire list would fill in every hole — the drilled flange's rim cap
+    // would lose its bore and six bolt openings, and each bore wall would lose
+    // the face it pairs with, opening the shell.
+    let cap_inner = cap_orig.inner_wires().to_vec();
     let cap_wire = Wire::new(vec![OrientedEdge::new(plate_edge, cap_forward)], true)?;
     let cap_wire_id = topo.add_wire(cap_wire);
-    let mut cap_face = Face::new(cap_wire_id, Vec::new(), plane_surf);
+    let mut cap_face = Face::new(cap_wire_id, cap_inner, plane_surf);
     cap_face.set_reversed(plane_reversed);
     let cap_face_id = topo.add_face(cap_face);
     face_replacements.insert(rim.plane_face, cap_face_id);

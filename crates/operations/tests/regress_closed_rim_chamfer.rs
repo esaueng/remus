@@ -230,6 +230,141 @@ fn closed_rim_chamfer_removes_material_on_the_right_side() {
     );
 }
 
+/// The rim assembler must handle a cap that carries HOLES, not just a bare
+/// disc.
+///
+/// The first version of this fix bailed on any cap with inner wires, because
+/// the rebuild handed the new cap an empty inner-wire list — which would have
+/// filled in every hole and stranded each bore wall. That restriction passed
+/// the bare-cylinder repro and still failed the real case: the drilled flange's
+/// rim cap is an annulus with a central opening and six bolt holes, and
+/// chamfering it reported "trimming failure". The cap's holes are now carried
+/// through, guarded by a check that the shrinking outer boundary still clears
+/// them.
+#[test]
+fn rim_chamfer_preserves_cap_holes() {
+    use brepkit_math::mat::Mat4;
+    use brepkit_math::vec::Vec3;
+    use brepkit_operations::boolean::{BooleanOp, boolean};
+    use brepkit_operations::heal::unify_faces;
+    use brepkit_operations::revolve::revolve;
+    use brepkit_operations::transform::transform_solid;
+    use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+
+    let revolved = |t: &mut Topology, ri: f64, ro: f64, z0: f64, z1: f64| {
+        let pts = [
+            Point3::new(ri, 0.0, z0),
+            Point3::new(ro, 0.0, z0),
+            Point3::new(ro, 0.0, z1),
+            Point3::new(ri, 0.0, z1),
+        ];
+        let w = make_polygon_wire(t, &pts, 1e-7).unwrap();
+        let f = make_planar_face_from_wire(t, w).unwrap();
+        revolve(
+            t,
+            f,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::TAU,
+        )
+        .unwrap()
+    };
+
+    let mut topo = Topology::new();
+    let rim = revolved(&mut topo, 24.0, 45.0, 0.0, 10.0);
+    let hub = revolved(&mut topo, 12.0, 24.0, 0.0, 26.0);
+    let blank = boolean(&mut topo, BooleanOp::Fuse, rim, hub).unwrap();
+    unify_faces(&mut topo, blank).unwrap();
+
+    let mut pattern = None;
+    for i in 0..6 {
+        let a = std::f64::consts::TAU * f64::from(i) / 6.0;
+        let c = primitives::make_cylinder(&mut topo, 3.0, 16.0).unwrap();
+        transform_solid(
+            &mut topo,
+            c,
+            &Mat4::translation(34.0 * a.cos(), 34.0 * a.sin(), -3.0),
+        )
+        .unwrap();
+        pattern = Some(match pattern {
+            None => c,
+            Some(p) => boolean(&mut topo, BooleanOp::Fuse, p, c).unwrap(),
+        });
+    }
+    let body = boolean(&mut topo, BooleanOp::Cut, blank, pattern.unwrap()).unwrap();
+
+    // The two r45 rims plus the r24 hub lip — the edges the flange demo picks.
+    let picks: Vec<EdgeId> = solid_edges(&topo, body)
+        .into_iter()
+        .filter(|&e| {
+            let ed = topo.edge(e).unwrap();
+            if ed.start() != ed.end() {
+                return false;
+            }
+            let p = topo.vertex(ed.start()).unwrap().point();
+            let r = p.x().hypot(p.y());
+            (r - 45.0).abs() < 1e-6 || ((r - 24.0).abs() < 1e-6 && p.z() >= 25.5)
+        })
+        .collect();
+    assert_eq!(picks.len(), 3, "two r45 rims and the r24 hub lip");
+
+    // Each cap involved really does carry holes — otherwise this test would
+    // silently be re-testing the bare-disc case.
+    let holed_caps = solid_faces(&topo, body)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| {
+            let face = topo.face(f).unwrap();
+            face.surface().type_tag() == "plane" && !face.inner_wires().is_empty()
+        })
+        .count();
+    assert!(holed_caps >= 2, "the flange caps must be holed annuli");
+
+    let before = measure::solid_volume(&topo, body, 0.05).unwrap();
+    let d = 1.5;
+    let r = blend_ops::chamfer_v2(&mut topo, body, &picks, d, d)
+        .expect("all three flange rims must chamfer");
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+
+    // Three exact conical bands; the nine cylinders (3 body + 6 bores) survive.
+    let census = surface_census(&topo, r.solid);
+    assert_eq!(census.get("cone").copied().unwrap_or(0), 3, "{census:?}");
+    assert_eq!(
+        census.get("cylinder").copied().unwrap_or(0),
+        9,
+        "{census:?}"
+    );
+
+    assert_eq!(
+        brep_edge_health(&topo, r.solid),
+        (0, 0),
+        "the chamfered flange must stay closed — a dropped cap hole would \
+         strand its bore wall and open the shell"
+    );
+    assert_eq!(
+        mesh_edge_health(&topo, r.solid),
+        (0, 0),
+        "and it must tessellate watertight"
+    );
+
+    // Volume by Pappus, one wedge per rim.
+    let wedge = |rr: f64| 0.5 * d * d * std::f64::consts::TAU * (rr - d / 3.0);
+    let want = before - 2.0 * wedge(45.0) - wedge(24.0);
+    let got = measure::solid_volume(&topo, r.solid, 0.05).unwrap();
+    assert!(
+        (got - want).abs() / want < 1e-4,
+        "volume {got} vs Pappus {want}"
+    );
+
+    // The bolt holes must still be holes.
+    let opts = ClassifyOptions::default();
+    assert_eq!(
+        classify_point(&topo, r.solid, Point3::new(34.0, 0.0, 5.0), &opts).unwrap(),
+        PointClassification::Outside,
+        "a bolt hole must survive the chamfer"
+    );
+}
+
 /// Chamfering BOTH rims in one call must also work, and must be symmetric.
 #[test]
 fn both_rims_chamfered_in_one_call() {
