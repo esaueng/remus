@@ -13,7 +13,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use brepkit_check::validate::{ValidateOptions, validate_solid};
-use brepkit_operations::blend_ops::{chamfer_v2, fillet_v2};
+use brepkit_operations::blend_ops::{chamfer_distance_angle, chamfer_v2, fillet_v2};
 use brepkit_operations::chamfer::chamfer;
 use brepkit_operations::measure::solid_volume;
 use brepkit_operations::primitives::{make_box, make_cylinder};
@@ -169,13 +169,6 @@ fn in_range_chamfer_removes_the_exact_prism() {
 /// An oversized setback is caught whichever face carries it — `d1` fitting
 /// must not excuse `d2` overrunning, and the *fit* check must be what fires,
 /// not some downstream symptom.
-///
-/// Note this only exercises the rejection path: a well-sized asymmetric
-/// chamfer (`d1 != d2`) is separately unsupported on the planar builder,
-/// which emits an open shell and is refused by the postcondition check. That
-/// predates this guard — verified against the untouched baseline — and is a
-/// fail-closed limitation rather than a wrong answer, so it is out of scope
-/// here.
 #[test]
 fn oversized_setback_is_caught_on_either_face() {
     for (d1, d2) in [(1.0_f64, 40.0_f64), (40.0, 1.0)] {
@@ -336,6 +329,118 @@ fn overlapping_chamfers_on_every_edge_are_rejected() {
         assert!(
             msg.contains("does not fit"),
             "d={d}: the fit check should fire, got: {msg}"
+        );
+    }
+}
+
+/// A well-sized asymmetric chamfer must close the shell and take exactly the
+/// wedge its two setbacks describe.
+///
+/// Regression for a defect that predated the setback guard: the side faces at
+/// each end of a chamfered edge split their corner using a single distance,
+/// `max(d1, d2)`, for both directions. The neighbouring faces had placed their
+/// chamfer points at their own setbacks, so as soon as `d1 != d2` the points
+/// no longer coincided and the shell opened — 6 free edges, Euler 0 instead
+/// of 2 — for *any* asymmetry, even `d2 = d1 + 1e-4`.
+///
+/// It went unnoticed because `chamfer_v2` refused the open shell (fail-closed,
+/// so never a wrong answer to a caller) while the unit test that covered this
+/// only measured volume and never checked closure.
+///
+/// Volume is the oracle: `1000 - (d1·d2/2)·10` is reached only when both
+/// setbacks are honoured, which no single-distance scheme can do.
+#[test]
+fn asymmetric_chamfer_closes_and_takes_the_exact_wedge() {
+    for (d1, d2) in [
+        (1.0_f64, 2.0_f64),
+        (2.0, 1.0),
+        (0.5, 9.0),
+        (9.0, 0.5),
+        (3.0, 7.0),
+        (1.0, 1.0001),
+    ] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+
+        let result = chamfer_v2(&mut topo, solid, &edges[..1], d1, d2)
+            .unwrap_or_else(|e| panic!("d1={d1}, d2={d2} should chamfer cleanly: {e}"));
+
+        let report = validate_solid(&topo, result.solid, &ValidateOptions::default()).unwrap();
+        assert!(
+            report.is_valid(),
+            "d1={d1}, d2={d2}: shell must close, got {:#?}",
+            report.issues
+        );
+
+        let volume = solid_volume(&topo, result.solid, DEFLECTION).unwrap();
+        let expected = 1000.0 - 0.5 * d1 * d2 * 10.0;
+        assert!(
+            (volume - expected).abs() < 1e-6,
+            "d1={d1}, d2={d2}: expected {expected} mm³, got {volume} mm³"
+        );
+    }
+}
+
+/// Asymmetric chamfers on several edges at once must also close.
+#[test]
+fn asymmetric_chamfer_closes_on_multiple_edges() {
+    for n in [2usize, 4, 12] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+        let targets: Vec<EdgeId> = edges[..n].to_vec();
+
+        let result = chamfer_v2(&mut topo, solid, &targets, 1.0, 2.0)
+            .unwrap_or_else(|e| panic!("{n} asymmetric edges should chamfer cleanly: {e}"));
+
+        let report = validate_solid(&topo, result.solid, &ValidateOptions::default()).unwrap();
+        assert!(
+            report.is_valid(),
+            "{n} edges: shell must close, got {:#?}",
+            report.issues
+        );
+
+        let volume = solid_volume(&topo, result.solid, DEFLECTION).unwrap();
+        assert!(
+            volume < 1000.0 && volume > 0.0,
+            "{n} edges: a chamfer must remove material, got {volume} mm³"
+        );
+    }
+}
+
+/// `chamfer_distance_angle` is asymmetric for every angle but 45°, so it was
+/// caught by the same open-shell defect.
+///
+/// It sets `d2 = distance · tan(angle)`, which equals `distance` only at
+/// π/4 — and π/4 was the sole angle the existing test covered, which is why
+/// the breakage never showed. Any other angle produced an open shell.
+#[test]
+fn distance_angle_chamfer_closes_at_angles_other_than_45_degrees() {
+    for angle_deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
+        let angle = angle_deg.to_radians();
+        let distance = 1.0_f64;
+
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+
+        let result = chamfer_distance_angle(&mut topo, solid, &edges[..1], distance, angle)
+            .unwrap_or_else(|e| panic!("{angle_deg}° should chamfer cleanly: {e}"));
+
+        let report = validate_solid(&topo, result.solid, &ValidateOptions::default()).unwrap();
+        assert!(
+            report.is_valid(),
+            "{angle_deg}°: shell must close, got {:#?}",
+            report.issues
+        );
+
+        // Wedge legs are `distance` and `distance·tan(angle)`.
+        let volume = solid_volume(&topo, result.solid, DEFLECTION).unwrap();
+        let expected = 1000.0 - 0.5 * distance * (distance * angle.tan()) * 10.0;
+        assert!(
+            (volume - expected).abs() < 1e-6,
+            "{angle_deg}°: expected {expected} mm³, got {volume} mm³"
         );
     }
 }

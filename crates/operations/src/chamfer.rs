@@ -219,6 +219,9 @@ fn chamfer_core(
     // For side-face corners, compute max distance from any chamfered edge meeting
     // at each vertex so the offset stays consistent with the largest adjacent bevel.
     let mut vertex_max_distance: HashMap<usize, f64> = HashMap::new();
+    // Which chamfered edges meet each vertex. A side-face corner needs this to
+    // work out, per direction, which neighbouring face's setback it must match.
+    let mut vertex_chamfer_edges: HashMap<usize, Vec<EdgeId>> = HashMap::new();
     for &edge_id in &filtered_edges {
         let edge = topo.edge(edge_id)?;
         let max_d = distances.max_distance();
@@ -228,6 +231,10 @@ fn chamfer_core(
             if max_d > *entry {
                 *entry = max_d;
             }
+            vertex_chamfer_edges
+                .entry(vid.index())
+                .or_default()
+                .push(edge_id);
         }
     }
 
@@ -240,6 +247,7 @@ fn chamfer_core(
         distances: &distances,
         vertex_chamfer_endpoints: &vertex_chamfer_endpoints,
         vertex_max_distance: &vertex_max_distance,
+        vertex_chamfer_edges: &vertex_chamfer_edges,
     }
     .run(&shell_face_ids, &face_polygons, tol)?;
 
@@ -296,21 +304,38 @@ fn chamfer_core(
                     new_verts.push(pos);
                 }
                 (false, false, true) => {
-                    // Side face corner: vertex is at a chamfered edge endpoint
-                    // but neither adjacent edge of THIS face is chamfered.
-                    // Split into two offset points along the face's own edges.
-                    // Use the max distance from any chamfered edge at this vertex
-                    // so the side-face split stays consistent with the largest bevel.
-                    let side_dist = vertex_max_distance
+                    // Side face corner: the vertex is at a chamfered edge's
+                    // endpoint, but neither of THIS face's edges is chamfered.
+                    // It splits into two points, one along each of its edges.
+                    //
+                    // Each of those edges is shared with a face that is being
+                    // bevelled, and that neighbour has already placed its own
+                    // chamfer point along the same edge — at *its* setback. The
+                    // split point has to land on top of it or the two faces stop
+                    // sharing a boundary and the shell opens up. So each
+                    // direction takes the setback of the face across that edge,
+                    // which is what makes an asymmetric chamfer close.
+                    let fallback = vertex_max_distance
                         .get(&poly.vertex_ids[i].index())
                         .copied()
                         .unwrap_or_else(|| distances.max_distance());
+                    let side_dist = |wire_edge: EdgeId| -> f64 {
+                        neighbour_setback(
+                            wire_edge,
+                            face_id,
+                            poly.vertex_ids[i],
+                            &vertex_chamfer_edges,
+                            &edge_to_faces,
+                            &distances,
+                        )
+                        .unwrap_or(fallback)
+                    };
 
                     let dir_prev = (prev_pos - pos).normalize()?;
-                    new_verts.push(pos + dir_prev * side_dist);
+                    new_verts.push(pos + dir_prev * side_dist(poly.wire_edge_ids[prev_i]));
 
                     let dir_next = (next_pos - pos).normalize()?;
-                    new_verts.push(pos + dir_next * side_dist);
+                    new_verts.push(pos + dir_next * side_dist(poly.wire_edge_ids[i]));
                 }
                 (true, false, _) => {
                     // Only the edge before is chamfered. Offset toward V[next].
@@ -631,6 +656,46 @@ struct FacePolygon {
     normal: Vec3,
 }
 
+/// The setback that governs how far a side-face corner travels along one of
+/// its own edges.
+///
+/// `wire_edge` is an edge of `this_face` running out of `vertex`, and `vertex`
+/// is the endpoint of some chamfered edge. The face on the far side of
+/// `wire_edge` is the one being bevelled there, so its setback is the distance
+/// the split point must travel to meet the chamfer point that face placed on
+/// the same edge.
+///
+/// Returns `None` when the answer would be a guess: more than one chamfered
+/// edge meeting the vertex (so which bevel governs is ambiguous), or a
+/// non-manifold wire edge. Callers fall back to the previous behaviour there.
+fn neighbour_setback(
+    wire_edge: EdgeId,
+    this_face: FaceId,
+    vertex: VertexId,
+    vertex_chamfer_edges: &HashMap<usize, Vec<EdgeId>>,
+    edge_to_faces: &HashMap<usize, Vec<FaceId>>,
+    distances: &ChamferDistances,
+) -> Option<f64> {
+    let chamfered = vertex_chamfer_edges.get(&vertex.index())?;
+    let [chamfered_edge] = chamfered.as_slice() else {
+        return None;
+    };
+
+    let faces = edge_to_faces.get(&wire_edge.index())?;
+    let [a, b] = faces.as_slice() else {
+        return None;
+    };
+    let neighbour = if *a == this_face {
+        *b
+    } else if *b == this_face {
+        *a
+    } else {
+        return None;
+    };
+
+    Some(distances.distance_for(chamfered_edge.index(), neighbour, edge_to_faces))
+}
+
 /// How far a face vertex slides along each of its two incident wire edges.
 ///
 /// Mirrors the offsetting arms in [`chamfer_core`] one-for-one, so the check
@@ -652,6 +717,7 @@ struct SetbackCheck<'a> {
     distances: &'a ChamferDistances,
     vertex_chamfer_endpoints: &'a HashSet<usize>,
     vertex_max_distance: &'a HashMap<usize, f64>,
+    vertex_chamfer_edges: &'a HashMap<usize, Vec<EdgeId>>,
 }
 
 impl SetbackCheck<'_> {
@@ -671,16 +737,28 @@ impl SetbackCheck<'_> {
         match (before_chamfered, after_chamfered, at_endpoint) {
             // Untouched vertex.
             (false, false, false) => VertexSlide::default(),
-            // Side-face corner: splits into two points, one along each edge.
+            // Side-face corner: splits into two points, one along each edge,
+            // each travelling by the setback of the face across that edge.
             (false, false, true) => {
-                let d = self
+                let fallback = self
                     .vertex_max_distance
                     .get(&poly.vertex_ids[i].index())
                     .copied()
                     .unwrap_or_else(|| self.distances.max_distance());
+                let side_dist = |wire_edge: EdgeId| -> f64 {
+                    neighbour_setback(
+                        wire_edge,
+                        face_id,
+                        poly.vertex_ids[i],
+                        self.vertex_chamfer_edges,
+                        self.edge_to_faces,
+                        self.distances,
+                    )
+                    .unwrap_or(fallback)
+                };
                 VertexSlide {
-                    toward_prev: d,
-                    toward_next: d,
+                    toward_prev: side_dist(poly.wire_edge_ids[prev_i]),
+                    toward_next: side_dist(poly.wire_edge_ids[i]),
                 }
             }
             // Only the entering edge is chamfered: slides toward the next vertex.
@@ -1084,11 +1162,16 @@ mod tests {
 
     /// Asymmetric single-edge chamfer volume on a unit cube.
     ///
-    /// Removes a right-triangular prism with legs d1=0.2 and d2=0.3, length 1.0.
-    /// The cross-section is a right triangle with legs d1 and d2.
-    /// V_removed = (d1 * d2 / 2) × L = 0.03.
-    /// Side-face corner offsets use max(d1,d2)=0.3, which introduces
-    /// small extra triangular wedges at each end, giving V ≈ 0.965.
+    /// Removes a right-triangular prism with legs d1=0.2 and d2=0.3 over the
+    /// edge's length 1.0, so `V = 1 - (d1·d2/2)·L = 0.97` exactly. There is
+    /// nothing else to take: a chamfer of one edge touches no other feature.
+    ///
+    /// This previously expected 0.965 and explained the 0.005 as "extra
+    /// triangular wedges" from the side-face corners using `max(d1, d2)`.
+    /// Those wedges were the defect, not a design choice — the same offsets
+    /// left the shell open with 6 free edges and Euler 0. The test only ever
+    /// measured volume, so it passed on a solid that was not closed, which is
+    /// how the bug survived. It now checks closure too.
     #[test]
     fn chamfer_asymmetric_single_edge_volume() {
         let mut topo = Topology::new();
@@ -1097,13 +1180,23 @@ mod tests {
 
         let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], 0.2, 0.3).unwrap();
 
-        let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
-        let expected = 0.965;
-        let rel_err = (vol - expected).abs() / expected;
+        let report = brepkit_check::validate::validate_solid(
+            &topo,
+            result,
+            &brepkit_check::validate::ValidateOptions::default(),
+        )
+        .expect("validation should run");
         assert!(
-            rel_err < 1e-3,
-            "asymmetric chamfer d1=0.2, d2=0.3 on unit cube: expected {expected}, got {vol} \
-             (rel_err={rel_err:.2e})"
+            report.is_valid(),
+            "asymmetric chamfer must produce a closed solid: {:#?}",
+            report.issues
+        );
+
+        let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+        let expected = 1.0 - 0.5 * 0.2 * 0.3;
+        assert!(
+            (vol - expected).abs() < 1e-9,
+            "asymmetric chamfer d1=0.2, d2=0.3 on unit cube: expected {expected}, got {vol}"
         );
     }
 
@@ -1196,5 +1289,78 @@ mod tests {
                 "d={d}: expected {expected}, got {volume}"
             );
         }
+    }
+
+    /// A lopsided chamfer must apply *both* setbacks, not one of them twice.
+    ///
+    /// The side faces at each end of a chamfered edge split their corner into
+    /// two points, one per adjacent face. Those points have to land on the
+    /// chamfer points the neighbouring faces placed, which sit at that face's
+    /// own setback — so the split has to use d1 in one direction and d2 in the
+    /// other. Using a single distance for both (previously `max(d1, d2)`) tore
+    /// the shell open at every asymmetric chamfer.
+    ///
+    /// Volume is the oracle: `1 - (d1·d2/2)·L` is only reached when both
+    /// setbacks are honoured. Using max twice would give `1 - max²/2`, using
+    /// min twice `1 - min²/2`; at 40:1 those are far apart and easy to tell.
+    #[test]
+    fn asymmetric_chamfer_applies_both_setbacks() {
+        for (d1, d2) in [(0.2, 0.3), (0.05, 0.4), (0.4, 0.05), (0.02, 0.8)] {
+            let mut topo = Topology::new();
+            let cube = make_unit_cube_manifold(&mut topo);
+            let edges = solid_edge_ids(&topo, cube);
+
+            let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], d1, d2)
+                .unwrap_or_else(|e| panic!("d1={d1}, d2={d2} should chamfer cleanly: {e}"));
+
+            let report = brepkit_check::validate::validate_solid(
+                &topo,
+                result,
+                &brepkit_check::validate::ValidateOptions::default(),
+            )
+            .expect("validation should run");
+            assert!(
+                report.is_valid(),
+                "d1={d1}, d2={d2}: shell must close, got {:#?}",
+                report.issues
+            );
+
+            let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+            let expected = 1.0 - 0.5 * d1 * d2;
+            assert!(
+                (vol - expected).abs() < 1e-9,
+                "d1={d1}, d2={d2}: expected {expected}, got {vol} \
+                 (max-twice would give {}, min-twice {})",
+                1.0 - 0.5 * d1.max(d2) * d1.max(d2),
+                1.0 - 0.5 * d1.min(d2) * d1.min(d2)
+            );
+        }
+    }
+
+    /// Swapping the two distances mirrors the bevel; it must not change how
+    /// much material comes off, and both orders must close.
+    #[test]
+    fn asymmetric_chamfer_is_order_independent_in_volume() {
+        let measure = |d1: f64, d2: f64| {
+            let mut topo = Topology::new();
+            let cube = make_unit_cube_manifold(&mut topo);
+            let edges = solid_edge_ids(&topo, cube);
+            let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], d1, d2).unwrap();
+            let report = brepkit_check::validate::validate_solid(
+                &topo,
+                result,
+                &brepkit_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            assert!(report.is_valid(), "d1={d1}, d2={d2} must close");
+            crate::measure::solid_volume(&topo, result, 0.01).unwrap()
+        };
+
+        let forward = measure(0.15, 0.45);
+        let reversed = measure(0.45, 0.15);
+        assert!(
+            (forward - reversed).abs() < 1e-9,
+            "swapping d1/d2 must remove the same volume: {forward} vs {reversed}"
+        );
     }
 }
