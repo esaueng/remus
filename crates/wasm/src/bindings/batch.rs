@@ -21,7 +21,9 @@ use crate::error::WasmError;
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
-use crate::helpers::{TOL, classify_to_string, get_f64, get_u32, panic_message, try_fillet};
+use crate::helpers::{
+    TOL, classify_to_string, get_f64, get_u32, panic_message, try_chamfer, try_fillet,
+};
 use crate::kernel::BrepKernel;
 
 /// Maximum encoded JSON accepted by one `executeBatch` call (16 MiB).
@@ -883,13 +885,20 @@ impl BrepKernel {
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(|e| e.to_string()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let result = brepkit_operations::chamfer::chamfer(
-                    self.topo_mut(),
-                    solid_id,
-                    &edge_ids,
-                    dist,
-                )
-                .map_err(|e| e.to_string())?;
+                // Same engine chain and panic guard as the `chamfer` binding,
+                // and as the sibling `fillet` arm below. Calling the v1
+                // flat-bevel engine directly here meant a batch chamfer never
+                // reached the v2 fallback, so a closed cylinder rim failed
+                // through `executeBatch` while succeeding through `chamfer`.
+                let chamfer_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    try_chamfer(self.topo_mut(), solid_id, &edge_ids, dist)
+                }));
+                let result = match chamfer_result {
+                    Ok(inner) => inner.map_err(|e| e.to_string())?,
+                    Err(panic_info) => {
+                        return Err(panic_message(&panic_info, "Chamfer"));
+                    }
+                };
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "fillet" => {

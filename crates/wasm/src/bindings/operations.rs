@@ -1758,7 +1758,7 @@ impl BrepKernel {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use brepkit_math::vec::Point3;
     use brepkit_topology::builder::make_polygon_wire;
@@ -1788,6 +1788,179 @@ mod tests {
     fn wire_perimeter(k: &BrepKernel, wire_handle: u32) -> f64 {
         let wid = k.resolve_wire(wire_handle).unwrap();
         brepkit_operations::measure::wire_length(&k.topo, wid).unwrap()
+    }
+
+    // ── Closed-rim chamfer fixture (shared by both entry points) ──
+    //
+    // The flange rim from OpenZCAD, reduced: a cylinder whose end cap is
+    // bounded by ONE closed circular edge. The v1 flat-bevel engine is
+    // planar-only and fails it ("cannot normalize zero vector"); only the v2
+    // fallback inside `try_chamfer` can build it. Both the single-call binding
+    // and the batch dispatch must therefore reach that fallback.
+
+    const RIM_R: f64 = 45.0;
+    const RIM_H: f64 = 10.0;
+
+    /// Cylinder solid handle plus the handles of its two closed rim circles.
+    fn rim_cylinder(k: &mut BrepKernel) -> (u32, Vec<u32>) {
+        use brepkit_topology::explorer::solid_faces;
+
+        let cyl =
+            brepkit_operations::primitives::make_cylinder(k.topo_mut(), RIM_R, RIM_H).unwrap();
+        let topo = &k.topo;
+        let mut rims = Vec::new();
+        for fid in solid_faces(topo, cyl).unwrap() {
+            let f = topo.face(fid).unwrap();
+            for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    let ed = topo.edge(oe.edge()).unwrap();
+                    if ed.start() == ed.end()
+                        && ed.curve().type_tag() == "circle"
+                        && !rims.contains(&oe.edge())
+                    {
+                        rims.push(oe.edge());
+                    }
+                }
+            }
+        }
+        assert_eq!(rims.len(), 2, "a cylinder has two closed rim circles");
+        (
+            solid_id_to_u32(cyl),
+            rims.into_iter()
+                .map(crate::handles::edge_id_to_u32)
+                .collect(),
+        )
+    }
+
+    /// Material left after a symmetric chamfer of setback `d` on a rim of
+    /// radius `RIM_R`, by Pappus: the right triangle (legs `d`, `d`, area
+    /// `d²/2`) revolved about the axis at centroid radius `RIM_R − d/3`.
+    fn rim_chamfer_volume(d: f64) -> f64 {
+        let full = std::f64::consts::PI * RIM_R * RIM_R * RIM_H;
+        full - 0.5 * d * d * std::f64::consts::TAU * (RIM_R - d / 3.0)
+    }
+
+    /// Assert the chamfered solid is a closed, manifold B-Rep whose mesh is
+    /// also watertight, and whose volume matches the analytic ring wedge.
+    /// A closed B-Rep can still tessellate open, so both are checked.
+    fn assert_rim_chamfer_ok(k: &BrepKernel, handle: u32, d: f64, label: &str) {
+        let sid = k.resolve_solid(handle).unwrap();
+        let shell = k
+            .topo
+            .shell(k.topo.solid(sid).unwrap().outer_shell())
+            .unwrap();
+        brepkit_topology::validation::validate_shell_closed(shell, &k.topo)
+            .unwrap_or_else(|e| panic!("{label}: chamfered solid must be closed: {e:?}"));
+        brepkit_topology::validation::validate_shell_manifold(shell, &k.topo)
+            .unwrap_or_else(|e| panic!("{label}: chamfered solid must be manifold: {e:?}"));
+
+        let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+            &k.topo, sid, 0.01, 0.1,
+        )
+        .unwrap();
+        let quality = brepkit_operations::tessellate::welded_mesh_quality(&mesh);
+        assert!(
+            quality.is_watertight(),
+            "{label}: tessellation must be watertight ({} boundary, {} non-manifold edges)",
+            quality.boundary_edges,
+            quality.non_manifold_edges
+        );
+
+        let vol = brepkit_operations::measure::solid_volume(&k.topo, sid, 0.02).unwrap();
+        let want = rim_chamfer_volume(d);
+        assert!(
+            (vol - want).abs() / want < 1e-6,
+            "{label}: volume {vol} vs Pappus {want}"
+        );
+    }
+
+    #[test]
+    fn chamfer_binding_closed_rim_matches_pappus() {
+        for d in [0.5_f64, 1.5] {
+            for rim_index in 0..2 {
+                let mut k = BrepKernel::new();
+                let (cyl, rims) = rim_cylinder(&mut k);
+                let out = k.chamfer_solid(cyl, vec![rims[rim_index]], d).unwrap();
+                assert_rim_chamfer_ok(&k, out, d, &format!("binding d={d} rim={rim_index}"));
+            }
+        }
+    }
+
+    #[test]
+    fn chamfer_batch_dispatch_closed_rim_matches_pappus() {
+        // The batch arm used to call `brepkit_operations::chamfer::chamfer`
+        // directly, skipping the v2 fallback that `try_chamfer` provides — so
+        // this exact geometry errored through `executeBatch` while succeeding
+        // through the single-call binding.
+        for d in [0.5_f64, 1.5] {
+            for rim_index in 0..2 {
+                let mut k = BrepKernel::new();
+                let (cyl, rims) = rim_cylinder(&mut k);
+                let entry = dispatch(
+                    &mut k,
+                    "chamfer",
+                    serde_json::json!({ "solid": cyl, "edges": [rims[rim_index]], "distance": d }),
+                );
+                assert!(
+                    entry.get("error").is_none(),
+                    "batch d={d} rim={rim_index} errored: {entry}"
+                );
+                let out = entry["ok"].as_u64().unwrap() as u32;
+                assert_rim_chamfer_ok(&k, out, d, &format!("batch d={d} rim={rim_index}"));
+            }
+        }
+    }
+
+    #[test]
+    fn chamfer_batch_dispatch_agrees_with_binding_on_a_box_edge() {
+        // The planar case both engines can build: the two entry points must
+        // still agree once they share a code path.
+        let d = 1.0;
+        let mut kb = BrepKernel::new();
+        let box_b =
+            brepkit_operations::primitives::make_box(kb.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let edge_b = first_box_edge(&kb, box_b);
+        let via_binding = kb
+            .chamfer_solid(solid_id_to_u32(box_b), vec![edge_b], d)
+            .unwrap();
+        let v_binding = kb.volume(via_binding, 0.05).unwrap();
+
+        let mut kd = BrepKernel::new();
+        let box_d =
+            brepkit_operations::primitives::make_box(kd.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let edge_d = first_box_edge(&kd, box_d);
+        let entry = dispatch(
+            &mut kd,
+            "chamfer",
+            serde_json::json!({ "solid": solid_id_to_u32(box_d), "edges": [edge_d], "distance": d }),
+        );
+        assert!(
+            entry.get("error").is_none(),
+            "batch chamfer errored: {entry}"
+        );
+        let v_batch = kd
+            .volume(entry["ok"].as_u64().unwrap() as u32, 0.05)
+            .unwrap();
+
+        // A 1×1 bevel along one 10-long edge removes 0.5 · 1² · 10 = 5.
+        assert!(
+            (v_binding - 995.0).abs() < 0.05,
+            "binding chamfer volume {v_binding}, expected ~995"
+        );
+        assert!(
+            (v_binding - v_batch).abs() < 1e-9,
+            "entry points disagree: binding {v_binding} vs batch {v_batch}"
+        );
+    }
+
+    fn first_box_edge(k: &BrepKernel, solid: brepkit_topology::solid::SolidId) -> u32 {
+        let topo = &k.topo;
+        let shell = topo
+            .shell(topo.solid(solid).unwrap().outer_shell())
+            .unwrap();
+        let face = topo.face(shell.faces()[0]).unwrap();
+        let wire = topo.wire(face.outer_wire()).unwrap();
+        crate::handles::edge_id_to_u32(wire.edges()[0].edge())
     }
 
     #[test]
