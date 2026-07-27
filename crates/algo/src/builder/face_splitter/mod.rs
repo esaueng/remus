@@ -3897,15 +3897,24 @@ fn split_face_2d_impl(
     let all_sections_internal = if sections.is_empty() {
         false
     } else if is_plane {
-        // Plane faces: exactly 1 closed section curve, or all-Line
-        // sections forming closed loops strictly inside the boundary
-        // (nested coplanar footprints). Multiple circles on the same
-        // plane face still need the wire builder for loop formation.
-        let single_closed = sections.len() == 1
+        // Plane faces: closed section curves that are pairwise separate (each
+        // one bounds its own disc — a bolt circle stamps N of them onto the
+        // flange's cap and bottom in a single Cut), or all-Line sections
+        // forming closed loops strictly inside the boundary (nested coplanar
+        // footprints).
+        //
+        // `split_face_with_internal_loops` already chains and emits any number
+        // of loops; the old gate admitted only ONE closed section, so a
+        // multi-hole cap fell through to the wire builder, which wove the
+        // holes into a single sub-face and left the bore walls stranded in
+        // their own open shells. Nested or overlapping loops still go to the
+        // wire builder: the disc-per-loop reading is wrong when one loop
+        // contains another.
+        let all_closed = !sections.is_empty()
             && sections.iter().all(|s| {
                 (s.start - s.end).length() < tol.linear // closed curve
             });
-        if single_closed {
+        if all_closed && plane_closed_loops_separate(sections, frame) {
             true
         } else {
             deduped_line_loops =
@@ -5716,6 +5725,47 @@ pub fn interior_point_3d(sub_face: &SplitSubFace, frame: Option<&PlaneFrame>) ->
         });
     let n = sub_face.outer_wire.len() as f64;
     Point3::new(sum.x() / n, sum.y() / n, sum.z() / n)
+}
+
+/// Are several CLOSED section curves on a plane face pairwise separate — each
+/// bounding its own disc, none nested inside or straddling another?
+///
+/// Every section here is already known to be a closed curve, so each one is a
+/// complete loop on its own and `split_face_with_internal_loops` can carve one
+/// disc per loop. That reading only holds when the loops don't interact: a
+/// loop nested inside another (a re-bored opening) or two overlapping loops
+/// (a deepened pocket) need the wire builder's arrangement instead.
+///
+/// The test is deliberately conservative — outlines are sampled through the
+/// face frame and compared by 2D bounding box. Disjoint boxes prove disjoint
+/// discs; anything closer falls through to the generic path unchanged. A
+/// single loop passes vacuously, which is the behaviour this gate replaced.
+fn plane_closed_loops_separate(sections: &[SectionEdge], frame: &PlaneFrame) -> bool {
+    const SAMPLES: usize = 24;
+
+    // (min_u, max_u, min_v, max_v) per section outline.
+    let boxes: Vec<(f64, f64, f64, f64)> = sections
+        .iter()
+        .map(|s| {
+            let mut bb = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+            for k in 0..SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let t = k as f64 / SAMPLES as f64;
+                let uv = frame.project(evaluate_edge_at_t(&s.curve_3d, s.start, s.end, t));
+                bb.0 = bb.0.min(uv.x());
+                bb.1 = bb.1.max(uv.x());
+                bb.2 = bb.2.min(uv.y());
+                bb.3 = bb.3.max(uv.y());
+            }
+            bb
+        })
+        .collect();
+
+    boxes.iter().enumerate().all(|(i, a)| {
+        boxes[i + 1..]
+            .iter()
+            .all(|b| a.1 < b.0 || b.1 < a.0 || a.3 < b.2 || b.3 < a.2)
+    })
 }
 
 /// Detect section edges (lines, open arcs, and open NURBS conics) forming
