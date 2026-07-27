@@ -147,6 +147,72 @@ pub struct GcsSolveResult {
     pub max_residual: f64,
 }
 
+/// Residual magnitude attributed to one constraint in a `gcsSolveDetailed`
+/// report.
+///
+/// A large magnitude is evidence about *where* a system is unsatisfied, not
+/// proof that this constraint is at fault — one bad constraint pushes error
+/// into every constraint sharing its parameters.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct GcsConstraintResidual {
+    /// The `gcsAddConstraint` handle this magnitude belongs to.
+    pub constraint: u32,
+    /// Largest absolute residual across the constraint's equations, measured
+    /// at the solver's final iterate — its best attempt, before any rollback.
+    /// Constraints the system could satisfy read ~0 here, so a magnitude that
+    /// survives marks where it could not.
+    pub max_residual: f64,
+}
+
+/// Typed result for `gcsSolveDetailed`.
+///
+/// Kernel-internal constraints (an arc's centre–endpoint tie) carry no
+/// `gcsAddConstraint` handle. They are excluded from `constraintResiduals`
+/// entirely and summarised by `internalMaxResidual` instead, so no internal
+/// equation is ever attributed to a caller's constraint.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct GcsSolveDiagnostics {
+    /// Whether the solver reached the requested tolerance.
+    pub converged: bool,
+    /// Number of DogLeg iterations used.
+    pub iterations: u32,
+    /// Maximum absolute residual at the solver's final iterate.
+    pub max_residual: f64,
+    /// Maximum absolute residual at the state now published in the sketch.
+    /// Differs from `maxResidual` only when `rolledBack` is set.
+    pub published_max_residual: f64,
+    /// Degrees of freedom remaining (`numParams - rank`).
+    pub dof: u32,
+    /// Rank of the constraint Jacobian.
+    pub rank: u32,
+    /// Total free solver parameters.
+    pub num_params: u32,
+    /// Total residual equations, kernel-internal constraints included.
+    pub num_equations: u32,
+    /// Per-constraint residuals for caller-added constraints only.
+    pub constraint_residuals: Vec<GcsConstraintResidual>,
+    /// Largest residual over kernel-internal constraints alone.
+    pub internal_max_residual: f64,
+    /// Whether the attempt was discarded and the pre-solve geometry restored.
+    /// A rejected solve never leaves partially moved geometry published.
+    pub rolled_back: bool,
+    /// Whether some equation is linearly dependent on the others
+    /// (`rank < numEquations`). Reported independently of `classification`,
+    /// which can only name one state.
+    pub redundant: bool,
+    /// One of `solved`, `underConstrained`, `redundant`, `unsatisfied`.
+    ///
+    /// `unsatisfied` means the solver did not converge — it does **not**
+    /// identify a conflicting constraint. Non-convergence is equally
+    /// consistent with contradictory constraints, a poor starting point, or
+    /// too small an iteration budget.
+    pub classification: String,
+}
+
 /// Typed result for `gcsDof`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]

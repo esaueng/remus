@@ -4,7 +4,7 @@
 //! every solve, no constraint removal), the `gcs*` surface holds a persistent
 //! [`brepkit_sketch::GcsSystem`] per sketch and speaks typed entity
 //! handles: points, lines, circles, and arcs are created explicitly and
-//! constraints reference them by handle. All 19 GCS constraint types are
+//! constraints reference them by handle. All 24 GCS constraint types are
 //! reachable, constraints can be removed, and solving does not lose state.
 //!
 //! Handle model: JS holds opaque `u32` values that index per-sketch handle
@@ -59,6 +59,11 @@ fn table_get<T: Copy>(table: &[T], entity: &'static str, idx: u32) -> Result<T, 
 /// | `arcLength` | `arc`, `value` |
 /// | `concentricArcArc` | `arc1`, `arc2` |
 /// | `concentricArcCircle` | `arc`, `circle` |
+/// | `circleRadius` | `circle`, `value` (radius; must be > 0) |
+/// | `equalRadiusCircleCircle` | `circle1`, `circle2` |
+/// | `equalLength` | `l1`, `l2` |
+/// | `midpoint` | `point`, `line` |
+/// | `symmetric` | `a`, `b` (points), `axis` (line) |
 fn parse_gcs_constraint(
     sk: &GcsSketchState,
     val: &serde_json::Value,
@@ -86,6 +91,16 @@ fn parse_gcs_constraint(
         } else {
             Err(WasmError::InvalidInput {
                 reason: format!("constraint field '{key}' must be finite"),
+            })
+        }
+    };
+    let positive_number = |key: &str| -> Result<f64, WasmError> {
+        let v = number(key)?;
+        if v > 0.0 {
+            Ok(v)
+        } else {
+            Err(WasmError::InvalidInput {
+                reason: format!("constraint field '{key}' must be greater than zero, got {v}"),
             })
         }
     };
@@ -155,6 +170,21 @@ fn parse_gcs_constraint(
         "concentricArcCircle" => Ok(Constraint::ConcentricArcCircle(
             arc("arc")?,
             circle("circle")?,
+        )),
+        "circleRadius" => Ok(Constraint::CircleRadius(
+            circle("circle")?,
+            positive_number("value")?,
+        )),
+        "equalRadiusCircleCircle" => Ok(Constraint::EqualRadiusCircleCircle(
+            circle("circle1")?,
+            circle("circle2")?,
+        )),
+        "equalLength" => Ok(Constraint::EqualLength(line("l1")?, line("l2")?)),
+        "midpoint" => Ok(Constraint::Midpoint(point("point")?, line("line")?)),
+        "symmetric" => Ok(Constraint::Symmetric(
+            point("a")?,
+            point("b")?,
+            line("axis")?,
         )),
         other => Err(WasmError::InvalidInput {
             reason: format!("unknown constraint type: '{other}'"),
@@ -378,6 +408,74 @@ impl BrepKernel {
         })
     }
 
+    pub(crate) fn gcs_solve_detailed_impl(
+        &mut self,
+        sketch: u32,
+        max_iterations: u32,
+        tolerance: f64,
+    ) -> Result<crate::types::GcsSolveDiagnostics, WasmError> {
+        if !(tolerance.is_finite() && tolerance > 0.0) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("tolerance must be positive and finite, got {tolerance}"),
+            });
+        }
+        let sk = self.gcs_sketch_mut(sketch)?;
+
+        // Reverse the handle table so residuals can be keyed by the same
+        // opaque `u32` JS already holds. Later entries win, which matters only
+        // if a table ever aliased — it does not, since handles are append-only.
+        let handle_of: std::collections::HashMap<brepkit_sketch::ConstraintId, u32> = sk
+            .constraints
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| {
+                #[allow(clippy::cast_possible_truncation)]
+                (id, i as u32)
+            })
+            .collect();
+
+        let diag = sk
+            .sys
+            .solve_detailed(max_iterations as usize, tolerance)
+            .map_err(|e| WasmError::InvalidInput {
+                reason: format!("solveDetailed: {e}"),
+            })?;
+
+        // Only caller-added constraints get a handle. Internal ones are
+        // summarised separately by `internal_max_residual`, never mapped onto
+        // a user handle.
+        let constraint_residuals = diag
+            .residuals
+            .iter()
+            .filter(|r| !r.internal)
+            .filter_map(|r| {
+                handle_of.get(&r.constraint).map(|&constraint| {
+                    crate::types::GcsConstraintResidual {
+                        constraint,
+                        max_residual: r.max_abs_residual,
+                    }
+                })
+            })
+            .collect();
+
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(crate::types::GcsSolveDiagnostics {
+            converged: diag.converged,
+            iterations: diag.iterations as u32,
+            max_residual: diag.max_residual,
+            published_max_residual: diag.published_max_residual,
+            dof: diag.dof as u32,
+            rank: diag.rank as u32,
+            num_params: diag.num_params as u32,
+            num_equations: diag.num_equations as u32,
+            constraint_residuals,
+            internal_max_residual: diag.internal_max_residual,
+            rolled_back: diag.rolled_back,
+            redundant: diag.redundant,
+            classification: diag.classification.as_str().to_string(),
+        })
+    }
+
     pub(crate) fn gcs_dof_impl(
         &mut self,
         sketch: u32,
@@ -399,7 +497,7 @@ impl BrepKernel {
     /// Create a new typed GCS sketch. Returns a sketch handle.
     ///
     /// This is the successor to the legacy `sketch*` API: the constraint
-    /// system persists across calls, entities are typed handles, all 19
+    /// system persists across calls, entities are typed handles, all 24
     /// constraint types are available, and constraints can be removed.
     #[wasm_bindgen(js_name = "gcsNew")]
     pub fn gcs_new(&mut self) -> u32 {
@@ -458,7 +556,7 @@ impl BrepKernel {
     /// Add a constraint from a JSON object string and return a constraint
     /// handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
     ///
-    /// All 19 constraint types are supported. Entity fields are `u32`
+    /// All 24 constraint types are supported. Entity fields are `u32`
     /// handles from the `gcsAdd*` calls. Types and fields:
     /// `coincident{a,b}`, `distance{a,b,value}`,
     /// `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -468,7 +566,13 @@ impl BrepKernel {
     /// `tangentLineArc{line,arc,point}`, `tangentArcArc{arc1,arc2,point}`,
     /// `equalRadiusArcArc{arc1,arc2}`, `equalRadiusArcCircle{arc,circle}`,
     /// `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
-    /// `concentricArcCircle{arc,circle}`.
+    /// `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
+    /// `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
+    /// `midpoint{point,line}`, `symmetric{a,b,axis}`.
+    ///
+    /// `circleRadius` takes a **radius**, not a diameter, and requires a
+    /// positive finite value. There is no first-class point-lock constraint:
+    /// compose one from `fixX` + `fixY` on the same point.
     #[wasm_bindgen(js_name = "gcsAddConstraint")]
     pub fn gcs_add_constraint(&mut self, sketch: u32, json: &str) -> Result<u32, JsError> {
         Ok(self.gcs_add_constraint_impl(sketch, json)?)
@@ -519,6 +623,39 @@ impl BrepKernel {
         tolerance: f64,
     ) -> Result<JsValue, JsError> {
         let result = self.gcs_solve_impl(sketch, max_iterations, tolerance)?;
+        Ok(serde_json::to_string(&result)
+            .map_err(|e| JsError::new(&e.to_string()))?
+            .into())
+    }
+
+    /// Solve and report what the attempt actually established, transactionally.
+    ///
+    /// Additive to [`gcs_solve`](Self::gcs_solve), whose behaviour is
+    /// unchanged. Two differences matter:
+    ///
+    /// - **Transactional.** A solve that fails to reach `tolerance` is rolled
+    ///   back: the pre-solve points and radii are restored and `rolledBack` is
+    ///   set. `gcsSolve` still publishes whatever iterate it stopped on.
+    /// - **Measured.** Returns convergence, iteration count, residuals, DOF,
+    ///   rank, parameter and equation counts, a per-constraint residual keyed
+    ///   by the `gcsAddConstraint` handle, and an overall classification.
+    ///
+    /// The classification is one of `solved`, `underConstrained`, `redundant`,
+    /// or `unsatisfied`. `unsatisfied` reports only that the solver did not
+    /// converge — it does **not** single out a conflicting constraint, and a
+    /// large per-constraint residual is evidence, not proof, of where the
+    /// conflict lies. Kernel-internal arc constraints are excluded from
+    /// `constraintResiduals` and summarised by `internalMaxResidual`.
+    ///
+    /// Returns a JSON string (see the `GcsSolveDiagnostics` TypeScript type).
+    #[wasm_bindgen(js_name = "gcsSolveDetailed")]
+    pub fn gcs_solve_detailed(
+        &mut self,
+        sketch: u32,
+        max_iterations: u32,
+        tolerance: f64,
+    ) -> Result<JsValue, JsError> {
+        let result = self.gcs_solve_detailed_impl(sketch, max_iterations, tolerance)?;
         Ok(serde_json::to_string(&result)
             .map_err(|e| JsError::new(&e.to_string()))?
             .into())
@@ -640,7 +777,7 @@ mod tests {
 
     /// Every documented constraint tag parses and adds.
     #[test]
-    fn all_nineteen_constraint_types_parse() {
+    fn all_twenty_four_constraint_types_parse() {
         let mut k = BrepKernel::new();
         let s = k.gcs_new();
         let p0 = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
@@ -650,6 +787,7 @@ mod tests {
         let l0 = k.gcs_add_line_impl(s, p0, p1).unwrap();
         let l1 = k.gcs_add_line_impl(s, p2, p3).unwrap();
         let ci = k.gcs_add_circle_impl(s, p0, 1.0).unwrap();
+        let ci2 = k.gcs_add_circle_impl(s, p3, 2.0).unwrap();
         let a0 = k.gcs_add_arc_impl(s, p0, p1, p2).unwrap();
         let a1 = k.gcs_add_arc_impl(s, p3, p1, p2).unwrap();
 
@@ -673,12 +811,17 @@ mod tests {
             format!(r#"{{"type":"arcLength","arc":{a0},"value":1.5}}"#),
             format!(r#"{{"type":"concentricArcArc","arc1":{a0},"arc2":{a1}}}"#),
             format!(r#"{{"type":"concentricArcCircle","arc":{a0},"circle":{ci}}}"#),
+            format!(r#"{{"type":"circleRadius","circle":{ci},"value":2.0}}"#),
+            format!(r#"{{"type":"equalRadiusCircleCircle","circle1":{ci},"circle2":{ci2}}}"#),
+            format!(r#"{{"type":"equalLength","l1":{l0},"l2":{l1}}}"#),
+            format!(r#"{{"type":"midpoint","point":{p2},"line":{l0}}}"#),
+            format!(r#"{{"type":"symmetric","a":{p0},"b":{p1},"axis":{l1}}}"#),
         ];
         for c in &constraints {
             k.gcs_add_constraint_impl(s, c)
                 .unwrap_or_else(|e| panic!("constraint failed to add: {c}: {e:?}"));
         }
-        assert_eq!(constraints.len(), 19);
+        assert_eq!(constraints.len(), 24);
     }
 
     /// Unknown types and bad handles produce typed errors.
@@ -716,6 +859,426 @@ mod tests {
         assert!(
             (restored[0] - 1.0).abs() < 1e-12 && (restored[1] - 2.0).abs() < 1e-12,
             "restore must roll back GCS point moves, got {restored:?}"
+        );
+    }
+
+    // ── Constraints for selection-first sketching ────────────────────
+
+    /// `circleRadius` drives the radius parameter, and rejects a diameter-like
+    /// misuse only insofar as the value must be positive and finite.
+    #[test]
+    fn circle_radius_constraint_drives_radius() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let circle = k.gcs_add_circle_impl(s, c, 1.0).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"circleRadius","circle":{circle},"value":6.5}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 100, 1e-10).unwrap();
+        assert!(r.converged);
+        let radius = k.gcs_circle_radius_impl(s, circle).unwrap();
+        assert!((radius - 6.5).abs() < 1e-9, "radius = {radius}");
+    }
+
+    /// Non-positive and non-finite radii are refused at the binding boundary.
+    #[test]
+    fn circle_radius_rejects_bad_values() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let circle = k.gcs_add_circle_impl(s, c, 1.0).unwrap();
+        for bad in ["0", "-3.0", "null"] {
+            assert!(
+                k.gcs_add_constraint_impl(
+                    s,
+                    &format!(r#"{{"type":"circleRadius","circle":{circle},"value":{bad}}}"#),
+                )
+                .is_err(),
+                "radius value {bad} must be rejected"
+            );
+        }
+        // JSON cannot carry NaN/Infinity literals, so a caller reaches the
+        // non-finite path through a string; that must be refused too.
+        assert!(
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"circleRadius","circle":{circle},"value":"NaN"}}"#),
+            )
+            .is_err()
+        );
+        // A stale/out-of-range circle handle is refused.
+        assert!(
+            k.gcs_add_constraint_impl(s, r#"{"type":"circleRadius","circle":99,"value":2.0}"#)
+                .is_err()
+        );
+    }
+
+    /// Two circles driven to a common radius through one dimension.
+    #[test]
+    fn equal_radius_circle_circle_solves() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c1 = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let c2 = k.gcs_add_point_impl(s, 30.0, 0.0, true).unwrap();
+        let circ1 = k.gcs_add_circle_impl(s, c1, 2.0).unwrap();
+        let circ2 = k.gcs_add_circle_impl(s, c2, 9.0).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"circleRadius","circle":{circ1},"value":4.0}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"equalRadiusCircleCircle","circle1":{circ1},"circle2":{circ2}}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(r.converged, "{r:?}");
+        assert!((k.gcs_circle_radius_impl(s, circ1).unwrap() - 4.0).abs() < 1e-9);
+        assert!((k.gcs_circle_radius_impl(s, circ2).unwrap() - 4.0).abs() < 1e-9);
+    }
+
+    /// `equalLength` ties a free edge to a pinned one.
+    #[test]
+    fn equal_length_solves() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let a0 = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let a1 = k.gcs_add_point_impl(s, 3.0, 4.0, true).unwrap();
+        let l1 = k.gcs_add_line_impl(s, a0, a1).unwrap();
+        let b0 = k.gcs_add_point_impl(s, 10.0, 0.0, true).unwrap();
+        let b1 = k.gcs_add_point_impl(s, 11.0, 0.0, false).unwrap();
+        let l2 = k.gcs_add_line_impl(s, b0, b1).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"horizontal","line":{l2}}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"equalLength","l1":{l1},"l2":{l2}}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(r.converged, "{r:?}");
+        let p = k.gcs_point_position_impl(s, b1).unwrap();
+        let len = (p[0] - 10.0).hypot(p[1]);
+        assert!((len - 5.0).abs() < 1e-8, "length = {len}");
+    }
+
+    /// `midpoint` centres a point on an edge.
+    #[test]
+    fn midpoint_solves() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let a = k.gcs_add_point_impl(s, -4.0, 2.0, true).unwrap();
+        let b = k.gcs_add_point_impl(s, 10.0, 8.0, true).unwrap();
+        let line = k.gcs_add_line_impl(s, a, b).unwrap();
+        let mid = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"midpoint","point":{mid},"line":{line}}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 100, 1e-10).unwrap();
+        assert!(r.converged, "{r:?}");
+        let p = k.gcs_point_position_impl(s, mid).unwrap();
+        assert!(
+            (p[0] - 3.0).abs() < 1e-9 && (p[1] - 5.0).abs() < 1e-9,
+            "midpoint = {p:?}"
+        );
+    }
+
+    /// `symmetric` mirrors a free point across an axis line.
+    #[test]
+    fn symmetric_solves() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        // Axis x = 2.
+        let ax = k.gcs_add_point_impl(s, 2.0, -1.0, true).unwrap();
+        let bx = k.gcs_add_point_impl(s, 2.0, 5.0, true).unwrap();
+        let axis = k.gcs_add_line_impl(s, ax, bx).unwrap();
+        let p1 = k.gcs_add_point_impl(s, -3.0, 4.0, true).unwrap();
+        let p2 = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"symmetric","a":{p1},"b":{p2},"axis":{axis}}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(r.converged, "{r:?}");
+        let p = k.gcs_point_position_impl(s, p2).unwrap();
+        assert!(
+            (p[0] - 7.0).abs() < 1e-8 && (p[1] - 4.0).abs() < 1e-8,
+            "reflection of (-3,4) about x=2 is (7,4), got {p:?}"
+        );
+    }
+
+    /// A point lock is composed from fixX + fixY rather than a first-class
+    /// constraint, as OpenZCAD is expected to do.
+    #[test]
+    fn point_lock_composes_from_fix_x_and_fix_y() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 5.0, 5.0, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":1.5}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixY","point":{p},"value":-2.5}}"#))
+            .unwrap();
+
+        let d = k.gcs_solve_detailed_impl(s, 100, 1e-10).unwrap();
+        assert!(d.converged);
+        assert_eq!(d.dof, 0, "a locked point has no freedom left");
+        assert_eq!(d.classification, "solved");
+        let pos = k.gcs_point_position_impl(s, p).unwrap();
+        assert!((pos[0] - 1.5).abs() < 1e-9 && (pos[1] + 2.5).abs() < 1e-9);
+    }
+
+    // ── gcsSolveDetailed ─────────────────────────────────────────────
+
+    /// The detailed report classifies an under-constrained sketch truthfully
+    /// and keys each residual to the handle the caller holds.
+    #[test]
+    fn solve_detailed_reports_under_constrained() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let b = k.gcs_add_point_impl(s, 3.0, 0.0, false).unwrap();
+        let cid = k
+            .gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"distance","a":{a},"b":{b},"value":5.0}}"#),
+            )
+            .unwrap();
+
+        let d = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        assert!(d.converged);
+        assert_eq!(d.classification, "underConstrained");
+        assert_eq!(d.dof, 1);
+        assert_eq!(d.num_params, 2);
+        assert_eq!(d.num_equations, 1);
+        assert_eq!(d.rank, 1);
+        assert!(!d.redundant);
+        assert!(!d.rolled_back);
+        assert_eq!(d.constraint_residuals.len(), 1);
+        assert_eq!(
+            d.constraint_residuals[0].constraint, cid,
+            "residual must be keyed by the caller's constraint handle"
+        );
+        assert!(d.constraint_residuals[0].max_residual < 1e-9);
+    }
+
+    /// A consistent duplicate is redundant, not a conflict.
+    #[test]
+    fn solve_detailed_reports_redundant() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 5.0, 7.0, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixY","point":{p},"value":3.0}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+
+        let d = k.gcs_solve_detailed_impl(s, 100, 1e-10).unwrap();
+        assert!(d.converged);
+        assert_eq!(d.classification, "redundant");
+        assert!(d.redundant);
+        assert_eq!(d.rank, 2);
+        assert_eq!(d.num_equations, 3);
+        assert!(!d.rolled_back);
+    }
+
+    /// Contradictory constraints report `unsatisfied` and roll the geometry
+    /// back. No single constraint is named as the conflict.
+    #[test]
+    fn solve_detailed_rolls_back_and_blames_nobody() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
+        let c1 = k
+            .gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        let c2 = k
+            .gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":9.0}}"#))
+            .unwrap();
+
+        let d = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        assert!(!d.converged);
+        assert_eq!(d.classification, "unsatisfied");
+        assert!(d.rolled_back);
+
+        // Geometry is restored exactly — no partially solved coordinates.
+        let pos = k.gcs_point_position_impl(s, p).unwrap();
+        assert!(
+            (pos[0] - 1.25).abs() < 1e-15 && (pos[1] + 4.5).abs() < 1e-15,
+            "rejected solve must not publish moved geometry, got {pos:?}"
+        );
+
+        // Both constraints carry equal residual at the compromise; neither is
+        // singled out.
+        let mut by_handle = std::collections::HashMap::new();
+        for r in &d.constraint_residuals {
+            by_handle.insert(r.constraint, r.max_residual);
+        }
+        assert!((by_handle[&c1] - 3.5).abs() < 1e-6, "{by_handle:?}");
+        assert!((by_handle[&c2] - 3.5).abs() < 1e-6, "{by_handle:?}");
+    }
+
+    /// Internal arc constraints never appear under a caller's handle; they are
+    /// summarised separately.
+    #[test]
+    fn solve_detailed_excludes_internal_arc_constraints() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let a0 = k.gcs_add_point_impl(s, 5.0, 0.0, false).unwrap();
+        let a1 = k.gcs_add_point_impl(s, 0.0, 2.0, false).unwrap();
+        k.gcs_add_arc_impl(s, c, a0, a1).unwrap();
+        let user = k
+            .gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"distance","a":{c},"b":{a0},"value":5.0}}"#),
+            )
+            .unwrap();
+
+        let d = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
+        // Two equations total: the caller's distance plus the internal tie.
+        assert_eq!(d.num_equations, 2);
+        // Only the caller's constraint is attributed.
+        assert_eq!(d.constraint_residuals.len(), 1);
+        assert_eq!(d.constraint_residuals[0].constraint, user);
+        assert!(
+            d.internal_max_residual.is_finite(),
+            "internal residual must be reported separately"
+        );
+    }
+
+    /// Removing a constraint restores DOF and drops it from the report.
+    #[test]
+    fn solve_detailed_tracks_constraint_removal() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        let cid = k
+            .gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixY","point":{p},"value":3.0}}"#))
+            .unwrap();
+
+        let before = k.gcs_solve_detailed_impl(s, 100, 1e-10).unwrap();
+        assert_eq!(before.dof, 0);
+        assert_eq!(before.constraint_residuals.len(), 2);
+
+        k.gcs_remove_constraint_impl(s, cid).unwrap();
+        let after = k.gcs_solve_detailed_impl(s, 100, 1e-10).unwrap();
+        assert_eq!(after.dof, 1);
+        assert_eq!(after.classification, "underConstrained");
+        assert_eq!(after.constraint_residuals.len(), 1);
+        assert!(
+            after
+                .constraint_residuals
+                .iter()
+                .all(|r| r.constraint != cid),
+            "the removed handle must not appear"
+        );
+    }
+
+    /// Repeated detailed solves of an identically built sketch agree exactly.
+    #[test]
+    fn solve_detailed_is_deterministic() {
+        let build = || {
+            let mut k = BrepKernel::new();
+            let s = k.gcs_new();
+            let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+            let b = k.gcs_add_point_impl(s, 3.1, 0.7, false).unwrap();
+            let c = k.gcs_add_point_impl(s, 1.0, 4.2, false).unwrap();
+            let l1 = k.gcs_add_line_impl(s, a, b).unwrap();
+            let l2 = k.gcs_add_line_impl(s, b, c).unwrap();
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"distance","a":{a},"b":{b},"value":5.0}}"#),
+            )
+            .unwrap();
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"perpendicular","l1":{l1},"l2":{l2}}}"#),
+            )
+            .unwrap();
+            k.gcs_add_constraint_impl(
+                s,
+                &format!(r#"{{"type":"equalLength","l1":{l1},"l2":{l2}}}"#),
+            )
+            .unwrap();
+            (k, s, b, c)
+        };
+
+        let (mut k1, s1, b1, c1) = build();
+        let (mut k2, s2, b2, c2) = build();
+        let d1 = k1.gcs_solve_detailed_impl(s1, 300, 1e-10).unwrap();
+        let d2 = k2.gcs_solve_detailed_impl(s2, 300, 1e-10).unwrap();
+
+        assert_eq!(d1.converged, d2.converged);
+        assert_eq!(d1.iterations, d2.iterations);
+        assert_eq!(d1.rank, d2.rank);
+        assert_eq!(d1.dof, d2.dof);
+        assert_eq!(d1.classification, d2.classification);
+        assert!((d1.max_residual - d2.max_residual).abs() < f64::EPSILON);
+        assert_eq!(d1.constraint_residuals.len(), d2.constraint_residuals.len());
+        for (r1, r2) in d1
+            .constraint_residuals
+            .iter()
+            .zip(d2.constraint_residuals.iter())
+        {
+            assert_eq!(r1.constraint, r2.constraint, "handle order must be stable");
+            assert!((r1.max_residual - r2.max_residual).abs() < f64::EPSILON);
+        }
+
+        for (ka, sa, ha, kb, sb, hb) in [(&k1, s1, b1, &k2, s2, b2), (&k1, s1, c1, &k2, s2, c2)] {
+            let pa = ka.gcs_point_position_impl(sa, ha).unwrap();
+            let pb = kb.gcs_point_position_impl(sb, hb).unwrap();
+            assert!(
+                (pa[0] - pb[0]).abs() < f64::EPSILON && (pa[1] - pb[1]).abs() < f64::EPSILON,
+                "solved coordinates must be reproducible: {pa:?} vs {pb:?}"
+            );
+        }
+    }
+
+    /// Bad arguments to the detailed path are rejected the same way.
+    #[test]
+    fn solve_detailed_validates_arguments() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        assert!(k.gcs_solve_detailed_impl(s, 100, 0.0).is_err());
+        assert!(k.gcs_solve_detailed_impl(s, 100, -1e-9).is_err());
+        assert!(k.gcs_solve_detailed_impl(s, 100, f64::NAN).is_err());
+        assert!(k.gcs_solve_detailed_impl(999, 100, 1e-10).is_err());
+    }
+
+    /// `gcsSolve` keeps its old behaviour: it publishes its final iterate and
+    /// does not roll back. Only the new path is transactional.
+    #[test]
+    fn plain_solve_still_publishes_its_final_iterate() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+        let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
+            .unwrap();
+        k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":9.0}}"#))
+            .unwrap();
+
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(!r.converged);
+        let pos = k.gcs_point_position_impl(s, p).unwrap();
+        assert!(
+            (pos[0] - 1.25).abs() > 1e-6,
+            "gcsSolve must keep publishing its last iterate, got {pos:?}"
         );
     }
 }

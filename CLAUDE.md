@@ -265,13 +265,25 @@ Quick reference — find the right file for any task:
 ### L2: sketch (`crates/sketch/src/`)
 | Task | File(s) |
 |------|---------|
-| GCS system (CRUD, solve orchestration) | `gcs/system.rs` |
-| Constraint types (10 variants, Jacobians) | `gcs/constraint.rs` |
+| GCS system (CRUD, solve orchestration, `solve_detailed`) | `gcs/system.rs` |
+| Constraint types (24 variants, Jacobians) | `gcs/constraint.rs` |
 | Entity arena (Points, Lines, Circles) | `gcs/entity.rs` |
 | DogLeg trust-region solver | `gcs/solver.rs` |
 | QR factorization (rank detection) | `gcs/qr.rs` |
 | DOF analysis | `gcs/dof.rs` |
+| Solve diagnostics + classification | `gcs/diagnostics.rs` |
 | Error types | `lib.rs` (`SketchError`) |
+
+Adding a `Constraint` variant requires an arm in `residual_count`,
+`eval_residuals`, and `eval_jacobian` (all `gcs/constraint.rs`), plus
+`validate_constraint` and the four `constraint_references_*` helpers in
+`gcs/system.rs`. All are exhaustive matches, so the compiler flags every
+site. Expose it to JS through `parse_gcs_constraint` in
+`wasm/src/bindings/gcs_sketch.rs`. Every analytic Jacobian needs a
+finite-difference test; `gcs/constraint/tests.rs` carries helpers for both a
+fixed step (`check_jacobian_fd`) and a scale-relative one
+(`check_jacobian_central`) — use the latter when testing at large
+coordinates, where a fixed 1e-7 step loses too much to cancellation.
 
 ### L3: operations (`crates/operations/src/`)
 | Task | File(s) |

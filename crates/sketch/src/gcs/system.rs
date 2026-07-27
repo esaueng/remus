@@ -8,6 +8,7 @@ use super::constraint::{
     Constraint, ConstraintEntry, ConstraintId, EntitySnapshot, JacobianWriter, eval_jacobian,
     eval_residuals, residual_count,
 };
+use super::diagnostics::{ConstraintResidual, SolveDiagnostics, classify as classify_solve};
 use super::dof::{self, DofAnalysis};
 use super::entity::{
     ArcData, ArcId, CircleData, CircleId, GenArena, LineData, LineId, ParamRef, PointData, PointId,
@@ -418,6 +419,122 @@ impl GcsSystem {
         Ok(result)
     }
 
+    /// Solve, then report everything the attempt established — transactionally.
+    ///
+    /// This is [`solve`](Self::solve) plus measurement, with one behavioural
+    /// difference: **an attempt that does not converge is rolled back**. The
+    /// pre-solve coordinates and radii are restored, so a rejected solve never
+    /// leaves half-moved geometry published. A converged solve publishes its
+    /// result exactly as [`solve`](Self::solve) does.
+    ///
+    /// [`solve`](Self::solve) itself is unchanged and still publishes whatever
+    /// iterate it finished on; callers depending on that behaviour keep it.
+    ///
+    /// Residuals are reported per constraint at the solver's final iterate —
+    /// its best attempt, which is where an unsatisfiable constraint stands
+    /// out from the ones the system could satisfy. Kernel-internal
+    /// constraints are flagged as such rather than being attributed to a
+    /// caller's constraint. See [`SolveDiagnostics`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`solve`](Self::solve).
+    pub fn solve_detailed(
+        &mut self,
+        max_iterations: usize,
+        tolerance: f64,
+    ) -> Result<SolveDiagnostics, SketchError> {
+        self.rebuild_if_dirty();
+
+        // Snapshot for rollback before anything is mutated.
+        let before = self.extract_params();
+
+        let result = self.solve(max_iterations, tolerance)?;
+
+        // Measure at the solver's final iterate, *before* any rollback. This
+        // is the informative state: constraints the system can satisfy have
+        // driven their residual to ~0, so whatever residual remains marks
+        // where the system could not reconcile. Measuring after a rollback
+        // would instead report the untouched starting geometry, where every
+        // constraint — satisfiable or not — still reads large.
+        let analysis = self.dof();
+        let (residuals, internal_max_residual) = self.constraint_residuals();
+
+        let rolled_back = !result.converged;
+        let published_max_residual = if rolled_back {
+            self.write_params(&before);
+            let (restored, _) = self.constraint_residuals();
+            fold_max_residual(&restored)
+        } else {
+            fold_max_residual(&residuals)
+        };
+
+        let redundant = analysis.rank < analysis.num_equations;
+
+        Ok(SolveDiagnostics {
+            converged: result.converged,
+            iterations: result.iterations,
+            max_residual: result.max_residual,
+            published_max_residual,
+            dof: analysis.dof,
+            rank: analysis.rank,
+            num_params: analysis.num_params,
+            num_equations: analysis.num_equations,
+            residuals,
+            internal_max_residual,
+            rolled_back,
+            redundant,
+            classification: classify_solve(
+                result.converged,
+                analysis.dof,
+                analysis.rank,
+                analysis.num_equations,
+            ),
+        })
+    }
+
+    /// Whether a constraint was created by the kernel rather than the caller.
+    ///
+    /// [`add_arc`](Self::add_arc) installs an internal constraint tying the
+    /// arc's end point to its start radius. It has no caller-facing handle, so
+    /// diagnostics must not attribute its residual to a user constraint.
+    #[must_use]
+    pub fn is_internal_constraint(&self, id: ConstraintId) -> bool {
+        self.arc_internal_constraints.values().any(|&c| c == id)
+    }
+
+    /// Residual magnitude of every live constraint at the current state,
+    /// plus the largest magnitude over internal constraints alone.
+    ///
+    /// Order follows the constraint arena's slot order, which is stable for a
+    /// given sequence of add/remove calls.
+    fn constraint_residuals(&self) -> (Vec<ConstraintResidual>, f64) {
+        let snap = self.build_snapshot();
+        let internal: std::collections::HashSet<ConstraintId> =
+            self.arc_internal_constraints.values().copied().collect();
+
+        let mut out = Vec::with_capacity(self.constraints.len());
+        let mut internal_max = 0.0_f64;
+        let mut buf = Vec::new();
+
+        for (cid, entry) in self.constraints.iter() {
+            buf.clear();
+            eval_residuals(&entry.constraint, &snap, &mut buf);
+            let max_abs = max_abs_residual(&buf);
+            let is_internal = internal.contains(&cid);
+            if is_internal && (max_abs.is_nan() || max_abs > internal_max) {
+                internal_max = max_abs;
+            }
+            out.push(ConstraintResidual {
+                constraint: cid,
+                max_abs_residual: max_abs,
+                internal: is_internal,
+            });
+        }
+
+        (out, internal_max)
+    }
+
     /// Analyze degrees of freedom in the current system.
     pub fn dof(&mut self) -> DofAnalysis {
         self.rebuild_if_dirty();
@@ -618,6 +735,29 @@ impl GcsSystem {
                 self.check_arc(*arc)?;
                 self.check_circle(*circ)?;
             }
+            Constraint::CircleRadius(circ, value) => {
+                self.check_circle(*circ)?;
+                if !(value.is_finite() && *value > 0.0) {
+                    return Err(SketchError::InvalidValue);
+                }
+            }
+            Constraint::EqualRadiusCircleCircle(c1, c2) => {
+                self.check_circle(*c1)?;
+                self.check_circle(*c2)?;
+            }
+            Constraint::EqualLength(l1, l2) => {
+                self.check_line(*l1)?;
+                self.check_line(*l2)?;
+            }
+            Constraint::Midpoint(pt, line) => {
+                self.check_point(*pt)?;
+                self.check_line(*line)?;
+            }
+            Constraint::Symmetric(p1, p2, axis) => {
+                self.check_point(*p1)?;
+                self.check_point(*p2)?;
+                self.check_line(*axis)?;
+            }
         }
         Ok(())
     }
@@ -653,6 +793,39 @@ impl GcsSystem {
             Err(SketchError::InvalidHandle)
         }
     }
+}
+
+/// Largest per-constraint residual in a report, propagating NaN.
+fn fold_max_residual(residuals: &[ConstraintResidual]) -> f64 {
+    let mut max = 0.0_f64;
+    for r in residuals {
+        if r.max_abs_residual.is_nan() {
+            return f64::NAN;
+        }
+        if r.max_abs_residual > max {
+            max = r.max_abs_residual;
+        }
+    }
+    max
+}
+
+/// Largest absolute value in `values`, propagating NaN rather than dropping it.
+///
+/// `f64::max` returns the non-NaN operand, which would silently turn a poisoned
+/// residual (from a stale handle) into a clean zero. Diagnostics must not lie
+/// about that, so NaN short-circuits.
+fn max_abs_residual(values: &[f64]) -> f64 {
+    let mut max = 0.0_f64;
+    for &v in values {
+        let a = v.abs();
+        if a.is_nan() {
+            return f64::NAN;
+        }
+        if a > max {
+            max = a;
+        }
+    }
+    max
 }
 
 /// Build a snapshot from parameter values (used in solver closures).
@@ -714,6 +887,8 @@ fn constraint_references_point(c: &Constraint, id: PointId) -> bool {
         Constraint::TangentLineArc(_, _, shared) | Constraint::TangentArcArc(_, _, shared) => {
             *shared == id
         }
+        Constraint::Midpoint(pt, _) => *pt == id,
+        Constraint::Symmetric(p1, p2, _) => *p1 == id || *p2 == id,
         Constraint::Horizontal(_)
         | Constraint::Vertical(_)
         | Constraint::Angle(_, _, _)
@@ -723,7 +898,10 @@ fn constraint_references_point(c: &Constraint, id: PointId) -> bool {
         | Constraint::EqualRadiusArcCircle(_, _)
         | Constraint::ArcLength(_, _)
         | Constraint::ConcentricArcArc(_, _)
-        | Constraint::ConcentricArcCircle(_, _) => false,
+        | Constraint::ConcentricArcCircle(_, _)
+        | Constraint::CircleRadius(_, _)
+        | Constraint::EqualRadiusCircleCircle(_, _)
+        | Constraint::EqualLength(_, _) => false,
     }
 }
 
@@ -733,9 +911,11 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
         Constraint::Horizontal(l) | Constraint::Vertical(l) => *l == id,
         Constraint::PointLineDistance(_, l, _) => *l == id,
         Constraint::TangentLineArc(l, _, _) => *l == id,
+        Constraint::Midpoint(_, l) | Constraint::Symmetric(_, _, l) => *l == id,
         Constraint::Angle(l1, l2, _)
         | Constraint::Perpendicular(l1, l2)
-        | Constraint::Parallel(l1, l2) => *l1 == id || *l2 == id,
+        | Constraint::Parallel(l1, l2)
+        | Constraint::EqualLength(l1, l2) => *l1 == id || *l2 == id,
         Constraint::Coincident(_, _)
         | Constraint::Distance(_, _, _)
         | Constraint::FixX(_, _)
@@ -747,7 +927,9 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
         | Constraint::EqualRadiusArcCircle(_, _)
         | Constraint::ArcLength(_, _)
         | Constraint::ConcentricArcArc(_, _)
-        | Constraint::ConcentricArcCircle(_, _) => false,
+        | Constraint::ConcentricArcCircle(_, _)
+        | Constraint::CircleRadius(_, _)
+        | Constraint::EqualRadiusCircleCircle(_, _) => false,
     }
 }
 
@@ -758,6 +940,8 @@ fn constraint_references_circle(c: &Constraint, id: CircleId) -> bool {
         Constraint::EqualRadiusArcCircle(_, circ) | Constraint::ConcentricArcCircle(_, circ) => {
             *circ == id
         }
+        Constraint::CircleRadius(circ, _) => *circ == id,
+        Constraint::EqualRadiusCircleCircle(c1, c2) => *c1 == id || *c2 == id,
         Constraint::Coincident(_, _)
         | Constraint::Distance(_, _, _)
         | Constraint::PointLineDistance(_, _, _)
@@ -773,7 +957,10 @@ fn constraint_references_circle(c: &Constraint, id: CircleId) -> bool {
         | Constraint::TangentArcArc(_, _, _)
         | Constraint::EqualRadiusArcArc(_, _)
         | Constraint::ArcLength(_, _)
-        | Constraint::ConcentricArcArc(_, _) => false,
+        | Constraint::ConcentricArcArc(_, _)
+        | Constraint::EqualLength(_, _)
+        | Constraint::Midpoint(_, _)
+        | Constraint::Symmetric(_, _, _) => false,
     }
 }
 
@@ -798,7 +985,12 @@ fn constraint_references_arc(c: &Constraint, id: ArcId) -> bool {
         | Constraint::Angle(_, _, _)
         | Constraint::Perpendicular(_, _)
         | Constraint::Parallel(_, _)
-        | Constraint::PointOnCircle(_, _) => false,
+        | Constraint::PointOnCircle(_, _)
+        | Constraint::CircleRadius(_, _)
+        | Constraint::EqualRadiusCircleCircle(_, _)
+        | Constraint::EqualLength(_, _)
+        | Constraint::Midpoint(_, _)
+        | Constraint::Symmetric(_, _, _) => false,
     }
 }
 

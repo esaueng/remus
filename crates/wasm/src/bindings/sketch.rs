@@ -320,7 +320,7 @@ impl BrepKernel {
     ///
     /// **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
     /// `gcsAddConstraint`, …), which holds a persistent constraint system,
-    /// supports all 19 constraint types with explicit line entities, and
+    /// supports all 24 constraint types with explicit line entities, and
     /// allows constraint removal. The `sketch*` methods remain for
     /// backward compatibility.
     #[wasm_bindgen(js_name = "sketchNew")]

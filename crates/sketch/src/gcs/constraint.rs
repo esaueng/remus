@@ -88,6 +88,49 @@ pub enum Constraint {
     /// Arc and circle must be concentric. Produces 2 residuals:
     /// `[c_arc.x - c_circ.x, c_arc.y - c_circ.y]`.
     ConcentricArcCircle(ArcId, CircleId),
+
+    /// A circle's radius must equal a target value. Produces 1 residual:
+    /// `radius - target`.
+    ///
+    /// Radius is the kernel unit; callers working in diameter convert at
+    /// their boundary.
+    CircleRadius(CircleId, f64),
+
+    /// Two circles must have equal radii. Produces 1 residual: `r1 - r2`.
+    EqualRadiusCircleCircle(CircleId, CircleId),
+
+    /// Two lines must have equal length. Produces 1 residual:
+    /// `len1 - len2`.
+    ///
+    /// The residual is a length, so it shares the solver tolerance's units.
+    /// A line whose endpoints coincide has an undefined length gradient; that
+    /// line's contribution to the Jacobian is dropped rather than producing
+    /// NaN.
+    EqualLength(LineId, LineId),
+
+    /// A point must lie at the midpoint of a line. Produces 2 residuals:
+    /// `[p.x - (a.x + b.x)/2, p.y - (a.y + b.y)/2]`.
+    ///
+    /// Both residuals are linear in the parameters, so the Jacobian is exact
+    /// and constant.
+    Midpoint(PointId, LineId),
+
+    /// Two points must be symmetric about an axis line. Produces 2 residuals,
+    /// both normalized by the axis length so they carry length units:
+    ///
+    /// 1. `cross(axis_dir, midpoint - axis_p1) / |axis_dir|` — the midpoint of
+    ///    the two points lies *on* the axis.
+    /// 2. `dot(axis_dir, p2 - p1) / |axis_dir|` — the segment joining them is
+    ///    *perpendicular* to the axis.
+    ///
+    /// Together these two conditions are exactly mirror symmetry: they pin the
+    /// reflection of `p1` across the axis to `p2` with no residual freedom, and
+    /// both are rational functions with closed-form derivatives.
+    ///
+    /// A degenerate axis (both defining points coincident) has no well-defined
+    /// direction; the constraint reports zero residual and zero gradient rather
+    /// than dividing by zero, matching [`Constraint::PointLineDistance`].
+    Symmetric(PointId, PointId, LineId),
 }
 
 /// Entity data snapshot used during residual/Jacobian evaluation.
@@ -171,7 +214,9 @@ pub const fn residual_count(c: &Constraint) -> usize {
     match c {
         Constraint::Coincident(_, _)
         | Constraint::ConcentricArcArc(_, _)
-        | Constraint::ConcentricArcCircle(_, _) => 2,
+        | Constraint::ConcentricArcCircle(_, _)
+        | Constraint::Midpoint(_, _)
+        | Constraint::Symmetric(_, _, _) => 2,
         Constraint::Distance(_, _, _)
         | Constraint::PointLineDistance(_, _, _)
         | Constraint::FixX(_, _)
@@ -187,7 +232,30 @@ pub const fn residual_count(c: &Constraint) -> usize {
         | Constraint::TangentArcArc(_, _, _)
         | Constraint::EqualRadiusArcArc(_, _)
         | Constraint::EqualRadiusArcCircle(_, _)
-        | Constraint::ArcLength(_, _) => 1,
+        | Constraint::ArcLength(_, _)
+        | Constraint::CircleRadius(_, _)
+        | Constraint::EqualRadiusCircleCircle(_, _)
+        | Constraint::EqualLength(_, _) => 1,
+    }
+}
+
+/// Length and unit direction of a line, read through a snapshot.
+///
+/// Returns `(len, ux, uy)`. For a line whose endpoints coincide the direction
+/// is undefined; `len` is then zero (or subnormal) and the unit components are
+/// reported as zero so callers can drop the gradient contribution instead of
+/// dividing by zero. Callers must test `len` rather than comparing floats.
+fn line_len_dir(snap: &EntitySnapshot, id: LineId) -> (f64, f64, f64) {
+    let (p1, p2) = snap.line(id);
+    let (x1, y1) = snap.point(p1);
+    let (x2, y2) = snap.point(p2);
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = dx.hypot(dy);
+    if len < 1e-300 {
+        (len, 0.0, 0.0)
+    } else {
+        (len, dx / len, dy / len)
     }
 }
 
@@ -374,6 +442,53 @@ pub fn eval_residuals(c: &Constraint, snap: &EntitySnapshot, out: &mut Vec<f64>)
             let (ccx, ccy) = snap.point(circ_center);
             out.push(acx - ccx);
             out.push(acy - ccy);
+        }
+        Constraint::CircleRadius(circ, target) => {
+            let (_center, radius) = snap.circle(*circ);
+            out.push(radius - target);
+        }
+        Constraint::EqualRadiusCircleCircle(c1, c2) => {
+            let (_center1, r1) = snap.circle(*c1);
+            let (_center2, r2) = snap.circle(*c2);
+            out.push(r1 - r2);
+        }
+        Constraint::EqualLength(l1, l2) => {
+            let (len1, _, _) = line_len_dir(snap, *l1);
+            let (len2, _, _) = line_len_dir(snap, *l2);
+            out.push(len1 - len2);
+        }
+        Constraint::Midpoint(pt, line) => {
+            let (lp1, lp2) = snap.line(*line);
+            let (px, py) = snap.point(*pt);
+            let (ax, ay) = snap.point(lp1);
+            let (bx, by) = snap.point(lp2);
+            out.push(px - 0.5 * (ax + bx));
+            out.push(py - 0.5 * (ay + by));
+        }
+        Constraint::Symmetric(p1, p2, axis) => {
+            let (ap1, ap2) = snap.line(*axis);
+            let (ax, ay) = snap.point(ap1);
+            let (bx, by) = snap.point(ap2);
+            let (x1, y1) = snap.point(*p1);
+            let (x2, y2) = snap.point(*p2);
+            let dx = bx - ax;
+            let dy = by - ay;
+            let len = dx.hypot(dy);
+            if len < 1e-300 {
+                // Degenerate axis: no direction to mirror about.
+                out.push(0.0);
+                out.push(0.0);
+                return;
+            }
+            let inv_l = 1.0 / len;
+            // Midpoint of the pair must lie on the axis.
+            let wx = 0.5 * (x1 + x2) - ax;
+            let wy = 0.5 * (y1 + y2) - ay;
+            out.push((dx * wy - dy * wx) * inv_l);
+            // The segment joining the pair must be perpendicular to the axis.
+            let ex = x2 - x1;
+            let ey = y2 - y1;
+            out.push((dx * ex + dy * ey) * inv_l);
         }
     }
 }
@@ -920,6 +1035,116 @@ pub fn eval_jacobian(
             jw.add(row_offset, ParamRef::PointX(circ_center), -1.0);
             jw.set(row_offset + 1, ParamRef::PointY(arc_center), 1.0);
             jw.add(row_offset + 1, ParamRef::PointY(circ_center), -1.0);
+        }
+        Constraint::CircleRadius(circ, _target) => {
+            // r = radius - target
+            jw.add(row_offset, ParamRef::CircleRadius(*circ), 1.0);
+        }
+        Constraint::EqualRadiusCircleCircle(c1, c2) => {
+            // r = r1 - r2. `add` rather than `set` so a self-referencing
+            // constraint (c1 == c2) correctly cancels to zero.
+            jw.add(row_offset, ParamRef::CircleRadius(*c1), 1.0);
+            jw.add(row_offset, ParamRef::CircleRadius(*c2), -1.0);
+        }
+        Constraint::EqualLength(l1, l2) => {
+            // r = len1 - len2. d(len)/d(endpoint) is the unit direction,
+            // negated at the start point. `line_len_dir` reports a zero
+            // direction for a degenerate line, which drops that line's
+            // gradient contribution instead of dividing by zero.
+            let (l1p1, l1p2) = snap.line(*l1);
+            let (l2p1, l2p2) = snap.line(*l2);
+            let (_, u1x, u1y) = line_len_dir(snap, *l1);
+            let (_, u2x, u2y) = line_len_dir(snap, *l2);
+            jw.add(row_offset, ParamRef::PointX(l1p2), u1x);
+            jw.add(row_offset, ParamRef::PointY(l1p2), u1y);
+            jw.add(row_offset, ParamRef::PointX(l1p1), -u1x);
+            jw.add(row_offset, ParamRef::PointY(l1p1), -u1y);
+            jw.add(row_offset, ParamRef::PointX(l2p2), -u2x);
+            jw.add(row_offset, ParamRef::PointY(l2p2), -u2y);
+            jw.add(row_offset, ParamRef::PointX(l2p1), u2x);
+            jw.add(row_offset, ParamRef::PointY(l2p1), u2y);
+        }
+        Constraint::Midpoint(pt, line) => {
+            // r0 = px - (ax + bx)/2, r1 = py - (ay + by)/2 — linear, so these
+            // partials are exact constants.
+            let (lp1, lp2) = snap.line(*line);
+            jw.add(row_offset, ParamRef::PointX(*pt), 1.0);
+            jw.add(row_offset, ParamRef::PointX(lp1), -0.5);
+            jw.add(row_offset, ParamRef::PointX(lp2), -0.5);
+            jw.add(row_offset + 1, ParamRef::PointY(*pt), 1.0);
+            jw.add(row_offset + 1, ParamRef::PointY(lp1), -0.5);
+            jw.add(row_offset + 1, ParamRef::PointY(lp2), -0.5);
+        }
+        Constraint::Symmetric(p1, p2, axis) => {
+            // r0 = C/L with C = dx*wy - dy*wx, w = midpoint - axis_p1
+            // r1 = D/L with D = dx*ex + dy*ey, e = p2 - p1
+            // d = axis_p2 - axis_p1, L = |d|
+            let (ap1, ap2) = snap.line(*axis);
+            let (ax, ay) = snap.point(ap1);
+            let (bx, by) = snap.point(ap2);
+            let (x1, y1) = snap.point(*p1);
+            let (x2, y2) = snap.point(*p2);
+            let dx = bx - ax;
+            let dy = by - ay;
+            let len = dx.hypot(dy);
+            if len < 1e-300 {
+                // Degenerate axis — residuals are pinned to zero, so is the
+                // gradient.
+                return;
+            }
+            let inv_l = 1.0 / len;
+            let wx = 0.5 * (x1 + x2) - ax;
+            let wy = 0.5 * (y1 + y2) - ay;
+            let ex = x2 - x1;
+            let ey = y2 - y1;
+            let r0 = (dx * wy - dy * wx) * inv_l;
+            let r1 = (dx * ex + dy * ey) * inv_l;
+
+            // ∂L/∂axis endpoints (L is independent of p1/p2).
+            let dl_dax = -dx * inv_l;
+            let dl_day = -dy * inv_l;
+            let dl_dbx = dx * inv_l;
+            let dl_dby = dy * inv_l;
+
+            // Row 0 — midpoint-on-axis.
+            // w depends on p1/p2 through the midpoint (factor 1/2); L does not.
+            jw.add(row_offset, ParamRef::PointX(*p1), -0.5 * dy * inv_l);
+            jw.add(row_offset, ParamRef::PointY(*p1), 0.5 * dx * inv_l);
+            jw.add(row_offset, ParamRef::PointX(*p2), -0.5 * dy * inv_l);
+            jw.add(row_offset, ParamRef::PointY(*p2), 0.5 * dx * inv_l);
+            // Axis endpoints move both C and L; quotient rule via
+            // ∂(C/L)/∂v = (∂C/∂v - r0·∂L/∂v)/L.
+            jw.add(
+                row_offset,
+                ParamRef::PointX(ap1),
+                (-wy + dy - r0 * dl_dax) * inv_l,
+            );
+            jw.add(
+                row_offset,
+                ParamRef::PointY(ap1),
+                (-dx + wx - r0 * dl_day) * inv_l,
+            );
+            jw.add(
+                row_offset,
+                ParamRef::PointX(ap2),
+                (wy - r0 * dl_dbx) * inv_l,
+            );
+            jw.add(
+                row_offset,
+                ParamRef::PointY(ap2),
+                (-wx - r0 * dl_dby) * inv_l,
+            );
+
+            // Row 1 — pair segment perpendicular to the axis.
+            let row1 = row_offset + 1;
+            jw.add(row1, ParamRef::PointX(*p1), -dx * inv_l);
+            jw.add(row1, ParamRef::PointY(*p1), -dy * inv_l);
+            jw.add(row1, ParamRef::PointX(*p2), dx * inv_l);
+            jw.add(row1, ParamRef::PointY(*p2), dy * inv_l);
+            jw.add(row1, ParamRef::PointX(ap1), (-ex - r1 * dl_dax) * inv_l);
+            jw.add(row1, ParamRef::PointY(ap1), (-ey - r1 * dl_day) * inv_l);
+            jw.add(row1, ParamRef::PointX(ap2), (ex - r1 * dl_dbx) * inv_l);
+            jw.add(row1, ParamRef::PointY(ap2), (ey - r1 * dl_dby) * inv_l);
         }
     }
 }
