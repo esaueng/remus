@@ -64,7 +64,23 @@ fn brep_edge_health(topo: &Topology, s: SolidId) -> (usize, usize) {
 }
 
 fn mesh_edge_health(topo: &Topology, s: SolidId) -> (usize, usize) {
-    let mesh = tessellate_solid_with_tolerance(topo, s, 0.01, 0.1).unwrap();
+    mesh_edge_health_at(topo, s, 0.01, 0.1)
+}
+
+/// Mesh health at a chosen tolerance.
+///
+/// Worth sweeping rather than fixing at one setting: a band and its neighbour
+/// wall pick their own chord-deviation sample counts, so whether they happen to
+/// agree depends on the tolerance as much as on the geometry. A bore-mouth
+/// chamfer that leaks 58 boundary edges at (0.02, 0.3) reads perfectly closed
+/// at (0.01, 0.1).
+fn mesh_edge_health_at(
+    topo: &Topology,
+    s: SolidId,
+    deflection: f64,
+    angular: f64,
+) -> (usize, usize) {
+    let mesh = tessellate_solid_with_tolerance(topo, s, deflection, angular).unwrap();
     let q = 1e6;
     let mut canon: HashMap<(i64, i64, i64), u32> = HashMap::new();
     let mut remap = vec![0u32; mesh.positions.len()];
@@ -401,5 +417,172 @@ fn both_rims_chamfered_in_one_call() {
     assert!(
         (vol - want).abs() / want < 1e-6,
         "volume {vol} vs {want} (two chamfers)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Bore mouths: the rim as an INNER wire of the cap.
+//
+// The rebuild above swaps the cap's OUTER wire for the plate contact, which
+// covers a disc rim and an annulus rim. A bore mouth is the other way round:
+// the rim bounds a hole *through* the cap, material lies outside it, and the
+// chamfer widens the hole instead of shrinking the boundary. Those failed with
+// `TrimmingFailure` until the rebuild learned to move whichever single wire the
+// rim forms and carry the rest.
+//
+// They also force the mesh question. The band and the wall sample their shared
+// contact circle from their own surfaces, and here the two contact radii always
+// differ — the plate contact sits a full setback outside the wall — so the
+// sample counts differ too. The result was closed, manifold and
+// `validate_solid`-clean with a mesh full of holes.
+// ---------------------------------------------------------------------------
+
+/// Tolerances the bore-mouth meshes are checked at. One setting proves very
+/// little here: the leak this pins is invisible at (0.01, 0.1) and 58 boundary
+/// edges wide at (0.02, 0.3), which is close to the tessellator's own default.
+const MESH_TOLERANCES: [(f64, f64); 5] = [
+    (0.01, 0.1),
+    (0.02, 0.3),
+    (0.05, 0.3),
+    (0.005, 0.2),
+    (0.1, 0.5),
+];
+
+/// A 20x20x6 plate with an r=3 bore straight through it.
+fn drilled_plate(topo: &mut Topology) -> SolidId {
+    let plate = primitives::make_box(topo, 20.0, 20.0, 6.0).unwrap();
+    let tool = primitives::make_cylinder(topo, 3.0, 20.0).unwrap();
+    brepkit_operations::transform::transform_solid(
+        topo,
+        tool,
+        &brepkit_math::mat::Mat4::translation(10.0, 10.0, -5.0),
+    )
+    .unwrap();
+    brepkit_operations::boolean::boolean(
+        topo,
+        brepkit_operations::boolean::BooleanOp::Cut,
+        plate,
+        tool,
+    )
+    .unwrap()
+}
+
+/// Material removed by a symmetric chamfer of setback `d` at the mouth of a
+/// bore of radius `r`, by Pappus: the right triangle (legs `d`, `d`, area
+/// `d²/2`) revolved about the axis at centroid radius `r + d/3` — plus, not
+/// minus, because the chamfer eats outward into the surrounding plate.
+fn expected_bore_removal(r: f64, d: f64) -> f64 {
+    0.5 * d * d * std::f64::consts::TAU * (r + d / 3.0)
+}
+
+#[test]
+fn bore_mouth_chamfer_is_exact_and_watertight() {
+    for (label, z) in [("bottom", 0.0), ("top", 6.0)] {
+        let mut topo = Topology::new();
+        let drilled = drilled_plate(&mut topo);
+        let before = measure::solid_volume(&topo, drilled, 0.01).unwrap();
+
+        let rim = closed_rims(&topo, drilled)
+            .into_iter()
+            .find(|&e| {
+                let ed = topo.edge(e).unwrap();
+                (topo.vertex(ed.start()).unwrap().point().z() - z).abs() < 1e-9
+            })
+            .expect("a through bore has a rim at each face");
+
+        let d = 0.5;
+        let result = blend_ops::chamfer_v2(&mut topo, drilled, &[rim], d, d).unwrap();
+        assert!(!result.is_partial, "{label}: chamfer must fully succeed");
+
+        let (free, nonmanifold) = brep_edge_health(&topo, result.solid);
+        assert_eq!((free, nonmanifold), (0, 0), "{label}: B-Rep edge health");
+
+        for (deflection, angular) in MESH_TOLERANCES {
+            assert_eq!(
+                mesh_edge_health_at(&topo, result.solid, deflection, angular),
+                (0, 0),
+                "{label}: the chamfered bore must MESH closed at \
+                 (deflection {deflection}, angular {angular}) — the band and \
+                 the wall sample the shared contact circle at different \
+                 resolutions, and no B-Rep gate catches that"
+            );
+        }
+
+        let census = surface_census(&topo, result.solid);
+        assert_eq!(
+            census.get("cone").copied().unwrap_or(0),
+            1,
+            "{label}: a rim chamfer is one cone band"
+        );
+
+        let after = measure::solid_volume(&topo, result.solid, 0.01).unwrap();
+        let expected = expected_bore_removal(3.0, d);
+        assert!(
+            (before - after - expected).abs() < 1e-2,
+            "{label}: expected {expected:.4} removed, got {:.4}",
+            before - after
+        );
+    }
+}
+
+/// Both mouths of the same bore in one call: the second rim's assembly has to
+/// find its boundary on the cap the first one already replaced, and shorten a
+/// wall that has already been shortened at the other end.
+#[test]
+fn both_bore_mouths_chamfered_in_one_call() {
+    let mut topo = Topology::new();
+    let drilled = drilled_plate(&mut topo);
+    let before = measure::solid_volume(&topo, drilled, 0.01).unwrap();
+
+    let rims = closed_rims(&topo, drilled);
+    assert_eq!(rims.len(), 2, "a through bore has two mouths");
+
+    let d = 0.5;
+    let result = blend_ops::chamfer_v2(&mut topo, drilled, &rims, d, d).unwrap();
+    assert!(!result.is_partial);
+    assert_eq!(result.succeeded.len(), 2);
+
+    assert_eq!(brep_edge_health(&topo, result.solid), (0, 0));
+    for (deflection, angular) in MESH_TOLERANCES {
+        assert_eq!(
+            mesh_edge_health_at(&topo, result.solid, deflection, angular),
+            (0, 0),
+            "must mesh closed at (deflection {deflection}, angular {angular})"
+        );
+    }
+    assert_eq!(
+        surface_census(&topo, result.solid)
+            .get("cone")
+            .copied()
+            .unwrap_or(0),
+        2,
+        "one band per mouth"
+    );
+
+    let after = measure::solid_volume(&topo, result.solid, 0.01).unwrap();
+    let expected = 2.0 * expected_bore_removal(3.0, d);
+    assert!(
+        (before - after - expected).abs() < 2e-2,
+        "expected {expected:.4} removed, got {:.4}",
+        before - after
+    );
+}
+
+/// A setback wide enough to swallow the plate's own outer boundary has no
+/// annular rebuild — the widened mouth would have to merge with the outside of
+/// the part. It must be declined, not approximated.
+#[test]
+fn bore_mouth_chamfer_wider_than_the_plate_is_declined() {
+    let mut topo = Topology::new();
+    let drilled = drilled_plate(&mut topo);
+    let rim = closed_rims(&topo, drilled)[0];
+
+    // The plate's nearest wall is 10mm from the bore axis, the bore r=3, so a
+    // 9mm setback puts the plate contact at r=12 — outside the part.
+    let result = blend_ops::chamfer_v2(&mut topo, drilled, &[rim], 9.0, 9.0);
+    assert!(
+        result.is_err(),
+        "a chamfer that outgrows the face must fail, not produce a cap whose \
+         wires cross"
     );
 }

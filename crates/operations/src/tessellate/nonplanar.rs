@@ -102,11 +102,6 @@ pub(super) fn tessellate_revolution_band_shared(
         }
         rims.push(ids);
     }
-    if rims[0].len() != rims[1].len() {
-        return Ok(false);
-    }
-    let n = rims[0].len();
-
     // Sort each rim by angle around the axis so the two rings align by index.
     let angle_of = |gid: u32, merged: &TriangleMesh| project(merged.positions[gid as usize]).0;
     for rim in &mut rims {
@@ -116,6 +111,8 @@ pub(super) fn tessellate_revolution_band_shared(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
+    let equal_counts = rims[0].len() == rims[1].len();
+    let n = rims[0].len();
 
     // Emit default-oriented (non-reversed) triangles: the geometric normal
     // matches the surface outward normal, the convention `tessellate_analytic`
@@ -141,13 +138,30 @@ pub(super) fn tessellate_revolution_band_shared(
         merged.indices.extend_from_slice(&tri);
     };
 
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let (b0, b1) = (rims[0][i], rims[0][j]);
-        let (t0, t1) = (rims[1][i], rims[1][j]);
-        emit(merged, b0, b1, t1);
-        emit(merged, b0, t1, t0);
+    if equal_counts {
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let (b0, b1) = (rims[0][i], rims[0][j]);
+            let (t0, t1) = (rims[1][i], rims[1][j]);
+            emit(merged, b0, b1, t1);
+            emit(merged, b0, t1, t0);
+        }
+        return Ok(true);
     }
+
+    // Rims of different radii get different chord-deviation sample counts, so
+    // they cannot pair index-for-index — a cone band always risks this, and a
+    // chamfer that widens a bore hits it every time (a r3.5 plate contact and
+    // a r3 wall contact sample 30 and 28). Merge them by angle instead, which
+    // still uses only shared-pool vertices, so both neighbours stay crack-free.
+    let with_angles = |rim: &[u32], merged: &TriangleMesh| -> LatRing {
+        rim.iter()
+            .map(|&gid| (angle_of(gid, merged), gid))
+            .collect()
+    };
+    let lo = with_angles(&rims[0], merged);
+    let hi = with_angles(&rims[1], merged);
+    stitch_rings(merged, &lo, &hi, &emit);
 
     Ok(true)
 }
