@@ -95,6 +95,9 @@ struct FaceContainment {
 struct PlanarContainment {
     frame: PlaneFrame,
     polygon: Vec<Point2>,
+    /// Inner-wire outlines, in the same frame as `polygon`. A point strictly
+    /// inside one of these is in a HOLE, so it is not on the face.
+    holes: Vec<Vec<Point2>>,
     margin: f64,
 }
 
@@ -107,40 +110,51 @@ impl FaceContainment {
             return true;
         };
         let p2 = planar.frame.project(pt);
-        point_in_polygon_2d(p2, &planar.polygon)
-            || distance_to_polygon_boundary(p2, &planar.polygon) <= planar.margin
+        let within_outer = point_in_polygon_2d(p2, &planar.polygon)
+            || distance_to_polygon_boundary(p2, &planar.polygon) <= planar.margin;
+        if !within_outer {
+            return false;
+        }
+        // A face with holes is not the disc its outer wire bounds. Without
+        // this, the flange rim's z=10 cap (an annulus r24..45) accepted the
+        // hub bore's seam at r=12 — a point in open space — and paved a
+        // spurious vertex that split the bore seam in two.
+        //
+        // Points ON a hole rim stay accepted: that rim is real face boundary,
+        // and a tool edge genuinely meeting it must still pave. Only the
+        // strict interior, beyond the same sagitta margin the outer test
+        // uses, is rejected.
+        !planar.holes.iter().any(|hole| {
+            point_in_polygon_2d(p2, hole) && distance_to_polygon_boundary(p2, hole) > planar.margin
+        })
     }
 }
 
-/// Sample a face's boundary into an AABB plus, for planar faces, an
-/// in-plane outer-wire polygon for exact containment testing.
-fn build_face_containment(
+/// Sample one wire into an ordered 3D outline, honouring traversal direction
+/// and dropping the duplicate closing vertex.
+///
+/// Returns the outline and the longest chord contributed by a CURVED edge.
+/// Only curved edges contribute to that sagitta margin: a straight Line edge's
+/// sampled chords coincide with the edge exactly (zero sagitta), so it must not
+/// inflate the chord. Basing the margin on a long straight edge would
+/// over-extend a thin face's boundary band (a 123mm-wide × 1mm-tall ramp strip
+/// got a 1.9mm margin, admitting EF crossings well outside it — the 3×3
+/// scoop+label lip-corner fallback).
+fn sample_wire_outline(
     topo: &Topology,
-    fid: FaceId,
+    wire_id: brepkit_topology::wire::WireId,
     tol: Tolerance,
-) -> Result<FaceContainment, AlgoError> {
-    let face = topo.face(fid)?;
-    let surface = face.surface().clone();
-    let outer_wire_id = face.outer_wire();
-
-    let mut all_points = Vec::new();
-    let mut outer_points = Vec::new();
+) -> Result<(Vec<Point3>, f64), AlgoError> {
+    let mut points = Vec::new();
     let mut max_chord = 0.0_f64;
-
-    let outer_wire = topo.wire(outer_wire_id)?;
-    let oriented: Vec<_> = outer_wire.edges().to_vec();
+    let wire = topo.wire(wire_id)?;
+    let oriented: Vec<_> = wire.edges().to_vec();
     let mut prev: Option<Point3> = None;
     for oe in &oriented {
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
         let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
-        // Only curved edges contribute to the sagitta margin: a straight Line
-        // edge's sampled chords coincide with the edge exactly (zero sagitta),
-        // so it must not inflate `max_chord`. Basing the margin on a long
-        // straight edge would over-extend a thin face's boundary band (a
-        // 123mm-wide × 1mm-tall ramp strip got a 1.9mm margin, admitting EF
-        // crossings well outside it — the 3×3 scoop+label lip-corner fallback).
         let is_curved = !matches!(edge.curve(), EdgeCurve::Line);
         let n = N_BOUNDARY_SAMPLES;
         // Sample inclusive of the edge's end vertex (0..=n) so the closing
@@ -160,33 +174,43 @@ fn build_face_containment(
                 }
             }
             prev = Some(pt);
-            outer_points.push(pt);
+            points.push(pt);
         }
     }
     // The last edge's end vertex coincides with the first edge's start
     // vertex on a closed wire; drop the duplicate so the closing polygon
     // segment isn't degenerate.
-    if outer_points.len() >= 2
-        && let (Some(&first), Some(&last)) = (outer_points.first(), outer_points.last())
+    if points.len() >= 2
+        && let (Some(&first), Some(&last)) = (points.first(), points.last())
         && (last - first).length() <= tol.linear
     {
-        outer_points.pop();
+        points.pop();
     }
-    all_points.extend_from_slice(&outer_points);
+    Ok((points, max_chord))
+}
 
+/// Sample a face's boundary into an AABB plus, for planar faces, in-plane
+/// outer-wire and hole polygons for exact containment testing.
+fn build_face_containment(
+    topo: &Topology,
+    fid: FaceId,
+    tol: Tolerance,
+) -> Result<FaceContainment, AlgoError> {
+    let face = topo.face(fid)?;
+    let surface = face.surface().clone();
+
+    let (outer_points, mut max_chord) = sample_wire_outline(topo, face.outer_wire(), tol)?;
+    let mut all_points = outer_points.clone();
+
+    // Hole outlines get the same treatment as the outer wire — they are face
+    // boundary too, and their sagitta feeds the same margin.
+    let mut hole_points: Vec<Vec<Point3>> = Vec::new();
     for &inner_wid in face.inner_wires() {
-        let inner_wire = topo.wire(inner_wid)?;
-        let inner_edges: Vec<_> = inner_wire.edges().to_vec();
-        for oe in &inner_edges {
-            let edge = topo.edge(oe.edge())?;
-            let start_pos = topo.vertex(edge.start())?.point();
-            let end_pos = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
-            let n = N_BOUNDARY_SAMPLES;
-            for i in 0..=n {
-                let t = t0 + (t1 - t0) * (i as f64 / n as f64);
-                all_points.push(edge.curve().evaluate_with_endpoints(t, start_pos, end_pos));
-            }
+        let (pts, chord) = sample_wire_outline(topo, inner_wid, tol)?;
+        max_chord = max_chord.max(chord);
+        all_points.extend_from_slice(&pts);
+        if pts.len() >= 3 {
+            hole_points.push(pts);
         }
     }
 
@@ -211,11 +235,16 @@ fn build_face_containment(
             let margin = (max_chord * 0.5).max(tol.linear * 10.0);
             let frame = PlaneFrame::from_normal_and_point(*normal, outer_points[0]);
             let polygon: Vec<Point2> = outer_points.iter().map(|&p| frame.project(p)).collect();
+            let holes: Vec<Vec<Point2>> = hole_points
+                .iter()
+                .map(|pts| pts.iter().map(|&p| frame.project(p)).collect())
+                .collect();
             return Ok(FaceContainment {
                 bbox: bbox.expanded(margin),
                 planar: Some(PlanarContainment {
                     frame,
                     polygon,
+                    holes,
                     margin,
                 }),
             });
