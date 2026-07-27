@@ -1672,7 +1672,7 @@ export class BrepKernel {
      * Add a constraint from a JSON object string and return a constraint
      * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
      *
-     * All 19 constraint types are supported. Entity fields are `u32`
+     * All 24 constraint types are supported. Entity fields are `u32`
      * handles from the `gcsAdd*` calls. Types and fields:
      * `coincident{a,b}`, `distance{a,b,value}`,
      * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -1682,7 +1682,13 @@ export class BrepKernel {
      * `tangentLineArc{line,arc,point}`, `tangentArcArc{arc1,arc2,point}`,
      * `equalRadiusArcArc{arc1,arc2}`, `equalRadiusArcCircle{arc,circle}`,
      * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
-     * `concentricArcCircle{arc,circle}`.
+     * `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
+     * `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
+     * `midpoint{point,line}`, `symmetric{a,b,axis}`.
+     *
+     * `circleRadius` takes a **radius**, not a diameter, and requires a
+     * positive finite value. There is no first-class point-lock constraint:
+     * compose one from `fixX` + `fixY` on the same point.
      * @param {number} sketch
      * @param {string} json
      * @returns {number}
@@ -1757,7 +1763,7 @@ export class BrepKernel {
      * Create a new typed GCS sketch. Returns a sketch handle.
      *
      * This is the successor to the legacy `sketch*` API: the constraint
-     * system persists across calls, entities are typed handles, all 19
+     * system persists across calls, entities are typed handles, all 24
      * constraint types are available, and constraints can be removed.
      * @returns {number}
      */
@@ -1819,6 +1825,39 @@ export class BrepKernel {
      */
     gcsSolve(sketch, max_iterations, tolerance) {
         const ret = wasm.brepkernel_gcsSolve(this.__wbg_ptr, sketch, max_iterations, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Solve and report what the attempt actually established, transactionally.
+     *
+     * Additive to [`gcs_solve`](Self::gcs_solve), whose behaviour is
+     * unchanged. Two differences matter:
+     *
+     * - **Transactional.** A solve that fails to reach `tolerance` is rolled
+     *   back: the pre-solve points and radii are restored and `rolledBack` is
+     *   set. `gcsSolve` still publishes whatever iterate it stopped on.
+     * - **Measured.** Returns convergence, iteration count, residuals, DOF,
+     *   rank, parameter and equation counts, a per-constraint residual keyed
+     *   by the `gcsAddConstraint` handle, and an overall classification.
+     *
+     * The classification is one of `solved`, `underConstrained`, `redundant`,
+     * or `unsatisfied`. `unsatisfied` reports only that the solver did not
+     * converge — it does **not** single out a conflicting constraint, and a
+     * large per-constraint residual is evidence, not proof, of where the
+     * conflict lies. Kernel-internal arc constraints are excluded from
+     * `constraintResiduals` and summarised by `internalMaxResidual`.
+     *
+     * Returns a JSON string (see the `GcsSolveDiagnostics` TypeScript type).
+     * @param {number} sketch
+     * @param {number} max_iterations
+     * @param {number} tolerance
+     * @returns {any}
+     */
+    gcsSolveDetailed(sketch, max_iterations, tolerance) {
+        const ret = wasm.brepkernel_gcsSolveDetailed(this.__wbg_ptr, sketch, max_iterations, tolerance);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -4636,7 +4675,7 @@ export class BrepKernel {
      *
      * **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
      * `gcsAddConstraint`, …), which holds a persistent constraint system,
-     * supports all 19 constraint types with explicit line entities, and
+     * supports all 24 constraint types with explicit line entities, and
      * allows constraint removal. The `sketch*` methods remain for
      * backward compatibility.
      * @returns {number}
