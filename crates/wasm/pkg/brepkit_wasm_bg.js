@@ -5719,13 +5719,13 @@ export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
 export function __wbg___wbindgen_throw_344f42d3211c4765(arg0, arg1) {
     throw new Error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_error_316990aa90f6d367(arg0, arg1) {
+export function __wbg_error_e07dd184a6ea68d9(arg0, arg1) {
     console.error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_log_00056f7fb97a1270(arg0, arg1) {
+export function __wbg_log_a27d0e78be23f4f0(arg0, arg1) {
     console.log(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_warn_75e489d51dd63657(arg0, arg1) {
+export function __wbg_warn_fab2c6da0dbeb591(arg0, arg1) {
     console.warn(getStringFromWasm0(arg0, arg1));
 }
 export function __wbindgen_cast_0000000000000001(arg0, arg1) {

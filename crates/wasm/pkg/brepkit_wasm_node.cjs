@@ -5733,13 +5733,13 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_error_316990aa90f6d367: function(arg0, arg1) {
+        __wbg_error_e07dd184a6ea68d9: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_log_00056f7fb97a1270: function(arg0, arg1) {
+        __wbg_log_a27d0e78be23f4f0: function(arg0, arg1) {
             console.log(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_warn_75e489d51dd63657: function(arg0, arg1) {
+        __wbg_warn_fab2c6da0dbeb591: function(arg0, arg1) {
             console.warn(getStringFromWasm0(arg0, arg1));
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
