@@ -1193,7 +1193,36 @@ pub fn solid_volume(
             })
         })
     };
+    // Per-face summation is only exact when the faces' own meshes tile the
+    // same closed surface the solid does. That holds for planes and for the
+    // quadrics, which the direct path integrates analytically anyway — but not
+    // for NURBS, whose per-face mesh need not reproduce the trimmed patch the
+    // solid mesh carries. Summing those leaves the integral open: a filleted
+    // L-blank whose blend wall came out NURBS measured 49.1 mm³ removed by the
+    // per-face path against 34.7 from the solid's own (watertight) mesh.
+    //
+    // So when a NURBS face is present, prefer the closed whole-solid mesh —
+    // the same reasoning the scalloped-sphere and torus-notch cases above
+    // already apply. Solids without NURBS keep the existing routing, so the
+    // common bored-solid path costs no extra tessellation.
     if needs_direct_tessellation {
+        let has_nurbs = {
+            let s = topo.solid(solid)?;
+            let sh = topo.shell(s.outer_shell())?;
+            sh.faces().iter().any(|&fid| {
+                topo.face(fid)
+                    .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
+            })
+        };
+        if has_nurbs {
+            let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+            if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
+                let vol = signed_volume_from_mesh(&mesh);
+                if vol > 1e-12 {
+                    return Ok(vol);
+                }
+            }
+        }
         return volume_from_direct_face_tessellation(topo, solid, deflection);
     }
 

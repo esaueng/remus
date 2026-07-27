@@ -11,13 +11,18 @@
 //! The builder now expands each seed to its whole chain, so the stripe spans
 //! the full column and terminates on the real end caps.
 //!
-//! These drive [`FilletBuilder`] directly. `blend_ops::fillet_v2` tries the
-//! v1 rolling-ball rebuild first for planar line blends, and on this shape v1
-//! answers 49.03 from one column and 36.68 from the mirrored one — over-
-//! removing, and depending on which way the topology happens to orient the
-//! column's edges. Going through the public wrapper would measure v1 here, not
-//! the walking engine. (On the real bracket v1 fails outright and the wrapper
-//! falls through to this builder, which is why that case comes out right.)
+//! These drive [`FilletBuilder`] directly, because `blend_ops::fillet_v2`
+//! tries the v1 rolling-ball rebuild first for planar line blends — so going
+//! through the public wrapper would measure v1 here, not the walking engine.
+//! v1 succeeds on this shape but builds the wall as NURBS where the walking
+//! engine emits an exact cylinder, and the two tessellate differently: 36.68
+//! against 34.07, for an exact 33.91. (On the real bracket v1 fails outright
+//! and the wrapper falls through to this builder, which is why that case comes
+//! out right either way.)
+//!
+//! An earlier version of this note claimed v1 over-removed and gave mirrored
+//! columns different answers, 49.03 against 36.68. That was a defect in
+//! `solid_volume`, not in v1 — see `regress_volume_nurbs_faces`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
