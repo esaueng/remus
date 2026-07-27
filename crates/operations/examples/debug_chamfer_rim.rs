@@ -83,6 +83,35 @@ fn solid_edges(topo: &Topology, s: SolidId) -> Vec<brepkit_topology::edge::EdgeI
 fn main() {
     env_logger::init();
 
+    // BARE FILLET CHECK: cylinder rim fillet against the exact closed form.
+    for r in [0.5_f64, 1.5, 3.0] {
+        let mut t = Topology::new();
+        let c = primitives::make_cylinder(&mut t, 45.0, 10.0).unwrap();
+        let es = solid_edges(&t, c);
+        let rim = es
+            .iter()
+            .copied()
+            .find(|&e| {
+                let ed = t.edge(e).unwrap();
+                ed.start() == ed.end()
+            })
+            .unwrap();
+        let before = brepkit_operations::measure::solid_volume(&t, c, 0.002).unwrap();
+        if let Ok(res) = brepkit_operations::blend_ops::fillet_v2(&mut t, c, &[rim], r) {
+            let after = brepkit_operations::measure::solid_volume(&t, res.solid, 0.002).unwrap();
+            let big = 45.0_f64;
+            let area = r * r * (1.0 - std::f64::consts::PI / 4.0);
+            let num = (big - r / 2.0) - (std::f64::consts::PI / 4.0) * (big - r) - r / 3.0;
+            let cen = num / (1.0 - std::f64::consts::PI / 4.0);
+            let want = area * std::f64::consts::TAU * cen;
+            println!(
+                "BARE FILLET r={r}: removed {:.4} vs closed form {want:.4} (err {:.2e})",
+                before - after,
+                ((before - after) - want).abs() / want
+            );
+        }
+    }
+
     for dist in [1.5_f64, 0.5] {
         let mut topo = Topology::new();
         let cyl = primitives::make_cylinder(&mut topo, 45.0, 10.0).unwrap();

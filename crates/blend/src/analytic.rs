@@ -902,9 +902,16 @@ fn plane_is_bounded_disc(
     r_c: f64,
 ) -> Result<bool, BlendError> {
     let face = topo.face(face_plane)?;
-    if !face.inner_wires().is_empty() {
-        return Ok(false);
-    }
+    // Holes are irrelevant to the post-vs-rim question. What decides it is
+    // whether the plane reaches BEYOND the cylinder — a plate a post stands on
+    // — or is bounded by it, and only the OUTER wire can do that; an inner wire
+    // lies inside the outer boundary by definition.
+    //
+    // Bailing on any holed cap made every annular cap read as a plate, so a
+    // washer's own top rim filleted OUTWARD (contact at r_c + r) instead of
+    // rounding inward: the cap grew past the wall it was bounded by, giving a
+    // self-intersecting solid that still reported zero free and zero
+    // non-manifold edges.
     let axis = cyl.axis();
     let o_c = cyl.origin();
     // Radial distance from the cylinder axis to a point: |(p − o_c) − ((p − o_c)·axis)·axis|.

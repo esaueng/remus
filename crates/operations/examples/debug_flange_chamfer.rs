@@ -199,6 +199,278 @@ fn main() {
         }
     }
 
+    // Simplest holed cap: a washer (annulus, ONE inner wire, no bolt holes).
+    {
+        let mut tw = Topology::new();
+        let washer = revolved_annulus(&mut tw, 12.0, 24.0, 0.0, 26.0);
+        let mut tgt = None;
+        let mut seen: Vec<EdgeId> = Vec::new();
+        for fid in solid_faces(&tw, washer).unwrap() {
+            let f = tw.face(fid).unwrap();
+            for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                for oe in tw.wire(wid).unwrap().edges() {
+                    if seen.contains(&oe.edge()) {
+                        continue;
+                    }
+                    seen.push(oe.edge());
+                    let e = tw.edge(oe.edge()).unwrap();
+                    if e.start() != e.end() {
+                        continue;
+                    }
+                    let p = tw.vertex(e.start()).unwrap().point();
+                    if (p.x().hypot(p.y()) - 24.0).abs() < 1e-6 && (p.z() - 26.0).abs() < 1e-6 {
+                        tgt = Some(oe.edge());
+                    }
+                }
+            }
+        }
+        if let Some(g) = tgt {
+            let r = 1.5_f64;
+            let before = brepkit_operations::measure::solid_volume(&tw, washer, 0.002).unwrap();
+            match brepkit_operations::blend_ops::fillet_v2(&mut tw, washer, &[g], r) {
+                Ok(res) => {
+                    let after =
+                        brepkit_operations::measure::solid_volume(&tw, res.solid, 0.002).unwrap();
+                    let area = r * r * (1.0 - std::f64::consts::PI / 4.0);
+                    let num =
+                        (24.0 - r / 2.0) - (std::f64::consts::PI / 4.0) * (24.0 - r) - r / 3.0;
+                    let cen = num / (1.0 - std::f64::consts::PI / 4.0);
+                    let expect = area * std::f64::consts::TAU * cen;
+                    println!(
+                        "  WASHER rim: removed {:.4} vs {expect:.4} (err {:.2e})",
+                        before - after,
+                        ((before - after) - expect).abs() / expect
+                    );
+                }
+                Err(e) => println!("  WASHER rim: ERR {e}"),
+            }
+            // Dump the resulting faces so the geometry can be read directly.
+            let mut tw2 = Topology::new();
+            let w2 = revolved_annulus(&mut tw2, 12.0, 24.0, 0.0, 26.0);
+            let mut g2 = None;
+            let mut sn: Vec<EdgeId> = Vec::new();
+            for fid in solid_faces(&tw2, w2).unwrap() {
+                let f = tw2.face(fid).unwrap();
+                for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                    for oe in tw2.wire(wid).unwrap().edges() {
+                        if sn.contains(&oe.edge()) {
+                            continue;
+                        }
+                        sn.push(oe.edge());
+                        let e = tw2.edge(oe.edge()).unwrap();
+                        if e.start() != e.end() {
+                            continue;
+                        }
+                        let p = tw2.vertex(e.start()).unwrap().point();
+                        if (p.x().hypot(p.y()) - 24.0).abs() < 1e-6 && (p.z() - 26.0).abs() < 1e-6 {
+                            g2 = Some(oe.edge());
+                        }
+                    }
+                }
+            }
+            if let Ok(res) =
+                brepkit_operations::blend_ops::fillet_v2(&mut tw2, w2, &[g2.unwrap()], 1.5)
+            {
+                println!("  --- washer after fillet ---");
+                for fid in solid_faces(&tw2, res.solid).unwrap() {
+                    let f = tw2.face(fid).unwrap();
+                    let extra = match f.surface() {
+                        brepkit_topology::face::FaceSurface::Torus(t) => format!(
+                            " major={:.3} minor={:.3} c=({:.2},{:.2},{:.2})",
+                            t.major_radius(),
+                            t.minor_radius(),
+                            t.center().x(),
+                            t.center().y(),
+                            t.center().z()
+                        ),
+                        brepkit_topology::face::FaceSurface::Cylinder(c) => {
+                            format!(" r={:.3}", c.radius())
+                        }
+                        _ => String::new(),
+                    };
+                    let mut ring = Vec::new();
+                    for wid in
+                        std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied())
+                    {
+                        for oe in tw2.wire(wid).unwrap().edges() {
+                            let e = tw2.edge(oe.edge()).unwrap();
+                            let p = tw2.vertex(e.start()).unwrap().point();
+                            ring.push(format!("({:.2}@z{:.2})", p.x().hypot(p.y()), p.z()));
+                        }
+                    }
+                    println!(
+                        "    {}{} rev={} inner={} [{}]",
+                        f.surface().type_tag(),
+                        extra,
+                        f.is_reversed(),
+                        f.inner_wires().len(),
+                        ring.join(" ")
+                    );
+                }
+            }
+        }
+    }
+
+    // Per-rim fillet volume vs closed form — isolate which rim is off.
+    for (want_r, want_z) in [(45.0_f64, 10.0_f64), (45.0, 0.0), (24.0, 26.0)] {
+        let mut t2 = Topology::new();
+        let b2 = drilled_flange(&mut t2);
+        let mut tgt = None;
+        let mut seen: Vec<EdgeId> = Vec::new();
+        for fid in solid_faces(&t2, b2).unwrap() {
+            let f = t2.face(fid).unwrap();
+            for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                for oe in t2.wire(wid).unwrap().edges() {
+                    if seen.contains(&oe.edge()) {
+                        continue;
+                    }
+                    seen.push(oe.edge());
+                    let e = t2.edge(oe.edge()).unwrap();
+                    if e.start() != e.end() {
+                        continue;
+                    }
+                    let p = t2.vertex(e.start()).unwrap().point();
+                    if (p.x().hypot(p.y()) - want_r).abs() < 1e-6 && (p.z() - want_z).abs() < 1e-6 {
+                        tgt = Some(oe.edge());
+                    }
+                }
+            }
+        }
+        let Some(g) = tgt else { continue };
+        let r = 1.5_f64;
+        let before = brepkit_operations::measure::solid_volume(&t2, b2, 0.002).unwrap();
+        if let Ok(res) = brepkit_operations::blend_ops::fillet_v2(&mut t2, b2, &[g], r) {
+            let after = brepkit_operations::measure::solid_volume(&t2, res.solid, 0.002).unwrap();
+            let area = r * r * (1.0 - std::f64::consts::PI / 4.0);
+            let num = (want_r - r / 2.0) - (std::f64::consts::PI / 4.0) * (want_r - r) - r / 3.0;
+            let cen = num / (1.0 - std::f64::consts::PI / 4.0);
+            let expect = area * std::f64::consts::TAU * cen;
+            println!(
+                "  rim r={want_r} z={want_z}: removed {:.3} vs {expect:.3} (err {:.2e})",
+                before - after,
+                ((before - after) - expect).abs() / expect
+            );
+        }
+    }
+
+    // Fillet convergence + the reaching-a-hole case.
+    {
+        let mut tf = Topology::new();
+        let bf = drilled_flange(&mut tf);
+        let rims: Vec<EdgeId> = {
+            let mut v = Vec::new();
+            let mut seen: Vec<EdgeId> = Vec::new();
+            for fid in solid_faces(&tf, bf).unwrap() {
+                let f = tf.face(fid).unwrap();
+                for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                    for oe in tf.wire(wid).unwrap().edges() {
+                        if seen.contains(&oe.edge()) {
+                            continue;
+                        }
+                        seen.push(oe.edge());
+                        let e = tf.edge(oe.edge()).unwrap();
+                        if e.start() != e.end() {
+                            continue;
+                        }
+                        let p = tf.vertex(e.start()).unwrap().point();
+                        let r = p.x().hypot(p.y());
+                        if (r - 45.0).abs() < 1e-6 || ((r - 24.0).abs() < 1e-6 && p.z() >= 25.5) {
+                            v.push(oe.edge());
+                        }
+                    }
+                }
+            }
+            v
+        };
+        for defl in [0.05, 0.01, 0.002] {
+            let mut t2 = Topology::new();
+            let b2 = drilled_flange(&mut t2);
+            let rr: Vec<EdgeId> = {
+                let mut v = Vec::new();
+                let mut seen: Vec<EdgeId> = Vec::new();
+                for fid in solid_faces(&t2, b2).unwrap() {
+                    let f = t2.face(fid).unwrap();
+                    for wid in
+                        std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied())
+                    {
+                        for oe in t2.wire(wid).unwrap().edges() {
+                            if seen.contains(&oe.edge()) {
+                                continue;
+                            }
+                            seen.push(oe.edge());
+                            let e = t2.edge(oe.edge()).unwrap();
+                            if e.start() != e.end() {
+                                continue;
+                            }
+                            let p = t2.vertex(e.start()).unwrap().point();
+                            let r = p.x().hypot(p.y());
+                            if (r - 45.0).abs() < 1e-6 || ((r - 24.0).abs() < 1e-6 && p.z() >= 25.5)
+                            {
+                                v.push(oe.edge());
+                            }
+                        }
+                    }
+                }
+                v
+            };
+            let before = brepkit_operations::measure::solid_volume(&t2, b2, defl).unwrap();
+            if let Ok(res) = brepkit_operations::blend_ops::fillet_v2(&mut t2, b2, &rr, 1.5) {
+                let after =
+                    brepkit_operations::measure::solid_volume(&t2, res.solid, defl).unwrap();
+                println!(
+                    "  fillet defl={defl}: removed {:.3} (analytic 342.81)",
+                    before - after
+                );
+            }
+        }
+        // Radius that reaches the bolt circle.
+        let top = rims
+            .iter()
+            .copied()
+            .find(|&e| {
+                let p = tf.vertex(tf.edge(e).unwrap().start()).unwrap().point();
+                (p.x().hypot(p.y()) - 45.0).abs() < 1e-6 && (p.z() - 10.0).abs() < 1e-6
+            })
+            .unwrap();
+        let mut t3 = Topology::new();
+        let b3 = drilled_flange(&mut t3);
+        let rr: Vec<EdgeId> = solid_faces(&t3, b3)
+            .unwrap()
+            .into_iter()
+            .flat_map(|fid| {
+                let f = t3.face(fid).unwrap();
+                let mut v = Vec::new();
+                for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                    for oe in t3.wire(wid).unwrap().edges() {
+                        let e = t3.edge(oe.edge()).unwrap();
+                        if e.start() != e.end() {
+                            continue;
+                        }
+                        let p = t3.vertex(e.start()).unwrap().point();
+                        if (p.x().hypot(p.y()) - 45.0).abs() < 1e-6 && (p.z() - 10.0).abs() < 1e-6 {
+                            v.push(oe.edge());
+                        }
+                    }
+                }
+                v
+            })
+            .collect();
+        let _ = top;
+        let vb = brepkit_operations::measure::solid_volume(&t3, b3, 0.05).unwrap();
+        match brepkit_operations::blend_ops::fillet_v2(&mut t3, b3, &rr[..1], 10.0) {
+            Ok(res) => {
+                let va = brepkit_operations::measure::solid_volume(&t3, res.solid, 0.05).unwrap();
+                let mut cen = std::collections::BTreeMap::new();
+                for fid in solid_faces(&t3, res.solid).unwrap() {
+                    *cen.entry(t3.face(fid).unwrap().surface().type_tag())
+                        .or_insert(0) += 1;
+                }
+                println!("  fillet r=10 (reaches bolts): OK vol {vb:.1} -> {va:.1} {cen:?}");
+            }
+            Err(e) => println!("  fillet r=10 (reaches bolts): ERR {e}"),
+        }
+    }
+
     // One at a time, so a single failure does not hide the others.
     for &e in &picked {
         let ed = t.edge(e).unwrap();
@@ -235,6 +507,36 @@ fn main() {
         match brepkit_operations::blend_ops::chamfer_v2(&mut t2, b2, &[tg], 1.5, 1.5) {
             Ok(r) => println!("  {label}: chamfer OK failed={}", r.failed.len()),
             Err(err) => println!("  {label}: chamfer ERR {err}"),
+        }
+        // Same rim, FILLET — does it hit the bare-disc gate too?
+        let mut t3 = Topology::new();
+        let b3 = drilled_flange(&mut t3);
+        let mut tgt3 = None;
+        let mut seen3: Vec<EdgeId> = Vec::new();
+        for fid in solid_faces(&t3, b3).unwrap() {
+            let f = t3.face(fid).unwrap();
+            for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                for oe in t3.wire(wid).unwrap().edges() {
+                    if seen3.contains(&oe.edge()) {
+                        continue;
+                    }
+                    seen3.push(oe.edge());
+                    let e3 = t3.edge(oe.edge()).unwrap();
+                    let p = t3.vertex(e3.start()).unwrap().point();
+                    if e3.start() == e3.end()
+                        && (p.x().hypot(p.y()) - a.x().hypot(a.y())).abs() < 1e-6
+                        && (p.z() - a.z()).abs() < 1e-6
+                    {
+                        tgt3 = Some(oe.edge());
+                    }
+                }
+            }
+        }
+        if let Some(g3) = tgt3 {
+            match brepkit_operations::blend_ops::fillet_v2(&mut t3, b3, &[g3], 1.5) {
+                Ok(r) => println!("  {label}: fillet  OK failed={}", r.failed.len()),
+                Err(err) => println!("  {label}: fillet  ERR {err}"),
+            }
         }
     }
 }
