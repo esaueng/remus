@@ -309,6 +309,10 @@ fn planar_chamfer_result(
         is_partial: false,
     };
     validate_complete_blend(topo, "chamfer", solid, &result)?;
+    // The fast path gets the same volume guard as the walking path. Closedness
+    // and manifoldness alone do not prove a bevel is right: a setback that
+    // overruns its face folds the polygon through itself and still validates.
+    validate_blend_volume(topo, "chamfer", solid, result_solid, edges, d1.max(d2))?;
     Ok(result)
 }
 

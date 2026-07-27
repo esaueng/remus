@@ -14,6 +14,7 @@
 
 use brepkit_check::validate::{ValidateOptions, validate_solid};
 use brepkit_operations::blend_ops::{chamfer_v2, fillet_v2};
+use brepkit_operations::chamfer::chamfer;
 use brepkit_operations::measure::solid_volume;
 use brepkit_operations::primitives::{make_box, make_cylinder};
 use brepkit_topology::Topology;
@@ -84,57 +85,112 @@ fn oversized_fillet_radius_leaves_box_intact() {
     );
 }
 
-/// An out-of-range chamfer currently *succeeds* (see the ignored test below),
-/// so this asserts the weaker guarantee that still has to hold either way:
-/// the blend writes its result into a new solid and never edits the input.
+/// A setback larger than the part is rejected, and the box is untouched.
 #[test]
-fn oversized_chamfer_does_not_mutate_input() {
+fn oversized_chamfer_leaves_box_intact() {
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let edges = solid_edges(&topo, solid).unwrap();
     let target: Vec<EdgeId> = edges[..1].to_vec();
 
-    let before = fingerprint(&topo, solid);
-    let _ = chamfer_v2(&mut topo, solid, &target, 40.0, 40.0);
-    let after = fingerprint(&topo, solid);
-
-    assert_eq!(
-        before, after,
-        "a blend must leave the input solid alone whether it succeeds or fails"
-    );
+    assert_failure_leaves_input_intact("chamfer 40x40 on a 10mm box", &mut topo, solid, |t, s| {
+        chamfer_v2(t, s, &target, 40.0, 40.0).is_err()
+    });
 }
 
 /// A chamfer removes material. It cannot make a part bigger.
 ///
-/// Ignored: this is a live defect in the blend engine, recorded here as a
-/// ready-to-run repro rather than left undocumented. `chamfer_v2` with 40 mm
-/// setbacks on a 10 mm box — setbacks four times the edge length, so the
-/// chamfer plane misses the part entirely — returns `is_partial = false`,
-/// `failed = []`, and a solid that passes `validate_solid`, yet whose volume
-/// has grown from 1000 mm³ to ~2333 mm³.
+/// Regression for the defect this file originally recorded as an ignored
+/// repro: `chamfer_v2` with 40 mm setbacks on a 10 mm box — four times the
+/// edge length, so the bevel overran the faces it was cutting — used to
+/// return `is_partial = false`, `failed = []`, and a solid that passed
+/// `validate_solid`, yet whose volume had *grown* from 1000 mm³ to
+/// ~2333 mm³. Closed and manifold, and completely wrong.
 ///
-/// The failure mode is the one the release checklist calls out: a modifier
-/// returning a confident success value instead of a typed error. A caller
-/// has no signal that the result is nonsense. Un-ignore once the engine
-/// range-checks setbacks against the edge it is blending.
+/// The engine now range-checks each setback against the wire edge it slides
+/// along, so this is refused outright.
 #[test]
-#[ignore = "known defect: out-of-range chamfer returns a valid-looking larger solid instead of an error"]
-fn out_of_range_chamfer_must_not_grow_the_solid() {
+fn out_of_range_chamfer_is_rejected_not_silently_wrong() {
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let edges = solid_edges(&topo, solid).unwrap();
-    let before = solid_volume(&topo, solid, DEFLECTION).unwrap();
 
-    match chamfer_v2(&mut topo, solid, &edges[..1], 40.0, 40.0) {
-        // Rejecting it outright is the correct outcome.
-        Err(_) => {}
-        Ok(result) => {
-            let after = solid_volume(&topo, result.solid, DEFLECTION).unwrap();
-            assert!(
-                after < before,
-                "a chamfer may only remove material: {before} mm³ -> {after} mm³"
-            );
-        }
+    let msg = match chamfer_v2(&mut topo, solid, &edges[..1], 40.0, 40.0) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a 40mm setback on a 10mm box must be refused"),
+    };
+    assert!(
+        msg.contains("does not fit"),
+        "the error should name the real problem, got: {msg}"
+    );
+
+    // And nothing was published: the box is exactly as it was.
+    let after = solid_volume(&topo, solid, DEFLECTION).unwrap();
+    assert!(
+        (after - 1000.0).abs() < 1e-9,
+        "input volume must be untouched, got {after}"
+    );
+}
+
+/// The accepted range still works, and removes exactly the right material.
+///
+/// A symmetric chamfer of one edge of a cube cuts a triangular prism:
+/// `½·d²·length`. Anything else means the bevel landed in the wrong place.
+/// The largest legal setback is the full edge length, where the chamfer
+/// consumes the adjacent face entirely — that boundary is excluded.
+#[test]
+fn in_range_chamfer_removes_the_exact_prism() {
+    for d in [0.1_f64, 1.0, 5.0, 9.99] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+
+        let result = chamfer_v2(&mut topo, solid, &edges[..1], d, d)
+            .unwrap_or_else(|e| panic!("d={d} is within range but was refused: {e}"));
+        let after = solid_volume(&topo, result.solid, DEFLECTION).unwrap();
+        let expected = 1000.0 - 0.5 * d * d * 10.0;
+        assert!(
+            (after - expected).abs() < 1e-6,
+            "d={d}: expected {expected} mm³, got {after} mm³"
+        );
+    }
+
+    // Exactly the edge length is degenerate — the bevel would eat the whole
+    // adjacent face — so it is refused rather than producing a sliver.
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edges = solid_edges(&topo, solid).unwrap();
+    assert!(
+        chamfer_v2(&mut topo, solid, &edges[..1], 10.0, 10.0).is_err(),
+        "a setback equal to the edge length is degenerate and must be refused"
+    );
+}
+
+/// An oversized setback is caught whichever face carries it — `d1` fitting
+/// must not excuse `d2` overrunning, and the *fit* check must be what fires,
+/// not some downstream symptom.
+///
+/// Note this only exercises the rejection path: a well-sized asymmetric
+/// chamfer (`d1 != d2`) is separately unsupported on the planar builder,
+/// which emits an open shell and is refused by the postcondition check. That
+/// predates this guard — verified against the untouched baseline — and is a
+/// fail-closed limitation rather than a wrong answer, so it is out of scope
+/// here.
+#[test]
+fn oversized_setback_is_caught_on_either_face() {
+    for (d1, d2) in [(1.0_f64, 40.0_f64), (40.0, 1.0)] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+
+        let msg = match chamfer_v2(&mut topo, solid, &edges[..1], d1, d2) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("d1={d1}, d2={d2}: an oversized setback must be refused"),
+        };
+        assert!(
+            msg.contains("does not fit"),
+            "d1={d1}, d2={d2}: the fit check should fire, got: {msg}"
+        );
     }
 }
 
@@ -204,4 +260,50 @@ fn count_analytic_faces(topo: &Topology, solid: SolidId) -> usize {
         .into_iter()
         .filter(|&f| topo.face(f).is_ok_and(|face| face.surface().is_analytic()))
         .count()
+}
+
+/// Chamfers on neighbouring edges eat into each other. Once two of them
+/// consume a shared edge entirely, the bevel between them inverts.
+///
+/// This is the same defect as `out_of_range_chamfer_is_rejected_not_silently_wrong`
+/// reached from the other direction, and it survived the first fix: with
+/// *every* edge chamfered there is no un-chamfered edge left to overrun, so a
+/// check that only looked at untouched edges saw nothing wrong. The raw
+/// flat-bevel engine returned a 10 mm box as a 425,666 mm³ solid.
+///
+/// The geometric limit for chamfering all edges of a cube is `d < L/2`: two
+/// bevels approach each other from the ends of every 10 mm edge.
+#[test]
+fn overlapping_chamfers_on_every_edge_are_rejected() {
+    // Comfortably inside the limit: still works, still removes material.
+    for d in [1.0_f64, 4.0] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+        let result = chamfer(&mut topo, solid, &edges, d)
+            .unwrap_or_else(|e| panic!("d={d} is within the limit but was refused: {e}"));
+        let volume = solid_volume(&topo, result, DEFLECTION).unwrap();
+        assert!(
+            volume < 1000.0 && volume > 0.0,
+            "d={d}: a chamfer must remove material, got {volume} mm³"
+        );
+    }
+
+    // At and beyond the limit the bevels collide and must be refused.
+    for d in [5.0_f64, 6.0, 40.0] {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edges = solid_edges(&topo, solid).unwrap();
+        let msg = match chamfer(&mut topo, solid, &edges, d) {
+            Err(e) => e.to_string(),
+            Ok(r) => {
+                let volume = solid_volume(&topo, r, DEFLECTION).unwrap();
+                panic!("d={d} makes the bevels collide but was accepted, volume {volume} mm³");
+            }
+        };
+        assert!(
+            msg.contains("does not fit"),
+            "d={d}: the fit check should fire, got: {msg}"
+        );
+    }
 }

@@ -231,6 +231,18 @@ fn chamfer_core(
         }
     }
 
+    // A setback larger than the face it slides across produces an inverted
+    // polygon, not a chamfer. Reject before touching the arena so the caller
+    // gets a precise error instead of a plausible-looking wrong solid.
+    SetbackCheck {
+        edge_to_faces: &edge_to_faces,
+        target_set: &target_set,
+        distances: &distances,
+        vertex_chamfer_endpoints: &vertex_chamfer_endpoints,
+        vertex_max_distance: &vertex_max_distance,
+    }
+    .run(&shell_face_ids, &face_polygons, tol)?;
+
     let mut chamfer_data: HashMap<usize, ChamferEdgeData> = HashMap::new();
     let mut result_specs: Vec<FaceSpec> = Vec::new();
 
@@ -619,6 +631,181 @@ struct FacePolygon {
     normal: Vec3,
 }
 
+/// How far a face vertex slides along each of its two incident wire edges.
+///
+/// Mirrors the offsetting arms in [`chamfer_core`] one-for-one, so the check
+/// stays true to what the builder will actually do.
+#[derive(Debug, Clone, Copy, Default)]
+struct VertexSlide {
+    /// Distance travelled toward the previous vertex, i.e. consumed from the
+    /// wire edge entering this vertex.
+    toward_prev: f64,
+    /// Distance travelled toward the next vertex, i.e. consumed from the wire
+    /// edge leaving this vertex.
+    toward_next: f64,
+}
+
+/// Shared lookups for the setback fit check.
+struct SetbackCheck<'a> {
+    edge_to_faces: &'a HashMap<usize, Vec<FaceId>>,
+    target_set: &'a HashSet<usize>,
+    distances: &'a ChamferDistances,
+    vertex_chamfer_endpoints: &'a HashSet<usize>,
+    vertex_max_distance: &'a HashMap<usize, f64>,
+}
+
+impl SetbackCheck<'_> {
+    /// How far vertex `i` of `poly` slides along its incident wire edges.
+    fn vertex_slide(&self, poly: &FacePolygon, i: usize, face_id: FaceId) -> VertexSlide {
+        let n = poly.positions.len();
+        let prev_i = if i == 0 { n - 1 } else { i - 1 };
+
+        let before_chamfered = self
+            .target_set
+            .contains(&poly.wire_edge_ids[prev_i].index());
+        let after_chamfered = self.target_set.contains(&poly.wire_edge_ids[i].index());
+        let at_endpoint = self
+            .vertex_chamfer_endpoints
+            .contains(&poly.vertex_ids[i].index());
+
+        match (before_chamfered, after_chamfered, at_endpoint) {
+            // Untouched vertex.
+            (false, false, false) => VertexSlide::default(),
+            // Side-face corner: splits into two points, one along each edge.
+            (false, false, true) => {
+                let d = self
+                    .vertex_max_distance
+                    .get(&poly.vertex_ids[i].index())
+                    .copied()
+                    .unwrap_or_else(|| self.distances.max_distance());
+                VertexSlide {
+                    toward_prev: d,
+                    toward_next: d,
+                }
+            }
+            // Only the entering edge is chamfered: slides toward the next vertex.
+            (true, false, _) => VertexSlide {
+                toward_prev: 0.0,
+                toward_next: self.distances.distance_for(
+                    poly.wire_edge_ids[prev_i].index(),
+                    face_id,
+                    self.edge_to_faces,
+                ),
+            },
+            // Only the leaving edge is chamfered: slides toward the previous vertex.
+            (false, true, _) => VertexSlide {
+                toward_prev: self.distances.distance_for(
+                    poly.wire_edge_ids[i].index(),
+                    face_id,
+                    self.edge_to_faces,
+                ),
+                toward_next: 0.0,
+            },
+            // Both adjacent edges chamfered: the vertex moves inward to where
+            // the two trim lines meet. That point still displaces along both
+            // incident edges, and by more than the setback once the corner is
+            // acute — so the displacement is computed exactly rather than
+            // approximated by the distances themselves.
+            (true, true, _) => {
+                let next_i = (i + 1) % n;
+                let dist_after = self.distances.distance_for(
+                    poly.wire_edge_ids[i].index(),
+                    face_id,
+                    self.edge_to_faces,
+                );
+                let dist_before = self.distances.distance_for(
+                    poly.wire_edge_ids[prev_i].index(),
+                    face_id,
+                    self.edge_to_faces,
+                );
+
+                let pos = poly.positions[i];
+                let (Ok(u), Ok(v)) = (
+                    (pos - poly.positions[prev_i]).normalize(),
+                    (poly.positions[next_i] - pos).normalize(),
+                ) else {
+                    return VertexSlide::default();
+                };
+
+                // The trim lines are offset from each incident edge by its own
+                // setback; their intersection sits `d/sin` along each edge,
+                // skewed by how far the corner is from square.
+                let cos_phi = u.dot(v);
+                let sin_phi = u.cross(v).length();
+                if sin_phi < 1e-9 {
+                    // Collinear edges: the builder falls back to a midpoint
+                    // average, which does not slide along either edge.
+                    return VertexSlide::default();
+                }
+
+                VertexSlide {
+                    toward_prev: (dist_before.mul_add(cos_phi, -dist_after) / sin_phi).abs(),
+                    toward_next: (dist_after.mul_add(cos_phi, -dist_before) / sin_phi).abs(),
+                }
+            }
+        }
+    }
+
+    /// Reject setbacks that do not fit on the faces they slide across.
+    ///
+    /// Each chamfered edge pushes its neighbouring face vertices along the
+    /// wire edges that meet it. If the two ends of one wire edge together
+    /// travel at least its whole length, the rebuilt polygon folds through
+    /// itself: the result is still a closed, manifold, "valid" solid, but it
+    /// is not a chamfer — on a 10 mm box a 40 mm setback came back *larger*
+    /// than the input. Catch it here, before the arena is touched, where the
+    /// offending distance and the length it overran can both be named.
+    fn run(
+        &self,
+        shell_face_ids: &[FaceId],
+        face_polygons: &HashMap<usize, FacePolygon>,
+        tol: Tolerance,
+    ) -> Result<(), crate::OperationsError> {
+        // Walk shell order so the reported edge never depends on hash order.
+        for &face_id in shell_face_ids {
+            let Some(poly) = face_polygons.get(&face_id.index()) else {
+                continue;
+            };
+            let n = poly.positions.len();
+            if n < 3 {
+                continue;
+            }
+
+            let slides: Vec<VertexSlide> = (0..n)
+                .map(|i| self.vertex_slide(poly, i, face_id))
+                .collect();
+
+            // Every wire edge is checked, chamfered ones included. A chamfered
+            // edge is replaced by its bevel, but the bevel still spans what is
+            // left of the original edge after both endpoints have moved; when
+            // neighbouring chamfers eat it from both ends the bevel inverts.
+            // Endpoints of a chamfered edge only slide along it when the
+            // *adjacent* edge is chamfered too, so a lone chamfer scores zero
+            // here and is never wrongly refused.
+            for i in 0..n {
+                let next_i = (i + 1) % n;
+                let length = (poly.positions[next_i] - poly.positions[i]).length();
+                let consumed = slides[i].toward_next + slides[next_i].toward_prev;
+
+                // Scale the guard with the edge so it means the same thing on
+                // a 0.1 mm feature and a 1 m one.
+                let slack = tol.linear * length.max(1.0);
+                if consumed + slack >= length {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "chamfer setback does not fit: {consumed:.6} of material must be \
+                             taken from an edge only {length:.6} long. Reduce the chamfer \
+                             distance below {length:.6}."
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Chamfer point data collected during polygon rebuilding.
 ///
 /// Maps `(face_index, vertex_index)` → chamfer point position.
@@ -670,7 +857,7 @@ fn record_chamfer_point(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, deprecated)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, deprecated)]
 mod tests {
     use brepkit_topology::test_utils::make_unit_cube_manifold;
     use brepkit_topology::validation::validate_shell_manifold;
@@ -962,5 +1149,52 @@ mod tests {
 
         let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], 0.2, -0.1);
         assert!(result.is_err(), "negative d2 should fail");
+    }
+
+    /// A setback wider than the face it cuts across is refused outright
+    /// rather than folding the polygon through itself.
+    ///
+    /// On the unit cube every wire edge is 1 long, so any setback at or above
+    /// 1 overruns. This is the unit-level guard behind the
+    /// `regress_failed_blend_leaves_input_intact` regression, where an
+    /// oversized chamfer used to come back as a *larger* solid that still
+    /// passed `validate_solid`.
+    #[test]
+    fn chamfer_setback_wider_than_the_face_is_refused() {
+        for d in [1.0, 1.5, 4.0] {
+            let mut topo = Topology::new();
+            let cube = make_unit_cube_manifold(&mut topo);
+            let edges = solid_edge_ids(&topo, cube);
+
+            let result = chamfer(&mut topo, cube, &[edges[0]], d);
+            match result {
+                Err(e) => assert!(
+                    e.to_string().contains("does not fit"),
+                    "d={d} should be refused by the fit check, got: {e}"
+                ),
+                Ok(_) => panic!("d={d} overruns a unit face and must be refused"),
+            }
+        }
+    }
+
+    /// The guard must not narrow the working range: setbacks that do fit are
+    /// still accepted and still remove exactly the right prism.
+    #[test]
+    fn chamfer_setback_that_fits_is_still_accepted() {
+        for d in [0.05, 0.25, 0.49] {
+            let mut topo = Topology::new();
+            let cube = make_unit_cube_manifold(&mut topo);
+            let edges = solid_edge_ids(&topo, cube);
+
+            let result = chamfer(&mut topo, cube, &[edges[0]], d)
+                .unwrap_or_else(|e| panic!("d={d} fits on a unit face but was refused: {e}"));
+            let volume = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+            // One edge of a unit cube: a triangular prism of 0.5*d*d*1.
+            let expected = 1.0 - 0.5 * d * d;
+            assert!(
+                (volume - expected).abs() < 1e-9,
+                "d={d}: expected {expected}, got {volume}"
+            );
+        }
     }
 }
