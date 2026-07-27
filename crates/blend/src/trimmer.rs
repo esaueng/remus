@@ -104,6 +104,7 @@ pub fn trim_face(
     let surface = face.surface().clone();
     let reversed = face.is_reversed();
     let outer_wire_id = face.outer_wire();
+    let inner_wire_ids: Vec<WireId> = face.inner_wires().to_vec();
 
     let outer_wire = topo.wire(outer_wire_id)?;
     let oriented_edges: Vec<OrientedEdge> = outer_wire.edges().to_vec();
@@ -307,11 +308,65 @@ pub fn trim_face(
     let mut loop_edges = kept_chain;
     loop_edges.push(OrientedEdge::new(contact_edge_id, contact_forward));
 
-    let trimmed_wire =
-        Wire::new(loop_edges, true).map_err(|_| BlendError::TrimmingFailure { face: face_id })?;
+    let trimmed_wire = Wire::new(loop_edges.clone(), true)
+        .map_err(|_| BlendError::TrimmingFailure { face: face_id })?;
     let trimmed_wire_id = topo.add_wire(trimmed_wire);
 
-    let mut trimmed_face = Face::new(trimmed_wire_id, Vec::new(), surface);
+    // Carry over the holes that fall on the side we kept. Handing the new
+    // face an empty inner-wire list silently filled every hole in: trimming a
+    // face that a bore passes through dropped the bore's boundary, so its
+    // cylindrical wall lost one of its two faces, the shell opened, and the
+    // volume grew by the bore. Holes on the discarded side are gone with it.
+    let kept_inner: Vec<WireId> = {
+        // Signed side of the contact line, in the face's local 2D frame.
+        let side_of = |p: Point3| -> f64 {
+            let (px, py) = project(p);
+            (line_b.0 - line_a.0) * (py - line_a.1) - (line_b.1 - line_a.1) * (px - line_a.0)
+        };
+
+        // Which side survived? Read it off a kept-boundary vertex that sits
+        // clearly off the contact line.
+        let mut kept_sign = 0.0_f64;
+        'sign: for oe in &loop_edges {
+            if oe.edge() == contact_edge_id {
+                continue;
+            }
+            let edge = topo.edge(oe.edge())?;
+            for vid in [edge.start(), edge.end()] {
+                let s = side_of(topo.vertex(vid)?.point());
+                if s.abs() > PARAM_TOL {
+                    kept_sign = s;
+                    break 'sign;
+                }
+            }
+        }
+
+        let mut kept = Vec::new();
+        for &wid in &inner_wire_ids {
+            if kept_sign == 0.0 {
+                // Undecidable (degenerate kept chain) — keeping the hole is
+                // the conservative choice; dropping it opens the shell.
+                kept.push(wid);
+                continue;
+            }
+            let wire = topo.wire(wid)?;
+            let mut sum = 0.0_f64;
+            let mut count = 0_u32;
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge())?;
+                for vid in [edge.start(), edge.end()] {
+                    sum += side_of(topo.vertex(vid)?.point());
+                    count += 1;
+                }
+            }
+            if count > 0 && sum / f64::from(count) * kept_sign > 0.0 {
+                kept.push(wid);
+            }
+        }
+        kept
+    };
+
+    let mut trimmed_face = Face::new(trimmed_wire_id, kept_inner, surface);
     if reversed {
         trimmed_face.set_reversed(true);
     }

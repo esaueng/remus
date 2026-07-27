@@ -194,3 +194,115 @@ pub fn expand_g1_chain(
     result.sort_unstable_by_key(|e| e.index());
     Ok(result)
 }
+
+/// Group seed edges into G1 chains, each ordered head-to-tail.
+///
+/// [`expand_g1_chain`] answers "which edges belong to the ridgeline", but
+/// returns them as an index-sorted set covering every seed at once. A blend
+/// spine needs something stronger: one entry per ridgeline, with the edges in
+/// traversal order, so arc length accumulates monotonically along the chain.
+///
+/// Seeds that land on the same ridgeline collapse into a single chain. A
+/// chain that is not a simple path (a branch point, which G1 face-pair
+/// matching should already exclude) is returned in its expansion order rather
+/// than dropped, leaving the caller's existing behaviour intact.
+///
+/// # Errors
+///
+/// Returns [`crate::BlendError::Topology`] if any topology lookup fails.
+pub fn g1_chains(
+    topo: &Topology,
+    solid: SolidId,
+    seed_edges: &[EdgeId],
+    tol: Tolerance,
+) -> Result<Vec<Vec<EdgeId>>, crate::BlendError> {
+    let mut claimed: HashSet<usize> = HashSet::new();
+    let mut chains: Vec<Vec<EdgeId>> = Vec::new();
+
+    for &seed in seed_edges {
+        if claimed.contains(&seed.index()) {
+            continue;
+        }
+        let members = expand_g1_chain(topo, solid, &[seed], tol)?;
+        // An edge that belongs to no face of this solid expands to nothing.
+        // Keep it as its own chain so the caller still has something to
+        // attribute the resulting failure to, rather than silently dropping
+        // the request.
+        let members = if members.is_empty() {
+            vec![seed]
+        } else {
+            members
+        };
+        for member in &members {
+            claimed.insert(member.index());
+        }
+        chains.push(order_chain(topo, members)?);
+    }
+
+    Ok(chains)
+}
+
+/// Order a set of connected edges head-to-tail.
+///
+/// Walks from a free end (a vertex touched by exactly one edge of the set);
+/// a closed loop has no free end, so the lowest-indexed vertex starts it.
+/// Returns the input order unchanged if the set does not form a simple path.
+fn order_chain(topo: &Topology, edges: Vec<EdgeId>) -> Result<Vec<EdgeId>, crate::BlendError> {
+    if edges.len() <= 1 {
+        return Ok(edges);
+    }
+
+    let mut incident: HashMap<usize, Vec<EdgeId>> = HashMap::new();
+    let mut vertices: HashMap<usize, brepkit_topology::vertex::VertexId> = HashMap::new();
+    for &eid in &edges {
+        let edge = topo.edge(eid)?;
+        for vid in [edge.start(), edge.end()] {
+            incident.entry(vid.index()).or_default().push(eid);
+            vertices.insert(vid.index(), vid);
+        }
+    }
+    for list in incident.values_mut() {
+        list.sort_unstable_by_key(|e: &EdgeId| e.index());
+    }
+
+    // Prefer a free end so an open chain runs end to end; fall back to the
+    // lowest vertex index for a closed loop. `min()` keeps this deterministic.
+    let start_index = incident
+        .iter()
+        .filter(|(_, list)| list.len() == 1)
+        .map(|(index, _)| *index)
+        .min()
+        .or_else(|| incident.keys().copied().min());
+    let Some(start_index) = start_index else {
+        return Ok(edges);
+    };
+    let Some(&start_vertex) = vertices.get(&start_index) else {
+        return Ok(edges);
+    };
+
+    let mut ordered: Vec<EdgeId> = Vec::with_capacity(edges.len());
+    let mut used: HashSet<usize> = HashSet::new();
+    let mut current = start_vertex;
+    while ordered.len() < edges.len() {
+        let Some(candidates) = incident.get(&current.index()) else {
+            break;
+        };
+        let Some(&next) = candidates.iter().find(|eid| !used.contains(&eid.index())) else {
+            break;
+        };
+        used.insert(next.index());
+        ordered.push(next);
+        let edge = topo.edge(next)?;
+        current = if edge.start() == current {
+            edge.end()
+        } else {
+            edge.start()
+        };
+    }
+
+    if ordered.len() == edges.len() {
+        Ok(ordered)
+    } else {
+        Ok(edges)
+    }
+}

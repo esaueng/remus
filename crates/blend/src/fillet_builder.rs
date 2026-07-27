@@ -22,6 +22,7 @@ use crate::builder_utils::{
     FlippedNormalSurface, create_blend_face, sample_nurbs_endpoints, surface_ref_or_adapter,
 };
 use crate::corner;
+use crate::g1_chain;
 use crate::radius_law::RadiusLaw;
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
@@ -74,7 +75,7 @@ impl<'a> FilletBuilder<'a> {
     ///
     /// 1. Build adjacency index for the solid.
     /// 2. For each target edge, find the two adjacent faces.
-    /// 3. Build single-edge spines (no G1 chain propagation in v1).
+    /// 3. Expand each edge set into G1 ridgeline chains and build a spine per chain.
     /// 4. Compute stripes via analytic fast path or walking engine.
     /// 5. Trim adjacent faces along contact curves.
     /// 6. Assemble new solid from trimmed faces, blend faces, and untouched
@@ -87,17 +88,15 @@ impl<'a> FilletBuilder<'a> {
     /// [`BlendResult::failed`] rather than aborting the whole operation.
     #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<BlendResult, BlendError> {
-        // Expand edge sets: keep actual RadiusLaw references via indices.
-        let mut all_edges: Vec<(EdgeId, usize)> = Vec::new();
+        // Keep each edge set beside its RadiusLaw via a shared index.
+        let mut seeds_by_law: Vec<Vec<EdgeId>> = Vec::with_capacity(self.edge_sets.len());
         let mut laws: Vec<RadiusLaw> = Vec::with_capacity(self.edge_sets.len());
-        for (law_idx, (edges, law)) in self.edge_sets.into_iter().enumerate() {
-            for eid in edges {
-                all_edges.push((eid, law_idx));
-            }
+        for (edges, law) in self.edge_sets {
+            seeds_by_law.push(edges);
             laws.push(law);
         }
 
-        if all_edges.is_empty() {
+        if seeds_by_law.iter().all(Vec::is_empty) {
             return Err(BlendError::Topology(
                 brepkit_topology::TopologyError::Empty {
                     entity: "fillet edge set",
@@ -121,17 +120,58 @@ impl<'a> FilletBuilder<'a> {
         let mut failed: Vec<(EdgeId, BlendError)> = Vec::new();
         let mut stripe_results: Vec<StripeResult> = Vec::new();
 
-        for &(edge_id, law_idx) in &all_edges {
-            let result = compute_stripe_for_edge(topo, &adjacency, edge_id, &laws[law_idx]);
-            match result {
+        // Blend whole G1 ridgelines, not the individual edges the caller
+        // happened to name. A tangent-continuous run that is split into
+        // several edges — a corner column interrupted where a wall seats into
+        // a plate, say — cannot be filleted piecewise: a stripe covering only
+        // part of it has to run out in the middle of a smooth edge, where
+        // there is no cap face to close against. Expanding to the chain gives
+        // the stripe real ends. This matches the v1 rolling-ball engine, which
+        // has always called `expand_g1_chain`.
+        let tol = brepkit_math::tolerance::Tolerance::new();
+        let mut chain_work: Vec<(Vec<EdgeId>, usize)> = Vec::new();
+        for (law_idx, seeds) in seeds_by_law.iter().enumerate() {
+            if seeds.is_empty() {
+                continue;
+            }
+            for chain in g1_chain::g1_chains(topo, self.solid, seeds, tol)? {
+                chain_work.push((chain, law_idx));
+            }
+        }
+
+        for (chain, law_idx) in &chain_work {
+            // Report against the edges the caller asked for, not the ones the
+            // chain expansion pulled in.
+            let requested: Vec<EdgeId> = chain
+                .iter()
+                .copied()
+                .filter(|eid| seeds_by_law[*law_idx].contains(eid))
+                .collect();
+            let report_edge = requested
+                .first()
+                .copied()
+                .or_else(|| chain.first().copied());
+
+            let spine = match Spine::from_chain(topo, chain.clone()) {
+                Ok(spine) => spine,
+                Err(e) => {
+                    if let Some(edge) = report_edge {
+                        failed.push((edge, e));
+                    }
+                    continue;
+                }
+            };
+            match compute_stripe_for_spine(topo, &adjacency, spine, &laws[*law_idx]) {
                 Ok(sr) => {
                     touched_faces.insert(sr.stripe.face1);
                     touched_faces.insert(sr.stripe.face2);
                     stripe_results.push(sr);
-                    succeeded.push(edge_id);
+                    succeeded.extend(requested.iter().copied());
                 }
                 Err(e) => {
-                    failed.push((edge_id, e));
+                    if let Some(edge) = report_edge {
+                        failed.push((edge, e));
+                    }
                 }
             }
         }
@@ -385,7 +425,7 @@ fn make_end_arc(
 #[allow(clippy::too_many_arguments)]
 fn stitch_end(
     topo: &mut Topology,
-    spine_edge: EdgeId,
+    spine_edges: &[EdgeId],
     v_id: VertexId,
     arc: EdgeId,
     arc_blend_from: VertexId,
@@ -407,7 +447,7 @@ fn stitch_end(
         let oes = wire.edges();
         if oes
             .iter()
-            .any(|oe| oe.edge() == spine_edge || oe.edge() == arc)
+            .any(|oe| spine_edges.contains(&oe.edge()) || oe.edge() == arc)
         {
             continue;
         }
@@ -452,7 +492,7 @@ fn stitch_end(
         let oes = wire.edges();
         if oes
             .iter()
-            .any(|oe| oe.edge() == spine_edge || oe.edge() == arc)
+            .any(|oe| spine_edges.contains(&oe.edge()) || oe.edge() == arc)
         {
             continue;
         }
@@ -529,17 +569,49 @@ fn stitch_planar_blend(
     tr2: &trimmer::TrimResult,
     face_replacements: &std::collections::HashMap<FaceId, FaceId>,
 ) -> Result<Option<Vec<FaceId>>, BlendError> {
+    // A straight run: every edge on the chain is a line, and the chain is an
+    // open path so it has two free ends to close against. A single edge is
+    // the degenerate case of this.
     let spine_edges = stripe.spine.edges();
-    if spine_edges.len() != 1 {
+    if spine_edges.is_empty() {
         return Ok(None);
     }
-    let spine_edge = spine_edges[0];
-    let (v0, v1) = {
-        let e = topo.edge(spine_edge)?;
+    let mut ends: std::collections::HashMap<VertexId, usize> = std::collections::HashMap::new();
+    for &eid in spine_edges {
+        let e = topo.edge(eid)?;
         if e.start() == e.end() || !matches!(e.curve(), EdgeCurve::Line) {
             return Ok(None);
         }
-        (e.start(), e.end())
+        *ends.entry(e.start()).or_insert(0) += 1;
+        *ends.entry(e.end()).or_insert(0) += 1;
+    }
+    if ends.values().filter(|count| **count == 1).count() != 2 {
+        // A closed ridgeline has no free end; that is the closed-rim path.
+        return Ok(None);
+    }
+    // Take the ends from the ordered chain rather than from the incidence
+    // map, whose iteration order is not stable — `v0`/`v1` set the spine
+    // direction, and flipping it between runs would flip the end arcs with it.
+    let first = topo.edge(spine_edges[0])?;
+    let (v0, v1) = if spine_edges.len() == 1 {
+        (first.start(), first.end())
+    } else {
+        let second = topo.edge(spine_edges[1])?;
+        let joins_second = [second.start(), second.end()];
+        let v0 = if joins_second.contains(&first.start()) {
+            first.end()
+        } else {
+            first.start()
+        };
+        let last = topo.edge(spine_edges[spine_edges.len() - 1])?;
+        let prev = topo.edge(spine_edges[spine_edges.len() - 2])?;
+        let joins_prev = [prev.start(), prev.end()];
+        let v1 = if joins_prev.contains(&last.start()) {
+            last.end()
+        } else {
+            last.start()
+        };
+        (v0, v1)
     };
     let (Some(ce1), Some(ce2)) = (tr1.contact_edge, tr2.contact_edge) else {
         return Ok(None);
@@ -725,7 +797,14 @@ fn stitch_planar_blend(
     ];
     for &(v_end, arc, arc_from, cap_normal, k) in &ends {
         if let Some(patch) = stitch_end(
-            topo, spine_edge, v_end, arc, arc_from, c1[k], c2[k], cap_normal,
+            topo,
+            spine_edges,
+            v_end,
+            arc,
+            arc_from,
+            c1[k],
+            c2[k],
+            cap_normal,
         )? {
             faces.push(patch);
         }
@@ -1102,12 +1181,19 @@ fn torus_band_needs_reversal(
 /// Returns [`BlendError`] if the edge is non-manifold, if topology lookups
 /// fail, or if neither the analytic nor walking path can produce a result.
 #[allow(clippy::too_many_lines)]
-fn compute_stripe_for_edge(
+fn compute_stripe_for_spine(
     topo: &Topology,
     adjacency: &brepkit_topology::adjacency::AdjacencyIndex,
-    edge_id: EdgeId,
+    spine: Spine,
     law: &RadiusLaw,
 ) -> Result<StripeResult, BlendError> {
+    // Every edge on a G1 chain shares one face pair (that is what makes it a
+    // ridgeline), so the first edge speaks for the whole spine.
+    let edge_id = spine.edges().first().copied().ok_or(BlendError::Topology(
+        brepkit_topology::TopologyError::Empty {
+            entity: "fillet spine",
+        },
+    ))?;
     let adj_faces = adjacency.faces_for_edge(edge_id);
     if adj_faces.len() != 2 {
         // Non-manifold (3+ faces) or boundary (0-1 faces) edge cannot be filleted.
@@ -1130,8 +1216,6 @@ fn compute_stripe_for_edge(
     let face2_data = topo.face(face2)?;
     let surf2 = face2_data.surface().clone();
     let face2_reversed = face2_data.is_reversed();
-
-    let spine = Spine::from_single_edge(topo, edge_id)?;
 
     // Get radius at the spine midpoint for the analytic path.
     let radius = law.evaluate(0.5);
