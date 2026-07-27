@@ -231,6 +231,68 @@ pub fn try_fillet(
     Ok(solid_id)
 }
 
+/// Chamfer edges, falling back to the v2 walking engine when the v1 flat-bevel
+/// engine cannot handle the geometry.
+///
+/// v1 is tried FIRST so every case it already handles keeps its exact current
+/// behaviour — this is purely additive, turning errors into successes rather
+/// than moving work between engines. v1 is planar-only and errors out on a
+/// curved neighbour (a cylinder rim reports "cannot normalize zero vector"),
+/// which is what left the OpenZCAD flange demo unable to chamfer its rim once
+/// the booleans went analytic and started handing it real circles.
+///
+/// Note `blend_ops::chamfer_v2` itself routes planar-line edge sets back to the
+/// same v1 code, so the fallback only ever adds the builder path.
+///
+/// # Errors
+///
+/// Returns the v2 engine's error if both engines fail. Unlike `try_fillet`,
+/// failure is NOT reported by returning the input handle: a chamfer that
+/// silently does nothing while reporting success is the no-op trap, and the
+/// caller (and its user) is better served by the error.
+pub fn try_chamfer(
+    topo: &mut brepkit_topology::Topology,
+    solid_id: brepkit_topology::solid::SolidId,
+    edge_ids: &[brepkit_topology::edge::EdgeId],
+    distance: f64,
+) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
+    let is_valid =
+        |topo: &brepkit_topology::Topology, s: brepkit_topology::solid::SolidId| -> bool {
+            topo.solid(s)
+                .and_then(|sd| topo.shell(sd.outer_shell()))
+                .map(|sh| brepkit_topology::validation::validate_shell_closed(sh, topo).is_ok())
+                .unwrap_or(false)
+        };
+
+    // Both engines mutate the shared arena in place, so a rejected attempt
+    // leaves the input partly chamfered. Snapshot once and roll back after a
+    // rejected attempt so the next engine starts clean — the same discipline
+    // `try_fillet` uses, and for the same reason (a "failed" blend otherwise
+    // ships a corrupted body).
+    let snapshot = topo.clone();
+
+    if let Ok(s) = brepkit_operations::chamfer::chamfer(topo, solid_id, edge_ids, distance)
+        && is_valid(topo, s)
+    {
+        return Ok(s);
+    }
+    topo.restore_preserving_handle_slots(&snapshot);
+
+    match brepkit_operations::blend_ops::chamfer_v2(topo, solid_id, edge_ids, distance, distance) {
+        Ok(r) if is_valid(topo, r.solid) => Ok(r.solid),
+        Ok(_) => {
+            topo.restore_preserving_handle_slots(&snapshot);
+            Err(brepkit_operations::OperationsError::InvalidInput {
+                reason: "chamfer produced an open shell".into(),
+            })
+        }
+        Err(e) => {
+            topo.restore_preserving_handle_slots(&snapshot);
+            Err(e)
+        }
+    }
+}
+
 /// Extract a human-readable message from a `catch_unwind` panic payload.
 pub fn panic_message(payload: &Box<dyn std::any::Any + Send>, operation: &str) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {

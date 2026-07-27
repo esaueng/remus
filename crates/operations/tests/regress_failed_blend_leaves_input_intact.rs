@@ -219,15 +219,54 @@ fn rejected_arguments_leave_box_intact() {
     });
 }
 
-/// A chamfer on a cylinder's closed rim is rejected by design. The cylinder
-/// must survive that rejection unchanged — including its analytic surfaces,
-/// which a partial trim would have replaced.
+/// A chamfer that the engine cannot build must leave the cylinder unchanged —
+/// including its analytic surfaces, which a partial trim would have replaced.
+///
+/// This used to target a closed rim, which was rejected outright by
+/// `reject_closed_edges`. Closed rims are now built by the annular assembler,
+/// so the invariant is exercised on the cylinder's SEAM line instead: a seam is
+/// not a blendable convex edge, both engines still fail it, and the failure
+/// runs deeper than an argument check — the stripe is attempted and abandoned,
+/// which is exactly the path that could corrupt the arena.
 #[test]
-fn rejected_closed_rim_chamfer_leaves_cylinder_intact() {
+fn failed_seam_chamfer_leaves_cylinder_intact() {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
 
-    // Either rim will do — both are closed circular edges.
+    let seam = solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&e| {
+            topo.edge(e)
+                .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+        })
+        .expect("cylinder must have a seam line");
+
+    let before_analytic = count_analytic_faces(&topo, solid);
+
+    assert_failure_leaves_input_intact(
+        "chamfer on a cylinder seam line",
+        &mut topo,
+        solid,
+        |t, s| chamfer_v2(t, s, &[seam], 0.4, 0.4).is_err(),
+    );
+
+    assert_eq!(
+        count_analytic_faces(&topo, solid),
+        before_analytic,
+        "a rejected chamfer must not degrade analytic surfaces to NURBS"
+    );
+}
+
+/// The counterpart to the above: a closed rim is now BUILT, not rejected, and
+/// the result must keep every analytic surface (wall, caps) plus gain an exact
+/// conical band. A NURBS band here would mean the annular assembler was
+/// bypassed for the walker.
+#[test]
+fn closed_rim_chamfer_keeps_surfaces_analytic() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+
     let rim = solid_edges(&topo, solid)
         .unwrap()
         .into_iter()
@@ -238,18 +277,11 @@ fn rejected_closed_rim_chamfer_leaves_cylinder_intact() {
         .expect("cylinder must have a circular rim");
 
     let before_analytic = count_analytic_faces(&topo, solid);
-
-    assert_failure_leaves_input_intact(
-        "chamfer on a closed cylinder rim",
-        &mut topo,
-        solid,
-        |t, s| chamfer_v2(t, s, &[rim], 0.4, 0.4).is_err(),
-    );
-
+    let result = chamfer_v2(&mut topo, solid, &[rim], 0.4, 0.4).expect("closed rim must chamfer");
     assert_eq!(
-        count_analytic_faces(&topo, solid),
-        before_analytic,
-        "a rejected chamfer must not degrade analytic surfaces to NURBS"
+        count_analytic_faces(&topo, result.solid),
+        before_analytic + 1,
+        "the band must be analytic too, so every face stays exact"
     );
 }
 

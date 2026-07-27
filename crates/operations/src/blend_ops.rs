@@ -275,25 +275,6 @@ fn is_planar_line_blend(
 
     Ok(true)
 }
-
-fn reject_closed_edges(
-    topo: &Topology,
-    edges: &[EdgeId],
-    operation: &'static str,
-) -> Result<(), OperationsError> {
-    for &edge_id in edges {
-        let edge = topo.edge(edge_id)?;
-        if edge.start() == edge.end() {
-            return Err(OperationsError::InvalidInput {
-                reason: format!(
-                    "closed-edge {operation} assembly is not yet supported; refusing to return an invalid solid"
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 fn planar_chamfer_result(
     topo: &mut Topology,
     solid: SolidId,
@@ -401,7 +382,6 @@ pub fn chamfer_v2(
             reason: "no edges specified".into(),
         });
     }
-    reject_closed_edges(topo, edges, "chamfer")?;
     if is_planar_line_blend(topo, solid, edges)? {
         return transactional(topo, |t| planar_chamfer_result(t, solid, edges, d1, d2));
     }
@@ -442,7 +422,6 @@ pub fn chamfer_distance_angle(
             reason: "no edges specified".into(),
         });
     }
-    reject_closed_edges(topo, edges, "chamfer")?;
     let d2 = distance * angle.tan();
     if is_planar_line_blend(topo, solid, edges)? {
         return transactional(topo, |t| {

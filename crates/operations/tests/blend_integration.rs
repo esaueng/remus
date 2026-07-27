@@ -141,21 +141,41 @@ fn bottom_circle_edge(topo: &Topology, solid: brepkit_topology::solid::SolidId) 
         .expect("primitive must have a bottom circle edge")
 }
 
-fn assert_closed_edge_rejected(
-    result: Result<brepkit_blend::BlendResult, brepkit_operations::OperationsError>,
+/// Strict validation for a closed-rim chamfer.
+///
+/// `expected_cones` counts every conical face in the result, not just the band:
+/// a chamfered cylinder has one (the band), a chamfered cone has two (its own
+/// wall plus the band).
+fn assert_valid_closed_chamfer(
+    topo: &Topology,
+    result: &brepkit_blend::BlendResult,
+    expected_cones: usize,
 ) {
-    let error = match result {
-        Ok(_) => panic!("closed-edge operation must fail closed"),
-        Err(error) => error,
-    };
-    let message = error.to_string();
-    assert!(
-        message.contains("closed-edge"),
-        "unexpected error: {message}"
-    );
-    assert!(
-        message.contains("invalid solid"),
-        "error must explain the safety postcondition: {message}"
+    assert!(!result.is_partial);
+    assert_eq!(result.succeeded.len(), 1);
+    assert!(result.failed.is_empty());
+
+    let report = brepkit_check::validate::validate_solid(
+        topo,
+        result.solid,
+        &brepkit_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(report.is_valid(), "{:#?}", report.issues);
+
+    let cone_count = solid_faces(topo, result.solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face_id| {
+            matches!(
+                topo.face(face_id).unwrap().surface(),
+                brepkit_topology::face::FaceSurface::Cone(_)
+            )
+        })
+        .count();
+    assert_eq!(
+        cone_count, expected_cones,
+        "closed-rim chamfer must add one exact conical band (not a NURBS approximation)"
     );
 }
 
@@ -205,18 +225,28 @@ fn fillet_cone_closed_rim_is_valid() {
     assert_valid_closed_fillet(&topo, &result);
 }
 
+/// Closed circular chamfers use the rim assembler ported from the fillet
+/// builder and must pass the same strict validation as the fillet pair above.
+///
+/// These two previously asserted the opposite — that a closed-edge chamfer
+/// must fail closed with "closed-edge ... invalid solid" — which pinned the
+/// `reject_closed_edges` guard that stood in for the missing assembly. The
+/// guard is gone now that `chamfer_builder` can build the annular case, so the
+/// tests assert the real postcondition instead of the placeholder refusal.
 #[test]
-fn chamfer_cylinder_closed_rim_fails_closed() {
+fn chamfer_cylinder_closed_rim_is_valid() {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
     let rim = bottom_circle_edge(&topo, solid);
-    assert_closed_edge_rejected(chamfer_v2(&mut topo, solid, &[rim], 0.4, 0.4));
+    let result = chamfer_v2(&mut topo, solid, &[rim], 0.4, 0.4).unwrap();
+    assert_valid_closed_chamfer(&topo, &result, 1);
 }
 
 #[test]
-fn chamfer_cone_closed_rim_fails_closed() {
+fn chamfer_cone_closed_rim_is_valid() {
     let mut topo = Topology::new();
     let solid = make_cone(&mut topo, 3.0, 1.0, 4.0).unwrap();
     let rim = bottom_circle_edge(&topo, solid);
-    assert_closed_edge_rejected(chamfer_v2(&mut topo, solid, &[rim], 0.4, 0.4));
+    let result = chamfer_v2(&mut topo, solid, &[rim], 0.4, 0.4).unwrap();
+    assert_valid_closed_chamfer(&topo, &result, 2);
 }
