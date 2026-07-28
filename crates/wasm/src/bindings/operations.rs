@@ -1840,10 +1840,49 @@ mod tests {
         full - 0.5 * d * d * std::f64::consts::TAU * (RIM_R - d / 3.0)
     }
 
+    /// Which JS entry point ran the chamfer. Both must reach the same engine
+    /// chain (`try_chamfer`: v1, roll back, then v2).
+    #[derive(Clone, Copy)]
+    enum Entry {
+        /// The single-call `chamfer` binding.
+        Binding,
+        /// The `"chamfer"` op inside `executeBatch`.
+        Batch,
+    }
+
+    impl Entry {
+        const fn label(self) -> &'static str {
+            match self {
+                Self::Binding => "binding",
+                Self::Batch => "batch",
+            }
+        }
+    }
+
+    /// Chamfer one edge through `entry`, returning the result solid handle.
+    fn chamfer_via(k: &mut BrepKernel, entry: Entry, solid: u32, edge: u32, d: f64) -> u32 {
+        match entry {
+            Entry::Binding => k.chamfer_solid(solid, vec![edge], d).unwrap(),
+            Entry::Batch => {
+                let out = dispatch(
+                    k,
+                    "chamfer",
+                    serde_json::json!({ "solid": solid, "edges": [edge], "distance": d }),
+                );
+                assert!(
+                    out.get("error").is_none(),
+                    "batch chamfer d={d} errored: {out}"
+                );
+                out["ok"].as_u64().unwrap() as u32
+            }
+        }
+    }
+
     /// Assert the chamfered solid is a closed, manifold B-Rep whose mesh is
     /// also watertight, and whose volume matches the analytic ring wedge.
     /// A closed B-Rep can still tessellate open, so both are checked.
-    fn assert_rim_chamfer_ok(k: &BrepKernel, handle: u32, d: f64, label: &str) {
+    /// Returns the measured volume so callers can compare entry points.
+    fn assert_rim_chamfer_ok(k: &BrepKernel, handle: u32, d: f64, label: &str) -> f64 {
         let sid = k.resolve_solid(handle).unwrap();
         let shell = k
             .topo
@@ -1872,84 +1911,64 @@ mod tests {
             (vol - want).abs() / want < 1e-6,
             "{label}: volume {vol} vs Pappus {want}"
         );
+        vol
     }
 
     #[test]
-    fn chamfer_binding_closed_rim_matches_pappus() {
-        for d in [0.5_f64, 1.5] {
-            for rim_index in 0..2 {
-                let mut k = BrepKernel::new();
-                let (cyl, rims) = rim_cylinder(&mut k);
-                let out = k.chamfer_solid(cyl, vec![rims[rim_index]], d).unwrap();
-                assert_rim_chamfer_ok(&k, out, d, &format!("binding d={d} rim={rim_index}"));
-            }
-        }
-    }
-
-    #[test]
-    fn chamfer_batch_dispatch_closed_rim_matches_pappus() {
+    fn both_entry_points_chamfer_a_closed_rim_identically() {
         // The batch arm used to call `brepkit_operations::chamfer::chamfer`
         // directly, skipping the v2 fallback that `try_chamfer` provides — so
-        // this exact geometry errored through `executeBatch` while succeeding
-        // through the single-call binding.
+        // this exact geometry errored through `executeBatch` ("cannot normalize
+        // zero vector") while succeeding through the single-call binding.
+        // Asserting the analytic volume, not merely `Ok`, is what makes this
+        // guard the fix; asserting the two agree is the property that broke.
         for d in [0.5_f64, 1.5] {
             for rim_index in 0..2 {
-                let mut k = BrepKernel::new();
-                let (cyl, rims) = rim_cylinder(&mut k);
-                let entry = dispatch(
-                    &mut k,
-                    "chamfer",
-                    serde_json::json!({ "solid": cyl, "edges": [rims[rim_index]], "distance": d }),
-                );
+                let mut volumes = Vec::new();
+                for entry in [Entry::Binding, Entry::Batch] {
+                    let mut k = BrepKernel::new();
+                    let (cyl, rims) = rim_cylinder(&mut k);
+                    let out = chamfer_via(&mut k, entry, cyl, rims[rim_index], d);
+                    let label = format!("{} d={d} rim={rim_index}", entry.label());
+                    volumes.push(assert_rim_chamfer_ok(&k, out, d, &label));
+                }
                 assert!(
-                    entry.get("error").is_none(),
-                    "batch d={d} rim={rim_index} errored: {entry}"
+                    (volumes[0] - volumes[1]).abs() < 1e-9,
+                    "d={d} rim={rim_index}: entry points disagree: \
+                     binding {} vs batch {}",
+                    volumes[0],
+                    volumes[1]
                 );
-                let out = entry["ok"].as_u64().unwrap() as u32;
-                assert_rim_chamfer_ok(&k, out, d, &format!("batch d={d} rim={rim_index}"));
             }
         }
     }
 
     #[test]
-    fn chamfer_batch_dispatch_agrees_with_binding_on_a_box_edge() {
-        // The planar case both engines can build: the two entry points must
-        // still agree once they share a code path.
-        let d = 1.0;
-        let mut kb = BrepKernel::new();
-        let box_b =
-            brepkit_operations::primitives::make_box(kb.topo_mut(), 10.0, 10.0, 10.0).unwrap();
-        let edge_b = first_box_edge(&kb, box_b);
-        let via_binding = kb
-            .chamfer_solid(solid_id_to_u32(box_b), vec![edge_b], d)
-            .unwrap();
-        let v_binding = kb.volume(via_binding, 0.05).unwrap();
-
-        let mut kd = BrepKernel::new();
-        let box_d =
-            brepkit_operations::primitives::make_box(kd.topo_mut(), 10.0, 10.0, 10.0).unwrap();
-        let edge_d = first_box_edge(&kd, box_d);
-        let entry = dispatch(
-            &mut kd,
-            "chamfer",
-            serde_json::json!({ "solid": solid_id_to_u32(box_d), "edges": [edge_d], "distance": d }),
-        );
-        assert!(
-            entry.get("error").is_none(),
-            "batch chamfer errored: {entry}"
-        );
-        let v_batch = kd
-            .volume(entry["ok"].as_u64().unwrap() as u32, 0.05)
-            .unwrap();
-
+    fn both_entry_points_agree_on_a_planar_box_edge() {
+        // The case the v1 flat-bevel engine builds on its own: routing the
+        // batch arm through the fallback chain must leave it unchanged.
         // A 1×1 bevel along one 10-long edge removes 0.5 · 1² · 10 = 5.
+        let d = 1.0;
+        let mut volumes = Vec::new();
+        for entry in [Entry::Binding, Entry::Batch] {
+            let mut k = BrepKernel::new();
+            let cube =
+                brepkit_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+            let edge = first_box_edge(&k, cube);
+            let out = chamfer_via(&mut k, entry, solid_id_to_u32(cube), edge, d);
+            let vol = k.volume(out, 0.05).unwrap();
+            assert!(
+                (vol - 995.0).abs() < 0.05,
+                "{}: chamfered box volume {vol}, expected ~995",
+                entry.label()
+            );
+            volumes.push(vol);
+        }
         assert!(
-            (v_binding - 995.0).abs() < 0.05,
-            "binding chamfer volume {v_binding}, expected ~995"
-        );
-        assert!(
-            (v_binding - v_batch).abs() < 1e-9,
-            "entry points disagree: binding {v_binding} vs batch {v_batch}"
+            (volumes[0] - volumes[1]).abs() < 1e-9,
+            "entry points disagree: binding {} vs batch {}",
+            volumes[0],
+            volumes[1]
         );
     }
 
