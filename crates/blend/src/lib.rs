@@ -79,6 +79,19 @@ pub enum BlendError {
         vertex: VertexId,
     },
 
+    /// Multiple blend stripes meet at a vertex, which the walking engine's
+    /// watertight assembly does not support yet: the corner solver computes
+    /// exact vertex-blend geometry, but the stripes are not set back and the
+    /// corner faces do not share boundary edges with them, so the assembled
+    /// shell can never close. Callers fall back to another engine.
+    #[error("unsupported vertex blend at {vertex:?}: {stripes} stripes meet")]
+    UnsupportedVertexBlend {
+        /// The vertex where multiple stripes meet.
+        vertex: VertexId,
+        /// How many stripes meet there.
+        stripes: usize,
+    },
+
     /// Surface type not supported.
     #[error("unsupported surface on face {face:?}: {surface_tag}")]
     UnsupportedSurface {

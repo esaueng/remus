@@ -4,7 +4,7 @@
 //! and solid assembly. Supports constant and variable radius fillets on
 //! planar face pairs (v1).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use brepkit_math::curves::Circle3D;
 use brepkit_math::vec::{Point3, Vec3};
@@ -136,6 +136,40 @@ impl<'a> FilletBuilder<'a> {
             }
             for chain in g1_chain::g1_chains(topo, self.solid, seeds, tol)? {
                 chain_work.push((chain, law_idx));
+            }
+        }
+
+        // Two or more chains touching the same vertex need a vertex blend
+        // there. The corner solver computes exact geometry for that, but this
+        // builder cannot yet assemble it watertight: stripes run to the
+        // vertex un-set-back and the corner faces mint their own boundary
+        // edges, so the shell has free edges by construction and every
+        // downstream validation rejects it. Fail fast with a typed error
+        // before any stripe work so callers (`try_fillet`, `fillet_v2`) fall
+        // through to an engine that closes corners, instead of paying for a
+        // doomed build plus rollback.
+        {
+            let mut chains_at_vertex: HashMap<usize, (brepkit_topology::vertex::VertexId, usize)> =
+                HashMap::new();
+            for (chain_idx, (chain, _)) in chain_work.iter().enumerate() {
+                let mut seen_here: HashSet<usize> = HashSet::new();
+                for &eid in chain {
+                    let Ok(edge) = topo.edge(eid) else { continue };
+                    for vid in [edge.start(), edge.end()] {
+                        if !seen_here.insert(vid.index()) {
+                            continue; // count each chain once per vertex
+                        }
+                        let entry = chains_at_vertex
+                            .entry(vid.index())
+                            .or_insert((vid, chain_idx));
+                        if entry.1 != chain_idx {
+                            return Err(BlendError::UnsupportedVertexBlend {
+                                vertex: entry.0,
+                                stripes: 2,
+                            });
+                        }
+                    }
+                }
             }
         }
 

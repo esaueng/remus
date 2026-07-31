@@ -8,7 +8,6 @@
 //! producing watertight corners with no overlap by construction.
 
 use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::surface::NurbsSurface;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::face::FaceSurface;
 use brepkit_topology::vertex::VertexId;
@@ -32,6 +31,12 @@ pub struct VertexContactData {
     pub is_convex: bool,
     /// Vertex ID for error reporting.
     pub vertex_id: VertexId,
+    /// The exact corner ball `(center, radius)` when the caller solved it
+    /// from face tangency (see `corner::tangent_corner_ball`). When absent,
+    /// the legacy normal-sum heuristic estimates it from the contacts — that
+    /// estimate is only correct for mutually orthogonal faces with set-back
+    /// contacts, and produces a √2·R ball from unset-back ones.
+    pub ball: Option<(Point3, f64)>,
 }
 
 /// Result of building a spherical corner patch.
@@ -53,6 +58,15 @@ pub struct SphericalCornerResult {
 ///
 /// Returns `(center, sphere_radius)`.
 fn compute_sphere_center(data: &VertexContactData) -> Result<(Point3, f64), BlendError> {
+    if let Some((center, radius)) = data.ball {
+        if radius < TOL {
+            return Err(BlendError::CornerFailure {
+                vertex: data.vertex_id,
+            });
+        }
+        return Ok((center, radius));
+    }
+
     let mut normal_sum = Vec3::new(0.0, 0.0, 0.0);
     for n in &data.face_normals {
         normal_sum += *n;
@@ -134,15 +148,16 @@ fn build_great_circle_arc(
 
 /// Build a spherical triangle corner patch for a standard 3-edge vertex.
 ///
-/// The result is a degree-(2,2) rational NURBS surface that exactly
-/// lies on the rolling-ball sphere and is bounded by three great-circle
-/// arcs connecting the contact points.
+/// The result is an exact analytic sphere face on the corner ball, bounded
+/// by three great-circle arcs connecting the contact points. (An earlier
+/// revision approximated the patch with a degree-(2,2) rational NURBS whose
+/// heuristic apex sagged several percent of R mid-patch; the analytic
+/// surface removed both that error and the degenerate-corner fold.)
 ///
 /// # Errors
 ///
 /// Returns `BlendError::CornerFailure` if the geometry is degenerate
 /// (e.g. coplanar face normals, contact points not on the sphere).
-#[allow(clippy::too_many_lines)]
 pub fn build_spherical_corner(
     data: &VertexContactData,
 ) -> Result<SphericalCornerResult, BlendError> {
@@ -153,65 +168,15 @@ pub fn build_spherical_corner(
     }
 
     let (center, r) = compute_sphere_center(data)?;
-    let vid = data.vertex_id;
 
-    let q1 = data.contact_points[0];
-    let q2 = data.contact_points[1];
-    let q3 = data.contact_points[2];
-
-    let dir1 = (q1 - center) * (1.0 / r);
-    let dir2 = (q2 - center) * (1.0 / r);
-    let dir3 = (q3 - center) * (1.0 / r);
-
-    // Edge midpoint control points (tangent intersection for rational arcs).
-    let mid_q1q2 = edge_mid_cp(center, r, dir1, dir2, vid)?;
-    let mid_q2q3 = edge_mid_cp(center, r, dir2, dir3, vid)?;
-    let mid_q3q1 = edge_mid_cp(center, r, dir3, dir1, vid)?;
-
-    let w_q1q2 = cos_half_angle(dir1, dir2);
-    let w_q2q3 = cos_half_angle(dir2, dir3);
-    let w_q3q1 = cos_half_angle(dir3, dir1);
-
-    // Apex: projection of the centroid direction onto the sphere.
-    let apex_dir_raw = dir1 + dir2 + dir3;
-    let apex_dir_len = apex_dir_raw.length();
-    if apex_dir_len < TOL {
-        return Err(BlendError::CornerFailure { vertex: vid });
-    }
-    let apex_dir = apex_dir_raw * (1.0 / apex_dir_len);
-    let apex = center + apex_dir * r;
-
-    let w_apex = w_q1q2 * w_q2q3 * w_q3q1;
-
-    // Build 3x3 control point grid (degree 2x2).
-    //
-    // Row 0: Q1, mid_Q1Q2, Q2           (bottom edge)
-    // Row 1: mid_Q3Q1, apex, mid_Q2Q3   (middle row)
-    // Row 2: Q3, Q3, Q3                 (degenerate top = triangle apex vertex)
-    let control_points = vec![
-        vec![q1, mid_q1q2, q2],
-        vec![mid_q3q1, apex, mid_q2q3],
-        vec![q3, q3, q3],
-    ];
-
-    let weights = vec![
-        vec![1.0, w_q1q2, 1.0],
-        vec![w_q3q1, w_apex, w_q2q3],
-        vec![1.0, 1.0, 1.0],
-    ];
-
-    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-
-    let surface = NurbsSurface::new(2, 2, knots.clone(), knots, control_points, weights)?;
-
-    let arc_q1q2 = build_great_circle_arc(center, r, q1, q2, vid)?;
-    let arc_q2q3 = build_great_circle_arc(center, r, q2, q3, vid)?;
-    let arc_q3q1 = build_great_circle_arc(center, r, q3, q1, vid)?;
-
-    Ok(SphericalCornerResult {
-        surface: FaceSurface::Nurbs(surface),
-        boundary_curves: vec![arc_q1q2, arc_q2q3, arc_q3q1],
-    })
+    build_triangle_on_sphere(
+        center,
+        r,
+        data.contact_points[0],
+        data.contact_points[1],
+        data.contact_points[2],
+        data.vertex_id,
+    )
 }
 
 /// Build spherical corner patches for a vertex with N > 3 edges.
@@ -265,6 +230,12 @@ pub fn build_n_edge_corner(
 }
 
 /// Build a single spherical triangle patch given three points already on the sphere.
+///
+/// The surface is the exact analytic sphere, oriented so that both chart
+/// singularities stay away from the patch: the poles go 90° off the patch
+/// centroid direction and the `u`-seam to its antipode, keeping UV
+/// projection of the patch continuous for anything smaller than a
+/// hemisphere.
 fn build_triangle_on_sphere(
     center: Point3,
     radius: f64,
@@ -279,80 +250,27 @@ fn build_triangle_on_sphere(
     let dir2 = (q2 - center) * (1.0 / r);
     let dir3 = (q3 - center) * (1.0 / r);
 
-    let mid_q1q2 = edge_mid_cp(center, r, dir1, dir2, vertex_id)?;
-    let mid_q2q3 = edge_mid_cp(center, r, dir2, dir3, vertex_id)?;
-    let mid_q3q1 = edge_mid_cp(center, r, dir3, dir1, vertex_id)?;
-
-    let w_q1q2 = cos_half_angle(dir1, dir2);
-    let w_q2q3 = cos_half_angle(dir2, dir3);
-    let w_q3q1 = cos_half_angle(dir3, dir1);
-
-    let apex_dir_raw = dir1 + dir2 + dir3;
-    let apex_dir_len = apex_dir_raw.length();
-    if apex_dir_len < TOL {
+    let mean_raw = dir1 + dir2 + dir3;
+    if mean_raw.length() < TOL {
         return Err(BlendError::CornerFailure { vertex: vertex_id });
     }
-    let apex = center + apex_dir_raw * (r / apex_dir_len);
-    let w_apex = w_q1q2 * w_q2q3 * w_q3q1;
-
-    let control_points = vec![
-        vec![q1, mid_q1q2, q2],
-        vec![mid_q3q1, apex, mid_q2q3],
-        vec![q3, q3, q3],
-    ];
-
-    let weights = vec![
-        vec![1.0, w_q1q2, 1.0],
-        vec![w_q3q1, w_apex, w_q2q3],
-        vec![1.0, 1.0, 1.0],
-    ];
-
-    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-
-    let surface = NurbsSurface::new(2, 2, knots.clone(), knots, control_points, weights)?;
+    let mean_dir = mean_raw
+        .normalize()
+        .map_err(|_| BlendError::CornerFailure { vertex: vertex_id })?;
+    let polar = brepkit_math::frame::Frame3::from_normal(center, mean_dir)
+        .map_err(|_| BlendError::CornerFailure { vertex: vertex_id })?
+        .x;
+    let sphere = brepkit_math::surfaces::SphericalSurface::with_frame(center, r, polar, -mean_dir)
+        .map_err(|_| BlendError::CornerFailure { vertex: vertex_id })?;
 
     let arc_q1q2 = build_great_circle_arc(center, r, q1, q2, vertex_id)?;
     let arc_q2q3 = build_great_circle_arc(center, r, q2, q3, vertex_id)?;
     let arc_q3q1 = build_great_circle_arc(center, r, q3, q1, vertex_id)?;
 
     Ok(SphericalCornerResult {
-        surface: FaceSurface::Nurbs(surface),
+        surface: FaceSurface::Sphere(sphere),
         boundary_curves: vec![arc_q1q2, arc_q2q3, arc_q3q1],
     })
-}
-
-/// Compute the tangent-intersection midpoint control point for a
-/// rational quadratic arc between two directions on the sphere.
-fn edge_mid_cp(
-    center: Point3,
-    radius: f64,
-    dir_a: Vec3,
-    dir_b: Vec3,
-    vertex_id: VertexId,
-) -> Result<Point3, BlendError> {
-    let bisector_raw = dir_a + dir_b;
-    let bisector_len = bisector_raw.length();
-    if bisector_len < TOL {
-        return Err(BlendError::CornerFailure { vertex: vertex_id });
-    }
-    let bisector = bisector_raw * (1.0 / bisector_len);
-    let cos_half = dir_a.dot(bisector);
-    if cos_half.abs() < TOL {
-        return Err(BlendError::CornerFailure { vertex: vertex_id });
-    }
-    Ok(center + bisector * (radius / cos_half))
-}
-
-/// Cosine of the half-angle between two unit direction vectors.
-#[must_use]
-fn cos_half_angle(dir_a: Vec3, dir_b: Vec3) -> f64 {
-    let bisector_raw = dir_a + dir_b;
-    let bisector_len = bisector_raw.length();
-    if bisector_len < f64::EPSILON {
-        return 0.0;
-    }
-    let bisector = bisector_raw * (1.0 / bisector_len);
-    dir_a.dot(bisector)
 }
 
 #[cfg(test)]
@@ -398,6 +316,7 @@ mod tests {
             radius: r,
             is_convex: true,
             vertex_id,
+            ball: Option::None,
         }
     }
 
@@ -423,35 +342,78 @@ mod tests {
     }
 
     #[test]
-    fn test_spherical_triangle_points_on_sphere() {
+    fn test_spherical_triangle_surface_is_exact_sphere() {
         let (_topo, vid) = make_vertex_id();
         let data = unit_cube_corner_data(vid);
         let (center, r) = compute_sphere_center(&data).expect("should compute center");
 
         let result = build_spherical_corner(&data).expect("should build corner");
 
-        let nurbs = match &result.surface {
-            FaceSurface::Nurbs(s) => s,
-            _ => panic!("expected Nurbs surface"),
+        // The patch is the analytic corner ball itself — no approximation.
+        // (The former degree-(2,2) rational patch needed a 15%-of-R sampling
+        // allowance here; that tolerance codified the corner-blob defect.)
+        let FaceSurface::Sphere(sphere) = &result.surface else {
+            panic!("expected analytic Sphere surface");
+        };
+        assert!((sphere.radius() - r).abs() < 1e-12, "radius mismatch");
+        assert!(
+            (sphere.center() - center).length() < 1e-12,
+            "center mismatch"
+        );
+
+        // The chart's singularities must stay off the patch: every contact
+        // direction keeps a healthy margin from both poles and the u-seam.
+        for (i, cp) in data.contact_points.iter().enumerate() {
+            let (u, v) = sphere.project_point(*cp);
+            assert!(
+                v.abs() < std::f64::consts::FRAC_PI_2 - 0.3,
+                "contact {i} too close to a pole (v={v})"
+            );
+            assert!(
+                u > 0.3 && u < std::f64::consts::TAU - 0.3,
+                "contact {i} too close to the u-seam (u={u})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_explicit_ball_overrides_heuristic() {
+        // With an exact ball supplied, the solver must use it verbatim
+        // instead of re-deriving a (wrong) ball from the contacts. Feed the
+        // unset-back contacts of a unit-cube corner — the configuration that
+        // historically inflated the ball to √2·R — together with the true
+        // tangent ball.
+        let (_topo, vid) = make_vertex_id();
+        let r = 0.2;
+        let center = Point3::new(r, r, r);
+        let data = VertexContactData {
+            vertex_pos: Point3::new(0.0, 0.0, 0.0),
+            contact_points: vec![
+                Point3::new(0.0, r, r),
+                Point3::new(r, 0.0, r),
+                Point3::new(r, r, 0.0),
+            ],
+            face_normals: vec![
+                Vec3::new(-1.0, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(0.0, 0.0, -1.0),
+            ],
+            radius: r,
+            is_convex: true,
+            vertex_id: vid,
+            ball: Some((center, r)),
         };
 
-        let n_samples = 5;
-        for i in 0..=n_samples {
-            for j in 0..=n_samples {
-                let u = i as f64 / n_samples as f64;
-                let v = j as f64 / n_samples as f64;
-                let pt = nurbs.evaluate(u, v);
-                let dist = (pt - center).length();
-                let err = (dist - r).abs();
-                // Rational quadratic on a sphere should be exact at corners
-                // and close elsewhere. Allow a modest tolerance for the
-                // degenerate-row approximation.
-                assert!(
-                    err < r * 0.15,
-                    "point at ({u},{v}) dist error {err} (dist={dist}, r={r})"
-                );
-            }
-        }
+        let result = build_spherical_corner(&data).expect("should build corner");
+        let FaceSurface::Sphere(sphere) = &result.surface else {
+            panic!("expected analytic Sphere surface");
+        };
+        assert!(
+            (sphere.radius() - r).abs() < 1e-12,
+            "ball radius must be the fillet radius, not √2·R: got {}",
+            sphere.radius()
+        );
+        assert!((sphere.center() - center).length() < 1e-12);
     }
 
     #[test]

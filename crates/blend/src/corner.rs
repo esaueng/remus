@@ -21,7 +21,9 @@ use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::BlendError;
 use crate::section::CircSection;
-use crate::spherical_triangle::{VertexContactData, build_n_edge_corner, build_spherical_corner};
+use crate::spherical_triangle::{
+    SphericalCornerResult, VertexContactData, build_n_edge_corner, build_spherical_corner,
+};
 use crate::stripe::Stripe;
 
 /// Classification of a vertex blend.
@@ -217,6 +219,79 @@ fn build_triangular_patch(
     Ok((surface, vec![v0, v1, v2], vec![e0, e1, e2]))
 }
 
+/// Solve the exact corner ball for a vertex where stripes over three
+/// distinct planar faces meet.
+///
+/// The ball is tangent to all three face planes on the material side, so its
+/// centre satisfies `nᵢ · (c − v) = sᵢ·R` for each face plane through the
+/// vertex `v`, where the side sign `sᵢ` comes from an adjacent stripe's
+/// section centre (the rolling-ball centre, which by construction sits at
+/// distance R from both of its faces on the material side). This is exact
+/// for any planar corner, orthogonal or oblique — unlike the legacy
+/// normal-sum offset, which is only a tangent centre when the faces are
+/// mutually perpendicular.
+///
+/// Returns the centre and the three tangency contact points (one per face,
+/// each exactly at distance R from the centre), or `None` when the vertex
+/// is not a three-planar-face corner or the planes are too close to
+/// coplanar to solve stably (the caller then falls back to the heuristic).
+fn tangent_corner_ball(
+    vertex_id: VertexId,
+    stripes: &[Stripe],
+    stripe_indices: &[usize],
+    radius: f64,
+    topo: &Topology,
+) -> Option<(Point3, Vec<Point3>)> {
+    let vertex_pos = topo.vertex(vertex_id).ok()?.point();
+
+    let mut plane_faces: Vec<usize> = Vec::new();
+    let mut normals: Vec<Vec3> = Vec::new();
+    let mut signs: Vec<f64> = Vec::new();
+    for &idx in stripe_indices {
+        let stripe = &stripes[idx];
+        let section = contact_section_at_vertex(vertex_id, stripe, topo)?;
+        for face_id in [stripe.face1, stripe.face2] {
+            if plane_faces.contains(&face_id.index()) {
+                continue;
+            }
+            let FaceSurface::Plane { normal, .. } = topo.face(face_id).ok()?.surface() else {
+                return Option::None;
+            };
+            let n = normal.normalize().ok()?;
+            let side = n.dot(section.center - vertex_pos);
+            if side.abs() < radius * 1e-6 {
+                return Option::None; // section centre on the plane: degenerate
+            }
+            plane_faces.push(face_id.index());
+            normals.push(n);
+            signs.push(side.signum());
+        }
+    }
+    if normals.len() != 3 {
+        return Option::None;
+    }
+
+    // Cramer's rule on nᵢ · c' = sᵢ·R with c' = c − v.
+    let det = normals[0].dot(normals[1].cross(normals[2]));
+    if det.abs() < 1e-6 {
+        return Option::None; // near-coplanar normals: unstable
+    }
+    let b = [signs[0] * radius, signs[1] * radius, signs[2] * radius];
+    let offset = (normals[1].cross(normals[2]) * b[0]
+        + normals[2].cross(normals[0]) * b[1]
+        + normals[0].cross(normals[1]) * b[2])
+        * (1.0 / det);
+    let center = vertex_pos + offset;
+
+    // Tangency contact on plane i: the centre projected onto the plane.
+    let contacts: Vec<Point3> = normals
+        .iter()
+        .zip(&signs)
+        .map(|(n, s)| center - *n * (*s * radius))
+        .collect();
+    Some((center, contacts))
+}
+
 /// Classify the vertex blend type based on the stripes meeting at this vertex.
 #[must_use]
 pub fn classify_corner(vertex_id: VertexId, stripes: &[Stripe], topo: &Topology) -> CornerType {
@@ -253,7 +328,37 @@ fn build_multi_edge_corner(
 
     let radius = stripe_radius_at_vertex(vertex_id, &stripes[indices[0]], topo)
         .ok_or(BlendError::CornerFailure { vertex: vertex_id })?;
+    let vertex_pos = topo.vertex(vertex_id)?.point();
 
+    // Exact path: a corner over three distinct planar faces has an exact
+    // tangent ball, solved from the face planes and the material side. Its
+    // tangency points replace the stripes' raw end contacts — the stripe
+    // sections end at the vertex plane (no setback), so the raw contacts sit
+    // at distance √2·R from any tangent centre of an orthogonal corner and
+    // would otherwise inflate the corner ball to √2·R.
+    if let Some((center, contacts)) =
+        tangent_corner_ball(vertex_id, stripes, &indices, radius, topo)
+    {
+        let face_normals: Vec<Vec3> = contacts
+            .iter()
+            .filter_map(|q| (center - *q).normalize().ok())
+            .collect();
+        let data = VertexContactData {
+            vertex_pos,
+            contact_points: contacts,
+            face_normals,
+            radius,
+            is_convex: true,
+            vertex_id,
+            ball: Some((center, radius)),
+        };
+        let sr = build_spherical_corner(&data)?;
+        return finish_corner_results(vec![sr], topo);
+    }
+
+    // Legacy heuristic path (non-planar or 4+ faces): estimate the ball from
+    // the raw contacts and the normal-sum offset. Only correct for mutually
+    // orthogonal faces with set-back contacts.
     let mut face_normals: Vec<Vec3> = Vec::new();
     for &idx in &indices {
         let stripe = &stripes[idx];
@@ -271,7 +376,6 @@ fn build_multi_edge_corner(
 
     // Determine convexity: compute average face normal, then check if the
     // direction from vertex to the sphere center aligns with it.
-    let vertex_pos = topo.vertex(vertex_id)?.point();
     let mut normal_sum = Vec3::new(0.0, 0.0, 0.0);
     for n in &face_normals {
         normal_sum += *n;
@@ -301,6 +405,7 @@ fn build_multi_edge_corner(
         radius,
         is_convex,
         vertex_id,
+        ball: Option::None,
     };
 
     let spherical_results = if data.contact_points.len() == 3 {
@@ -309,6 +414,15 @@ fn build_multi_edge_corner(
         build_n_edge_corner(&data)?
     };
 
+    finish_corner_results(spherical_results, topo)
+}
+
+/// Materialize solved corner patches into topology: one face per patch,
+/// bounded by its arc edges and their endpoint vertices.
+fn finish_corner_results(
+    spherical_results: Vec<SphericalCornerResult>,
+    topo: &mut Topology,
+) -> Result<Vec<CornerResult>, BlendError> {
     let mut results = Vec::with_capacity(spherical_results.len());
 
     for sr in spherical_results {
@@ -836,10 +950,10 @@ mod tests {
         assert_eq!(results.len(), 1);
 
         let result = &results[0];
-        // The surface should be a NURBS patch (rational quadratic on the sphere).
+        // The surface is the exact analytic corner ball.
         match &result.surface {
-            FaceSurface::Nurbs(_) => {} // expected
-            other => panic!("Expected Nurbs surface, got {:?}", other.type_tag()),
+            FaceSurface::Sphere(_) => {} // expected
+            other => panic!("Expected Sphere surface, got {:?}", other.type_tag()),
         }
 
         // Should have 3 boundary edges (one per arc).
@@ -848,43 +962,60 @@ mod tests {
     }
 
     #[test]
-    fn multi_edge_corner_surface_on_sphere() {
+    fn multi_edge_corner_is_exact_tangent_ball() {
+        // The box-corner setup has three mutually orthogonal planar faces
+        // through the origin, fillet radius 0.2, and stripes whose sections
+        // end at the vertex plane (no setback). The solver must derive the
+        // exact tangent ball — center (0.2, 0.2, 0.2), radius 0.2 — from the
+        // face planes, NOT the √2·R ball through the raw section contacts
+        // that the legacy normal-sum heuristic produced.
         let (mut topo, v000, stripes, _solid_id) = setup_box_corner();
         let results = build_multi_edge_corner(v000, &stripes, &mut topo).unwrap();
         let result = &results[0];
 
-        match &result.surface {
-            FaceSurface::Nurbs(nurbs) => {
-                // Sample points on the surface and verify they are on the sphere.
-                // We need the sphere center. For face normals (0,0,-1), (0,-1,0),
-                // (-1,0,0) the average normal is (-1,-1,-1)/sqrt(3). The center
-                // is offset along this direction from the vertex at the origin.
-                let n_samples = 5;
-                for i in 0..=n_samples {
-                    for j in 0..=n_samples {
-                        let u = i as f64 / n_samples as f64;
-                        let v = j as f64 / n_samples as f64;
-                        let pt = nurbs.evaluate(u, v);
+        let FaceSurface::Sphere(sphere) = &result.surface else {
+            panic!("Expected Sphere surface");
+        };
+        let r = 0.2;
+        assert!(
+            (sphere.radius() - r).abs() < 1e-12,
+            "corner ball radius should equal the fillet radius, got {}",
+            sphere.radius()
+        );
+        let expected_center = Point3::new(r, r, r);
+        assert!(
+            (sphere.center() - expected_center).length() < 1e-12,
+            "corner ball center should be the tangency solution"
+        );
 
-                        // The point should be at distance approximately R from some center.
-                        // We just check the surface points are reasonable (within 15% of R).
-                        let dist_from_origin = (pt - Point3::new(0.0, 0.0, 0.0)).length();
-                        assert!(
-                            dist_from_origin < 1.0,
-                            "Surface point at ({u},{v}) unreasonably far from origin: {dist_from_origin}"
-                        );
-                    }
-                }
-            }
-            other => panic!("Expected Nurbs surface, got {:?}", other.type_tag()),
+        // Corner patch vertices are the tangency contacts on the three face
+        // planes — each exactly on the ball and on its plane.
+        for &vid in &result.new_vertices {
+            let p = topo.vertex(vid).unwrap().point();
+            let dist = (p - expected_center).length();
+            assert!(
+                (dist - r).abs() < 1e-12,
+                "patch corner should sit on the ball, dist {dist}"
+            );
+            let on_a_plane = p.x().abs() < 1e-12 || p.y().abs() < 1e-12 || p.z().abs() < 1e-12;
+            assert!(on_a_plane, "patch corner should be a face tangency point");
         }
 
-        // Boundary curves should be NurbsCurve edges.
+        // Boundary curves are exact arcs of the ball, stored as NurbsCurve
+        // edges (rational quadratics are exact circles).
         for &eid in &result.new_edges {
             let edge = topo.edge(eid).unwrap();
-            match edge.curve() {
-                EdgeCurve::NurbsCurve(_) => {} // expected
-                other => panic!("Expected NurbsCurve edge, got {:?}", other.type_tag()),
+            let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+                panic!("Expected NurbsCurve edge");
+            };
+            for i in 0..=16 {
+                let t = f64::from(i) / 16.0;
+                let pt = curve.evaluate(t);
+                let dist = (pt - expected_center).length();
+                assert!(
+                    (dist - r).abs() < 1e-10,
+                    "boundary arc leaves the ball at t={t}: dist {dist}"
+                );
             }
         }
     }
