@@ -12,7 +12,8 @@ use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_d
 use super::mesh_ops::{dedupe_coincident_triangles, weld_boundary_vertices};
 use super::nonplanar::{
     tessellate_latitude_band_shared, tessellate_nonplanar_cdt, tessellate_nonplanar_snap,
-    tessellate_revolution_band_shared, tessellate_torus_notch_band, tessellate_torus_two_rim_band,
+    tessellate_revolution_band_shared, tessellate_sphere_cap_shared, tessellate_torus_notch_band,
+    tessellate_torus_two_rim_band,
 };
 use super::nurbs::{compute_angular_range, compute_v_param_range};
 use super::planar::{
@@ -971,7 +972,22 @@ pub(super) fn tessellate_face_with_shared_edges(
                 edge_global_indices,
                 merged,
                 point_to_global,
-            )?);
+            )?)
+            // A spherical vertex-blend cap (fillet corner ball) is filled as a
+            // structured web from the shared rim samples: its boundary arcs
+            // project to (near-)collinear UV polylines that break the CDT
+            // below (zero-UV-area flap triangles, deflection-dependent
+            // cracks). Returns false for any other sphere face.
+            || (matches!(face_data.surface(), FaceSurface::Sphere(_))
+                && tessellate_sphere_cap_shared(
+                    topo,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
+                )?);
 
         if !handled_band {
             let pos_save = merged.positions.len();

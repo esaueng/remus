@@ -601,10 +601,13 @@ fn vertex_blend_three_edges_at_corner() {
 }
 
 #[test]
-fn vertex_blend_is_curved_not_flat() {
-    // Fillet all 12 edges of a unit cube. Verify that vertex blend
-    // NURBS patches approximate a spherical cap on the correct
-    // fillet sphere: center at (corner - R*(1,1,1)/|...|), radius R.
+fn vertex_blend_is_exact_sphere() {
+    // Fillet all 12 edges of a unit cube. Every vertex blend must be an
+    // analytic sphere face on the correct corner ball: center at the cube
+    // corner offset inward by R along each face normal, radius exactly R.
+    // (The former degree-(2,2) rational approximation sagged up to ~5% of R
+    // mid-patch and folded at its degenerate corner, which rendered as a
+    // pinched blob on every filleted corner.)
     let r = 0.1_f64;
     let mut topo = Topology::new();
     let cube = make_unit_cube_manifold(&mut topo);
@@ -616,91 +619,179 @@ fn vertex_blend_is_curved_not_flat() {
     let solid = topo.solid(result).unwrap();
     let shell = topo.shell(solid.outer_shell()).unwrap();
 
-    // For each blend face, check that interior surface points lie
-    // approximately on a sphere of radius R centered inside the solid.
     let mut blend_face_count = 0;
-    let mut max_sphere_err = 0.0_f64;
 
     for &fid in shell.faces() {
         let face = topo.face(fid).unwrap();
-        if !matches!(face.surface(), FaceSurface::Nurbs(_)) {
+        let FaceSurface::Sphere(sphere) = face.surface() else {
             continue;
-        }
-        let wire = topo.wire(face.outer_wire()).unwrap();
-        let wire_verts: Vec<Point3> = wire
-            .edges()
-            .iter()
-            .map(|oe| {
-                let v = topo.vertex(topo.edge(oe.edge()).unwrap().start()).unwrap();
-                v.point()
-            })
-            .collect();
-        if wire_verts.len() != 3 {
-            continue;
-        }
+        };
         blend_face_count += 1;
 
-        // The sphere center is at the original cube corner offset
-        // inward by R along each face normal. For a 90° corner with
-        // axis-aligned face normals, this is corner ± R on each axis.
-        // Find the nearest cube corner by rounding each boundary vertex
-        // coordinate to 0 or 1.
-        let avg = Point3::new(
-            (wire_verts[0].x() + wire_verts[1].x() + wire_verts[2].x()) / 3.0,
-            (wire_verts[0].y() + wire_verts[1].y() + wire_verts[2].y()) / 3.0,
-            (wire_verts[0].z() + wire_verts[1].z() + wire_verts[2].z()) / 3.0,
+        assert!(
+            (sphere.radius() - r).abs() < 1e-9,
+            "corner ball radius should equal the fillet radius, got {}",
+            sphere.radius()
         );
+
+        // Expected center: nearest cube corner offset inward by R per axis.
+        let c = sphere.center();
         let corner = Point3::new(
-            if avg.x() > 0.5 { 1.0 } else { 0.0 },
-            if avg.y() > 0.5 { 1.0 } else { 0.0 },
-            if avg.z() > 0.5 { 1.0 } else { 0.0 },
+            if c.x() > 0.5 { 1.0 } else { 0.0 },
+            if c.y() > 0.5 { 1.0 } else { 0.0 },
+            if c.z() > 0.5 { 1.0 } else { 0.0 },
         );
-        let sphere_center = Point3::new(
+        let expected = Point3::new(
             corner.x() + if corner.x() > 0.5 { -r } else { r },
             corner.y() + if corner.y() > 0.5 { -r } else { r },
             corner.z() + if corner.z() > 0.5 { -r } else { r },
         );
+        assert!(
+            (c - expected).length() < 1e-9,
+            "corner ball center ({:.4},{:.4},{:.4}) should be at ({:.4},{:.4},{:.4})",
+            c.x(),
+            c.y(),
+            c.z(),
+            expected.x(),
+            expected.y(),
+            expected.z(),
+        );
 
-        // The boundary points are at distance √2·R from the sphere center
-        // (they're on face planes, not on the fillet sphere itself).
-        // The rational Bézier patch should lie on a sphere of that radius.
-        let r_blend = (wire_verts[0] - sphere_center).length();
-
-        // Evaluate interior points and check distance from sphere.
-        if let FaceSurface::Nurbs(srf) = face.surface() {
-            for u in [0.25, 0.5, 0.75] {
-                for v in [0.25, 0.5, 0.75] {
-                    let pt = srf.evaluate(u, v);
-                    let dist = (pt - sphere_center).length();
-                    let err = (dist - r_blend).abs();
-                    max_sphere_err = max_sphere_err.max(err);
-                }
-            }
+        // Every boundary vertex lies on the ball.
+        let wire = topo.wire(face.outer_wire()).unwrap();
+        for oe in wire.edges() {
+            let v = topo.vertex(topo.edge(oe.edge()).unwrap().start()).unwrap();
+            let dist = (v.point() - c).length();
+            assert!(
+                (dist - r).abs() < 1e-9,
+                "corner cap boundary vertex should sit on the ball, dist {dist}"
+            );
         }
     }
 
-    assert!(
-        blend_face_count >= 8,
-        "expected 8 vertex blend faces, found {blend_face_count}"
-    );
-    // A degree (2,2) rational patch can't exactly represent a sphere —
-    // the triangular degenerate topology introduces approximation error.
-    // Allow up to 6% of the fillet radius (increased from 5% after fillet
-    // contact direction fix which slightly shifts vertex blend sampling).
-    assert!(
-        max_sphere_err < r * 0.06,
-        "blend surface deviates from sphere by {max_sphere_err:.6} (limit {:.6})",
-        r * 0.06,
+    assert_eq!(
+        blend_face_count, 8,
+        "expected 8 spherical vertex blend faces, found {blend_face_count}"
     );
 }
 
 #[test]
-fn vertex_blend_sphere_center_inside_solid() {
-    // Verify the blend surface midpoints are close to the solid
-    // boundary. The (2,2) rational patch is an approximation of the
-    // spherical cap, so allow up to R/2 overshoot past face planes.
+fn vertex_blend_cap_mesh_on_sphere_and_outward() {
+    // Tessellate the fully filleted cube and check the corner caps at mesh
+    // level: every triangle vertex of a sphere-surface face lies on the
+    // corner ball (exact surface evaluation, not an approximation) and every
+    // triangle faces outward — the folded-over slivers of the old rational
+    // patch showed up here as normals pointing into the body.
     let r = 0.1_f64;
-    let margin = r;
+    let mut topo = Topology::new();
+    let cube = make_unit_cube_manifold(&mut topo);
+    let edges = solid_edge_ids(&topo, cube);
+
+    let result =
+        fillet_rolling_ball(&mut topo, cube, &edges, r).expect("all-edges fillet should succeed");
+
+    let (mesh, face_offsets) =
+        crate::tessellate::tessellate_solid_grouped_with_tolerance(&topo, result, 0.002, 0.06)
+            .expect("grouped tessellation should succeed");
+    let face_ids = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert_eq!(face_ids.len() + 1, face_offsets.len());
+
+    let mut checked_faces = 0;
+    for (i, &fid) in face_ids.iter().enumerate() {
+        let face = topo.face(fid).unwrap();
+        let FaceSurface::Sphere(sphere) = face.surface() else {
+            continue;
+        };
+        checked_faces += 1;
+        let center = sphere.center();
+        let radius = sphere.radius();
+
+        let start = face_offsets[i] as usize;
+        let end = face_offsets[i + 1] as usize;
+        assert!(end > start, "corner cap should produce triangles");
+        for t in (start..end).step_by(3) {
+            let pa = mesh.positions[mesh.indices[t] as usize];
+            let pb = mesh.positions[mesh.indices[t + 1] as usize];
+            let pc = mesh.positions[mesh.indices[t + 2] as usize];
+            for p in [pa, pb, pc] {
+                let dist = (p - center).length();
+                assert!(
+                    (dist - radius).abs() < 1e-6,
+                    "corner cap mesh vertex off the ball by {}",
+                    (dist - radius).abs()
+                );
+            }
+            // Outward check: the geometric triangle normal must not point
+            // toward the ball center (convex corner).
+            let n = (pb - pa).cross(pc - pa);
+            let mid = Point3::new(
+                (pa.x() + pb.x() + pc.x()) / 3.0,
+                (pa.y() + pb.y() + pc.y()) / 3.0,
+                (pa.z() + pb.z() + pc.z()) / 3.0,
+            );
+            let radial = mid - center;
+            assert!(
+                n.dot(radial) > 0.0,
+                "corner cap triangle folded over (normal points into the body)"
+            );
+        }
+    }
+    assert_eq!(checked_faces, 8, "expected 8 spherical corner caps");
+}
+
+#[test]
+fn vertex_blend_cap_single_face_tessellation_trims_to_wire() {
+    // The single-face tessellation path (`tessellate_face`) must trim the
+    // spherical cap to its three boundary arcs rather than sweeping the UV
+    // bounding-box rectangle: the rectangle over-covers a corner cap by tens
+    // of percent of its area. The octant cap of a box corner has exact area
+    // (4πR²)/8; the chordal mesh approaches it from below.
+    let r = 0.1_f64;
+    let mut topo = Topology::new();
+    let cube = make_unit_cube_manifold(&mut topo);
+    let edges = solid_edge_ids(&topo, cube);
+
+    let result =
+        fillet_rolling_ball(&mut topo, cube, &edges, r).expect("all-edges fillet should succeed");
+
+    let solid = topo.solid(result).unwrap();
+    let shell = topo.shell(solid.outer_shell()).unwrap();
+    let cap = shell
+        .faces()
+        .iter()
+        .copied()
+        .find(|&fid| {
+            matches!(
+                topo.face(fid).map(brepkit_topology::face::Face::surface),
+                Ok(FaceSurface::Sphere(_))
+            )
+        })
+        .expect("filleted cube should have a spherical corner cap");
+
+    let mesh = crate::tessellate::tessellate(&topo, cap, 0.001)
+        .expect("corner cap should tessellate standalone");
+    let mut area = 0.0_f64;
+    for t in (0..mesh.indices.len()).step_by(3) {
+        let pa = mesh.positions[mesh.indices[t] as usize];
+        let pb = mesh.positions[mesh.indices[t + 1] as usize];
+        let pc = mesh.positions[mesh.indices[t + 2] as usize];
+        area += (pb - pa).cross(pc - pa).length() * 0.5;
+    }
+    let octant = 4.0 * std::f64::consts::PI * r * r / 8.0;
+    assert!(
+        (area - octant).abs() < octant * 0.05,
+        "corner cap standalone mesh area {area:.6} should be ≈ octant {octant:.6}"
+    );
+}
+
+#[test]
+fn vertex_blend_sphere_stays_inside_solid() {
+    // The corner ball is tangent to the three face planes from inside, so the
+    // whole cap — now exactly on the ball — must stay within the original
+    // bounds. (The rational-patch predecessor needed an R/2 overshoot
+    // allowance here.)
+    let r = 0.1_f64;
+    let margin = 1e-9;
     let mut topo = Topology::new();
     let cube = make_unit_cube_manifold(&mut topo);
     let edges = solid_edge_ids(&topo, cube);
@@ -711,36 +802,23 @@ fn vertex_blend_sphere_center_inside_solid() {
     let solid = topo.solid(result).unwrap();
     let shell = topo.shell(solid.outer_shell()).unwrap();
 
+    let mut cap_count = 0;
     for &fid in shell.faces() {
         let face = topo.face(fid).unwrap();
-        if let FaceSurface::Nurbs(srf) = face.surface() {
-            let wire = topo.wire(face.outer_wire()).unwrap();
-            if wire.edges().len() != 3 {
-                continue;
-            }
-
-            // Sample interior surface points — they should be
-            // within the unit cube bounds (with some tolerance for
-            // the quadratic patch approximation error).
-            for u in [0.25, 0.5, 0.75] {
-                for v in [0.25, 0.5] {
-                    let pt = srf.evaluate(u, v);
-                    assert!(
-                        pt.x() > -margin
-                            && pt.x() < 1.0 + margin
-                            && pt.y() > -margin
-                            && pt.y() < 1.0 + margin
-                            && pt.z() > -margin
-                            && pt.z() < 1.0 + margin,
-                        "blend point ({:.4},{:.4},{:.4}) too far outside unit cube",
-                        pt.x(),
-                        pt.y(),
-                        pt.z(),
-                    );
-                }
-            }
+        let FaceSurface::Sphere(sphere) = face.surface() else {
+            continue;
+        };
+        cap_count += 1;
+        let c = sphere.center();
+        let rr = sphere.radius();
+        for (lo, hi, v) in [(0.0, 1.0, c.x()), (0.0, 1.0, c.y()), (0.0, 1.0, c.z())] {
+            assert!(
+                v - rr >= lo - margin && v + rr <= hi + margin,
+                "corner ball (center coord {v}, radius {rr}) protrudes past [{lo},{hi}]"
+            );
         }
     }
+    assert_eq!(cap_count, 8, "expected 8 spherical corner caps");
 }
 
 /// Fillet on a boolean result: fuse(box, cylinder) → fillet should work

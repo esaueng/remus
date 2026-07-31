@@ -7,6 +7,7 @@ use brepkit_topology::face::{FaceId, FaceSurface};
 use super::AnalyticKind;
 use super::TriangleMeshUV;
 use super::edge_sampling::{plane_axes, segments_for_chord_deviation_a};
+use super::nonplanar::tessellate_trimmed_sphere_uvs;
 use super::nurbs::{
     compute_angular_range, compute_axial_range, compute_sphere_v_range, compute_torus_v_range,
     compute_v_param_range, sphere_analytic_kind, tessellate_nurbs,
@@ -149,33 +150,57 @@ pub fn tessellate_with_uvs_a(
         FaceSurface::Sphere(sphere) => {
             let u_range = compute_angular_range(topo, face_data, |p| sphere.project_point(p));
             let v_range = compute_sphere_v_range(topo, face_data, sphere);
-            // Both directions are curved at once; the worst-case sag is along
-            // the diagonal, so shrink the step (~0.7) to keep it within tol.
-            let nu = segments_for_chord_deviation_a(
-                sphere.radius(),
-                u_range.1 - u_range.0,
+            // Trimmed sphere faces (a fillet's corner cap, a boolean
+            // fragment) are generally not iso-parametric rectangles; the
+            // sweep below would cover their UV bounding box and overhang the
+            // boundary. Triangulate inside the actual wire instead: the
+            // structured cap web is tried first (it self-validates and
+            // declines full spheres, bands, and over-spread patches), then
+            // the boundary-constrained CDT unless the boundary really spans a
+            // full revolution (whole spheres, polar caps, latitude bands stay
+            // on the sweep, which handles their seam/pole topology).
+            let full_turn = u_range.1 - u_range.0 >= std::f64::consts::TAU - 1e-9;
+            let trimmed = tessellate_trimmed_sphere_uvs(
+                topo,
+                face,
+                face_data,
+                sphere,
                 deflection * SPHERE_DIAG,
                 angular_tol * SPHERE_DIAG,
-                true,
+                !full_turn,
             );
-            let nv = segments_for_chord_deviation_a(
-                sphere.radius(),
-                v_range.1 - v_range.0,
-                deflection * SPHERE_DIAG,
-                angular_tol * SPHERE_DIAG,
-                true,
-            );
-            let kind = sphere_analytic_kind(v_range);
-            let sphere = sphere.clone();
-            Ok(tessellate_analytic(
-                |u, v| sphere.evaluate(u, v),
-                |u, v| sphere.normal(u, v),
-                u_range,
-                v_range,
-                nu,
-                nv,
-                kind,
-            ))
+            if let Some(result) = trimmed {
+                Ok(result)
+            } else {
+                // Both directions are curved at once; the worst-case sag is
+                // along the diagonal, so shrink the step (~0.7) to keep it
+                // within tol.
+                let nu = segments_for_chord_deviation_a(
+                    sphere.radius(),
+                    u_range.1 - u_range.0,
+                    deflection * SPHERE_DIAG,
+                    angular_tol * SPHERE_DIAG,
+                    true,
+                );
+                let nv = segments_for_chord_deviation_a(
+                    sphere.radius(),
+                    v_range.1 - v_range.0,
+                    deflection * SPHERE_DIAG,
+                    angular_tol * SPHERE_DIAG,
+                    true,
+                );
+                let kind = sphere_analytic_kind(v_range);
+                let sphere = sphere.clone();
+                Ok(tessellate_analytic(
+                    |u, v| sphere.evaluate(u, v),
+                    |u, v| sphere.normal(u, v),
+                    u_range,
+                    v_range,
+                    nu,
+                    nv,
+                    kind,
+                ))
+            }
         }
         FaceSurface::Torus(torus) => {
             let u_range = compute_angular_range(topo, face_data, |p| torus.project_point(p));

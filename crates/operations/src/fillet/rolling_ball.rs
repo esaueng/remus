@@ -1861,6 +1861,22 @@ pub fn fillet_rolling_ball(
                 v_pos.z() + offset_sign * radius * normal_sum.z(),
             );
 
+            // Exact corner ball: when the three contacts are equidistant from
+            // the centre (always the case for mutually orthogonal faces, i.e.
+            // every box-like corner), the cap lies on that sphere exactly, so
+            // emit it as an analytic sphere face. The boundary arcs are shared
+            // circles of the same sphere, so seams stay watertight and G1. The
+            // rational apex patch below stays only as the fallback for oblique
+            // corners: it sags several percent of R mid-patch and folds at its
+            // degenerate corner, which shades as a pinched blob on every
+            // filleted box corner.
+            if let Some(spec) =
+                build_three_edge_sphere_cap(&ordered_points, sphere_center, is_concave)
+            {
+                all_specs.push(spec);
+                continue;
+            }
+
             let p0 = ordered_points[0];
             let p1 = ordered_points[1];
             let p2 = ordered_points[2];
@@ -1982,7 +1998,8 @@ pub fn fillet_rolling_ball(
         let verts = match spec {
             FaceSpec::Planar { vertices, .. }
             | FaceSpec::Surface { vertices, .. }
-            | FaceSpec::CylindricalFace { vertices, .. } => vertices,
+            | FaceSpec::CylindricalFace { vertices, .. }
+            | FaceSpec::SphereCapFace { vertices, .. } => vertices,
         };
         // Only dedup if there are actually zero-length edges (consecutive
         // vertices within tolerance). Count them first.
@@ -2066,7 +2083,8 @@ pub fn fillet_rolling_ball(
             let verts = match spec {
                 FaceSpec::Planar { vertices, .. }
                 | FaceSpec::Surface { vertices, .. }
-                | FaceSpec::CylindricalFace { vertices, .. } => vertices,
+                | FaceSpec::CylindricalFace { vertices, .. }
+                | FaceSpec::SphereCapFace { vertices, .. } => vertices,
             };
             for v in verts.iter_mut() {
                 if let Some(closest) = original_verts
@@ -2227,6 +2245,70 @@ fn corner_is_concave(
 /// Build the corner patch where exactly two filleted edges meet at a vertex
 /// (sharing one face).
 ///
+/// Build the 3-edge vertex-blend cap as an exact spherical face.
+///
+/// The cap's three corners are the strip-end contact points; its boundary arcs
+/// (minted by the adjacent `CylindricalFace` specs and shared through the
+/// assembly edge map) are circles of the corner ball. When all three contacts
+/// are equidistant from `sphere_center` the interior is exactly the ball
+/// surface, so the face carries `FaceSurface::Sphere` and tessellates with
+/// exact positions and normals.
+///
+/// The parameterization frame keeps both singularities of the sphere chart
+/// away from the patch: the poles go 90° off the patch-centre direction and
+/// the `u`-seam to its antipode, so UV projection of the boundary is
+/// continuous for any patch smaller than a hemisphere.
+///
+/// Returns `None` when the contacts are not equidistant from `sphere_center`
+/// (obliquely meeting faces — the offset centre is not a tangent-ball centre
+/// there) or the geometry is degenerate; the caller then falls back to the
+/// rational approximation.
+fn build_three_edge_sphere_cap(
+    points: &[Point3],
+    sphere_center: Point3,
+    is_concave: bool,
+) -> Option<FaceSpec> {
+    let &[p0, p1, p2] = points else {
+        return Option::None;
+    };
+
+    let d0 = p0 - sphere_center;
+    let d1 = p1 - sphere_center;
+    let d2 = p2 - sphere_center;
+    let r0 = d0.length();
+    let r1 = d1.length();
+    let r2 = d2.length();
+    let r = (r0 + r1 + r2) / 3.0;
+    if r < 1e-12 {
+        return Option::None;
+    }
+    let radius_tol = r * 1e-6;
+    if (r0 - r).abs() > radius_tol || (r1 - r).abs() > radius_tol || (r2 - r).abs() > radius_tol {
+        return Option::None;
+    }
+
+    let mean_dir = ((d0 + d1 + d2) * (1.0 / 3.0)).normalize().ok()?;
+    // Any direction perpendicular to the patch centre serves as the polar
+    // axis; Frame3 supplies one. The seam reference then points at the
+    // antipode of the patch.
+    let polar = brepkit_math::frame::Frame3::from_normal(sphere_center, mean_dir)
+        .ok()?
+        .x;
+    let sphere =
+        brepkit_math::surfaces::SphericalSurface::with_frame(sphere_center, r, polar, -mean_dir)
+            .ok()?;
+
+    Some(FaceSpec::SphereCapFace {
+        vertices: points.to_vec(),
+        sphere,
+        // The sphere's parametric normal is the outward radial: a convex
+        // corner keeps it (material on the far side of the ball), a concave
+        // corner shows the ball from inside.
+        reversed: is_concave,
+        inner_wires: vec![],
+    })
+}
+
 /// The four corners are `p` (the preserved trim point on the third, unfilleted
 /// edge), the two near contacts `near1`/`near2` that join `p` along the trimmed
 /// side faces, and the far contact `far` on the two edges' shared face. The two

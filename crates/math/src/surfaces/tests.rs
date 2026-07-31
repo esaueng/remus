@@ -255,6 +255,51 @@ fn sphere_with_axis_zero_radius_error() {
 }
 
 #[test]
+fn sphere_with_frame_places_seam_and_poles() {
+    // z fixes the poles, x_ref fixes zero longitude: u=0 on the equator must
+    // land along x_ref, and the poles along ±z.
+    let c = Point3::new(1.0, 2.0, 3.0);
+    let s =
+        SphericalSurface::with_frame(c, 2.0, Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 1.0, 0.0))
+            .unwrap();
+    let seam = s.evaluate(0.0, 0.0);
+    assert!(approx_eq((seam - Point3::new(1.0, 4.0, 3.0)).length(), 0.0));
+    let pole = s.evaluate(0.0, FRAC_PI_2);
+    assert!(approx_eq((pole - Point3::new(1.0, 2.0, 5.0)).length(), 0.0));
+    // Normal stays the outward radial.
+    let n = s.normal(1.2, 0.4);
+    let p = s.evaluate(1.2, 0.4);
+    assert!(approx_eq((n - (p - c) * 0.5).length(), 0.0));
+}
+
+#[test]
+fn sphere_with_frame_orthogonalizes_x_ref() {
+    // A non-perpendicular x_ref is projected into the equator plane.
+    let s = SphericalSurface::with_frame(
+        Point3::new(0.0, 0.0, 0.0),
+        1.0,
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, 0.7),
+    )
+    .unwrap();
+    let seam = s.evaluate(0.0, 0.0);
+    assert!(approx_eq((seam - Point3::new(1.0, 0.0, 0.0)).length(), 0.0));
+}
+
+#[test]
+fn sphere_with_frame_zero_radius_error() {
+    assert!(
+        SphericalSurface::with_frame(
+            Point3::new(0.0, 0.0, 0.0),
+            0.0,
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0)
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn torus_normal() {
     let t = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0, 2.0).unwrap();
     let n = t.normal(0.0, 0.0);

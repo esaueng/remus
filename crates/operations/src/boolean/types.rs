@@ -2,7 +2,7 @@
 //! Shared type definitions, constants, and the selection truth table for the
 //! boolean pipeline.
 
-use brepkit_math::surfaces::CylindricalSurface;
+use brepkit_math::surfaces::{CylindricalSurface, SphericalSurface};
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::edge::EdgeCurve;
@@ -108,6 +108,24 @@ pub enum FaceSpec {
         /// Inner wire vertex loops (holes in the face).
         inner_wires: Vec<Vec<Point3>>,
     },
+    /// A spherical cap face (e.g. a fillet's corner ball patch) whose
+    /// boundary edges are great-circle arcs of the sphere.
+    ///
+    /// Like `CylindricalFace`, this variant mints `EdgeCurve::Circle` edges —
+    /// the short great-circle arc between each consecutive vertex pair — so
+    /// adjacent faces share true arc geometry instead of straight chords:
+    /// the shared edge pool then samples the real seam curve, edge display
+    /// draws arcs, and STEP export keeps circles.
+    SphereCapFace {
+        /// Vertex positions for the outer wire (at least 3), on the sphere.
+        vertices: Vec<Point3>,
+        /// The spherical surface geometry.
+        sphere: SphericalSurface,
+        /// Whether the face's surface normal should be reversed.
+        reversed: bool,
+        /// Inner wire vertex loops (holes in the face).
+        inner_wires: Vec<Vec<Point3>>,
+    },
 }
 
 impl FaceSpec {
@@ -117,7 +135,8 @@ impl FaceSpec {
         match self {
             Self::Planar { inner_wires, .. }
             | Self::Surface { inner_wires, .. }
-            | Self::CylindricalFace { inner_wires, .. } => inner_wires,
+            | Self::CylindricalFace { inner_wires, .. }
+            | Self::SphereCapFace { inner_wires, .. } => inner_wires,
         }
     }
 
@@ -126,7 +145,8 @@ impl FaceSpec {
         match self {
             Self::Planar { inner_wires, .. }
             | Self::Surface { inner_wires, .. }
-            | Self::CylindricalFace { inner_wires, .. } => inner_wires,
+            | Self::CylindricalFace { inner_wires, .. }
+            | Self::SphereCapFace { inner_wires, .. } => inner_wires,
         }
     }
 }

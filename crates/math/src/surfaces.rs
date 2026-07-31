@@ -438,6 +438,43 @@ impl SphericalSurface {
         })
     }
 
+    /// Creates a spherical surface with a fully specified orientation frame.
+    ///
+    /// `z_axis` becomes the polar axis and `x_ref`, projected perpendicular to
+    /// it, fixes the zero-longitude direction. Both parametric singularities
+    /// are thereby placed by the caller: the poles sit at `±z_axis` and the
+    /// `u = 0 ≡ 2π` seam half-plane contains `+x_axis`. A trimmed patch (e.g.
+    /// a vertex-blend cap) stays well-conditioned in UV when its interior is
+    /// kept away from both — point `x_ref` at the patch antipode and pick
+    /// `z_axis` perpendicular to the patch centre direction.
+    ///
+    /// # Errors
+    /// Returns an error if radius is not positive or the z-axis is zero.
+    /// A degenerate `x_ref` (parallel to `z_axis`) falls back to an arbitrary
+    /// perpendicular, matching [`Frame3::from_normal_and_ref`].
+    pub fn with_frame(
+        center: Point3,
+        radius: f64,
+        z_axis: Vec3,
+        x_ref: Vec3,
+    ) -> Result<Self, MathError> {
+        if radius <= 0.0 {
+            return Err(MathError::ParameterOutOfRange {
+                value: radius,
+                min: f64::EPSILON,
+                max: f64::MAX,
+            });
+        }
+        let f = Frame3::from_normal_and_ref(center, z_axis, x_ref)?;
+        Ok(Self {
+            center,
+            radius,
+            x_axis: f.x,
+            y_axis: f.y,
+            z_axis: f.z,
+        })
+    }
+
     /// Evaluates the surface at parameters `(u, v)`.
     #[must_use]
     pub fn evaluate(&self, u: f64, v: f64) -> Point3 {

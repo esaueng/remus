@@ -1725,6 +1725,369 @@ fn interior_grid_resolution(
     }
 }
 
+/// Fill a spherical cap as a structured "web": concentric rings slerped from
+/// the boundary loop toward the patch's spherical centroid, closed by a fan to
+/// the centroid vertex.
+///
+/// `boundary` holds the cap's rim as ordered global vertex ids (an open list —
+/// no closing duplicate) whose positions already sit on the sphere of the
+/// given `center`/`radius`. Every generated vertex is evaluated exactly on the
+/// sphere, so no parameterization (and none of the UV pitfalls of the CDT
+/// path) is involved; triangles wind against the outward radial.
+///
+/// Returns `false` without emitting anything when the cap is unsuitable: rim
+/// off the sphere, a degenerate centroid, or a rim spreading beyond ~80° from
+/// its centroid (the slerp toward the centroid is no longer a bijection there).
+fn fill_sphere_cap_web(
+    center: Point3,
+    radius: f64,
+    boundary: &[u32],
+    deflection: f64,
+    angular_tol: f64,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> bool {
+    let n = boundary.len();
+    if n < 3 || radius <= 0.0 {
+        return false;
+    }
+
+    let mut dirs: Vec<Vec3> = Vec::with_capacity(n);
+    for &gid in boundary {
+        let d = merged.positions[gid as usize] - center;
+        if (d.length() - radius).abs() > radius * 1e-6 {
+            return false;
+        }
+        let Ok(unit) = d.normalize() else {
+            return false;
+        };
+        dirs.push(unit);
+    }
+
+    let mut centroid_raw = Vec3::new(0.0, 0.0, 0.0);
+    for d in &dirs {
+        centroid_raw += *d;
+    }
+    let Ok(centroid) = centroid_raw.normalize() else {
+        return false;
+    };
+
+    // Angle from the centroid per rim vertex; keep the cap comfortably inside
+    // a hemisphere so every slerp is well-defined and injective.
+    let mut theta_max = 0.0_f64;
+    let mut thetas = Vec::with_capacity(n);
+    for d in &dirs {
+        let cos = d.dot(centroid).clamp(-1.0, 1.0);
+        if cos < 0.17 {
+            return false; // beyond ~80 degrees
+        }
+        let theta = cos.acos();
+        theta_max = theta_max.max(theta);
+        thetas.push(theta);
+    }
+
+    // The web fills by slerping every rim vertex toward the centroid, which
+    // stays inside the patch only when the rim is star-shaped about the
+    // centroid: each rim edge's great-circle plane must keep the centroid on
+    // a consistent side. Reject rims that fail this (a concave boolean
+    // fragment) so they fall back to the CDT.
+    let mut orientation = 0_i8;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let edge_normal = dirs[i].cross(dirs[j]);
+        let len = edge_normal.length();
+        if len < 1e-14 {
+            continue; // duplicate or antipodal samples: no constraint
+        }
+        let side = edge_normal.dot(centroid) / len;
+        if side.abs() < 1e-9 {
+            continue; // centroid on the edge's great circle: degenerate rim
+        }
+        let sign: i8 = if side > 0.0 { 1 } else { -1 };
+        if orientation == 0 {
+            orientation = sign;
+        } else if sign != orientation {
+            return false;
+        }
+    }
+    if orientation == 0 {
+        return false;
+    }
+
+    let rings =
+        segments_for_chord_deviation_a(radius, theta_max, deflection, angular_tol, true).max(1);
+
+    let emit = |merged: &mut TriangleMesh, a: u32, b: u32, c: u32| {
+        if a == b || b == c || a == c {
+            return;
+        }
+        let (pa, pb, pc) = (
+            merged.positions[a as usize],
+            merged.positions[b as usize],
+            merged.positions[c as usize],
+        );
+        let geo = (pb - pa).cross(pc - pa);
+        if geo.length() < 1e-20 {
+            return;
+        }
+        let mid = Point3::new(
+            (pa.x() + pb.x() + pc.x()) / 3.0,
+            (pa.y() + pb.y() + pc.y()) / 3.0,
+            (pa.z() + pb.z() + pc.z()) / 3.0,
+        );
+        let mut tri = [a, b, c];
+        if geo.dot(mid - center) < 0.0 {
+            tri.swap(1, 2);
+        }
+        merged.indices.extend_from_slice(&tri);
+    };
+
+    let intern = |merged: &mut TriangleMesh,
+                  point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+                  dir: Vec3| {
+        let pt = center + dir * radius;
+        let key = point_merge_key(pt, MERGE_GRID);
+        *point_to_global.entry(key).or_insert_with(|| {
+            let idx = merged.positions.len() as u32;
+            merged.positions.push(pt);
+            merged.normals.push(dir);
+            idx
+        })
+    };
+
+    let mut prev: Vec<u32> = boundary.to_vec();
+    for k in 1..rings {
+        let t = k as f64 / rings as f64;
+        let mut ring = Vec::with_capacity(n);
+        for (d, &theta) in dirs.iter().zip(&thetas) {
+            let dir = if theta < 1e-12 {
+                centroid
+            } else {
+                let s = theta.sin();
+                let blended =
+                    *d * (((1.0 - t) * theta).sin() / s) + centroid * ((t * theta).sin() / s);
+                blended.normalize().unwrap_or(centroid)
+            };
+            ring.push(intern(merged, point_to_global, dir));
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            emit(merged, prev[i], prev[j], ring[j]);
+            emit(merged, prev[i], ring[j], ring[i]);
+        }
+        prev = ring;
+    }
+
+    let apex = intern(merged, point_to_global, centroid);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        emit(merged, prev[i], prev[j], apex);
+    }
+    true
+}
+
+/// Collect a face's outer-wire boundary as an ordered open loop of global
+/// vertex ids, drawing samples from the shared edge pool when available and
+/// sampling the edge geometry directly otherwise. Consecutive duplicates and
+/// the closing duplicate are removed.
+fn collect_boundary_loop(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    deflection: f64,
+    angular_tol: f64,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<Vec<u32>, crate::OperationsError> {
+    let wire = topo.wire(face_data.outer_wire())?;
+    let tol_dup = 1e-10;
+    let mut boundary: Vec<u32> = Vec::new();
+
+    let push_gid = |boundary: &mut Vec<u32>, merged: &TriangleMesh, gid: u32| {
+        if let Some(&last) = boundary.last()
+            && (last == gid
+                || (merged.positions[last as usize] - merged.positions[gid as usize]).length()
+                    < tol_dup)
+        {
+            return;
+        }
+        boundary.push(gid);
+    };
+
+    for oe in wire.edges() {
+        let is_fwd = oe.is_forward();
+        if let Some(global_ids) = edge_global_indices.get(&oe.edge().index()) {
+            let ordered: Vec<u32> = if is_fwd {
+                global_ids.clone()
+            } else {
+                global_ids.iter().rev().copied().collect()
+            };
+            for gid in ordered {
+                push_gid(&mut boundary, merged, gid);
+            }
+        } else {
+            let edge_data = topo.edge(oe.edge())?;
+            let points = sample_edge(topo, edge_data, deflection, angular_tol, false)?;
+            let ordered: Vec<Point3> = if is_fwd {
+                points
+            } else {
+                points.into_iter().rev().collect()
+            };
+            for pt in ordered {
+                let key = point_merge_key(pt, MERGE_GRID);
+                let gid = *point_to_global.entry(key).or_insert_with(|| {
+                    let idx = merged.positions.len() as u32;
+                    merged.positions.push(pt);
+                    merged.normals.push(Vec3::new(0.0, 0.0, 0.0));
+                    idx
+                });
+                push_gid(&mut boundary, merged, gid);
+            }
+        }
+    }
+
+    if boundary.len() > 2
+        && let (Some(&first), Some(&last)) = (boundary.first(), boundary.last())
+        && (first == last
+            || (merged.positions[first as usize] - merged.positions[last as usize]).length()
+                < tol_dup)
+    {
+        boundary.pop();
+    }
+    Ok(boundary)
+}
+
+/// Tessellate a spherical vertex-blend cap (a sphere face with no inner wires,
+/// e.g. the corner ball patch a fillet leaves at a box corner) as a structured
+/// web from the shared boundary samples.
+///
+/// The CDT path degrades on these caps: their boundary arcs project to
+/// (near-)collinear UV polylines, and collinear constraint chains drive the
+/// planar CDT into zero-UV-area triangles that carry real 3D area (rendered as
+/// flaps across the cap) and, at unlucky deflections, cracks. The web needs no
+/// parameterization at all — the rim reuses the shared edge-pool vertices
+/// verbatim, so seams stay watertight by construction.
+///
+/// Returns `Ok(true)` when the face is such a cap and was tessellated here;
+/// `Ok(false)` defers to the CDT/snap path.
+pub(super) fn tessellate_sphere_cap_shared(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    deflection: f64,
+    angular_tol: f64,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Sphere(sphere) = face_data.surface() else {
+        return Ok(false);
+    };
+    if !face_data.inner_wires().is_empty() {
+        return Ok(false);
+    }
+
+    let pos_save = merged.positions.len();
+    let idx_save = merged.indices.len();
+    let boundary = collect_boundary_loop(
+        topo,
+        face_data,
+        deflection,
+        angular_tol,
+        edge_global_indices,
+        merged,
+        point_to_global,
+    )?;
+
+    if fill_sphere_cap_web(
+        sphere.center(),
+        sphere.radius(),
+        &boundary,
+        deflection,
+        angular_tol,
+        merged,
+        point_to_global,
+    ) {
+        Ok(true)
+    } else {
+        // Roll back any boundary vertices this attempt interned so the CDT
+        // path starts from the same state it would have seen.
+        merged.positions.truncate(pos_save);
+        merged.normals.truncate(pos_save);
+        merged.indices.truncate(idx_save);
+        point_to_global.retain(|_, v| (*v as usize) < pos_save);
+        Ok(false)
+    }
+}
+
+/// Tessellate a trimmed sphere face standalone (single-face path), returning
+/// per-vertex UVs.
+///
+/// The rectangular UV sweep in `tessellate_with_uvs_a` covers the boundary's
+/// UV bounding box, which over-covers any sphere face whose boundary is not
+/// iso-parametric — e.g. the spherical vertex-blend cap a fillet leaves at a
+/// box corner (three arcs, none at constant `u` or `v`). This path samples the
+/// wire itself and fills the cap with the structured web (falling back to the
+/// boundary-constrained CDT for boundaries the web declines), then rebuilds
+/// every vertex normal exactly from the surface.
+///
+/// Returns `None` when neither path produces triangles; the caller falls back
+/// to the rectangular sweep so behavior never degrades.
+pub(super) fn tessellate_trimmed_sphere_uvs(
+    topo: &Topology,
+    face_id: FaceId,
+    face_data: &brepkit_topology::face::Face,
+    sphere: &brepkit_math::surfaces::SphericalSurface,
+    deflection: f64,
+    angular_tol: f64,
+    try_cdt: bool,
+) -> Option<super::TriangleMeshUV> {
+    let empty_pool: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
+    let mut merged = TriangleMesh::default();
+    let mut point_to_global: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();
+
+    let web_ok = tessellate_sphere_cap_shared(
+        topo,
+        face_data,
+        deflection,
+        angular_tol,
+        &empty_pool,
+        &mut merged,
+        &mut point_to_global,
+    )
+    .unwrap_or(false);
+
+    if !web_ok {
+        if !try_cdt {
+            return None;
+        }
+        let result = tessellate_nonplanar_cdt(
+            topo,
+            face_id,
+            face_data,
+            deflection,
+            angular_tol,
+            false,
+            &empty_pool,
+            &mut merged,
+            &mut point_to_global,
+        );
+        if result.is_err() {
+            return None;
+        }
+    }
+    if merged.indices.is_empty() {
+        return None;
+    }
+
+    let mut uvs = Vec::with_capacity(merged.positions.len());
+    for i in 0..merged.positions.len() {
+        let (u, v) = sphere.project_point(merged.positions[i]);
+        uvs.push([u, v]);
+        merged.normals[i] = sphere.normal(u, v);
+    }
+    Some(super::TriangleMeshUV { mesh: merged, uvs })
+}
+
 /// Check if a 2D point is inside a polygon defined by (u, v) coordinates.
 /// Uses the winding number algorithm for robustness.
 pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: brepkit_math::vec::Point2) -> bool {

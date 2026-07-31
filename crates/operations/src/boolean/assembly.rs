@@ -162,7 +162,8 @@ pub(crate) fn assemble_solid_mixed(
         face_specs.iter().flat_map(|s| match s {
             FaceSpec::Planar { vertices, .. }
             | FaceSpec::Surface { vertices, .. }
-            | FaceSpec::CylindricalFace { vertices, .. } => vertices.iter().copied(),
+            | FaceSpec::CylindricalFace { vertices, .. }
+            | FaceSpec::SphereCapFace { vertices, .. } => vertices.iter().copied(),
         }),
         tol,
     );
@@ -174,20 +175,110 @@ pub(crate) fn assemble_solid_mixed(
 
     let mut face_ids = Vec::with_capacity(face_specs.len());
 
-    // Process CylindricalFace specs first so circle edges populate edge_map
-    // before planar/surface faces look them up. This ensures adjacent planar
-    // faces share the Circle edge rather than creating a Line edge.
+    // Process CylindricalFace and SphereCapFace specs first so circle edges
+    // populate edge_map before planar/surface faces look them up. This ensures
+    // adjacent faces share the Circle edge rather than creating a Line edge.
+    let arc_minting = |s: &&FaceSpec| {
+        matches!(
+            s,
+            FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. }
+        )
+    };
     let cylindrical_first = face_specs
         .iter()
-        .filter(|s| matches!(s, FaceSpec::CylindricalFace { .. }))
-        .chain(
-            face_specs
-                .iter()
-                .filter(|s| !matches!(s, FaceSpec::CylindricalFace { .. })),
-        );
+        .filter(arc_minting)
+        .chain(face_specs.iter().filter(|s| !arc_minting(s)));
 
     for spec in cylindrical_first {
         match spec {
+            FaceSpec::SphereCapFace {
+                vertices,
+                sphere,
+                reversed,
+                ..
+            } => {
+                let verts = vertices;
+                let n = verts.len();
+                if n < 3 {
+                    continue;
+                }
+
+                let vert_ids: Vec<VertexId> = verts
+                    .iter()
+                    .map(|p| {
+                        let key = quantize_point(*p, resolution);
+                        *vertex_map
+                            .entry(key)
+                            .or_insert_with(|| topo.add_vertex(Vertex::new(*p, tol.linear)))
+                    })
+                    .collect();
+
+                let center = sphere.center();
+                let radius = sphere.radius();
+                let mut oriented_edges = Vec::with_capacity(n);
+                for i in 0..n {
+                    let j = (i + 1) % n;
+                    let vi = vert_ids[i].index();
+                    let vj = vert_ids[j].index();
+                    if vi == vj {
+                        continue; // Skip degenerate zero-length edges.
+                    }
+                    let (key_min, key_max) = if vi <= vj { (vi, vj) } else { (vj, vi) };
+
+                    let edge_id = *edge_map.entry((key_min, key_max)).or_insert_with(|| {
+                        let start = vert_ids[i];
+                        let end = vert_ids[j];
+                        // The boundary between consecutive cap corners is the
+                        // SHORT great-circle arc through both: a stored Circle
+                        // runs CCW start→end around its axis, and the axis
+                        // d_i × d_j makes that CCW span exactly the short arc
+                        // from verts[i] to verts[j].
+                        let di = verts[i] - center;
+                        let dj = verts[j] - center;
+                        let axis = di.cross(dj);
+                        if let (true, Ok(circle)) = (
+                            axis.length() > 1e-12 * radius * radius,
+                            brepkit_math::curves::Circle3D::new(center, axis, radius),
+                        ) {
+                            topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)))
+                        } else {
+                            // Coincident or antipodal corners: no unique great
+                            // circle — fall back to a chord.
+                            topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
+                        }
+                    });
+                    let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
+
+                    if oriented_edges
+                        .last()
+                        .is_some_and(|last: &OrientedEdge| last.edge() == edge_id)
+                    {
+                        continue;
+                    }
+                    oriented_edges.push(OrientedEdge::new(edge_id, is_forward));
+                }
+
+                let wire =
+                    Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
+                let wire_id = topo.add_wire(wire);
+
+                let inner_wire_ids = build_inner_wires(
+                    topo,
+                    spec.inner_wires(),
+                    &mut vertex_map,
+                    &mut edge_map,
+                    resolution,
+                    tol,
+                )?;
+
+                let surface = FaceSurface::Sphere(sphere.clone());
+                let face = if *reversed {
+                    topo.add_face(Face::new_reversed(wire_id, inner_wire_ids, surface))
+                } else {
+                    topo.add_face(Face::new(wire_id, inner_wire_ids, surface))
+                };
+                face_ids.push(face);
+            }
             FaceSpec::CylindricalFace {
                 vertices,
                 cylinder,
@@ -323,7 +414,9 @@ pub(crate) fn assemble_solid_mixed(
                         reversed,
                         ..
                     } => (vertices.clone(), surface.clone(), *reversed),
-                    FaceSpec::CylindricalFace { .. } => unreachable!(),
+                    FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. } => {
+                        unreachable!()
+                    }
                 };
 
                 let n = verts.len();
