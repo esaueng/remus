@@ -934,10 +934,18 @@ export class BrepKernel {
      * Apply a constant-radius fillet and return face-evolution tracking data.
      *
      * Returns a JSON string `{"solid": <u32>, "evolution": {modified,
-     * generated, deleted}}` — the same shape as `fuseWithEvolution`. Blend
-     * faces appear under `generated` and surviving faces under `modified`.
-     * Provenance is matched geometrically (face normal + centroid), so it is
-     * unaffected by how the fillet renumbers faces.
+     * generated, deleted, unresolved, origin}}` — the same shape as
+     * `fuseWithEvolution`. Blend faces appear under `generated` and surviving
+     * faces under `modified`.
+     *
+     * `origin` says how far the answer can be trusted. `"construction"` means
+     * the blend engine recorded the correspondence while assembling the
+     * result; `"geometry"` means it was matched from face normals and
+     * centroids, because the engine that ran rebuilds faces instead of
+     * trimming them and keeps no record. Either way, `unresolved` lists result
+     * faces with no established origin (with the input faces that tied, when
+     * there were any) — a caller holding a persistent face reference must fail
+     * closed on those rather than pick from the candidates.
      *
      * # Errors
      *
