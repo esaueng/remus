@@ -331,6 +331,28 @@ impl BrepKernel {
         Ok(step_str.into_bytes())
     }
 
+    /// Export several solids into one STEP AP203 file.
+    ///
+    /// The solids stay distinct in the output — they become separate
+    /// `MANIFOLD_SOLID_BREP` items of a single
+    /// `ADVANCED_BREP_SHAPE_REPRESENTATION`, so a reader recovers exactly the
+    /// bodies that went in. `solids` is a JS `Uint32Array` or array of solid
+    /// handles.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, if any handle is invalid, or if
+    /// export fails.
+    #[wasm_bindgen(js_name = "exportStepMulti")]
+    pub fn export_step_multi(&self, solids: &[u32]) -> Result<Vec<u8>, JsError> {
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let step_str = brepkit_io::step::writer::write_step(&self.topo, &solid_ids)?;
+        Ok(step_str.into_bytes())
+    }
+
     /// Import a STEP file and return solid handles.
     ///
     /// Returns handles for each solid found in the STEP file.

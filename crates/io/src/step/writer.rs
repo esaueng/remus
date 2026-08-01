@@ -51,7 +51,7 @@ pub fn write_step(topo: &Topology, solids: &[SolidId]) -> Result<String, IoError
         shape_repr_id,
         "ADVANCED_BREP_SHAPE_REPRESENTATION",
         &format!(
-            "'brepkit export', ({},), #{})",
+            "'brepkit export', ({}), #{})",
             items.join(", "),
             repr_context_id
         ),
