@@ -2277,3 +2277,131 @@ fn pinched_ledge_prism_is_watertight() {
         }
     }
 }
+
+// ── holes on a cylindrical face ──
+//
+// `tessellate_analytic_with_boundary` carried a note saying its dropping of
+// inner wires was safe because the holed sub-face of
+// `split_face_with_internal_loops` is discarded by classification. Measured on
+// an equal-radius cross-drilled shaft — the body that took two fixes on the
+// measurement side — neither half of that holds.
+//
+// The face carrying the holes is the shaft wall the cut KEEPS, not a discarded
+// sub-face. And it never reaches that function: its outer boundary is the
+// ordinary two rim circles and a seam, so the dispatcher sends it to the
+// analytic grid, which spans the face's whole uv box and pastes over both bore
+// rims. A cross-drilled shaft renders as an undrilled one.
+
+/// A shaft of radius 3 and height 30 with an equal-radius bore driven clean
+/// through its side at mid-height. Equal radii keep the cut analytic: the two
+/// cylinders meet in a pair of plane ellipses, and each becomes an inner wire
+/// on the shaft wall.
+fn cross_drilled_shaft() -> (Topology, brepkit_topology::solid::SolidId) {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let shaft = crate::primitives::make_cylinder(&mut topo, 3.0, 30.0).unwrap();
+    let len = 30.0 + 4.0 * 3.0;
+    let bore = crate::primitives::make_cylinder(&mut topo, 3.0, len).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        bore,
+        &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    crate::transform::transform_solid(&mut topo, bore, &Mat4::translation(-len / 2.0, 0.0, 15.0))
+        .unwrap();
+    let res =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, shaft, bore).unwrap();
+    (topo, res)
+}
+
+/// The one cylindrical face of the cut result that carries inner wires.
+fn holed_cylindrical_face(
+    topo: &Topology,
+    solid: brepkit_topology::solid::SolidId,
+) -> brepkit_topology::face::FaceId {
+    let shell = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
+    let mut found = None;
+    for &fid in shell.faces() {
+        let f = topo.face(fid).unwrap();
+        if matches!(f.surface(), FaceSurface::Cylinder(_)) && !f.inner_wires().is_empty() {
+            assert!(
+                found.is_none(),
+                "expected exactly one holed cylindrical face"
+            );
+            found = Some(fid);
+        }
+    }
+    assert!(
+        found.is_some(),
+        "the cut should keep a cylindrical face carrying the bore rims"
+    );
+    found.unwrap()
+}
+
+/// Summed triangle area of a face's mesh.
+fn tessellated_area(topo: &Topology, face: brepkit_topology::face::FaceId, deflection: f64) -> f64 {
+    let mesh = crate::tessellate::tessellate(topo, face, deflection).unwrap();
+    mesh.indices
+        .chunks_exact(3)
+        .map(|t| {
+            let a = mesh.positions[t[0] as usize];
+            let b = mesh.positions[t[1] as usize];
+            let c = mesh.positions[t[2] as usize];
+            (b - a).cross(c - a).length() / 2.0
+        })
+        .sum()
+}
+
+#[test]
+fn a_cut_keeps_a_cylindrical_face_that_carries_holes() {
+    // The premise the old note rested on: that a holed cylindrical face only
+    // ever appears as a sub-face classification throws away. It appears in the
+    // kept result, with both bore rims on it.
+    let (topo, solid) = cross_drilled_shaft();
+    let wall = holed_cylindrical_face(&topo, solid);
+    assert_eq!(
+        topo.face(wall).unwrap().inner_wires().len(),
+        2,
+        "the shaft wall should carry one inner wire per bore rim"
+    );
+}
+
+#[test]
+fn a_holed_cylindrical_face_does_not_take_the_boundary_tessellator() {
+    // Pins the routing, so `tessellate_analytic_with_boundary`'s "no holed face
+    // reaches here" cannot quietly become false. If this flips, that function
+    // starts receiving holes and its doc comment has to be revisited along with
+    // its body.
+    let (topo, solid) = cross_drilled_shaft();
+    let wall = holed_cylindrical_face(&topo, solid);
+    let face_data = topo.face(wall).unwrap();
+    assert!(
+        !super::face::cylinder_has_non_standard_boundary(&topo, face_data).unwrap(),
+        "a holed cylindrical wall reached the boundary tessellator, which ignores inner wires"
+    );
+}
+
+#[test]
+#[ignore = "holed cylindrical faces render with their holes filled; see this module's note"]
+fn holed_cylindrical_wall_is_rendered_without_its_holes() {
+    // Closed form for the wall that is left. The full wall is 2*pi*r*h =
+    // 565.486678. The bore removes, in the wall's (u, z) parameters, the region
+    // |z - h/2| < r|cos u| — its area on the surface is
+    // r * integral over 0..2pi of 2r|cos u| du = 4r^2 * 2 = 72 for r = 3.
+    // So the drilled wall is 565.486678 - 72 = 493.486678.
+    //
+    // Measured today: 565.179 at deflection 0.005, i.e. the whole undrilled
+    // wall to within its own chord error. Both rims are paved over.
+    let (topo, solid) = cross_drilled_shaft();
+    let wall = holed_cylindrical_face(&topo, solid);
+    let area = tessellated_area(&topo, wall, 0.005);
+    let expected = 2.0 * std::f64::consts::PI * 3.0 * 30.0 - 72.0;
+    assert!(
+        (area - expected).abs() < 0.01 * expected,
+        "the rendered wall should be the drilled wall {expected:.6}, got {area:.6}"
+    );
+}

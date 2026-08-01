@@ -1105,6 +1105,441 @@ fn sweep_miter_fallback_smooth_on_no_kinks() {
     );
 }
 
+// ── SweepCornerMode::Round ──
+
+/// Helper: a regular `sides`-gon of radius `r` in the XY plane, centred at the
+/// origin (normal +Z). Inscribed, so its area is `sides/2 · r² · sin(2π/sides)`
+/// — just under `πr²`.
+fn make_ngon(topo: &mut Topology, sides: usize, r: f64) -> FaceId {
+    let t = 1e-7;
+    let verts: Vec<_> = (0..sides)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let a = std::f64::consts::TAU * (i as f64) / (sides as f64);
+            topo.add_vertex(Vertex::new(Point3::new(r * a.cos(), r * a.sin(), 0.0), t))
+        })
+        .collect();
+    let edges: Vec<_> = (0..sides)
+        .map(|i| topo.add_edge(Edge::new(verts[i], verts[(i + 1) % sides], EdgeCurve::Line)))
+        .collect();
+    let wire = Wire::new(
+        edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+        true,
+    )
+    .unwrap();
+    let wid = topo.add_wire(wire);
+    topo.add_face(Face::new(
+        wid,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ))
+}
+
+/// Assert every edge of `solid`'s outer shell is used by exactly two faces.
+fn assert_manifold(topo: &Topology, solid: SolidId) {
+    let shell = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
+    let mut edge_counts: HashMap<usize, usize> = HashMap::new();
+    for &fid in shell.faces() {
+        let f = topo.face(fid).unwrap();
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                *edge_counts.entry(oe.edge().index()).or_insert(0) += 1;
+            }
+        }
+    }
+    for (&edge_idx, &count) in &edge_counts {
+        assert_eq!(
+            count, 2,
+            "edge {edge_idx} shared by {count} faces, expected 2 (manifold)"
+        );
+    }
+}
+
+#[test]
+fn sweep_round_l_path_is_two_cylinders_and_a_torus_quadrant() {
+    // Closed form, derived rather than recorded. A circular profile of radius r
+    // swept along two straight legs of length `leg` meeting at a right angle,
+    // with the path corner rounded to radius R, is exactly:
+    //
+    //   * two cylinders of radius r. The arc is tangent to both legs, so it eats
+    //     R·tan(θ/2) = R·tan(45°) = R of each leg, leaving length (leg - R).
+    //   * one quarter of a torus of major radius R, minor radius r:
+    //     (2π²Rr²)/4 = π²Rr²/2.
+    //
+    //   V = 2·πr²(leg - R) + π²Rr²/2
+    //
+    // For leg = 5, R = 2, r = 1:  V = 6π + π² = 28.7192.
+    //
+    // The construction inscribes both circles, so the measured volume must land
+    // *just under* that: the 64-gon profile is short by (2π)²/(6·64²) ≈ 0.16% of
+    // πr², and chording the quadrant into 32 rings costs a further ≈ 0.04% of
+    // the torus term. Total predicted deficit ≈ 0.18%; the bound below is 0.4%.
+    let (leg, big_r, r) = (5.0, 2.0, 1.0);
+    let mut topo = Topology::new();
+    let profile = make_ngon(&mut topo, 64, r);
+    let path = l_shaped_path();
+
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: big_r },
+        ..Default::default()
+    };
+    let solid = sweep_with_options(&mut topo, profile, &path, &options).unwrap();
+
+    let pi = std::f64::consts::PI;
+    let exact = 2.0 * pi * r * r * (leg - big_r) + pi * pi * big_r * r * r / 2.0;
+    let vol = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(
+        vol < exact && vol > exact * 0.996,
+        "rounded L-sweep volume should approach 2πr²(leg-R) + π²Rr²/2 = {exact} \
+         from below, got {vol}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+    assert!(
+        crate::tessellate::is_watertight(&mesh),
+        "rounded L-sweep mesh should be watertight ({} boundary edges)",
+        crate::tessellate::boundary_edge_count(&mesh)
+    );
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(
+        report.issues.is_empty(),
+        "rounded L-sweep should validate cleanly, got {:?}",
+        report.issues
+    );
+    assert_manifold(&topo, solid);
+}
+
+#[test]
+fn sweep_round_square_profile_matches_pappus_and_differs_from_smooth() {
+    // A 1×1 square profile round-cornered at R = 1 on the L path. The legs are
+    // exact prisms of length (5 - R·tan(45°)) = 4, and the corner is a solid of
+    // revolution whose generating area is the same square with its centroid on
+    // the arc, so Pappus gives area · R · θ for it:
+    //
+    //   V = 1·(4 + 4) + 1·1·(π/2) = 9.5708
+    //
+    // Round used to be accepted and then silently swept as Smooth, which is a
+    // different solid (10 in Miter, 9.1667 in Smooth) — so this also pins that
+    // asking for Round no longer hands back one of the other two.
+    let mut topo = Topology::new();
+    let profile = make_square(&mut topo, 1.0);
+    let path = l_shaped_path();
+
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 1.0 },
+        ..Default::default()
+    };
+    let solid = sweep_with_options(&mut topo, profile, &path, &options).unwrap();
+
+    let exact = 8.0 + std::f64::consts::FRAC_PI_2;
+    let vol = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(
+        vol < exact && vol > exact * 0.999,
+        "rounded L-sweep of a unit square should approach {exact} from below, got {vol}"
+    );
+
+    let mut smooth_topo = Topology::new();
+    let smooth_profile = make_square(&mut smooth_topo, 1.0);
+    let smooth = sweep_with_options(
+        &mut smooth_topo,
+        smooth_profile,
+        &path,
+        &SweepOptions::default(),
+    )
+    .unwrap();
+    let smooth_vol = crate::measure::solid_volume(&smooth_topo, smooth, 0.05).unwrap();
+    assert!(
+        (vol - smooth_vol).abs() > 0.3,
+        "Round must not reproduce the Smooth sweep: round {vol}, smooth {smooth_vol}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+    assert!(
+        crate::tessellate::is_watertight(&mesh),
+        "rounded square L-sweep mesh should be watertight ({} boundary edges)",
+        crate::tessellate::boundary_edge_count(&mesh)
+    );
+    assert_manifold(&topo, solid);
+}
+
+#[test]
+fn sweep_round_u_path_rounds_both_corners() {
+    // U path with 5-unit legs and two right-angle kinks, R = 1.5, 1×1 square.
+    // Each corner eats 1.5 from both of its legs, so the straight runs are
+    // 3.5, 5 - 2·1.5 = 2 and 3.5, and each corner contributes area·R·θ:
+    //   V = (3.5 + 2 + 3.5) + 2·(1·1.5·π/2) = 9 + 1.5π = 13.7124
+    let path = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+        vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(5.0, 0.0, 5.0),
+            Point3::new(5.0, 0.0, 0.0),
+        ],
+        vec![1.0, 1.0, 1.0, 1.0],
+    )
+    .unwrap();
+
+    let mut topo = Topology::new();
+    let profile = make_square(&mut topo, 1.0);
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 1.5 },
+        ..Default::default()
+    };
+    let solid = sweep_with_options(&mut topo, profile, &path, &options).unwrap();
+
+    let exact = 9.0 + 1.5 * std::f64::consts::PI;
+    let vol = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(
+        vol < exact && vol > exact * 0.999,
+        "rounded U-sweep volume should approach {exact} from below, got {vol}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+    assert!(
+        crate::tessellate::is_watertight(&mesh),
+        "rounded U-sweep mesh should be watertight ({} boundary edges)",
+        crate::tessellate::boundary_edge_count(&mesh)
+    );
+}
+
+#[test]
+fn sweep_round_carries_inner_wires_around_the_corner() {
+    // A 4×4 profile with a 2×2 hole, rounded at R = 3 on the L path. Both the
+    // outer boundary and the hole are solids of revolution about the same axis
+    // with their centroids on the arc, so Pappus applies to the annular area:
+    //   V = (16 - 4)·(2 + 2) + (16 - 4)·3·(π/2) = 48 + 18π = 104.5487
+    let mut topo = Topology::new();
+    let outer = make_square(&mut topo, 4.0);
+    let inner = make_square(&mut topo, 2.0);
+    let inner_wire = topo.face(inner).unwrap().outer_wire();
+    let outer_wire = topo.face(outer).unwrap().outer_wire();
+    let profile = topo.add_face(Face::new(
+        outer_wire,
+        vec![inner_wire],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+
+    let path = l_shaped_path();
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 3.0 },
+        ..Default::default()
+    };
+    let solid = sweep_with_options(&mut topo, profile, &path, &options).unwrap();
+
+    let exact = 48.0 + 18.0 * std::f64::consts::PI;
+    let vol = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(
+        vol < exact && vol > exact * 0.999,
+        "rounded holed L-sweep volume should approach {exact} from below (the hole must \
+         survive the corner), got {vol}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+    assert!(
+        crate::tessellate::is_watertight(&mesh),
+        "rounded holed L-sweep mesh should be watertight ({} boundary edges)",
+        crate::tessellate::boundary_edge_count(&mesh)
+    );
+}
+
+#[test]
+fn sweep_round_no_kinks_sweeps_the_path_as_given() {
+    // Nothing to round on a straight path, so Round is satisfied exactly by the
+    // ordinary sweep — this is not a silent substitution.
+    let mut topo = Topology::new();
+    let profile = make_unit_square_face(&mut topo);
+    let path = straight_z_path(5.0);
+
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 1.0 },
+        ..Default::default()
+    };
+    let solid = sweep_with_options(&mut topo, profile, &path, &options).unwrap();
+    let vol = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+    assert!(
+        (vol - 5.0).abs() < 1e-6,
+        "straight-path round sweep should produce volume 5.0, got {vol}"
+    );
+}
+
+#[test]
+fn sweep_round_rejects_non_positive_radius() {
+    let mut topo = Topology::new();
+    let profile = make_unit_square_face(&mut topo);
+    let path = l_shaped_path();
+
+    for radius in [0.0, -1.0, f64::NAN] {
+        let options = SweepOptions {
+            corner_mode: SweepCornerMode::Round { radius },
+            ..Default::default()
+        };
+        let err = sweep_with_options(&mut topo, profile, &path, &options).unwrap_err();
+        assert!(
+            matches!(err, crate::OperationsError::InvalidInput { .. }),
+            "radius {radius} should be rejected as invalid input, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn sweep_round_rejects_radius_longer_than_the_path_run() {
+    // R = 6 sets the arc back 6 along each 5-unit leg: no such corner exists.
+    // The caller must be told, not handed a mitered or smoothed corner.
+    let mut topo = Topology::new();
+    let profile = make_unit_square_face(&mut topo);
+    let path = l_shaped_path();
+
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 6.0 },
+        ..Default::default()
+    };
+    let err = sweep_with_options(&mut topo, profile, &path, &options).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::OperationsError::Unsupported {
+                operation: "sweep",
+                ..
+            }
+        ),
+        "over-long corner radius should be reported as unsupported, got {err:?}"
+    );
+}
+
+#[test]
+fn sweep_round_rejects_overlapping_corner_arcs() {
+    // U path: the middle leg is 5 long, so two R = 3 corners would need 6 of it.
+    let path = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+        vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(5.0, 0.0, 5.0),
+            Point3::new(5.0, 0.0, 0.0),
+        ],
+        vec![1.0, 1.0, 1.0, 1.0],
+    )
+    .unwrap();
+
+    let mut topo = Topology::new();
+    let profile = make_unit_square_face(&mut topo);
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 3.0 },
+        ..Default::default()
+    };
+    let err = sweep_with_options(&mut topo, profile, &path, &options).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::OperationsError::Unsupported {
+                operation: "sweep",
+                ..
+            }
+        ),
+        "overlapping corner arcs should be reported as unsupported, got {err:?}"
+    );
+}
+
+#[test]
+fn sweep_round_rejects_a_profile_that_reaches_past_the_corner_axis() {
+    // A 4×4 profile reaches 2 into the turn; at R = 1 the inboard half of the
+    // ring would sweep through the rotation axis and fold the solid inside out.
+    let mut topo = Topology::new();
+    let profile = make_square(&mut topo, 4.0);
+    let path = l_shaped_path();
+
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 1.0 },
+        ..Default::default()
+    };
+    let err = sweep_with_options(&mut topo, profile, &path, &options).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::OperationsError::Unsupported {
+                operation: "sweep",
+                ..
+            }
+        ),
+        "a profile reaching past the corner axis should be reported as unsupported, got {err:?}"
+    );
+}
+
+#[test]
+fn sweep_round_rejects_a_kink_whose_run_is_curved() {
+    // Degree-2 path with a double interior knot: the run before the kink is a
+    // curved Bezier, the run after it is straight. An arc tangent to both path
+    // *lines* does not exist, so this needs a variable-radius blend the round
+    // construction does not do — and must say so.
+    let path = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+        vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 2.5),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(2.5, 0.0, 5.0),
+            Point3::new(5.0, 0.0, 5.0),
+        ],
+        vec![1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+    .unwrap();
+    assert_eq!(detect_kinks(&path).len(), 1, "path should have one kink");
+
+    let mut topo = Topology::new();
+    let profile = make_unit_square_face(&mut topo);
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 1.0 },
+        ..Default::default()
+    };
+    let err = sweep_with_options(&mut topo, profile, &path, &options).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::OperationsError::Unsupported {
+                operation: "sweep",
+                ..
+            }
+        ),
+        "a curved run beside a kink should be reported as unsupported, got {err:?}"
+    );
+}
+
+#[test]
+fn sweep_round_rejects_a_guide_spine() {
+    let mut topo = Topology::new();
+    let profile = make_unit_square_face(&mut topo);
+    let path = l_shaped_path();
+
+    let options = SweepOptions {
+        corner_mode: SweepCornerMode::Round { radius: 1.0 },
+        aux_spine: Some(straight_z_path(5.0)),
+        ..Default::default()
+    };
+    let err = sweep_with_options(&mut topo, profile, &path, &options).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::OperationsError::Unsupported {
+                operation: "sweep",
+                ..
+            }
+        ),
+        "round corners plus a guide spine should be reported as unsupported, got {err:?}"
+    );
+}
+
 // ── densify_path_points (rectLipSweep non-square overshoot regression) ──
 
 /// Sample a rounded-rectangle boundary the way `sweepAlongEdges` does: line

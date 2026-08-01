@@ -48,14 +48,34 @@ fn compute_frames(
     } else {
         num_segments + 1
     };
-    let mut frames = Vec::with_capacity(frame_count);
 
     let (u0, u1) = path.domain();
-    let t0 = path.tangent(u0)?;
+    let mut samples = Vec::with_capacity(frame_count);
+    for k in 0..frame_count {
+        #[allow(clippy::cast_precision_loss)]
+        let t_param = u0 + (u1 - u0) * (k as f64) / (num_segments as f64);
+        samples.push((path.evaluate(t_param), path.tangent(t_param)?));
+    }
+
+    Ok(frames_from_samples(&samples, initial_up))
+}
+
+/// Build rotation-minimizing frames from an ordered `(origin, tangent)` sample
+/// list.
+///
+/// The samples need not come from a single curve — corner-rounded paths splice
+/// straight runs and arc runs together — so this works on the sampled sequence
+/// rather than on a parameter range. Uses the same double-reflection propagation
+/// as [`compute_frames`], which is exact (zero twist) on a planar circular arc.
+fn frames_from_samples(samples: &[(Point3, Vec3)], initial_up: Vec3) -> Vec<Frame> {
+    let mut frames = Vec::with_capacity(samples.len());
+    let Some(&(origin0, t0)) = samples.first() else {
+        return frames;
+    };
     let up0 = orthogonalize(initial_up, t0);
     let right0 = t0.cross(up0);
     frames.push(Frame {
-        origin: path.evaluate(u0),
+        origin: origin0,
         tangent: t0,
         up: up0,
         right: right0,
@@ -66,17 +86,8 @@ fn compute_frames(
     // Two reflections per step:
     //   1. Reflect across the plane bisecting consecutive origins (position change).
     //   2. Reflect across the plane bisecting the reflected tangent and new tangent.
-    let last_k = if is_closed {
-        num_segments - 1
-    } else {
-        num_segments
-    };
-    for k in 1..=last_k {
-        #[allow(clippy::cast_precision_loss)]
-        let t_param = u0 + (u1 - u0) * (k as f64) / (num_segments as f64);
-
-        let origin = path.evaluate(t_param);
-        let tangent = path.tangent(t_param)?;
+    for k in 1..samples.len() {
+        let (origin, tangent) = samples[k];
 
         let prev = &frames[k - 1];
 
@@ -111,7 +122,7 @@ fn compute_frames(
         });
     }
 
-    Ok(frames)
+    frames
 }
 
 /// The profile's own orthonormal basis `(right, up, tangent)` for mapping its 2D
@@ -1117,9 +1128,24 @@ pub enum SweepCornerMode {
     /// are joined by miter faces on the bisector plane of the two
     /// tangent directions. Produces clean geometry at sharp turns.
     Miter,
-    /// At each kink, insert a smooth fillet blend by rotating the profile
-    /// through the turn angle in small angular steps.
-    Round,
+    /// Rounded joints at sharp corners.
+    ///
+    /// Each kink in the path is replaced by a circular arc of `radius` that is
+    /// tangent to both adjacent path directions, and the profile is carried
+    /// around that arc. A circular profile of radius `r` swept this way over a
+    /// turn of angle `θ` produces exactly a torus sector: major radius
+    /// `radius`, minor radius `r`, angle `θ`.
+    ///
+    /// The arc eats `radius · tan(θ/2)` of path on each side of the kink, so
+    /// the adjacent path runs must be at least that long — and straight over
+    /// that length. `radius` must also exceed the profile's reach toward the
+    /// inside of the turn, or the swept solid would fold through its own
+    /// rotation axis. Sweeping reports each of these as an error rather than
+    /// falling back to another corner mode.
+    Round {
+        /// Radius of the corner arc, in model units. Must be positive.
+        radius: f64,
+    },
 }
 
 /// Options for advanced sweep operations.
@@ -1178,19 +1204,19 @@ pub fn sweep_with_options(
         });
     }
 
-    // Dispatch to miter sweep for Miter corners, but only if the path
-    // actually has kinks. This avoids entering sweep_miter just to fall
-    // back to smooth sweep, which would drop the caller's scale_law
-    // (Box<dyn Fn> is not Clone).
-    // Round is not yet implemented — fall through to smooth sweep as the safe default.
-    // TODO: implement proper fillet-blend round corners.
-    if matches!(options.corner_mode, SweepCornerMode::Miter) && !detect_kinks(path).is_empty() {
-        return sweep_miter(topo, profile, path, options);
+    // Dispatch to the corner-aware builders, but only if the path actually has
+    // kinks. A kink-free path has no corner to treat, and entering the corner
+    // builder just to fall back to the smooth sweep would drop the caller's
+    // scale_law (Box<dyn Fn> is not Clone).
+    if !matches!(options.corner_mode, SweepCornerMode::Smooth) && !detect_kinks(path).is_empty() {
+        match options.corner_mode {
+            SweepCornerMode::Miter => return sweep_miter(topo, profile, path, options),
+            SweepCornerMode::Round { radius } => {
+                return sweep_round(topo, profile, path, options, radius);
+            }
+            SweepCornerMode::Smooth => unreachable!("guarded above"),
+        }
     }
-
-    let face_data = topo.face(profile)?;
-    let input_wire_id = face_data.outer_wire();
-    let inner_wire_ids_opts: Vec<brepkit_topology::wire::WireId> = face_data.inner_wires().to_vec();
 
     // Detect closed paths — delegate to basic sweep for now since advanced
     // options (scale laws, contact modes) with closed paths needs more work.
@@ -1219,51 +1245,13 @@ pub fn sweep_with_options(
         return Ok(solid);
     }
 
-    let input_wire = topo.wire(input_wire_id)?;
-    let original_oriented: Vec<_> = input_wire.edges().to_vec();
-
-    if original_oriented.is_empty() {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "sweep profile has no edges".into(),
-        });
-    }
-
-    let input_oriented = crate::extrude::maybe_split_closed_wire(
-        topo,
-        &original_oriented,
-        tol.linear,
-        crate::extrude::DEFAULT_DEFLECTION,
-    )?;
-    let n = input_oriented.len();
-
-    let mut input_verts: Vec<VertexId> = Vec::with_capacity(n);
-    for oe in &input_oriented {
-        let edge = topo.edge(oe.edge())?;
-        let vid = oe.oriented_start(edge);
-        input_verts.push(vid);
-    }
-
-    let mut input_positions: Vec<Point3> = input_verts
-        .iter()
-        .map(|&vid| {
-            topo.vertex(vid)
-                .map(brepkit_topology::vertex::Vertex::point)
-        })
-        .collect::<Result<_, _>>()?;
-
-    // Profile normal from the section boundary (planar or non-planar alike); the
-    // gate that required a planar surface is gone.
-    let mut input_normal = crate::winding::newell_normal(&input_positions)
-        .normalize()
-        .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-
-    // Ensure CCW winding relative to path direction (same fix as sweep()).
     let path_tangent_0 = path.tangent(0.0)?;
-    if crate::winding::ensure_ccw_positions(&mut input_positions, path_tangent_0) {
-        input_normal = -input_normal;
-    }
-
-    let centroid = crate::winding::polygon_centroid(&input_positions);
+    let SweptProfile {
+        positions: input_positions,
+        inner_wire_ids: inner_wire_ids_opts,
+        normal: input_normal,
+        centroid,
+    } = prepare_profile(topo, profile, path_tangent_0)?;
 
     let num_segments = if options.segments > 0 {
         options.segments
@@ -1348,6 +1336,120 @@ pub fn sweep_with_options(
         }
     };
 
+    let scales: Vec<f64> = (0..=num_segments)
+        .map(|k| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = k as f64 / num_segments as f64;
+            options.scale_law.as_ref().map_or(1.0, |law| law(t))
+        })
+        .collect();
+
+    assemble_swept_solid(
+        topo,
+        &input_positions,
+        &inner_wire_ids_opts,
+        centroid,
+        input_normal,
+        &frames,
+        &scales,
+    )
+}
+
+/// A profile boundary prepared for sweeping: the outer wire sampled as a
+/// polygon, its inner wires, and the centroid / normal derived from it.
+struct SweptProfile {
+    positions: Vec<Point3>,
+    inner_wire_ids: Vec<brepkit_topology::wire::WireId>,
+    normal: Vec3,
+    centroid: Point3,
+}
+
+/// Read `profile`'s boundary and orient it for a sweep that starts along
+/// `path_tangent_0`.
+///
+/// Closed (single-edge) boundary curves are split into a polygon first, so the
+/// caller always gets one position per swept ring corner.
+fn prepare_profile(
+    topo: &mut Topology,
+    profile: FaceId,
+    path_tangent_0: Vec3,
+) -> Result<SweptProfile, crate::OperationsError> {
+    let tol = Tolerance::new();
+
+    let face_data = topo.face(profile)?;
+    let input_wire_id = face_data.outer_wire();
+    let inner_wire_ids: Vec<brepkit_topology::wire::WireId> = face_data.inner_wires().to_vec();
+
+    let input_wire = topo.wire(input_wire_id)?;
+    let original_oriented: Vec<_> = input_wire.edges().to_vec();
+    if original_oriented.is_empty() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "sweep profile has no edges".into(),
+        });
+    }
+
+    let input_oriented = crate::extrude::maybe_split_closed_wire(
+        topo,
+        &original_oriented,
+        tol.linear,
+        crate::extrude::DEFAULT_DEFLECTION,
+    )?;
+
+    let mut positions: Vec<Point3> = Vec::with_capacity(input_oriented.len());
+    for oe in &input_oriented {
+        let edge = topo.edge(oe.edge())?;
+        let vid = oe.oriented_start(edge);
+        positions.push(topo.vertex(vid)?.point());
+    }
+
+    // Profile normal from the section boundary (planar or non-planar alike); the
+    // gate that required a planar surface is gone.
+    let mut normal = crate::winding::newell_normal(&positions)
+        .normalize()
+        .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+
+    // Ensure CCW winding relative to path direction (same fix as sweep()).
+    if crate::winding::ensure_ccw_positions(&mut positions, path_tangent_0) {
+        normal = -normal;
+    }
+
+    let centroid = crate::winding::polygon_centroid(&positions);
+
+    Ok(SweptProfile {
+        positions,
+        inner_wire_ids,
+        normal,
+        centroid,
+    })
+}
+
+/// Build the swept solid from a prepared profile and an explicit frame
+/// sequence.
+///
+/// `frames` carries one frame per ring, so `frames.len() - 1` segments are
+/// built; `scales` is the per-ring scale factor and must be the same length.
+/// Splitting this out lets every frame-generating strategy (rotation-minimizing
+/// sweep, guided sweep, rounded corners) share one assembly, so caps, inner
+/// wires and side-face orientation cannot drift apart between them.
+fn assemble_swept_solid(
+    topo: &mut Topology,
+    input_positions: &[Point3],
+    inner_wire_ids: &[brepkit_topology::wire::WireId],
+    centroid: Point3,
+    input_normal: Vec3,
+    frames: &[Frame],
+    scales: &[f64],
+) -> Result<SolidId, crate::OperationsError> {
+    let tol = Tolerance::new();
+    let n = input_positions.len();
+    debug_assert_eq!(frames.len(), scales.len());
+    if frames.len() < 2 || n < 3 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "sweep needs at least two frames and a three-point profile".into(),
+        });
+    }
+    let num_segments = frames.len() - 1;
+
     // Map the profile's 2D shape onto the path's perpendicular plane using the
     // profile's own basis, so a profile whose plane is not perpendicular to the
     // path is still swept perpendicular (rather than collapsing to a ribbon).
@@ -1355,11 +1457,7 @@ pub fn sweep_with_options(
 
     let mut ring_verts: Vec<Vec<VertexId>> = Vec::with_capacity(num_segments + 1);
 
-    for (k, frame) in frames.iter().enumerate() {
-        #[allow(clippy::cast_precision_loss)]
-        let t = k as f64 / num_segments as f64;
-        let scale = options.scale_law.as_ref().map_or(1.0, |law| law(t));
-
+    for (frame, &scale) in frames.iter().zip(scales) {
         let ring: Vec<VertexId> = input_positions
             .iter()
             .map(|&pos| {
@@ -1383,7 +1481,6 @@ pub fn sweep_with_options(
         ring_verts.push(ring);
     }
 
-    // Build edges, faces, and assemble (same as basic sweep)
     let mut ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> =
         Vec::with_capacity(num_segments + 1);
     for ring in &ring_verts {
@@ -1411,16 +1508,16 @@ pub fn sweep_with_options(
     }
 
     // Closed paths are delegated to sweep() earlier, so is_closed is always false here.
-    let mut inner_swept_opts: Vec<SweptWireData> = Vec::new();
-    for &iw_id in &inner_wire_ids_opts {
-        inner_swept_opts.push(sweep_wire_through_frames(
+    let mut inner_swept: Vec<SweptWireData> = Vec::new();
+    for &iw_id in inner_wire_ids {
+        inner_swept.push(sweep_wire_through_frames(
             topo,
             iw_id,
             centroid,
             initial_right,
             initial_up,
             initial_tangent,
-            &frames,
+            frames,
             num_segments,
             false,
         )?);
@@ -1428,13 +1525,13 @@ pub fn sweep_with_options(
 
     let mut all_faces = Vec::with_capacity(num_segments * n + 2);
 
-    let start_inner_wires_opts = build_inner_cap_wires(topo, &inner_swept_opts, 0, true)?;
+    let start_inner_wires = build_inner_cap_wires(topo, &inner_swept, 0, true)?;
     let start_verts = crate::cap::ring_point_positions(topo, &ring_verts[0])?;
     let start_outward = crate::cap::outward_normal(&start_verts, -frames[0].tangent)?;
     all_faces.push(crate::cap::build_cap_face(
         topo,
         &ring_edges[0],
-        start_inner_wires_opts,
+        start_inner_wires,
         &start_verts,
         start_outward,
         true,
@@ -1478,18 +1575,18 @@ pub fn sweep_with_options(
         }
     }
 
-    for iwd in &inner_swept_opts {
+    for iwd in &inner_swept {
         let inner_faces = build_inner_side_faces(topo, iwd, num_segments)?;
         all_faces.extend(inner_faces);
     }
 
-    let end_inner_wires_opts = build_inner_cap_wires(topo, &inner_swept_opts, num_segments, false)?;
+    let end_inner_wires = build_inner_cap_wires(topo, &inner_swept, num_segments, false)?;
     let end_verts = crate::cap::ring_point_positions(topo, &ring_verts[num_segments])?;
     let end_outward = crate::cap::outward_normal(&end_verts, frames[num_segments].tangent)?;
     all_faces.push(crate::cap::build_cap_face(
         topo,
         &ring_edges[num_segments],
-        end_inner_wires_opts,
+        end_inner_wires,
         &end_verts,
         end_outward,
         false,
@@ -1970,6 +2067,375 @@ fn sweep_miter(
     let shell = Shell::new(all_faces).map_err(crate::OperationsError::Topology)?;
     let shell_id = topo.add_shell(shell);
     Ok(topo.add_solid(Solid::new(shell_id, vec![])))
+}
+
+/// Angular resolution of a corner arc: one ring per this many radians.
+///
+/// A quarter turn therefore gets 32 rings, whose chorded volume is within
+/// ~0.04% of the exact torus sector.
+const ROUND_ARC_STEP_RAD: f64 = std::f64::consts::PI / 64.0;
+
+/// Minimum number of angular steps across a corner arc, however shallow.
+const ROUND_ARC_MIN_STEPS: usize = 4;
+
+/// Half-angle of a reversal beyond which a corner arc is not constructible:
+/// the setback `radius · tan(θ/2)` diverges as `θ → π`.
+const ROUND_MAX_TURN_RAD: f64 = std::f64::consts::PI * 0.995;
+
+/// Geometry of one rounded corner: where the arc leaves and rejoins the path,
+/// and the rotation that carries the profile between them.
+struct RoundedCorner {
+    /// Path parameter where the arc departs the incoming run.
+    u_in: f64,
+    /// Path parameter where the arc rejoins the outgoing run.
+    u_out: f64,
+    /// Tangent point on the incoming run (the arc's start).
+    p_in: Point3,
+    /// Arc centre.
+    centre: Point3,
+    /// Rotation axis (`t_in × t_out`, normalized).
+    axis: Vec3,
+    /// Incoming tangent at `p_in`.
+    t_in: Vec3,
+    /// Turn angle swept by the arc.
+    angle: f64,
+}
+
+/// Rotate `v` about the unit `axis` by `angle` (Rodrigues).
+fn rotate_about(v: Vec3, axis: Vec3, angle: f64) -> Vec3 {
+    let (sin_a, cos_a) = angle.sin_cos();
+    v * cos_a + axis.cross(v) * sin_a + axis * (axis.dot(v) * (1.0 - cos_a))
+}
+
+/// Find the parameter between `u_kink` and `u_far` whose point sits `dist` away
+/// from the point at `u_kink`.
+///
+/// The distance grows monotonically away from the kink along a straight run —
+/// which [`sweep_round`] verifies separately — so a bisection converges. Returns
+/// `None` when the run is shorter than `dist`.
+fn param_at_distance(path: &NurbsCurve, u_kink: f64, u_far: f64, dist: f64) -> Option<f64> {
+    let anchor = path.evaluate(u_kink);
+    if (path.evaluate(u_far) - anchor).length() <= dist {
+        return None;
+    }
+    let (mut near, mut far) = (u_kink, u_far);
+    for _ in 0..64 {
+        let mid = 0.5 * (near + far);
+        if (path.evaluate(mid) - anchor).length() < dist {
+            near = mid;
+        } else {
+            far = mid;
+        }
+    }
+    Some(0.5 * (near + far))
+}
+
+/// Check that the path run between `u_kink` and `u_end` is the straight line
+/// through `anchor` with direction `dir`.
+fn run_is_straight(
+    path: &NurbsCurve,
+    u_kink: f64,
+    u_end: f64,
+    anchor: Point3,
+    dir: Vec3,
+    tol: f64,
+) -> bool {
+    const SAMPLES: usize = 12;
+    (0..=SAMPLES).all(|k| {
+        #[allow(clippy::cast_precision_loss)]
+        let u = u_kink + (u_end - u_kink) * (k as f64 / SAMPLES as f64);
+        let v = path.evaluate(u) - anchor;
+        (v - dir * v.dot(dir)).length() <= tol
+    })
+}
+
+/// Sweep a face along a path whose kinks are rounded by circular arcs.
+///
+/// Each kink is replaced by an arc of `radius` tangent to both adjacent path
+/// runs, and the profile is carried around it by rotating rigidly about the
+/// arc's axis. For a circular profile this reproduces the exact torus sector,
+/// so an L-shaped path yields two cylinders joined by a torus quadrant.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError::InvalidInput`] for a non-positive radius
+/// and [`crate::OperationsError::Unsupported`] when no such arc exists: the
+/// radius eats more path than a run has, the runs adjacent to a kink are
+/// curved, the path reverses on itself, or the profile reaches past the
+/// rotation axis so the rounded corner would fold through itself. It never
+/// falls back to another corner mode — a caller asking for `Round` either gets
+/// rounded corners or an error saying why it could not have them.
+#[allow(clippy::too_many_lines)]
+fn sweep_round(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &NurbsCurve,
+    options: &SweepOptions,
+    radius: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    let tol = Tolerance::new();
+
+    if !radius.is_finite() || radius <= tol.linear {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("sweep corner radius must be a positive length, got {radius}"),
+        });
+    }
+    if options.aux_spine.is_some() {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "sweep",
+            reason: "rounded corners and a guide spine cannot be combined: the guide is sampled \
+                     on the original path, which the corner arcs replace"
+                .into(),
+        });
+    }
+
+    let kinks = detect_kinks(path);
+    debug_assert!(
+        !kinks.is_empty(),
+        "sweep_round should only be called when the path has kinks"
+    );
+
+    let (u_min, u_max) = path.domain();
+
+    // Resolve each kink into an arc: tangent points, centre and rotation.
+    let mut corners: Vec<RoundedCorner> = Vec::with_capacity(kinks.len());
+    for (j, &u_kink) in kinks.iter().enumerate() {
+        let eps = 1e-8;
+        let t_in = path.tangent(u_kink - eps)?;
+        let t_out = path.tangent(u_kink + eps)?;
+        let angle = t_in.dot(t_out).clamp(-1.0, 1.0).acos();
+        if angle >= ROUND_MAX_TURN_RAD {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "sweep",
+                reason: format!(
+                    "cannot round a corner that reverses the path: turn angle {:.1}° at path \
+                     parameter {u_kink}",
+                    angle.to_degrees()
+                ),
+            });
+        }
+        let Ok(axis) = t_in.cross(t_out).normalize() else {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "sweep",
+                reason: format!("corner at path parameter {u_kink} has no turn plane to round in"),
+            });
+        };
+
+        let setback = radius * (0.5 * angle).tan();
+        let kink_point = path.evaluate(u_kink);
+
+        // Search only within the neighbouring kinks so one corner cannot claim
+        // path that belongs to the next.
+        let u_before = if j == 0 { u_min } else { kinks[j - 1] };
+        let u_after = if j + 1 == kinks.len() {
+            u_max
+        } else {
+            kinks[j + 1]
+        };
+
+        let too_long = |side: &str| crate::OperationsError::Unsupported {
+            operation: "sweep",
+            reason: format!(
+                "corner radius {radius} needs {setback:.6} of straight path on the {side} of \
+                 the corner at path parameter {u_kink}, which is longer than that run"
+            ),
+        };
+        let u_in = param_at_distance(path, u_kink, u_before, setback)
+            .ok_or_else(|| too_long("start side"))?;
+        let u_out = param_at_distance(path, u_kink, u_after, setback)
+            .ok_or_else(|| too_long("end side"))?;
+
+        // The arc is tangent to the *lines* through the kink, so the runs it
+        // replaces have to be straight. Rounding a curved run would need a
+        // variable-radius blend, which this construction does not do.
+        let straight_tol = tol.linear.max(setback * 1e-6);
+        if !run_is_straight(path, u_kink, u_in, kink_point, t_in, straight_tol)
+            || !run_is_straight(path, u_kink, u_out, kink_point, t_out, straight_tol)
+        {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "sweep",
+                reason: format!(
+                    "the path curves within {setback:.6} of the corner at path parameter \
+                     {u_kink}; rounding needs straight runs on both sides of a kink"
+                ),
+            });
+        }
+
+        // The two runs leave the kink along -t_in and +t_out; the arc centre sits
+        // on their bisector at radius / cos(angle / 2).
+        let bisector = (t_out - t_in)
+            .normalize()
+            .unwrap_or_else(|_| axis.cross(t_in));
+        let centre = kink_point + bisector * (radius / (0.5 * angle).cos());
+
+        corners.push(RoundedCorner {
+            u_in,
+            u_out,
+            p_in: kink_point - t_in * setback,
+            centre,
+            axis,
+            t_in,
+            angle,
+        });
+    }
+
+    for pair in corners.windows(2) {
+        if pair[0].u_out >= pair[1].u_in {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "sweep",
+                reason: format!(
+                    "corner radius {radius} makes adjacent corner arcs overlap on the path run \
+                     between path parameters {} and {}",
+                    pair[0].u_out, pair[1].u_in
+                ),
+            });
+        }
+    }
+
+    let path_tangent_0 = path.tangent(u_min)?;
+    let prof = prepare_profile(topo, profile, path_tangent_0)?;
+
+    // Sample the rounded path: straight runs from the original curve, corner
+    // arcs from the rotation. Junction samples are shared, so each piece after
+    // the first contributes from its second sample on.
+    let run_segments = if options.segments > 0 {
+        options.segments
+    } else {
+        (path.control_points().len() * 2).max(4)
+    };
+
+    let mut samples: Vec<(Point3, Vec3)> = Vec::new();
+    // Frame index at which each corner arc starts, for the fold check below.
+    let mut corner_start_idx: Vec<usize> = Vec::with_capacity(corners.len());
+
+    for i in 0..=corners.len() {
+        let run_start = if i == 0 { u_min } else { corners[i - 1].u_out };
+        let run_end = if i == corners.len() {
+            u_max
+        } else {
+            corners[i].u_in
+        };
+        for k in 0..=run_segments {
+            #[allow(clippy::cast_precision_loss)]
+            let u = run_start + (run_end - run_start) * (k as f64 / run_segments as f64);
+            if k == 0 && !samples.is_empty() {
+                continue;
+            }
+            samples.push((path.evaluate(u), path.tangent(u)?));
+        }
+
+        if let Some(corner) = corners.get(i) {
+            corner_start_idx.push(samples.len() - 1);
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let steps =
+                ((corner.angle / ROUND_ARC_STEP_RAD).ceil() as usize).max(ROUND_ARC_MIN_STEPS);
+            let radial = corner.p_in - corner.centre;
+            for k in 1..=steps {
+                #[allow(clippy::cast_precision_loss)]
+                let phi = corner.angle * (k as f64 / steps as f64);
+                samples.push((
+                    corner.centre + rotate_about(radial, corner.axis, phi),
+                    rotate_about(corner.t_in, corner.axis, phi),
+                ));
+            }
+        }
+    }
+
+    let frames: Vec<Frame> = match options.contact_mode {
+        SweepContactMode::RotationMinimizing => {
+            let up_hint = orthogonalize(prof.normal, path_tangent_0);
+            frames_from_samples(&samples, up_hint)
+        }
+        SweepContactMode::Fixed => {
+            let up = orthogonalize(prof.normal, path_tangent_0);
+            let right = path_tangent_0.cross(up);
+            samples
+                .iter()
+                .map(|&(origin, tangent)| Frame {
+                    origin,
+                    tangent,
+                    up,
+                    right,
+                })
+                .collect()
+        }
+        SweepContactMode::ConstantNormal(normal_dir) => samples
+            .iter()
+            .map(|&(origin, tangent)| {
+                let up = orthogonalize(normal_dir, tangent);
+                Frame {
+                    origin,
+                    tangent,
+                    up,
+                    right: tangent.cross(up),
+                }
+            })
+            .collect(),
+    };
+
+    // Reject a corner the profile cannot turn: every ring point must stay on the
+    // outboard side of the rotation axis, or the arc folds the solid through
+    // itself. The signed radius of a ring point is `radius + offset · r̂`, where
+    // r̂ points from the arc centre to the tangent point.
+    let (initial_right, initial_up, initial_tangent) = profile_basis(prof.normal);
+    for (corner, &idx) in corners.iter().zip(&corner_start_idx) {
+        let frame = &frames[idx];
+        let Ok(r_hat) = (corner.p_in - corner.centre).normalize() else {
+            continue;
+        };
+        for &pos in &prof.positions {
+            let v = transform_point(
+                pos,
+                prof.centroid,
+                initial_right,
+                initial_up,
+                initial_tangent,
+                frame,
+            );
+            let signed_radius = radius + (v - frame.origin).dot(r_hat);
+            if signed_radius <= tol.linear {
+                return Err(crate::OperationsError::Unsupported {
+                    operation: "sweep",
+                    reason: format!(
+                        "corner radius {radius} is smaller than the profile's reach into the \
+                         corner, so the rounded corner would fold through its own axis"
+                    ),
+                });
+            }
+        }
+    }
+
+    // Scale law is parameterized by normalized distance along the rounded path,
+    // which is what the caller means by `t` once the corners have replaced the
+    // original path parameterization.
+    let scales: Vec<f64> = if let Some(law) = options.scale_law.as_ref() {
+        let mut travelled = Vec::with_capacity(frames.len());
+        let mut total = 0.0;
+        for (k, frame) in frames.iter().enumerate() {
+            if k > 0 {
+                total += (frame.origin - frames[k - 1].origin).length();
+            }
+            travelled.push(total);
+        }
+        if total <= tol.linear {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "sweep path has zero length".into(),
+            });
+        }
+        travelled.iter().map(|&d| law(d / total)).collect()
+    } else {
+        vec![1.0; frames.len()]
+    };
+
+    assemble_swept_solid(
+        topo,
+        &prof.positions,
+        &prof.inner_wire_ids,
+        prof.centroid,
+        prof.normal,
+        &frames,
+        &scales,
+    )
 }
 
 /// Sweep through multiple section profiles along a `spine`, lofting the

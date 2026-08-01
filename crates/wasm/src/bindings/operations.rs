@@ -1133,7 +1133,8 @@ impl BrepKernel {
     ///
     /// `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
     /// `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
-    /// `corner_mode`: "smooth" (default), "miter", or "round"
+    /// `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
+    ///   (e.g. `"round:2.5"` — rounding a corner needs a radius).
     /// Returns a solid handle.
     #[wasm_bindgen(js_name = "sweepWithOptions")]
     #[allow(clippy::needless_pass_by_value)]
@@ -1194,10 +1195,23 @@ impl BrepKernel {
                 None
             };
 
-        let cm = match corner_mode {
-            "miter" => SweepCornerMode::Miter,
-            "round" => SweepCornerMode::Round,
-            _ => SweepCornerMode::Smooth,
+        let cm = if corner_mode == "miter" {
+            SweepCornerMode::Miter
+        } else if let Some(rest) = corner_mode.strip_prefix("round:") {
+            let radius = rest.trim().parse::<f64>().map_err(|_| {
+                JsError::new(&format!(
+                    "corner mode \"{corner_mode}\": expected a corner radius, as in \"round:2.5\""
+                ))
+            })?;
+            SweepCornerMode::Round { radius }
+        } else if corner_mode == "round" {
+            // Rounding needs a radius. Silently sweeping without one produced a
+            // different solid than the caller asked for, with no way to tell.
+            return Err(JsError::new(
+                "corner mode \"round\" needs a corner radius, as in \"round:2.5\"",
+            ));
+        } else {
+            SweepCornerMode::Smooth
         };
 
         let options = SweepOptions {

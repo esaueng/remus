@@ -19,6 +19,40 @@ use super::planar::{tessellate_analytic, tessellate_analytic_with_boundary, tess
 /// the diagonal within tolerance.
 const SPHERE_DIAG: f64 = 0.7;
 
+/// Does this cylindrical face's outer boundary need the CDT tessellator rather
+/// than the analytic grid?
+///
+/// True for a boolean sub-face bounded by intersection curves — a NURBS edge,
+/// or more than four line edges — rather than the usual circles and seams.
+///
+/// Note what this does NOT test: inner wires. A cylindrical face carrying holes
+/// keeps its circle-and-seam outer boundary, so it goes to the analytic grid,
+/// which spans the face's whole uv box and pastes over the holes. That is a
+/// live gap, pinned by `holed_cylindrical_wall_is_rendered_without_its_holes`
+/// in this module's tests.
+///
+/// # Errors
+///
+/// Returns an error if the face's outer wire cannot be read.
+pub(super) fn cylinder_has_non_standard_boundary(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+) -> Result<bool, crate::OperationsError> {
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut has_nurbs = false;
+    let mut all_line = true;
+    for oe in wire.edges() {
+        if let Ok(e) = topo.edge(oe.edge()) {
+            match e.curve() {
+                EdgeCurve::NurbsCurve(_) => has_nurbs = true,
+                EdgeCurve::Line => {}
+                _ => all_line = false,
+            }
+        }
+    }
+    Ok(has_nurbs || (all_line && wire.edges().len() > 4))
+}
+
 /// Tessellate a face and return mesh with per-vertex UV coordinates.
 ///
 /// UV coordinates are the parametric (u, v) values of the surface at each
@@ -76,25 +110,7 @@ pub fn tessellate_with_uvs_a(
         }
         FaceSurface::Nurbs(surface) => Ok(tessellate_nurbs(surface, deflection, angular_tol)),
         FaceSurface::Cylinder(cyl) => {
-            // Check if the boundary is non-standard (e.g., boolean result
-            // with arbitrary polyline boundary instead of circles + seams).
-            let has_non_standard_boundary = {
-                let wire = topo.wire(face_data.outer_wire())?;
-                let mut has_nurbs = false;
-                let mut all_line = true;
-                for oe in wire.edges() {
-                    if let Ok(e) = topo.edge(oe.edge()) {
-                        match e.curve() {
-                            EdgeCurve::NurbsCurve(_) => has_nurbs = true,
-                            EdgeCurve::Line => {}
-                            _ => all_line = false,
-                        }
-                    }
-                }
-                has_nurbs || (all_line && wire.edges().len() > 4)
-            };
-
-            if has_non_standard_boundary {
+            if cylinder_has_non_standard_boundary(topo, face_data)? {
                 tessellate_analytic_with_boundary(topo, face_data, cyl, deflection, angular_tol)
             } else {
                 let v_range = compute_axial_range(topo, face_data, cyl.origin(), cyl.axis());

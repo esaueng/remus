@@ -15,11 +15,19 @@ use super::{AnalyticKind, MERGE_GRID, TriangleMesh, TriangleMeshUV, point_merge_
 /// Used for faces with non-rectangular boundaries (e.g., boolean sub-faces
 /// bounded by intersection curves). Projects boundary to UV, CDT-triangulates,
 /// then evaluates each vertex on the cylinder surface.
-// TODO: Handle inner wires (holes) -- currently only tessellates the outer wire.
-// The "outside" sub-face from `split_face_with_internal_loops` has holes that
-// are ignored here. This is OK for now because the outside sub-face is discarded
-// by classification in the Steinmetz case, but will need fixing for correct
-// rendering of boolean results with internal loops.
+/// Only the outer wire is read. No holed face reaches here: the caller routes a
+/// cylinder to this function on a non-standard boundary — a NURBS edge, or more
+/// than four line edges — and the boolean's holed cylindrical faces keep an
+/// ordinary circle-and-seam boundary, which goes to the analytic grid instead.
+/// `crates/operations/tests/regress_holed_cylinder_tessellation.rs` pins that
+/// split, so this stays true or that test says so.
+///
+/// This is not a statement that holes are handled. They are dropped, on the
+/// analytic-grid branch that does take them — see that test for the measured
+/// gap. An earlier note here claimed holed faces were safe because the holed
+/// "outside" sub-face of `split_face_with_internal_loops` is discarded by
+/// classification; the face that actually carries holes is the one the cut
+/// KEEPS, so that reasoning did not hold.
 pub(super) fn tessellate_analytic_with_boundary(
     topo: &Topology,
     face_data: &brepkit_topology::face::Face,
