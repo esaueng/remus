@@ -3874,16 +3874,103 @@ fn box_cylinder_fuse_returns_manifold_result() {
     );
 }
 
+/// This intersect used to be pinned as a refusal
+/// (`box_cone_invalid_mesh_fallback_fails_closed`): a point-tipped cone
+/// tessellated OPEN — its base circle was emitted twice, once by the lateral
+/// face and once by the cap, sharing no vertex — so the mesh fallback this case
+/// lands on had no watertight operand and correctly declined with
+/// `NonManifoldResult`. With the cone's lateral face now fanned from the shared
+/// rim to the shared apex, the operand is closed and the operation completes.
+///
+/// The assertion therefore flips from "refuses" to "returns the right solid",
+/// and the right solid is known in advance: `make_box` sits with a corner at the
+/// origin and `make_cone` puts its base circle at the origin on the +z axis, so
+/// the box keeps exactly the `x >= 0, y >= 0` quarter of the cone across its
+/// full height — one quarter of `pi*r^2*h/3`.
+///
+/// See `crates/operations/tests/regress_cone_apex_shared_rim.rs` for the
+/// tessellation defect itself.
 #[test]
-fn box_cone_invalid_mesh_fallback_fails_closed() {
+fn box_cone_intersect_returns_quarter_cone() {
     let mut topo = Topology::default();
     let box_solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let cone = crate::primitives::make_cone(&mut topo, 1.0, 0.0, 2.0).unwrap();
 
-    let result = boolean(&mut topo, BooleanOp::Intersect, box_solid, cone);
+    let solid = boolean(&mut topo, BooleanOp::Intersect, box_solid, cone)
+        .expect("box-cone intersect should succeed now the cone tessellates closed");
+
+    let shell = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
     assert!(
-        matches!(result, Err(crate::OperationsError::NonManifoldResult)),
-        "known non-watertight fallback must fail closed: {result:?}"
+        validate_shell_manifold(shell, &topo).is_ok(),
+        "box-cone intersect must be manifold"
+    );
+
+    // A closed B-Rep is not the same claim as a closed mesh, and it was the mesh
+    // that was broken here. Check the mesh directly, at the deflection the
+    // structured fuzz harness uses.
+    let aabb = crate::measure::solid_bounding_box(&topo, solid).unwrap();
+    let extent = (aabb.max - aabb.min).length();
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, extent * 4e-5).unwrap();
+    assert_eq!(
+        crate::tessellate::boundary_edge_count(&mesh),
+        0,
+        "quarter-cone mesh has open edges"
+    );
+    assert_eq!(
+        crate::tessellate::non_manifold_edge_count(&mesh),
+        0,
+        "quarter-cone mesh has non-manifold edges"
+    );
+
+    // The true quarter cone: pi * r^2 * h / 3 / 4 = pi/6 for r = 1, h = 2.
+    // Watertightness alone would not catch a boolean that kept the wrong
+    // quarter, or the whole cone, so the volume is checked too.
+    let (r, h) = (1.0_f64, 2.0_f64);
+    let exact_quarter = std::f64::consts::PI * r * r * h / 3.0 / 4.0;
+    let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+
+    assert!(
+        volume <= exact_quarter * (1.0 + 1e-9),
+        "intersect invented material: {volume} exceeds the true quarter cone \
+         {exact_quarter}"
+    );
+    assert!(
+        volume >= exact_quarter * 0.95,
+        "{volume} is not a quarter cone (expected about {exact_quarter}) — a \
+         different fragment was kept"
+    );
+
+    // This case resolves through the MESH fallback, so the cone's lateral
+    // surface comes back as a fan of planar facets and the answer is the
+    // INSCRIBED solid's, not pi/6 exactly. That value is itself a closed form:
+    // with `k` lateral facets over the quarter the base is `k` triangles of a
+    // regular `4k`-gon inscribed in the circle, and the solid is the cone over
+    // it. Deriving `k` from the face count keeps this exact rather than
+    // approximate, and keeps it honest if the fallback's density ever changes.
+    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let all_planar = faces.iter().all(|&f| {
+        topo.face(f)
+            .is_ok_and(|fd| matches!(fd.surface(), FaceSurface::Plane { .. }))
+    });
+    let expected = if all_planar {
+        // faces = k lateral facets + the quarter-disc base + the two cut planes.
+        assert!(
+            faces.len() > 3,
+            "expected a facet fan plus a base and two cut planes, got {} faces",
+            faces.len()
+        );
+        let k = (faces.len() - 3) as f64;
+        h / 3.0 * k * 0.5 * r * r * (std::f64::consts::TAU / (4.0 * k)).sin()
+    } else {
+        exact_quarter
+    };
+    assert!(
+        (volume - expected).abs() < 1e-9,
+        "box-cone intersect volume {volume} differs from {expected} \
+         ({} faces, all planar: {all_planar})",
+        faces.len()
     );
 }
 

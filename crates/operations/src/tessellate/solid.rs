@@ -11,9 +11,9 @@ use super::TriangleMesh;
 use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_deviation_a};
 use super::mesh_ops::{dedupe_coincident_triangles, weld_boundary_vertices};
 use super::nonplanar::{
-    tessellate_latitude_band_shared, tessellate_nonplanar_cdt, tessellate_nonplanar_snap,
-    tessellate_revolution_band_shared, tessellate_sphere_cap_shared, tessellate_torus_notch_band,
-    tessellate_torus_two_rim_band,
+    tessellate_cone_apex_fan_shared, tessellate_latitude_band_shared, tessellate_nonplanar_cdt,
+    tessellate_nonplanar_snap, tessellate_revolution_band_shared, tessellate_sphere_cap_shared,
+    tessellate_torus_notch_band, tessellate_torus_two_rim_band,
 };
 use super::nurbs::{compute_angular_range, compute_v_param_range};
 use super::planar::{
@@ -836,8 +836,19 @@ pub(super) fn tessellate_face_with_shared_edges(
             // reconciliation, which cracks drilled holes at certain radius/
             // deflection combos (issue #696). Falls back to snap for faces that
             // aren't a simple two-rim full-revolution band.
+            //
+            // A point-tipped cone has only ONE rim, so the two-rim band path
+            // declines it; the one-rim apex fan takes it instead. Without that,
+            // the face fell through to snap and split the base circle in two
+            // whenever its segment count was odd.
             let handled =
-                tessellate_revolution_band_shared(topo, face_data, edge_global_indices, merged)?;
+                tessellate_revolution_band_shared(topo, face_data, edge_global_indices, merged)?
+                    || tessellate_cone_apex_fan_shared(
+                        topo,
+                        face_data,
+                        edge_global_indices,
+                        merged,
+                    )?;
             if !handled {
                 // Partial (non-full-revolution) hole-free bands have a genuine
                 // simple polygon UV boundary, so CDT over the shared pool ids

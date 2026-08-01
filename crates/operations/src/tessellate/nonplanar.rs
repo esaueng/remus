@@ -166,6 +166,177 @@ pub(super) fn tessellate_revolution_band_shared(
     Ok(true)
 }
 
+/// Tessellate a point-tipped cone's lateral face as a fan from the shared rim
+/// vertices to the shared apex vertex.
+///
+/// This is the one-rim sibling of [`tessellate_revolution_band_shared`]. A
+/// pointed cone's lateral face is bounded by a SINGLE closed rim circle plus a
+/// doubled degenerate seam line running out to the apex, so the two-rim band
+/// path above declines it, the CDT path emits nothing (the seam collapses the
+/// UV boundary), and the face used to fall through to
+/// [`tessellate_nonplanar_snap`].
+///
+/// That fallback is what cracked the cone. The snap path tessellates the face
+/// from the cone's OWN parametric grid, whose `u = 0` ray is the surface
+/// frame's x-axis, and then reconciles with the shared pool by 1e-6 proximity.
+/// The rim circle's `t = 0` ray is the *circle's* frame x-axis, and for a cone
+/// built with `make_cone` the two frames are half a turn apart (the base circle
+/// is normal `+axis`, the cone axis runs apex→base, i.e. `-axis`). With `n`
+/// segments the two rings therefore coincide only when `n` is EVEN; when `n` is
+/// odd every rim sample lands exactly half a segment (≈ `πr/n`, four orders of
+/// magnitude past the snap tolerance at r = 3, n = 209) from its pool
+/// counterpart, nothing snaps, and the cone and its base cap end up sharing no
+/// vertices at all.
+///
+/// Fanning the shared rim to the shared apex removes the parity coincidence
+/// entirely: the face is watertight against its cap by construction, at any
+/// radius, deflection and scale.
+///
+/// Returns `Ok(true)` when the face matched this pattern and was tessellated,
+/// `Ok(false)` when it did not (the caller falls back to CDT/snap unchanged).
+pub(super) fn tessellate_cone_apex_fan_shared(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Cone(cone) = face_data.surface() else {
+        return Ok(false);
+    };
+    if !face_data.inner_wires().is_empty() {
+        return Ok(false);
+    }
+
+    // Exactly one closed rim circle; every other edge must be a (seam) line.
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut rim_edge_idx: Option<usize> = None;
+    let mut seam_edge_indices: Vec<usize> = Vec::new();
+    for oe in wire.edges() {
+        let e = topo.edge(oe.edge())?;
+        let idx = oe.edge().index();
+        match e.curve() {
+            EdgeCurve::Circle(_) if e.start() == e.end() => match rim_edge_idx {
+                None => rim_edge_idx = Some(idx),
+                Some(existing) if existing == idx => {}
+                Some(_) => return Ok(false),
+            },
+            EdgeCurve::Line => {
+                if !seam_edge_indices.contains(&idx) {
+                    seam_edge_indices.push(idx);
+                }
+            }
+            // An open rim arc, a trimmed cone, a NURBS boundary: not the
+            // pointed-cone pattern. Let the caller decide.
+            _ => return Ok(false),
+        }
+    }
+    let Some(rim_idx) = rim_edge_idx else {
+        return Ok(false);
+    };
+    if seam_edge_indices.is_empty() {
+        return Ok(false);
+    }
+
+    // Shared rim vertices, closing duplicate dropped.
+    let Some(rim_ids) = edge_global_indices.get(&rim_idx) else {
+        return Ok(false);
+    };
+    let mut rim: Vec<u32> = rim_ids.clone();
+    if rim.len() > 1 && rim.first() == rim.last() {
+        rim.pop();
+    }
+    if rim.len() < 3 {
+        return Ok(false);
+    }
+    if rim.iter().any(|&g| (g as usize) >= merged.positions.len()) {
+        return Ok(false);
+    }
+
+    // The fan tip is the shared pool vertex sitting on the cone's apex. Take it
+    // from the seam lines rather than interning a fresh point, so the cone and
+    // any neighbour that also meets the apex agree on one vertex id.
+    //
+    // The match is relative to the rim's own radius, so it carries no length
+    // unit: a scaled copy of the same cone accepts or rejects identically.
+    let apex_pos = cone.apex();
+    let rim_extent = rim
+        .iter()
+        .map(|&g| (merged.positions[g as usize] - apex_pos).length())
+        .fold(0.0_f64, f64::max);
+    if rim_extent <= 0.0 || !rim_extent.is_finite() {
+        return Ok(false);
+    }
+    let apex_slack = rim_extent * 1e-9;
+    let mut apex_gid: Option<u32> = None;
+    for &se in &seam_edge_indices {
+        let Some(ids) = edge_global_indices.get(&se) else {
+            return Ok(false);
+        };
+        for &gid in ids {
+            let Some(&pos) = merged.positions.get(gid as usize) else {
+                return Ok(false);
+            };
+            if (pos - apex_pos).length() <= apex_slack {
+                match apex_gid {
+                    None => apex_gid = Some(gid),
+                    // Two distinct vertex ids at the apex would leave the fan
+                    // stitched to only one of them. Decline instead.
+                    Some(existing) if existing == gid => {}
+                    Some(_) => return Ok(false),
+                }
+            }
+        }
+    }
+    let Some(apex_gid) = apex_gid else {
+        return Ok(false);
+    };
+    if rim.contains(&apex_gid) {
+        return Ok(false);
+    }
+
+    // Order the rim by its angle around the cone axis so consecutive pairs are
+    // adjacent on the circle. The ids are distinct, so an unstable sort is both
+    // equivalent and cheaper (no merge buffer, less codegen).
+    rim.sort_unstable_by(|&a, &b| {
+        let ua = cone.project_point(merged.positions[a as usize]).0;
+        let ub = cone.project_point(merged.positions[b as usize]).0;
+        ua.partial_cmp(&ub).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Emit default-oriented (non-reversed) triangles, matching the convention
+    // of `tessellate_analytic`; `tessellate_face_with_shared_edges` applies the
+    // face's `is_reversed` flip afterwards.
+    // Built first and committed only if EVERY wedge is sound: a fan that
+    // silently dropped one wedge would leave a two-triangle hole, which is the
+    // failure this path exists to prevent.
+    let n = rim.len();
+    let mut tris: Vec<u32> = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        let (a, b, c) = (rim[i], rim[(i + 1) % n], apex_gid);
+        let (pa, pb, pc) = (
+            merged.positions[a as usize],
+            merged.positions[b as usize],
+            merged.positions[c as usize],
+        );
+        let (e1, e2) = (pb - pa, pc - pa);
+        let geo = e1.cross(e2);
+        // Relative degeneracy test: a sliver is one whose normal is negligible
+        // against the product of its own edge lengths, which is scale-free.
+        if geo.length() <= e1.length() * e2.length() * 1e-12 {
+            return Ok(false);
+        }
+        let (u, v) = cone.project_point(pa);
+        let mut tri = [a, b, c];
+        if geo.dot(cone.normal(u, v)) < 0.0 {
+            tri.swap(1, 2);
+        }
+        tris.extend_from_slice(&tri);
+    }
+    merged.indices.extend_from_slice(&tris);
+
+    Ok(true)
+}
+
 /// Tessellate a torus band bounded by two closed rim circles and seamed by ONE
 /// doubled open arc edge, in either orientation:
 ///   * constant-`v` rims (latitude circles wrapping the ring angle `u`) — a
