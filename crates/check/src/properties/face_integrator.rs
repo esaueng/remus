@@ -203,8 +203,8 @@ const WRAP_EPS: f64 = 1e-3;
 /// onto a line or a point, or it wraps the periodic axis instead of closing.
 const DEGENERATE_UV_AREA: f64 = 1e-12;
 
-/// Samples a closed curved edge contributes when a face's boundary or one of
-/// its holes is outlined in UV.
+/// Samples a curved edge contributes when a face's boundary or one of its
+/// holes is outlined in UV.
 ///
 /// The quadrature is exact for the polylines these outlines are, so the whole
 /// residual of a trimmed curved face is their chord error. That is worth more
@@ -212,6 +212,12 @@ const DEGENERATE_UV_AREA: f64 = 1e-12;
 /// being walked: the chord error falls with the square of the step, so four
 /// times the default buys a factor of sixteen. On a cross-drilled shaft it
 /// takes the body from 0.06 % of its closed form to 0.005 %.
+///
+/// It applies to OPEN arcs as well as closed circles. An arc bows away from
+/// the chord between its endpoints just as a circle does, and a face can be
+/// bounded by nothing else: a rolling-ball corner patch is three quarter great
+/// circles, and outlining it by its three vertices alone reads its area 25 %
+/// low.
 const TRIM_SAMPLES: usize = 128;
 
 /// The `v` extent a face's own boundary curves cover on its surface.
@@ -468,7 +474,12 @@ where
     };
 
     let face = topo.face(face_id)?;
-    let outer = crate::util::wire_polygon_sampled(topo, face.outer_wire(), TRIM_SAMPLES)?;
+    let outer = crate::util::wire_polygon_curve_sampled(
+        topo,
+        face.outer_wire(),
+        TRIM_SAMPLES,
+        TRIM_SAMPLES,
+    )?;
     let boundary = if outer.len() < 3 {
         UvLoop::default()
     } else {
@@ -477,7 +488,9 @@ where
 
     let mut pockets = Vec::new();
     let mut bands = Vec::new();
-    for hole in crate::util::face_hole_polygons_sampled(topo, face_id, TRIM_SAMPLES)? {
+    for hole in
+        crate::util::face_hole_polygons_curve_sampled(topo, face_id, TRIM_SAMPLES, TRIM_SAMPLES)?
+    {
         let loop_ = to_loop(&hole);
         let wraps = u_periodic && loop_.u_winding().abs() >= std::f64::consts::TAU - WRAP_EPS;
         if wraps {

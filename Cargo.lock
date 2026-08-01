@@ -338,6 +338,7 @@ dependencies = [
 name = "brepkit-offset"
 version = "0.1.0"
 dependencies = [
+ "brepkit-check",
  "brepkit-geometry",
  "brepkit-math",
  "brepkit-operations",

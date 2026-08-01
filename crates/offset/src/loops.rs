@@ -19,6 +19,10 @@ use crate::error::OffsetError;
 
 type LoopBuild = (Vec<WireId>, Vec<(EdgeId, EdgeId)>);
 
+/// Squared sine of the angle below which two intersection lines are treated
+/// as parallel. Dimensionless, so it means the same thing at every scale.
+const PARALLEL_SIN_SQ: f64 = 1e-20;
+
 /// Build closed wire loops for each offset face from the trimmed
 /// intersection curves and split edges.
 ///
@@ -156,7 +160,7 @@ fn build_loops_for_face(
 /// Build wire from Circle edges and seam edges.
 ///
 /// Handles two patterns:
-/// - **Single closed circle**: one Circle edge (start == end) → wire = [circle].
+/// - **Single closed circle**: one Circle edge (start == end) → wire = `[circle]`.
 /// - **Two circles + seam** (cylinder lateral): two Circle edges at different
 ///   positions → create a seam Line edge connecting their vertices, then
 ///   build wire = [circle_a, seam_fwd, circle_b_rev, seam_rev].
@@ -601,10 +605,21 @@ fn line_line_closest_point(a: &LineSeg, b: &LineSeg, tol: f64) -> Option<(Point3
     let aw = dot3(da, w0);
     let bw = dot3(db, w0);
 
-    let denom = aa * bb - ab * ab;
+    // A zero-length segment has no direction to intersect along.
+    if aa <= 0.0 || bb <= 0.0 {
+        return None;
+    }
 
-    // Parallel lines — cross product denominator is near-zero.
-    if denom.abs() < 1e-20 {
+    // `denom` is |da x db|^2, so it carries the fourth power of the model's
+    // units. Comparing it against a fixed number is a statement about the
+    // model's size, not its shape: at metre scale nothing trips it, while a
+    // body a few microns across has every corner of every face rejected as
+    // parallel and loses its wire loops entirely. Dividing by |da|^2|db|^2
+    // leaves sin^2 of the angle between the lines, which is what the test
+    // was always about, and the threshold then means the same angle at every
+    // scale. The value matches the old one at unit scale.
+    let denom = aa * bb - ab * ab;
+    if denom.abs() < aa * bb * PARALLEL_SIN_SQ {
         return None;
     }
 

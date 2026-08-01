@@ -16,6 +16,7 @@ log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+brepkit-check.workspace = true
 brepkit-operations.workspace = true
 brepkit-topology = {workspace = true, features = ["test-utils"]}
 

@@ -108,6 +108,10 @@ pub fn wire_polygon(
 /// error falls with the square of the step, so the property integrator asks
 /// for several times the default when it removes a hole from a curved face.
 ///
+/// An OPEN curved edge still contributes only its own endpoint here — one
+/// chord for the whole arc. [`wire_polygon_curve_sampled`] is the form that
+/// outlines those too.
+///
 /// # Errors
 ///
 /// Returns an error if any topology entity referenced by the wire is missing.
@@ -115,6 +119,32 @@ pub fn wire_polygon_sampled(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
     closed_samples: usize,
+) -> Result<Vec<Point3>, CheckError> {
+    wire_polygon_curve_sampled(topo, wire_id, closed_samples, 1)
+}
+
+/// [`wire_polygon_sampled`] with the samples an OPEN curved edge contributes
+/// chosen as well.
+///
+/// A closed circle edge is laid down as a polyline, but an open arc used to
+/// contribute only its own endpoint — one chord across the whole arc, however
+/// far the arc bows away from it. That is invisible on a wire that merely has
+/// to be walked, and decisive on one that trims an integration domain: the
+/// rolling-ball corner patch of a rounded offset is bounded by three quarter
+/// great circles and nothing else, so chording each of them to its endpoints
+/// shrinks the region by a quarter and reads the patch's area 25 % low.
+///
+/// `open_samples` of 1 reproduces the old single-chord behaviour exactly, and
+/// is what [`wire_polygon_sampled`] passes.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the wire is missing.
+pub fn wire_polygon_curve_sampled(
+    topo: &Topology,
+    wire_id: brepkit_topology::wire::WireId,
+    closed_samples: usize,
+    open_samples: usize,
 ) -> Result<Vec<Point3>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let mut pts = Vec::new();
@@ -191,9 +221,38 @@ pub fn wire_polygon_sampled(
             pts.extend(sampled);
             prev_end = Some(start_vid);
         } else {
-            let vid = if forward { start_vid } else { end_vid };
-            pts.push(topo.vertex(vid)?.point());
-            prev_end = Some(if forward { end_vid } else { start_vid });
+            let (from_vid, to_vid) = if forward {
+                (start_vid, end_vid)
+            } else {
+                (end_vid, start_vid)
+            };
+            let is_open_curve = open_samples > 1 && !matches!(curve, EdgeCurve::Line);
+            if is_open_curve {
+                // Walk the edge's own span, half-open so the next edge
+                // supplies the closing point — the same convention the closed
+                // branch above uses.
+                let start_pt = topo.vertex(start_vid)?.point();
+                let end_pt = topo.vertex(end_vid)?.point();
+                let (t0, t1) = curve.domain_with_endpoints(start_pt, end_pt);
+                #[allow(clippy::cast_precision_loss)]
+                let step =
+                    |i: usize| -> f64 { (t1 - t0).mul_add(i as f64 / open_samples as f64, t0) };
+                if forward {
+                    pts.extend(
+                        (0..open_samples)
+                            .map(|i| curve.evaluate_with_endpoints(step(i), start_pt, end_pt)),
+                    );
+                } else {
+                    pts.extend(
+                        (1..=open_samples)
+                            .rev()
+                            .map(|i| curve.evaluate_with_endpoints(step(i), start_pt, end_pt)),
+                    );
+                }
+            } else {
+                pts.push(topo.vertex(from_vid)?.point());
+            }
+            prev_end = Some(to_vid);
         }
     }
 
@@ -227,10 +286,25 @@ pub fn face_hole_polygons_sampled(
     face_id: FaceId,
     closed_samples: usize,
 ) -> Result<Vec<Vec<Point3>>, CheckError> {
+    face_hole_polygons_curve_sampled(topo, face_id, closed_samples, 1)
+}
+
+/// [`face_hole_polygons_sampled`] with the samples an OPEN curved edge
+/// contributes chosen as well, as [`wire_polygon_curve_sampled`] takes it.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the face is missing.
+pub fn face_hole_polygons_curve_sampled(
+    topo: &Topology,
+    face_id: FaceId,
+    closed_samples: usize,
+    open_samples: usize,
+) -> Result<Vec<Vec<Point3>>, CheckError> {
     let face = topo.face(face_id)?;
     let mut holes = Vec::with_capacity(face.inner_wires().len());
     for &wire_id in face.inner_wires() {
-        let poly = wire_polygon_sampled(topo, wire_id, closed_samples)?;
+        let poly = wire_polygon_curve_sampled(topo, wire_id, closed_samples, open_samples)?;
         if poly.len() >= 3 {
             holes.push(poly);
         }

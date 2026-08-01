@@ -161,6 +161,14 @@ pub struct OffsetData {
     /// Offset face for each original face.
     pub offset_faces: HashMap<FaceId, OffsetFace>,
 
+    /// Source faces grouped by the shell they came from, outer shell first
+    /// and one entry per cavity after it.
+    ///
+    /// The result keeps the same partition: faces built from a cavity's
+    /// source faces become that cavity's offset shell, so a hollow part stays
+    /// hollow instead of collapsing into a single skin.
+    pub shell_faces: Vec<Vec<FaceId>>,
+
     // --- Phase 3 & 4: intersections ---
     /// Intersection curves between adjacent offset faces.
     pub intersections: Vec<FaceIntersection>,
@@ -203,6 +211,7 @@ impl OffsetData {
             edge_class: BTreeMap::new(),
             vertex_class: BTreeMap::new(),
             offset_faces: HashMap::new(),
+            shell_faces: Vec::new(),
             intersections: Vec::new(),
             edge_splits: BTreeMap::new(),
             boundary_edges: HashMap::new(),

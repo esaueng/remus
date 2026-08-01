@@ -30,8 +30,22 @@ pub fn build_offset_faces(
     solid: SolidId,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
-    let shell_id = topo.solid(solid)?.outer_shell();
-    let faces = topo.shell(shell_id)?.faces().to_vec();
+    // Every shell the solid bounds its volume with, outer first. A cavity's
+    // faces are offset by the same rule as the outer skin's — along their own
+    // outward normal, which for a void points into the void — so a positive
+    // distance grows the outer boundary and shrinks the cavity, and the sign
+    // falls out of the face's own orientation rather than a special case.
+    let solid_data = topo.solid(solid)?;
+    let shell_ids: Vec<_> = std::iter::once(solid_data.outer_shell())
+        .chain(solid_data.inner_shells().iter().copied())
+        .collect();
+
+    let mut faces = Vec::new();
+    for shell_id in shell_ids {
+        let shell_faces = topo.shell(shell_id)?.faces().to_vec();
+        faces.extend(shell_faces.iter().copied());
+        data.shell_faces.push(shell_faces);
+    }
 
     for face_id in faces {
         if data.excluded_faces.contains(&face_id) {

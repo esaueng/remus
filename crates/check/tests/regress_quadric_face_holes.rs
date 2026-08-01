@@ -66,11 +66,18 @@ fn uv_rect_wire(
     let b = topo.add_vertex(Vertex::new(p(u1, v0), TOL));
     let c = topo.add_vertex(Vertex::new(p(u1, v1), TOL));
     let d = topo.add_vertex(Vertex::new(p(u0, v1), TOL));
-    let ring =
-        |vv: f64| Circle3D::new(Point3::new(0.0, 0.0, vv), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
-    let e0 = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(ring(v0))));
+    // `EdgeCurve::Circle` spans start to end the CCW way about the circle's
+    // own normal, so which arc an edge denotes is the normal's choice, not the
+    // endpoints'. `a → b` climbs in `u`, so its ring is about `+z`; `c → d`
+    // descends, so its ring must be about `−z` or the edge names the MAJOR arc
+    // — the complement of the patch this loop is meant to bound.
+    let ring = |vv: f64, up: bool| {
+        let axis = Vec3::new(0.0, 0.0, if up { 1.0 } else { -1.0 });
+        Circle3D::new(Point3::new(0.0, 0.0, vv), axis, R).unwrap()
+    };
+    let e0 = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(ring(v0, true))));
     let e1 = topo.add_edge(Edge::new(b, c, EdgeCurve::Line));
-    let e2 = topo.add_edge(Edge::new(c, d, EdgeCurve::Circle(ring(v1))));
+    let e2 = topo.add_edge(Edge::new(c, d, EdgeCurve::Circle(ring(v1, false))));
     let e3 = topo.add_edge(Edge::new(d, a, EdgeCurve::Line));
     let oriented = if ccw {
         vec![

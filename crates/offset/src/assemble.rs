@@ -16,89 +16,117 @@ use crate::error::OffsetError;
 /// faces, and wire loops.
 ///
 /// For each non-excluded offset face that has reconstructed wire loops,
-/// a new [`Face`] is created with the offset surface and wires. All
-/// new faces (including any joint faces from Phase 6) are collected
-/// into a [`Shell`], which is then wrapped in a [`Solid`].
+/// a new [`Face`] is created with the offset surface and wires.
+///
+/// The source solid's shell partition is preserved: faces built from the
+/// outer shell's sources become the result's outer shell, and each cavity's
+/// sources become one inner shell of the result. Joint faces (Phase 6) and
+/// the walls of a thick solid belong to the outer shell.
 ///
 /// # Errors
 ///
 /// Returns [`OffsetError::AssemblyFailed`] if no faces could be
 /// assembled or the shell construction fails.
 pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId, OffsetError> {
-    let mut new_faces = Vec::new();
     let has_openings = !data.excluded_faces.is_empty();
-    let mut offset_face_ids = data.offset_faces.keys().copied().collect::<Vec<_>>();
-    offset_face_ids.sort_by_key(|face_id| face_id.index());
-
-    for face_id in &offset_face_ids {
-        let offset_face = &data.offset_faces[face_id];
-        if offset_face.status == OffsetStatus::Excluded {
-            continue;
-        }
-
-        let wires = data
-            .face_wires
-            .get(face_id)
-            .ok_or_else(|| OffsetError::AssemblyFailed {
-                reason: format!(
-                    "offset face {} has no reconstructed wire loops",
-                    face_id.index()
-                ),
-            })?;
-
-        if wires.is_empty() {
-            return Err(OffsetError::AssemblyFailed {
-                reason: format!("offset face {} has an empty wire-loop set", face_id.index()),
-            });
-        }
-
-        let outer_wire = wires[0];
-        let inner_wires = wires[1..].to_vec();
-
-        // A thick solid contains the original outer skin and an offset inner
-        // skin, so the offset faces must oppose their source faces.
-        let result_reversed = topo.face(offset_face.original)?.is_reversed() ^ has_openings;
-        let face = if result_reversed {
-            Face::new_reversed(outer_wire, inner_wires, offset_face.surface.clone())
-        } else {
-            Face::new(outer_wire, inner_wires, offset_face.surface.clone())
-        };
-        let face_id = topo.add_face(face);
-        new_faces.push(face_id);
+    if data.shell_faces.is_empty() {
+        return Err(OffsetError::AssemblyFailed {
+            reason: "no source shells were recorded for the offset solid".to_string(),
+        });
     }
+
+    let mut shell_groups: Vec<Vec<FaceId>> = Vec::with_capacity(data.shell_faces.len());
+    for source_faces in &data.shell_faces {
+        let mut source_faces = source_faces.clone();
+        source_faces.sort_by_key(|face_id| face_id.index());
+        let mut new_faces = Vec::new();
+
+        for face_id in &source_faces {
+            let Some(offset_face) = data.offset_faces.get(face_id) else {
+                continue;
+            };
+            if offset_face.status == OffsetStatus::Excluded {
+                continue;
+            }
+
+            let wires =
+                data.face_wires
+                    .get(face_id)
+                    .ok_or_else(|| OffsetError::AssemblyFailed {
+                        reason: format!(
+                            "offset face {} has no reconstructed wire loops",
+                            face_id.index()
+                        ),
+                    })?;
+
+            if wires.is_empty() {
+                return Err(OffsetError::AssemblyFailed {
+                    reason: format!("offset face {} has an empty wire-loop set", face_id.index()),
+                });
+            }
+
+            let outer_wire = wires[0];
+            let inner_wires = wires[1..].to_vec();
+
+            // A thick solid contains the original outer skin and an offset
+            // inner skin, so the offset faces must oppose their source faces.
+            let result_reversed = topo.face(offset_face.original)?.is_reversed() ^ has_openings;
+            let face = if result_reversed {
+                Face::new_reversed(outer_wire, inner_wires, offset_face.surface.clone())
+            } else {
+                Face::new(outer_wire, inner_wires, offset_face.surface.clone())
+            };
+            new_faces.push(topo.add_face(face));
+        }
+
+        shell_groups.push(new_faces);
+    }
+
+    let outer_group = &mut shell_groups[0];
 
     if has_openings {
         // Retain a cloned outer skin for every non-excluded source face. The
         // clone prevents shell orientation from mutating faces owned by the
         // caller's original solid while safely reusing its shared edges.
-        for face_id in &offset_face_ids {
-            let offset_face = &data.offset_faces[face_id];
+        let mut source_faces = data.shell_faces[0].clone();
+        source_faces.sort_by_key(|face_id| face_id.index());
+        for face_id in &source_faces {
+            let Some(offset_face) = data.offset_faces.get(face_id) else {
+                continue;
+            };
             if offset_face.status == OffsetStatus::Done {
-                new_faces.push(topo.add_face(topo.face(offset_face.original)?.clone()));
+                outer_group.push(topo.add_face(topo.face(offset_face.original)?.clone()));
             }
         }
         let wall_faces = build_wall_faces(topo, data)?;
-        new_faces.extend(wall_faces);
+        outer_group.extend(wall_faces);
     }
 
-    for &joint_face in &data.joint_faces {
-        new_faces.push(joint_face);
-    }
+    outer_group.extend(data.joint_faces.iter().copied());
 
-    if new_faces.is_empty() {
+    if shell_groups.iter().all(Vec::is_empty) {
         return Err(OffsetError::AssemblyFailed {
             reason: "no faces could be assembled for the offset solid".to_string(),
         });
     }
 
-    let shell = Shell::new(new_faces)?;
-    let shell_id = topo.add_shell(shell);
+    let mut shell_ids = Vec::with_capacity(shell_groups.len());
+    for (index, group) in shell_groups.into_iter().enumerate() {
+        if group.is_empty() {
+            return Err(OffsetError::AssemblyFailed {
+                reason: format!(
+                    "source shell {index} produced no offset faces; a cavity must not vanish \
+                     silently"
+                ),
+            });
+        }
+        let shell_id = topo.add_shell(Shell::new(group)?);
+        orient_shell_faces(topo, shell_id)?;
+        shell_ids.push(shell_id);
+    }
 
-    let solid = Solid::new(shell_id, vec![]);
-    let solid_id = topo.add_solid(solid);
-    orient_shell_faces(topo, shell_id)?;
-
-    Ok(solid_id)
+    let solid = Solid::new(shell_ids[0], shell_ids[1..].to_vec());
+    Ok(topo.add_solid(solid))
 }
 
 /// Make adjacent faces traverse every shared edge in opposite directions.
