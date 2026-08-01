@@ -4,19 +4,49 @@
 //! works by rebuilding face polygons with offset vertices and inserting new
 //! quadrilateral chamfer faces, then assembling the result using the same
 //! spatial-hash dedup pattern as [`crate::boolean`].
+//!
+//! Only the faces the bevel actually cuts back are rebuilt. A face the
+//! chamfer does not move — including every curved face — is carried through
+//! verbatim, keeping its exact surface, its curved edges, its orientation and
+//! all of its inner wires. A face the chamfer *does* move gets a replacement
+//! outer wire and still keeps its inner wires; if the bevel would cut into one
+//! of those holes the operation is refused rather than approximated. Only the
+//! bevel strips and corner patches are newly minted geometry, and new geometry
+//! cannot carry a hole.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
+use brepkit_topology::edge::{EdgeCurve, EdgeId};
 use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 use brepkit_topology::vertex::VertexId;
+use brepkit_topology::wire::WireId;
 
+use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed};
 use crate::dot_normal_point;
+
+/// Operation name carried by [`OperationsError::Unsupported`] refusals.
+const OP: &str = "chamfer";
+
+/// Deflection for the closing volume check. Only the sign and gross magnitude
+/// matter, so this is deliberately coarse.
+const VOLUME_DEFLECTION: f64 = 0.05;
+
+/// Samples taken along a closed inner-wire curve when testing whether the
+/// bevel cuts into it. Matches the boolean pipeline's own sampling so a bore
+/// rim is tested against the same polygon the rest of the kernel sees.
+const HOLE_SAMPLES: usize = 32;
+
+fn unsupported(reason: impl Into<String>) -> OperationsError {
+    OperationsError::Unsupported {
+        operation: OP,
+        reason: reason.into(),
+    }
+}
 
 /// Chamfer one or more edges of a solid.
 ///
@@ -24,13 +54,24 @@ use crate::dot_normal_point;
 /// parameter controls how far from each vertex the bevel is placed
 /// along the adjacent edges.
 ///
+/// Faces the bevel does not move are carried through verbatim — exact
+/// surface, curved edges, orientation and every inner wire. Faces it does
+/// move keep their inner wires while their outer wire is rebuilt. The result
+/// is checked with [`crate::validate::validate_solid`] and required to enclose
+/// a positive volume strictly smaller than the input's before it is returned.
+///
 /// # Errors
 ///
-/// Returns an error if:
-/// - `distance` is zero or negative
-/// - any edge is not shared by exactly two faces in the solid
-/// - any face is a NURBS surface (only planar faces are supported)
-/// - the result cannot be assembled into a valid solid
+/// Returns [`OperationsError::InvalidInput`] if `distance` is zero or
+/// negative, no edges are given, none of them is shared by exactly two faces,
+/// or a setback does not fit on the face it slides across.
+///
+/// Returns [`OperationsError::Unsupported`] when the bevel has no exact
+/// construction here — a target edge on a curved face or on a hole's rim, a
+/// corner of a bevelled edge that also lies on a curved face or on a hole's
+/// rim, a rebuilt boundary carrying a curved edge, a bevel that would cut into
+/// a hole in the face it trims, or a result that fails validation, encloses no
+/// volume, or does not come back smaller than the input.
 pub fn chamfer(
     topo: &mut Topology,
     solid: SolidId,
@@ -54,15 +95,17 @@ pub fn chamfer(
 ///
 /// Each target edge is replaced by a flat bevel face. Unlike [`chamfer()`],
 /// the two adjacent faces can have different setback distances, producing
-/// a non-symmetric bevel.
+/// a non-symmetric bevel. Faces, holes and orientation are preserved exactly
+/// as described for [`chamfer()`], and the result passes the same gates.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - either distance is zero or negative
-/// - any edge is not shared by exactly two faces in the solid
-/// - any face is a NURBS surface (only planar faces are supported)
-/// - the result cannot be assembled into a valid solid
+/// Returns [`OperationsError::InvalidInput`] if either distance is zero or
+/// negative, no edges are given, none of them is shared by exactly two faces,
+/// or a setback does not fit on the face it slides across.
+///
+/// Returns [`OperationsError::Unsupported`] for the same configurations
+/// [`chamfer()`] declines.
 pub fn chamfer_asymmetric(
     topo: &mut Topology,
     solid: SolidId,
@@ -136,12 +179,26 @@ fn chamfer_core(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
+    // Measured before anything is built so the closing gate can insist the
+    // bevel actually took material off.
+    let before = crate::measure::solid_volume(topo, solid, VOLUME_DEFLECTION)?;
+
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
     let shell_face_ids: Vec<FaceId> = shell.faces().to_vec();
 
     let mut edge_to_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
     let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::new();
+    // Faces the polygon rebuild cannot express, kept so a bevel that would
+    // need one re-trimmed can be refused by name instead of leaving it behind.
+    let mut curved_faces: BTreeSet<usize> = BTreeSet::new();
+    // Which faces meet each vertex, over every wire — a corner shared with a
+    // curved face or with a hole's rim is not one this rebuild can relocate.
+    let mut faces_at_vertex: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    // Edges and vertices that belong to some face's inner wire. The rebuild
+    // below only ever touches outer wires.
+    let mut inner_wire_edges: BTreeSet<usize> = BTreeSet::new();
+    let mut inner_wire_vertices: BTreeSet<usize> = BTreeSet::new();
 
     for &face_id in &shell_face_ids {
         let face = topo.face(face_id)?;
@@ -162,6 +219,12 @@ fn chamfer_core(
                 .entry(oe.edge().index())
                 .or_default()
                 .push(face_id);
+            for v in [edge.start(), edge.end()] {
+                faces_at_vertex
+                    .entry(v.index())
+                    .or_default()
+                    .insert(face_id.index());
+            }
         }
 
         // Include inner wire edges in adjacency map so hole-boundary
@@ -173,15 +236,25 @@ fn chamfer_core(
                     .entry(oe.edge().index())
                     .or_default()
                     .push(face_id);
+                inner_wire_edges.insert(oe.edge().index());
+                let edge = topo.edge(oe.edge())?;
+                for v in [edge.start(), edge.end()] {
+                    inner_wire_vertices.insert(v.index());
+                    faces_at_vertex
+                        .entry(v.index())
+                        .or_default()
+                        .insert(face_id.index());
+                }
             }
         }
 
-        // Only build polygon data for planar faces. Non-planar faces
-        // will be passed through unchanged if they don't contain target edges.
-        let normal = match face.surface() {
-            FaceSurface::Plane { normal, .. } => *normal,
-            _ => continue,
+        // Only build polygon data for planar faces. Non-planar faces are
+        // carried through verbatim, so they may not be touched by the bevel.
+        let FaceSurface::Plane { normal, .. } = face.surface() else {
+            curved_faces.insert(face_id.index());
+            continue;
         };
+        let normal = *normal;
 
         face_polygons.insert(
             face_id.index(),
@@ -190,6 +263,11 @@ fn chamfer_core(
                 positions,
                 wire_edge_ids,
                 normal,
+                // A face's outer wire winds CCW about its *stored* surface
+                // normal whether or not the face is reversed, so `normal`
+                // stays the reference for in-plane constructions while
+                // `outward` is what the bevel must face away from.
+                outward: if face.is_reversed() { -normal } else { normal },
             },
         );
     }
@@ -213,6 +291,55 @@ fn chamfer_core(
     }
 
     let target_set: HashSet<usize> = filtered_edges.iter().map(|e| e.index()).collect();
+
+    // Everything the bevel touches has to be rebuildable exactly. Walk the
+    // targets in the caller's order so the edge named in a refusal never
+    // depends on hash order.
+    for &edge_id in &filtered_edges {
+        if inner_wire_edges.contains(&edge_id.index()) {
+            return Err(unsupported(format!(
+                "edge {} is part of a hole's rim; bevelling it would have to rebuild \
+                 an inner wire, and this chamfer only re-trims outer boundaries",
+                edge_id.index()
+            )));
+        }
+        for face_id in &edge_to_faces[&edge_id.index()] {
+            if curved_faces.contains(&face_id.index()) {
+                return Err(unsupported(format!(
+                    "edge {} lies on curved face {}; a bevel is cut from the two \
+                     planes meeting at the edge, and this one has no plane",
+                    edge_id.index(),
+                    face_id.index()
+                )));
+            }
+        }
+        let edge = topo.edge(edge_id)?;
+        for vid in [edge.start(), edge.end()] {
+            if inner_wire_vertices.contains(&vid.index()) {
+                return Err(unsupported(format!(
+                    "corner {} of bevelled edge {} sits on a hole's rim; moving it \
+                     would drag the hole off the wall that owns it",
+                    vid.index(),
+                    edge_id.index()
+                )));
+            }
+            let Some(at) = faces_at_vertex.get(&vid.index()) else {
+                continue;
+            };
+            for &pos in at {
+                if curved_faces.contains(&pos) {
+                    return Err(unsupported(format!(
+                        "corner {} of bevelled edge {} also lies on curved face {}; \
+                         re-trimming a curved neighbour against the bevel is not \
+                         implemented",
+                        vid.index(),
+                        edge_id.index(),
+                        pos
+                    )));
+                }
+            }
+        }
+    }
 
     // Vertices at endpoints of chamfered edges (used to detect side-face corners).
     let mut vertex_chamfer_endpoints: HashSet<usize> = HashSet::new();
@@ -255,8 +382,9 @@ fn chamfer_core(
     let mut result_specs: Vec<FaceSpec> = Vec::new();
 
     // Track corner vertices where all adjacent edges are chamfered.
-    // Maps vertex_id → (original_position, Vec<(face_id, intersection_point)>).
-    let mut corner_data: HashMap<usize, (Point3, Vec<(FaceId, Point3)>)> = HashMap::new();
+    // Maps vertex_id → the (face, trim-plane intersection) each face contributed.
+    // Ordered so the emitted face list never depends on hash iteration order.
+    let mut corner_data: BTreeMap<usize, Vec<(FaceId, Point3)>> = BTreeMap::new();
 
     // Count how many faces reference each vertex (to detect full-corner chamfer).
     let mut vertex_face_count: HashMap<usize, usize> = HashMap::new();
@@ -266,19 +394,38 @@ fn chamfer_core(
         }
     }
 
+    // Scale-relative slack for "is this point still on that plane", following
+    // the crate's own `approx_eq` convention. Never loosened to admit a case.
+    let eps = tol.linear.max(model_span(&face_polygons) * tol.relative);
+
     for &face_id in &shell_face_ids {
-        // Non-planar faces pass through unchanged.
+        // A curved face is never moved by the bevel — the checks above refused
+        // every configuration that would need one re-trimmed — so it travels
+        // verbatim: exact surface, curved edges, orientation, inner wires.
         let Some(poly) = face_polygons.get(&face_id.index()) else {
-            let face = topo.face(face_id)?;
-            let verts = crate::boolean::face_polygon(topo, face_id)?;
-            result_specs.push(FaceSpec::Surface {
-                vertices: verts,
-                surface: face.surface().clone(),
-                reversed: false,
-                inner_wires: vec![],
+            result_specs.push(FaceSpec::Existing {
+                face: face_id,
+                outer: None,
             });
             continue;
         };
+        // A planar face none of whose corners the bevel disturbs is likewise
+        // carried through whole rather than rebuilt from its corner positions,
+        // which is the only way its holes survive at all.
+        if !poly
+            .vertex_ids
+            .iter()
+            .any(|v| vertex_chamfer_endpoints.contains(&v.index()))
+        {
+            result_specs.push(FaceSpec::Existing {
+                face: face_id,
+                outer: None,
+            });
+            continue;
+        }
+        // This face's boundary is about to be rebuilt from corner positions,
+        // which can only express straight chords.
+        require_line_outer_wire(topo, face_id)?;
         let n = poly.positions.len();
         let mut new_verts: Vec<Point3> = Vec::with_capacity(n + target_set.len());
 
@@ -476,21 +623,37 @@ fn chamfer_core(
                     // Track for corner triangle generation.
                     corner_data
                         .entry(poly.vertex_ids[i].index())
-                        .or_insert_with(|| (pos, Vec::new()))
-                        .1
+                        .or_default()
                         .push((face_id, intersection));
                 }
             }
         }
 
-        // Recompute plane d from the (possibly shifted) polygon.
-        // Normal stays the same since vertices only moved within the face plane.
-        let new_d = dot_normal_point(poly.normal, new_verts[0]);
-        result_specs.push(FaceSpec::Planar {
-            vertices: new_verts,
-            normal: poly.normal,
-            d: new_d,
-            inner_wires: vec![],
+        if new_verts.len() < 3 {
+            return Err(unsupported(format!(
+                "the bevel collapses face {} to {} corner(s)",
+                face_id.index(),
+                new_verts.len()
+            )));
+        }
+        // Every corner slid along an edge of the face, so the rebuilt boundary
+        // must still lie on the face's own plane; the face therefore keeps its
+        // surface exactly, rather than being handed a freshly derived one.
+        let plane_d = dot_normal_point(poly.normal, poly.positions[0]);
+        for p in &new_verts {
+            if (dot_normal_point(poly.normal, *p) - plane_d).abs() > eps {
+                return Err(unsupported(format!(
+                    "re-trimming face {} against the bevel would pull it off its own \
+                     plane",
+                    face_id.index()
+                )));
+            }
+        }
+        require_holes_clear_of_trim(topo, face_id, poly, &new_verts, eps)?;
+        // Replacement outer wire; inner wires copied verbatim, holes and all.
+        result_specs.push(FaceSpec::Existing {
+            face: face_id,
+            outer: Some(new_verts),
         });
     }
 
@@ -517,10 +680,12 @@ fn chamfer_core(
         let c2_start = data.get_point(f2, v_start)?;
         let c2_end = data.get_point(f2, v_end)?;
 
-        // Build the chamfer quad. Check orientation against the average
-        // of the two adjacent face normals to ensure outward winding.
-        let n1 = face_polygons[&f1.index()].normal;
-        let n2 = face_polygons[&f2.index()].normal;
+        // Build the chamfer quad. Check orientation against the average of the
+        // two adjacent faces' OUTWARD normals to ensure outward winding: a
+        // reversed face stores the normal pointing into the material, and
+        // averaging those would face the bevel the wrong way.
+        let n1 = face_polygons[&f1.index()].outward;
+        let n2 = face_polygons[&f2.index()].outward;
         let avg_normal = n1 + n2;
 
         let edge_a = c2_start - c1_start;
@@ -552,24 +717,7 @@ fn chamfer_core(
     // At each original vertex where ALL adjacent edges are chamfered,
     // the trim-plane intersections from each face create a polygonal gap
     // (triangle for box vertices, k-gon for degree-k vertices).
-    // Compute an approximate solid center for outward normal orientation.
-    let solid_center = {
-        let mut cx = 0.0;
-        let mut cy = 0.0;
-        let mut cz = 0.0;
-        let mut count = 0.0;
-        for poly in face_polygons.values() {
-            for p in &poly.positions {
-                cx += p.x();
-                cy += p.y();
-                cz += p.z();
-                count += 1.0;
-            }
-        }
-        Point3::new(cx / count, cy / count, cz / count)
-    };
-
-    for (vid, (orig_pos, entries)) in corner_data {
+    for (vid, entries) in corner_data {
         // Only create a corner face if ALL faces at this vertex contributed
         // (i.e. all edges at this vertex are chamfered).
         let expected = vertex_face_count.get(&vid).copied().unwrap_or(0);
@@ -577,14 +725,26 @@ fn chamfer_core(
             continue;
         }
 
-        // Order the corner vertices for consistent winding.
-        // Use the original vertex position to compute outward direction.
-        let outward = (orig_pos - solid_center)
+        // Which way is out, taken from the faces that meet at this corner
+        // rather than from the body's centroid: a corner of a pocket faces
+        // into the cavity, and a centroid cannot tell that apart from a
+        // corner of the block. Each face contributes its outward normal, so
+        // reversed faces point the patch the right way round.
+        let outward = entries
+            .iter()
+            .fold(Vec3::new(0.0, 0.0, 0.0), |acc, (fid, _)| {
+                acc + face_polygons[&fid.index()].outward
+            })
             .normalize()
-            .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+            .map_err(|_| {
+                unsupported(format!(
+                    "the faces meeting at corner {vid} face in opposing directions, so \
+                     the corner patch closing the bevels there has no outward side"
+                ))
+            })?;
 
-        // For a triangle (3 entries), compute the normal and ensure it
-        // points outward (away from solid center).
+        // For a triangle (3 entries), compute the normal and ensure it agrees
+        // with the outward direction worked out above.
         let pts: Vec<Point3> = entries.iter().map(|(_, p)| *p).collect();
         let e1 = pts[1] - pts[0];
         let e2 = pts[2] - pts[0];
@@ -635,6 +795,8 @@ fn chamfer_core(
                 .unwrap_or(Vec3::new(0.0, 0.0, 1.0))
         };
         let cd = dot_normal_point(cn, corner_verts[0]);
+        // Newly minted geometry: a corner patch is a fresh polygon spanning
+        // the gap the bevels leave, so it has no hole to carry.
         result_specs.push(FaceSpec::Planar {
             vertices: corner_verts,
             normal: cn,
@@ -643,7 +805,39 @@ fn chamfer_core(
         });
     }
 
-    assemble_solid_mixed(topo, &result_specs, tol)
+    let result = assemble_solid_mixed(topo, &result_specs, tol)?;
+
+    let report = crate::validate::validate_solid(topo, result)?;
+    if !report.is_valid() {
+        let detail: Vec<&str> = report
+            .issues
+            .iter()
+            .filter(|i| i.severity == crate::validate::Severity::Error)
+            .map(|i| i.description.as_str())
+            .collect();
+        return Err(unsupported(format!(
+            "chamfered shell failed validation ({})",
+            detail.join("; ")
+        )));
+    }
+    // A shell can pass the structural checks and still be turned inside out,
+    // and a chamfer that comes back no smaller than its input did not cut a
+    // bevel — it folded, or it filled something in.
+    let after = crate::measure::solid_volume(topo, result, VOLUME_DEFLECTION)?;
+    if !after.is_finite() || after <= 0.0 {
+        return Err(unsupported(format!(
+            "chamfered shell encloses no volume ({after}); the bevel turned the body \
+             inside out"
+        )));
+    }
+    if after >= before {
+        return Err(unsupported(format!(
+            "a chamfer removes material, but the result encloses {after} against the \
+             input's {before}"
+        )));
+    }
+
+    Ok(result)
 }
 
 /// Per-face polygon data collected from the solid.
@@ -653,7 +847,198 @@ struct FacePolygon {
     /// The `EdgeId` for each wire edge: `wire_edge_ids[i]` connects
     /// `vertex_ids[i]` to `vertex_ids[(i+1) % n]`.
     wire_edge_ids: Vec<EdgeId>,
+    /// The face's *stored* surface normal. The outer wire winds CCW about this
+    /// vector whether or not the face is reversed, so every in-plane
+    /// construction below (`inward = normal x direction`) refers to it.
     normal: Vec3,
+    /// The face's outward normal — [`Self::normal`] flipped when the face is
+    /// reversed. What the bevel has to face away from.
+    outward: Vec3,
+}
+
+/// Bounding-box diagonal over every planar face corner, used to scale the
+/// "is this point still on that plane" slack with the model.
+fn model_span(face_polygons: &HashMap<usize, FacePolygon>) -> f64 {
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for poly in face_polygons.values() {
+        for &p in &poly.positions {
+            bounds = Some(match bounds {
+                None => (p, p),
+                Some((lo, hi)) => (
+                    Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+                    Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+                ),
+            });
+        }
+    }
+    bounds.map_or(0.0, |(lo, hi)| (hi - lo).length())
+}
+
+/// Refuse a face whose boundary the bevel must rebuild when that boundary is
+/// not made of straight edges to begin with.
+///
+/// The rebuild describes a wire as a list of corner positions, so the
+/// assembler can only mint chords between them; an arc in the boundary would
+/// come back flattened.
+fn require_line_outer_wire(topo: &Topology, fid: FaceId) -> Result<(), OperationsError> {
+    let wire = topo.face(fid)?.outer_wire();
+    for oe in topo.wire(wire)?.edges() {
+        if !matches!(topo.edge(oe.edge())?.curve(), EdgeCurve::Line) {
+            return Err(unsupported(format!(
+                "the chamfer has to rebuild the boundary of face {}, which carries a \
+                 curved edge; re-trimming a curved boundary against the bevel is not \
+                 implemented",
+                fid.index()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The points of `wire`, sampling any closed curve edge.
+///
+/// A drilled hole's rim is a single closed circle edge whose start and end are
+/// the same vertex — one position. Testing that one point against the trimmed
+/// boundary would say nothing about the rest of the circle, so closed curves
+/// are sampled the way the boolean pipeline samples them.
+fn wire_points(topo: &Topology, wire: WireId) -> Result<Vec<Point3>, OperationsError> {
+    let mut pts = Vec::new();
+    for oe in topo.wire(wire)?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let closed = edge.start() == edge.end()
+            && matches!(
+                edge.curve(),
+                EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
+            );
+        if closed {
+            pts.extend(crate::boolean::sample_edge_curve(
+                edge.curve(),
+                HOLE_SAMPLES,
+            ));
+        } else {
+            pts.push(topo.vertex(oe.oriented_start(edge))?.point());
+        }
+    }
+    Ok(pts)
+}
+
+/// An orthonormal basis of the plane with normal `n`.
+fn plane_basis(n: Vec3) -> Result<(Vec3, Vec3), OperationsError> {
+    let seed = if n.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let u = n.cross(seed).normalize()?;
+    Ok((u, n.cross(u)))
+}
+
+/// Whether `p` is inside the closed polygon `poly` by the even-odd rule.
+fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[(i + n - 1) % n];
+        if (yi > p.1) != (yj > p.1) {
+            let t = (p.1 - yi) / (yj - yi);
+            if p.0 < t.mul_add(xj - xi, xi) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Whether the closed segments `a[i]→a[i+1]` and `b[j]→b[j+1]` ever cross.
+fn polylines_cross(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
+    let cross = |o: (f64, f64), p: (f64, f64), q: (f64, f64)| {
+        (p.0 - o.0).mul_add(q.1 - o.1, -((p.1 - o.1) * (q.0 - o.0)))
+    };
+    let straddles = |p1, p2, q1, q2| {
+        let d1 = cross(q1, q2, p1);
+        let d2 = cross(q1, q2, p2);
+        let d3 = cross(p1, p2, q1);
+        let d4 = cross(p1, p2, q2);
+        ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
+    };
+    for i in 0..a.len() {
+        let (p1, p2) = (a[i], a[(i + 1) % a.len()]);
+        for j in 0..b.len() {
+            let (q1, q2) = (b[j], b[(j + 1) % b.len()]);
+            if straddles(p1, p2, q1, q2) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Refuse a bevel that would cut into a hole in the face it trims.
+///
+/// The rebuilt face keeps its inner wires verbatim, which is only honest while
+/// those holes still fit inside the trimmed boundary. A setback wide enough to
+/// reach a bore would leave the rim floating across the new edge — a face
+/// whose hole is no longer in it. That has no exact construction here, so it
+/// is named rather than approximated.
+fn require_holes_clear_of_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    poly: &FacePolygon,
+    new_outer: &[Point3],
+    eps: f64,
+) -> Result<(), OperationsError> {
+    let inner = topo.face(face_id)?.inner_wires().to_vec();
+    if inner.is_empty() {
+        return Ok(());
+    }
+    let (u, v) = plane_basis(poly.normal)?;
+    let flatten = |p: Point3| (dot_normal_point(u, p), dot_normal_point(v, p));
+    let outer2: Vec<(f64, f64)> = new_outer.iter().map(|&p| flatten(p)).collect();
+
+    for (slot, &wid) in inner.iter().enumerate() {
+        let pts = wire_points(topo, wid)?;
+        let inner2: Vec<(f64, f64)> = pts.iter().map(|&p| flatten(p)).collect();
+        if inner2.len() < 3 {
+            continue;
+        }
+        let escaped = inner2.iter().any(|p| !point_in_polygon(*p, &outer2));
+        if escaped || polylines_cross(&inner2, &outer2) {
+            return Err(unsupported(format!(
+                "the bevel cuts into inner wire {slot} of face {}; the setback reaches \
+                 the hole, so the trimmed face can no longer carry it",
+                face_id.index()
+            )));
+        }
+        // A hole that merely grazes the new boundary is no better: the rim and
+        // the trimmed edge would land on top of each other.
+        let touching = inner2.iter().any(|p| {
+            (0..outer2.len()).any(|i| {
+                point_segment_distance(*p, outer2[i], outer2[(i + 1) % outer2.len()]) <= eps
+            })
+        });
+        if touching {
+            return Err(unsupported(format!(
+                "the bevel lands on inner wire {slot} of face {}; the trimmed boundary \
+                 and the hole's rim coincide",
+                face_id.index()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn point_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len_sq = dx.mul_add(dx, dy * dy);
+    let t = if len_sq <= f64::MIN_POSITIVE {
+        0.0
+    } else {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len_sq).clamp(0.0, 1.0)
+    };
+    let (qx, qy) = (t.mul_add(dx, a.0), t.mul_add(dy, a.1));
+    (p.0 - qx).hypot(p.1 - qy)
 }
 
 /// The setback that governs how far a side-face corner travels along one of
