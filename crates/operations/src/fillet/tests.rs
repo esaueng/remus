@@ -349,12 +349,24 @@ fn rolling_ball_fillet_multiple_edges() {
     let s = topo.solid(result).expect("result solid");
     let sh = topo.shell(s.outer_shell()).expect("shell");
 
-    // 6 trimmed planar + 2 NURBS fillet strips + 1 corner patch (the two
-    // edges share a corner) = 9 faces.
+    // 6 trimmed planar + 2 fillet strips + the corner, which is TWO faces:
+    // the octant of the corner ball, plus the planar ledge the third (still
+    // sharp) edge runs out onto one radius below the shared face. Those two
+    // used to be approximated by a single blended patch; splitting them is what
+    // makes the corner exact. = 10 faces.
     assert_eq!(
         sh.faces().len(),
-        9,
-        "expected 9 faces after two-edge shared-corner rolling-ball fillet"
+        10,
+        "expected 10 faces after two-edge shared-corner rolling-ball fillet"
+    );
+    let spheres = sh
+        .faces()
+        .iter()
+        .filter(|&&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Sphere(_)))
+        .count();
+    assert_eq!(
+        spheres, 1,
+        "the corner must be an exact ball octant, not an approximating patch"
     );
     validate_shell_manifold(sh, &topo).expect("two-edge fillet should be manifold");
 }
@@ -1268,19 +1280,62 @@ fn fillet_rolling_ball_second_pass_on_blended_solid() {
     };
     assert!(has_blend, "first fillet must produce a blend face");
 
-    // Second fillet on a different edge.
+    // Second fillet on a different edge — one with a real dihedral to round.
+    //
+    // This used to pick `edges2[1]`, which is one of the first blend's G1
+    // CONTACT lines: the engine cannot round a tangent joint, skipped it, and
+    // returned a rebuilt solid carrying no second blend at all. The test passed
+    // on a fillet that had not happened. Pick an edge the selection filter
+    // agrees is blendable, and check the blend is actually there.
     let edges2 = solid_edge_ids(&topo, result1);
-    let result2 = fillet_rolling_ball(&mut topo, result1, &[edges2[1]], 0.05);
+    let filletable =
+        crate::query::filter_filletable_edges(&topo, result1, &edges2).expect("filletable edges");
+    let target = *filletable
+        .first()
+        .expect("the once-filleted cube still has blendable edges");
+    let faces_before = {
+        let s = topo.solid(result1).unwrap();
+        topo.shell(s.outer_shell()).unwrap().faces().len()
+    };
+    let result2 = fillet_rolling_ball(&mut topo, result1, &[target], 0.05);
     assert!(
         result2.is_ok(),
         "second fillet on NURBS-containing solid must succeed: {:?}",
         result2.err()
     );
+    let result2 = result2.unwrap();
 
-    let vol = crate::measure::solid_volume(&topo, result2.unwrap(), 0.1).unwrap();
+    let vol = crate::measure::solid_volume(&topo, result2, 0.1).unwrap();
     assert!(
         vol > 0.5,
         "doubly-filleted solid must have positive volume, got {vol}"
+    );
+    let faces_after = {
+        let s = topo.solid(result2).unwrap();
+        topo.shell(s.outer_shell()).unwrap().faces().len()
+    };
+    assert!(
+        faces_after > faces_before,
+        "the second fillet must add a blend face ({faces_before} -> {faces_after})"
+    );
+
+    // And an edge the engine CANNOT round is now refused by name rather than
+    // quietly left out of an otherwise successful rebuild.
+    let tangent = edges2
+        .iter()
+        .copied()
+        .find(|e| !filletable.contains(e))
+        .expect("the first blend leaves two tangent contact lines");
+    let refused = fillet_rolling_ball(&mut topo, result1, &[tangent], 0.05);
+    assert!(
+        matches!(
+            refused,
+            Err(crate::OperationsError::Blend(
+                brepkit_blend::BlendError::EdgesNotBlended { .. }
+            ))
+        ),
+        "a tangent contact line must be refused by name, got: {:?}",
+        refused.map(|_| "Ok")
     );
 }
 
@@ -1345,8 +1400,9 @@ fn adjacent_fillet_overlap_curved_face_detected() {
                 msg.contains("overlap")
                     || msg.contains("curvature")
                     || msg.contains("exceeds")
-                    || msg.contains("degenerate"),
-                "expected overlap/curvature/degenerate error, got: {msg}"
+                    || msg.contains("degenerate")
+                    || msg.contains("not blended"),
+                "expected overlap/curvature/degenerate/not-blended error, got: {msg}"
             );
         }
     }

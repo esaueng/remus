@@ -251,6 +251,60 @@ pub fn try_fillet(
     Err(v2_failure)
 }
 
+/// [`try_fillet`], with the rule that the answer must cover every edge named.
+///
+/// The `fillet` binding used to retry on the PLANAR SUBSET of the selection
+/// whenever the whole set failed, and return that subset's solid as if it were
+/// the blend that was asked for. Nothing about the returned handle said
+/// otherwise: a fresh, valid, watertight solid whose volume sat inside the
+/// plausible envelope. A selection mixing a plate's top perimeter with its bore
+/// rim came back byte-identical to the perimeter-only result, the rim silently
+/// dropped — though that rim rounds perfectly when picked on its own. A caller
+/// had no way to detect it.
+///
+/// The retry still runs, because it is a cheap way to find out whether the
+/// non-planar edges are the blocker, but its solid is never the answer: when it
+/// covers only part of the selection the result is a typed
+/// [`BlendError::EdgesNotBlended`] naming the edges that carry no blend, and
+/// the input is left untouched.
+///
+/// # Errors
+///
+/// Returns the engine chain's typed failure, or `EdgesNotBlended` when the only
+/// thing that would have succeeded is a strict subset of the selection.
+pub fn fillet_whole_selection(
+    topo: &mut brepkit_topology::Topology,
+    solid_id: brepkit_topology::solid::SolidId,
+    edge_ids: &[brepkit_topology::edge::EdgeId],
+    radius: f64,
+) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
+    let primary = match try_fillet(topo, solid_id, edge_ids, radius) {
+        Ok(solid) => return Ok(solid),
+        Err(e) => e,
+    };
+
+    let planar_edges = brepkit_operations::query::filter_planar_edges(topo, solid_id, edge_ids)?;
+    if planar_edges.is_empty() || planar_edges.len() == edge_ids.len() {
+        return Err(primary);
+    }
+    let dropped: Vec<brepkit_topology::edge::EdgeId> = edge_ids
+        .iter()
+        .copied()
+        .filter(|e| !planar_edges.contains(e))
+        .collect();
+    Err(brepkit_operations::OperationsError::Blend(
+        brepkit_operations::blend_ops::BlendError::EdgesNotBlended {
+            edges: dropped,
+            reason: format!(
+                "the blend engines refused the whole selection ({primary}); the {} \
+                 edge(s) between planar faces would round on their own, but \
+                 returning that subset would drop the rest without saying so",
+                planar_edges.len()
+            ),
+        },
+    ))
+}
+
 /// Chamfer edges, falling back to the v2 walking engine when the v1 flat-bevel
 /// engine cannot handle the geometry.
 ///
@@ -871,15 +925,23 @@ mod fillet_tests {
         let first = try_fillet(&mut topo, cube, &[edges[0], edges[1]], 1.0).expect("first fillet");
         let v1 = brepkit_operations::measure::solid_volume(&topo, first, 0.05).unwrap();
 
-        // The scenario under test only exists if the first fillet produced NURBS
-        // blend faces for the later edges to border.
+        // The scenario under test only exists if the first fillet produced blend
+        // faces for the later edges to border. It used to name NURBS
+        // specifically: this corner is now built entirely from exact analytic
+        // surfaces — two cylindrical bands, the ball octant, and the ledge — so
+        // the precondition is "a curved blend face exists", which is the
+        // property #813 is actually about.
         let sd = topo.solid(first).expect("solid");
         let sh = topo.shell(sd.outer_shell()).expect("shell");
         let has_blend = sh.faces().iter().any(|&fid| {
-            topo.face(fid)
-                .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
+            topo.face(fid).is_ok_and(|f| {
+                matches!(
+                    f.surface(),
+                    FaceSurface::Nurbs(_) | FaceSurface::Cylinder(_) | FaceSurface::Sphere(_)
+                )
+            })
         });
-        assert!(has_blend, "first fillet should create NURBS blend faces");
+        assert!(has_blend, "first fillet should create blend faces");
 
         // Filleting any single result edge must stay a manifold solid and must
         // not self-intersect/inflate past the original box volume (the #813 bug
@@ -1086,5 +1148,140 @@ mod fillet_tests {
             .expect("rim shell");
         brepkit_topology::validation::validate_shell_closed(rim_shell, &topo)
             .expect("the hole-rim result must be watertight");
+    }
+
+    // ── The blend must cover every edge named ──
+    //
+    // `fillet` used to retry on the PLANAR SUBSET of a failing selection and
+    // return that subset's solid as the answer. A plate's top perimeter picked
+    // together with its bore rim therefore came back byte-identical to the
+    // perimeter-only result: fresh valid handle, volume inside the plausible
+    // envelope, no error, no warning — and the rim, which rounds perfectly when
+    // picked alone, simply missing. Nothing the caller could inspect said so.
+
+    const PLATE_W: f64 = 80.0;
+    const PLATE_D: f64 = 60.0;
+    const PLATE_T: f64 = 20.0;
+    const BORE_R: f64 = 8.0;
+
+    /// A plate with one bore straight through, its four top perimeter edges,
+    /// and its top bore rim.
+    fn bored_plate(
+        topo: &mut Topology,
+    ) -> (
+        brepkit_topology::solid::SolidId,
+        Vec<brepkit_topology::edge::EdgeId>,
+        brepkit_topology::edge::EdgeId,
+    ) {
+        use brepkit_math::mat::Mat4;
+        use brepkit_operations::boolean::{BooleanOp, boolean};
+        use brepkit_operations::primitives::{make_box, make_cylinder};
+        use brepkit_operations::transform::transform_solid;
+        use brepkit_topology::edge::EdgeCurve;
+
+        let blank = make_box(topo, PLATE_W, PLATE_D, PLATE_T).unwrap();
+        let drill = make_cylinder(topo, BORE_R, PLATE_T + 4.0).unwrap();
+        transform_solid(
+            topo,
+            drill,
+            &Mat4::translation(PLATE_W / 2.0, PLATE_D / 2.0, -2.0),
+        )
+        .unwrap();
+        let body = boolean(topo, BooleanOp::Cut, blank, drill).unwrap();
+
+        let mut edges: Vec<brepkit_topology::edge::EdgeId> = Vec::new();
+        for fid in brepkit_topology::explorer::solid_faces(topo, body).unwrap() {
+            let f = topo.face(fid).unwrap();
+            for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    if !edges.contains(&oe.edge()) {
+                        edges.push(oe.edge());
+                    }
+                }
+            }
+        }
+        let mut perimeter = Vec::new();
+        let mut rim = None;
+        for e in edges {
+            let ed = topo.edge(e).unwrap();
+            if ed.start() == ed.end() {
+                if let EdgeCurve::Circle(c) = ed.curve()
+                    && (c.center().z() - PLATE_T).abs() < 1e-9
+                {
+                    rim = Some(e);
+                }
+                continue;
+            }
+            let a = topo.vertex(ed.start()).unwrap().point();
+            let b = topo.vertex(ed.end()).unwrap().point();
+            if (a.z() - PLATE_T).abs() < 1e-9 && (b.z() - PLATE_T).abs() < 1e-9 {
+                perimeter.push(e);
+            }
+        }
+        assert_eq!(perimeter.len(), 4, "the top face has four perimeter edges");
+        (body, perimeter, rim.expect("top bore rim"))
+    }
+
+    #[test]
+    fn fillet_whole_selection_never_returns_the_planar_subset() {
+        let radius = 1.0;
+
+        // Both halves of the selection round on their own, so neither is at
+        // fault: only the combination was.
+        let mut topo = Topology::new();
+        let (body, perimeter, rim) = bored_plate(&mut topo);
+        let blank = brepkit_operations::measure::solid_volume(&topo, body, 0.001).unwrap();
+
+        let perimeter_only = {
+            let mut t = topo.clone();
+            let s = super::fillet_whole_selection(&mut t, body, &perimeter, radius)
+                .expect("the perimeter alone must round");
+            brepkit_operations::measure::solid_volume(&t, s, 0.001).unwrap()
+        };
+        assert!(
+            perimeter_only < blank,
+            "the perimeter fillet must remove material"
+        );
+        let rim_only = {
+            let mut t = topo.clone();
+            let s = super::fillet_whole_selection(&mut t, body, &[rim], radius)
+                .expect("the bore rim alone must round");
+            brepkit_operations::measure::solid_volume(&t, s, 0.001).unwrap()
+        };
+        assert!(rim_only < blank, "the rim fillet must remove material");
+
+        let mut mixed = perimeter;
+        mixed.push(rim);
+        match super::fillet_whole_selection(&mut topo, body, &mixed, radius) {
+            Ok(s) => {
+                // Blending everything is the ideal answer; blending only the
+                // perimeter and calling it done is the defect.
+                let volume = brepkit_operations::measure::solid_volume(&topo, s, 0.001).unwrap();
+                let both = blank - (blank - perimeter_only) - (blank - rim_only);
+                assert!(
+                    (volume - both).abs() < 0.02 * (blank - both),
+                    "the mixed selection returned {volume}; the perimeter alone \
+                     gives {perimeter_only} and blending both gives {both}. A \
+                     figure matching the perimeter means the rim was dropped."
+                );
+            }
+            Err(e) => {
+                assert_eq!(
+                    brepkit_operations::blend_ops::blend_failure_code(&e),
+                    "edges-not-blended",
+                    "the refusal must say the selection was not fully blended: {e}"
+                );
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains(&format!("{rim:?}")),
+                    "the refusal must name the edge it could not blend, got: {msg}"
+                );
+                let after = brepkit_operations::measure::solid_volume(&topo, body, 0.001).unwrap();
+                assert!(
+                    (after - blank).abs() < 1e-9,
+                    "a refused fillet must leave the input untouched ({blank} -> {after})"
+                );
+            }
+        }
     }
 }

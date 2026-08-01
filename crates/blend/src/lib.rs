@@ -92,6 +92,22 @@ pub enum BlendError {
         stripes: usize,
     },
 
+    /// Some of the edges the caller named were never blended.
+    ///
+    /// A blend must round every edge it was asked to round, or say which ones
+    /// it could not. Quietly returning the subset it managed is the worst
+    /// outcome available: the caller gets a fresh, valid, watertight handle
+    /// whose volume sits inside the plausible envelope and has no way to tell
+    /// that a feature it asked for is simply missing. Engines — and
+    /// dispatchers that retry on a reduced selection — raise this instead.
+    #[error("{} of the edges named were not blended ({edges:?}): {reason}", edges.len())]
+    EdgesNotBlended {
+        /// The named edges that carry no blend in the result.
+        edges: Vec<EdgeId>,
+        /// Why they could not be blended.
+        reason: String,
+    },
+
     /// Surface type not supported.
     #[error("unsupported surface on face {face:?}: {surface_tag}")]
     UnsupportedSurface {

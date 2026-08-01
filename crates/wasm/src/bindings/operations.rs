@@ -266,36 +266,17 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
-        // Use the rolling-ball fillet algorithm for true G1-continuous NURBS
-        // blend surfaces. Falls back to the planar fillet if rolling-ball fails.
-        // If the full set of edges fails (e.g. edges adjacent to NURBS faces from
-        // a prior fillet), filter to edges between two planar faces and retry.
-        // A failure of both attempts surfaces the first attempt's typed error,
-        // prefixed with its `blend_failure_code` so callers can branch on the
-        // cause without matching prose.
-        //
-        // Wrap in catch_unwind to prevent panics from propagating across the
-        // WASM FFI boundary, which would abort the entire WASM instance.
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<u32, JsError> {
-                let solid = match try_fillet(self.topo_mut(), solid_id, &edge_ids, radius) {
-                    Ok(s) => s,
-                    Err(primary) => {
-                        // Filter to edges where both adjacent faces are planar.
-                        let planar_edges = brepkit_operations::query::filter_planar_edges(
-                            &self.topo, solid_id, &edge_ids,
-                        )?;
-                        if planar_edges.is_empty() || planar_edges.len() == edge_ids.len() {
-                            return Err(fillet_failure_js_error(&primary));
-                        }
-                        try_fillet(self.topo_mut(), solid_id, &planar_edges, radius)
-                            .map_err(|_| fillet_failure_js_error(&primary))?
-                    }
-                };
-                Ok(solid_id_to_u32(solid))
-            }));
+        // `fillet_whole_selection` runs the engine chain and enforces the rule
+        // that the answer covers every edge named (see its doc comment for what
+        // used to happen instead). Wrap in catch_unwind to prevent panics from
+        // propagating across the WASM FFI boundary, which would abort the
+        // entire WASM instance.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::helpers::fillet_whole_selection(self.topo_mut(), solid_id, &edge_ids, radius)
+        }));
         match result {
-            Ok(inner) => inner,
+            Ok(Ok(solid)) => Ok(solid_id_to_u32(solid)),
+            Ok(Err(e)) => Err(fillet_failure_js_error(&e)),
             Err(panic_info) => {
                 let msg = panic_message(&panic_info, "Fillet");
                 Err(JsError::new(&msg))

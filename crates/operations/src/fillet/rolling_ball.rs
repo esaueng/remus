@@ -1468,6 +1468,15 @@ pub fn fillet_rolling_ball(
     // Phase 4: Build NURBS fillet faces for each target edge.
     // Also collect contact points per vertex for vertex blend patches.
     // vertex_contacts maps vertex_index → list of (face_index, contact_point) pairs.
+    //
+    // `blended_edges` records which edges actually got a blend face. Every
+    // `continue` below skips an edge — an unreadable surface normal, a
+    // degenerate tangent, a dihedral too flat to round — and the loop then
+    // carries on and assembles a perfectly valid solid that is simply missing
+    // the blend the caller asked for. The guard after the loop turns that into
+    // a typed error naming the edges, so a partial blend can never be mistaken
+    // for a complete one.
+    let mut blended_edges: HashSet<usize> = HashSet::new();
     let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::new();
     // For G1 chain junctions, store the contact points computed by the first
     // edge so the second edge can reuse them exactly.
@@ -1718,6 +1727,7 @@ pub fn fillet_rolling_ball(
                 (f1.index(), f2.index()),
                 [contact1_start, contact2_start, contact1_end, contact2_end],
             );
+            blended_edges.insert(edge_id.index());
             continue;
         }
 
@@ -1772,6 +1782,37 @@ pub fn fillet_rolling_ball(
             (f1.index(), f2.index()),
             [contact1_start, contact2_start, contact1_end, contact2_end],
         );
+        blended_edges.insert(edge_id.index());
+    }
+
+    // Every edge the CALLER named must carry a blend. An edge dropped by the
+    // manifold filter in Phase 2 or skipped by any of Phase 4's `continue`s
+    // reaches here unblended, and the assembly below would still produce a
+    // closed, valid, plausibly-sized solid — one the caller has no way to tell
+    // apart from the blend it asked for. Report it instead; the dispatcher can
+    // then try another engine, and if none succeeds the caller hears which
+    // edges were missed rather than receiving a quiet subset.
+    {
+        let mut missing: Vec<EdgeId> = Vec::new();
+        for &requested in edges {
+            if blended_edges.contains(&requested.index())
+                || missing.iter().any(|e| e.index() == requested.index())
+            {
+                continue;
+            }
+            missing.push(requested);
+        }
+        if !missing.is_empty() {
+            return Err(crate::OperationsError::Blend(
+                brepkit_blend::BlendError::EdgesNotBlended {
+                    edges: missing,
+                    reason: "the rolling-ball engine produced no blend surface for them \
+                             (non-manifold edge, unreadable surface normal, or a dihedral \
+                             too flat to round)"
+                        .into(),
+                },
+            ));
+        }
     }
 
     // Phase 5b: Build vertex blend patches at junctions where 2+ fillet edges meet.
@@ -1804,22 +1845,7 @@ pub fn fillet_rolling_ball(
             continue;
         }
 
-        // Compute the outward normal for the blend patch.
-        // The vertex's original position is "inside" the fillet region, so the normal
-        // should point away from the original vertex.
-        // Use the cross product of two edges of the polygon.
-        let e1 = blend_points[1] - blend_points[0];
-        let e2 = blend_points[2] - blend_points[0];
-        let cross = e1.cross(e2);
-        let blend_normal = if let Ok(n) = cross.normalize() {
-            n
-        } else {
-            continue; // Degenerate (collinear points)
-        };
-
-        // Orient the normal to point outward (away from the original vertex position).
-        // The original vertex is at the centroid of the face normals, offset inward.
-        // We can use any face polygon vertex to get the original vertex position.
+        // The original (about to be rounded away) vertex position.
         let original_vertex = face_polygons
             .values()
             .flat_map(|fp| {
@@ -1831,92 +1857,137 @@ pub fn fillet_rolling_ball(
             })
             .next();
 
-        let blend_normal = if let Some(v_pos) = original_vertex {
-            let centroid = blend_points
+        // The corner ball: radius `radius`, nestled into this vertex tangent to
+        // every face the strips contact. Its centre is the vertex offset one
+        // radius along each of those faces' outward normals — subtracting on a
+        // convex corner, adding on a concave one. Every patch below is built
+        // and oriented against it, so it is computed once here.
+        let mut face_normals: Vec<Vec3> = Vec::new();
+        for &(face_idx, _) in contacts {
+            if let Some(poly) = face_polygons.get(&face_idx) {
+                let n = poly.normal;
+                if !face_normals.iter().any(|e| (*e - n).length() < 1e-10) {
+                    face_normals.push(n);
+                }
+            }
+        }
+        let normal_sum = face_normals.iter().fold(Vec3::new(0.0, 0.0, 0.0), |a, n| {
+            Vec3::new(a.x() + n.x(), a.y() + n.y(), a.z() + n.z())
+        });
+        let fillet_edges = vertex_fillet_edges
+            .get(&vi)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let is_concave = corner_is_concave(topo, vi, fillet_edges, normal_sum);
+        let offset_sign = if is_concave { 1.0 } else { -1.0 };
+        let sphere_center = original_vertex.map(|v_pos| {
+            Point3::new(
+                v_pos.x() + offset_sign * radius * normal_sum.x(),
+                v_pos.y() + offset_sign * radius * normal_sum.y(),
+                v_pos.z() + offset_sign * radius * normal_sum.z(),
+            )
+        });
+
+        let centroid = {
+            let sum = blend_points
                 .iter()
                 .fold(Vec3::new(0.0, 0.0, 0.0), |acc, p| {
                     Vec3::new(acc.x() + p.x(), acc.y() + p.y(), acc.z() + p.z())
                 });
-            let centroid = Point3::new(
-                centroid.x() / blend_points.len() as f64,
-                centroid.y() / blend_points.len() as f64,
-                centroid.z() / blend_points.len() as f64,
-            );
-            // Normal should point away from the original vertex
-            let to_vertex = v_pos - centroid;
-            if to_vertex.dot(blend_normal) > 0.0 {
-                -blend_normal
-            } else {
-                blend_normal
+            #[allow(clippy::cast_precision_loss)]
+            let count = blend_points.len() as f64;
+            Point3::new(sum.x() / count, sum.y() / count, sum.z() / count)
+        };
+
+        // Which way is OUT of the finished solid here? Away from the corner
+        // ball's centre: the material is the ball's side of the patch.
+        //
+        // This used to be "away from the original vertex", which is exactly
+        // backwards on a convex corner — rounding it REMOVES the vertex, so the
+        // vertex ends up OUTSIDE the new surface and outward points toward it.
+        // Every corner patch was therefore emitted inside out. The shell still
+        // closed and `validate_solid` still passed (wire winding against face
+        // normal is only a Warning), but the patch shaded and exported
+        // inverted, and the divergence-theorem volume integral counted its
+        // contribution with the wrong sign — which is the whole of the reported
+        // "corner blends over-remove material". No material was over-cut; one
+        // face per corner was inside out.
+        let outward_ref = match (sphere_center, original_vertex) {
+            (Some(centre), _) => {
+                let radial = centroid - centre;
+                if is_concave { -radial } else { radial }
             }
+            (None, Some(v_pos)) => v_pos - centroid,
+            (None, None) => Vec3::new(0.0, 0.0, 0.0),
+        };
+
+        let e1 = blend_points[1] - blend_points[0];
+        let e2 = blend_points[2] - blend_points[0];
+        let Ok(raw_normal) = e1.cross(e2).normalize() else {
+            continue; // Degenerate (collinear points)
+        };
+        let blend_normal = if raw_normal.dot(outward_ref) < 0.0 {
+            -raw_normal
         } else {
-            blend_normal
+            raw_normal
         };
 
         // Two filleted edges meeting at this corner (sharing one face). The two
         // strips were set back and the third, unfilleted edge was preserved at
         // P (Phase 3). The gap is a four-sided region P–near1–far–near2: its two
         // straight P-edges meet the trimmed side faces and its two arc-edges
-        // meet the strip ends. The eighth-sphere triangle used for 3-edge
-        // corners does not apply here because one of its arcs would face the
-        // (still sharp) unfilleted edge with nothing to share it.
+        // meet the strip ends.
+        //
+        // It is filled by the SAME eighth-sphere the 3-edge corner uses, plus
+        // the planar ledge that closes it back to P — see
+        // `build_two_edge_corner_exact`. (One patch spanning the whole gap was
+        // tried first: being neither surface, it left the corner a few tenths
+        // of a percent short of the closed form and cost the ball its exact
+        // analytic form. It survives as the fallback for oblique corners.)
         if fillet_count == 2 {
             let mut built = false;
-            if let (Some(&p_pt), Some(v_pos)) = (corner_preserved.get(&vi), original_vertex)
+            if let (Some(&p_pt), Some(centre)) = (corner_preserved.get(&vi), sphere_center)
                 && blend_points.len() == 3
             {
-                // Sphere centre: corner offset inward by R along each distinct
-                // contact-face normal. Convex corners subtract Σnormals;
-                // concave corners add (same rule as the 3-edge path below).
-                let mut face_normals: Vec<Vec3> = Vec::new();
-                for &(face_idx, _) in contacts {
-                    if let Some(poly) = face_polygons.get(&face_idx) {
-                        let n = poly.normal;
-                        if !face_normals.iter().any(|e| (*e - n).length() < 1e-10) {
-                            face_normals.push(n);
-                        }
-                    }
-                }
-                let normal_sum = face_normals.iter().fold(Vec3::new(0.0, 0.0, 0.0), |a, n| {
-                    Vec3::new(a.x() + n.x(), a.y() + n.y(), a.z() + n.z())
-                });
-                let fillet_edges = vertex_fillet_edges
-                    .get(&vi)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let is_concave = corner_is_concave(topo, vi, fillet_edges, normal_sum);
-                let offset_sign = if is_concave { 1.0 } else { -1.0 };
-                let sphere_center = Point3::new(
-                    v_pos.x() + offset_sign * radius * normal_sum.x(),
-                    v_pos.y() + offset_sign * radius * normal_sum.y(),
-                    v_pos.z() + offset_sign * radius * normal_sum.z(),
-                );
-
-                // `far` (D) is the contact on the two edges' shared face —
-                // the point farthest from P. The other two connect to P.
+                // `far` is the contact on the face BOTH strips touch, so it is
+                // the one both strips reported and appears twice among the
+                // contact entries. (Falling back to "farthest from P" keeps the
+                // previous choice when no duplicate can be identified.)
                 let far_idx = (0..3)
-                    .max_by(|&a, &b| {
-                        (blend_points[a] - p_pt)
-                            .length()
-                            .partial_cmp(&(blend_points[b] - p_pt).length())
-                            .unwrap_or(std::cmp::Ordering::Equal)
+                    .find(|&i| {
+                        contacts
+                            .iter()
+                            .filter(|(_, pt)| (*pt - blend_points[i]).length() < tol.linear)
+                            .count()
+                            >= 2
                     })
-                    .unwrap_or(0);
+                    .unwrap_or_else(|| {
+                        (0..3)
+                            .max_by(|&a, &b| {
+                                (blend_points[a] - p_pt)
+                                    .length()
+                                    .partial_cmp(&(blend_points[b] - p_pt).length())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .unwrap_or(0)
+                    });
                 let far = blend_points[far_idx];
                 let near: Vec<Point3> = (0..3)
                     .filter(|&i| i != far_idx)
                     .map(|i| blend_points[i])
                     .collect();
 
-                if let Some(spec) = build_two_edge_corner_patch(
-                    p_pt,
-                    near[0],
-                    far,
-                    near[1],
-                    sphere_center,
-                    v_pos,
-                    is_concave,
+                // Preferred: the exact two-face corner (ball octant + ledge).
+                // The approximating patch stays as the fallback for corners
+                // whose faces do not meet squarely.
+                if let Some(mut specs) = build_two_edge_corner_exact(
+                    p_pt, near[0], far, near[1], centre, radius, is_concave, tol,
                 ) {
+                    all_specs.append(&mut specs);
+                    built = true;
+                } else if let Some(spec) =
+                    build_two_edge_corner_patch(p_pt, near[0], far, near[1], centre, is_concave)
+                {
                     all_specs.push(spec);
                     built = true;
                 }
@@ -1938,17 +2009,6 @@ pub fn fillet_rolling_ball(
 
         // Order the blend points consistently (counter-clockwise when viewed from
         // the outward normal direction).
-        let centroid = blend_points
-            .iter()
-            .fold(Vec3::new(0.0, 0.0, 0.0), |acc, p| {
-                Vec3::new(acc.x() + p.x(), acc.y() + p.y(), acc.z() + p.z())
-            });
-        let centroid = Point3::new(
-            centroid.x() / blend_points.len() as f64,
-            centroid.y() / blend_points.len() as f64,
-            centroid.z() / blend_points.len() as f64,
-        );
-
         // Build a local reference frame: normal + two tangent axes
         let ref_dir = (blend_points[0] - centroid)
             .normalize()
@@ -1970,86 +2030,11 @@ pub fn fillet_rolling_ball(
 
         // Build a spherical cap NURBS patch instead of a flat triangle.
         // The fillet sphere at a vertex corner is tangent to each adjacent
-        // face.  Its center lies at the original vertex offset inward by R
-        // along each face normal: center = vertex - R * Σ(face_normals).
+        // face.  Its center is the corner ball centre computed above: the
+        // original vertex offset inward by R along each contact face's normal.
         if ordered_points.len() == 3
-            && let Some(v_pos) = original_vertex
+            && let Some(sphere_center) = sphere_center
         {
-            // Collect distinct face normals from the contacts at this vertex.
-            let mut face_normals: Vec<Vec3> = Vec::new();
-            for &(face_idx, _) in contacts {
-                if let Some(poly) = face_polygons.get(&face_idx) {
-                    let n = poly.normal;
-                    let already = face_normals.iter().any(|existing| {
-                        (existing.x() - n.x()).abs() < 1e-10
-                            && (existing.y() - n.y()).abs() < 1e-10
-                            && (existing.z() - n.z()).abs() < 1e-10
-                    });
-                    if !already {
-                        face_normals.push(n);
-                    }
-                }
-            }
-
-            // Sphere center: vertex offset inward by R along each face normal.
-            let normal_sum = face_normals
-                .iter()
-                .fold(Vec3::new(0.0, 0.0, 0.0), |acc, n| {
-                    Vec3::new(acc.x() + n.x(), acc.y() + n.y(), acc.z() + n.z())
-                });
-
-            // Determine whether this vertex corner is convex or concave.
-            // For a convex corner the face normals (outward) and edge
-            // tangents (pointing away from vertex, i.e. inward) point in
-            // opposite directions: normal_sum · avg_tangent < 0.
-            // For concave corners they align: dot > 0.
-            let is_concave = if let Some(fillet_edges) = vertex_fillet_edges.get(&vi) {
-                if fillet_edges.len() >= 3 {
-                    let mut tangent_sum = Vec3::new(0.0, 0.0, 0.0);
-                    let mut count = 0;
-                    for &eid in fillet_edges {
-                        if let Ok(edge) = topo.edge(eid) {
-                            let e_start = edge.start();
-                            let e_end = edge.end();
-                            let curve = edge.curve().clone();
-                            let p_s = topo.vertex(e_start)?.point();
-                            let p_e = topo.vertex(e_end)?.point();
-                            let (t_param, sign) = if e_start.index() == vi {
-                                let (t0, _) = curve.domain_with_endpoints(p_s, p_e);
-                                (t0, 1.0)
-                            } else {
-                                let (_, t1) = curve.domain_with_endpoints(p_s, p_e);
-                                (t1, -1.0)
-                            };
-                            let tan = curve.tangent_with_endpoints(t_param, p_s, p_e);
-                            if let Ok(n) = (tan * sign).normalize() {
-                                tangent_sum = Vec3::new(
-                                    tangent_sum.x() + n.x(),
-                                    tangent_sum.y() + n.y(),
-                                    tangent_sum.z() + n.z(),
-                                );
-                                count += 1;
-                            }
-                        }
-                    }
-                    count >= 3 && normal_sum.dot(tangent_sum) > 0.0
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            // For outward-pointing face normals on a convex corner, "inward"
-            // means subtracting. For concave corners the offset direction
-            // is reversed (we add instead of subtract).
-            let offset_sign = if is_concave { 1.0 } else { -1.0 };
-            let sphere_center = Point3::new(
-                v_pos.x() + offset_sign * radius * normal_sum.x(),
-                v_pos.y() + offset_sign * radius * normal_sum.y(),
-                v_pos.z() + offset_sign * radius * normal_sum.z(),
-            );
-
             // Exact corner ball: when the three contacts are equidistant from
             // the centre (always the case for mutually orthogonal faces, i.e.
             // every box-like corner), the cap lies on that sphere exactly, so
@@ -2510,21 +2495,112 @@ fn build_three_edge_sphere_cap(
     })
 }
 
+/// Build the EXACT corner where two filleted edges meet at a vertex whose third
+/// edge stays sharp.
+///
+/// Once both bands are set back by `radius / tan(θ/2)`, the ball sits nestled in
+/// the corner tangent to all three faces and the blend surface is the octant of
+/// it facing the corner — the same spherical patch a 3-edge vertex blend uses.
+/// Its three boundary arcs are the two band-end sections (`near1`→`far`,
+/// `near2`→`far`) and a third arc `near1`→`near2` lying one radius in from the
+/// shared face. When the third edge is filleted too, its band consumes that
+/// third arc. Here it is not, so the material along it survives right up to
+/// that plane and the arc instead bounds a planar LEDGE: the arc plus two
+/// straight legs back to `p`, the point where the two side faces trimmed the
+/// unfilleted edge.
+///
+/// Emitting those two exact faces rather than one patch spanning both keeps the
+/// corner analytic. The sphere shares its arcs with the cylindrical band ends
+/// (the assembler mints arc edges before polygonal ones, so the ledge picks the
+/// third arc up instead of cutting a chord across it), and the material the
+/// corner removes is exactly the `radius` cube minus the ball octant,
+/// `r³(1 − π/6)`.
+///
+/// Returns `None` unless the corner really is that shape — every contact one
+/// radius from the ball centre, and `p` coplanar with the two near contacts —
+/// so an oblique or concave corner keeps the approximating patch it had.
+#[allow(clippy::too_many_arguments)]
+fn build_two_edge_corner_exact(
+    p: Point3,
+    near1: Point3,
+    far: Point3,
+    near2: Point3,
+    sphere_center: Point3,
+    radius: f64,
+    is_concave: bool,
+    tol: Tolerance,
+) -> Option<Vec<FaceSpec>> {
+    if is_concave {
+        // A concave corner adds material; the ledge is not the sharp edge's
+        // run-out plane there. Leave it to the approximating patch.
+        return Option::None;
+    }
+    let radial = |q: Point3| q - sphere_center;
+    let radius_tol = radius * 1e-6;
+    for q in [near1, near2, far] {
+        if (radial(q).length() - radius).abs() > radius_tol {
+            return Option::None;
+        }
+    }
+
+    // The shared face's outward normal is the ball's radial at the point where
+    // it touches that face — and the ledge, one radius in from it, is parallel.
+    let ledge_normal = radial(far).normalize().ok()?;
+    let ledge_d = dot_normal_point(ledge_normal, p);
+    let plane_tol = tol.linear * 100.0;
+    for q in [near1, near2] {
+        if (dot_normal_point(ledge_normal, q) - ledge_d).abs() > plane_tol {
+            return Option::None;
+        }
+    }
+
+    // The ball octant, wound counter-clockwise about the sphere's own outward
+    // (radial) normal, which is the winding `SphereCapFace` stores.
+    let mean = (radial(near1) + radial(far) + radial(near2))
+        .normalize()
+        .ok()?;
+    let cap_points = if (far - near1).cross(near2 - near1).dot(mean) >= 0.0 {
+        vec![near1, far, near2]
+    } else {
+        vec![near1, near2, far]
+    };
+    let cap = build_three_edge_sphere_cap(&cap_points, sphere_center, is_concave)?;
+
+    // The ledge, wound counter-clockwise about its outward normal.
+    let ledge_vertices = if (near1 - p).cross(near2 - p).dot(ledge_normal) >= 0.0 {
+        vec![p, near1, near2]
+    } else {
+        vec![p, near2, near1]
+    };
+    Some(vec![
+        cap,
+        FaceSpec::Planar {
+            vertices: ledge_vertices,
+            normal: ledge_normal,
+            d: ledge_d,
+            inner_wires: vec![],
+        },
+    ])
+}
+
 /// The four corners are `p` (the preserved trim point on the third, unfilleted
 /// edge), the two near contacts `near1`/`near2` that join `p` along the trimmed
 /// side faces, and the far contact `far` on the two edges' shared face. The two
 /// `near→far` boundaries are circular arcs of the corner sphere (matching the
 /// setback strip ends); the two `p→near` boundaries are straight (matching the
-/// side faces). Returns a degree-(2,2) rational NURBS patch oriented to face
-/// away from the original corner `v_pos`, or `None` if the geometry is
-/// degenerate.
+/// side faces). Returns a degree-(2,2) rational NURBS patch oriented away from
+/// the corner ball's centre, or `None` if the geometry is degenerate.
+///
+/// This is the fallback for corners [`build_two_edge_corner_exact`] declines
+/// (oblique faces, concave corners): it approximates the ball octant and the
+/// ledge with one blended surface, so the material it removes is a fraction of
+/// a percent off the closed form.
 fn build_two_edge_corner_patch(
     p: Point3,
     near1: Point3,
     far: Point3,
     near2: Point3,
     sphere_center: Point3,
-    v_pos: Point3,
     is_concave: bool,
 ) -> Option<FaceSpec> {
     // Rational-quadratic middle control point + weight for the circular arc
@@ -2601,14 +2677,14 @@ fn build_two_edge_corner_patch(
     )
     .ok()?;
 
-    // Orient the patch outward. For a convex corner the exterior lies away from
-    // the original (now removed) sharp corner; for a concave corner the material
-    // is added, so the reference flips.
-    let outward_ref = if is_concave {
-        v_pos - centroid4
-    } else {
-        centroid4 - v_pos
-    };
+    // Orient the patch outward: away from the corner ball's centre, because the
+    // material is the ball's side of the patch. (A concave corner shows the
+    // ball from inside, so the reference flips.) The reference used to be
+    // "away from the original sharp corner", which is backwards — rounding the
+    // corner removes that vertex, leaving it OUTSIDE the surface — and every
+    // corner patch came out inside out.
+    let radial = centroid4 - sphere_center;
+    let outward_ref = if is_concave { -radial } else { radial };
     let outward = outward_ref
         .normalize()
         .unwrap_or_else(|_| Vec3::new(0.0, 0.0, 1.0));

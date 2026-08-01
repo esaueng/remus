@@ -1214,7 +1214,28 @@ pub fn solid_volume(
                     .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
             })
         };
-        if has_nurbs {
+        // The same reasoning covers a sphere patch that is not a latitude BAND.
+        // `volume_from_direct_face_tessellation` integrates a sphere face
+        // analytically over the [u] x [v] box its wire spans, which is the
+        // patch itself only when the wire is constant-v. A vertex-blend corner
+        // ball — a spherical triangle closed by three great-circle arcs — fills
+        // barely a quarter of that box, so the direct path credits it with four
+        // times its real surface and the solid measures much too large. A plain
+        // filleted box never noticed: with no inner wire anywhere it takes the
+        // whole-solid mesh above. Drill one hole and the same body routed here
+        // instead, and its corner fillets read as removing half of what the
+        // undrilled plate's removed.
+        let has_non_band_sphere = {
+            let s = topo.solid(solid)?;
+            let sh = topo.shell(s.outer_shell())?;
+            sh.faces().iter().any(|&fid| {
+                topo.face(fid).is_ok_and(|f| match f.surface() {
+                    FaceSurface::Sphere(sphere) => !sphere_outer_wire_constant_v(topo, fid, sphere),
+                    _ => false,
+                })
+            })
+        };
+        if has_nurbs || has_non_band_sphere {
             let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
             if !mesh.indices.is_empty() && mesh_boundary_edge_count(&mesh) == 0 {
                 let vol = signed_volume_from_mesh(&mesh);
