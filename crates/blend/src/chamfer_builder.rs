@@ -556,8 +556,18 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
     let wall_center = project_onto_axis(wall_pt, axis_origin, axis);
     let wall_radius = radial_distance(wall_pt, axis_origin, axis);
 
-    let plate_circle = Circle3D::new(plate_center, axis, plate_radius)?;
-    let wall_circle = Circle3D::new(wall_center, axis, wall_radius)?;
+    // Pin both contact circles' `evaluate(0)` to the ray the rim's own seam
+    // vertex sits on, exactly as the fillet twin does. The rebuild re-points
+    // the wall's seam edge at the new circle's seam vertex while keeping the
+    // seam's curve, so a circle seamed wherever `Frame3::from_normal` happens
+    // to land leaves that edge running as a chord through the inside of the
+    // wall — an edge of the wall face that is not on the wall surface.
+    let seam_dir = {
+        let v = topo.vertex(topo.edge(rim_edge)?.start())?.point() - axis_origin;
+        v - axis * axis.dot(v)
+    };
+    let plate_circle = Circle3D::new_with_ref(plate_center, axis, plate_radius, seam_dir)?;
+    let wall_circle = Circle3D::new_with_ref(wall_center, axis, wall_radius, seam_dir)?;
 
     // At a bore mouth the chamfer must widen the hole. If the contact came out
     // the other way the configuration is not the one this rebuild models, so

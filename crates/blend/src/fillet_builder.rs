@@ -223,6 +223,13 @@ impl<'a> FilletBuilder<'a> {
                     stripe_results.push(sr);
                     succeeded.extend(requested.iter().copied());
                 }
+                // A radius the geometry cannot accommodate is a verdict on the
+                // radius, not on this engine, so it must reach the caller as
+                // itself. Filed among `failed` it becomes a bare partial
+                // result, which reads exactly like an internal failure and
+                // leaves the caller no way to say "try a smaller radius".
+                // Same treatment the rim assembler's own bound already gets.
+                Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
                 Err(e) => {
                     if let Some(edge) = report_edge {
                         failed.push((edge, e));
@@ -1035,8 +1042,26 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
     let wall_center = project_onto_axis(wall_pt, axis_origin, axis);
     let wall_radius = radial_distance(wall_pt, axis_origin, axis);
 
-    let plate_circle = Circle3D::new(plate_center, axis, plate_radius)?;
-    let wall_circle = Circle3D::new(wall_center, axis, wall_radius)?;
+    // Pin both contact circles' `evaluate(0)` to the ray the rim's own seam
+    // vertex sits on. The rebuild shortens the wall by swapping the rim circle
+    // for the wall-contact circle and re-pointing the wall's seam edge at the
+    // new circle's seam vertex — while keeping the seam's CURVE. A circle built
+    // without a reference direction puts its seam wherever `Frame3::from_normal`
+    // happens to land (for an axis of `+z`, a quarter turn away), so the seam
+    // line was re-pointed at a vertex a quarter turn from where it starts: a
+    // straight chord through the inside of the wall, an edge of the wall face
+    // that is not on the wall surface. It survives every topological check —
+    // the shell closes, nothing is free or non-manifold, and the tessellator
+    // and volume integrator both work from the surface rather than that edge —
+    // but any consumer that reads the wire as the face's real boundary sees a
+    // face a fraction of its true size. `mass_properties` does, and reported
+    // half the volume of a rim-filleted cylinder.
+    let seam_dir = {
+        let v = topo.vertex(topo.edge(rim_edge)?.start())?.point() - axis_origin;
+        v - axis * axis.dot(v)
+    };
+    let plate_circle = Circle3D::new_with_ref(plate_center, axis, plate_radius, seam_dir)?;
+    let wall_circle = Circle3D::new_with_ref(wall_center, axis, wall_radius, seam_dir)?;
 
     // When the contact moves INTO the wall, the rebuild shortens the wall to
     // meet it — and can only do that with material the wall HAS. On a 6 mm

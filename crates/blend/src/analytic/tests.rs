@@ -408,12 +408,21 @@ fn plane_cylinder_fillet_rim_emits_torus_with_smaller_major() {
     );
 }
 
-/// Concave plane-cylinder fillet rejects radii ≥ r_c/2 — past that
-/// threshold `major = r_c - r ≤ minor = r` and the construction
-/// becomes a self-intersecting spindle torus, which is invalid as a
-/// fillet surface. Convex must still accept radii up to `r_c`.
+/// The inward CONVEX plane-cylinder fillet — a bare disc cap's own rim — is
+/// bounded by the CYLINDER RADIUS, not by half of it. The carrier torus has
+/// `major = r_c − r`, so `r > r_c/2` makes it a horn or spindle torus, but the
+/// face cut from it spans only the quarter tube between the two contacts and
+/// the spindle's self-intersecting lobe lies entirely outside that quarter.
+/// What actually bounds the blend is the ball fitting inside the cylinder:
+/// `r < r_c`. At or past `r_c` no engine can do better, so the helper says
+/// `RadiusTooLarge` rather than returning `None` and letting the walker fail
+/// with a bare partial result.
+///
+/// The inward CONCAVE case — the flat bottom of a blind hole — keeps the
+/// `r_c/2` bound. See the note in `plane_cylinder_fillet`: its rim assembly is
+/// independently wrong, and that bound is the only thing limiting the reach.
 #[test]
-fn plane_cylinder_fillet_concave_rejects_spindle_radius() {
+fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
     use brepkit_math::curves::Circle3D;
     use brepkit_math::surfaces::CylindricalSurface;
     use brepkit_topology::edge::{Edge, EdgeCurve};
@@ -454,84 +463,69 @@ fn plane_cylinder_fillet_concave_rejects_spindle_radius() {
         (spine, cyl, face_plate, face_cyl)
     };
 
-    // Concave: r > r_c/2 ⇒ would form spindle torus ⇒ reject.
-    let mut topo_concave = Topology::new();
-    let (spine_concave, cyl_concave, fp_concave, fc_concave) = setup(&mut topo_concave, true);
+    // Convex inward (a non-reversed cylinder bounded by its own disc cap): the
+    // horn-torus boundary itself (`r = r_c/2`, `major == minor`) and the
+    // spindle regime past it are ordinary blends.
+    let mut topo = Topology::new();
+    let (spine, cyl, fp, fc) = setup(&mut topo, false);
+    let n_p_inward = Vec3::new(0.0, 0.0, 1.0);
+    for radius in [0.5, 1.0, 1.1, 1.5, 1.999] {
+        let result =
+            plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, radius, fp, fc).unwrap();
+        let stripe = result
+            .unwrap_or_else(|| panic!("cap rim must accept r = {radius} < r_c"))
+            .stripe;
+        let FaceSurface::Torus(torus) = &stripe.surface else {
+            panic!("cap rim must produce a torus");
+        };
+        assert!(
+            (torus.major_radius() - (r_c - radius)).abs() < 1e-9,
+            "major radius should be r_c - r = {}, got {}",
+            r_c - radius,
+            torus.major_radius()
+        );
+        assert!(
+            (torus.minor_radius() - radius).abs() < 1e-9,
+            "minor radius should be r = {radius}, got {}",
+            torus.minor_radius()
+        );
+    }
+
+    // At r_c the rolling ball no longer fits inside the cylinder. Named, not
+    // silently declined.
+    for radius in [r_c, r_c * 1.5] {
+        let outcome = plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, radius, fp, fc);
+        let Err(err) = outcome else {
+            panic!("r >= r_c must be refused by name, not accepted or declined");
+        };
+        match err {
+            BlendError::RadiusTooLarge { max_radius, .. } => assert!(
+                (max_radius - r_c).abs() < 1e-9,
+                "achievable maximum should be r_c = {r_c}, got {max_radius}"
+            ),
+            other => panic!("expected RadiusTooLarge, got {other:?}"),
+        }
+    }
+
+    // Concave inward (a reversed cylinder, i.e. a blind hole's floor) is held
+    // at the old bound on purpose, until its own assembly is right.
+    let mut topo = Topology::new();
+    let (spine, cyl, fp, fc) = setup(&mut topo, true);
     let n_p_inward = Vec3::new(0.0, 0.0, -1.0);
-    let result = plane_cylinder_fillet(
-        n_p_inward,
-        0.0,
-        &cyl_concave,
-        &spine_concave,
-        &topo_concave,
-        // Just above r_c/2 = 1.0 — would produce major = 0.9 < minor = 1.1.
-        1.1,
-        fp_concave,
-        fc_concave,
-    )
-    .unwrap();
     assert!(
-        result.is_none(),
-        "concave fillet must reject r > r_c/2 (spindle-torus regime)"
+        plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, 0.9, fp, fc)
+            .unwrap()
+            .is_some(),
+        "a blind-hole floor still rounds below r_c/2"
     );
-
-    // Concave at r exactly r_c/2 is also a degenerate equality (major
-    // = minor); rejected.
-    let result_eq = plane_cylinder_fillet(
-        n_p_inward,
-        0.0,
-        &cyl_concave,
-        &spine_concave,
-        &topo_concave,
-        1.0,
-        fp_concave,
-        fc_concave,
-    )
-    .unwrap();
-    assert!(
-        result_eq.is_none(),
-        "concave fillet must reject r = r_c/2 (degenerate major = minor)"
-    );
-
-    // The non-reversed cylinder face here borders a bare disc cap (the rim
-    // circle is the plate's only boundary), so it is an INWARD rim, not a
-    // post-on-a-plate. The rim shares the concave `major = r_c − r` formula, so
-    // it must reject r ≥ r_c/2 (spindle) too…
-    let mut topo_rim = Topology::new();
-    let (spine_rim, cyl_rim, fp_rim, fc_rim) = setup(&mut topo_rim, false);
-    let n_p_inward_rim = Vec3::new(0.0, 0.0, 1.0);
-    let result_rim_spindle = plane_cylinder_fillet(
-        n_p_inward_rim,
-        0.0,
-        &cyl_rim,
-        &spine_rim,
-        &topo_rim,
-        1.5,
-        fp_rim,
-        fc_rim,
-    )
-    .unwrap();
-    assert!(
-        result_rim_spindle.is_none(),
-        "rim fillet must reject r > r_c/2 (spindle-torus regime)"
-    );
-
-    // …and accept a small radius (major = r_c − r > minor = r).
-    let result_rim_ok = plane_cylinder_fillet(
-        n_p_inward_rim,
-        0.0,
-        &cyl_rim,
-        &spine_rim,
-        &topo_rim,
-        0.5,
-        fp_rim,
-        fc_rim,
-    )
-    .unwrap();
-    assert!(
-        result_rim_ok.is_some(),
-        "rim fillet should accept r < r_c/2"
-    );
+    for radius in [r_c * 0.5, 1.1, 1.999, r_c] {
+        assert!(
+            plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, radius, fp, fc)
+                .unwrap()
+                .is_none(),
+            "a blind-hole floor must still decline r = {radius} >= r_c/2"
+        );
+    }
 }
 
 /// Concave plane-cone fillet ("tapered hole through plate") emits a

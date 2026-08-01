@@ -649,13 +649,30 @@ fn plane_plane_chamfer(
 /// doesn't cover:
 ///   - the cylinder axis isn't parallel to the plane normal,
 ///   - the spine geometry is too short or degenerate,
-///   - the fillet radius exceeds the cylinder radius (would invert
-///     `r_c - r` for the concave case or geometrically nest the convex
-///     fillet inside the cylinder).
+///   - an OUTWARD plate contact (`major = r_c + r`) with a radius at or
+///     past `r_c`.
+///
+/// An INWARD, CONVEX plate contact (`major = r_c - r`: a bare disc cap's
+/// own rim) is bounded by `r < r_c` — the radius at which the rolling ball
+/// stops fitting inside the cylinder. Note that this is NOT `r_c/2`: past
+/// half the radius the carrier torus is a horn or a self-intersecting
+/// spindle, but the quarter-tube band cut from it never reaches the
+/// self-intersecting lobe. A radius at or past that bound, and the
+/// vertex-tolerance sliver below it where the remaining cap face would be
+/// smaller than a vertex, is refused as [`BlendError::RadiusTooLarge`]
+/// rather than declined — no engine below can fit a ball that does not fit,
+/// and a caller handed a bare partial result cannot tell an impossible
+/// radius from an internal failure.
+///
+/// An inward, CONCAVE contact (the flat bottom of a blind hole) keeps the
+/// older `r_c/2` bound and still returns `None` past it; see the note at
+/// the bound itself.
 ///
 /// # Errors
 ///
-/// Returns `BlendError` if topology lookups fail.
+/// Returns `BlendError` if topology lookups fail, or
+/// [`BlendError::RadiusTooLarge`] for an inward convex contact whose radius
+/// is at or past the cylinder radius.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn plane_cylinder_fillet(
     n_p_inward: Vec3,
@@ -715,18 +732,79 @@ pub fn plane_cylinder_fillet(
     //    that is not there.
     let convex = plane_bounded == mat_inside_cyl;
 
-    // 3) Radius bound depends on which way the plate contact runs:
-    //    - Outward (major = `r_c + r`): always > minor = `r`, so the only
-    //      regime rejected here is `r ≥ r_c`. The binding constraints for a
-    //      hole rim are the plate's own boundary and its thickness, which the
-    //      rim assembler checks against the actual face.
-    //    - Inward (major = `r_c - r`): needs `r < r_c` to keep major positive
-    //      *and* `r ≤ r_c/2` to keep major ≥ minor. Past `r_c/2` the
-    //      construction becomes a spindle (self-intersecting) torus which is
-    //      invalid as a fillet surface.
-    let max_radius = if inward { r_c * 0.5 } else { r_c };
-    if radius <= tol_lin || radius >= max_radius {
+    // 3) Radius bound depends on which way the plate contact runs.
+    //
+    //    Outward (major = `r_c + r`): always > minor = `r`, so the only regime
+    //    rejected here is `r ≥ r_c`. The binding constraints for a hole rim are
+    //    the plate's own boundary and its thickness, which the rim assembler
+    //    checks against the actual face.
+    //
+    //    Inward and CONVEX (major = `r_c − r`: a bare disc cap's own rim): the
+    //    ball has to fit inside the cylinder, which is exactly `r < r_c`. That
+    //    is the ONLY bound — the ball's centre circle has radius `r_c − r`, so
+    //    at `r = r_c` it collapses onto the axis and there is no ball left to
+    //    roll.
+    //
+    //    The old bound here was `r ≤ r_c/2`, on the grounds that `r > r_c/2`
+    //    makes the carrier torus a horn (`R = r`) or spindle (`R < r`) — which
+    //    self-intersects. The torus does; the FACE cut from it does not. The
+    //    band this builds spans a quarter of the tube, from the wall contact at
+    //    `v = 0` (tube radial `R + r = r_c`) to the plate contact at
+    //    `v = ±π/2` (tube radial `R`). A spindle torus crosses its own axis
+    //    only where its tube radial goes negative, i.e. `R + r·cos v < 0`, so
+    //    `|v| > arccos(−R/r) ≥ π/2` for every `R ≥ 0`. The self-intersecting
+    //    lobe is therefore disjoint from the quarter actually used, touching it
+    //    at most at the single limit point `R = 0`, `|v| = π/2`. Refusing
+    //    `r > r_c/2` refused sound geometry: a rim rounded to more than half the
+    //    radius is an ordinary shape (at the limit, a hemispherical end).
+    //
+    //    The bound is open at both ends. At `r = r_c` the plate contact circle
+    //    collapses onto the axis: the cap face disappears and the end becomes a
+    //    hemisphere, which is a different topology than the band-plus-cap this
+    //    assembles. The last sliver below it is refused for the same reason —
+    //    a cap whose radius is under the vertex tolerance is not a face, and
+    //    emitting one produces a body that passes every topological check and
+    //    tessellates into degenerate triangles.
+    //
+    //    Inward and CONCAVE (the flat bottom of a blind hole) shares all of
+    //    that geometry, and the argument above applies to it unchanged — but it
+    //    KEEPS the `r_c/2` bound, because the rim assembly is independently
+    //    wrong for it and the old bound is the only thing limiting how far the
+    //    wrongness reaches. An r = 3 blind hole rounded at r = 1 loses 7.93 of
+    //    volume where a concave blend must ADD 3.74, and the result passes the
+    //    closed-shell, Euler and blend-volume-budget checks. That defect
+    //    predates this bound and wants its own lane; widening here would only
+    //    hand it more radii to be wrong at.
+    if radius <= tol_lin {
         return Ok(None);
+    }
+    let cap_floor = {
+        let tol = brepkit_math::tolerance::Tolerance::new();
+        tol.linear.max(tol.relative * r_c)
+    };
+    let inward_convex = inward && convex;
+    let max_radius = if inward_convex {
+        r_c - cap_floor
+    } else if inward {
+        r_c * 0.5
+    } else {
+        r_c
+    };
+    if radius >= max_radius {
+        if !inward_convex {
+            return Ok(None);
+        }
+        // No engine below can fit a ball that does not fit, so this is a
+        // verdict on the radius rather than on this path. Name it, instead of
+        // declining to the walker and letting the caller read a bare partial
+        // result that reads exactly like an internal failure.
+        let Some(&edge) = spine.edges().first() else {
+            return Ok(None);
+        };
+        return Err(BlendError::RadiusTooLarge {
+            edge,
+            max_radius: r_c,
+        });
     }
 
     // 4) Project the cylinder origin onto the plane along axis_c. The
