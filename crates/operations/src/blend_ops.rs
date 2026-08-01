@@ -247,6 +247,104 @@ fn validate_complete_blend(
     Ok(())
 }
 
+/// Shortest distance from `p` to the segment `a`–`b`.
+fn point_segment_distance(
+    p: brepkit_math::vec::Point3,
+    a: brepkit_math::vec::Point3,
+    b: brepkit_math::vec::Point3,
+) -> f64 {
+    let ab = b - a;
+    let len_sq = ab.dot(ab);
+    if len_sq <= 0.0 {
+        return (p - a).length();
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    (p - (a + ab * t)).length()
+}
+
+/// Sample a closed or open edge into points, endpoints included.
+fn sample_edge(
+    topo: &Topology,
+    edge: EdgeId,
+    samples: usize,
+) -> Result<Vec<brepkit_math::vec::Point3>, OperationsError> {
+    let e = topo.edge(edge)?;
+    let start = topo.vertex(e.start())?.point();
+    let end = topo.vertex(e.end())?.point();
+    let (t0, t1) = e.curve().domain_with_endpoints(start, end);
+    Ok((0..=samples)
+        .map(|i| {
+            let t = t0
+                + (t1 - t0) * f64::from(u32::try_from(i).unwrap_or(u32::MAX))
+                    / f64::from(u32::try_from(samples).unwrap_or(1).max(1));
+            e.curve().evaluate_with_endpoints(t, start, end)
+        })
+        .collect())
+}
+
+/// Refuse a blend whose setback would run into a hole in one of its own
+/// neighbouring faces.
+///
+/// The blend's contact curve on a planar neighbour lies `size` away from the
+/// blended edge, so the neighbour's boundary is rebuilt that far in. If an
+/// inner loop of that face — a drilled hole, a pocket — sits closer than
+/// `size`, the rebuilt boundary crosses its own hole. Expressing that would
+/// require the blend and the hole to merge into one surface, which none of
+/// these engines can do.
+///
+/// Emitting it anyway is the dangerous option: a wire crossing its own inner
+/// loop still passes the closed-shell and Euler checks, so the result looks
+/// valid and meshes into a self-intersecting body. The cause is genuinely the
+/// radius — the same edge blends fine below the clearance — so this reports
+/// `RadiusTooLarge` with the clearance as the achievable maximum.
+///
+/// Only straight blended edges are considered: a closed rim edge IS an inner
+/// loop, and the analytic rim assemblers have their own clearance guard.
+fn reject_blend_into_hole(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    size: f64,
+) -> Result<(), OperationsError> {
+    let adjacency = topo.build_adjacency(solid)?;
+    for &edge_id in edges {
+        let e = topo.edge(edge_id)?;
+        if !matches!(e.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        let a = topo.vertex(e.start())?.point();
+        let b = topo.vertex(e.end())?.point();
+
+        for &face_id in adjacency.faces_for_edge(edge_id) {
+            let face = topo.face(face_id)?;
+            if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+                continue;
+            }
+            for &inner in face.inner_wires() {
+                let wire_edges: Vec<_> = topo.wire(inner)?.edges().to_vec();
+                if wire_edges.iter().any(|oe| oe.edge() == edge_id) {
+                    // The blended edge is part of this loop; the loop is the
+                    // blend's own spine, not an obstacle.
+                    continue;
+                }
+                let mut clearance = f64::INFINITY;
+                for oe in &wire_edges {
+                    for p in sample_edge(topo, oe.edge(), 64)? {
+                        clearance = clearance.min(point_segment_distance(p, a, b));
+                    }
+                }
+                if clearance <= size {
+                    return Err(OperationsError::Blend(BlendError::RadiusTooLarge {
+                        edge: edge_id,
+                        max_radius: clearance,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Return whether every requested edge is a manifold line between two planar
 /// faces. These inputs are handled by the polygon-rebuilding chamfer path,
 /// which also closes the two end faces of a finite chamfer. The walking
@@ -313,6 +411,11 @@ fn planar_fillet_result(
         is_partial: false,
     };
     validate_complete_blend(topo, "fillet", solid, &result)?;
+    // The fast path gets the same volume guard as the walking path — and needs
+    // it more since it learned to rebuild holed caps: a setback that crosses an
+    // inner loop folds the cap through itself and still validates as a closed
+    // 2-manifold. Only the volume rules catch that.
+    validate_blend_volume(topo, "fillet", solid, result_solid, edges, radius)?;
     Ok(result)
 }
 
@@ -337,13 +440,15 @@ pub fn fillet_v2(
             reason: "no edges specified".into(),
         });
     }
+    reject_blend_into_hole(topo, solid, edges, radius)?;
     if is_planar_line_blend(topo, solid, edges)? {
         // The rolling-ball rebuild handles the validated planar classes
-        // (simple prisms) and closes multi-edge corner patches. On richer
-        // topology (L-shaped side faces, coplanar slivers, holed caps) it
-        // emits an open shell; fall through to the walking builder, whose
-        // stitched planar assembly handles those shapes. Each attempt is
-        // transactional, so the fall-through starts from a clean arena.
+        // (simple prisms), closes multi-edge corner patches, and carries the
+        // inner loops of a holed cap through as topology. On richer topology
+        // (L-shaped side faces, coplanar slivers) it emits an open shell; fall
+        // through to the walking builder, whose stitched planar assembly
+        // handles those shapes. Each attempt is transactional, so the
+        // fall-through starts from a clean arena.
         match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
             Ok(result) => return Ok(result),
             Err(e) => {

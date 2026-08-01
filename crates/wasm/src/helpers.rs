@@ -996,10 +996,11 @@ mod fillet_tests {
             .expect("second fillet on a NURBS-blend-adjacent edge must be watertight");
     }
 
-    // The OpenZCAD plate (80 x 60 x 6 with a bored hole): corner chains and
-    // hole rims fail in every engine, and the caller must receive the
-    // walking engine's typed diagnosis — not a silent no-op — with the input
-    // rolled back untouched.
+    // The OpenZCAD plate (80 x 60 x 6 with a bored hole). Corner chains and
+    // hole rims used to fail in every engine; they now succeed, so this pins
+    // both halves of that: the cases that work, and — for one that still
+    // cannot work — that the caller receives a typed diagnosis rather than a
+    // silent no-op, with the input rolled back untouched.
     #[test]
     fn try_fillet_failure_reports_the_walking_engine_diagnosis() {
         use brepkit_math::mat::Mat4;
@@ -1048,31 +1049,42 @@ mod fillet_tests {
         let before =
             brepkit_topology::explorer::solid_entity_counts(&topo, solid).expect("counts before");
 
-        let corner_error = try_fillet(&mut topo, solid, &[long, short], 2.0)
-            .expect_err("corner chain on a boolean body must fail typed");
+        // A radius half again the plate's own thickness cannot be seated: the
+        // contact would hang below the bottom face. This is the case that must
+        // still refuse, and it is the one that carries the typed-diagnosis
+        // contract this test exists for.
+        let too_large = try_fillet(&mut topo, solid, &[long], 9.0)
+            .expect_err("a radius larger than the plate is thick must fail typed");
         assert!(
             matches!(
-                corner_error,
-                brepkit_operations::OperationsError::Blend(
-                    BlendError::UnsupportedVertexBlend { .. }
-                )
+                too_large,
+                brepkit_operations::OperationsError::Blend(BlendError::RadiusTooLarge { .. })
             ),
-            "expected UnsupportedVertexBlend, got: {corner_error}"
+            "expected RadiusTooLarge, got: {too_large}"
         );
-        assert_eq!(
-            blend_failure_code(&corner_error),
-            "unsupported-vertex-blend"
-        );
-
-        let rim_error = try_fillet(&mut topo, solid, &[rim], 1.0)
-            .expect_err("hole rim on a boolean body must fail typed");
-        assert!(
-            !blend_failure_code(&rim_error).is_empty(),
-            "rim failure must map to a code, got: {rim_error}"
-        );
+        assert_eq!(blend_failure_code(&too_large), "radius-too-large");
 
         let after =
             brepkit_topology::explorer::solid_entity_counts(&topo, solid).expect("counts after");
-        assert_eq!(before, after, "failed fillets mutated the input topology");
+        assert_eq!(before, after, "a failed fillet mutated the input topology");
+
+        // Both of these used to be the failures this test asserted. They are
+        // the point of the blend work, so pin them as successes at the wasm
+        // boundary rather than dropping the coverage.
+        let corner = try_fillet(&mut topo, solid, &[long, short], 2.0)
+            .expect("a corner chain on a drilled plate now blends");
+        let corner_shell = topo
+            .shell(topo.solid(corner).expect("corner solid").outer_shell())
+            .expect("corner shell");
+        brepkit_topology::validation::validate_shell_closed(corner_shell, &topo)
+            .expect("the corner-chain result must be watertight");
+
+        let rim_solid = try_fillet(&mut topo, solid, &[rim], 1.0)
+            .expect("a hole rim on a drilled plate now blends");
+        let rim_shell = topo
+            .shell(topo.solid(rim_solid).expect("rim solid").outer_shell())
+            .expect("rim shell");
+        brepkit_topology::validation::validate_shell_closed(rim_shell, &topo)
+            .expect("the hole-rim result must be watertight");
     }
 }

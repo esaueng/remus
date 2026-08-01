@@ -680,36 +680,50 @@ pub fn plane_cylinder_fillet(
         return Ok(None);
     }
 
-    // 2) Detect concave ("hole through plate") vs convex ("post on plate").
-    //    The cylinder face's `reversed` flag tells us which side of the
-    //    cylinder lateral the surrounding material lives on:
-    //      * not reversed: material is on the cylinder's *inward* side
-    //        (a solid post). Convex external corner.
-    //      * reversed:     material is on the cylinder's *outward* side
-    //        (a hole through a slab). Concave internal corner.
-    let concave = topo.face(face_cyl)?.is_reversed();
+    // 2) Two independent facts place the rolling ball; both are needed, and
+    //    conflating them is what used to leave the hole rim unsupported.
+    //
+    //    (a) Which side of the CYLINDER the material is on. The cylinder
+    //        face's `reversed` flag says: not reversed means material on the
+    //        axis side (a solid post), reversed means material outside (a bore
+    //        through a slab).
+    //    (b) Whether the PLANE reaches past the cylinder. A bounded disc cap
+    //        stops at radius `r_c`, so the plate contact must land INSIDE it
+    //        (`r_c - r`); a plate the cylinder passes through extends beyond,
+    //        so the contact lands OUTSIDE (`r_c + r`). Nothing else can decide
+    //        this — the contact circle has to lie on the plane face.
+    let mat_inside_cyl = !topo.face(face_cyl)?.is_reversed();
     let r_c = cyl.radius();
+    let plane_bounded = plane_is_bounded_disc(topo, face_plane, cyl, r_c)?;
+    let inward = plane_bounded;
 
-    // 2b) Among the convex (non-reversed-cylinder) configurations, distinguish
-    //     the "post on a large plate" (the plate extends past the cylinder, so
-    //     the fillet flares OUTWARD with plate contact at `r_c + r`) from the
-    //     "rim of a bare disc cap bounded BY the cylinder" (e.g. a primitive
-    //     cylinder's bottom/top rim — the cap *is* the circle of radius `r_c`,
-    //     so the fillet rounds INWARD with plate contact at `r_c - r`). The
-    //     discriminator: a bounded disc cap has no inner wires and every
-    //     boundary vertex lies within `r_c` of the cylinder axis; a plate that
-    //     the post stands on has boundary vertices beyond `r_c`.
-    let rim = !concave && plane_is_bounded_disc(topo, face_plane, cyl, r_c)?;
+    //    The edge is CONVEX (the fillet removes material, so the ball rolls
+    //    inside the solid) exactly when those two agree — the plane is bounded
+    //    by the cylinder it shares material with, or extends past a cylinder
+    //    whose material is outside:
+    //
+    //      material inside | plane bounded | case                     | convex
+    //      ----------------+---------------+--------------------------+-------
+    //      yes             | yes           | cylinder's own end cap   | yes
+    //      yes             | no            | post standing on a plate | no
+    //      no              | yes           | flat bottom of a blind hole | no
+    //      no              | no            | rim of a hole THROUGH a plate | yes
+    //
+    //    The last row is the case this used to get wrong: it read `reversed`
+    //    alone as "concave", rounded the rim inward at `r_c - r` with the ball
+    //    below the plate, and handed the trimmer a stripe describing geometry
+    //    that is not there.
+    let convex = plane_bounded == mat_inside_cyl;
 
-    // 3) Radius bound depends on the case:
-    //    - Convex post: major = `r_c + r`, always > minor = `r`, so the only
-    //      regime to reject is `r ≥ r_c` (rolling ball would encircle the
-    //      cylinder axis).
-    //    - Concave hole / convex rim: major = `r_c - r`; needs `r < r_c` to
-    //      keep major positive *and* `r ≤ r_c/2` to keep major ≥ minor. Past
-    //      `r_c/2` the construction becomes a spindle (self-intersecting) torus
-    //      which is invalid as a fillet surface.
-    let inward = concave || rim;
+    // 3) Radius bound depends on which way the plate contact runs:
+    //    - Outward (major = `r_c + r`): always > minor = `r`, so the only
+    //      regime rejected here is `r ≥ r_c`. The binding constraints for a
+    //      hole rim are the plate's own boundary and its thickness, which the
+    //      rim assembler checks against the actual face.
+    //    - Inward (major = `r_c - r`): needs `r < r_c` to keep major positive
+    //      *and* `r ≤ r_c/2` to keep major ≥ minor. Past `r_c/2` the
+    //      construction becomes a spindle (self-intersecting) torus which is
+    //      invalid as a fillet surface.
     let max_radius = if inward { r_c * 0.5 } else { r_c };
     if radius <= tol_lin || radius >= max_radius {
         return Ok(None);
@@ -725,18 +739,13 @@ pub fn plane_cylinder_fillet(
 
     // 5) Torus placement.
     //    `z_axis_dir` is the side of the plate the rolling ball trajectory is
-    //    lifted toward (the cylinder-material side along the axis), and the
-    //    torus center sits one fillet radius along it.
-    //      - Concave hole / convex post: the empty wedge is on the plate side
-    //        opposite the cylinder material, so the ball lifts toward
-    //        `-n_p_inward` and the torus center is below the plate.
-    //      - Convex rim (disc bounded by the cylinder): the material *is* on
-    //        the `+n_p_inward` side, so the ball lifts INTO the material
-    //        (toward `+n_p_inward`) and the torus center sits one radius above
-    //        the plate; plate contact lands at `r_c - r`.
-    //    Major radius: `r_c + r` for a convex post (plate contact OUTSIDE the
-    //    spine), `r_c - r` for the inward cases (plate contact INSIDE).
-    let z_axis_dir = if rim { n_p_inward } else { -n_p_inward };
+    //    lifted toward, and the torus center sits one fillet radius along it.
+    //    A convex edge is rounded off by a ball rolling INSIDE the solid, so
+    //    the centre lifts toward the material (`+n_p_inward`); a concave edge
+    //    is filled in by a ball rolling in the void (`-n_p_inward`).
+    //    Major radius: `r_c + r` where the plate contact runs OUTSIDE the
+    //    spine, `r_c - r` where it runs INSIDE.
+    let z_axis_dir = if convex { n_p_inward } else { -n_p_inward };
     let torus_center = p_axis_on_plane + z_axis_dir * radius;
     let major_radius = if inward { r_c - radius } else { r_c + radius };
     let minor_radius = radius;
@@ -1037,6 +1046,14 @@ pub fn plane_cylinder_chamfer(
     //        material side; the cone *opens* upward through the plate
     //        toward the empty wedge inside the hole).
     //    We bake this into a single `apex_dir = s · n_p_inward` factor.
+    //    KNOWN GAP: this reads the surface normal only, so on a `reversed`
+    //    plane face — a counterbore's seat, for one — it picks the side the
+    //    material is NOT on and puts the cylinder contact above the seat
+    //    instead of down the bore. `closed_rim_info`'s axial check refuses
+    //    that outright rather than assembling a band attached to nothing.
+    //    Correcting the direction here needs the radial sign fixed with it
+    //    (the fillet path's `plane_bounded`/`mat_inside_cyl` taxonomy); done
+    //    alone it merely trades one wrong band for another.
     let axis_toward_material = -n_p_inward;
 
     // 6) Spine: detect closed-circle case so we can spin a full 2π.

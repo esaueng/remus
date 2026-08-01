@@ -126,10 +126,35 @@ pub enum FaceSpec {
         /// Inner wire vertex loops (holes in the face).
         inner_wires: Vec<Vec<Point3>>,
     },
+    /// A face whose wires are copied verbatim from an existing face.
+    ///
+    /// The other variants describe a wire as a list of vertex positions, so
+    /// the assembler can only mint straight edges between consecutive
+    /// positions. That vocabulary cannot express a loop whose whole boundary
+    /// is one closed curve — a drilled hole's rim is a single circle edge
+    /// with `start == end`, i.e. ONE position — and the mixed-spec assembler
+    /// used to drop such loops (`< 3` positions) outright, which silently
+    /// filled in the hole and left its bore wall with a free edge.
+    ///
+    /// This variant instead deep-copies the source face's wires, preserving
+    /// every edge's exact curve, and registers the copies in the same
+    /// vertex/edge dedup maps as the other specs so neighbouring rebuilt
+    /// faces share them.
+    Existing {
+        /// The face whose surface, orientation, and wires are copied.
+        face: FaceId,
+        /// Replacement outer-wire vertex positions (a rebuilt/trimmed
+        /// boundary), or `None` to copy the source's outer wire verbatim.
+        /// Inner wires are always copied verbatim.
+        outer: Option<Vec<Point3>>,
+    },
 }
 
 impl FaceSpec {
-    /// Returns a reference to this face's inner wires.
+    /// Returns a reference to this face's positional inner wires.
+    ///
+    /// [`Self::Existing`] carries its holes as topology rather than
+    /// positions, so it reports none here; the assembler copies them.
     #[must_use]
     pub fn inner_wires(&self) -> &[Vec<Point3>] {
         match self {
@@ -137,16 +162,43 @@ impl FaceSpec {
             | Self::Surface { inner_wires, .. }
             | Self::CylindricalFace { inner_wires, .. }
             | Self::SphereCapFace { inner_wires, .. } => inner_wires,
+            Self::Existing { .. } => &[],
         }
     }
 
-    /// Returns a mutable reference to this face's inner wires.
-    pub fn inner_wires_mut(&mut self) -> &mut Vec<Vec<Point3>> {
+    /// Returns a mutable slice of this face's positional inner wires.
+    pub fn inner_wires_mut(&mut self) -> &mut [Vec<Point3>] {
         match self {
             Self::Planar { inner_wires, .. }
             | Self::Surface { inner_wires, .. }
             | Self::CylindricalFace { inner_wires, .. }
             | Self::SphereCapFace { inner_wires, .. } => inner_wires,
+            Self::Existing { .. } => &mut [],
+        }
+    }
+
+    /// Returns a mutable slice of this face's outer-wire vertex positions.
+    ///
+    /// Empty for an [`Self::Existing`] face that reuses its source wire.
+    pub fn vertices_mut(&mut self) -> &mut [Point3] {
+        match self {
+            Self::Planar { vertices, .. }
+            | Self::Surface { vertices, .. }
+            | Self::CylindricalFace { vertices, .. }
+            | Self::SphereCapFace { vertices, .. } => vertices,
+            Self::Existing { outer, .. } => outer.as_deref_mut().unwrap_or(&mut []),
+        }
+    }
+
+    /// Returns this face's outer-wire vertex positions, if it has any.
+    #[must_use]
+    pub fn vertices(&self) -> &[Point3] {
+        match self {
+            Self::Planar { vertices, .. }
+            | Self::Surface { vertices, .. }
+            | Self::CylindricalFace { vertices, .. }
+            | Self::SphereCapFace { vertices, .. } => vertices,
+            Self::Existing { outer, .. } => outer.as_deref().unwrap_or(&[]),
         }
     }
 }

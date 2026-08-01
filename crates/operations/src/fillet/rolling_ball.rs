@@ -883,6 +883,47 @@ pub fn fillet_rolling_ball(
         map
     };
 
+    // Classify faces the positional `FaceSpec` vocabulary cannot describe.
+    //
+    // Every spec except `FaceSpec::Existing` states a wire as a list of vertex
+    // positions, so the assembler can only mint straight edges between
+    // consecutive positions. A drilled hole's rim is ONE closed circle edge —
+    // a single position — and the assembler used to drop such loops outright:
+    // the cap came back solid, its bore wall kept the rim it no longer shared,
+    // and the shell was left with a free edge. That is why every holed cap
+    // (boolean-result plates, flanges) made this engine emit an open shell.
+    //
+    // Such faces are copied verbatim instead. `verbatim` marks the faces whose
+    // loops must survive as topology; `untouched` marks the ones the blend does
+    // not reach, whose outer wire can be copied as well instead of rebuilt.
+    let (verbatim_faces, untouched_faces) = {
+        let mut verbatim: HashSet<usize> = HashSet::new();
+        let mut untouched: HashSet<usize> = HashSet::new();
+        for &face_id in &shell_face_ids {
+            let face = topo.face(face_id)?;
+            let has_holes = !face.inner_wires().is_empty();
+            let mut closed_edge = false;
+            let mut touched = false;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid)?.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    closed_edge |= edge.start() == edge.end();
+                    touched |= target_set.contains(&oe.edge().index());
+                    touched |= vertex_fillet_edges.contains_key(&edge.start().index());
+                    touched |= vertex_fillet_edges.contains_key(&edge.end().index());
+                }
+            }
+            if has_holes || closed_edge {
+                verbatim.insert(face_id.index());
+            }
+            if !touched {
+                untouched.insert(face_id.index());
+            }
+        }
+        (verbatim, untouched)
+    };
+
     // Phase 3: Build modified (trimmed) planar faces.
     let mut all_specs: Vec<FaceSpec> = Vec::new();
 
@@ -897,6 +938,17 @@ pub fn fillet_rolling_ball(
     let mut corner_preserved: HashMap<usize, Point3> = HashMap::new();
 
     for &face_id in &shell_face_ids {
+        // A face the blend never reaches, carrying a loop only topology can
+        // express: copy it whole. Its edges join the assembly's shared pool, so
+        // the trimmed cap that keeps the same hole reuses the very same rim.
+        if verbatim_faces.contains(&face_id.index()) && untouched_faces.contains(&face_id.index()) {
+            all_specs.push(FaceSpec::Existing {
+                face: face_id,
+                outer: None,
+            });
+            continue;
+        }
+
         // Non-planar faces: either pass through or trim at fillet contact points.
         let Some(poly) = face_polygons.get(&face_id.index()) else {
             let face = topo.face(face_id)?;
@@ -1146,12 +1198,19 @@ pub fn fillet_rolling_ball(
         // Skip polygon trimming for degenerate faces (e.g., disc caps with a
         // single closed circular edge where start==end vertex).
         if n < 3 {
-            all_specs.push(FaceSpec::Planar {
-                vertices: poly.positions.clone(),
-                normal: poly.normal,
-                d: poly.d,
-                inner_wires: poly.inner_wires.clone(),
-            });
+            if verbatim_faces.contains(&face_id.index()) {
+                all_specs.push(FaceSpec::Existing {
+                    face: face_id,
+                    outer: None,
+                });
+            } else {
+                all_specs.push(FaceSpec::Planar {
+                    vertices: poly.positions.clone(),
+                    normal: poly.normal,
+                    d: poly.d,
+                    inner_wires: poly.inner_wires.clone(),
+                });
+            }
             continue;
         }
 
@@ -1313,13 +1372,23 @@ pub fn fillet_rolling_ball(
             }
         }
 
-        let new_d = dot_normal_point(poly.normal, new_verts[0]);
-        all_specs.push(FaceSpec::Planar {
-            vertices: new_verts,
-            normal: poly.normal,
-            d: new_d,
-            inner_wires: poly.inner_wires.clone(),
-        });
+        if verbatim_faces.contains(&face_id.index()) {
+            // A trimmed cap that carries holes: the outer wire is rebuilt from
+            // the blend contacts, but every inner loop is carried through as
+            // topology so its rim stays the edge its bore wall is bounded by.
+            all_specs.push(FaceSpec::Existing {
+                face: face_id,
+                outer: Some(new_verts),
+            });
+        } else {
+            let new_d = dot_normal_point(poly.normal, new_verts[0]);
+            all_specs.push(FaceSpec::Planar {
+                vertices: new_verts,
+                normal: poly.normal,
+                d: new_d,
+                inner_wires: poly.inner_wires.clone(),
+            });
+        }
     }
 
     // Phase 4: Build NURBS fillet faces for each target edge.
@@ -2000,6 +2069,12 @@ pub fn fillet_rolling_ball(
             | FaceSpec::Surface { vertices, .. }
             | FaceSpec::CylindricalFace { vertices, .. }
             | FaceSpec::SphereCapFace { vertices, .. } => vertices,
+            FaceSpec::Existing {
+                outer: Some(vertices),
+                ..
+            } => vertices,
+            // A face copied verbatim has no positional wire to clean up.
+            FaceSpec::Existing { outer: None, .. } => continue,
         };
         // Only dedup if there are actually zero-length edges (consecutive
         // vertices within tolerance). Count them first.
@@ -2085,6 +2160,12 @@ pub fn fillet_rolling_ball(
                 | FaceSpec::Surface { vertices, .. }
                 | FaceSpec::CylindricalFace { vertices, .. }
                 | FaceSpec::SphereCapFace { vertices, .. } => vertices,
+                FaceSpec::Existing {
+                    outer: Some(vertices),
+                    ..
+                } => vertices,
+                // A face copied verbatim keeps its own vertices.
+                FaceSpec::Existing { outer: None, .. } => continue,
             };
             for v in verts.iter_mut() {
                 if let Some(closest) = original_verts

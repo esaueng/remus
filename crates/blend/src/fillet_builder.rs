@@ -14,12 +14,13 @@ use brepkit_topology::face::{Face, FaceId, FaceSurface};
 use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
 use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::analytic;
 use crate::blend_func::{ConstRadBlend, EvolRadBlend};
 use crate::builder_utils::{
-    FlippedNormalSurface, create_blend_face, sample_nurbs_endpoints, surface_ref_or_adapter,
+    FlippedNormalSurface, create_blend_face, project_onto_axis, radial_distance,
+    sample_nurbs_endpoints, surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
 };
 use crate::corner;
 use crate::g1_chain;
@@ -140,14 +141,34 @@ impl<'a> FilletBuilder<'a> {
         }
 
         // Two or more chains touching the same vertex need a vertex blend
-        // there. The corner solver computes exact geometry for that, but this
-        // builder cannot yet assemble it watertight: stripes run to the
-        // vertex un-set-back and the corner faces mint their own boundary
-        // edges, so the shell has free edges by construction and every
-        // downstream validation rejects it. Fail fast with a typed error
+        // there. The corner solver computes exact geometry for that
+        // (`corner::compute_corners` already returns patches), but this builder
+        // cannot yet assemble it watertight. Fail fast with a typed error
         // before any stripe work so callers (`try_fillet`, `fillet_v2`) fall
         // through to an engine that closes corners, instead of paying for a
         // doomed build plus rollback.
+        //
+        // Removing this guard does not currently reach the corner code at all.
+        // Measured on a two-edge box corner with the guard disabled, the
+        // blockers are, in the order they bite:
+        //
+        //  1. `trimmer` cannot cut one base face twice. Both stripes trim the
+        //     shared cap and the second cut fails outright with
+        //     `TrimmingFailure`, so nothing downstream ever runs.
+        //  2. Stripes are not set back at the shared vertex — each runs to the
+        //     vertex plane, leaving no tangency circle for a patch to meet.
+        //  3. Corner patches mint their own boundary edges instead of reusing
+        //     those set-back boundaries, so stripe-to-corner adjacency would be
+        //     coincidental rather than topological.
+        //  4. The trimmer does not let a base face consume the corner patch's
+        //     arc boundary when its wire is rewritten.
+        //
+        // Until all four are addressed the shell has free edges by
+        // construction. The planar fast path in `fillet_rolling_ball` closes
+        // these corners today — which is why a plain box and a drilled plate
+        // both fillet corner chains and whole perimeters — so what this guard
+        // still blocks is corner chains on curved or imported geometry the fast
+        // path declines.
         {
             let mut chains_at_vertex: HashMap<usize, (brepkit_topology::vertex::VertexId, usize)> =
                 HashMap::new();
@@ -235,6 +256,11 @@ impl<'a> FilletBuilder<'a> {
             if let Some(rim) = closed_rim_info(topo, &sr.stripe)? {
                 match assemble_closed_rim(topo, &sr.stripe, &rim, &mut face_replacements) {
                     Ok(band) => blend_face_ids.push(band),
+                    // A radius the geometry cannot accommodate is a verdict,
+                    // not a reason to try another assembler: no engine below
+                    // can fit a blend that does not fit. Report it and let the
+                    // caller lower the radius.
+                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
                     Err(e) => {
                         log::warn!("closed-rim assembly failed: {e}, falling back to trim path");
                         regular_results.push(sr);
@@ -848,34 +874,29 @@ fn stitch_planar_blend(
 }
 
 /// Geometry of a full-revolution rim fillet (a closed circular edge between a
-/// bounded disc cap and an axisymmetric wall), recovered from a stripe whose
-/// blend surface is a torus.
+/// planar cap and an axisymmetric wall), recovered from a stripe whose blend
+/// surface is a torus.
 struct ClosedRimInfo {
-    /// The bounded disc cap face (a `Plane`).
+    /// The planar cap face.
     plane_face: FaceId,
     /// The axisymmetric wall face (`Cylinder` or `Cone`).
     wall_face: FaceId,
     /// The original closed rim edge on the wall, to be replaced by the
     /// wall-contact circle.
     rim_edge: EdgeId,
-    /// Contact circle on the plate (radius `r_c − r`), in the plane.
+    /// Whether the rim is one of the cap's INNER loops (a hole drilled through
+    /// a plate) rather than its outer boundary (a bounded disc cap).
+    ///
+    /// The two differ in which way the setback runs. On a disc cap the contact
+    /// circle shrinks the outer boundary to `r_c − r`; on a hole rim it grows
+    /// the inner loop to `r_c + r`, replacing that loop and leaving the outer
+    /// wire and the cap's other holes alone.
+    rim_is_inner: bool,
+    /// Contact circle on the plate (radius `r_c ∓ r`), in the plane.
     plate_circle: Circle3D,
     /// Contact circle on the wall (radius `r_c` for a cylinder), one fillet
     /// radius along the axis from the plate.
     wall_circle: Circle3D,
-}
-
-/// Project a point onto the infinite axis line through `origin` with unit
-/// direction `axis`, returning the foot of the perpendicular.
-fn project_onto_axis(p: Point3, origin: Point3, axis: Vec3) -> Point3 {
-    let d = p - origin;
-    origin + axis * axis.dot(d)
-}
-
-/// Radial distance from a point to the axis line.
-fn radial_distance(p: Point3, origin: Point3, axis: Vec3) -> f64 {
-    let d = p - origin;
-    (d - axis * axis.dot(d)).length()
 }
 
 /// Detect a full-revolution rim-fillet stripe and recover its annular geometry.
@@ -923,19 +944,35 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         _ => return Ok(None),
     };
 
-    // The annular rebuild replaces the cap's OUTER wire with the plate-contact
-    // circle, so it applies whenever that outer wire is exactly this rim. The
-    // cap may still carry holes — a drilled flange's rim cap is an annulus with
-    // a central opening and six bolt holes — and those are preserved verbatim
-    // by the rebuild. Anything else falls back to the normal trim path.
-    {
+    // The annular rebuild replaces exactly one of the cap's loops with the
+    // plate-contact circle, so it applies whenever some loop is precisely this
+    // rim and nothing else.
+    //
+    //   * the OUTER wire — a bounded disc cap, e.g. a primitive cylinder's end
+    //     face. The cap may still carry holes (a drilled flange's rim cap is an
+    //     annulus with a central opening and bolt holes) and those are
+    //     preserved verbatim by the rebuild.
+    //   * an INNER wire — a hole drilled through a plate. Here the rim IS a
+    //     hole, so the rebuild swaps that one loop and leaves the outer wire
+    //     and the cap's other holes untouched.
+    //
+    // Anything else falls back to the normal trim path.
+    let rim_is_inner = {
         let cap = topo.face(plane_face)?;
-        let cap_wire = topo.wire(cap.outer_wire())?;
-        let edges = cap_wire.edges();
-        if edges.len() != 1 || edges[0].edge() != rim_edge {
+        let is_lone_rim = |wid| -> Result<bool, BlendError> {
+            let edges = topo.wire(wid)?.edges();
+            Ok(edges.len() == 1 && edges[0].edge() == rim_edge)
+        };
+        if is_lone_rim(cap.outer_wire())? {
+            false
+        } else if cap.inner_wires().iter().try_fold(false, |acc, &wid| {
+            Ok::<_, BlendError>(acc || is_lone_rim(wid)?)
+        })? {
+            true
+        } else {
             return Ok(None);
         }
-    }
+    };
 
     // The plane-side contact curve is the one whose face is the plane.
     let (plate_contact, wall_contact) = if plane_face == stripe.face1 {
@@ -968,31 +1005,96 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
     let plate_circle = Circle3D::new(plate_center, axis, plate_radius)?;
     let wall_circle = Circle3D::new(wall_center, axis, wall_radius)?;
 
-    // The cap's holes survive the rebuild unchanged, which is only correct if
-    // the shrinking outer boundary still clears them. A radius large enough to
-    // reach a bolt hole would need the hole and the fillet to merge — real
-    // geometry the annular rebuild cannot express — so defer to the trim path
-    // rather than emit a cap whose outer wire crosses its own hole.
+    // When the contact moves INTO the wall, the rebuild shortens the wall to
+    // meet it — and can only do that with material the wall HAS. On a 6 mm
+    // plate an R9 hole-rim fillet puts the contact 3 mm below the underside,
+    // and the rebuild emits it happily: the shell still closes, no edge is
+    // free, and the tessellation is still watertight, because every one of
+    // those checks is topological. Only the wall's own axial extent says the
+    // geometry is nonsense.
+    //
+    // A concave rim blend moves the contact the other way and EXTENDS the wall
+    // instead — a cone's base rim flares into a foot below its own base plane,
+    // which is legitimate and has no such bound. That case shows up as the wall
+    // having no extent at all in the setback direction, and is left alone.
+    {
+        let setback = axis.dot(wall_center - plate_center);
+        let wall_wire = topo.face(wall_face)?.outer_wire();
+        let (s_min, s_max) = wire_axial_range(topo, wall_wire, plate_center, axis)?;
+        // The rim sits at s = 0 (the cap's plane); `available` is how far the
+        // wall reaches from there in the direction the contact moved.
+        let available = if setback >= 0.0 { s_max } else { -s_min };
+        let shortening = available > 1e-9 * (1.0 + setback.abs());
+        if shortening && setback.abs() >= available {
+            // Report the achievable fillet radius, not the axial setback: they
+            // coincide for a cylinder and differ by the generator slope on a
+            // cone.
+            let radius = match &stripe.surface {
+                FaceSurface::Torus(t) => t.minor_radius(),
+                _ => setback.abs(),
+            };
+            let scale = if setback.abs() > 0.0 {
+                available / setback.abs()
+            } else {
+                0.0
+            };
+            return Err(BlendError::RadiusTooLarge {
+                edge: rim_edge,
+                max_radius: (radius * scale).max(0.0),
+            });
+        }
+    }
+
+    // The cap's other loops survive the rebuild unchanged, which is only
+    // correct if the moved contact circle still clears every one of them. A
+    // radius that reaches past one would need the fillet and that loop to merge
+    // into a single surface — real geometry this rebuild cannot express — and
+    // the resulting cap wire would cross its own boundary while still passing
+    // the closed-shell and Euler checks, i.e. ship as a self-intersecting body.
+    //
+    // Which loops are obstacles, and on which side, follows from the direction
+    // the contact moved:
+    //
+    //   * disc cap (rim is the outer wire): the boundary SHRINKS to `r_c − r`,
+    //     so the cap's holes must all stay inside it.
+    //   * hole rim (rim is an inner wire): the loop GROWS to `r_c + r`, so the
+    //     outer wire and every other hole must stay outside it.
     {
         let cap = topo.face(plane_face)?;
-        for &hole_wid in cap.inner_wires() {
-            for oe in topo.wire(hole_wid)?.edges() {
-                let e = topo.edge(oe.edge())?;
-                let (sp, ep) = (
-                    topo.vertex(e.start())?.point(),
-                    topo.vertex(e.end())?.point(),
-                );
-                let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
-                // Sample along the curve, not just endpoints: a closed circle's
-                // far side has no endpoint there.
-                for k in 0..=8 {
-                    let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
-                    let p = e.curve().evaluate_with_endpoints(t, sp, ep);
-                    if radial_distance(p, axis_origin, axis) >= plate_radius {
-                        return Ok(None);
-                    }
-                }
+        let others: Vec<WireId> = if rim_is_inner {
+            std::iter::once(cap.outer_wire())
+                .chain(cap.inner_wires().iter().copied())
+                .filter(|&wid| {
+                    topo.wire(wid)
+                        .is_ok_and(|w| w.edges().first().is_none_or(|oe| oe.edge() != rim_edge))
+                })
+                .collect()
+        } else {
+            cap.inner_wires().to_vec()
+        };
+        for wid in others {
+            let clearance = wire_radial_extremum(topo, wid, axis_origin, axis, rim_is_inner)?;
+            let collides = if rim_is_inner {
+                clearance <= plate_radius
+            } else {
+                clearance >= plate_radius
+            };
+            if !collides {
+                continue;
             }
+            if rim_is_inner {
+                // The cause is genuinely the radius: the same rim rounds fine
+                // below the clearance, so say so with the achievable maximum
+                // rather than failing as a trimming problem.
+                return Err(BlendError::RadiusTooLarge {
+                    edge: rim_edge,
+                    max_radius: (clearance - wall_radius).max(0.0),
+                });
+            }
+            // The shrinking-disc direction keeps its established behaviour:
+            // defer to the trim path rather than change how existing shapes
+            // report.
+            return Ok(None);
         }
     }
 
@@ -1000,6 +1102,7 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         plane_face,
         wall_face,
         rim_edge,
+        rim_is_inner,
         plate_circle,
         wall_circle,
     }))
@@ -1048,6 +1151,30 @@ fn assemble_closed_rim(
         }
     };
 
+    // `closed_rim_info` measured the setback against the wall as it was; by the
+    // time this runs, an earlier rim on the SAME wall may already have eaten
+    // into it. Two R2 fillets on the two rims of a 3 mm bore each pass on their
+    // own and together invert the wall, so re-measure what is actually left.
+    {
+        let ax = torus.z_axis();
+        let setback = ax.dot(rim.wall_circle.center() - rim.plate_circle.center());
+        let (s_min, s_max) =
+            wire_axial_range(topo, wall_outer_wire, rim.plate_circle.center(), ax)?;
+        let available = if setback >= 0.0 { s_max } else { -s_min };
+        let shortening = available > 1e-9 * (1.0 + setback.abs());
+        if shortening && setback.abs() >= available {
+            let scale = if setback.abs() > 0.0 {
+                available / setback.abs()
+            } else {
+                0.0
+            };
+            return Err(BlendError::RadiusTooLarge {
+                edge: rim.rim_edge,
+                max_radius: (torus.minor_radius() * scale).max(0.0),
+            });
+        }
+    }
+
     // Vertices for the two closed contact circles (start == end → degenerate).
     let plate_point = rim.plate_circle.evaluate(0.0);
     let wall_point = rim.wall_circle.evaluate(0.0);
@@ -1079,30 +1206,57 @@ fn assemble_closed_rim(
     let seam_circle = Circle3D::new(seam_center, seam_normal, torus.minor_radius())?;
     let seam_edge = topo.add_edge(Edge::new(plate_v, wall_v, EdgeCurve::Circle(seam_circle)));
 
-    // --- Rebuild the disc cap bounded by the plate-contact circle. ---
-    // The cap originally borders the rim via a single closed-circle wire; the
-    // new cap reuses the plate-contact circle with the same orientation the cap
-    // had on the original rim edge.
-    let cap_orig_wire = topo.face(
+    // --- Rebuild the cap with the rim loop replaced by the plate contact. ---
+    // Exactly one of the cap's loops is the rim; that loop becomes the
+    // plate-contact circle with the orientation the cap had on the original rim
+    // edge, and every other loop is carried through verbatim. Handing the
+    // rebuilt face an empty inner-wire list would fill in every hole — a
+    // drilled flange's rim cap would lose its bore and bolt openings, and each
+    // bore wall would lose the face it pairs with, opening the shell.
+    let cap_orig = topo.face(
         face_replacements
             .get(&rim.plane_face)
             .copied()
             .unwrap_or(rim.plane_face),
     )?;
-    let cap_orig_wire_id = cap_orig_wire.outer_wire();
+    let cap_orig_outer = cap_orig.outer_wire();
+    let cap_orig_inner = cap_orig.inner_wires().to_vec();
+    let rim_loop = if rim.rim_is_inner {
+        *cap_orig_inner
+            .iter()
+            .find(|&&wid| {
+                topo.wire(wid)
+                    .is_ok_and(|w| w.edges().iter().any(|oe| oe.edge() == rim.rim_edge))
+            })
+            .ok_or(BlendError::TrimmingFailure {
+                face: rim.plane_face,
+            })?
+    } else {
+        cap_orig_outer
+    };
     let cap_forward = topo
-        .wire(cap_orig_wire_id)?
+        .wire(rim_loop)?
         .edges()
         .iter()
         .find(|oe| oe.edge() == rim.rim_edge)
         .is_some_and(OrientedEdge::is_forward);
-    // Carry the cap's holes through. Handing the rebuilt face an empty
-    // inner-wire list would fill in every hole — a drilled flange's rim cap
-    // would lose its bore and bolt openings, and each bore wall would lose the
-    // face it pairs with, opening the shell.
-    let cap_inner = cap_orig_wire.inner_wires().to_vec();
-    let cap_wire = Wire::new(vec![OrientedEdge::new(plate_edge, cap_forward)], true)?;
-    let cap_wire_id = topo.add_wire(cap_wire);
+    let contact_wire = Wire::new(vec![OrientedEdge::new(plate_edge, cap_forward)], true)?;
+    let contact_wire_id = topo.add_wire(contact_wire);
+    let (cap_wire_id, cap_inner) = if rim.rim_is_inner {
+        let inner = cap_orig_inner
+            .iter()
+            .map(|&wid| {
+                if wid == rim_loop {
+                    contact_wire_id
+                } else {
+                    wid
+                }
+            })
+            .collect();
+        (cap_orig_outer, inner)
+    } else {
+        (contact_wire_id, cap_orig_inner)
+    };
     let mut cap_face = Face::new(cap_wire_id, cap_inner, plane_surf);
     cap_face.set_reversed(plane_reversed);
     let cap_face_id = topo.add_face(cap_face);

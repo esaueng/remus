@@ -11,7 +11,7 @@ use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeCurve};
 use brepkit_topology::face::{Face, FaceId, FaceSurface};
 use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::BlendError;
 use crate::stripe::Stripe;
@@ -236,4 +236,172 @@ pub fn surface_ref_or_adapter<'a>(
         FaceSurface::Torus(t) => t as &dyn ParametricSurface,
         FaceSurface::Nurbs(n) => n as &dyn ParametricSurface,
     }
+}
+
+/// Project a point onto the infinite axis line through `origin` with unit
+/// direction `axis`, returning the foot of the perpendicular.
+#[must_use]
+pub fn project_onto_axis(p: Point3, origin: Point3, axis: Vec3) -> Point3 {
+    let d = p - origin;
+    origin + axis * axis.dot(d)
+}
+
+/// Radial distance from a point to the axis line.
+#[must_use]
+pub fn radial_distance(p: Point3, origin: Point3, axis: Vec3) -> f64 {
+    let d = p - origin;
+    (d - axis * axis.dot(d)).length()
+}
+
+/// How far a wire reaches along the axis, either side of `origin`, as
+/// `(min, max)` signed distances.
+///
+/// Used to check that a rim setback stays on the wall it is shortening, so an
+/// answer that overstated the wall's extent would let the contact circle sit
+/// off the end of it. Circles perpendicular to the axis and straight edges are
+/// exact at their endpoints; anything else is sampled and then pulled IN by
+/// half the largest sample spacing, since the axial coordinate is 1-Lipschitz
+/// in 3D position.
+pub fn wire_axial_range(
+    topo: &Topology,
+    wire: WireId,
+    origin: Point3,
+    axis: Vec3,
+) -> Result<(f64, f64), BlendError> {
+    const SAMPLES: usize = 64;
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for oe in topo.wire(wire)?.edges() {
+        let e = topo.edge(oe.edge())?;
+        let (sp, ep) = (
+            topo.vertex(e.start())?.point(),
+            topo.vertex(e.end())?.point(),
+        );
+        let s = |p: Point3| axis.dot(p - origin);
+        lo = lo.min(s(sp)).min(s(ep));
+        hi = hi.max(s(sp)).max(s(ep));
+        let perpendicular_circle = matches!(e.curve(), EdgeCurve::Circle(c)
+            if c.normal().cross(axis).length() < 1e-9);
+        if matches!(e.curve(), EdgeCurve::Line) || perpendicular_circle {
+            // Constant (circle) or monotone (line) along the axis: the
+            // endpoints already bound it.
+            continue;
+        }
+        let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+        let mut prev: Option<Point3> = None;
+        let mut spacing: f64 = 0.0;
+        let (mut c_lo, mut c_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for k in 0..=SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * (k as f64) / (SAMPLES as f64);
+            let p = e.curve().evaluate_with_endpoints(t, sp, ep);
+            if let Some(q) = prev {
+                spacing = spacing.max((p - q).length());
+            }
+            prev = Some(p);
+            c_lo = c_lo.min(s(p));
+            c_hi = c_hi.max(s(p));
+        }
+        // Understate the reach rather than overstate it.
+        lo = lo.min(c_lo + spacing * 0.5);
+        hi = hi.max(c_hi - spacing * 0.5);
+    }
+    Ok((lo, hi))
+}
+
+/// The extremal radial distance from the axis line to a whole wire: the
+/// minimum when `want_min`, otherwise the maximum.
+///
+/// This decides whether a rim fillet's moved contact circle still clears the
+/// cap's other loops, so an answer that is optimistic by even a little would
+/// admit a self-intersecting cap. Every value returned is therefore either
+/// exact or erring the safe way (a smaller minimum, a larger maximum):
+///
+///   * straight edges — the radial distance along a segment is the norm of an
+///     affine function, so it is convex: the maximum is at an endpoint and the
+///     minimum is solved for in closed form.
+///   * whole circles lying in a plane perpendicular to the axis — the usual
+///     `|d ± ρ|`, where `d` is the centre's own radial distance.
+///   * anything else — sampled, then widened by half the largest sample
+///     spacing. Radial distance is 1-Lipschitz in 3D position, so the true
+///     extremum cannot lie further than that from the sampled one. No
+///     assumption about the curve is needed for this to hold.
+pub fn wire_radial_extremum(
+    topo: &Topology,
+    wire: WireId,
+    origin: Point3,
+    axis: Vec3,
+    want_min: bool,
+) -> Result<f64, BlendError> {
+    const SAMPLES: usize = 64;
+    let pick = |acc: f64, v: f64| if want_min { acc.min(v) } else { acc.max(v) };
+    let mut best = if want_min { f64::INFINITY } else { 0.0 };
+
+    for oe in topo.wire(wire)?.edges() {
+        let e = topo.edge(oe.edge())?;
+        let (sp, ep) = (
+            topo.vertex(e.start())?.point(),
+            topo.vertex(e.end())?.point(),
+        );
+        best = pick(best, radial_distance(sp, origin, axis));
+        best = pick(best, radial_distance(ep, origin, axis));
+
+        match e.curve() {
+            EdgeCurve::Line => {
+                if !want_min {
+                    // Convex along the segment: the endpoints already bound it.
+                    continue;
+                }
+                let perp = |p: Point3| {
+                    let d = p - origin;
+                    d - axis * axis.dot(d)
+                };
+                let (pa, pb) = (perp(sp), perp(ep));
+                let ab = pb - pa;
+                let len_sq = ab.dot(ab);
+                if len_sq > 0.0 {
+                    let t = (-pa.dot(ab) / len_sq).clamp(0.0, 1.0);
+                    best = best.min((pa + ab * t).length());
+                }
+            }
+            EdgeCurve::Circle(c)
+                if e.start() == e.end() && c.normal().cross(axis).length() < 1e-9 =>
+            {
+                // A whole circle in a plane perpendicular to the axis: the
+                // radial distance sweeps the full interval about its centre.
+                let d = radial_distance(c.center(), origin, axis);
+                best = pick(
+                    best,
+                    if want_min {
+                        (d - c.radius()).abs()
+                    } else {
+                        d + c.radius()
+                    },
+                );
+            }
+            curve => {
+                let (t0, t1) = curve.domain_with_endpoints(sp, ep);
+                let mut prev: Option<Point3> = None;
+                let mut spacing: f64 = 0.0;
+                for k in 0..=SAMPLES {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = t0 + (t1 - t0) * (k as f64) / (SAMPLES as f64);
+                    let p = curve.evaluate_with_endpoints(t, sp, ep);
+                    if let Some(q) = prev {
+                        spacing = spacing.max((p - q).length());
+                    }
+                    prev = Some(p);
+                    best = pick(best, radial_distance(p, origin, axis));
+                }
+                // Widen by the Lipschitz bound so the answer never claims more
+                // clearance than the curve actually has.
+                best = if want_min {
+                    best - spacing * 0.5
+                } else {
+                    best + spacing * 0.5
+                };
+            }
+        }
+    }
+    Ok(best)
 }

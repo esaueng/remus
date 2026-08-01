@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use brepkit_math::curves::Circle3D;
-use brepkit_math::vec::{Point3, Vec3};
+use brepkit_math::vec::Point3;
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 use brepkit_topology::face::{Face, FaceId, FaceSurface};
@@ -17,7 +17,10 @@ use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic;
-use crate::builder_utils::{create_blend_face, sample_nurbs_endpoints};
+use crate::builder_utils::{
+    create_blend_face, project_onto_axis, radial_distance, sample_nurbs_endpoints,
+    wire_axial_range, wire_radial_extremum,
+};
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
 use crate::trimmer::{self, TrimSide};
@@ -216,6 +219,9 @@ impl<'a> ChamferBuilder<'a> {
                         rim_band_faces.push(band);
                         continue;
                     }
+                    // A setback the geometry cannot accommodate is a verdict,
+                    // not a reason to try another assembler.
+                    Err(e @ BlendError::RadiusTooLarge { .. }) => return Err(e),
                     Err(e) => {
                         log::warn!("closed-rim chamfer assembly failed: {e}, falling back to trim");
                     }
@@ -425,18 +431,6 @@ enum CapRimWire {
     Inner(usize),
 }
 
-/// Project a point onto the infinite axis line through `origin`.
-fn project_onto_axis(p: Point3, origin: Point3, axis: Vec3) -> Point3 {
-    let d = p - origin;
-    origin + axis * axis.dot(d)
-}
-
-/// Radial distance from a point to the axis line.
-fn radial_distance(p: Point3, origin: Point3, axis: Vec3) -> f64 {
-    let d = p - origin;
-    (d - axis * axis.dot(d)).length()
-}
-
 /// Detect a full-revolution rim-chamfer stripe and recover its annular geometry.
 ///
 /// Returns `Some` when the blend surface is a cone, the spine is a single
@@ -551,8 +545,12 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
     // to stay inside it; a bore mouth widens the hole to `plate_radius`, so
     // everything else has to stay outside. A setback big enough to reach
     // another boundary would need the two to merge — real geometry the annular
-    // rebuild cannot express — so defer to the trim path rather than emit a cap
-    // whose wires cross.
+    // rebuild cannot express — and the cap wire would cross its own boundary
+    // while still passing every topological check.
+    //
+    // The measurement is exact rather than sampled at nine points per edge:
+    // a nine-point sample of a straight plate edge can miss its nearest
+    // approach by more than the clearance being tested.
     {
         let cap = topo.face(plane_face)?;
         let mut others: Vec<brepkit_topology::wire::WireId> = Vec::new();
@@ -569,26 +567,48 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
                 );
             }
         }
-        let clears = |r: f64| match cap_rim_wire {
-            CapRimWire::Outer => r < plate_radius,
-            CapRimWire::Inner(_) => r > plate_radius,
-        };
+        let widening = matches!(cap_rim_wire, CapRimWire::Inner(_));
         for wid in others {
-            for oe in topo.wire(wid)?.edges() {
-                let e = topo.edge(oe.edge())?;
-                let start = topo.vertex(e.start())?.point();
-                let end = topo.vertex(e.end())?.point();
-                // Endpoints alone miss a closed circle's far side, so sample
-                // the curve too.
-                let (t0, t1) = e.curve().domain_with_endpoints(start, end);
-                for k in 0..=8 {
-                    let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
-                    let p = e.curve().evaluate_with_endpoints(t, start, end);
-                    if !clears(radial_distance(p, axis_origin, axis)) {
-                        return Ok(None);
-                    }
-                }
+            let clearance = wire_radial_extremum(topo, wid, axis_origin, axis, widening)?;
+            let collides = if widening {
+                clearance <= plate_radius
+            } else {
+                clearance >= plate_radius
+            };
+            if !collides {
+                continue;
             }
+            if widening {
+                // The cause is the setback: the same rim chamfers fine below
+                // the clearance, so report the achievable distance.
+                return Err(BlendError::RadiusTooLarge {
+                    edge: rim_edge,
+                    max_radius: (clearance - wall_radius).max(0.0),
+                });
+            }
+            // The shrinking direction keeps its established behaviour: defer to
+            // the trim path rather than change how existing shapes report.
+            return Ok(None);
+        }
+    }
+
+    // When the contact moves INTO the wall, the rebuild shortens the wall to
+    // meet it, and only the wall's own axial extent says whether it has that
+    // much material to give — the shell would still close, and the tessellation
+    // would still be watertight, with the contact hanging off the end of the
+    // bore. A concave rim band extends the wall instead, which has no such
+    // bound; that case shows up as no extent in the setback direction.
+    {
+        let setback = axis.dot(wall_center - plate_center);
+        let wall_wire = topo.face(wall_face)?.outer_wire();
+        let (s_min, s_max) = wire_axial_range(topo, wall_wire, plate_center, axis)?;
+        let available = if setback >= 0.0 { s_max } else { -s_min };
+        let shortening = available > 1e-9 * (1.0 + setback.abs());
+        if shortening && setback.abs() >= available {
+            return Err(BlendError::RadiusTooLarge {
+                edge: rim_edge,
+                max_radius: available.max(0.0),
+            });
         }
     }
 

@@ -86,6 +86,171 @@ pub(crate) fn assemble_solid(
     assemble_solid_mixed(topo, &specs, tol)
 }
 
+/// Scratch state threaded through the verbatim-copy helpers below.
+struct CopyMaps<'a> {
+    vertex_map: &'a mut HashMap<(i64, i64, i64), VertexId>,
+    edge_map: &'a mut HashMap<(usize, usize), EdgeId>,
+    /// Source edge → its copy, so the same source edge shared by several
+    /// copied faces yields ONE new edge (that is what makes the copied bore
+    /// wall and the copied cap hole meet at a shared rim).
+    edge_copies: &'a mut HashMap<EdgeId, EdgeId>,
+    resolution: f64,
+    tol: Tolerance,
+}
+
+/// Map a source vertex onto the assembly's shared vertex pool by position.
+fn copy_vertex(
+    topo: &mut Topology,
+    source: VertexId,
+    maps: &mut CopyMaps<'_>,
+) -> Result<VertexId, crate::OperationsError> {
+    let p = topo.vertex(source)?.point();
+    let key = quantize_point(p, maps.resolution);
+    if let Some(&existing) = maps.vertex_map.get(&key) {
+        return Ok(existing);
+    }
+    let new = topo.add_vertex(Vertex::new(p, maps.tol.linear));
+    maps.vertex_map.insert(key, new);
+    Ok(new)
+}
+
+/// Copy a source edge, preserving its exact curve.
+///
+/// The copy is memoised per source edge. Straight-endpoint copies are also
+/// published to `edge_map` (first writer wins) so a neighbouring face rebuilt
+/// from vertex positions picks up this edge instead of minting a duplicate
+/// line between the same two vertices. Closed edges (`start == end`) are
+/// deliberately NOT published: their `(v, v)` key would collide with a
+/// degenerate polygon segment.
+fn copy_edge(
+    topo: &mut Topology,
+    source: EdgeId,
+    maps: &mut CopyMaps<'_>,
+) -> Result<EdgeId, crate::OperationsError> {
+    if let Some(&existing) = maps.edge_copies.get(&source) {
+        return Ok(existing);
+    }
+    let (start, end, curve) = {
+        let e = topo.edge(source)?;
+        (e.start(), e.end(), e.curve().clone())
+    };
+    let new_start = copy_vertex(topo, start, maps)?;
+    let new_end = copy_vertex(topo, end, maps)?;
+    let new = topo.add_edge(Edge::new(new_start, new_end, curve));
+    maps.edge_copies.insert(source, new);
+    if new_start != new_end {
+        let (a, b) = (new_start.index(), new_end.index());
+        let key = if a <= b { (a, b) } else { (b, a) };
+        maps.edge_map.entry(key).or_insert(new);
+    }
+    Ok(new)
+}
+
+/// Copy a source wire edge-for-edge, keeping traversal orientation.
+fn copy_wire(
+    topo: &mut Topology,
+    source: WireId,
+    maps: &mut CopyMaps<'_>,
+) -> Result<WireId, crate::OperationsError> {
+    let (oriented, closed) = {
+        let w = topo.wire(source)?;
+        (w.edges().to_vec(), w.is_closed())
+    };
+    let mut edges = Vec::with_capacity(oriented.len());
+    for oe in &oriented {
+        let source_start = topo.edge(oe.edge())?.start();
+        let new_edge = copy_edge(topo, oe.edge(), maps)?;
+        let new_start = topo.edge(new_edge)?.start();
+        // The copy normally keeps the source's direction, but a memoised copy
+        // reached from another face may have been minted the other way round.
+        let same_direction = new_start == copy_vertex(topo, source_start, maps)?;
+        let forward = if same_direction {
+            oe.is_forward()
+        } else {
+            !oe.is_forward()
+        };
+        edges.push(OrientedEdge::new(new_edge, forward));
+    }
+    let wire = Wire::new(edges, closed).map_err(crate::OperationsError::Topology)?;
+    Ok(topo.add_wire(wire))
+}
+
+/// Build an outer wire from vertex positions, sharing vertices and edges with
+/// the rest of the assembly.
+fn build_polygon_wire(
+    topo: &mut Topology,
+    positions: &[Point3],
+    maps: &mut CopyMaps<'_>,
+) -> Result<WireId, crate::OperationsError> {
+    let n = positions.len();
+    let vert_ids: Vec<VertexId> = positions
+        .iter()
+        .map(|p| {
+            let key = quantize_point(*p, maps.resolution);
+            *maps
+                .vertex_map
+                .entry(key)
+                .or_insert_with(|| topo.add_vertex(Vertex::new(*p, maps.tol.linear)))
+        })
+        .collect();
+    let mut oriented = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (vi, vj) = (vert_ids[i].index(), vert_ids[j].index());
+        if vi == vj {
+            continue;
+        }
+        let key = if vi <= vj { (vi, vj) } else { (vj, vi) };
+        let edge_id = *maps
+            .edge_map
+            .entry(key)
+            .or_insert_with(|| topo.add_edge(Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line)));
+        let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
+        if oriented
+            .iter()
+            .any(|oe: &OrientedEdge| oe.edge() == edge_id)
+        {
+            continue;
+        }
+        oriented.push(OrientedEdge::new(edge_id, is_forward));
+    }
+    let wire = Wire::new(oriented, true).map_err(crate::OperationsError::Topology)?;
+    Ok(topo.add_wire(wire))
+}
+
+/// Materialise a [`FaceSpec::Existing`]: copy the source face's surface,
+/// orientation, and inner wires, taking the outer wire either verbatim or
+/// from a replacement polygon.
+fn clone_existing_face(
+    topo: &mut Topology,
+    source: FaceId,
+    outer: Option<&[Point3]>,
+    maps: &mut CopyMaps<'_>,
+) -> Result<FaceId, crate::OperationsError> {
+    let (surface, reversed, source_outer, source_inner) = {
+        let f = topo.face(source)?;
+        (
+            f.surface().clone(),
+            f.is_reversed(),
+            f.outer_wire(),
+            f.inner_wires().to_vec(),
+        )
+    };
+    let outer_wire = match outer {
+        Some(positions) if positions.len() >= 3 => build_polygon_wire(topo, positions, maps)?,
+        _ => copy_wire(topo, source_outer, maps)?,
+    };
+    let mut inner_wires = Vec::with_capacity(source_inner.len());
+    for wid in source_inner {
+        inner_wires.push(copy_wire(topo, wid, maps)?);
+    }
+    Ok(if reversed {
+        topo.add_face(Face::new_reversed(outer_wire, inner_wires, surface))
+    } else {
+        topo.add_face(Face::new(outer_wire, inner_wires, surface))
+    })
+}
+
 /// Build inner wire topology from vertex position lists.
 ///
 /// For each inner wire (a closed loop of vertex positions), creates vertices
@@ -158,13 +323,30 @@ pub(crate) fn assemble_solid_mixed(
     let n = face_specs.len();
     topo.reserve(n.saturating_mul(2), n.saturating_mul(3), n, n, 1, 1);
 
+    // Copied faces contribute vertices too; the spatial-hash resolution has to
+    // span them or their positions land in different cells than the rebuilt
+    // faces they must share vertices with.
+    let mut existing_points: Vec<Point3> = Vec::new();
+    for spec in face_specs {
+        let FaceSpec::Existing { face, .. } = spec else {
+            continue;
+        };
+        let f = topo.face(*face)?;
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let e = topo.edge(oe.edge())?;
+                existing_points.push(topo.vertex(e.start())?.point());
+                existing_points.push(topo.vertex(e.end())?.point());
+            }
+        }
+    }
+
     let resolution = vertex_merge_resolution(
-        face_specs.iter().flat_map(|s| match s {
-            FaceSpec::Planar { vertices, .. }
-            | FaceSpec::Surface { vertices, .. }
-            | FaceSpec::CylindricalFace { vertices, .. }
-            | FaceSpec::SphereCapFace { vertices, .. } => vertices.iter().copied(),
-        }),
+        face_specs
+            .iter()
+            .flat_map(FaceSpec::vertices)
+            .copied()
+            .chain(existing_points.iter().copied()),
         tol,
     );
 
@@ -172,8 +354,27 @@ pub(crate) fn assemble_solid_mixed(
         HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
     let mut edge_map: HashMap<(usize, usize), brepkit_topology::edge::EdgeId> =
         HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
+    let mut edge_copies: HashMap<EdgeId, EdgeId> = HashMap::default();
 
     let mut face_ids = Vec::with_capacity(face_specs.len());
+
+    // Copied faces go first: they carry the exact curves (hole rims, bore
+    // seams) that the positional specs must share rather than re-mint as
+    // chords.
+    for spec in face_specs {
+        let FaceSpec::Existing { face, outer } = spec else {
+            continue;
+        };
+        let mut maps = CopyMaps {
+            vertex_map: &mut vertex_map,
+            edge_map: &mut edge_map,
+            edge_copies: &mut edge_copies,
+            resolution,
+            tol,
+        };
+        let new_face = clone_existing_face(topo, *face, outer.as_deref(), &mut maps)?;
+        face_ids.push(new_face);
+    }
 
     // Process CylindricalFace and SphereCapFace specs first so circle edges
     // populate edge_map before planar/surface faces look them up. This ensures
@@ -184,10 +385,11 @@ pub(crate) fn assemble_solid_mixed(
             FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. }
         )
     };
-    let cylindrical_first = face_specs
-        .iter()
-        .filter(arc_minting)
-        .chain(face_specs.iter().filter(|s| !arc_minting(s)));
+    let cylindrical_first = face_specs.iter().filter(arc_minting).chain(
+        face_specs
+            .iter()
+            .filter(|s| !arc_minting(s) && !matches!(s, FaceSpec::Existing { .. })),
+    );
 
     for spec in cylindrical_first {
         match spec {
@@ -414,8 +616,11 @@ pub(crate) fn assemble_solid_mixed(
                         reversed,
                         ..
                     } => (vertices.clone(), surface.clone(), *reversed),
-                    FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. } => {
-                        unreachable!()
+                    FaceSpec::CylindricalFace { .. }
+                    | FaceSpec::SphereCapFace { .. }
+                    | FaceSpec::Existing { .. } => {
+                        // Filtered out of `cylindrical_first` above.
+                        continue;
                     }
                 };
 
