@@ -19,7 +19,7 @@ use brepkit_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
     TOL, classify_to_string, create_apex_face, fillet_failure_js_error, panic_message,
-    parse_points, try_fillet,
+    parse_points, try_fillet_with_origins,
 };
 use crate::kernel::BrepKernel;
 
@@ -287,10 +287,18 @@ impl BrepKernel {
     /// Apply a constant-radius fillet and return face-evolution tracking data.
     ///
     /// Returns a JSON string `{"solid": <u32>, "evolution": {modified,
-    /// generated, deleted}}` — the same shape as `fuseWithEvolution`. Blend
-    /// faces appear under `generated` and surviving faces under `modified`.
-    /// Provenance is matched geometrically (face normal + centroid), so it is
-    /// unaffected by how the fillet renumbers faces.
+    /// generated, deleted, unresolved, origin}}` — the same shape as
+    /// `fuseWithEvolution`. Blend faces appear under `generated` and surviving
+    /// faces under `modified`.
+    ///
+    /// `origin` says how far the answer can be trusted. `"construction"` means
+    /// the blend engine recorded the correspondence while assembling the
+    /// result; `"geometry"` means it was matched from face normals and
+    /// centroids, because the engine that ran rebuilds faces instead of
+    /// trimming them and keeps no record. Either way, `unresolved` lists result
+    /// faces with no established origin (with the input faces that tied, when
+    /// there were any) — a caller holding a persistent face reference must fail
+    /// closed on those rather than pick from the candidates.
     ///
     /// # Errors
     ///
@@ -315,16 +323,20 @@ impl BrepKernel {
         // abort the whole WASM instance.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
             || -> Result<String, JsError> {
+                // Snapshot the input faces BEFORE the blend: a successful blend
+                // trims them in place, so collecting afterwards would compare
+                // the result against itself.
                 let input_faces =
                     brepkit_operations::boolean::collect_face_signatures(&self.topo, solid_id)?;
-                let result = try_fillet(self.topo_mut(), solid_id, &edge_ids, radius)
-                    .map_err(|e| fillet_failure_js_error(&e))?;
-                let output_faces =
-                    brepkit_operations::boolean::collect_face_signatures(&self.topo, result)?;
-                let evo = brepkit_operations::evolution::build_evolution_by_geometry(
+                let (result, origins) =
+                    try_fillet_with_origins(self.topo_mut(), solid_id, &edge_ids, radius)
+                        .map_err(|e| fillet_failure_js_error(&e))?;
+                let evo = brepkit_operations::blend_ops::evolution_from_blend_origins(
+                    &self.topo,
+                    result,
+                    origins.as_ref(),
                     &input_faces,
-                    &output_faces,
-                );
+                )?;
                 Ok(format!(
                     "{{\"solid\":{},\"evolution\":{}}}",
                     solid_id_to_u32(result),

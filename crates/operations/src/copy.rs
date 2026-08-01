@@ -36,6 +36,7 @@ struct WireSnap {
 }
 
 struct FaceSnap {
+    old_index: usize,
     outer_wire_index: usize,
     inner_wire_indices: Vec<usize>,
     surface: FaceSurface,
@@ -54,11 +55,30 @@ struct ShellSnap {
 /// # Errors
 ///
 /// Returns an error if any topology lookup fails.
-#[allow(clippy::too_many_lines)]
 pub fn copy_solid(
     topo: &mut Topology,
     solid_id: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
+    copy_solid_with_face_map(topo, solid_id).map(|(id, _)| id)
+}
+
+/// [`copy_solid`], additionally reporting which copied face came from which
+/// original face.
+///
+/// The mapping is `original face index -> copied face index`. It is exact by
+/// construction — the copy walks the original's shells in order and mints one
+/// face per face — so an operation built on top of a copy (a pattern instance,
+/// say) can hand a consumer real provenance instead of matching geometry that
+/// is, by definition, identical for every instance.
+///
+/// # Errors
+///
+/// Returns an error if any topology lookup fails.
+#[allow(clippy::too_many_lines)]
+pub fn copy_solid_with_face_map(
+    topo: &mut Topology,
+    solid_id: SolidId,
+) -> Result<(SolidId, HashMap<usize, usize>), crate::OperationsError> {
     let solid = topo.solid(solid_id)?;
     let outer_shell_id = solid.outer_shell();
     let inner_shell_ids: Vec<_> = solid.inner_shells().to_vec();
@@ -140,6 +160,7 @@ pub fn copy_solid(
             }
 
             face_snaps.push(FaceSnap {
+                old_index: face_id.index(),
                 outer_wire_index,
                 inner_wire_indices,
                 surface,
@@ -194,6 +215,7 @@ pub fn copy_solid(
     }
 
     let mut new_shell_ids = Vec::new();
+    let mut face_map: HashMap<usize, usize> = HashMap::new();
     for ssnap in &shell_snaps {
         let mut new_face_ids = Vec::new();
         for fsnap in &ssnap.faces {
@@ -209,6 +231,7 @@ pub fn copy_solid(
                 Face::new(new_outer, new_inner, fsnap.surface.clone())
             };
             let new_fid = topo.add_face(new_face);
+            face_map.insert(fsnap.old_index, new_fid.index());
             new_face_ids.push(new_fid);
         }
         let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
@@ -218,7 +241,7 @@ pub fn copy_solid(
     let new_outer = new_shell_ids[0];
     let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
 
-    Ok(topo.add_solid(Solid::new(new_outer, new_inner)))
+    Ok((topo.add_solid(Solid::new(new_outer, new_inner)), face_map))
 }
 
 /// Create a deep copy of a solid with a simultaneous affine transform.
@@ -352,6 +375,7 @@ pub fn copy_and_transform_solid(
             }
 
             face_snaps.push(FaceSnap {
+                old_index: face_id.index(),
                 outer_wire_index,
                 inner_wire_indices,
                 surface,

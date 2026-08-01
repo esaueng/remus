@@ -1,15 +1,16 @@
 //! Thin wrappers around `brepkit-blend` for the operations API.
 
-pub use brepkit_blend::BlendError;
 use brepkit_blend::BlendResult;
 use brepkit_blend::chamfer_builder::ChamferBuilder;
 use brepkit_blend::fillet_builder::FilletBuilder;
+pub use brepkit_blend::{BlendError, BlendFaceOrigins};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{EdgeCurve, EdgeId};
 use brepkit_topology::face::FaceSurface;
 use brepkit_topology::solid::SolidId;
 
 use crate::OperationsError;
+use crate::evolution::EvolutionMap;
 
 /// Run a blend attempt transactionally: on any failure, roll the arena back
 /// to its pre-attempt state.
@@ -387,6 +388,9 @@ fn planar_chamfer_result(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        // The planar rebuild re-mints the faces it touches instead of trimming
+        // them, so it holds no input-face-to-output-face record to report.
+        face_origins: None,
     };
     validate_complete_blend(topo, "chamfer", solid, &result)?;
     // The fast path gets the same volume guard as the walking path. Closedness
@@ -409,6 +413,9 @@ fn planar_fillet_result(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        // The rolling-ball rebuild re-mints the loops of every cap it rebuilds,
+        // so there is no face-to-face record to carry out of it.
+        face_origins: None,
     };
     validate_complete_blend(topo, "fillet", solid, &result)?;
     // The fast path gets the same volume guard as the walking path — and needs
@@ -666,6 +673,12 @@ fn fillet_by_feature(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        // Each feature was blended on whichever engine fitted it, and a face
+        // created by one step can be trimmed by the next. Composing the steps'
+        // records is not the same as concatenating them, so this path reports
+        // none rather than a record that is right only when every step happened
+        // to take the walking builder.
+        face_origins: None,
     };
     // Per-feature validation compared each step with the step before it; this
     // compares the finished body with what the caller actually handed in, so
@@ -819,6 +832,161 @@ pub fn chamfer_distance_angle(
         validate_blend_volume(t, "chamfer", solid, result.solid, edges, distance.max(d2))?;
         Ok(result)
     })
+}
+
+// ── Face provenance ────────────────────────────────────────────
+
+/// [`evolution_from_blend_origins`] for a [`BlendResult`] this crate produced.
+fn evolution_for_blend(
+    topo: &Topology,
+    result: &BlendResult,
+    input_signatures: &[crate::evolution::FaceSignature],
+) -> Result<EvolutionMap, OperationsError> {
+    evolution_from_blend_origins(
+        topo,
+        result.solid,
+        result.face_origins.as_ref(),
+        input_signatures,
+    )
+}
+
+/// Turn a blend engine's own construction record into an [`EvolutionMap`],
+/// falling back to geometric matching when the engine that ran kept none.
+///
+/// `input_signatures` must have been snapshotted **before** the blend: a
+/// successful blend trims the input solid's faces in place, so collecting them
+/// afterwards would compare the result against itself.
+///
+/// The construction record is checked against the result shell rather than
+/// trusted. A result face the record does not name is reported as unresolved,
+/// so a record that has drifted from the assembler produces a refusal rather
+/// than a confident half-answer.
+///
+/// Exposed for callers that drive the blend engines themselves — the WASM
+/// bindings run their own engine cascade — and so still need to turn whatever
+/// record came back into a map.
+///
+/// # Errors
+///
+/// Returns an error if the result solid's faces cannot be read.
+pub fn evolution_from_blend_origins(
+    topo: &Topology,
+    result_solid: SolidId,
+    origins: Option<&BlendFaceOrigins>,
+    input_signatures: &[crate::evolution::FaceSignature],
+) -> Result<EvolutionMap, OperationsError> {
+    use brepkit_topology::explorer::solid_faces;
+
+    let Some(origins) = origins else {
+        let output_signatures = crate::boolean::collect_face_signatures(topo, result_solid)?;
+        return Ok(crate::evolution::build_evolution_by_geometry(
+            input_signatures,
+            &output_signatures,
+        ));
+    };
+
+    let result_faces: std::collections::HashSet<usize> = solid_faces(topo, result_solid)?
+        .into_iter()
+        .map(brepkit_topology::arena::Id::index)
+        .collect();
+
+    let mut evo = EvolutionMap::exact();
+    let mut named: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for &(src, dst) in &origins.survived {
+        if result_faces.contains(&dst.index()) {
+            evo.add_modified(src.index(), dst.index());
+            named.insert(dst.index());
+        } else {
+            // The assembler dropped this face from the shell after recording
+            // it. Saying "deleted" would be a claim; the record disagrees with
+            // the result, so say nothing about the input and let the consumer
+            // fail closed.
+            log::debug!(
+                "blend provenance: recorded survivor {} is not in the result shell",
+                dst.index()
+            );
+        }
+    }
+    for (face, sources) in &origins.created {
+        if !result_faces.contains(&face.index()) {
+            continue;
+        }
+        named.insert(face.index());
+        if sources.is_empty() {
+            evo.add_unresolved(face.index(), Vec::new());
+            continue;
+        }
+        for src in sources {
+            evo.add_generated(src.index(), face.index());
+        }
+    }
+    for face in &origins.created_unattributed {
+        if result_faces.contains(&face.index()) {
+            named.insert(face.index());
+            evo.add_unresolved(face.index(), Vec::new());
+        }
+    }
+
+    for &fid in &result_faces {
+        if !named.contains(&fid) {
+            evo.add_unresolved(fid, Vec::new());
+        }
+    }
+
+    Ok(evo)
+}
+
+/// Fillet edges and report how each input face evolved.
+///
+/// The walking builder trims the faces it touches rather than re-minting them,
+/// so it knows exactly which output face carries each input face and which two
+/// base faces every blend band was built between. When that builder ran, the
+/// returned map is [`EvolutionOrigin::Construction`] — fact, not inference.
+///
+/// The planar rolling-ball fast path and the per-feature fallback rebuild faces
+/// instead, keeping no such record; those return an
+/// [`EvolutionOrigin::Geometry`] map from matching face normals and centroids,
+/// with anything the matcher cannot separate left in
+/// [`EvolutionMap::unresolved`]. Check
+/// [`EvolutionMap::origin`](crate::evolution::EvolutionMap::origin) before
+/// binding a persistent reference.
+///
+/// [`EvolutionOrigin::Construction`]: crate::evolution::EvolutionOrigin::Construction
+/// [`EvolutionOrigin::Geometry`]: crate::evolution::EvolutionOrigin::Geometry
+/// [`EvolutionMap::unresolved`]: crate::evolution::EvolutionMap::unresolved
+///
+/// # Errors
+/// Returns whatever [`fillet_v2`] returns.
+pub fn fillet_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<(BlendResult, EvolutionMap), OperationsError> {
+    let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
+    let result = fillet_v2(topo, solid, edges, radius)?;
+    let evo = evolution_for_blend(topo, &result, &input_signatures)?;
+    Ok((result, evo))
+}
+
+/// Chamfer edges with two distances and report how each input face evolved.
+///
+/// Same provenance contract as [`fillet_with_evolution`].
+///
+/// # Errors
+/// Returns whatever [`chamfer_v2`] returns.
+pub fn chamfer_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<(BlendResult, EvolutionMap), OperationsError> {
+    let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
+    let result = chamfer_v2(topo, solid, edges, d1, d2)?;
+    let evo = evolution_for_blend(topo, &result, &input_signatures)?;
+    Ok((result, evo))
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
 use crate::trimmer::{self, TrimSide};
 use crate::walker::{Walker, WalkerConfig, approximate_blend_surface};
-use crate::{BlendError, BlendResult};
+use crate::{BlendError, BlendFaceOrigins, BlendResult};
 
 /// Builder for fillet (rounding) operations on solid edges.
 ///
@@ -238,6 +238,13 @@ impl<'a> FilletBuilder<'a> {
                 succeeded: Vec::new(),
                 failed,
                 is_partial,
+                // Nothing was blended, so the input solid is the result and
+                // every face is itself.
+                face_origins: Some(BlendFaceOrigins {
+                    survived: original_faces.iter().map(|&f| (f, f)).collect(),
+                    created: Vec::new(),
+                    created_unattributed: Vec::new(),
+                }),
             });
         }
 
@@ -249,13 +256,19 @@ impl<'a> FilletBuilder<'a> {
         // contact circle crosses no boundary edge). Regular stripes still flow
         // through the trim + corner + blend-face path below.
         let mut blend_face_ids: Vec<FaceId> = Vec::new();
+        // Every blend face beside the two base faces it was built between —
+        // exact provenance, taken from the stripe that produced it.
+        let mut blend_face_origins: Vec<(FaceId, Vec<FaceId>)> = Vec::new();
         let mut face_replacements: std::collections::HashMap<FaceId, FaceId> =
             std::collections::HashMap::new();
         let mut regular_results: Vec<&StripeResult> = Vec::new();
         for sr in &stripe_results {
             if let Some(rim) = closed_rim_info(topo, &sr.stripe)? {
                 match assemble_closed_rim(topo, &sr.stripe, &rim, &mut face_replacements) {
-                    Ok(band) => blend_face_ids.push(band),
+                    Ok(band) => {
+                        blend_face_ids.push(band);
+                        blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
+                    }
                     // A radius the geometry cannot accommodate is a verdict,
                     // not a reason to try another assembler: no engine below
                     // can fit a blend that does not fit. Report it and let the
@@ -371,6 +384,8 @@ impl<'a> FilletBuilder<'a> {
             // Falls back to the legacy detached quad when not applicable.
             match stitch_planar_blend(topo, stripe, tr1, tr2, &face_replacements) {
                 Ok(Some(mut faces)) => {
+                    blend_face_origins
+                        .extend(faces.iter().map(|&f| (f, vec![stripe.face1, stripe.face2])));
                     blend_face_ids.append(&mut faces);
                     continue;
                 }
@@ -381,6 +396,7 @@ impl<'a> FilletBuilder<'a> {
             }
             let blend_face_id = create_blend_face(topo, stripe)?;
             blend_face_ids.push(blend_face_id);
+            blend_face_origins.push((blend_face_id, vec![stripe.face1, stripe.face2]));
         }
 
         let mut result_faces: Vec<FaceId> = Vec::new();
@@ -399,6 +415,22 @@ impl<'a> FilletBuilder<'a> {
         result_faces.extend(&blend_face_ids);
         result_faces.extend(&corner_face_ids);
 
+        // Provenance, straight from the bookkeeping above: an untouched face is
+        // itself, a trimmed one is its replacement, and each blend band names
+        // the two base faces its stripe ran between. Corner patches are the one
+        // thing this builder cannot name a source for — `CornerResult` records
+        // no stripe — so they are reported as created-with-no-origin rather
+        // than attributed to whichever face happens to be nearest.
+        let mut survived: Vec<(FaceId, FaceId)> = Vec::with_capacity(original_faces.len());
+        for &fid in &original_faces {
+            survived.push((fid, face_replacements.get(&fid).copied().unwrap_or(fid)));
+        }
+        let face_origins = BlendFaceOrigins {
+            survived,
+            created: blend_face_origins,
+            created_unattributed: corner_face_ids.clone(),
+        };
+
         let new_shell = Shell::new(result_faces)?;
         let new_shell_id = topo.add_shell(new_shell);
         let new_solid = Solid::new(new_shell_id, inner_shells);
@@ -410,6 +442,7 @@ impl<'a> FilletBuilder<'a> {
             succeeded,
             failed,
             is_partial,
+            face_origins: Some(face_origins),
         })
     }
 }

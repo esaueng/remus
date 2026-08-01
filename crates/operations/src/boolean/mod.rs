@@ -982,7 +982,13 @@ fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<S
 /// fully-contained operand pairs (`detect_trivial_relation`) — it falls back to
 /// [`boolean`] with the geometry heuristic (normal + centroid). Either way,
 /// unmatched input faces are classified as "deleted"; synthesised result faces
-/// with no input origin are left unattributed.
+/// with no input origin are reported in
+/// [`EvolutionMap::unresolved`](crate::evolution::EvolutionMap::unresolved).
+///
+/// Check [`EvolutionMap::origin`](crate::evolution::EvolutionMap::origin) to
+/// tell the two routes apart: the faithful path reports
+/// [`EvolutionOrigin::Construction`](crate::evolution::EvolutionOrigin::Construction),
+/// the fallback [`EvolutionOrigin::Geometry`](crate::evolution::EvolutionOrigin::Geometry).
 ///
 /// # Errors
 ///
@@ -1047,12 +1053,17 @@ pub fn boolean_with_evolution(
             // fall through to boolean()'s full pipeline (fast paths + mesh
             // fallback + validation), matching boolean()'s contract.
             if healed_ok && validate_boolean_result(topo, result).is_ok() {
-                let mut evo = crate::evolution::EvolutionMap::new();
+                let mut evo = crate::evolution::EvolutionMap::exact();
                 let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {
                     if let Some(in_idx) = src {
                         evo.add_modified(in_idx, out_idx);
                         sourced.insert(in_idx);
+                    } else {
+                        // The GFA synthesised this face rather than deriving it
+                        // from any one input. Say so, instead of omitting it and
+                        // leaving a consumer to read the silence as "absent".
+                        evo.add_unresolved(out_idx, Vec::new());
                     }
                 }
                 for in_idx in input_indices {

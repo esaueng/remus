@@ -177,6 +177,32 @@ pub fn try_fillet(
     edge_ids: &[brepkit_topology::edge::EdgeId],
     radius: f64,
 ) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
+    try_fillet_with_origins(topo, solid_id, edge_ids, radius).map(|(solid, _)| solid)
+}
+
+/// [`try_fillet`], also returning whatever face provenance the engine that
+/// succeeded recorded.
+///
+/// Only the walking builder keeps a record; the rolling-ball rebuilds re-mint
+/// the faces they touch and return `None`, which the caller must report as an
+/// inference rather than passing off as fact.
+///
+/// # Errors
+///
+/// Same as [`try_fillet`].
+#[allow(deprecated)]
+pub fn try_fillet_with_origins(
+    topo: &mut brepkit_topology::Topology,
+    solid_id: brepkit_topology::solid::SolidId,
+    edge_ids: &[brepkit_topology::edge::EdgeId],
+    radius: f64,
+) -> Result<
+    (
+        brepkit_topology::solid::SolidId,
+        Option<brepkit_operations::blend_ops::BlendFaceOrigins>,
+    ),
+    brepkit_operations::OperationsError,
+> {
     // Drop tangent / degenerate edges (e.g. a fillet face's G1 contact line
     // with its planar neighbour). If none qualify there is nothing to blend,
     // which is a selection problem the caller must hear about — not a
@@ -224,7 +250,7 @@ pub fn try_fillet(
     // remembered verbatim — if the fallback engines cannot rescue the call,
     // that typed diagnosis is what the caller receives.
     let v2_failure = match brepkit_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius) {
-        Ok(r) if is_valid(topo, r.solid) => return Ok(r.solid),
+        Ok(r) if is_valid(topo, r.solid) => return Ok((r.solid, r.face_origins)),
         Ok(_) => brepkit_operations::OperationsError::InvalidInput {
             reason: "fillet produced an open shell".into(),
         },
@@ -235,14 +261,14 @@ pub fn try_fillet(
     if let Ok(s) = brepkit_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
         && is_valid(topo, s)
     {
-        return Ok(s);
+        return Ok((s, None));
     }
     topo.restore_preserving_handle_slots(&snapshot);
 
     if let Ok(s) = brepkit_operations::fillet::fillet(topo, solid_id, edges, radius)
         && is_valid(topo, s)
     {
-        return Ok(s);
+        return Ok((s, None));
     }
     topo.restore_preserving_handle_slots(&snapshot);
 

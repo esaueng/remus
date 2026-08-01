@@ -126,6 +126,27 @@ pub enum BlendError {
     Math(#[from] brepkit_math::MathError),
 }
 
+/// Exact face provenance, recorded by the builder while it assembled the
+/// result rather than inferred from the result's geometry afterwards.
+///
+/// The builders already hold everything needed: which faces the blend touched,
+/// which trimmed face replaced each of them, and which two base faces every
+/// blend face was built between. Reporting it costs nothing and removes the
+/// guesswork from a persistent face reference.
+#[derive(Debug, Clone, Default)]
+pub struct BlendFaceOrigins {
+    /// Input face -> the output face that carries it. An untouched face maps to
+    /// itself; a trimmed one maps to its replacement.
+    pub survived: Vec<(FaceId, FaceId)>,
+    /// A face that did not exist in the input -> the input faces it was built
+    /// between (the two base faces of the stripe, for a blend band).
+    pub created: Vec<(FaceId, Vec<FaceId>)>,
+    /// Output faces the builder created without being able to name a base face
+    /// for them. Reported so a consumer sees the face exists and has no origin,
+    /// rather than not seeing it at all.
+    pub created_unattributed: Vec<FaceId>,
+}
+
 /// Result of a blend operation.
 pub struct BlendResult {
     /// The resulting solid.
@@ -136,4 +157,8 @@ pub struct BlendResult {
     pub failed: Vec<(EdgeId, BlendError)>,
     /// Whether this is a partial result (some edges failed).
     pub is_partial: bool,
+    /// Construction-derived face provenance, when the engine that ran could
+    /// report it. `None` means the caller must fall back to matching geometry —
+    /// and must say so to its own consumer.
+    pub face_origins: Option<BlendFaceOrigins>,
 }

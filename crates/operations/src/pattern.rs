@@ -9,8 +9,40 @@ use brepkit_topology::Topology;
 use brepkit_topology::compound::{Compound, CompoundId};
 use brepkit_topology::solid::SolidId;
 
-use crate::copy::copy_solid;
+use crate::copy::copy_solid_with_face_map;
+use crate::evolution::EvolutionMap;
 use crate::transform::transform_solid;
+
+/// Provenance bookkeeping shared by every pattern.
+///
+/// A pattern instance is a copy, so its faces map to the source body's faces by
+/// construction — there is nothing to infer, and geometric matching could not
+/// tell the instances apart anyway (they are congruent by definition).
+///
+/// The source solid is itself the first element of every pattern, so its faces
+/// are recorded as modified into themselves; each copy's faces are new geometry
+/// generated from the source face they were copied from.
+struct PatternTracker {
+    evo: EvolutionMap,
+}
+
+impl PatternTracker {
+    fn new(topo: &Topology, solid: SolidId) -> Result<Self, crate::OperationsError> {
+        let mut evo = EvolutionMap::exact();
+        for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
+            evo.add_modified(fid.index(), fid.index());
+        }
+        Ok(Self { evo })
+    }
+
+    fn record_instance(&mut self, face_map: &std::collections::HashMap<usize, usize>) {
+        let mut sources: Vec<usize> = face_map.keys().copied().collect();
+        sources.sort_unstable();
+        for src in sources {
+            self.evo.add_generated(src, face_map[&src]);
+        }
+    }
+}
 
 /// Create a linear pattern of a solid.
 ///
@@ -31,6 +63,25 @@ pub fn linear_pattern(
     spacing: f64,
     count: usize,
 ) -> Result<CompoundId, crate::OperationsError> {
+    linear_pattern_with_evolution(topo, solid, direction, spacing, count).map(|(c, _)| c)
+}
+
+/// [`linear_pattern`], additionally reporting where every instance face came
+/// from.
+///
+/// The map is [`EvolutionOrigin::Construction`](crate::evolution::EvolutionOrigin::Construction):
+/// a copy knows its own correspondence, so nothing here is inferred.
+///
+/// # Errors
+///
+/// Same as [`linear_pattern`].
+pub fn linear_pattern_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    direction: Vec3,
+    spacing: f64,
+    count: usize,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if count < 1 {
@@ -46,11 +97,13 @@ pub fn linear_pattern(
 
     let dir = direction.normalize()?;
 
+    let mut tracker = PatternTracker::new(topo, solid)?;
     let mut solids = Vec::with_capacity(count);
     solids.push(solid);
 
     for i in 1..count {
-        let copy = copy_solid(topo, solid)?;
+        let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
+        tracker.record_instance(&face_map);
         #[allow(clippy::cast_precision_loss)]
         let offset = dir * (spacing * i as f64);
         let matrix = Mat4::translation(offset.x(), offset.y(), offset.z());
@@ -59,7 +112,7 @@ pub fn linear_pattern(
     }
 
     let compound = Compound::new(solids);
-    Ok(topo.add_compound(compound))
+    Ok((topo.add_compound(compound), tracker.evo))
 }
 
 /// Create a circular pattern of a solid.
@@ -79,6 +132,21 @@ pub fn circular_pattern(
     axis_direction: Vec3,
     count: usize,
 ) -> Result<CompoundId, crate::OperationsError> {
+    circular_pattern_with_evolution(topo, solid, axis_direction, count).map(|(c, _)| c)
+}
+
+/// [`circular_pattern`], additionally reporting where every instance face came
+/// from. Exact by construction; see [`linear_pattern_with_evolution`].
+///
+/// # Errors
+///
+/// Same as [`circular_pattern`].
+pub fn circular_pattern_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    axis_direction: Vec3,
+    count: usize,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
     if count < 2 {
         return Err(crate::OperationsError::InvalidInput {
             reason: "circular pattern needs at least 2 copies".into(),
@@ -87,6 +155,7 @@ pub fn circular_pattern(
 
     let axis = axis_direction.normalize()?;
 
+    let mut tracker = PatternTracker::new(topo, solid)?;
     let mut solids = Vec::with_capacity(count);
     solids.push(solid);
 
@@ -94,7 +163,8 @@ pub fn circular_pattern(
     let angle_step = 2.0 * std::f64::consts::PI / (count as f64);
 
     for i in 1..count {
-        let copy = copy_solid(topo, solid)?;
+        let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
+        tracker.record_instance(&face_map);
         #[allow(clippy::cast_precision_loss)]
         let angle = angle_step * (i as f64);
 
@@ -104,7 +174,7 @@ pub fn circular_pattern(
     }
 
     let compound = Compound::new(solids);
-    Ok(topo.add_compound(compound))
+    Ok((topo.add_compound(compound), tracker.evo))
 }
 
 /// Create a 2D grid pattern of a solid.
@@ -130,6 +200,29 @@ pub fn grid_pattern(
     count_x: usize,
     count_y: usize,
 ) -> Result<CompoundId, crate::OperationsError> {
+    grid_pattern_with_evolution(
+        topo, solid, dir_x, dir_y, spacing_x, spacing_y, count_x, count_y,
+    )
+    .map(|(c, _)| c)
+}
+
+/// [`grid_pattern`], additionally reporting where every instance face came
+/// from. Exact by construction; see [`linear_pattern_with_evolution`].
+///
+/// # Errors
+///
+/// Same as [`grid_pattern`].
+#[allow(clippy::too_many_arguments)]
+pub fn grid_pattern_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    dir_x: Vec3,
+    dir_y: Vec3,
+    spacing_x: f64,
+    spacing_y: f64,
+    count_x: usize,
+    count_y: usize,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if count_x < 1 || count_y < 1 {
@@ -157,6 +250,7 @@ pub fn grid_pattern(
         });
     }
 
+    let mut tracker = PatternTracker::new(topo, solid)?;
     let mut solids = Vec::with_capacity(count_x * count_y);
 
     for iy in 0..count_y {
@@ -166,7 +260,8 @@ pub fn grid_pattern(
                 continue;
             }
 
-            let copy = copy_solid(topo, solid)?;
+            let (copy, face_map) = copy_solid_with_face_map(topo, solid)?;
+            tracker.record_instance(&face_map);
 
             #[allow(clippy::cast_precision_loss)]
             let offset = dx * (spacing_x * ix as f64) + dy * (spacing_y * iy as f64);
@@ -178,7 +273,7 @@ pub fn grid_pattern(
     }
 
     let compound = Compound::new(solids);
-    Ok(topo.add_compound(compound))
+    Ok((topo.add_compound(compound), tracker.evo))
 }
 
 /// Build a rotation matrix for a given axis and angle (Rodrigues' formula).

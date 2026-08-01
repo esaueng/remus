@@ -3,10 +3,58 @@
 //! Records how faces evolve through booleans, fillets, and other operations,
 //! enabling downstream consumers to track face provenance (e.g., for applying
 //! persistent attributes like color or constraints).
+//!
+//! # Wrong provenance is worse than none
+//!
+//! A consumer that stores a user's face selection against these indices acts on
+//! whatever this map says. Naming the wrong face silently moves that selection
+//! onto different geometry; naming no face at all lets the consumer drop the
+//! reference and say so. Every classifier here is therefore built to refuse
+//! rather than guess: an output face the matcher cannot separate is reported in
+//! [`EvolutionMap::unresolved`], not bound to the best of several poor
+//! candidates. [`EvolutionMap::origin`] tells the consumer whether it is
+//! looking at construction-derived fact or a geometric inference.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use brepkit_math::vec::{Point3, Vec3};
+
+/// How an [`EvolutionMap`] was derived.
+///
+/// Consumers that bind persistent references should treat the two differently:
+/// a [`Construction`](EvolutionOrigin::Construction) map is what the operation
+/// itself recorded while building the result, and a
+/// [`Geometry`](EvolutionOrigin::Geometry) map is an inference that can be
+/// wrong even when it reports no ambiguity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvolutionOrigin {
+    /// The operation reported each output face's true input source while
+    /// building the result. Exact.
+    Construction,
+    /// Output faces were matched to input faces from geometry alone (normal +
+    /// centroid). Correct on the shapes it is tested against, but an inference.
+    #[default]
+    Geometry,
+}
+
+impl EvolutionOrigin {
+    /// Whether entries in this map are construction-derived fact rather than
+    /// geometric inference.
+    #[must_use]
+    pub fn is_exact(self) -> bool {
+        matches!(self, Self::Construction)
+    }
+
+    /// Stable lowercase name, used in the JSON encoding and by consumers that
+    /// branch on provenance quality.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Construction => "construction",
+            Self::Geometry => "geometry",
+        }
+    }
+}
 
 /// Tracks how faces evolve through a modeling operation.
 ///
@@ -14,6 +62,14 @@ use brepkit_math::vec::{Point3, Vec3};
 /// - **modified**: input face -> output faces that replace it
 /// - **generated**: input face -> new faces created adjacent to it
 /// - **deleted**: input faces that were completely removed
+/// - **unresolved**: output faces whose origin could not be established
+///
+/// The four buckets are claims of different strength. `modified`, `generated`
+/// and `deleted` are assertions; `unresolved` is an admission. An input face
+/// that appears in none of them — because it only ever turned up as a losing
+/// candidate in an `unresolved` tie — is *unknown*, not surviving and not
+/// deleted, and a consumer must fail closed on it exactly as it would on an
+/// unresolved output.
 #[derive(Debug, Clone, Default)]
 pub struct EvolutionMap {
     /// Input face -> output faces that are modified versions of it.
@@ -22,13 +78,31 @@ pub struct EvolutionMap {
     pub generated: HashMap<usize, Vec<usize>>,
     /// Input faces that were completely removed.
     pub deleted: HashSet<usize>,
+    /// Output faces with no established origin, each with the input faces that
+    /// were plausible sources. An empty candidate list means nothing was
+    /// plausible at all.
+    ///
+    /// Ordered so the map serializes deterministically.
+    pub unresolved: BTreeMap<usize, Vec<usize>>,
+    /// Whether the entries above are construction-derived or inferred.
+    pub origin: EvolutionOrigin,
 }
 
 impl EvolutionMap {
-    /// Create an empty evolution map.
+    /// Create an empty evolution map whose entries are geometric inferences.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an empty evolution map whose entries the caller will fill in from
+    /// its own construction records.
+    #[must_use]
+    pub fn exact() -> Self {
+        Self {
+            origin: EvolutionOrigin::Construction,
+            ..Self::default()
+        }
     }
 
     /// Record that `input` was modified into `output`.
@@ -46,13 +120,43 @@ impl EvolutionMap {
         self.deleted.insert(input);
     }
 
+    /// Record that `output`'s origin could not be established, listing the
+    /// input faces that could not be told apart (empty if there were none).
+    pub fn add_unresolved(&mut self, output: usize, candidates: Vec<usize>) {
+        self.unresolved.insert(output, candidates);
+    }
+
+    /// Whether every output face this map saw was attributed.
+    ///
+    /// A consumer rebinding stored selections should check this before trusting
+    /// the map as a complete account of the operation.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.unresolved.is_empty()
+    }
+
     /// Serialize to JSON without serde.
     ///
-    /// Produces a JSON object with `modified`, `generated`, and `deleted` fields.
+    /// Produces a JSON object with `modified`, `generated`, `deleted`,
+    /// `unresolved` and `origin` fields. `origin` is `"construction"` or
+    /// `"geometry"`; see [`EvolutionOrigin`].
     #[must_use]
     pub fn to_json(&self) -> String {
-        let modified_entries: Vec<String> = self
-            .modified
+        fn index_map(m: &HashMap<usize, Vec<usize>>) -> String {
+            // Sort so the encoding is deterministic across runs.
+            let mut keys: Vec<usize> = m.keys().copied().collect();
+            keys.sort_unstable();
+            keys.iter()
+                .map(|k| {
+                    let vals: Vec<String> = m[k].iter().map(ToString::to_string).collect();
+                    format!("\"{k}\":[{}]", vals.join(","))
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+
+        let unresolved_entries: Vec<String> = self
+            .unresolved
             .iter()
             .map(|(k, vs)| {
                 let vals: Vec<String> = vs.iter().map(ToString::to_string).collect();
@@ -60,24 +164,83 @@ impl EvolutionMap {
             })
             .collect();
 
-        let generated_entries: Vec<String> = self
-            .generated
-            .iter()
-            .map(|(k, vs)| {
-                let vals: Vec<String> = vs.iter().map(ToString::to_string).collect();
-                format!("\"{k}\":[{}]", vals.join(","))
-            })
-            .collect();
-
-        let deleted_vals: Vec<String> = self.deleted.iter().map(ToString::to_string).collect();
+        let mut deleted: Vec<usize> = self.deleted.iter().copied().collect();
+        deleted.sort_unstable();
+        let deleted_vals: Vec<String> = deleted.iter().map(ToString::to_string).collect();
 
         format!(
-            "{{\"modified\":{{{}}},\"generated\":{{{}}},\"deleted\":[{}]}}",
-            modified_entries.join(","),
-            generated_entries.join(","),
-            deleted_vals.join(",")
+            "{{\"modified\":{{{}}},\"generated\":{{{}}},\"deleted\":[{}],\
+             \"unresolved\":{{{}}},\"origin\":\"{}\"}}",
+            index_map(&self.modified),
+            index_map(&self.generated),
+            deleted_vals.join(","),
+            unresolved_entries.join(","),
+            self.origin.as_str()
         )
     }
+}
+
+/// A face's matching signature: `(index, normal, centroid)`.
+pub type FaceSignature = (usize, Vec3, Point3);
+
+/// A modified face is a trimmed piece of the same surface, so its normal barely
+/// moves; the cone is wide only because non-planar face normals are sampled
+/// from a boundary polygon and wander when the face is re-trimmed.
+const NORMAL_MIN_DOT: f64 = 0.707; // cos 45°
+
+/// Centroid budget as a fraction of the body's own diagonal.
+///
+/// 0.5 reproduces the budget the absolute constant it replaced happened to give
+/// on a 10-unit box — the size every existing test models at — so this changes
+/// the answer only where the answer was scale-dependent.
+const CENTROID_BUDGET_FRACTION: f64 = 0.5;
+
+/// Two candidates whose scores differ by less than this are not separable.
+const SCORE_TIE: f64 = 0.05;
+
+/// Normal agreement required before two input faces can be called pieces of one
+/// surface (cos 2.6°).
+const COSURFACE_MIN_DOT: f64 = 0.999;
+
+/// Out-of-plane separation, as a fraction of the body diagonal, still counted as
+/// "the same plane".
+const COSURFACE_PLANE_FRACTION: f64 = 1e-3;
+
+/// The characteristic length of a set of face signatures: the diagonal of the
+/// axis-aligned box containing every centroid.
+///
+/// This is what makes the matcher answer the same question at every modelling
+/// unit. It is derived from the faces themselves rather than taken from a
+/// caller, so a caller that forgets to pass a scale cannot silently get the
+/// wrong one.
+///
+/// Returns 0.0 when every centroid coincides (or there are none), which the
+/// matcher reads as "no room to be approximate" and handles by requiring exact
+/// coincidence — refusing rather than matching everything to everything.
+#[must_use]
+pub fn characteristic_length(faces: &[FaceSignature], more: &[FaceSignature]) -> f64 {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for &(_, _, c) in faces.iter().chain(more.iter()) {
+        for (i, v) in [c.x(), c.y(), c.z()].into_iter().enumerate() {
+            if v < min[i] {
+                min[i] = v;
+            }
+            if v > max[i] {
+                max[i] = v;
+            }
+        }
+    }
+    if !min[0].is_finite() {
+        return 0.0;
+    }
+    let d: f64 = (0..3)
+        .map(|i| {
+            let e = max[i] - min[i];
+            e * e
+        })
+        .sum();
+    d.sqrt()
 }
 
 /// Build an [`EvolutionMap`] by matching output faces to input faces purely
@@ -85,93 +248,185 @@ impl EvolutionMap {
 ///
 /// This is operation-agnostic — any op that can snapshot face signatures before
 /// and after (booleans, fillets, …) reuses it:
-/// - An output face whose normal+centroid is close to an input face is a
-///   **modified** version of it (every near-tied input is recorded, so a
-///   same-domain merge of two inputs into one output keeps both origins).
-/// - An output face matching no input is **generated**, attributed to the
-///   nearest input (e.g. a fillet blend face or a boolean intersection face).
+/// - An output face whose normal+centroid clearly beats every alternative is a
+///   **modified** version of that input.
+/// - An output face matching no input at all is **generated**, attributed to the
+///   nearest input when that input is unambiguously nearest.
 /// - An input face matched by no output is **deleted**.
+/// - An output face whose best candidates cannot be separated is **unresolved**
+///   and is deliberately left unattributed.
+///
+/// Distances are measured against the body's own diagonal
+/// ([`characteristic_length`]), so the same body modelled in metres, millimetres
+/// or inches produces the same map.
+///
+/// The result's [`EvolutionMap::origin`] is always
+/// [`EvolutionOrigin::Geometry`]: this is an inference, and a consumer holding
+/// persistent references should treat it as one.
 #[must_use]
 pub fn build_evolution_by_geometry(
-    input_faces: &[(usize, Vec3, Point3)],
-    output_faces: &[(usize, Vec3, Point3)],
+    input_faces: &[FaceSignature],
+    output_faces: &[FaceSignature],
+) -> EvolutionMap {
+    let scale = characteristic_length(input_faces, output_faces);
+    build_evolution_by_geometry_with_scale(input_faces, output_faces, scale)
+}
+
+/// [`build_evolution_by_geometry`] with the characteristic length supplied.
+///
+/// Callers that know the body's true extent — a solid's bounding-box diagonal,
+/// say — should pass it. It matters when the faces themselves do not span the
+/// body: a single closed face (a sphere, a full torus) has one centroid, and a
+/// length derived from centroids alone would collapse to zero.
+///
+/// A non-finite or negative `characteristic_length` is treated as zero, which
+/// makes the matcher demand exact coincidence rather than match everything.
+#[must_use]
+pub fn build_evolution_by_geometry_with_scale(
+    input_faces: &[FaceSignature],
+    output_faces: &[FaceSignature],
+    characteristic_length: f64,
 ) -> EvolutionMap {
     let mut evo = EvolutionMap::new();
     let mut matched_inputs: HashSet<usize> = HashSet::new();
-    let mut unmatched_outputs: Vec<(usize, Vec3, Point3)> = Vec::new();
+    let mut unmatched_outputs: Vec<FaceSignature> = Vec::new();
 
-    // Normal dot threshold cos(45°) — relaxed because faces split by an
-    // operation may shift slightly. Centroid distance² cap is generous.
-    let normal_threshold = 0.707;
-    let centroid_dist_sq_max = 100.0;
+    let scale = if characteristic_length.is_finite() && characteristic_length > 0.0 {
+        characteristic_length
+    } else {
+        0.0
+    };
+    let max_dist = CENTROID_BUDGET_FRACTION * scale;
+    let max_dist_sq = max_dist * max_dist;
+    let plane_tol = COSURFACE_PLANE_FRACTION * scale;
+
+    // A zero budget cannot divide, and a zero-scale body can only be matched by
+    // exact coincidence. Normalise the score by 1.0 in that case: dist_sq is
+    // then either 0 (score 1) or already rejected by the gate.
+    let score_denom = if max_dist_sq > 0.0 { max_dist_sq } else { 1.0 };
 
     for &(out_idx, out_normal, out_centroid) in output_faces {
+        let mut candidates: Vec<(usize, f64)> = Vec::new();
         let mut best_score = f64::NEG_INFINITY;
-        let mut matches: Vec<(usize, f64)> = Vec::new();
 
         for &(in_idx, in_normal, in_centroid) in input_faces {
             let dot = out_normal.dot(in_normal);
-            if dot < normal_threshold {
+            if dot < NORMAL_MIN_DOT {
                 continue;
             }
-            let dx = out_centroid.x() - in_centroid.x();
-            let dy = out_centroid.y() - in_centroid.y();
-            let dz = out_centroid.z() - in_centroid.z();
-            let dist_sq = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
-            if dist_sq > centroid_dist_sq_max {
+            let dist_sq = dist_sq(out_centroid, in_centroid);
+            if dist_sq > max_dist_sq {
                 continue;
             }
-            let score = dot - dist_sq / centroid_dist_sq_max;
+            let score = dot - dist_sq / score_denom;
             if score > best_score {
                 best_score = score;
             }
-            matches.push((in_idx, score));
+            candidates.push((in_idx, score));
         }
 
-        if matches.is_empty() {
+        if candidates.is_empty() {
             unmatched_outputs.push((out_idx, out_normal, out_centroid));
             continue;
         }
 
-        // Accept any near-tied match: two inputs legitimately contributing to
-        // one output (e.g. the two halves of a same-domain-merged face).
-        let score_tol = 0.05;
-        for &(in_idx, score) in &matches {
-            if score >= best_score - score_tol {
-                evo.add_modified(in_idx, out_idx);
-                matched_inputs.insert(in_idx);
-            }
-        }
-    }
+        let tied: Vec<usize> = candidates
+            .iter()
+            .filter(|&&(_, score)| score >= best_score - SCORE_TIE)
+            .map(|&(in_idx, _)| in_idx)
+            .collect();
 
-    // Unmatched outputs are generated — attribute each to the nearest input.
-    for &(out_idx, _out_normal, out_centroid) in &unmatched_outputs {
-        let mut best_dist_sq = f64::MAX;
-        let mut best_input: Option<usize> = None;
-        for &(in_idx, _, in_centroid) in input_faces {
-            let dx = out_centroid.x() - in_centroid.x();
-            let dy = out_centroid.y() - in_centroid.y();
-            let dz = out_centroid.z() - in_centroid.z();
-            let dist_sq = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
-            if dist_sq < best_dist_sq {
-                best_dist_sq = dist_sq;
-                best_input = Some(in_idx);
-            }
+        // More than one tied candidate is only an answer when those candidates
+        // are pieces of one surface — the two halves of a same-domain merge,
+        // which genuinely both flow into this output. Candidates on different
+        // surfaces that merely score alike are not a merge, they are a coin
+        // toss, and this map does not toss coins.
+        if tied.len() > 1 && !all_cosurface(input_faces, &tied, plane_tol) {
+            evo.add_unresolved(out_idx, tied);
+            continue;
         }
-        if let Some(in_idx) = best_input {
-            evo.add_generated(in_idx, out_idx);
+
+        for in_idx in tied {
+            evo.add_modified(in_idx, out_idx);
             matched_inputs.insert(in_idx);
         }
     }
 
-    // Any input matched by nothing was deleted.
+    // An output resembling no input is new geometry. Attribute it to the
+    // nearest input only when that input is unambiguously nearest and within
+    // the same centroid budget; otherwise the "nearest" is a guess about a face
+    // that may have nothing to do with it.
+    for &(out_idx, _out_normal, out_centroid) in &unmatched_outputs {
+        let mut by_dist: Vec<(usize, f64)> = input_faces
+            .iter()
+            .map(|&(in_idx, _, in_centroid)| (in_idx, dist_sq(out_centroid, in_centroid)))
+            .filter(|&(_, d)| d <= max_dist_sq)
+            .collect();
+        if by_dist.is_empty() {
+            evo.add_unresolved(out_idx, Vec::new());
+            continue;
+        }
+        by_dist.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let (nearest, nearest_d) = by_dist[0];
+        let tie_band = SCORE_TIE * score_denom;
+        let contenders: Vec<usize> = by_dist
+            .iter()
+            .filter(|&&(_, d)| d <= nearest_d + tie_band)
+            .map(|&(i, _)| i)
+            .collect();
+        if contenders.len() > 1 && !all_cosurface(input_faces, &contenders, plane_tol) {
+            evo.add_unresolved(out_idx, contenders);
+            continue;
+        }
+        evo.add_generated(nearest, out_idx);
+        matched_inputs.insert(nearest);
+    }
+
+    // An input no output claimed, and that never turned up as a candidate the
+    // matcher could not decide, is gone. One that only ever lost a tie is
+    // neither claimed nor deleted — it is unknown, and stays out of every
+    // bucket so a consumer cannot read it as either.
+    let contested: HashSet<usize> = evo.unresolved.values().flatten().copied().collect();
     for &(in_idx, _, _) in input_faces {
-        if !matched_inputs.contains(&in_idx) {
+        if !matched_inputs.contains(&in_idx) && !contested.contains(&in_idx) {
             evo.add_deleted(in_idx);
         }
     }
 
     evo
+}
+
+fn dist_sq(a: Point3, b: Point3) -> f64 {
+    let dx = a.x() - b.x();
+    let dy = a.y() - b.y();
+    let dz = a.z() - b.z();
+    dx.mul_add(dx, dy.mul_add(dy, dz * dz))
+}
+
+/// Whether every listed input face lies on one surface: parallel normals, and
+/// no out-of-plane separation beyond `plane_tol`.
+///
+/// This is what separates a genuine same-domain merge (two coplanar halves of
+/// one wall flowing into one output face) from two unrelated faces that happen
+/// to score alike.
+fn all_cosurface(input_faces: &[FaceSignature], indices: &[usize], plane_tol: f64) -> bool {
+    let mut picked: Vec<(Vec3, Point3)> = Vec::with_capacity(indices.len());
+    for &want in indices {
+        match input_faces.iter().find(|&&(i, _, _)| i == want) {
+            Some(&(_, n, c)) => picked.push((n, c)),
+            None => return false,
+        }
+    }
+    let Some(&(n0, c0)) = picked.first() else {
+        return false;
+    };
+    picked.iter().skip(1).all(|&(n, c)| {
+        if n.dot(n0) < COSURFACE_MIN_DOT {
+            return false;
+        }
+        let offset = (c - c0).dot(n0).abs();
+        offset <= plane_tol
+    })
 }
 
 #[cfg(test)]
@@ -201,6 +456,88 @@ mod tests {
         assert_eq!(evo.modified.get(&0), Some(&vec![100]));
         assert_eq!(evo.generated.get(&0), Some(&vec![200]));
         assert!(evo.deleted.contains(&1), "input 1 had no output → deleted");
+        assert!(evo.is_complete(), "nothing should be unresolved here");
+        assert_eq!(evo.origin, EvolutionOrigin::Geometry);
+    }
+
+    #[test]
+    fn two_coplanar_halves_merging_into_one_output_keep_both_origins() {
+        let pz = Vec3::new(0.0, 0.0, 1.0);
+        let inputs = [
+            (0usize, pz, Point3::new(-2.0, 0.0, 0.0)),
+            (1usize, pz, Point3::new(2.0, 0.0, 0.0)),
+            // Something far away to give the set a scale.
+            (2usize, -pz, Point3::new(0.0, 0.0, -10.0)),
+        ];
+        let outputs = [(100usize, pz, Point3::new(0.0, 0.0, 0.0))];
+        let evo = build_evolution_by_geometry(&inputs, &outputs);
+        assert_eq!(evo.modified.get(&0), Some(&vec![100]));
+        assert_eq!(evo.modified.get(&1), Some(&vec![100]));
+        assert!(evo.is_complete());
+    }
+
+    #[test]
+    fn two_parallel_faces_on_different_planes_are_refused_not_guessed() {
+        let pz = Vec3::new(0.0, 0.0, 1.0);
+        // Equidistant from the output and NOT coplanar: no honest answer.
+        let inputs = [
+            (0usize, pz, Point3::new(0.0, 0.0, -2.0)),
+            (1usize, pz, Point3::new(0.0, 0.0, 2.0)),
+        ];
+        let outputs = [(100usize, pz, Point3::new(0.0, 0.0, 0.0))];
+        let evo = build_evolution_by_geometry(&inputs, &outputs);
+        assert!(
+            evo.modified.is_empty(),
+            "a coin toss must not be recorded as a match: {:?}",
+            evo.modified
+        );
+        assert_eq!(evo.unresolved.get(&100), Some(&vec![0, 1]));
+        assert!(!evo.is_complete());
+        // Neither contested input may be called deleted: they are unknown.
+        assert!(evo.deleted.is_empty(), "{:?}", evo.deleted);
+    }
+
+    #[test]
+    fn an_output_far_from_everything_is_unresolved_not_attributed() {
+        let pz = Vec3::new(0.0, 0.0, 1.0);
+        let inputs = [
+            (0usize, pz, Point3::new(0.0, 0.0, 0.0)),
+            (1usize, -pz, Point3::new(0.0, 0.0, 1.0)),
+        ];
+        // Orthogonal normal and far outside the body: nothing plausible.
+        let outputs = [(
+            100usize,
+            Vec3::new(1.0, 0.0, 0.0),
+            Point3::new(500.0, 0.0, 0.0),
+        )];
+        let evo = build_evolution_by_geometry(&inputs, &outputs);
+        assert_eq!(evo.unresolved.get(&100), Some(&Vec::new()));
+        assert!(evo.generated.is_empty());
+    }
+
+    #[test]
+    fn characteristic_length_is_the_centroid_box_diagonal() {
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let faces = [
+            (0usize, n, Point3::new(0.0, 0.0, 0.0)),
+            (1usize, n, Point3::new(3.0, 4.0, 0.0)),
+        ];
+        assert!((characteristic_length(&faces, &[]) - 5.0).abs() < 1e-12);
+        assert!(characteristic_length(&[], &[]).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn json_round_trip_shape() {
+        let mut evo = EvolutionMap::exact();
+        evo.add_modified(1, 7);
+        evo.add_generated(1, 8);
+        evo.add_deleted(2);
+        evo.add_unresolved(9, vec![3, 4]);
+        assert_eq!(
+            evo.to_json(),
+            "{\"modified\":{\"1\":[7]},\"generated\":{\"1\":[8]},\"deleted\":[2],\
+             \"unresolved\":{\"9\":[3,4]},\"origin\":\"construction\"}"
+        );
     }
 
     #[test]
