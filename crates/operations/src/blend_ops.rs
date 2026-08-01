@@ -419,6 +419,262 @@ fn planar_fillet_result(
     Ok(result)
 }
 
+/// Sample an edge into a polyline whose chords are no longer than `step`.
+///
+/// The count is capped so a very long edge beside a very small radius cannot
+/// turn a proximity test into a quadratic blow-up; at the cap the chords are
+/// coarser than `step`, which the caller absorbs with its own slack.
+fn edge_polyline(
+    topo: &Topology,
+    edge: EdgeId,
+    step: f64,
+) -> Result<Vec<brepkit_math::vec::Point3>, OperationsError> {
+    const MAX_SAMPLES: usize = 256;
+    let coarse = sample_edge(topo, edge, 8)?;
+    let rough: f64 = coarse.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+    let wanted = if step > 0.0 && rough.is_finite() {
+        (rough / step).ceil().max(8.0)
+    } else {
+        8.0
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let samples = if wanted >= MAX_SAMPLES as f64 {
+        MAX_SAMPLES
+    } else {
+        wanted as usize
+    };
+    sample_edge(topo, edge, samples)
+}
+
+/// Shortest distance between two sampled polylines.
+fn polyline_distance(a: &[brepkit_math::vec::Point3], b: &[brepkit_math::vec::Point3]) -> f64 {
+    let mut best = f64::INFINITY;
+    for &p in a {
+        for w in b.windows(2) {
+            best = best.min(point_segment_distance(p, w[0], w[1]));
+        }
+    }
+    for &p in b {
+        for w in a.windows(2) {
+            best = best.min(point_segment_distance(p, w[0], w[1]));
+        }
+    }
+    best
+}
+
+/// Union-find root of `i`, path-compressing on the way up.
+fn union_find_root(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
+}
+
+/// Partition a selection into groups of edges whose blends cannot reach each
+/// other.
+///
+/// A constant-size blend only reshapes material within `size` of its own edge,
+/// so two edges further apart than `2·size` — and not joined through the same
+/// tangent-continuous ridgeline — round into surfaces that never meet. They
+/// are separate features that happen to have been named in one call, and
+/// nothing about how one of them is built constrains the other.
+///
+/// This matters because the two fillet engines are complementary rather than
+/// ranked. The planar rebuild is the only one that closes a vertex blend where
+/// two rounded edges meet at a corner; the walking builder is the only one
+/// that assembles a closed rim. The choice between them was made once for the
+/// whole selection, on an all-or-nothing "every edge is a straight line
+/// between two planes" test, so a plate's top perimeter picked together with a
+/// bore rim sent the perimeter to the walking builder as well — and that
+/// builder refuses every corner it is handed. The rim's own seam vertex was
+/// never the problem: the vertex named in the refusal is a plate corner far
+/// from the bore.
+///
+/// Grouping is deliberately conservative: any pair that could possibly interact
+/// stays in one group, so nothing is ever applied in sequence that has to be
+/// solved together. It is also only consulted after one engine has already
+/// refused the selection whole, so a selection that works today never reaches
+/// it at all — four corner edges of a box are `2·size` apart and would split,
+/// but the planar rebuild takes them together and is never asked twice.
+///
+/// Groups keep the caller's edge order, and are themselves ordered by first
+/// appearance, so the partition is deterministic.
+fn independent_blend_groups(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    size: f64,
+) -> Result<Vec<Vec<EdgeId>>, OperationsError> {
+    if edges.len() < 2 {
+        return Ok(vec![edges.to_vec()]);
+    }
+    let tol = brepkit_math::tolerance::Tolerance::new();
+
+    // What each seed actually blends: both engines expand a seed to its whole
+    // G1 ridgeline first, so two distant seeds on one smooth run belong
+    // together even though the seeds themselves are far apart.
+    let mut chains: Vec<Vec<EdgeId>> = Vec::with_capacity(edges.len());
+    let mut outlines: Vec<Vec<brepkit_math::vec::Point3>> = Vec::with_capacity(edges.len());
+    for &edge in edges {
+        let chain = brepkit_blend::g1_chain::expand_g1_chain(topo, solid, &[edge], tol)?;
+        let chain = if chain.is_empty() { vec![edge] } else { chain };
+        let mut outline = Vec::new();
+        for &member in &chain {
+            outline.extend(edge_polyline(topo, member, size * 0.25)?);
+        }
+        chains.push(chain);
+        outlines.push(outline);
+    }
+
+    // Union-find over the seeds.
+    let mut parent: Vec<usize> = (0..edges.len()).collect();
+    // A polyline chord may sit up to half its own length from the true curve,
+    // so widen the reach test by that much rather than risk splitting a pair
+    // that in fact touches.
+    let reach = 2.0f64.mul_add(size, size * 0.25);
+    for i in 0..edges.len() {
+        for j in (i + 1)..edges.len() {
+            let shares_ridgeline = chains[i].iter().any(|e| chains[j].contains(e));
+            let touches =
+                shares_ridgeline || polyline_distance(&outlines[i], &outlines[j]) <= reach;
+            if touches {
+                let (ri, rj) = (
+                    union_find_root(&mut parent, i),
+                    union_find_root(&mut parent, j),
+                );
+                if ri != rj {
+                    parent[ri] = rj;
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<usize> = Vec::new();
+    let mut groups: Vec<Vec<EdgeId>> = Vec::new();
+    for i in 0..edges.len() {
+        let root = union_find_root(&mut parent, i);
+        let slot = if let Some(pos) = order.iter().position(|&r| r == root) {
+            pos
+        } else {
+            order.push(root);
+            groups.push(Vec::new());
+            groups.len() - 1
+        };
+        groups[slot].push(edges[i]);
+    }
+    Ok(groups)
+}
+
+/// Fillet one group of edges, choosing the engine that fits its shape.
+///
+/// The planar rebuild is tried first when every edge is a straight line
+/// between two planes — it is the only engine that closes a vertex blend — and
+/// the walking builder takes everything else, including closed rims. Both
+/// paths validate the group against the solid they were given.
+fn fillet_group(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<BlendResult, OperationsError> {
+    if is_planar_line_blend(topo, solid, edges)? {
+        // The rolling-ball rebuild handles the validated planar classes
+        // (simple prisms), closes multi-edge corner patches, and carries the
+        // inner loops of a holed cap through as topology. On richer topology
+        // (L-shaped side faces, coplanar slivers) it emits an open shell; fall
+        // through to the walking builder, whose stitched planar assembly
+        // handles those shapes. Each attempt is transactional, so the
+        // fall-through starts from a clean arena.
+        match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("planar fillet fast path failed ({e}); falling back to walking builder");
+            }
+        }
+    }
+    let mut builder = FilletBuilder::new(topo, solid);
+    builder.add_edges(edges, radius);
+    let result = builder.build()?;
+    validate_complete_blend(topo, "fillet", solid, &result)?;
+    validate_blend_volume(topo, "fillet", solid, result.solid, edges, radius)?;
+    Ok(result)
+}
+
+/// Which of `edges` no longer name a manifold edge of `solid`.
+fn stale_edges(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+) -> Result<Vec<EdgeId>, OperationsError> {
+    let adjacency = topo.build_adjacency(solid)?;
+    Ok(edges
+        .iter()
+        .copied()
+        .filter(|&e| adjacency.faces_for_edge(e).len() != 2)
+        .collect())
+}
+
+/// Fillet a selection that splits into features which cannot reach each other,
+/// one feature at a time, on whichever engine each one needs.
+///
+/// This runs only after a single engine has refused the selection whole, so it
+/// never displaces a working route; it turns a refusal into an answer or into a
+/// better-aimed refusal.
+///
+/// The order is not arbitrary. The planar rebuild re-mints the loops of every
+/// cap it rebuilds, so a bore rim that has not been blended yet loses its edge
+/// identity when the cap above it is rebuilt; the rim assembler, by contrast,
+/// carries the cap's other loops through verbatim, so straight edges named for
+/// a later feature survive it. Features the planar path cannot take therefore
+/// go first.
+///
+/// The identity assumption is checked rather than trusted: a feature whose
+/// edges did not survive an earlier one is reported as
+/// [`BlendError::EdgesNotBlended`] naming them, never dropped. Failure anywhere
+/// aborts the whole call, and the caller's `transactional` wrapper puts the
+/// input back exactly as it was.
+fn fillet_by_feature(
+    topo: &mut Topology,
+    solid: SolidId,
+    groups: &[Vec<EdgeId>],
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<BlendResult, OperationsError> {
+    let mut ordered: Vec<(bool, &[EdgeId])> = Vec::with_capacity(groups.len());
+    for group in groups {
+        ordered.push((is_planar_line_blend(topo, solid, group)?, group.as_slice()));
+    }
+    ordered.sort_by_key(|&(planar, _)| planar);
+
+    let mut current = solid;
+    for (_, group) in ordered {
+        let stale = stale_edges(topo, current, group)?;
+        if !stale.is_empty() {
+            return Err(OperationsError::Blend(BlendError::EdgesNotBlended {
+                edges: stale,
+                reason: "an earlier feature in the same selection rebuilt the faces \
+                         carrying these edges, so they no longer name anything to blend"
+                    .into(),
+            }));
+        }
+        current = fillet_group(topo, current, group, radius)?.solid;
+    }
+
+    let result = BlendResult {
+        solid: current,
+        succeeded: edges.to_vec(),
+        failed: Vec::new(),
+        is_partial: false,
+    };
+    // Per-feature validation compared each step with the step before it; this
+    // compares the finished body with what the caller actually handed in, so
+    // the volume budget covers every named edge at once.
+    validate_complete_blend(topo, "fillet", solid, &result)?;
+    validate_blend_volume(topo, "fillet", solid, current, edges, radius)?;
+    Ok(result)
+}
+
 /// Fillet edges with constant radius (v2 walking-based engine).
 ///
 /// # Errors
@@ -441,28 +697,25 @@ pub fn fillet_v2(
         });
     }
     reject_blend_into_hole(topo, solid, edges, radius)?;
-    if is_planar_line_blend(topo, solid, edges)? {
-        // The rolling-ball rebuild handles the validated planar classes
-        // (simple prisms), closes multi-edge corner patches, and carries the
-        // inner loops of a holed cap through as topology. On richer topology
-        // (L-shaped side faces, coplanar slivers) it emits an open shell; fall
-        // through to the walking builder, whose stitched planar assembly
-        // handles those shapes. Each attempt is transactional, so the
-        // fall-through starts from a clean arena.
-        match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                log::warn!("planar fillet fast path failed ({e}); falling back to walking builder");
-            }
-        }
+
+    // The whole selection on one engine, first and unchanged: everything that
+    // works today keeps working exactly as it does, and this is the only path a
+    // selection that is one feature ever takes.
+    let refusal = match transactional(topo, |t| fillet_group(t, solid, edges, radius)) {
+        Ok(result) => return Ok(result),
+        Err(e) => e,
+    };
+
+    // One engine could not take the selection whole. When the selection is
+    // really several features that cannot reach each other, that is not a
+    // verdict on any of them — it only says no single engine covers the mix —
+    // so give each feature the engine that fits it.
+    let groups = independent_blend_groups(topo, solid, edges, radius)?;
+    if groups.len() < 2 {
+        return Err(refusal);
     }
     transactional(topo, |t| {
-        let mut builder = FilletBuilder::new(t, solid);
-        builder.add_edges(edges, radius);
-        let result = builder.build()?;
-        validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
-        Ok(result)
+        fillet_by_feature(t, solid, &groups, edges, radius)
     })
 }
 
