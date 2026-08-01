@@ -1,9 +1,32 @@
-//! STEP AP203 file reader.
+//! STEP Part 21 file reader.
 //!
-//! Parses ISO 10303-21 (STEP Part 21) files and reconstructs B-Rep
-//! topology. Supports the entity types produced by our STEP writer:
-//! `MANIFOLD_SOLID_BREP`, `CLOSED_SHELL`, `ADVANCED_FACE`, `PLANE`,
-//! `EDGE_CURVE`, `LINE`, `CARTESIAN_POINT`, `DIRECTION`, etc.
+//! Parses ISO 10303-21 files and reconstructs B-Rep topology from
+//! `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS`, `CLOSED_SHELL`,
+//! `ADVANCED_FACE`, `EDGE_CURVE` and the analytic and NURBS geometry they
+//! reference.
+//!
+//! # Schema tolerance
+//!
+//! The `FILE_SCHEMA` declaration is not consulted. AP203
+//! (`CONFIG_CONTROL_DESIGN`), AP214 (`AUTOMOTIVE_DESIGN`, including the
+//! `AUTOMOTIVE_DESIGN { 1 0 10303 214 … }` object-identifier form) and AP242
+//! (`AP242_MANAGED_MODEL_BASED_3D_ENGINEERING`) all express solid geometry
+//! with the same ISO 10303-42 entities, which are what this reader consumes.
+//! Dispatching on the schema string would reject files whose geometry is
+//! perfectly readable, so entity support is decided per entity: anything
+//! genuinely unhandled fails with [`IoError::UnsupportedEntity`] naming it.
+//! The writer continues to emit AP203.
+//!
+//! # Units
+//!
+//! brepkit works in millimetres and radians. The file's declared
+//! `GLOBAL_UNIT_ASSIGNED_CONTEXT` is resolved once and applied to every
+//! length- and angle-valued quantity at parse time, so nothing downstream
+//! needs to know what the file said. A file that carries geometry but no
+//! usable `LENGTH_UNIT` is refused rather than assumed to be millimetres —
+//! guessing would silently rescale an entire model. A file with nothing
+//! length-valued in it (some are `PRODUCT`/`COLOUR_RGB` only) still imports,
+//! as zero solids.
 
 use std::collections::HashMap;
 
@@ -45,7 +68,15 @@ pub fn read_step_with_limits(
 ) -> Result<Vec<SolidId>, IoError> {
     ensure_input_size(input.len(), limits)?;
     let entities = parse_step_entities(input, limits)?;
-    let mut builder = StepBuilder::new(topo, &entities);
+    // Solid B-Reps are the only thing this reader builds, so they are also
+    // the only consumers of the length factor. A file with none of them
+    // never reads a length-valued value, which is why the missing-unit
+    // refusal below is conditioned on their presence.
+    let has_solids = entities.values().any(is_solid_brep);
+    let Some(units) = resolve_unit_scale(&entities, has_solids)? else {
+        return Ok(Vec::new());
+    };
+    let mut builder = StepBuilder::new(topo, &entities, units);
     builder.build_all_solids()
 }
 
@@ -201,33 +232,396 @@ fn parse_entity_id(s: &str) -> Option<u64> {
     trimmed.strip_prefix('#')?.parse().ok()
 }
 
+// ── Units ───────────────────────────────────────────────────────────
+
+/// Conversion factors from the file's declared units to brepkit's working
+/// units.
+///
+/// brepkit works in **millimetres** and **radians**: the writer declares
+/// `SI_UNIT(.MILLI.,.METRE.)` for length and `SI_UNIT($,.RADIAN.)` for plane
+/// angle (`writer::StepWriteContext::write_geometric_context`), and the
+/// default vertex/uncertainty tolerance of `1e-7` is a millimetre quantity.
+/// Everything read out of a STEP file is converted into those units once, at
+/// parse time, so no downstream code has to know what the file declared.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct UnitScale {
+    /// Multiply a length-valued quantity from the file by this to get
+    /// millimetres.
+    length: f64,
+    /// Multiply a plane-angle-valued quantity from the file by this to get
+    /// radians.
+    angle: f64,
+}
+
+/// Maximum depth of `CONVERSION_BASED_UNIT` → `MEASURE_WITH_UNIT` → unit
+/// indirection followed before the file is rejected as cyclic.
+const MAX_UNIT_INDIRECTION: u32 = 8;
+
+/// Which physical quantity a `NAMED_UNIT` measures, as far as this reader
+/// cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnitKind {
+    /// A `LENGTH_UNIT`.
+    Length,
+    /// A `PLANE_ANGLE_UNIT`.
+    PlaneAngle,
+    /// Anything else (solid angle, mass, …) — not used by geometry here.
+    Other,
+}
+
+/// Render an entity as `TYPE(attrs` so a marker search behaves the same for
+/// simple instances (`#5 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))`) and for
+/// complex/composite ones (`#5 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3)
+/// GLOBAL_UNIT_ASSIGNED_CONTEXT((#1)) … )`, whose parsed `entity_type` is
+/// empty because the statement opens straight into a parenthesis).
+fn entity_text(entity: &StepEntity) -> String {
+    if entity.entity_type.is_empty() {
+        entity.attrs.clone()
+    } else {
+        format!("{}({}", entity.entity_type, entity.attrs)
+    }
+}
+
+/// Return the contents of the balanced parenthesis group that immediately
+/// follows `marker`, without the outer parentheses.
+///
+/// Quoted STEP strings are skipped so a `'('` inside a name cannot unbalance
+/// the scan. Occurrences of `marker` that are not followed by `(` (for
+/// example `LENGTH_UNIT` matched inside `LENGTH_UNIT()` is fine, but a
+/// marker appearing inside a longer identifier is not) are skipped.
+fn balanced_group_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let bytes = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(marker) {
+        let after = from + rel + marker.len();
+        let open = text[after..]
+            .find(|c: char| !c.is_whitespace())
+            .map(|o| after + o);
+        match open {
+            Some(open) if bytes[open] == b'(' => {
+                let mut depth = 0i32;
+                let mut in_string = false;
+                for (i, &b) in bytes.iter().enumerate().skip(open) {
+                    match b {
+                        b'\'' => in_string = !in_string,
+                        b'(' if !in_string => depth += 1,
+                        b')' if !in_string => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(&text[open + 1..i]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                return None;
+            }
+            _ => from = after,
+        }
+    }
+    None
+}
+
+/// Classify a `NAMED_UNIT` instance from its textual form.
+fn unit_kind(text: &str) -> UnitKind {
+    if text.contains("LENGTH_UNIT") {
+        UnitKind::Length
+    } else if text.contains("PLANE_ANGLE_UNIT") {
+        // SOLID_ANGLE_UNIT deliberately does not match: it does not contain
+        // the "PLANE_" prefix.
+        UnitKind::PlaneAngle
+    } else {
+        UnitKind::Other
+    }
+}
+
+/// Multiplier for an SI prefix token as written in `SI_UNIT(<prefix>, …)`.
+///
+/// `$` (and the rarely used `*`) mean "no prefix".
+fn si_prefix_factor(token: &str) -> Option<f64> {
+    Some(match token.trim() {
+        "$" | "*" | "" => 1.0,
+        ".EXA." => 1e18,
+        ".PETA." => 1e15,
+        ".TERA." => 1e12,
+        ".GIGA." => 1e9,
+        ".MEGA." => 1e6,
+        ".KILO." => 1e3,
+        ".HECTO." => 1e2,
+        ".DECA." => 1e1,
+        ".DECI." => 1e-1,
+        ".CENTI." => 1e-2,
+        ".MILLI." => 1e-3,
+        ".MICRO." => 1e-6,
+        ".NANO." => 1e-9,
+        ".PICO." => 1e-12,
+        ".FEMTO." => 1e-15,
+        ".ATTO." => 1e-18,
+        _ => return None,
+    })
+}
+
+/// Resolve the factor that converts a value expressed in unit `#unit_ref`
+/// into that unit's SI base, together with the name of that base
+/// (`.METRE.`, `.RADIAN.`, …).
+///
+/// Handles the two shapes real writers emit:
+/// - `SI_UNIT(<prefix>, <name>)`, possibly inside a complex instance
+///   alongside `LENGTH_UNIT()` / `NAMED_UNIT(*)`;
+/// - `CONVERSION_BASED_UNIT('INCH', #m)` where `#m` is a
+///   `LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4), #si)`.
+fn unit_si_factor(
+    entities: &HashMap<u64, StepEntity>,
+    unit_ref: u64,
+    depth: u32,
+) -> Result<(f64, String), IoError> {
+    if depth > MAX_UNIT_INDIRECTION {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "unit definition at #{unit_ref} nests deeper than \
+                 {MAX_UNIT_INDIRECTION} levels (cyclic unit reference?)"
+            ),
+        });
+    }
+    let entity = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
+        reason: format!("unit entity #{unit_ref} not found"),
+    })?;
+    let text = entity_text(entity);
+
+    if let Some(group) = balanced_group_after(&text, "CONVERSION_BASED_UNIT") {
+        // CONVERSION_BASED_UNIT(<name>, #measure)
+        let measure_ref =
+            parse_refs(group)
+                .first()
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "CONVERSION_BASED_UNIT #{unit_ref} has no conversion factor reference"
+                    ),
+                })?;
+        let measure = entities
+            .get(&measure_ref)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("conversion factor entity #{measure_ref} not found"),
+            })?;
+        let measure_attrs = measure.attrs.clone();
+        let value = parse_floats(&measure_attrs)
+            .first()
+            .copied()
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("MEASURE_WITH_UNIT #{measure_ref} has no numeric value"),
+            })?;
+        let base_ref =
+            parse_refs(&measure_attrs)
+                .first()
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!("MEASURE_WITH_UNIT #{measure_ref} has no unit reference"),
+                })?;
+        let (base_factor, base_name) = unit_si_factor(entities, base_ref, depth + 1)?;
+        return Ok((value * base_factor, base_name));
+    }
+
+    if let Some(group) = balanced_group_after(&text, "SI_UNIT") {
+        let mut parts = group.split(',');
+        let prefix = parts.next().unwrap_or("").trim();
+        let name = parts.next().unwrap_or("").trim();
+        let factor = si_prefix_factor(prefix).ok_or_else(|| IoError::ParseError {
+            reason: format!("SI_UNIT #{unit_ref} has unrecognised prefix `{prefix}`"),
+        })?;
+        if name.is_empty() {
+            return Err(IoError::ParseError {
+                reason: format!("SI_UNIT #{unit_ref} has no unit name"),
+            });
+        }
+        return Ok((factor, name.to_string()));
+    }
+
+    Err(IoError::ParseError {
+        reason: format!(
+            "unit #{unit_ref} is neither an SI_UNIT nor a CONVERSION_BASED_UNIT \
+             and cannot be interpreted"
+        ),
+    })
+}
+
+/// Resolve the file's length and plane-angle units from its
+/// `GLOBAL_UNIT_ASSIGNED_CONTEXT`.
+///
+/// The context appears either as a standalone entity or — far more commonly —
+/// as one component of a complex instance that also carries
+/// `GEOMETRIC_REPRESENTATION_CONTEXT` and
+/// `GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT`; both shapes are handled.
+///
+/// `require_length` must be set when the caller is about to read
+/// length-valued geometry. With it set, a file that declares no usable
+/// `LENGTH_UNIT` is refused; with it clear, such a file yields `Ok(None)`,
+/// meaning "no length factor, and none needed". A missing factor is never
+/// defaulted, so no caller can be handed a guess.
+///
+/// # Errors
+///
+/// Returns a typed [`IoError::ParseError`] when `require_length` is set and
+/// the file declares no length unit, when a declared unit cannot be
+/// interpreted, or when two contexts disagree. Guessing a length unit would
+/// silently scale the whole model, so an unreadable declaration is refused
+/// rather than defaulted — a 25.4x or 1000x error in a part looks entirely
+/// plausible right up until it is machined.
+fn resolve_unit_scale(
+    entities: &HashMap<u64, StepEntity>,
+    require_length: bool,
+) -> Result<Option<UnitScale>, IoError> {
+    const MARKER: &str = "GLOBAL_UNIT_ASSIGNED_CONTEXT";
+
+    let mut context_ids: Vec<u64> = entities
+        .iter()
+        .filter(|(_, e)| e.entity_type == MARKER || e.attrs.contains(MARKER))
+        .map(|(&id, _)| id)
+        .collect();
+    context_ids.sort_unstable();
+
+    let mut length: Option<f64> = None;
+    let mut angle: Option<f64> = None;
+
+    for ctx_id in context_ids {
+        let entity = entities.get(&ctx_id).ok_or_else(|| IoError::ParseError {
+            reason: format!("entity #{ctx_id} not found"),
+        })?;
+        let text = entity_text(entity);
+        let group = balanced_group_after(&text, MARKER).ok_or_else(|| IoError::ParseError {
+            reason: format!("{MARKER} #{ctx_id} has no unit list"),
+        })?;
+
+        for unit_ref in parse_refs(group) {
+            let unit_entity = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
+                reason: format!("unit entity #{unit_ref} not found"),
+            })?;
+            let kind = unit_kind(&entity_text(unit_entity));
+            if kind == UnitKind::Other {
+                continue;
+            }
+            let (factor, base) = unit_si_factor(entities, unit_ref, 0)?;
+            let (expected_base, to_working, slot, label) = match kind {
+                // SI base for length is the metre; brepkit works in mm.
+                UnitKind::Length => (".METRE.", factor * 1e3, &mut length, "length"),
+                UnitKind::PlaneAngle => (".RADIAN.", factor, &mut angle, "plane angle"),
+                UnitKind::Other => unreachable!("filtered above"),
+            };
+            if base != expected_base {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "{label} unit #{unit_ref} resolves to base `{base}`, expected \
+                         `{expected_base}`"
+                    ),
+                });
+            }
+            if !to_working.is_finite() || to_working <= 0.0 {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "{label} unit #{unit_ref} has a non-positive conversion factor \
+                         {to_working}"
+                    ),
+                });
+            }
+            match *slot {
+                None => *slot = Some(to_working),
+                Some(existing) if !approx_same_factor(existing, to_working) => {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "STEP file declares conflicting {label} units \
+                             ({existing} vs {to_working}); refusing to guess which applies"
+                        ),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    let Some(length) = length else {
+        if require_length {
+            return Err(IoError::ParseError {
+                reason: "STEP file declares no LENGTH_UNIT in a \
+                         GLOBAL_UNIT_ASSIGNED_CONTEXT; the model's length unit is \
+                         unknown"
+                    .to_string(),
+            });
+        }
+        // Nothing length-valued will be read, so there is no factor to
+        // resolve and nothing that could be silently misscaled. Header-only
+        // and metadata-only files (product structure, colours, an assembly
+        // manifest with no B-Rep) are well formed and must not be rejected
+        // for omitting a unit they never use.
+        return Ok(None);
+    };
+
+    Ok(Some(UnitScale {
+        length,
+        // A file that declares no PLANE_ANGLE_UNIT leaves angle measures in
+        // the SI base, which is the radian — the only reading available.
+        angle: angle.unwrap_or(1.0),
+    }))
+}
+
+/// Compare two unit conversion factors for practical equality.
+fn approx_same_factor(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
+}
+
 // ── Building ────────────────────────────────────────────────────────
+
+/// Maximum number of curve-to-curve indirections (`SURFACE_CURVE`,
+/// `TRIMMED_CURVE`, …) followed before the file is rejected as cyclic.
+///
+/// Real files nest at most two levels; the bound exists so a malformed or
+/// hostile file terminates with a typed error rather than overflowing the
+/// stack (which, in the wasm build, aborts the module).
+const MAX_CURVE_INDIRECTION: u32 = 32;
+
+/// Distance (in millimetres) below which two consecutive `POLYLINE` points
+/// are treated as the same point.
+///
+/// Two orders of magnitude tighter than the `1e-7` vertex tolerance this
+/// reader assigns, so it only ever collapses points the kernel could not
+/// tell apart anyway.
+const POLYLINE_WELD_EPS: f64 = 1e-9;
 
 /// Reconstructs topology from parsed STEP entities.
 struct StepBuilder<'a> {
     topo: &'a mut Topology,
     entities: &'a HashMap<u64, StepEntity>,
+    /// Conversion from the file's declared units into millimetres/radians,
+    /// applied to every length- and angle-valued quantity as it is read.
+    units: UnitScale,
     vertex_cache: HashMap<u64, brepkit_topology::vertex::VertexId>,
     edge_cache: HashMap<u64, brepkit_topology::edge::EdgeId>,
 }
 
 impl<'a> StepBuilder<'a> {
-    fn new(topo: &'a mut Topology, entities: &'a HashMap<u64, StepEntity>) -> Self {
+    fn new(
+        topo: &'a mut Topology,
+        entities: &'a HashMap<u64, StepEntity>,
+        units: UnitScale,
+    ) -> Self {
         Self {
             topo,
             entities,
+            units,
             vertex_cache: HashMap::new(),
             edge_cache: HashMap::new(),
         }
     }
 
     fn build_all_solids(&mut self) -> Result<Vec<SolidId>, IoError> {
-        let brep_ids: Vec<u64> = self
+        let mut brep_ids: Vec<u64> = self
             .entities
             .iter()
-            .filter(|(_, e)| e.entity_type == "MANIFOLD_SOLID_BREP")
+            .filter(|(_, e)| is_solid_brep(e))
             .map(|(&id, _)| id)
             .collect();
+        // Entities live in a HashMap, so sort to make the order in which
+        // solids come back match the order they appear in the file.
+        brep_ids.sort_unstable();
 
         let mut solid_ids = Vec::new();
         for brep_id in brep_ids {
@@ -237,26 +631,76 @@ impl<'a> StepBuilder<'a> {
         Ok(solid_ids)
     }
 
+    /// Build one solid from a `MANIFOLD_SOLID_BREP` or its `BREP_WITH_VOIDS`
+    /// subtype.
+    ///
+    /// `BREP_WITH_VOIDS('name', #outer, (#void, ...))` carries the cavities
+    /// as `ORIENTED_CLOSED_SHELL`s after the outer shell; they become the
+    /// solid's inner shells. Dropping them, as this reader used to, turns a
+    /// hollow part into a filled one with no diagnostic.
     fn build_solid(&mut self, brep_id: u64) -> Result<SolidId, IoError> {
-        let attrs = self.get_entity(brep_id)?.attrs.clone();
+        let entity = self.get_entity(brep_id)?;
+        let with_voids =
+            entity.entity_type == "BREP_WITH_VOIDS" || entity.attrs.contains("BREP_WITH_VOIDS");
+        let attrs = entity.attrs.clone();
         let refs = parse_refs(&attrs);
-        // MANIFOLD_SOLID_BREP('name', #shell) — shell is the only #ref.
-        let shell_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-            reason: format!("MANIFOLD_SOLID_BREP #{brep_id} missing shell reference"),
-        })?;
 
-        let shell_id = self.build_shell(shell_ref)?;
-        let solid_id = self.topo.add_solid(Solid::new(shell_id, Vec::new()));
+        let mut refs = refs.into_iter();
+        let shell_ref = refs.next().ok_or_else(|| IoError::ParseError {
+            reason: format!("solid B-Rep #{brep_id} missing its outer shell reference"),
+        })?;
+        let shell_id = self.build_shell(shell_ref, false)?;
+
+        let mut inner_shells = Vec::new();
+        if with_voids {
+            for void_ref in refs {
+                inner_shells.push(self.build_shell(void_ref, false)?);
+            }
+            if inner_shells.is_empty() {
+                return Err(IoError::ParseError {
+                    reason: format!("BREP_WITH_VOIDS #{brep_id} declares no void shells"),
+                });
+            }
+        }
+
+        let solid_id = self.topo.add_solid(Solid::new(shell_id, inner_shells));
         Ok(solid_id)
     }
 
-    fn build_shell(&mut self, shell_ref: u64) -> Result<brepkit_topology::shell::ShellId, IoError> {
-        let attrs = self.get_entity(shell_ref)?.attrs.clone();
+    /// Build a shell from a `CLOSED_SHELL`, an `OPEN_SHELL`, or an
+    /// `ORIENTED_CLOSED_SHELL` wrapper.
+    ///
+    /// `flip` inverts the sense of every face in the shell. It carries the
+    /// `ORIENTED_CLOSED_SHELL` orientation flag, which void shells use
+    /// (always `.F.` per ISO 10303-42) so their normals end up pointing away
+    /// from the solid's material — the same convention brepkit's inner
+    /// shells use.
+    fn build_shell(
+        &mut self,
+        shell_ref: u64,
+        flip: bool,
+    ) -> Result<brepkit_topology::shell::ShellId, IoError> {
+        let entity = self.get_entity(shell_ref)?;
+        if entity.entity_type == "ORIENTED_CLOSED_SHELL" {
+            let attrs = entity.attrs.clone();
+            let reversed = orientation_is_reversed(&attrs);
+            let base = parse_refs(&attrs)
+                .first()
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "ORIENTED_CLOSED_SHELL #{shell_ref} missing its closed shell reference"
+                    ),
+                })?;
+            return self.build_shell(base, flip != reversed);
+        }
+
+        let attrs = entity.attrs.clone();
         let face_refs = parse_list_refs(&attrs);
 
         let mut face_ids = Vec::new();
         for face_ref in face_refs {
-            let face_id = self.build_face(face_ref)?;
+            let face_id = self.build_face(face_ref, flip)?;
             face_ids.push(face_id);
         }
 
@@ -268,11 +712,17 @@ impl<'a> StepBuilder<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn build_face(&mut self, face_ref: u64) -> Result<brepkit_topology::face::FaceId, IoError> {
+    fn build_face(
+        &mut self,
+        face_ref: u64,
+        flip: bool,
+    ) -> Result<brepkit_topology::face::FaceId, IoError> {
         let attrs = self.get_entity(face_ref)?.attrs.clone();
-        // Check for reversed face orientation (.F. flag at end of ADVANCED_FACE).
+        // Check for reversed face orientation (.F. flag at end of ADVANCED_FACE),
+        // then apply the enclosing shell's orientation on top of it.
         let orient_tail = attrs.trim_end_matches(')').trim();
-        let face_reversed = orient_tail.ends_with(".F.") || orient_tail.ends_with(".FALSE.");
+        let face_reversed =
+            (orient_tail.ends_with(".F.") || orient_tail.ends_with(".FALSE.")) != flip;
         let all_refs = parse_refs(&attrs);
         let list_refs = parse_list_refs(&attrs);
 
@@ -354,6 +804,7 @@ impl<'a> StepBuilder<'a> {
                 let radius = floats.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("CYLINDRICAL_SURFACE #{surface_ref} missing radius"),
                 })?;
+                let radius = radius * self.units.length;
                 let (origin, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let cyl = brepkit_math::surfaces::CylindricalSurface::new(origin, axis, radius)
                     .map_err(|e| IoError::ParseError {
@@ -367,11 +818,20 @@ impl<'a> StepBuilder<'a> {
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("CONICAL_SURFACE #{surface_ref} missing axis"),
                 })?;
-                // STEP: CONICAL_SURFACE('', #axis, base_radius, half_angle)
-                // half_angle is in radians in STEP AP203.
-                let half_angle = floats.last().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CONICAL_SURFACE #{surface_ref} missing half_angle"),
-                })?;
+                // STEP: CONICAL_SURFACE('', #axis, base_radius, semi_angle)
+                // The semi angle is a plane-angle measure, so it is stated in
+                // whatever PLANE_ANGLE_UNIT the file declared (radians for
+                // most writers, degrees for some).
+                //
+                // ISO 10303-42 measures `semi_angle` from the AXIS. brepkit's
+                // `ConicalSurface::half_angle` is measured from the radial
+                // plane. They are complements and coincide only at 45 degrees,
+                // so this conversion is what makes a foreign cone import at
+                // the angle its author actually meant.
+                let semi_angle = floats.last().copied().ok_or_else(|| IoError::ParseError {
+                    reason: format!("CONICAL_SURFACE #{surface_ref} missing semi_angle"),
+                })? * self.units.angle;
+                let half_angle = std::f64::consts::FRAC_PI_2 - semi_angle;
                 let (apex, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let cone = brepkit_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
                     .map_err(|e| IoError::ParseError {
@@ -388,6 +848,7 @@ impl<'a> StepBuilder<'a> {
                 let radius = floats.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("SPHERICAL_SURFACE #{surface_ref} missing radius"),
                 })?;
+                let radius = radius * self.units.length;
                 let (center, _axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let sphere = brepkit_math::surfaces::SphericalSurface::new(center, radius)
                     .map_err(|e| IoError::ParseError {
@@ -407,6 +868,8 @@ impl<'a> StepBuilder<'a> {
                 let minor_r = floats.get(1).copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("TOROIDAL_SURFACE #{surface_ref} missing minor_radius"),
                 })?;
+                let major_r = major_r * self.units.length;
+                let minor_r = minor_r * self.units.length;
                 let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let torus = brepkit_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
                     center, major_r, minor_r, axis, ref_dir,
@@ -415,6 +878,10 @@ impl<'a> StepBuilder<'a> {
                     reason: format!("TOROIDAL_SURFACE #{surface_ref}: {e}"),
                 })?;
                 Ok(FaceSurface::Torus(torus))
+            }
+            "SURFACE_OF_REVOLUTION" => self.build_surface_of_revolution(surface_ref, &attrs),
+            "SURFACE_OF_LINEAR_EXTRUSION" => {
+                self.build_surface_of_linear_extrusion(surface_ref, &attrs)
             }
             "B_SPLINE_SURFACE_WITH_KNOTS" | "BOUNDED_SURFACE" | "B_SPLINE_SURFACE" => {
                 let is_rational = attrs.contains("RATIONAL");
@@ -432,6 +899,238 @@ impl<'a> StepBuilder<'a> {
                 entity: entity_type,
             }),
         }
+    }
+
+    // ── Swept surfaces ─────────────────────────────────────────────
+
+    /// Resolve a swept surface's profile curve, keeping the analytic
+    /// geometry that [`EdgeCurve`] discards.
+    ///
+    /// `EdgeCurve::Line` stores nothing — a line edge's geometry lives in its
+    /// vertices — but a swept surface has no vertices to fall back on, so the
+    /// `LINE` placement is read directly here.
+    ///
+    /// Wrapper curves are unwrapped to their basis. A `TRIMMED_CURVE`'s span
+    /// is deliberately dropped: it bounds the profile, and therefore the
+    /// swept surface, but a [`FaceSurface`] carries no bounds either — the
+    /// face's own wires do. Applying the trim would move a boundary that is
+    /// already stated elsewhere.
+    fn build_swept_profile(&self, curve_ref: u64, depth: u32) -> Result<SweptProfile, IoError> {
+        if depth > MAX_CURVE_INDIRECTION {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "swept profile chain at #{curve_ref} exceeded \
+                     {MAX_CURVE_INDIRECTION} levels (cyclic curve reference?)"
+                ),
+            });
+        }
+        let entity = self.get_entity(curve_ref)?;
+        let entity_type = entity.entity_type.clone();
+        let attrs = entity.attrs.clone();
+
+        match entity_type.as_str() {
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" | "TRIMMED_CURVE" => {
+                let basis =
+                    parse_refs(&attrs)
+                        .first()
+                        .copied()
+                        .ok_or_else(|| IoError::ParseError {
+                            reason: format!(
+                                "{entity_type} #{curve_ref} missing its basis curve reference"
+                            ),
+                        })?;
+                self.build_swept_profile(basis, depth + 1)
+            }
+            "LINE" => Ok(SweptProfile::Line(self.build_line(curve_ref, &attrs)?)),
+            _ => match self.build_curve_geometry_at(curve_ref, depth)? {
+                EdgeCurve::Circle(circle) => Ok(SweptProfile::Circle(circle)),
+                EdgeCurve::Ellipse(ellipse) => Ok(SweptProfile::Ellipse(ellipse)),
+                EdgeCurve::NurbsCurve(nurbs) => Ok(SweptProfile::Nurbs(nurbs)),
+                EdgeCurve::Line => Err(IoError::ParseError {
+                    reason: format!(
+                        "swept profile #{curve_ref} resolved to a line with no placement"
+                    ),
+                }),
+            },
+        }
+    }
+
+    /// Read `LINE('name', #point, #vector)` as an infinite line.
+    fn build_line(
+        &self,
+        curve_ref: u64,
+        attrs: &str,
+    ) -> Result<brepkit_math::curves::Line3D, IoError> {
+        let refs = parse_refs(attrs);
+        let [point_ref, vector_ref, ..] = refs[..] else {
+            return Err(IoError::ParseError {
+                reason: format!("LINE #{curve_ref} needs a point and a direction vector"),
+            });
+        };
+        let origin = self.build_cartesian_point(point_ref)?;
+        let (direction, _) = self.build_vector(vector_ref)?;
+        brepkit_math::curves::Line3D::new(origin, direction).map_err(|e| IoError::ParseError {
+            reason: format!("LINE #{curve_ref}: {e}"),
+        })
+    }
+
+    /// Read `VECTOR('name', #direction, magnitude)` as a unit direction and
+    /// a magnitude in millimetres.
+    fn build_vector(&self, vector_ref: u64) -> Result<(Vec3, f64), IoError> {
+        let entity = self.get_entity(vector_ref)?;
+        let attrs = entity.attrs.clone();
+        let dir_ref = parse_refs(&attrs)
+            .first()
+            .copied()
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("VECTOR #{vector_ref} missing its direction reference"),
+            })?;
+        let direction = self.build_direction(dir_ref)?;
+        // The magnitude is the only float on the VECTOR itself; the
+        // direction's components live on the referenced DIRECTION.
+        let magnitude =
+            parse_floats(&attrs)
+                .first()
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!("VECTOR #{vector_ref} missing its magnitude"),
+                })?
+                * self.units.length;
+        Ok((direction, magnitude))
+    }
+
+    /// Read `AXIS1_PLACEMENT('name', #location, #axis)`.
+    ///
+    /// The axis is optional in STEP and defaults to the z direction.
+    fn build_axis1_placement(&self, axis_ref: u64) -> Result<(Point3, Vec3), IoError> {
+        let attrs = self.get_entity(axis_ref)?.attrs.clone();
+        let refs = parse_refs(&attrs);
+        let location_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
+            reason: format!("AXIS1_PLACEMENT #{axis_ref} missing its location"),
+        })?;
+        let location = self.build_cartesian_point(location_ref)?;
+        let direction = match refs.get(1) {
+            Some(&dir_ref) => self.build_direction(dir_ref)?,
+            None => Vec3::new(0.0, 0.0, 1.0),
+        };
+        Ok((location, direction))
+    }
+
+    /// Build `SURFACE_OF_REVOLUTION('name', #swept_curve, #axis_position)`.
+    ///
+    /// Revolving simple profiles reproduces brepkit's analytic surfaces
+    /// exactly, and an exact analytic surface is worth far more downstream
+    /// than a NURBS approximation of the same shape:
+    ///
+    /// | profile | configuration | surface |
+    /// |---------|---------------|---------|
+    /// | line | parallel to the axis | cylinder |
+    /// | line | meeting the axis at an angle | cone |
+    /// | line | perpendicular, meeting the axis | plane |
+    /// | circle | plane holds the axis, centred on it | sphere |
+    /// | circle | plane holds the axis, offset from it | torus |
+    ///
+    /// Anything else with a *bounded* profile becomes an exact NURBS surface
+    /// of revolution. A profile that is neither collapsible nor bounded — a
+    /// line skew to the axis, which sweeps a hyperboloid — has no
+    /// representation here and is refused by name rather than approximated.
+    fn build_surface_of_revolution(
+        &self,
+        surface_ref: u64,
+        attrs: &str,
+    ) -> Result<FaceSurface, IoError> {
+        let refs = parse_refs(attrs);
+        let [curve_ref, axis_ref, ..] = refs[..] else {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "SURFACE_OF_REVOLUTION #{surface_ref} needs a swept curve and an axis"
+                ),
+            });
+        };
+        let profile = self.build_swept_profile(curve_ref, 0)?;
+        let (axis_pt, axis_raw) = self.build_axis1_placement(axis_ref)?;
+        let axis = axis_raw.normalize().map_err(|e| IoError::ParseError {
+            reason: format!("SURFACE_OF_REVOLUTION #{surface_ref} has a zero axis: {e}"),
+        })?;
+
+        if let Some(surface) = revolve_analytic(&profile, axis_pt, axis, surface_ref)? {
+            return Ok(surface);
+        }
+
+        let generatrix = profile
+            .into_nurbs()
+            .map_err(|e| IoError::ParseError {
+                reason: format!("SURFACE_OF_REVOLUTION #{surface_ref} profile: {e}"),
+            })?
+            .ok_or_else(|| IoError::UnsupportedEntity {
+                entity: format!(
+                    "SURFACE_OF_REVOLUTION #{surface_ref} over an unbounded profile that is \
+                 not a cylinder, cone, plane, sphere or torus (a line skew to the axis \
+                 sweeps a hyperboloid, which this kernel cannot represent)"
+                ),
+            })?;
+        let surface =
+            revolve_nurbs(&generatrix, axis_pt, axis).map_err(|e| IoError::ParseError {
+                reason: format!("SURFACE_OF_REVOLUTION #{surface_ref}: {e}"),
+            })?;
+        Ok(FaceSurface::Nurbs(surface))
+    }
+
+    /// Build `SURFACE_OF_LINEAR_EXTRUSION('name', #swept_curve, #extrusion_axis)`.
+    ///
+    /// A circle swept along its own normal is a cylinder and a line swept off
+    /// its own direction is a plane; both collapse to the exact analytic
+    /// surface. Every other profile is bounded in the extrusion direction by
+    /// the `VECTOR`'s magnitude, so it converts to an exact tensor-product
+    /// NURBS surface — the profile in u, the sweep in v.
+    fn build_surface_of_linear_extrusion(
+        &self,
+        surface_ref: u64,
+        attrs: &str,
+    ) -> Result<FaceSurface, IoError> {
+        let refs = parse_refs(attrs);
+        let [curve_ref, vector_ref, ..] = refs[..] else {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "SURFACE_OF_LINEAR_EXTRUSION #{surface_ref} needs a swept curve and an \
+                     extrusion vector"
+                ),
+            });
+        };
+        let profile = self.build_swept_profile(curve_ref, 0)?;
+        let (direction, magnitude) = self.build_vector(vector_ref)?;
+        let direction = direction.normalize().map_err(|e| IoError::ParseError {
+            reason: format!("SURFACE_OF_LINEAR_EXTRUSION #{surface_ref} has a zero direction: {e}"),
+        })?;
+        if !(magnitude.is_finite() && magnitude.abs() > SWEEP_LENGTH_EPS) {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "SURFACE_OF_LINEAR_EXTRUSION #{surface_ref} extrudes by {magnitude}, \
+                     which sweeps no surface"
+                ),
+            });
+        }
+
+        if let Some(surface) = extrude_analytic(&profile, direction, surface_ref)? {
+            return Ok(surface);
+        }
+
+        let generatrix = profile
+            .into_nurbs()
+            .map_err(|e| IoError::ParseError {
+                reason: format!("SURFACE_OF_LINEAR_EXTRUSION #{surface_ref} profile: {e}"),
+            })?
+            .ok_or_else(|| IoError::UnsupportedEntity {
+                entity: format!(
+                    "SURFACE_OF_LINEAR_EXTRUSION #{surface_ref} over a line parallel to its \
+                 own extrusion direction, which sweeps no surface"
+                ),
+            })?;
+        let surface =
+            extrude_nurbs(&generatrix, direction * magnitude).map_err(|e| IoError::ParseError {
+                reason: format!("SURFACE_OF_LINEAR_EXTRUSION #{surface_ref}: {e}"),
+            })?;
+        Ok(FaceSurface::Nurbs(surface))
     }
 
     fn build_edge_loop(
@@ -494,13 +1193,49 @@ impl<'a> StepBuilder<'a> {
     /// Build the curve geometry for an edge from a curve entity reference.
     ///
     /// Dispatches on the entity type: LINE, CIRCLE, ELLIPSE,
-    /// `B_SPLINE_CURVE_WITH_KNOTS`.
+    /// `B_SPLINE_CURVE_WITH_KNOTS`, and the `SURFACE_CURVE` family
+    /// (`SURFACE_CURVE`, `SEAM_CURVE`, `INTERSECTION_CURVE`) which wrap a
+    /// 3-D curve alongside its parametric (pcurve) representations.
     fn build_curve_geometry(&self, curve_ref: u64) -> Result<EdgeCurve, IoError> {
+        self.build_curve_geometry_at(curve_ref, 0)
+    }
+
+    /// Build curve geometry, tracking how many wrapper entities have been
+    /// unwrapped so a cyclic reference chain terminates with a typed error
+    /// instead of overflowing the stack.
+    fn build_curve_geometry_at(&self, curve_ref: u64, depth: u32) -> Result<EdgeCurve, IoError> {
+        if depth > MAX_CURVE_INDIRECTION {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "curve reference chain at #{curve_ref} exceeded \
+                     {MAX_CURVE_INDIRECTION} levels (cyclic curve reference?)"
+                ),
+            });
+        }
         let entity = self.get_entity(curve_ref)?;
         let entity_type = entity.entity_type.clone();
         let attrs = entity.attrs.clone();
 
         match entity_type.as_str() {
+            // SURFACE_CURVE('name', #curve_3d, (#pcurve_or_surface, ...), .PCURVE_S1.)
+            // SEAM_CURVE and INTERSECTION_CURVE are subtypes with the same
+            // attribute layout. The first reference is the 3-D curve; the
+            // pcurve list is a redundant parametric representation that this
+            // reader does not model, so it is not consulted.
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
+                let basis =
+                    parse_refs(&attrs)
+                        .first()
+                        .copied()
+                        .ok_or_else(|| IoError::ParseError {
+                            reason: format!(
+                                "{entity_type} #{curve_ref} missing its 3-D curve reference"
+                            ),
+                        })?;
+                self.build_curve_geometry_at(basis, depth + 1)
+            }
+            "TRIMMED_CURVE" => self.build_trimmed_curve(curve_ref, &attrs, depth),
+            "POLYLINE" => self.build_polyline(curve_ref, &attrs),
             "LINE" => Ok(EdgeCurve::Line),
             "CIRCLE" => {
                 let refs = parse_refs(&attrs);
@@ -510,7 +1245,7 @@ impl<'a> StepBuilder<'a> {
                 })?;
                 let radius = floats.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("CIRCLE #{curve_ref} missing radius"),
-                })?;
+                })? * self.units.length;
                 let (center, normal, _u_axis) = self.build_axis2_placement(axis_ref)?;
                 let circle =
                     brepkit_math::curves::Circle3D::new(center, normal, radius).map_err(|e| {
@@ -532,11 +1267,15 @@ impl<'a> StepBuilder<'a> {
                     });
                 }
                 let (center, normal, _u_axis) = self.build_axis2_placement(axis_ref)?;
-                let ellipse =
-                    brepkit_math::curves::Ellipse3D::new(center, normal, floats[0], floats[1])
-                        .map_err(|e| IoError::ParseError {
-                            reason: format!("ELLIPSE #{curve_ref}: {e}"),
-                        })?;
+                let ellipse = brepkit_math::curves::Ellipse3D::new(
+                    center,
+                    normal,
+                    floats[0] * self.units.length,
+                    floats[1] * self.units.length,
+                )
+                .map_err(|e| IoError::ParseError {
+                    reason: format!("ELLIPSE #{curve_ref}: {e}"),
+                })?;
                 Ok(EdgeCurve::Ellipse(ellipse))
             }
             "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve(curve_ref, &attrs, false),
@@ -551,6 +1290,170 @@ impl<'a> StepBuilder<'a> {
             _ => Err(IoError::UnsupportedEntity {
                 entity: format!("{entity_type} (curve #{curve_ref})"),
             }),
+        }
+    }
+
+    /// Build the geometry behind a `TRIMMED_CURVE`.
+    ///
+    /// `TRIMMED_CURVE('name', #basis, (trim_1), (trim_2), sense_agreement,
+    /// master_representation)`, where each trim is a select carrying a
+    /// `PARAMETER_VALUE`, a `CARTESIAN_POINT`, or both.
+    ///
+    /// How much of the trim needs to survive depends on the basis, because
+    /// [`EdgeCurve`] stores no parameter range: an edge's extent is recovered
+    /// from its own vertices by
+    /// [`EdgeCurve::parameter_range_with_endpoints`][pr]. For `Line`,
+    /// `Circle` and `Ellipse` that recovery is exact — brepkit already models
+    /// an arc as the complete circle plus its two vertices, which is how a
+    /// bare `CIRCLE` inside an `EDGE_CURVE` is read — so the basis is
+    /// returned unchanged and the trim is carried by the edge.
+    ///
+    /// A B-spline is different: its parameterization is the knot vector, and
+    /// recovering the span means projecting the endpoints, which is
+    /// ambiguous on a closed or self-approaching curve. When the file states
+    /// the span as parameters, the curve is therefore split down to exactly
+    /// that span, so the resulting domain is the file's, not a projection's.
+    ///
+    /// Trim parameters on a B-spline are knot-space values and carry no
+    /// unit, so no unit scaling applies here.
+    ///
+    /// [pr]: brepkit_topology::edge::EdgeCurve::parameter_range_with_endpoints
+    fn build_trimmed_curve(
+        &self,
+        curve_ref: u64,
+        attrs: &str,
+        depth: u32,
+    ) -> Result<EdgeCurve, IoError> {
+        let basis_ref = parse_refs(attrs)
+            .first()
+            .copied()
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("TRIMMED_CURVE #{curve_ref} missing its basis curve reference"),
+            })?;
+        let basis = self.build_curve_geometry_at(basis_ref, depth + 1)?;
+
+        let EdgeCurve::NurbsCurve(nurbs) = basis else {
+            // Line, Circle and Ellipse are stored complete; the edge's
+            // vertices already express the trim.
+            return Ok(basis);
+        };
+
+        let params = parse_parameter_values(attrs);
+        let [t0, t1] = params[..] else {
+            // A .CARTESIAN. trim states its ends as points, which are the
+            // edge's own vertices; nothing further to apply.
+            return Ok(EdgeCurve::NurbsCurve(nurbs));
+        };
+
+        // `sense_agreement` only says whether the trim runs along or against
+        // the basis. Direction is carried by the edge's vertices, so order
+        // the span and let the edge decide which way it is traversed.
+        let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        let (d0, d1) = nurbs.domain();
+        let span = d1 - d0;
+        let tol = 1e-9 * span.abs().max(1.0);
+
+        if lo < d0 - tol || hi > d1 + tol {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "TRIMMED_CURVE #{curve_ref} trims to [{lo}, {hi}], outside its basis \
+                     curve's parameter domain [{d0}, {d1}]"
+                ),
+            });
+        }
+        if hi - lo <= tol {
+            return Err(IoError::ParseError {
+                reason: format!("TRIMMED_CURVE #{curve_ref} trims to the empty span [{lo}, {hi}]"),
+            });
+        }
+        if lo <= d0 + tol && hi >= d1 - tol {
+            // The trim is the whole curve.
+            return Ok(EdgeCurve::NurbsCurve(nurbs));
+        }
+
+        let split = |curve: &brepkit_math::nurbs::NurbsCurve, u: f64| {
+            brepkit_math::nurbs::knot_ops::curve_split(curve, u).map_err(|e| IoError::ParseError {
+                reason: format!("TRIMMED_CURVE #{curve_ref} could not be split at {u}: {e}"),
+            })
+        };
+
+        let trimmed = if lo > d0 + tol {
+            let (_, tail) = split(&nurbs, lo)?;
+            if hi < d1 - tol {
+                split(&tail, hi)?.0
+            } else {
+                tail
+            }
+        } else {
+            split(&nurbs, hi)?.0
+        };
+        Ok(EdgeCurve::NurbsCurve(trimmed))
+    }
+
+    /// Build a `POLYLINE('name', (#p1, #p2, …))` as a degree-1 curve.
+    ///
+    /// A polyline is a chain of straight segments, which is exactly a
+    /// degree-1 B-spline through the same points — so it fits [`EdgeCurve`]
+    /// without inventing a new variant or splitting the edge into several.
+    /// The knots are chord-length spaced, so the curve parameter advances
+    /// with arc length and endpoint projection (which is how an edge
+    /// recovers its span) stays well conditioned.
+    ///
+    /// A two-point polyline is a plain line segment and is read as
+    /// [`EdgeCurve::Line`], whose geometry the edge's vertices already
+    /// determine.
+    fn build_polyline(&self, curve_ref: u64, attrs: &str) -> Result<EdgeCurve, IoError> {
+        let point_refs = parse_list_refs(attrs);
+        if point_refs.is_empty() {
+            return Err(IoError::ParseError {
+                reason: format!("POLYLINE #{curve_ref} has no point list"),
+            });
+        }
+
+        // Coincident consecutive points would force a repeated interior knot,
+        // which a degree-1 B-spline cannot carry. They are geometrically
+        // nothing, so drop them rather than refuse the file.
+        let mut points: Vec<Point3> = Vec::with_capacity(point_refs.len());
+        for point_ref in point_refs {
+            let point = self.build_cartesian_point(point_ref)?;
+            if points
+                .last()
+                .is_none_or(|&prev| (point - prev).length() > POLYLINE_WELD_EPS)
+            {
+                points.push(point);
+            }
+        }
+
+        match points.len() {
+            0 | 1 => Err(IoError::ParseError {
+                reason: format!(
+                    "POLYLINE #{curve_ref} collapses to a single point and has no geometry"
+                ),
+            }),
+            2 => Ok(EdgeCurve::Line),
+            n => {
+                let mut params = Vec::with_capacity(n);
+                let mut total = 0.0;
+                params.push(0.0);
+                for pair in points.windows(2) {
+                    total += (pair[1] - pair[0]).length();
+                    params.push(total);
+                }
+
+                // Clamped degree-1 knot vector: n + 2 entries, with the first
+                // and last parameter doubled.
+                let mut knots = Vec::with_capacity(n + 2);
+                knots.push(params[0]);
+                knots.extend_from_slice(&params);
+                knots.push(params[n - 1]);
+
+                let weights = vec![1.0; n];
+                let nurbs = brepkit_math::nurbs::NurbsCurve::new(1, knots, points, weights)
+                    .map_err(|e| IoError::ParseError {
+                        reason: format!("POLYLINE #{curve_ref}: {e}"),
+                    })?;
+                Ok(EdgeCurve::NurbsCurve(nurbs))
+            }
         }
     }
 
@@ -663,7 +1566,8 @@ impl<'a> StepBuilder<'a> {
                 ),
             });
         }
-        Ok(Point3::new(coords[0], coords[1], coords[2]))
+        let s = self.units.length;
+        Ok(Point3::new(coords[0] * s, coords[1] * s, coords[2] * s))
     }
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
@@ -701,7 +1605,372 @@ impl<'a> StepBuilder<'a> {
     }
 }
 
+// ── Swept surface construction ──────────────────────────────────────
+
+/// A swept surface's profile curve, retaining the placement that
+/// [`EdgeCurve`] drops for lines.
+#[derive(Debug, Clone)]
+enum SweptProfile {
+    Line(brepkit_math::curves::Line3D),
+    Circle(brepkit_math::curves::Circle3D),
+    Ellipse(brepkit_math::curves::Ellipse3D),
+    Nurbs(brepkit_math::nurbs::NurbsCurve),
+}
+
+impl SweptProfile {
+    /// The profile as an exact NURBS curve, or `Ok(None)` when it is
+    /// unbounded and therefore has no NURBS form at all.
+    ///
+    /// A conic becomes the standard nine-point rational quadratic, which
+    /// represents it exactly rather than approximately. A `LINE` is infinite;
+    /// a swept surface over one is representable only when it collapses to an
+    /// analytic surface. The two outcomes are kept apart from a construction
+    /// failure so the caller can report the right reason.
+    fn into_nurbs(
+        self,
+    ) -> Result<Option<brepkit_math::nurbs::NurbsCurve>, brepkit_math::MathError> {
+        match self {
+            Self::Line(_) => Ok(None),
+            Self::Circle(circle) => conic_to_nurbs(
+                circle.center(),
+                circle.u_axis() * circle.radius(),
+                circle.v_axis() * circle.radius(),
+            )
+            .map(Some),
+            Self::Ellipse(ellipse) => conic_to_nurbs(
+                ellipse.center(),
+                ellipse.u_axis() * ellipse.semi_major(),
+                ellipse.v_axis() * ellipse.semi_minor(),
+            )
+            .map(Some),
+            Self::Nurbs(nurbs) => Ok(Some(nurbs)),
+        }
+    }
+}
+
+/// Tolerance for direction comparisons between unit vectors.
+///
+/// Applied to dot and cross products of normalized vectors, so it bounds a
+/// sine or cosine directly: two directions count as parallel or
+/// perpendicular only within 1e-9 radians. Tight enough that only a
+/// genuinely aligned declaration collapses to an analytic surface, rather
+/// than a nearly-aligned one being rounded into the wrong shape.
+const SWEEP_DIR_EPS: f64 = 1e-9;
+
+/// Tolerance in millimetres for "this distance is zero" tests when deciding
+/// whether a swept profile touches its axis.
+const SWEEP_LENGTH_EPS: f64 = 1e-9;
+
+/// Weights and knots of a full-turn rational quadratic conic.
+const CONIC_ARC_WEIGHT: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// Build the exact nine-control-point rational quadratic for a full turn of
+/// the conic `center + cos(t)·x + sin(t)·y`.
+///
+/// `x` and `y` are the conjugate semi-axis vectors, so this covers both a
+/// circle (equal lengths, perpendicular) and an ellipse.
+fn conic_to_nurbs(
+    center: Point3,
+    x: Vec3,
+    y: Vec3,
+) -> Result<brepkit_math::nurbs::NurbsCurve, brepkit_math::MathError> {
+    let control_points = conic_control_points(center, x, y);
+    let weights = conic_weights();
+    let knots = vec![
+        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+    ];
+    brepkit_math::nurbs::NurbsCurve::new(2, knots, control_points, weights)
+}
+
+/// The nine control points of a full-turn rational quadratic conic, starting
+/// and ending at `center + x`.
+fn conic_control_points(center: Point3, x: Vec3, y: Vec3) -> Vec<Point3> {
+    vec![
+        center + x,
+        center + x + y,
+        center + y,
+        center - x + y,
+        center - x,
+        center - x - y,
+        center - y,
+        center + x - y,
+        center + x,
+    ]
+}
+
+/// The nine weights matching [`conic_control_points`].
+fn conic_weights() -> Vec<f64> {
+    let w = CONIC_ARC_WEIGHT;
+    vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0]
+}
+
+/// Distance from `point` to the line through `axis_pt` along the unit
+/// `axis`, together with the point's projection onto that line.
+fn axis_projection(point: Point3, axis_pt: Point3, axis: Vec3) -> (Point3, f64) {
+    let to_point = point - axis_pt;
+    let along = to_point.dot(axis);
+    let foot = axis_pt + axis * along;
+    (foot, (point - foot).length())
+}
+
+/// Collapse a revolved profile to an analytic surface when the configuration
+/// admits one; `Ok(None)` means "no analytic form, try NURBS".
+fn revolve_analytic(
+    profile: &SweptProfile,
+    axis_pt: Point3,
+    axis: Vec3,
+    surface_ref: u64,
+) -> Result<Option<FaceSurface>, IoError> {
+    let fail = |reason: String| IoError::ParseError {
+        reason: format!("SURFACE_OF_REVOLUTION #{surface_ref}: {reason}"),
+    };
+
+    match profile {
+        SweptProfile::Line(line) => {
+            let dir = line.direction();
+            let cross = axis.cross(dir);
+            let (_, radius) = axis_projection(line.origin(), axis_pt, axis);
+
+            if cross.length() <= SWEEP_DIR_EPS {
+                // Parallel to the axis: a cylinder, unless the line *is* the
+                // axis, which sweeps nothing.
+                if radius <= SWEEP_LENGTH_EPS {
+                    return Err(fail(
+                        "the profile line lies on the axis of revolution and sweeps no \
+                         surface"
+                            .to_string(),
+                    ));
+                }
+                let cyl = brepkit_math::surfaces::CylindricalSurface::new(axis_pt, axis, radius)
+                    .map_err(|e| fail(e.to_string()))?;
+                return Ok(Some(FaceSurface::Cylinder(cyl)));
+            }
+
+            // Not parallel. Unless the line meets the axis, the sweep is a
+            // hyperboloid of one sheet, which has no analytic form here.
+            let normal = cross.normalize().map_err(|e| fail(e.to_string()))?;
+            let skew_distance = (line.origin() - axis_pt).dot(normal).abs();
+            if skew_distance > SWEEP_LENGTH_EPS {
+                return Ok(None);
+            }
+
+            let apex = line_line_intersection(axis_pt, axis, line.origin(), dir)
+                .ok_or_else(|| fail("the profile line does not meet the axis".to_string()))?;
+            let cos_to_axis = dir.dot(axis).abs();
+            if cos_to_axis <= SWEEP_DIR_EPS {
+                // Perpendicular and meeting the axis: the sweep is the plane
+                // through the intersection, normal to the axis.
+                let d = axis.dot(Vec3::new(apex.x(), apex.y(), apex.z()));
+                return Ok(Some(FaceSurface::Plane { normal: axis, d }));
+            }
+
+            // brepkit measures a cone's half angle from the radial plane to
+            // the generator, so it is the complement of the angle between the
+            // generator and the axis: sin(half_angle) = |dir · axis|.
+            let half_angle = cos_to_axis.clamp(-1.0, 1.0).asin();
+            let cone = brepkit_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
+                .map_err(|e| fail(e.to_string()))?;
+            Ok(Some(FaceSurface::Cone(cone)))
+        }
+        SweptProfile::Circle(circle) => {
+            // A sphere or torus needs the circle's plane to contain the whole
+            // axis line: the axis direction lies in the plane, and so does a
+            // point of the axis.
+            let plane_normal = circle.normal();
+            if plane_normal.dot(axis).abs() > SWEEP_DIR_EPS {
+                return Ok(None);
+            }
+            if (axis_pt - circle.center()).dot(plane_normal).abs() > SWEEP_LENGTH_EPS {
+                return Ok(None);
+            }
+
+            let (foot, offset) = axis_projection(circle.center(), axis_pt, axis);
+            if offset <= SWEEP_LENGTH_EPS {
+                let sphere = brepkit_math::surfaces::SphericalSurface::with_axis(
+                    circle.center(),
+                    circle.radius(),
+                    axis,
+                )
+                .map_err(|e| fail(e.to_string()))?;
+                return Ok(Some(FaceSurface::Sphere(sphere)));
+            }
+
+            let ref_dir = (circle.center() - foot)
+                .normalize()
+                .map_err(|e| fail(e.to_string()))?;
+            let torus = brepkit_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
+                foot,
+                offset,
+                circle.radius(),
+                axis,
+                ref_dir,
+            )
+            .map_err(|e| fail(e.to_string()))?;
+            Ok(Some(FaceSurface::Torus(torus)))
+        }
+        SweptProfile::Ellipse(_) | SweptProfile::Nurbs(_) => Ok(None),
+    }
+}
+
+/// Collapse an extruded profile to an analytic surface when it admits one;
+/// `Ok(None)` means "no analytic form, try NURBS".
+fn extrude_analytic(
+    profile: &SweptProfile,
+    direction: Vec3,
+    surface_ref: u64,
+) -> Result<Option<FaceSurface>, IoError> {
+    let fail = |reason: String| IoError::ParseError {
+        reason: format!("SURFACE_OF_LINEAR_EXTRUSION #{surface_ref}: {reason}"),
+    };
+
+    match profile {
+        SweptProfile::Circle(circle) => {
+            if circle.normal().cross(direction).length() > SWEEP_DIR_EPS {
+                // Oblique sweep: still a cylinder in shape but not about the
+                // circle's own axis, so it is not brepkit's CylindricalSurface.
+                return Ok(None);
+            }
+            let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+                circle.center(),
+                direction,
+                circle.radius(),
+            )
+            .map_err(|e| fail(e.to_string()))?;
+            Ok(Some(FaceSurface::Cylinder(cyl)))
+        }
+        SweptProfile::Line(line) => {
+            let normal = line.direction().cross(direction);
+            if normal.length() <= SWEEP_DIR_EPS {
+                return Err(fail(
+                    "the profile line is parallel to the extrusion direction and sweeps \
+                     no surface"
+                        .to_string(),
+                ));
+            }
+            let normal = normal.normalize().map_err(|e| fail(e.to_string()))?;
+            let origin = line.origin();
+            let d = normal.dot(Vec3::new(origin.x(), origin.y(), origin.z()));
+            Ok(Some(FaceSurface::Plane { normal, d }))
+        }
+        SweptProfile::Ellipse(_) | SweptProfile::Nurbs(_) => Ok(None),
+    }
+}
+
+/// Intersect two lines that are known to be coplanar and non-parallel.
+fn line_line_intersection(p0: Point3, u: Vec3, q0: Point3, v: Vec3) -> Option<Point3> {
+    let w0 = p0 - q0;
+    let b = u.dot(v);
+    let denom = b.mul_add(-b, 1.0);
+    if denom.abs() <= f64::EPSILON {
+        return None;
+    }
+    let d = u.dot(w0);
+    let e = v.dot(w0);
+    let s = b.mul_add(e, -d) / denom;
+    Some(p0 + u * s)
+}
+
+/// Revolve a NURBS generatrix a full turn about an axis, exactly.
+///
+/// Piegl & Tiller, *The NURBS Book*, algorithm A8.1: each generatrix control
+/// point traces a circle, represented by the same nine-point rational
+/// quadratic used for conics, and the surface weights are the product of the
+/// circle's and the generatrix's. The result is the exact surface of
+/// revolution, not a sampled approximation.
+///
+/// `u` runs around the revolution, `v` along the generatrix, matching STEP's
+/// own parameterization of `SURFACE_OF_REVOLUTION`.
+fn revolve_nurbs(
+    generatrix: &brepkit_math::nurbs::NurbsCurve,
+    axis_pt: Point3,
+    axis: Vec3,
+) -> Result<brepkit_math::nurbs::NurbsSurface, brepkit_math::MathError> {
+    let arc_weights = conic_weights();
+    let n_cols = generatrix.control_points().len();
+
+    let mut grid: Vec<Vec<Point3>> = vec![Vec::with_capacity(n_cols); arc_weights.len()];
+    let mut weights: Vec<Vec<f64>> = vec![Vec::with_capacity(n_cols); arc_weights.len()];
+
+    for (col, (&cp, &w)) in generatrix
+        .control_points()
+        .iter()
+        .zip(generatrix.weights())
+        .enumerate()
+    {
+        let (foot, radius) = axis_projection(cp, axis_pt, axis);
+        let ring = if radius <= SWEEP_LENGTH_EPS {
+            // On the axis: the whole ring degenerates to the point itself.
+            vec![cp; arc_weights.len()]
+        } else {
+            let x = cp - foot;
+            let y = axis.cross(x);
+            conic_control_points(foot, x, y)
+        };
+        for (row, &point) in ring.iter().enumerate() {
+            debug_assert_eq!(grid[row].len(), col);
+            grid[row].push(point);
+            weights[row].push(arc_weights[row] * w);
+        }
+    }
+
+    let knots_u = vec![
+        0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+    ];
+    brepkit_math::nurbs::NurbsSurface::new(
+        2,
+        generatrix.degree(),
+        knots_u,
+        generatrix.knots().to_vec(),
+        grid,
+        weights,
+    )
+}
+
+/// Extrude a NURBS profile along `offset`, exactly.
+///
+/// The result is the tensor product of the profile with a degree-1 line, so
+/// `P(u, v) = C(u) + v · offset` with `v ∈ [0, 1]` — STEP's own
+/// parameterization of `SURFACE_OF_LINEAR_EXTRUSION`.
+fn extrude_nurbs(
+    profile: &brepkit_math::nurbs::NurbsCurve,
+    offset: Vec3,
+) -> Result<brepkit_math::nurbs::NurbsSurface, brepkit_math::MathError> {
+    let grid: Vec<Vec<Point3>> = profile
+        .control_points()
+        .iter()
+        .map(|&cp| vec![cp, cp + offset])
+        .collect();
+    let weights: Vec<Vec<f64>> = profile.weights().iter().map(|&w| vec![w, w]).collect();
+
+    brepkit_math::nurbs::NurbsSurface::new(
+        profile.degree(),
+        1,
+        profile.knots().to_vec(),
+        vec![0.0, 0.0, 1.0, 1.0],
+        grid,
+        weights,
+    )
+}
+
 // ── Attribute parsing helpers ───────────────────────────────────────
+
+/// True when a parsed entity is a solid B-Rep root this reader should build.
+///
+/// `BREP_WITH_VOIDS` is a subtype of `MANIFOLD_SOLID_BREP`, so it names
+/// itself rather than its supertype; the complex-instance form spells both
+/// out and parses with an empty entity type.
+fn is_solid_brep(entity: &StepEntity) -> bool {
+    matches!(
+        entity.entity_type.as_str(),
+        "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS"
+    ) || (entity.entity_type.is_empty() && entity.attrs.contains("MANIFOLD_SOLID_BREP"))
+}
+
+/// Read the trailing `.T.` / `.F.` orientation flag of an oriented entity.
+fn orientation_is_reversed(attrs: &str) -> bool {
+    let tail = attrs.trim_end_matches(')').trim();
+    tail.ends_with(".F.") || tail.ends_with(".FALSE.")
+}
 
 /// Extract all `#NNN` references from an attribute string.
 fn parse_refs(attrs: &str) -> Vec<u64> {
@@ -725,6 +1994,28 @@ fn parse_refs(attrs: &str) -> Vec<u64> {
         }
     }
     refs
+}
+
+/// Extract every `PARAMETER_VALUE(x)` from an attribute string, in order.
+///
+/// A `TRIMMED_CURVE`'s two trim selects each hold a `CARTESIAN_POINT`, a
+/// `PARAMETER_VALUE`, or both, so the parameters have to be picked out by
+/// name rather than by position.
+fn parse_parameter_values(attrs: &str) -> Vec<f64> {
+    const MARKER: &str = "PARAMETER_VALUE(";
+    let mut values = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = attrs[from..].find(MARKER) {
+        let open = from + rel + MARKER.len();
+        let Some(close) = attrs[open..].find(')') else {
+            break;
+        };
+        if let Ok(value) = attrs[open..open + close].trim().parse::<f64>() {
+            values.push(value);
+        }
+        from = open + close;
+    }
+    values
 }
 
 /// Extract `#NNN` references from the first parenthesized list in attrs.
@@ -1126,7 +2417,9 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use std::fmt::Write as _;
 
     use brepkit_topology::Topology;
     use brepkit_topology::test_utils::make_unit_cube_non_manifold;
@@ -1286,6 +2579,58 @@ mod tests {
         let mut topo = Topology::new();
         let result = read_step("ISO-10303-21;\nHEADER;\nENDSEC;\n", &mut topo);
         assert!(result.is_err());
+    }
+
+    // ── Schema tolerance ───────────────────────────────────────────
+
+    /// Files declaring AP214 or AP242 import exactly like the AP203 the
+    /// writer emits.
+    ///
+    /// All three application protocols carry solid geometry as the same
+    /// ISO 10303-42 entities, so the schema string says nothing about
+    /// whether this reader can read the file. OpenZCAD's own exporter writes
+    /// `AUTOMOTIVE_DESIGN`, so refusing AP214 would reject its round trips.
+    #[test]
+    fn ap214_and_ap242_schemas_import_like_ap203() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let ap203 = writer::write_step(&write_topo, &[solid]).unwrap();
+        assert!(
+            ap203.contains("FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));"),
+            "the writer must keep emitting AP203"
+        );
+
+        let baseline_volume = {
+            let mut topo = Topology::new();
+            let solids = read_step(&ap203, &mut topo).unwrap();
+            brepkit_operations::measure::solid_volume(&topo, solids[0], 0.01).unwrap()
+        };
+        assert!((baseline_volume - 24.0).abs() < 1e-9, "{baseline_volume}");
+
+        for schema in [
+            "AUTOMOTIVE_DESIGN",
+            "AUTOMOTIVE_DESIGN_CC2",
+            "AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }",
+            "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING",
+            "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 3 1 4 }",
+        ] {
+            let swapped = ap203.replace(
+                "FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));",
+                &format!("FILE_SCHEMA(('{schema}'));"),
+            );
+            assert!(swapped.contains(schema), "schema swap failed for {schema}");
+
+            let mut topo = Topology::new();
+            let solids = read_step(&swapped, &mut topo)
+                .unwrap_or_else(|e| panic!("schema `{schema}` should import: {e}"));
+            assert_eq!(solids.len(), 1, "schema {schema}");
+            let volume = brepkit_operations::measure::solid_volume(&topo, solids[0], 0.01).unwrap();
+            assert!(
+                (volume - baseline_volume).abs() < 1e-9,
+                "schema {schema} changed the imported solid: {volume} vs {baseline_volume}"
+            );
+        }
     }
 
     #[test]
@@ -1598,6 +2943,1504 @@ mod tests {
         assert!((weights[1] - 0.5).abs() < 1e-10);
         assert!((weights[2] - 0.5).abs() < 1e-10);
         assert!((weights[3] - 1.0).abs() < 1e-10);
+    }
+
+    // ── SURFACE_CURVE family ───────────────────────────────────────
+
+    /// A millimetre/radian unit context using entity ids 9001-9005, so test
+    /// bodies are free to use small ids.
+    const MM_UNIT_CONTEXT: &str = "\
+#9001 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#9002 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n\
+#9003 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );\n\
+#9004 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#9001,'d','c');\n\
+#9005 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) \
+GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#9004)) \
+GLOBAL_UNIT_ASSIGNED_CONTEXT((#9001,#9002,#9003)) \
+REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n";
+
+    /// Wrap DATA-section statements in a minimal well-formed STEP file,
+    /// appending a millimetre unit context unless `body` brings its own.
+    fn step_file(body: &str) -> String {
+        let units = if body.contains("GLOBAL_UNIT_ASSIGNED_CONTEXT") {
+            ""
+        } else {
+            MM_UNIT_CONTEXT
+        };
+        format!(
+            "ISO-10303-21;\nHEADER;\n\
+             FILE_DESCRIPTION((''),'2;1');\n\
+             FILE_NAME('t','2024-01-01T00:00:00',(''),(''),'','','');\n\
+             FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n\
+             {body}\n{units}ENDSEC;\nEND-ISO-10303-21;\n"
+        )
+    }
+
+    /// Resolve units the way an import that is about to read geometry does:
+    /// the length unit is mandatory, so a scale always comes back.
+    fn required_unit_scale(entities: &HashMap<u64, StepEntity>) -> Result<UnitScale, IoError> {
+        Ok(resolve_unit_scale(entities, true)?
+            .expect("a required length unit always resolves to a scale"))
+    }
+
+    /// Resolve one curve entity through the real parse + dispatch path.
+    fn curve_geometry(body: &str, curve_id: u64) -> Result<EdgeCurve, IoError> {
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let units = required_unit_scale(&entities)?;
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units);
+        builder.build_curve_geometry(curve_id)
+    }
+
+    /// Resolve one surface entity through the real parse + dispatch path.
+    fn surface_geometry(body: &str, surface_id: u64) -> Result<FaceSurface, IoError> {
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let units = required_unit_scale(&entities)?;
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units);
+        builder.build_surface(surface_id)
+    }
+
+    /// An OCCT-style surface + pcurve tail, referenced by the wrapper's
+    /// `pcurve_or_surface` list. Entity ids 90+.
+    const OCCT_PCURVE_TAIL: &str = "\
+#90 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+#91 = DIRECTION('',(0.,0.,1.));\n\
+#92 = DIRECTION('',(1.,0.,0.));\n\
+#93 = AXIS2_PLACEMENT_3D('',#90,#91,#92);\n\
+#94 = PLANE('',#93);\n";
+
+    #[test]
+    fn surface_curve_resolves_to_wrapped_line() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+             #2 = DIRECTION('',(1.,0.,0.));\n\
+             #3 = VECTOR('',#2,1.);\n\
+             #4 = LINE('',#1,#3);\n\
+             #5 = SURFACE_CURVE('',#4,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+        );
+        let curve = curve_geometry(&body, 5).unwrap();
+        assert!(matches!(curve, EdgeCurve::Line), "got {curve:?}");
+    }
+
+    #[test]
+    fn surface_curve_resolves_to_wrapped_circle() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2 = DIRECTION('',(0.,0.,1.));\n\
+             #3 = DIRECTION('',(1.,0.,0.));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CIRCLE('',#4,2.5);\n\
+             #6 = SURFACE_CURVE('',#5,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+        );
+        let curve = curve_geometry(&body, 6).unwrap();
+        let EdgeCurve::Circle(circle) = curve else {
+            panic!("expected a circle, got {curve:?}");
+        };
+        assert!((circle.radius() - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn surface_curve_resolves_to_wrapped_bspline() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2 = CARTESIAN_POINT('',(1.,1.,0.));\n\
+             #3 = CARTESIAN_POINT('',(2.,1.,0.));\n\
+             #4 = CARTESIAN_POINT('',(3.,0.,0.));\n\
+             #5 = B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#4),\
+             .UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);\n\
+             #6 = SURFACE_CURVE('',#5,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+        );
+        let curve = curve_geometry(&body, 6).unwrap();
+        let EdgeCurve::NurbsCurve(nurbs) = curve else {
+            panic!("expected a NURBS curve, got {curve:?}");
+        };
+        assert_eq!(nurbs.degree(), 3);
+        assert_eq!(nurbs.control_points().len(), 4);
+    }
+
+    #[test]
+    fn seam_and_intersection_curves_resolve_like_surface_curve() {
+        for wrapper in ["SEAM_CURVE", "INTERSECTION_CURVE"] {
+            let body = format!(
+                "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                 #2 = DIRECTION('',(0.,0.,1.));\n\
+                 #3 = DIRECTION('',(1.,0.,0.));\n\
+                 #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+                 #5 = CIRCLE('',#4,4.);\n\
+                 #6 = {wrapper}('',#5,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+            );
+            let curve = curve_geometry(&body, 6).unwrap();
+            assert!(
+                matches!(curve, EdgeCurve::Circle(_)),
+                "{wrapper} should resolve to its 3-D circle, got {curve:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_curve_without_basis_reference_is_rejected() {
+        let body = "#1 = SURFACE_CURVE('',$,(),.PCURVE_S1.);";
+        let err = curve_geometry(body, 1).unwrap_err();
+        assert!(
+            err.to_string().contains("missing its 3-D curve reference"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── TRIMMED_CURVE ──────────────────────────────────────────────
+
+    /// A cubic Bezier on the knot domain `[0, 4]`, so a trim to `[1, 3]` is
+    /// visibly narrower than the whole curve.
+    const TRIM_BASIS_BSPLINE: &str = "\
+#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+#2 = CARTESIAN_POINT('',(1.,3.,0.));\n\
+#3 = CARTESIAN_POINT('',(3.,3.,0.));\n\
+#4 = CARTESIAN_POINT('',(4.,0.,0.));\n\
+#5 = B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#4),\
+.UNSPECIFIED.,.F.,.F.,(4,4),(0.,4.),.UNSPECIFIED.);\n";
+
+    #[test]
+    fn trimmed_bspline_is_narrowed_to_the_declared_span() {
+        let basis = {
+            let body = TRIM_BASIS_BSPLINE.to_string();
+            let EdgeCurve::NurbsCurve(n) = curve_geometry(&body, 5).unwrap() else {
+                panic!("fixture should be a NURBS curve");
+            };
+            n
+        };
+        assert_eq!(basis.domain(), (0.0, 4.0));
+
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #6 = TRIMMED_CURVE('',#5,(PARAMETER_VALUE(1.)),(PARAMETER_VALUE(3.)),\
+             .T.,.PARAMETER.);\n"
+        );
+        let EdgeCurve::NurbsCurve(trimmed) = curve_geometry(&body, 6).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+
+        let (d0, d1) = trimmed.domain();
+        assert!(
+            (d0 - 1.0).abs() < 1e-9 && (d1 - 3.0).abs() < 1e-9,
+            "trimmed domain should be [1, 3], got [{d0}, {d1}]"
+        );
+        // The trimmed curve must trace exactly the basis over that span.
+        for i in 0..=8 {
+            let t = 1.0 + f64::from(i) * 0.25;
+            let want = basis.evaluate(t);
+            let got = trimmed.evaluate(t);
+            assert!(
+                (want - got).length() < 1e-9,
+                "at t={t}: trimmed {got:?} should equal basis {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trim_covering_the_whole_bspline_leaves_it_alone() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #6 = TRIMMED_CURVE('',#5,(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(4.)),\
+             .T.,.PARAMETER.);\n"
+        );
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(&body, 6).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+        assert_eq!(curve.domain(), (0.0, 4.0));
+        assert_eq!(curve.control_points().len(), 4);
+    }
+
+    /// A reversed trim states the same span; the edge's vertices, not the
+    /// curve, decide which way it is traversed.
+    #[test]
+    fn reversed_trim_bounds_give_the_same_span() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #6 = TRIMMED_CURVE('',#5,(PARAMETER_VALUE(3.)),(PARAMETER_VALUE(1.)),\
+             .F.,.PARAMETER.);\n"
+        );
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(&body, 6).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+        let (d0, d1) = curve.domain();
+        assert!(
+            (d0 - 1.0).abs() < 1e-9 && (d1 - 3.0).abs() < 1e-9,
+            "[{d0},{d1}]"
+        );
+    }
+
+    /// Trimming an analytic curve returns it whole: brepkit stores the
+    /// complete circle and reads the arc extent off the edge's vertices,
+    /// exactly as it does for a bare CIRCLE in an EDGE_CURVE.
+    #[test]
+    fn trimmed_analytic_curves_resolve_to_their_basis() {
+        let circle = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                      #2 = DIRECTION('',(0.,0.,1.));\n\
+                      #3 = DIRECTION('',(1.,0.,0.));\n\
+                      #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+                      #5 = CIRCLE('',#4,4.);\n";
+        let body = format!(
+            "{circle}#6 = TRIMMED_CURVE('',#5,(PARAMETER_VALUE(0.)),\
+             (PARAMETER_VALUE(1.5707963267948966)),.T.,.PARAMETER.);\n"
+        );
+        let EdgeCurve::Circle(c) = curve_geometry(&body, 6).unwrap() else {
+            panic!("expected the basis circle");
+        };
+        assert!((c.radius() - 4.0).abs() < 1e-12);
+
+        let line = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(1.,0.,0.));\n\
+                    #3 = VECTOR('',#2,1.);\n\
+                    #4 = LINE('',#1,#3);\n";
+        let body = format!(
+            "{line}#5 = TRIMMED_CURVE('',#4,(PARAMETER_VALUE(0.)),\
+             (PARAMETER_VALUE(5.)),.T.,.PARAMETER.);\n"
+        );
+        assert!(matches!(curve_geometry(&body, 5).unwrap(), EdgeCurve::Line));
+    }
+
+    /// A `.CARTESIAN.` trim names its ends as points, which are the edge's
+    /// own vertices; the basis comes back untouched rather than guessed at.
+    #[test]
+    fn cartesian_trim_leaves_the_bspline_whole() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #6 = TRIMMED_CURVE('',#5,(#1),(#4),.T.,.CARTESIAN.);\n"
+        );
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(&body, 6).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+        assert_eq!(curve.domain(), (0.0, 4.0));
+    }
+
+    #[test]
+    fn trim_outside_the_basis_domain_is_refused() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #6 = TRIMMED_CURVE('',#5,(PARAMETER_VALUE(1.)),(PARAMETER_VALUE(9.)),\
+             .T.,.PARAMETER.);\n"
+        );
+        let err = curve_geometry(&body, 6).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("outside its basis curve's parameter domain"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_trim_span_is_refused() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #6 = TRIMMED_CURVE('',#5,(PARAMETER_VALUE(2.)),(PARAMETER_VALUE(2.)),\
+             .T.,.PARAMETER.);\n"
+        );
+        let err = curve_geometry(&body, 6).unwrap_err();
+        assert!(
+            err.to_string().contains("empty span"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── POLYLINE ───────────────────────────────────────────────────
+
+    #[test]
+    fn polyline_becomes_a_degree_one_bspline_through_its_points() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = CARTESIAN_POINT('',(3.,0.,0.));\n\
+                    #3 = CARTESIAN_POINT('',(3.,4.,0.));\n\
+                    #4 = CARTESIAN_POINT('',(3.,4.,12.));\n\
+                    #5 = POLYLINE('',(#1,#2,#3,#4));";
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(body, 5).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+        assert_eq!(curve.degree(), 1);
+        assert_eq!(curve.control_points().len(), 4);
+
+        // Chord-length knots: 0, 3, 7, 19.
+        let (d0, d1) = curve.domain();
+        assert!(
+            (d0 - 0.0).abs() < 1e-12 && (d1 - 19.0).abs() < 1e-12,
+            "[{d0},{d1}]"
+        );
+
+        let want = [
+            (0.0, Point3::new(0.0, 0.0, 0.0)),
+            (3.0, Point3::new(3.0, 0.0, 0.0)),
+            (7.0, Point3::new(3.0, 4.0, 0.0)),
+            (19.0, Point3::new(3.0, 4.0, 12.0)),
+            // Halfway along the second segment.
+            (5.0, Point3::new(3.0, 2.0, 0.0)),
+        ];
+        for (t, expected) in want {
+            let got = curve.evaluate(t);
+            assert!(
+                (got - expected).length() < 1e-9,
+                "at t={t} expected {expected:?}, got {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_point_polyline_is_a_line() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #3 = POLYLINE('',(#1,#2));";
+        assert!(matches!(curve_geometry(body, 3).unwrap(), EdgeCurve::Line));
+    }
+
+    /// Repeated points would force an interior knot of multiplicity 2, which
+    /// a degree-1 B-spline cannot carry. They are dropped, not refused.
+    #[test]
+    fn polyline_with_repeated_points_drops_the_duplicates() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #3 = CARTESIAN_POINT('',(3.,0.,0.));\n\
+                    #4 = CARTESIAN_POINT('',(3.,0.,0.));\n\
+                    #5 = CARTESIAN_POINT('',(3.,4.,0.));\n\
+                    #6 = POLYLINE('',(#1,#2,#3,#4,#5));";
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(body, 6).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+        assert_eq!(curve.control_points().len(), 3);
+        assert_eq!(curve.degree(), 1);
+    }
+
+    #[test]
+    fn degenerate_polyline_is_refused() {
+        for body in [
+            "#1 = CARTESIAN_POINT('',(1.,1.,1.));\n#2 = POLYLINE('',(#1));",
+            "#1 = CARTESIAN_POINT('',(1.,1.,1.));\n\
+             #2 = CARTESIAN_POINT('',(1.,1.,1.));\n\
+             #3 = POLYLINE('',(#1,#2));",
+        ] {
+            let id = if body.contains("#3 = POLYLINE") { 3 } else { 2 };
+            let err = curve_geometry(body, id).unwrap_err();
+            assert!(
+                err.to_string().contains("collapses to a single point"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    /// A polyline's points are length-valued and must be scaled like every
+    /// other coordinate the reader takes in.
+    #[test]
+    fn polyline_points_honour_the_declared_unit() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = CARTESIAN_POINT('',(1.,0.,0.));\n\
+                    #3 = CARTESIAN_POINT('',(1.,1.,0.));\n\
+                    #4 = POLYLINE('',(#1,#2,#3));\n\
+                    #5 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.) );\n\
+                    #6 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#5));";
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(body, 4).unwrap() else {
+            panic!("expected a NURBS curve");
+        };
+        let end = curve.control_points()[2];
+        assert!(
+            (end - Point3::new(1000.0, 1000.0, 0.0)).length() < 1e-9,
+            "metre-declared points should arrive in mm, got {end:?}"
+        );
+    }
+
+    // ── Swept surfaces ─────────────────────────────────────────────
+
+    /// The z axis through the origin, as `AXIS1_PLACEMENT` #10/#11/#12.
+    const Z_AXIS1: &str = "#10 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                           #11 = DIRECTION('',(0.,0.,1.));\n\
+                           #12 = AXIS1_PLACEMENT('',#10,#11);\n";
+
+    /// `LINE` #1..#3 from `origin` along `dir`.
+    fn step_line(origin: (f64, f64, f64), dir: (f64, f64, f64)) -> String {
+        format!(
+            "#1 = CARTESIAN_POINT('',({:?},{:?},{:?}));\n\
+             #2 = DIRECTION('',({:?},{:?},{:?}));\n\
+             #3 = VECTOR('',#2,1.);\n\
+             #4 = LINE('',#1,#3);\n",
+            origin.0, origin.1, origin.2, dir.0, dir.1, dir.2
+        )
+    }
+
+    /// `CIRCLE` #1..#5 centred at `center`, with plane normal `normal` and
+    /// in-plane reference direction `ref_dir`.
+    fn step_circle(
+        center: (f64, f64, f64),
+        normal: (f64, f64, f64),
+        ref_dir: (f64, f64, f64),
+        radius: f64,
+    ) -> String {
+        format!(
+            "#1 = CARTESIAN_POINT('',({:?},{:?},{:?}));\n\
+             #2 = DIRECTION('',({:?},{:?},{:?}));\n\
+             #3 = DIRECTION('',({:?},{:?},{:?}));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CIRCLE('',#4,{radius:?});\n",
+            center.0,
+            center.1,
+            center.2,
+            normal.0,
+            normal.1,
+            normal.2,
+            ref_dir.0,
+            ref_dir.1,
+            ref_dir.2
+        )
+    }
+
+    #[test]
+    fn line_revolved_about_a_parallel_axis_is_a_cylinder() {
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#4,#12);",
+            step_line((5.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        );
+        let FaceSurface::Cylinder(cyl) = surface_geometry(&body, 20).unwrap() else {
+            panic!("a line parallel to the axis should revolve into a cylinder");
+        };
+        // Every point on the surface sits at radius 5 from the z axis.
+        for i in 0..12 {
+            let u = f64::from(i) * 0.5;
+            let p = cyl.evaluate(u, 3.0);
+            assert!(
+                (p.x().hypot(p.y()) - 5.0).abs() < 1e-12,
+                "point {p:?} should be 5 from the z axis"
+            );
+            assert!((p.z() - 3.0).abs() < 1e-12, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn line_meeting_the_axis_at_an_angle_revolves_into_a_cone() {
+        // Through the origin, 45° between the +z axis and +x.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#4,#12);",
+            step_line((0.0, 0.0, 0.0), (s, 0.0, s))
+        );
+        let FaceSurface::Cone(cone) = surface_geometry(&body, 20).unwrap() else {
+            panic!("a line meeting the axis at an angle should revolve into a cone");
+        };
+        // A 45° cone: distance from the axis equals height.
+        for i in 1..8 {
+            let v = f64::from(i);
+            let p = cone.evaluate(0.7, v);
+            assert!(
+                (p.x().hypot(p.y()) - p.z()).abs() < 1e-12,
+                "45 degree cone should have radius == height at {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_perpendicular_to_the_axis_revolves_into_a_plane() {
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#4,#12);",
+            step_line((0.0, 0.0, 4.0), (1.0, 0.0, 0.0))
+        );
+        let FaceSurface::Plane { normal, d } = surface_geometry(&body, 20).unwrap() else {
+            panic!("a line crossing the axis at a right angle should revolve into a plane");
+        };
+        assert!(
+            (normal - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-12,
+            "{normal:?}"
+        );
+        assert!(
+            (d - 4.0).abs() < 1e-12,
+            "plane should sit at z = 4, got {d}"
+        );
+    }
+
+    #[test]
+    fn circle_centred_on_the_axis_revolves_into_a_sphere() {
+        // A circle in the xz plane, centred at the origin: its plane holds
+        // the z axis and its centre is on it.
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#5,#12);",
+            step_circle((0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), 3.0)
+        );
+        let FaceSurface::Sphere(sphere) = surface_geometry(&body, 20).unwrap() else {
+            panic!("a circle centred on the axis should revolve into a sphere");
+        };
+        for (u, v) in [(0.0, 0.0), (1.0, 0.4), (2.5, -0.9), (4.0, 1.2)] {
+            let p = sphere.evaluate(u, v);
+            let r = (p - Point3::new(0.0, 0.0, 0.0)).length();
+            assert!(
+                (r - 3.0).abs() < 1e-12,
+                "point {p:?} should be 3 from origin"
+            );
+        }
+    }
+
+    #[test]
+    fn circle_offset_from_the_axis_revolves_into_a_torus() {
+        // Circle of radius 2 centred at (10, 0, 0), in the xz plane.
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#5,#12);",
+            step_circle((10.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), 2.0)
+        );
+        let FaceSurface::Torus(torus) = surface_geometry(&body, 20).unwrap() else {
+            panic!("a circle offset from the axis should revolve into a torus");
+        };
+        for i in 0..7 {
+            for j in 0..7 {
+                let (u, v) = (f64::from(i) * 0.9, f64::from(j) * 0.9);
+                let p = torus.evaluate(u, v);
+                // Implicit torus: (hypot(x, y) - R)^2 + z^2 = r^2.
+                let radial = p.x().hypot(p.y()) - 10.0;
+                let implicit = radial.mul_add(radial, p.z() * p.z());
+                assert!(
+                    (implicit - 4.0).abs() < 1e-9,
+                    "point {p:?} is not on the R=10 r=2 torus ({implicit})"
+                );
+            }
+        }
+    }
+
+    /// A line skew to the axis sweeps a hyperboloid of one sheet, which is
+    /// neither one of brepkit's analytic surfaces nor bounded enough to
+    /// become a NURBS patch. It must be named, not approximated.
+    #[test]
+    fn line_skew_to_the_axis_is_refused_by_name() {
+        // Offset in y, tilted in x: never meets the z axis.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#4,#12);",
+            step_line((0.0, 4.0, 0.0), (s, 0.0, s))
+        );
+        let err = surface_geometry(&body, 20).unwrap_err();
+        assert!(
+            matches!(err, IoError::UnsupportedEntity { .. }),
+            "expected a typed UnsupportedEntity, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("SURFACE_OF_REVOLUTION #20")
+                && err.to_string().contains("hyperboloid"),
+            "the error must name the entity and say why: {err}"
+        );
+    }
+
+    #[test]
+    fn line_on_the_axis_of_revolution_is_refused() {
+        let body = format!(
+            "{}{Z_AXIS1}#20 = SURFACE_OF_REVOLUTION('',#4,#12);",
+            step_line((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        );
+        let err = surface_geometry(&body, 20).unwrap_err();
+        assert!(
+            err.to_string().contains("lies on the axis"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn circle_extruded_along_its_normal_is_a_cylinder() {
+        let body = format!(
+            "{}#10 = DIRECTION('',(0.,0.,1.));\n\
+             #11 = VECTOR('',#10,7.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#5,#11);",
+            step_circle((1.0, 2.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0), 3.0)
+        );
+        let FaceSurface::Cylinder(cyl) = surface_geometry(&body, 20).unwrap() else {
+            panic!("a circle swept along its own normal should be a cylinder");
+        };
+        for i in 0..10 {
+            let p = cyl.evaluate(f64::from(i) * 0.6, 2.0);
+            let r = (p.x() - 1.0).hypot(p.y() - 2.0);
+            assert!((r - 3.0).abs() < 1e-12, "{p:?}");
+            assert!((p.z() - 2.0).abs() < 1e-12, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn line_extruded_off_its_own_direction_is_a_plane() {
+        let body = format!(
+            "{}#10 = DIRECTION('',(0.,1.,0.));\n\
+             #11 = VECTOR('',#10,5.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#4,#11);",
+            step_line((0.0, 0.0, 6.0), (1.0, 0.0, 0.0))
+        );
+        let FaceSurface::Plane { normal, d } = surface_geometry(&body, 20).unwrap() else {
+            panic!("a line swept off its own direction should be a plane");
+        };
+        // x cross y = -z (or +z); either orientation describes the z = 6 plane.
+        assert!(
+            normal.cross(Vec3::new(0.0, 0.0, 1.0)).length() < 1e-12,
+            "{normal:?}"
+        );
+        assert!(
+            (d.abs() - 6.0).abs() < 1e-12,
+            "plane should sit at |z| = 6, got {d}"
+        );
+    }
+
+    #[test]
+    fn line_extruded_along_itself_is_refused() {
+        let body = format!(
+            "{}#10 = DIRECTION('',(1.,0.,0.));\n\
+             #11 = VECTOR('',#10,5.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#4,#11);",
+            step_line((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+        );
+        let err = surface_geometry(&body, 20).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("parallel to the extrusion direction"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn zero_length_extrusion_is_refused() {
+        let body = format!(
+            "{}#10 = DIRECTION('',(0.,0.,1.));\n\
+             #11 = VECTOR('',#10,0.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#5,#11);",
+            step_circle((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0), 3.0)
+        );
+        let err = surface_geometry(&body, 20).unwrap_err();
+        assert!(
+            err.to_string().contains("sweeps no surface"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An oblique circle sweep is a cylinder in shape but not about the
+    /// circle's own axis, so it is not brepkit's `CylindricalSurface`. It
+    /// becomes an exact NURBS patch instead of being forced into the wrong
+    /// analytic type.
+    #[test]
+    fn obliquely_extruded_circle_becomes_an_exact_nurbs_patch() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let body = format!(
+            "{}#10 = DIRECTION('',({s:?},0.,{s:?}));\n\
+             #11 = VECTOR('',#10,10.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#5,#11);",
+            step_circle((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0), 4.0)
+        );
+        let FaceSurface::Nurbs(surface) = surface_geometry(&body, 20).unwrap() else {
+            panic!("an oblique circle sweep should become a NURBS surface");
+        };
+        let offset = Vec3::new(s, 0.0, s) * 10.0;
+        for i in 0..=16 {
+            let u = f64::from(i) / 16.0;
+            for j in 0..=4 {
+                let v = f64::from(j) / 4.0;
+                let p = surface.evaluate(u, v);
+                // Undo the sweep: the point must land back on the circle.
+                let base = p - offset * v;
+                assert!(
+                    (base.z() - 0.0).abs() < 1e-9,
+                    "at ({u}, {v}) the profile point {base:?} left its plane"
+                );
+                assert!(
+                    (base.x().hypot(base.y()) - 4.0).abs() < 1e-9,
+                    "at ({u}, {v}) the profile point {base:?} is not on the radius-4 circle"
+                );
+            }
+        }
+    }
+
+    /// A B-spline profile extruded along a vector is the tensor product of
+    /// the profile with a degree-1 line, which is exact.
+    #[test]
+    fn bspline_extrusion_is_the_profile_translated_along_the_vector() {
+        let body = format!(
+            "{TRIM_BASIS_BSPLINE}\
+             #10 = DIRECTION('',(0.,0.,1.));\n\
+             #11 = VECTOR('',#10,6.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#5,#11);"
+        );
+        let EdgeCurve::NurbsCurve(profile) = curve_geometry(&body, 5).unwrap() else {
+            panic!("fixture should be a NURBS curve");
+        };
+        let FaceSurface::Nurbs(surface) = surface_geometry(&body, 20).unwrap() else {
+            panic!("a B-spline sweep should become a NURBS surface");
+        };
+        for i in 0..=8 {
+            let u = f64::from(i) / 2.0;
+            for j in 0..=4 {
+                let v = f64::from(j) / 4.0;
+                let want = profile.evaluate(u) + Vec3::new(0.0, 0.0, 6.0 * v);
+                let got = surface.evaluate(u, v);
+                assert!(
+                    (want - got).length() < 1e-9,
+                    "at ({u}, {v}) expected {want:?}, got {got:?}"
+                );
+            }
+        }
+    }
+
+    // ── Exactness of the NURBS sweep constructions ─────────────────
+
+    /// The nine-point rational quadratic must trace the conic exactly, not
+    /// approximately — every sample lies on the circle to machine precision.
+    #[test]
+    fn conic_nurbs_lies_exactly_on_its_circle() {
+        let center = Point3::new(1.0, -2.0, 3.0);
+        let x = Vec3::new(0.0, 5.0, 0.0);
+        let y = Vec3::new(0.0, 0.0, 5.0);
+        let curve = conic_to_nurbs(center, x, y).unwrap();
+
+        for i in 0..=64 {
+            let t = f64::from(i) / 64.0;
+            let p = curve.evaluate(t);
+            let offset = p - center;
+            assert!(
+                (offset.length() - 5.0).abs() < 1e-12,
+                "at t={t}: {p:?} is {} from the centre, want 5",
+                offset.length()
+            );
+            assert!(
+                offset.dot(Vec3::new(1.0, 0.0, 0.0)).abs() < 1e-12,
+                "at t={t}: {p:?} left the circle's plane"
+            );
+        }
+    }
+
+    /// `revolve_nurbs` must reproduce the analytic torus exactly, so that
+    /// choosing the NURBS path never silently degrades the geometry.
+    #[test]
+    fn revolved_nurbs_matches_the_analytic_torus() {
+        // Circle of radius 2 at (10, 0, 0) in the xz plane, revolved about z.
+        let profile = conic_to_nurbs(
+            Point3::new(10.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+        )
+        .unwrap();
+        let surface = revolve_nurbs(
+            &profile,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+
+        for i in 0..=24 {
+            let u = f64::from(i) / 24.0;
+            for j in 0..=24 {
+                let v = f64::from(j) / 24.0;
+                let p = surface.evaluate(u, v);
+                let radial = p.x().hypot(p.y()) - 10.0;
+                let implicit = radial.mul_add(radial, p.z() * p.z());
+                assert!(
+                    (implicit - 4.0).abs() < 1e-9,
+                    "at ({u}, {v}) the point {p:?} is off the torus by {}",
+                    (implicit - 4.0).abs()
+                );
+            }
+        }
+    }
+
+    /// A generatrix control point sitting on the axis degenerates to a single
+    /// point rather than producing a ring of the wrong radius.
+    #[test]
+    fn revolved_nurbs_handles_a_generatrix_touching_the_axis() {
+        // A degree-1 profile from the axis out to (4, 0, 4): revolving it
+        // gives a cone, whose apex is the on-axis control point.
+        let profile = brepkit_math::nurbs::NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(4.0, 0.0, 4.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        let surface = revolve_nurbs(
+            &profile,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+
+        for i in 0..=16 {
+            let u = f64::from(i) / 16.0;
+            let apex = surface.evaluate(u, 0.0);
+            assert!(
+                (apex - Point3::new(0.0, 0.0, 0.0)).length() < 1e-12,
+                "at u={u} the apex moved to {apex:?}"
+            );
+            for j in 1..=8 {
+                let v = f64::from(j) / 8.0;
+                let p = surface.evaluate(u, v);
+                assert!(
+                    (p.x().hypot(p.y()) - p.z()).abs() < 1e-9,
+                    "at ({u}, {v}) the point {p:?} is off the 45 degree cone"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cyclic_surface_curve_chain_is_rejected_not_overflowed() {
+        let body = "#1 = SURFACE_CURVE('',#2,(),.PCURVE_S1.);\n\
+                    #2 = SURFACE_CURVE('',#1,(),.PCURVE_S1.);";
+        let err = curve_geometry(body, 1).unwrap_err();
+        assert!(
+            err.to_string().contains("cyclic curve reference"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Rewrite every `EDGE_CURVE` so its curve reference goes through a
+    /// `SURFACE_CURVE` wrapper, the way OpenCascade writes edges on curved
+    /// faces. The resulting file must still import identically.
+    fn wrap_edge_curves_in_surface_curves(step: &str) -> String {
+        let mut next_id = step
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('#'))
+            .filter_map(|l| l.split_whitespace().next())
+            .filter_map(|s| s.trim_end_matches('=').parse::<u64>().ok())
+            .max()
+            .expect("file has entities")
+            + 1;
+
+        let mut wrappers = String::new();
+        let mut out = String::new();
+        for line in step.lines() {
+            if let Some(head) = line.find("= EDGE_CURVE(") {
+                let attrs = &line[head + "= EDGE_CURVE(".len()..];
+                let parts: Vec<&str> = attrs.split(',').collect();
+                assert_eq!(parts.len(), 5, "unexpected EDGE_CURVE layout: {line}");
+                let curve_ref = parts[3].trim();
+                let wrapper_id = next_id;
+                next_id += 1;
+                let _ = writeln!(
+                    wrappers,
+                    "#{wrapper_id} = SURFACE_CURVE('',{curve_ref},(),.PCURVE_S1.);"
+                );
+                let _ = writeln!(
+                    out,
+                    "{}= EDGE_CURVE({}, {}, {}, #{wrapper_id},{}",
+                    &line[..head],
+                    parts[0].trim(),
+                    parts[1].trim(),
+                    parts[2].trim(),
+                    parts[4]
+                );
+            } else if line.starts_with("ENDSEC;") && !wrappers.is_empty() {
+                out.push_str(&wrappers);
+                wrappers.clear();
+                let _ = writeln!(out, "{line}");
+            } else {
+                let _ = writeln!(out, "{line}");
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn cylinder_with_surface_curve_wrapped_edges_imports() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_cylinder(&mut write_topo, 1.0, 2.0).unwrap();
+        let step_str = writer::write_step(&write_topo, &[solid]).unwrap();
+
+        let wrapped = wrap_edge_curves_in_surface_curves(&step_str);
+        assert!(wrapped.contains("SURFACE_CURVE("));
+
+        let mut read_topo = Topology::new();
+        let solids = read_step(&wrapped, &mut read_topo).unwrap();
+        assert_eq!(solids.len(), 1);
+
+        let read_solid = read_topo.solid(solids[0]).unwrap();
+        let shell = read_topo.shell(read_solid.outer_shell()).unwrap();
+        let has_circle = shell.faces().iter().any(|&fid| {
+            let face = read_topo.face(fid).unwrap();
+            let wire = read_topo.wire(face.outer_wire()).unwrap();
+            wire.edges().iter().any(|he| {
+                matches!(
+                    read_topo.edge(he.edge()).unwrap().curve(),
+                    EdgeCurve::Circle(_)
+                )
+            })
+        });
+        assert!(
+            has_circle,
+            "circles behind SURFACE_CURVE wrappers must survive import"
+        );
+    }
+
+    // ── Units ──────────────────────────────────────────────────────
+
+    /// Insert extra DATA-section statements just before the closing ENDSEC.
+    fn append_entities(step: &str, extra: &str) -> String {
+        let idx = step.rfind("ENDSEC;").expect("DATA section ENDSEC");
+        format!("{}{}{}", &step[..idx], extra, &step[idx..])
+    }
+
+    /// Restate the writer's millimetre length unit as a CONVERSION_BASED_UNIT
+    /// inch, the way an inch-authored file from a real CAD system declares it.
+    fn declare_length_unit_inch(step: &str) -> String {
+        const MM: &str = "( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) )";
+        assert!(
+            step.contains(MM),
+            "writer no longer emits the expected mm unit"
+        );
+        let swapped = step.replace(
+            MM,
+            "( CONVERSION_BASED_UNIT('INCH',#90002) LENGTH_UNIT() NAMED_UNIT(#90001) )",
+        );
+        append_entities(
+            &swapped,
+            "#90001 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+             #90002 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#90001);\n",
+        )
+    }
+
+    /// Restate the writer's millimetre length unit as plain metres.
+    fn declare_length_unit_metre(step: &str) -> String {
+        const MM: &str = "SI_UNIT(.MILLI.,.METRE.)";
+        assert!(
+            step.contains(MM),
+            "writer no longer emits the expected mm unit"
+        );
+        step.replace(MM, "SI_UNIT($,.METRE.)")
+    }
+
+    /// Restate the writer's radian plane-angle unit as degrees, and convert
+    /// every CONICAL_SURFACE semi-angle in the file to match.
+    fn declare_angle_unit_degrees(step: &str) -> String {
+        const RAD: &str = "( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) )";
+        assert!(
+            step.contains(RAD),
+            "writer no longer emits the expected radian unit"
+        );
+        let swapped = step.replace(
+            RAD,
+            "( CONVERSION_BASED_UNIT('DEGREE',#90012) NAMED_UNIT(#90011) PLANE_ANGLE_UNIT() )",
+        );
+        let swapped = append_entities(
+            &swapped,
+            "#90011 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n\
+             #90012 = PLANE_ANGLE_MEASURE_WITH_UNIT\
+             (PLANE_ANGLE_MEASURE(1.745329251994330E-02),#90011);\n",
+        );
+
+        let mut out = String::new();
+        let mut rewrote = 0usize;
+        for line in swapped.lines() {
+            if line.contains("= CONICAL_SURFACE(") {
+                let (head, tail) = line.split_at(line.rfind(',').expect("angle attribute"));
+                let radians: f64 = tail
+                    .trim_start_matches(',')
+                    .trim()
+                    .trim_end_matches(");")
+                    .parse()
+                    .expect("semi-angle literal");
+                let _ = writeln!(out, "{head}, {});", radians.to_degrees());
+                rewrote += 1;
+            } else {
+                let _ = writeln!(out, "{line}");
+            }
+        }
+        assert!(rewrote > 0, "fixture has no CONICAL_SURFACE to convert");
+        out
+    }
+
+    /// Axis-aligned extent of a solid's vertices.
+    fn solid_extent(topo: &Topology, sid: SolidId) -> ([f64; 3], [f64; 3]) {
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let shell = topo.shell(topo.solid(sid).unwrap().outer_shell()).unwrap();
+        for &fid in shell.faces() {
+            let face = topo.face(fid).unwrap();
+            let mut wires = vec![face.outer_wire()];
+            wires.extend_from_slice(face.inner_wires());
+            for wid in wires {
+                for oriented in topo.wire(wid).unwrap().edges() {
+                    let edge = topo.edge(oriented.edge()).unwrap();
+                    for vid in [edge.start(), edge.end()] {
+                        let p = topo.vertex(vid).unwrap().point();
+                        for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+                            lo[axis] = lo[axis].min(value);
+                            hi[axis] = hi[axis].max(value);
+                        }
+                    }
+                }
+            }
+        }
+        (lo, hi)
+    }
+
+    /// Every cone half-angle in a solid, in the order the faces appear.
+    fn cone_half_angles(topo: &Topology, sid: SolidId) -> Vec<f64> {
+        let shell = topo.shell(topo.solid(sid).unwrap().outer_shell()).unwrap();
+        shell
+            .faces()
+            .iter()
+            .filter_map(|&fid| match topo.face(fid).unwrap().surface() {
+                FaceSurface::Cone(cone) => Some(cone.half_angle()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inch_declared_cube_imports_as_millimetres() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
+        let step_str = writer::write_step(&write_topo, &[solid]).unwrap();
+
+        let inches = declare_length_unit_inch(&step_str);
+        let mut read_topo = Topology::new();
+        let solids = read_step(&inches, &mut read_topo).unwrap();
+        assert_eq!(solids.len(), 1);
+
+        let (lo, hi) = solid_extent(&read_topo, solids[0]);
+        for axis in 0..3 {
+            let side = hi[axis] - lo[axis];
+            assert!(
+                (side - 25.4).abs() < 1e-9,
+                "a 1-inch cube must import as 25.4 mm, axis {axis} measured {side}"
+            );
+        }
+    }
+
+    #[test]
+    fn metre_declared_cube_imports_as_millimetres() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_box(&mut write_topo, 1.0, 2.0, 3.0).unwrap();
+        let step_str = writer::write_step(&write_topo, &[solid]).unwrap();
+
+        let metres = declare_length_unit_metre(&step_str);
+        let mut read_topo = Topology::new();
+        let solids = read_step(&metres, &mut read_topo).unwrap();
+
+        let (lo, hi) = solid_extent(&read_topo, solids[0]);
+        for (axis, expected) in [1000.0, 2000.0, 3000.0].into_iter().enumerate() {
+            let side = hi[axis] - lo[axis];
+            assert!(
+                (side - expected).abs() < 1e-6,
+                "metre-declared box axis {axis} should be {expected} mm, measured {side}"
+            );
+        }
+    }
+
+    #[test]
+    fn millimetre_declared_file_is_unscaled() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_box(&mut write_topo, 4.0, 5.0, 6.0).unwrap();
+        let step_str = writer::write_step(&write_topo, &[solid]).unwrap();
+
+        let mut read_topo = Topology::new();
+        let solids = read_step(&step_str, &mut read_topo).unwrap();
+        let (lo, hi) = solid_extent(&read_topo, solids[0]);
+        for (axis, expected) in [4.0, 5.0, 6.0].into_iter().enumerate() {
+            assert!((hi[axis] - lo[axis] - expected).abs() < 1e-9, "axis {axis}");
+        }
+    }
+
+    #[test]
+    fn degree_declared_cone_matches_the_radian_declared_file() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_cone(&mut write_topo, 1.0, 0.0, 2.0).unwrap();
+        let radian_step = writer::write_step(&write_topo, &[solid]).unwrap();
+        let degree_step = declare_angle_unit_degrees(&radian_step);
+        assert!(
+            degree_step.contains("CONVERSION_BASED_UNIT('DEGREE'"),
+            "fixture should declare degrees"
+        );
+
+        let mut radian_topo = Topology::new();
+        let radian_solids = read_step(&radian_step, &mut radian_topo).unwrap();
+        let mut degree_topo = Topology::new();
+        let degree_solids = read_step(&degree_step, &mut degree_topo).unwrap();
+
+        let radian_angles = cone_half_angles(&radian_topo, radian_solids[0]);
+        let degree_angles = cone_half_angles(&degree_topo, degree_solids[0]);
+        assert!(!radian_angles.is_empty(), "fixture should have a cone face");
+        assert_eq!(radian_angles.len(), degree_angles.len());
+        for (r, d) in radian_angles.iter().zip(degree_angles.iter()) {
+            assert!(
+                (r - d).abs() < 1e-12,
+                "degree-declared semi-angle {d} should equal the radian one {r}"
+            );
+        }
+
+        let radian_volume =
+            brepkit_operations::measure::solid_volume(&radian_topo, radian_solids[0], 0.01)
+                .unwrap();
+        let degree_volume =
+            brepkit_operations::measure::solid_volume(&degree_topo, degree_solids[0], 0.01)
+                .unwrap();
+        assert!(
+            (radian_volume - degree_volume).abs() < 1e-9 * radian_volume.abs().max(1.0),
+            "degree- and radian-declared cones should be the same solid: \
+             {degree_volume} vs {radian_volume}"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_scale_reads_inch_and_degrees() {
+        let body = "\
+#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#2 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#1);\n\
+#3 = ( CONVERSION_BASED_UNIT('INCH',#2) LENGTH_UNIT() NAMED_UNIT(#1) );\n\
+#4 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );\n\
+#5 = PLANE_ANGLE_MEASURE_WITH_UNIT(PLANE_ANGLE_MEASURE(1.745329251994330E-02),#4);\n\
+#6 = ( CONVERSION_BASED_UNIT('DEGREE',#5) NAMED_UNIT(#4) PLANE_ANGLE_UNIT() );\n\
+#7 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#3,#6));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let scale = required_unit_scale(&entities).unwrap();
+        assert!((scale.length - 25.4).abs() < 1e-12, "{scale:?}");
+        assert!(
+            (scale.angle - 1.745_329_251_994_33E-2).abs() < 1e-15,
+            "{scale:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_unit_scale_reads_si_prefixes() {
+        for (prefix, expected_mm) in [
+            (".MILLI.", 1.0),
+            (".CENTI.", 10.0),
+            ("$", 1000.0),
+            (".KILO.", 1e6),
+            (".MICRO.", 1e-3),
+        ] {
+            let body = format!(
+                "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT({prefix},.METRE.) );\n\
+                 #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));"
+            );
+            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let scale = required_unit_scale(&entities).unwrap();
+            assert!(
+                (scale.length - expected_mm).abs() <= 1e-9 * expected_mm,
+                "{prefix} should scale to {expected_mm} mm, got {}",
+                scale.length
+            );
+            assert!(
+                (scale.angle - 1.0).abs() < 1e-15,
+                "undeclared angle is radians"
+            );
+        }
+    }
+
+    #[test]
+    fn file_without_a_length_unit_is_refused() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT(());";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let err = required_unit_scale(&entities).unwrap_err();
+        assert!(
+            err.to_string().contains("declares no LENGTH_UNIT"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A file that carries geometry but declares no length unit is refused,
+    /// end to end through the public entry point.
+    ///
+    /// The alternative — assuming millimetres — would import a metre-authored
+    /// part 1000x too small and every downstream measurement, boolean and
+    /// toolpath would look entirely reasonable. There is no in-band signal
+    /// that would let a caller distinguish that from a correct import, so the
+    /// only safe answer is a typed refusal.
+    #[test]
+    fn geometry_without_a_declared_length_unit_is_refused() {
+        let mut topo = Topology::new();
+        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let step_str = writer::write_step(&topo, &[solid]).unwrap();
+
+        // Strip the unit declarations the writer emits, leaving the B-Rep.
+        let stripped: String = step_str
+            .lines()
+            .filter(|l| !l.contains("_UNIT(") && !l.contains("GLOBAL_UNIT_ASSIGNED_CONTEXT"))
+            .fold(String::new(), |mut acc, l| {
+                let _ = writeln!(acc, "{l}");
+                acc
+            });
+        assert!(stripped.contains("MANIFOLD_SOLID_BREP("));
+
+        let mut read_topo = Topology::new();
+        let err = read_step(&stripped, &mut read_topo).unwrap_err();
+        assert!(
+            matches!(err, IoError::ParseError { .. }),
+            "expected a typed parse error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("declares no LENGTH_UNIT"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A file with no unit declaration *and* no solid B-Rep imports cleanly
+    /// as zero solids rather than being refused.
+    ///
+    /// Product-structure-only and metadata-only STEP files are well formed
+    /// and common (OpenZCAD ships one as a fixture). Nothing in such a file
+    /// is length-valued, so there is no factor to apply and no way for a
+    /// missing declaration to produce a wrong answer — the refusal above
+    /// protects a quantity that is not present here.
+    #[test]
+    fn metadata_only_file_without_units_imports_as_no_solids() {
+        let step_str = "ISO-10303-21;\nHEADER;\n\
+             FILE_DESCRIPTION(('OpenZCAD sample'),'2;1');\n\
+             FILE_NAME('simple-assembly.step','2026-04-12T00:00:00',(''),(''),'','','');\n\
+             FILE_SCHEMA(('AUTOMOTIVE_DESIGN_CC2'));\nENDSEC;\nDATA;\n\
+             #10 = PRODUCT('Simple Block','Simple Block','',(#20));\n\
+             #20 = PRODUCT_CONTEXT('',#30,'mechanical');\n\
+             #30 = APPLICATION_CONTEXT('configuration controlled 3d designs');\n\
+             #40 = COLOUR_RGB('SampleColor',0.9,0.6,0.2);\n\
+             ENDSEC;\nEND-ISO-10303-21;\n";
+
+        let mut topo = Topology::new();
+        let solids = read_step(step_str, &mut topo).unwrap();
+        assert!(
+            solids.is_empty(),
+            "a file with no B-Rep should import as no solids"
+        );
+    }
+
+    /// The same relaxation must not extend to a declaration that is present
+    /// but broken: that is positive evidence of a malformed file, and it is
+    /// still refused even with no geometry to scale.
+    #[test]
+    fn broken_unit_declaration_is_refused_even_without_geometry() {
+        let body = "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.FURLONG.,.METRE.) );\n\
+                    #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let err = resolve_unit_scale(&entities, false).unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised prefix"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn conflicting_length_units_are_refused() {
+        let body = "\
+#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#2 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.CENTI.,.METRE.) );\n\
+#3 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));\n\
+#4 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#2));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let err = required_unit_scale(&entities).unwrap_err();
+        assert!(
+            err.to_string().contains("conflicting length units"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unrecognised_si_prefix_is_refused_not_defaulted() {
+        let body = "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.FURLONG.,.METRE.) );\n\
+                    #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let err = required_unit_scale(&entities).unwrap_err();
+        assert!(
+            err.to_string().contains("unrecognised prefix"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn length_unit_on_a_non_metre_base_is_refused() {
+        let body = "#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.GRAM.) );\n\
+                    #2 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let err = required_unit_scale(&entities).unwrap_err();
+        assert!(
+            err.to_string().contains("expected `.METRE.`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cyclic_conversion_based_unit_is_refused_not_overflowed() {
+        let body = "\
+#1 = ( CONVERSION_BASED_UNIT('A',#2) LENGTH_UNIT() NAMED_UNIT(*) );\n\
+#2 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(2.),#1);\n\
+#3 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#1));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let err = required_unit_scale(&entities).unwrap_err();
+        assert!(
+            err.to_string().contains("cyclic unit reference"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn inch_declared_circle_radius_is_scaled() {
+        let body = "\
+#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+#2 = DIRECTION('',(0.,0.,1.));\n\
+#3 = DIRECTION('',(1.,0.,0.));\n\
+#4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+#5 = CIRCLE('',#4,2.);\n\
+#6 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#7 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#6);\n\
+#8 = ( CONVERSION_BASED_UNIT('INCH',#7) LENGTH_UNIT() NAMED_UNIT(#6) );\n\
+#9 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#8));";
+        let EdgeCurve::Circle(circle) = curve_geometry(body, 5).unwrap() else {
+            panic!("expected a circle");
+        };
+        assert!(
+            (circle.radius() - 50.8).abs() < 1e-12,
+            "{}",
+            circle.radius()
+        );
+    }
+
+    #[test]
+    fn inch_declared_cylinder_radius_is_scaled() {
+        let body = "\
+#1 = CARTESIAN_POINT('',(1.,0.,0.));\n\
+#2 = DIRECTION('',(0.,0.,1.));\n\
+#3 = DIRECTION('',(1.,0.,0.));\n\
+#4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+#5 = CYLINDRICAL_SURFACE('',#4,2.);\n\
+#6 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#7 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#6);\n\
+#8 = ( CONVERSION_BASED_UNIT('INCH',#7) LENGTH_UNIT() NAMED_UNIT(#6) );\n\
+#9 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#8));";
+        let FaceSurface::Cylinder(cyl) = surface_geometry(body, 5).unwrap() else {
+            panic!("expected a cylinder");
+        };
+        assert!((cyl.radius() - 50.8).abs() < 1e-12, "{}", cyl.radius());
+        assert!(
+            (cyl.origin().x() - 25.4).abs() < 1e-12,
+            "the placement origin must be scaled too, got {}",
+            cyl.origin().x()
+        );
+    }
+
+    // ── Voids ──────────────────────────────────────────────────────
+
+    /// A 3x3x3 box with a fully interior 1x1x1 cavity: one outer shell, one
+    /// inner shell, volume 27 - 1 = 26.
+    fn make_hollow_cube(topo: &mut Topology) -> SolidId {
+        let outer = brepkit_operations::primitives::make_box(topo, 3.0, 3.0, 3.0).unwrap();
+        let void = brepkit_operations::primitives::make_box(topo, 1.0, 1.0, 1.0).unwrap();
+        brepkit_operations::transform::transform_solid(
+            topo,
+            void,
+            &brepkit_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        )
+        .unwrap();
+        let hollow = brepkit_operations::boolean::boolean(
+            topo,
+            brepkit_operations::boolean::BooleanOp::Cut,
+            outer,
+            void,
+        )
+        .unwrap();
+        assert_eq!(
+            topo.solid(hollow).unwrap().inner_shells().len(),
+            1,
+            "fixture should be a solid with one cavity"
+        );
+        hollow
+    }
+
+    #[test]
+    fn hollow_cube_round_trips_with_its_void() {
+        let mut write_topo = Topology::new();
+        let hollow = make_hollow_cube(&mut write_topo);
+        let source_volume =
+            brepkit_operations::measure::solid_volume(&write_topo, hollow, 0.01).unwrap();
+        assert!(
+            (source_volume - 26.0).abs() < 1e-6,
+            "hollow cube should measure 27 - 1 = 26, got {source_volume}"
+        );
+
+        let step_str = writer::write_step(&write_topo, &[hollow]).unwrap();
+        assert!(
+            step_str.contains("BREP_WITH_VOIDS("),
+            "a solid with cavities must export as BREP_WITH_VOIDS"
+        );
+        assert!(step_str.contains("ORIENTED_CLOSED_SHELL("));
+
+        let mut read_topo = Topology::new();
+        let solids = read_step(&step_str, &mut read_topo).unwrap();
+        assert_eq!(solids.len(), 1);
+
+        let read_solid = read_topo.solid(solids[0]).unwrap();
+        assert_eq!(
+            read_solid.inner_shells().len(),
+            1,
+            "the cavity must survive the round trip"
+        );
+
+        let read_volume =
+            brepkit_operations::measure::solid_volume(&read_topo, solids[0], 0.01).unwrap();
+        assert!(
+            (read_volume - source_volume).abs() < 1e-6,
+            "re-imported volume {read_volume} should match {source_volume}"
+        );
+    }
+
+    #[test]
+    fn solid_without_voids_still_exports_as_manifold_solid_brep() {
+        let mut topo = Topology::new();
+        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let step_str = writer::write_step(&topo, &[solid]).unwrap();
+        assert!(step_str.contains("MANIFOLD_SOLID_BREP("));
+        assert!(!step_str.contains("BREP_WITH_VOIDS("));
+    }
+
+    #[test]
+    fn oriented_closed_shell_flag_flips_face_sense() {
+        let mut write_topo = Topology::new();
+        let solid =
+            brepkit_operations::primitives::make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
+        let step_str = writer::write_step(&write_topo, &[solid]).unwrap();
+
+        // Re-root the same CLOSED_SHELL through an ORIENTED_CLOSED_SHELL with
+        // orientation .F. — every face must come back with its sense flipped.
+        let closed_shell_id: u64 = step_str
+            .lines()
+            .find_map(|l| {
+                l.contains("= CLOSED_SHELL(")
+                    .then(|| l.trim().trim_start_matches('#').split(' ').next())
+                    .flatten()
+            })
+            .and_then(|id| id.parse().ok())
+            .expect("writer emits a CLOSED_SHELL");
+
+        let mut senses = Vec::new();
+        for (orientation, expect_flip) in [(".T.", false), (".F.", true)] {
+            let idx = step_str.rfind("ENDSEC;").unwrap();
+            let rerooted = format!(
+                "{}#90001 = ORIENTED_CLOSED_SHELL('',*,#{closed_shell_id},{orientation});\n\
+                 #90002 = MANIFOLD_SOLID_BREP('',#90001);\n{}",
+                &step_str[..idx],
+                &step_str[idx..]
+            );
+            // Drop the original MANIFOLD_SOLID_BREP so only the re-rooted one builds.
+            let mut kept = String::new();
+            for line in rerooted
+                .lines()
+                .filter(|l| !l.contains("= MANIFOLD_SOLID_BREP(") || l.contains("#90001"))
+            {
+                let _ = writeln!(kept, "{line}");
+            }
+            let rerooted = kept;
+
+            let mut read_topo = Topology::new();
+            let solids = read_step(&rerooted, &mut read_topo).unwrap();
+            assert_eq!(solids.len(), 1, "orientation {orientation}");
+            let shell = read_topo
+                .shell(read_topo.solid(solids[0]).unwrap().outer_shell())
+                .unwrap();
+            let reversed: Vec<bool> = shell
+                .faces()
+                .iter()
+                .map(|&fid| read_topo.face(fid).unwrap().is_reversed())
+                .collect();
+            assert!(!reversed.is_empty());
+            senses.push((expect_flip, reversed));
+        }
+
+        let (_, forward) = &senses[0];
+        let (_, flipped) = &senses[1];
+        assert_eq!(forward.len(), flipped.len());
+        for (f, r) in forward.iter().zip(flipped.iter()) {
+            assert_ne!(f, r, "ORIENTED_CLOSED_SHELL .F. must invert each face");
+        }
     }
 
     #[test]

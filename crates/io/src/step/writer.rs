@@ -396,7 +396,7 @@ impl StepWriteContext {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn write_face(&mut self, topo: &Topology, face_id: FaceId) -> Result<u64, IoError> {
+    fn write_face(&mut self, topo: &Topology, face_id: FaceId, flip: bool) -> Result<u64, IoError> {
         let face = topo.face(face_id).map_err(topo_err)?;
 
         let mut bound_ids = Vec::new();
@@ -446,10 +446,15 @@ impl StepWriteContext {
                 let ref_dir = compute_ref_direction(cone.axis());
                 let axis = self.write_axis2_placement(cone.apex(), cone.axis(), ref_dir);
                 let id = self.next_id();
+                // ISO 10303-42's `semi_angle` is measured from the axis;
+                // brepkit's `half_angle` is measured from the radial plane.
+                // Emitting the latter unconverted made every cone we wrote
+                // read back at its complement in any other CAD system.
+                let semi_angle = std::f64::consts::FRAC_PI_2 - cone.half_angle();
                 self.write_entity(
                     id,
                     "CONICAL_SURFACE",
-                    &format!("'', #{axis}, 0.0E0, {:.15E})", cone.half_angle()),
+                    &format!("'', #{axis}, 0.0E0, {semi_angle:.15E})"),
                 );
                 id
             }
@@ -483,7 +488,11 @@ impl StepWriteContext {
         };
 
         let bound_refs: Vec<String> = bound_ids.iter().map(|id| format!("#{id}")).collect();
-        let face_orient = if face.is_reversed() { ".F." } else { ".T." };
+        let face_orient = if face.is_reversed() == flip {
+            ".T."
+        } else {
+            ".F."
+        };
         let advanced_face = self.next_id();
         self.write_entity(
             advanced_face,
@@ -540,12 +549,46 @@ impl StepWriteContext {
         Ok(id)
     }
 
+    /// Write a solid, emitting `BREP_WITH_VOIDS` when it has cavities.
+    ///
+    /// A solid's inner shells are its voids. Writing only the outer shell —
+    /// as this writer used to — exports a hollow part as a filled one with no
+    /// diagnostic, so the cavity silently disappears from the exchanged file.
     fn write_solid(&mut self, topo: &Topology, solid_id: SolidId) -> Result<u64, IoError> {
         let solid = topo.solid(solid_id).map_err(topo_err)?;
-        let shell = self.write_shell(topo, solid.outer_shell())?;
+        let outer_shell_id = solid.outer_shell();
+        let inner_shell_ids = solid.inner_shells().to_vec();
+        let shell = self.write_shell(topo, outer_shell_id, false)?;
+
+        if inner_shell_ids.is_empty() {
+            let brep = self.next_id();
+            self.write_entity(brep, "MANIFOLD_SOLID_BREP", &format!("'', #{shell})"));
+            return Ok(brep);
+        }
+
+        let mut void_refs = Vec::with_capacity(inner_shell_ids.len());
+        for inner_shell_id in inner_shell_ids {
+            // ISO 10303-42 requires void shells to be oriented .F., which
+            // flips the underlying CLOSED_SHELL's normals so they point away
+            // from the material. brepkit's inner-shell faces already point
+            // that way, so they are written flipped and the .F. puts them
+            // back on read.
+            let closed = self.write_shell(topo, inner_shell_id, true)?;
+            let oriented = self.next_id();
+            self.write_entity(
+                oriented,
+                "ORIENTED_CLOSED_SHELL",
+                &format!("'', *, #{closed}, .F.)"),
+            );
+            void_refs.push(format!("#{oriented}"));
+        }
 
         let brep = self.next_id();
-        self.write_entity(brep, "MANIFOLD_SOLID_BREP", &format!("'', #{shell})"));
+        self.write_entity(
+            brep,
+            "BREP_WITH_VOIDS",
+            &format!("'', #{shell}, ({}))", void_refs.join(", ")),
+        );
         Ok(brep)
     }
 
@@ -553,12 +596,13 @@ impl StepWriteContext {
         &mut self,
         topo: &Topology,
         shell_id: brepkit_topology::shell::ShellId,
+        flip: bool,
     ) -> Result<u64, IoError> {
         let shell = topo.shell(shell_id).map_err(topo_err)?;
         let mut face_step_ids = Vec::new();
 
         for &face_id in shell.faces() {
-            let step_face = self.write_face(topo, face_id)?;
+            let step_face = self.write_face(topo, face_id, flip)?;
             face_step_ids.push(step_face);
         }
 
