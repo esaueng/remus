@@ -41,17 +41,24 @@ const D: f64 = 60.0;
 const T: f64 = 6.0;
 const HOLE_R: f64 = 2.25;
 const INSET: f64 = 10.0;
-/// Deflection for the volume comparisons. Fine enough that the drilled
-/// plate's bore faceting stays well inside `VOLUME_TOLERANCE`.
-const VOLUME_DEFLECTION: f64 = 0.005;
+/// Deflection for the volume comparisons. Fine enough that the drilled plate's
+/// bore faceting stays well inside `VOLUME_TOLERANCE`.
+///
+/// It has to be five times finer than it used to be. The drilled plate is fully
+/// analytic before the fillet, so `solid_volume` now integrates it in closed
+/// form; the filleted body carries a NURBS vertex-blend patch and is still
+/// measured off its mesh. The bores' inscribed-mesh error therefore lands on one
+/// end of `before − after` instead of very nearly cancelling across both, and it
+/// is that single-sided term — `4·(2/3)·(2πr)·δ·T`, 1.1 mm³ at δ = 0.005 — the
+/// deflection has to keep small. The budget below is unchanged.
+const VOLUME_DEFLECTION: f64 = 0.001;
 /// How far the drilled plate's measured loss may sit from the plain plate's.
 ///
 /// The two bodies lose the same material, so the only difference is
-/// quadrature: the fillet's rebuild re-tessellates the four bores at a
-/// slightly different segment count than the input carried. That moves a
-/// fixed fraction of the BORES' volume — measured at 0.19 % of it here, and
-/// independent of the fillet radius — so the budget is stated against the
-/// bores rather than against the fillet.
+/// quadrature: the drilled plate's four bores are chorded in the filleted
+/// result, and the plain plate has no bores to chord. That moves a fixed
+/// fraction of the BORES' volume, so the budget is stated against the bores
+/// rather than against the fillet.
 fn volume_tolerance() -> f64 {
     let bore_volume = 4.0 * std::f64::consts::PI * HOLE_R * HOLE_R * T;
     bore_volume * 2.5e-3

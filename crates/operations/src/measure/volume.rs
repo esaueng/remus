@@ -1421,12 +1421,49 @@ fn planar_cap_signed_volume(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Option<f64>, crate::OperationsError> {
+    // Only claim a circular CAP (disc / annulus / sector): a face with no arc
+    // edge is an ordinary polygon, which keeps this recogniser scoped to
+    // genuine revolve caps and out of arbitrary planar-faced solids.
+    Ok(planar_face_signed_volume(topo, face_id)?
+        .and_then(|exact| (exact.arc_edges > 0).then_some(exact.volume)))
+}
+
+/// The closed-form integral of one planar face, with the terms a caller needs to
+/// decide whether to trust it.
+struct PlanarFaceExact {
+    /// Divergence-theorem contribution `(1/3)·(p·n̂_out)·A`.
+    volume: f64,
+    /// Geometric area (outer wire less its holes).
+    area: f64,
+    /// How many boundary edges are circular arcs.
+    arc_edges: usize,
+    /// Total arc length over those edges — the only part of the boundary a
+    /// tessellation has to approximate, so the budget for comparing this
+    /// against the face's own mesh is proportional to it.
+    arc_length: f64,
+}
+
+/// Exact signed volume contribution of any line-and-arc-bounded PLANAR face.
+///
+/// See [`planar_cap_signed_volume`] for the derivation; this is the unrestricted
+/// form, which an all-polygon face also satisfies (with `arc_edges == 0`).
+fn planar_face_signed_volume(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Option<PlanarFaceExact>, crate::OperationsError> {
     let face = topo.face(face_id)?;
     let FaceSurface::Plane { normal, d } = face.surface() else {
         return Ok(None);
     };
     let normal = *normal;
-    let d = *d;
+    // `d` is the offset along the STORED normal (`P·n = d`); the divergence
+    // term needs it along the UNIT normal, so scale by 1/|n| for the callers
+    // that hand in an unnormalised plane.
+    let n_len = normal.length();
+    if n_len <= 0.0 || !n_len.is_finite() {
+        return Ok(None);
+    }
+    let d = *d / n_len;
 
     // Right-handed in-plane frame: ex × ey = normal, so a boundary wound CCW as
     // seen from +normal yields a positive signed area.
@@ -1441,29 +1478,22 @@ fn planar_cap_signed_volume(
     // outer (the #1045 hole-winding class), which would ADD the hole's disc.
     // A hole is inside the outer by definition, so |outer| − Σ|hole| is the
     // geometric area either way.
-    let (outer_area2, mut arc_edges) =
-        match planar_wire_signed_area2(topo, face.outer_wire(), ex, ey)? {
-            Some(r) => r,
-            None => return Ok(None),
-        };
-    let mut area_mag2 = outer_area2.abs();
+    let Some(outer) = planar_wire_signed_area2(topo, face.outer_wire(), ex, ey)? else {
+        return Ok(None);
+    };
+    let mut arc_edges = outer.arc_edges;
+    let mut arc_length = outer.arc_length;
+    let mut area_mag2 = outer.area2.abs();
     for &iw in face.inner_wires() {
-        let Some((hole_area2, hole_arcs)) = planar_wire_signed_area2(topo, iw, ex, ey)? else {
+        let Some(hole) = planar_wire_signed_area2(topo, iw, ex, ey)? else {
             return Ok(None);
         };
-        arc_edges += hole_arcs;
-        area_mag2 -= hole_area2.abs();
+        arc_edges += hole.arc_edges;
+        arc_length += hole.arc_length;
+        area_mag2 -= hole.area2.abs();
     }
     if area_mag2 < 0.0 {
         return Ok(None); // holes exceed the outer boundary — not a sane cap
-    }
-
-    // Only claim a circular CAP (disc / annulus / sector) — a face with no arc
-    // edge is an ordinary polygon (e.g. a box face), which the tessellation path
-    // already integrates exactly; deferring it keeps this analytic path scoped to
-    // genuine revolve caps and out of arbitrary planar-faced solids.
-    if arc_edges == 0 {
-        return Ok(None);
     }
 
     // `area_mag2/2` is the geometric area. The divergence-theorem contribution
@@ -1473,19 +1503,34 @@ fn planar_cap_signed_volume(
     // from the outward offset, not from the wire winding.
     let area = area_mag2 / 2.0;
     let d_out = if face.is_reversed() { -d } else { d };
-    Ok(Some(d_out * area / 3.0))
+    Ok(Some(PlanarFaceExact {
+        volume: d_out * area / 3.0,
+        area,
+        arc_edges,
+        arc_length,
+    }))
+}
+
+/// One planar wire's Green's-theorem terms.
+struct PlanarWireArea {
+    /// Signed DOUBLED area, `∮(x dy − y dx)`.
+    area2: f64,
+    /// Circular-arc edge count.
+    arc_edges: usize,
+    /// Total arc length over those edges.
+    arc_length: f64,
 }
 
 /// Green's-theorem signed doubled area (`∮(x dy − y dx)`) of one planar wire in
-/// the `(ex, ey)` frame, plus its circular-arc edge count. `Ok(None)` when an
-/// edge is neither a line nor a circular arc, so the caller falls back to
-/// tessellation.
+/// the `(ex, ey)` frame, plus its circular-arc edge count and arc length.
+/// `Ok(None)` when an edge is neither a line nor a circular arc, so the caller
+/// falls back to tessellation.
 fn planar_wire_signed_area2(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
     ex: Vec3,
     ey: Vec3,
-) -> Result<Option<(f64, usize)>, crate::OperationsError> {
+) -> Result<Option<PlanarWireArea>, crate::OperationsError> {
     let to_2d = |p: Point3| {
         let v = Vec3::new(p.x(), p.y(), p.z());
         (v.dot(ex), v.dot(ey))
@@ -1493,6 +1538,7 @@ fn planar_wire_signed_area2(
     let tol_lin = brepkit_math::tolerance::Tolerance::default().linear;
     let mut area2: f64 = 0.0; // accumulates 2·A (Green's ∮(x dy − y dx))
     let mut arc_edges = 0_usize;
+    let mut arc_length = 0.0_f64;
     {
         let wire = topo.wire(wire_id)?;
         for oe in wire.edges() {
@@ -1588,10 +1634,15 @@ fn planar_wire_signed_area2(
                     -nat_alpha
                 };
                 area2 += alpha.signum() * radius * radius * (alpha.abs() - alpha.abs().sin());
+                arc_length += radius * alpha.abs();
             }
         }
     }
-    Ok(Some((area2, arc_edges)))
+    Ok(Some(PlanarWireArea {
+        area2,
+        arc_edges,
+        arc_length,
+    }))
 }
 
 /// Exact signed volume contribution of a conical face via the divergence
@@ -2028,17 +2079,142 @@ fn analytic_torus_signed_volume(
     Ok(if face.is_reversed() { -vol } else { vol })
 }
 
+/// Exact per-face divergence sum for a solid whose WHOLE boundary integrates in
+/// closed form — planes by Green's theorem, quadrics by their analytic
+/// integrators — so the result carries no tessellation error at all.
+///
+/// This exists because a per-face divergence sum is only valid when every face
+/// contributes an integral over the SAME boundary. Integrating the quadrics
+/// exactly while chording the planes breaks that: the planes' chord polygons no
+/// longer meet the quadrics' true arcs, and the sliver between them is charged
+/// to nobody. The loss is one-sided, scales with each plane's offset from the
+/// origin, and depends on how the modeller happened to split the body — so two
+/// equivalent decompositions of one solid measure differently. Integrating the
+/// planes exactly too removes the mismatch and the decomposition dependence.
+///
+/// Returns `None` — defer to the tessellated summation — unless
+///   * every face is a plane or a quadric (no NURBS), and
+///   * no quadric face carries an inner wire (the quadric integrators below are
+///     hole-unaware, so a bored wall must keep whatever the caller did before),
+///     and
+///   * every planar face is bounded only by lines and circular arcs, so
+///     [`planar_face_signed_volume`] applies, and
+///   * every planar face's closed form AGREES with the area of its own mesh to
+///     within the chord budget — see [`planar_face_area_is_consistent`].
+fn exact_analytic_face_volume(topo: &Topology, solid: SolidId, deflection: f64) -> Option<f64> {
+    let solid_data = topo.solid(solid).ok()?;
+    let shell = topo.shell(solid_data.outer_shell()).ok()?;
+    if shell.faces().is_empty() {
+        return None;
+    }
+
+    let mut total = 0.0;
+    for &fid in shell.faces() {
+        let face = topo.face(fid).ok()?;
+        let holed = !face.inner_wires().is_empty();
+        total += match face.surface() {
+            FaceSurface::Nurbs(_) => return None,
+            FaceSurface::Plane { .. } => {
+                let exact = planar_face_signed_volume(topo, fid).ok()??;
+                if !planar_face_area_is_consistent(topo, fid, &exact, deflection) {
+                    return None;
+                }
+                exact.volume
+            }
+            FaceSurface::Cylinder(_) if !holed => {
+                analytic_cylinder_signed_volume(topo, fid).ok()?
+            }
+            FaceSurface::Cone(_) if !holed => analytic_cone_signed_volume(topo, fid).ok()?,
+            FaceSurface::Sphere(_) if !holed => analytic_sphere_signed_volume(topo, fid).ok()?,
+            FaceSurface::Torus(_) if !holed => analytic_torus_signed_volume(topo, fid).ok()?,
+            _ => return None, // holed quadric wall: no hole-aware integrator here
+        };
+    }
+    Some(total.abs())
+}
+
+/// Whether a planar face's closed-form area is a REFINEMENT of the area its own
+/// tessellation reports, rather than a different answer.
+///
+/// Green's theorem integrates whatever loops the face stores; it cannot tell a
+/// hole from a mis-traced loop. A shelled cup whose rim boundary sorted into
+/// loops that jump across the solid, or a boolean result whose merged wire self-
+/// crosses, would still yield a confident number. Its own mesh is built from the
+/// same wires by an independent route (sample, project, constrained-triangulate,
+/// drop the exterior), so the two agreeing means the wires really do bound the
+/// region claimed.
+///
+/// The budget is what CHORDING can account for: replacing an arc of length `L`
+/// by an inscribed polyline at deflection `δ` moves the enclosed area by at most
+/// about `(2/3)·L·δ`, and nothing else should differ. `SLACK` covers samplers
+/// that land coarser than the nominal deflection (an angular criterion, a
+/// segment-count floor); it is a factor, not a fixed pad, so the check still
+/// tightens to nothing as `δ → 0`.
+fn planar_face_area_is_consistent(
+    topo: &Topology,
+    face_id: FaceId,
+    exact: &PlanarFaceExact,
+    deflection: f64,
+) -> bool {
+    /// Multiple of the ideal chord budget allowed before the closed form is
+    /// treated as describing a different region than the mesh does.
+    const SLACK: f64 = 16.0;
+
+    // The probe needs a mesh whose error is BOUNDED, not a fine one: the budget
+    // scales with the deflection the mesh was built at, so a coarse probe is
+    // just as conclusive and costs a fraction as much. Floor it at a thousandth
+    // of the face's own arc length, so a caller asking for 1e-6 does not pay for
+    // a million-segment rim it never sees. An arc-free face tessellates to the
+    // same polygon at every deflection, so it needs no floor — and its budget
+    // then collapses to round-off, which is right: a polygon's mesh area IS its
+    // Green's-theorem area.
+    let probe = if exact.arc_length > 0.0 {
+        deflection.max(exact.arc_length * 1e-3)
+    } else {
+        deflection
+    };
+    let Ok(mesh) = tessellate::tessellate(topo, face_id, probe) else {
+        return false;
+    };
+    let mut mesh_area = 0.0;
+    for tri in mesh.indices.chunks_exact(3) {
+        let p = |k: usize| {
+            let v = mesh.positions[tri[k] as usize];
+            Vec3::new(v.x(), v.y(), v.z())
+        };
+        mesh_area += (p(1) - p(0)).cross(p(2) - p(0)).length() / 2.0;
+    }
+    let budget =
+        SLACK * (2.0 / 3.0) * exact.arc_length * probe.max(0.0) + 1e-9 * exact.area.abs().max(1.0);
+    (exact.area - mesh_area).abs() <= budget
+}
+
 /// Compute volume by tessellating each face and summing signed tetrahedra
 /// WITHOUT winding correction. Relies on `tessellate()` already handling
 /// face reversal (via `is_reversed` flag) to produce correctly oriented
 /// triangles. For analytic surface faces (cylinder, cone, sphere, torus),
 /// uses exact analytical integration via the divergence theorem instead
 /// of tessellation.
+///
+/// # Accuracy
+///
+/// When the whole boundary is analytic (planes + quadrics, every planar face
+/// bounded by lines and circular arcs) the result is EXACT — floating-point
+/// round-off only, no dependence on `deflection` and none on how the body was
+/// decomposed. Otherwise the NURBS and spline-bounded faces fall back to their
+/// own tessellation, and the sum inherits that chord error: it is biased low by
+/// roughly `(2/3)·Σ(Lᵢ·δ·|dᵢ|)/3` over those faces (arc length `Lᵢ`, plane
+/// offset `dᵢ`, deflection `δ`), shrinking linearly with `deflection`.
 pub fn volume_from_direct_face_tessellation(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
+    // Exact whenever the whole boundary integrates in closed form.
+    if let Some(v) = exact_analytic_face_volume(topo, solid, deflection) {
+        return Ok(v);
+    }
+
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
 

@@ -353,6 +353,16 @@ pub(super) fn sample_wire_positions(
 
     let mut positions = Vec::new();
 
+    // Half-open in TRAVERSAL order: emit the vertex the wire arrives at and
+    // stop one step short of the vertex it leaves at, which the next edge
+    // supplies. `t_for_index` maps 0 -> the curve's natural start and
+    // `n_samples` -> its natural end, so a forward edge walks `0..n` and a
+    // REVERSED one must walk `n..=1` — not `(0..n).rev()`, which starts one
+    // step inside the arc and drops the vertex the wire arrives at. That
+    // dropped vertex leaves a chord running from the previous edge's last
+    // sample straight into the arc's interior; where the previous edge is a
+    // long straight side, the chord slices a large triangle off the face
+    // (a 74 mm run into an r = 3 arc loses 5.4 mm² — see the volume tests).
     let sample_curve_into = |evaluate: &dyn Fn(f64) -> Point3,
                              t_for_index: &dyn Fn(usize) -> f64,
                              n_samples: usize,
@@ -361,7 +371,7 @@ pub(super) fn sample_wire_positions(
         let indices: Box<dyn Iterator<Item = usize>> = if forward {
             Box::new(0..n_samples)
         } else {
-            Box::new((0..n_samples).rev())
+            Box::new((1..=n_samples).rev())
         };
         for i in indices {
             #[allow(clippy::cast_precision_loss)]

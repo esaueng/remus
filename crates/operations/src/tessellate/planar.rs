@@ -262,8 +262,15 @@ pub(super) fn tessellate_planar(
     let tol = 1e-10;
 
     // Sample a parametric curve into `positions`, skipping consecutive duplicates.
-    // `t_for_index(i)` maps a sample index to a parameter value.
-    // Iterates forward when `forward` is true, reversed otherwise.
+    // `t_for_index(i)` maps a sample index to a parameter value, with `0` the
+    // curve's natural start and `n_samples` its natural end.
+    //
+    // Half-open in TRAVERSAL order: emit the vertex the wire arrives at, stop
+    // one step short of the vertex it leaves at (the next edge supplies that).
+    // A forward edge therefore walks `0..n`; a REVERSED one walks `n..=1` —
+    // `(0..n).rev()` starts one step INSIDE the arc and drops the vertex the
+    // wire arrives at, leaving a chord from the previous edge's last sample
+    // straight into the arc's interior.
     let sample_curve = |evaluate_fn: &dyn Fn(f64) -> Point3,
                         t_for_index: &dyn Fn(usize) -> f64,
                         n_samples: usize,
@@ -272,7 +279,7 @@ pub(super) fn tessellate_planar(
         let indices: Box<dyn Iterator<Item = usize>> = if forward {
             Box::new(0..n_samples)
         } else {
-            Box::new((0..n_samples).rev())
+            Box::new((1..=n_samples).rev())
         };
         for i in indices {
             #[allow(clippy::cast_precision_loss)]
