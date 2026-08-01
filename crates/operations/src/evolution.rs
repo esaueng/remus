@@ -14,6 +14,23 @@
 //! [`EvolutionMap::unresolved`], not bound to the best of several poor
 //! candidates. [`EvolutionMap::origin`] tells the consumer whether it is
 //! looking at construction-derived fact or a geometric inference.
+//!
+//! # Refusing is not free either
+//!
+//! Silence about a face is its own failure. A result face in no bucket cannot be
+//! told from a face that is not in the result, so a consumer neither rebinds it
+//! nor knows to fail closed on it — and unlike a wrong answer, nothing about the
+//! result looks unusual. Refusal is therefore reserved for questions that are
+//! genuinely unanswerable, not spent on ties that only look like one.
+//!
+//! The distinction that does the work is between the two claims. `modified` says
+//! an output face *is* an input face carried forward, and that is the claim a
+//! stored selection rides on, so it is never made on a guess. `generated` says
+//! an output face is new and names what it was built from; it cannot move a
+//! selection anywhere, so it can name several sources at once. A blend band ties
+//! between the two faces its rounded edge separated because it was built from
+//! both — an unanswerable question under the first claim, and a plain fact under
+//! the second.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -70,6 +87,27 @@ impl EvolutionOrigin {
 /// candidate in an `unresolved` tie — is *unknown*, not surviving and not
 /// deleted, and a consumer must fail closed on it exactly as it would on an
 /// unresolved output.
+///
+/// # `modified` and `generated` say different things
+///
+/// `modified` is an identity claim: this output face *is* that input face, cut
+/// back. It is what a consumer rebinding a stored selection reads, so a wrong
+/// entry moves the selection onto geometry the user never picked.
+///
+/// `generated` is an adjacency claim: this output face is new, and these are the
+/// input faces it was built from. It cannot rebind anything, which is why a new
+/// face may name several sources without hazard. A blend band names both faces
+/// its rounded edge separated — many-to-one is the normal case here, not a
+/// degenerate one, and it is how both the walking builder's construction record
+/// and the geometric matcher report a band.
+///
+/// # Completeness
+///
+/// Every face of the result should appear in `modified`, `generated` or
+/// `unresolved`. A face in none of them is invisible to a consumer, which cannot
+/// distinguish it from a face that is not in the result — so it neither rebinds
+/// nor fails closed. Note that a face count cannot detect this: the count is
+/// right while the attribution is missing.
 #[derive(Debug, Clone, Default)]
 pub struct EvolutionMap {
     /// Input face -> output faces that are modified versions of it.
@@ -251,10 +289,15 @@ pub fn characteristic_length(faces: &[FaceSignature], more: &[FaceSignature]) ->
 /// - An output face whose normal+centroid clearly beats every alternative is a
 ///   **modified** version of that input.
 /// - An output face matching no input at all is **generated**, attributed to the
-///   nearest input when that input is unambiguously nearest.
+///   nearest input — or to all of them when several are equally near.
+/// - An output face that ties between several inputs it is parallel to none of
+///   is also **generated**, from every one of them: it cannot be any of them
+///   re-trimmed, so it is new geometry built between them. A blend band is the
+///   case this exists for.
 /// - An input face matched by no output is **deleted**.
-/// - An output face whose best candidates cannot be separated is **unresolved**
-///   and is deliberately left unattributed.
+/// - An output face whose best candidates cannot be separated, *and* which
+///   could be one of them carried forward, is **unresolved** and is deliberately
+///   left unattributed.
 ///
 /// Distances are measured against the body's own diagonal
 /// ([`characteristic_length`]), so the same body modelled in metres, millimetres
@@ -339,10 +382,39 @@ pub fn build_evolution_by_geometry_with_scale(
         // More than one tied candidate is only an answer when those candidates
         // are pieces of one surface — the two halves of a same-domain merge,
         // which genuinely both flow into this output. Candidates on different
-        // surfaces that merely score alike are not a merge, they are a coin
-        // toss, and this map does not toss coins.
+        // surfaces that merely score alike are not a merge, and this map does
+        // not toss coins about which of them the output *is*.
+        //
+        // But "which of them is it?" is the wrong question when the answer is
+        // "none of them". An output parallel to no candidate cannot be any of
+        // them carried forward, so the tie is not an ambiguity at all — it is
+        // the signature of a face built *between* them. A rolling-ball blend
+        // band is exactly that: tangent to each face its edge separated,
+        // equidistant from both, and facing along their bisector. That is why
+        // it ties, and `generated` is the bucket for it.
+        //
+        // The walking builder, which keeps a real construction record, reports
+        // the same band as generated from the same two base faces. Reaching
+        // that answer here too keeps the two engines behind one operation from
+        // disagreeing about what a blend face descends from.
+        //
+        // A tie among candidates the output *is* parallel to stays refused: any
+        // of them could be this face re-trimmed or moved, and picking one is
+        // the coin toss this map does not make. So no `modified` entry is ever
+        // added here, and the mis-binding hazard the refusal exists to prevent
+        // stays closed.
         if tied.len() > 1 && !all_cosurface(input_faces, &tied, plane_tol) {
-            evo.add_unresolved(out_idx, tied);
+            let could_be_one_of_them = tied
+                .iter()
+                .any(|&in_idx| could_be_carried_forward(input_faces, in_idx, out_normal));
+            if could_be_one_of_them {
+                evo.add_unresolved(out_idx, tied);
+            } else {
+                for in_idx in tied {
+                    evo.add_generated(in_idx, out_idx);
+                    matched_inputs.insert(in_idx);
+                }
+            }
             continue;
         }
 
@@ -352,10 +424,16 @@ pub fn build_evolution_by_geometry_with_scale(
         }
     }
 
-    // An output resembling no input is new geometry. Attribute it to the
-    // nearest input only when that input is unambiguously nearest and within
-    // the same centroid budget; otherwise the "nearest" is a guess about a face
-    // that may have nothing to do with it.
+    // An output resembling no input is new geometry. It is attributed to the
+    // nearest input within the same centroid budget — or, when several are
+    // equally near, to every one of them.
+    //
+    // Several equally-near inputs is not the ambiguity it looks like. This face
+    // resembles no input at all, so there is no question of it *being* one of
+    // them and no selection to relocate; the only claim on offer is which
+    // inputs it was built between, and "all of the equally-nearest" is the
+    // honest answer to that. Naming one of them at random would be a guess;
+    // naming none of them loses the one fact the matcher does have.
     for &(out_idx, _out_normal, out_centroid) in &unmatched_outputs {
         let mut by_dist: Vec<(usize, f64)> = input_faces
             .iter()
@@ -374,8 +452,11 @@ pub fn build_evolution_by_geometry_with_scale(
             .filter(|&&(_, d)| d <= nearest_d + tie_band)
             .map(|&(i, _)| i)
             .collect();
-        if contenders.len() > 1 && !all_cosurface(input_faces, &contenders, plane_tol) {
-            evo.add_unresolved(out_idx, contenders);
+        if contenders.len() > 1 {
+            for in_idx in contenders {
+                evo.add_generated(in_idx, out_idx);
+                matched_inputs.insert(in_idx);
+            }
             continue;
         }
         evo.add_generated(nearest, out_idx);
@@ -401,6 +482,30 @@ fn dist_sq(a: Point3, b: Point3) -> f64 {
     let dy = a.y() - b.y();
     let dz = a.z() - b.z();
     dx.mul_add(dx, dy.mul_add(dy, dz * dz))
+}
+
+/// Whether an output face could be input face `want` carried forward.
+///
+/// The test is orientation alone: re-trimming a face changes its boundary, not
+/// which way it faces, so an output parallel to an input might be that input
+/// re-trimmed, moved, or offset — and the matcher has no way to rule it out.
+/// The centroid is deliberately *not* consulted. A face that slid off its
+/// original plane is still that face, and treating the offset as disqualifying
+/// would turn a real ambiguity into a confident answer.
+///
+/// It is the converse that carries information. A face parallel to none of its
+/// candidates does not lie on any of their surfaces and cannot be any of them
+/// carried forward, whatever its position: it is new geometry. A rolling-ball
+/// blend band is the case in point — its normal bisects the two faces its edge
+/// separated, 45° from each on a box corner, so it is parallel to neither.
+///
+/// A missing `want` reads as "could not be", so a caller cannot get an answer
+/// out of an index that is not in the input set.
+fn could_be_carried_forward(input_faces: &[FaceSignature], want: usize, out_normal: Vec3) -> bool {
+    input_faces
+        .iter()
+        .find(|&&(i, _, _)| i == want)
+        .is_some_and(|&(_, n, _)| n.dot(out_normal) >= COSURFACE_MIN_DOT)
 }
 
 /// Whether every listed input face lies on one surface: parallel normals, and
@@ -495,6 +600,88 @@ mod tests {
         assert!(!evo.is_complete());
         // Neither contested input may be called deleted: they are unknown.
         assert!(evo.deleted.is_empty(), "{:?}", evo.deleted);
+    }
+
+    /// The six planes of a 10-cube, as the matcher sees them.
+    fn cube_face_signatures() -> [FaceSignature; 6] {
+        [
+            (0, Vec3::new(0.0, 0.0, 1.0), Point3::new(5.0, 5.0, 10.0)),
+            (1, Vec3::new(0.0, 0.0, -1.0), Point3::new(5.0, 5.0, 0.0)),
+            (2, Vec3::new(1.0, 0.0, 0.0), Point3::new(10.0, 5.0, 5.0)),
+            (3, Vec3::new(-1.0, 0.0, 0.0), Point3::new(0.0, 5.0, 5.0)),
+            (4, Vec3::new(0.0, 1.0, 0.0), Point3::new(5.0, 10.0, 5.0)),
+            (5, Vec3::new(0.0, -1.0, 0.0), Point3::new(5.0, 0.0, 5.0)),
+        ]
+    }
+
+    /// The blend-band signature, reduced to face signatures: an output that is
+    /// equidistant from two inputs and faces along their bisector is new
+    /// geometry built between them, not a re-trimmed copy of either. It ties
+    /// because of how it was built, and the tie names its two base faces.
+    ///
+    /// These are the real numbers for a 10-cube with the edge between the top
+    /// (+z) and the right (+x) face rounded at radius 1: the band's axis lies
+    /// at x = z = 9, so its surface centroid sits at 9 + cos 45° on both axes.
+    #[test]
+    fn a_band_facing_between_two_inputs_is_generated_from_both_not_refused() {
+        let inputs = cube_face_signatures();
+        let bisector = Vec3::new(1.0, 0.0, 1.0).normalize().unwrap();
+        let c = 9.0 + std::f64::consts::FRAC_1_SQRT_2;
+        let outputs = [(100usize, bisector, Point3::new(c, 5.0, c))];
+
+        let evo = build_evolution_by_geometry(&inputs, &outputs);
+
+        assert!(
+            evo.modified.is_empty(),
+            "a band is not a modified copy of either base face: {:?}",
+            evo.modified
+        );
+        assert_eq!(
+            evo.generated.get(&0),
+            Some(&vec![100]),
+            "the top face is one of the two the rounded edge separated"
+        );
+        assert_eq!(
+            evo.generated.get(&2),
+            Some(&vec![100]),
+            "the right face is the other"
+        );
+        assert_eq!(
+            evo.generated.len(),
+            2,
+            "and only those two: {:?}",
+            evo.generated
+        );
+        assert!(evo.is_complete(), "the band is placed, not refused");
+    }
+
+    /// The discriminator itself. Orientation decides: a face parallel to a
+    /// candidate might be that candidate re-trimmed or moved and is never
+    /// declared new, however far it has travelled; a face at 45° to it cannot
+    /// be, however close it sits. Position is not consulted, on purpose — a
+    /// face that slid off its plane is still that face.
+    #[test]
+    fn carried_forward_is_decided_by_orientation_not_position() {
+        let inputs = cube_face_signatures();
+        let pz = Vec3::new(0.0, 0.0, 1.0);
+        let bisector = Vec3::new(1.0, 0.0, 1.0).normalize().unwrap();
+
+        assert!(
+            could_be_carried_forward(&inputs, 0, pz),
+            "the top face could always be itself"
+        );
+        assert!(
+            !could_be_carried_forward(&inputs, 0, bisector),
+            "a band at 45° to the top face is not the top face"
+        );
+        assert!(
+            !could_be_carried_forward(&inputs, 2, bisector),
+            "nor the right face"
+        );
+        assert!(
+            !could_be_carried_forward(&inputs, 99, pz),
+            "an index that is not an input yields no answer"
+        );
     }
 
     #[test]

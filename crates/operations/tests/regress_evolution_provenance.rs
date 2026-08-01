@@ -249,16 +249,28 @@ fn plane_of(topo: &Topology, face: brepkit_topology::face::FaceId) -> (Vec3, f64
 /// construction record, so the map falls back to geometric matching and must
 /// say so.
 ///
-/// The blend face is the interesting one. It did not exist in the input, and
-/// its sampled normal sits between the two faces the rounded edge separated —
-/// equidistant from both, on neither's plane. The matcher has no basis to pick
-/// one, and the old near-tie rule handed it BOTH: the blend face was recorded
-/// as a modified version of the top face and of the side face at once, so a
-/// selection stored against either one silently acquired a face the user never
-/// picked. It is now reported unresolved, naming the two candidates, and the
-/// consumer fails closed on it.
+/// The blend face is the interesting one, and it has had two wrong answers.
+///
+/// It did not exist in the input, and its sampled normal sits between the two
+/// faces the rounded edge separated — equidistant from both, on neither's
+/// plane. The original near-tie rule read that tie as agreement and recorded
+/// the blend as a **modified** version of the top face and of the side face at
+/// once, so a selection stored against either silently acquired a face the user
+/// never picked. That was right to remove.
+///
+/// What replaced it read the tie as ambiguity and refused the face outright.
+/// But a tie between two faces the output is parallel to *neither* of is not an
+/// ambiguity: an output at 45° to both cannot be either of them re-trimmed,
+/// which leaves only one thing it can be — new geometry built between them.
+/// That is `generated`, and it is what the walking builder's own construction
+/// record says for the same band on a cylinder rim. Two engines behind one
+/// operation are not entitled to different answers about what a blend face
+/// descends from.
+///
+/// The property that made the first answer dangerous is still enforced below:
+/// the blend appears in no `modified` entry, so no stored selection moves.
 #[test]
-fn a_rebuilt_fillet_refuses_to_name_the_blend_face_it_cannot_place() {
+fn a_rebuilt_fillet_attributes_its_blend_face_to_both_base_faces() {
     let mut topo = Topology::new();
     let cube = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let edges = brepkit_topology::explorer::solid_edges(&topo, cube).unwrap();
@@ -296,28 +308,61 @@ fn a_rebuilt_fillet_refuses_to_name_the_blend_face_it_cannot_place() {
     claimed.dedup();
     assert_eq!(claimed.len(), 6, "six faces in, six distinct faces out");
 
-    // The seventh face is the blend, and it is refused rather than attributed.
+    // The seventh face is the blend, and it is generated from exactly the two
+    // faces the rounded edge ran between.
+    let generated: HashSet<usize> = evo.generated.values().flatten().copied().collect();
     assert_eq!(
-        evo.unresolved.len(),
+        generated.len(),
         1,
-        "exactly the blend face is unresolved: {:?}",
-        evo.unresolved
+        "one rounded edge, one blend face: {:?}",
+        evo.generated
     );
-    let (&blend, candidates) = evo.unresolved.iter().next().unwrap();
-    assert!(!before.contains(&blend) && after.contains(&blend));
+    let blend = *generated.iter().next().unwrap();
+    assert!(
+        !before.contains(&blend) && after.contains(&blend),
+        "the blend is a face of the result that was not a face of the input"
+    );
+
+    let mut sources: Vec<usize> = evo
+        .generated
+        .iter()
+        .filter(|(_, outs)| outs.contains(&blend))
+        .map(|(src, _)| *src)
+        .collect();
+    sources.sort_unstable();
     assert_eq!(
-        candidates.len(),
+        sources.len(),
         2,
-        "the two faces the rounded edge separated are named as candidates"
+        "a band is built between the two faces its edge separated, got {sources:?}"
     );
+    for src in &sources {
+        assert!(
+            before.contains(src),
+            "band attributed to {src}, which is not an input face"
+        );
+    }
+
+    // The hazard the old near-tie rule created: the blend must never be handed
+    // out as a surviving version of a face the user could have selected.
     assert!(
         !claimed.contains(&blend),
         "the blend face must not also be claimed as a surviving input face"
     );
+    for (src, outs) in &evo.modified {
+        assert!(
+            !outs.contains(&blend),
+            "input face {src} claims the blend as a modified version of itself"
+        );
+    }
+
     assert!(
         evo.deleted.is_empty(),
         "rounding an edge removes no face: {:?}",
         evo.deleted
     );
-    assert!(!evo.is_complete(), "the map admits it is incomplete");
+    assert!(
+        evo.is_complete(),
+        "every face of the result is placed: {:?}",
+        evo.unresolved
+    );
 }

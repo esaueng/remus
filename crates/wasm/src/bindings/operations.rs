@@ -291,14 +291,25 @@ impl BrepKernel {
     /// `fuseWithEvolution`. Blend faces appear under `generated` and surviving
     /// faces under `modified`.
     ///
+    /// A blend band is listed under **both** faces its rounded edge separated.
+    /// It was built between them, so both are its origin; `generated` is an
+    /// adjacency record, not an identity, and naming two sources for one new
+    /// face is the normal case. A band is never listed under `modified` — it is
+    /// not any input face cut back, and a selection stored against one of those
+    /// faces must not acquire it.
+    ///
     /// `origin` says how far the answer can be trusted. `"construction"` means
     /// the blend engine recorded the correspondence while assembling the
     /// result; `"geometry"` means it was matched from face normals and
     /// centroids, because the engine that ran rebuilds faces instead of
-    /// trimming them and keeps no record. Either way, `unresolved` lists result
-    /// faces with no established origin (with the input faces that tied, when
-    /// there were any) — a caller holding a persistent face reference must fail
-    /// closed on those rather than pick from the candidates.
+    /// trimming them and keeps no record. The two agree on where a band belongs;
+    /// `origin` distinguishes a recorded fact from an inference that happens to
+    /// reach the same answer.
+    ///
+    /// Either way, `unresolved` lists result faces with no established origin
+    /// (with the input faces that tied, when there were any) — a caller holding
+    /// a persistent face reference must fail closed on those rather than pick
+    /// from the candidates. For a fillet of a box or a cylinder rim it is empty.
     ///
     /// # Errors
     ///
