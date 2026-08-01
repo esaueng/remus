@@ -9,14 +9,27 @@ permissions:
   contents: read
 
 jobs:
-  readers:
+  # The reader targets hunt a panic on malformed input. The engine targets hunt
+  # a different animal — a well-formed, confident, wrong solid — and a failure
+  # there is a correctness bug, not a robustness one. They share a job shape but
+  # not a purpose.
+  targets:
     name: ${{ matrix.target }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        target: [step_reader, iges_reader, stl_reader, obj_reader, ply_reader, glb_reader, threemf_reader]
+        target:
+          - step_reader
+          - iges_reader
+          - stl_reader
+          - obj_reader
+          - ply_reader
+          - glb_reader
+          - threemf_reader
+          - boolean_tree
+          - modifier_ops
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@c93f4f9c67595668add93d3d6895795ce52d8c2d # nightly

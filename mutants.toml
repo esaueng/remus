@@ -1,20 +1,32 @@
 # cargo-mutants configuration
 # https://mutants.rs/config.html
 #
-# Scoped to critical correctness modules: NURBS math, predicates, and
-# boolean algorithm. Run locally with: cargo mutants
+# Run locally with: cargo mutants
 # CI runs weekly on Sunday (see .github/workflows/mutants.yml).
+#
+# Scope note: this file covered only the NURBS math, the predicates and the
+# boolean algorithm. That is the layer where a wrong answer is a wrong number,
+# and it left the layer where a wrong answer is a wrong *solid* unmeasured —
+# the blend, offset and modifier code that produced every defect closed in this
+# batch. Those crates are added below.
 
 timeout = 120
 
-# Only mutate the core math and algorithm crates
 examine_globs = [
+  # Core numerics and the boolean algorithm.
   "crates/math/src/nurbs/**",
   "crates/math/src/predicates.rs",
   "crates/math/src/filtered.rs",
   "crates/math/src/cdt.rs",
   "crates/math/src/convex_hull.rs",
   "crates/algo/src/**",
+
+  # The geometry engines. Every defect in the last batch lived here: a blend
+  # that returned a silent subset, an offset that reported surviving faces as
+  # deleted, modifiers that filled the holes they were told to keep.
+  "crates/blend/src/**",
+  "crates/offset/src/**",
+  "crates/operations/src/**",
 ]
 
 # Exclude test and bench code from mutation

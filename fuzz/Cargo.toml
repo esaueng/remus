@@ -10,9 +10,12 @@ version = "0.0.0"
 cargo-fuzz = true
 
 [dependencies]
+arbitrary = {version = "1", features = ["derive"]}
 brepkit-io = {path = "../crates/io"}
+brepkit-math = {path = "../crates/math"}
+brepkit-operations = {path = "../crates/operations"}
 brepkit-topology = {path = "../crates/topology"}
-libfuzzer-sys = "0.4"
+libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 
 [[bin]]
 bench = false
@@ -61,4 +64,18 @@ bench = false
 doc = false
 name = "threemf_reader"
 path = "fuzz_targets/threemf_reader.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "boolean_tree"
+path = "fuzz_targets/boolean_tree.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "modifier_ops"
+path = "fuzz_targets/modifier_ops.rs"
 test = false
