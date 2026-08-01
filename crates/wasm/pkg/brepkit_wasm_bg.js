@@ -4921,7 +4921,8 @@ export class BrepKernel {
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
      * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
-     * `corner_mode`: "smooth" (default), "miter", or "round"
+     * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
+     *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
      * Returns a solid handle.
      * @param {number} profile
      * @param {number} path_edge
