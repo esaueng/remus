@@ -161,6 +161,54 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
     counts.values().filter(|&&c| c != 2).count()
 }
 
+/// Whether a cylinder/cone wall is a NOTCHED band — a trimmed region whose UV
+/// outline is not the rectangle `[u_min, u_max] x [v_min, v_max]`.
+///
+/// Every measurement below the analytic path (this module's tessellation
+/// routes, and `face_area`'s `sweep * r * height`) reads a quadric wall as that
+/// rectangle. It is the right domain for a plain band or a partial sector, and
+/// wrong for the wall a boss crossing a wall leaves behind: the buried arc is
+/// removed only over the thickness it is buried in, so the survivor is the full
+/// ring above the wall plus a tab hanging below it, and the rectangle credits
+/// the whole cylinder — 3.05 % heavy on a 60x40x8 plate fused with an r=10 boss
+/// overhanging its x=0 wall, against a per-face integral exact to the closed
+/// form.
+///
+/// Signature: the outline visits three or more distinct axial levels. Two is
+/// all a rectangle's corners can occupy, so a third is proof the rectangle
+/// over-credits, and it is also what puts
+/// [`brepkit_check::properties::face_integrator`] on its boundary-trimmed
+/// branch, which integrates the real outline. Holed walls are routed by their
+/// own trigger; NURBS never reaches here.
+fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
+    let Ok(face) = topo.face(fid) else {
+        return false;
+    };
+    let (axis, origin) = match face.surface() {
+        FaceSurface::Cylinder(c) => (c.axis(), c.origin()),
+        FaceSurface::Cone(c) => (c.axis(), c.apex()),
+        _ => return false,
+    };
+    if !face.inner_wires().is_empty() {
+        return false;
+    }
+    let Ok(pts) = crate::boolean::face_polygon(topo, fid) else {
+        return false;
+    };
+    if pts.len() < 4 {
+        return false;
+    }
+    let mut levels: Vec<f64> = pts.iter().map(|p| axis.dot(*p - origin)).collect();
+    levels.sort_by(f64::total_cmp);
+    let span = levels[levels.len() - 1] - levels[0];
+    if span <= 0.0 {
+        return false;
+    }
+    let eps = span * 1e-6;
+    levels.dedup_by(|a, b| (*a - *b).abs() <= eps);
+    levels.len() >= 3
+}
+
 fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     use brepkit_topology::explorer::solid_faces;
 
@@ -180,6 +228,9 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
 
     let mut has_bored_quadric = false;
     for &fid in &faces {
+        if quadric_wall_is_notched_band(topo, fid) {
+            has_bored_quadric = true;
+        }
         let face = topo.face(fid).ok()?;
         match face.surface() {
             FaceSurface::Nurbs(_) => return None,

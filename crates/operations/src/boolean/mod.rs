@@ -625,7 +625,11 @@ pub fn boolean(
                 let euler_ok = hollow_ok
                     && (euler_eff == 2
                         || (euler_balanced(euler_eff, inner_wire_count) && closed_manifold));
-                if euler_ok && open_shell_ok && validate_boolean_result(topo, result).is_ok() {
+                if euler_ok
+                    && open_shell_ok
+                    && operands_are_represented(topo, op, result, a, b, tol)
+                    && validate_boolean_result(topo, result).is_ok()
+                {
                     log::info!(
                         "GFA boolean succeeded in {:.1}ms ({result_faces} faces)",
                         timer_elapsed_ms(gfa_start)
@@ -719,6 +723,7 @@ pub fn boolean(
                     // it and here mutates the result (only read-only component
                     // and classifier queries run in between).
                     && closed_manifold
+                    && operands_are_represented(topo, op, result, a, b, tol)
                     && validate_boolean_result(topo, result).is_ok()
                 {
                     log::info!(
@@ -1952,6 +1957,100 @@ fn xform_from_canonical_z(
         [0.0, 0.0, 0.0, 1.0],
     ]);
     translate * rot
+}
+
+/// Whether a GFA result still accounts for both operands.
+///
+/// A well-formed shell that quietly LOST an operand passes every structural
+/// gate above — Euler balances, the shell is closed, `validate_solid` accepts
+/// it — because what came back is a perfectly good solid; it is just the wrong
+/// one. A cylinder exactly tangent to a planar wall did this: the tangency
+/// splits the boss's rim circles antipodally to their seam, the assembler's
+/// wire trace collapsed, and the fuse returned the plate alone (−11.6 %) and the
+/// cut returned the blank untouched (+15.1 %), both fully valid. An
+/// approximation census cannot see either — there is no approximation, only
+/// less geometry — so the acceptance gate has to check the contract itself.
+///
+/// Two contract facts are cheap and exact enough to check:
+/// * a **union contains both operands**, so the result's bounding box must
+///   contain both operands' boxes;
+/// * a **difference whose tool has interior in common with the blank removes
+///   something**, so an untouched blank is a lost tool.
+///
+/// The margin is relative to the result's own diagonal, so the test is
+/// scale-free. Intersect is not checked here: an empty or tolerance-thin
+/// intersection is a legitimate outcome with no such lower bound.
+fn operands_are_represented(
+    topo: &Topology,
+    op: BooleanOp,
+    result: SolidId,
+    a: SolidId,
+    b: SolidId,
+    tol: brepkit_math::tolerance::Tolerance,
+) -> bool {
+    let Ok(r_box) = crate::measure::solid_bounding_box(topo, result) else {
+        return true; // unmeasurable: keep the historic acceptance
+    };
+    let diag = (r_box.max - r_box.min).length();
+    let margin = (diag * 1e-6).max(tol.linear);
+    match op {
+        BooleanOp::Fuse => {
+            let grown = r_box.expanded(margin);
+            [a, b].into_iter().all(|operand| {
+                crate::measure::solid_bounding_box(topo, operand)
+                    .is_ok_and(|ob| grown.contains_point(ob.min) && grown.contains_point(ob.max))
+            })
+        }
+        BooleanOp::Cut => {
+            // Only a result that is face-for-face and box-for-box the blank can
+            // have removed nothing, so the interior probe runs on that case
+            // alone: a blind pocket keeps the blank's box but adds its walls,
+            // and a through trim changes the box.
+            let (Ok(r_faces), Ok(a_faces)) = (
+                brepkit_topology::explorer::solid_faces(topo, result),
+                brepkit_topology::explorer::solid_faces(topo, a),
+            ) else {
+                return true;
+            };
+            if r_faces.len() != a_faces.len() {
+                return true;
+            }
+            let Ok(a_box) = crate::measure::solid_bounding_box(topo, a) else {
+                return true;
+            };
+            let r_grown = r_box.expanded(margin);
+            let a_grown = a_box.expanded(margin);
+            if !(r_grown.contains_point(a_box.min)
+                && r_grown.contains_point(a_box.max)
+                && a_grown.contains_point(r_box.min)
+                && a_grown.contains_point(r_box.max))
+            {
+                return true;
+            }
+            // A point strictly inside BOTH operands witnesses material the cut
+            // owed the caller. Anything less certain (on a boundary, or
+            // unclassifiable) accepts, so this can only reject on a witness.
+            let Ok(b_box) = crate::measure::solid_bounding_box(topo, b) else {
+                return true;
+            };
+            let c = b_box.center();
+            let d = b_box.max - b_box.min;
+            let mut probes = vec![c];
+            for sign in [-0.25, 0.25] {
+                probes.push(c + Vec3::new(d.x() * sign, 0.0, 0.0));
+                probes.push(c + Vec3::new(0.0, d.y() * sign, 0.0));
+                probes.push(c + Vec3::new(0.0, 0.0, d.z() * sign));
+            }
+            let inside = |s: SolidId, p: Point3| {
+                matches!(
+                    crate::classify::classify_point_robust(topo, s, p, 0.1, tol.linear),
+                    Ok(crate::classify::PointClassification::Inside)
+                )
+            };
+            !probes.iter().any(|&p| inside(b, p) && inside(a, p))
+        }
+        BooleanOp::Intersect => true,
+    }
 }
 
 /// Returns `true` when two axis-aligned boxes are separated on at least

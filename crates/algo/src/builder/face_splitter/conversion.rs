@@ -277,6 +277,51 @@ pub(super) fn is_point_on_boundary_uv(
     false
 }
 
+/// Move a raw surface projection into the period copy the pcurve lives in.
+///
+/// `project_point` normalises a periodic parameter into the principal window
+/// (`[0, 2pi)` for a cylinder's `u`), but the pcurve was fitted through
+/// *unwrapped* samples and can start anywhere. On a section that crosses the
+/// face's seam the two disagree by exactly one period, and the raw projection
+/// then measures the COMPLEMENTARY arc — a section sweeping a 2.8 rad major
+/// arc reads as a 3.5 rad sweep the other way round, so the face splitter cuts
+/// the band along the arc the section does not lie on.
+///
+/// The fix keeps the projection's period-equivalence but picks the
+/// representative that agrees with the fitted line's direction: the offset from
+/// `origin` is reduced modulo the period and signed to match the line. It only
+/// engages when the raw offset exceeds half a period — the only situation in
+/// which a wrap can have occurred — so a section that stays inside one period
+/// copy keeps the exact projected value, and a genuine long sweep re-derives
+/// the same number it started with. Non-periodic axes are returned untouched.
+fn lift_projection_into_period(
+    projected: Point2,
+    origin: Point2,
+    direction: brepkit_math::vec::Vec2,
+    surface: &FaceSurface,
+) -> Point2 {
+    let (u_period, v_period) = super::super::pcurve_compute::surface_periods(surface);
+    let lift = |value: f64, base: f64, dir: f64, period: Option<f64>| -> f64 {
+        let Some(period) = period else { return value };
+        if dir.abs() < 1e-12 {
+            return value;
+        }
+        let raw = value - base;
+        if raw.abs() <= period * 0.5 {
+            return value;
+        }
+        let mut delta = raw.rem_euclid(period);
+        if dir < 0.0 {
+            delta -= period;
+        }
+        base + delta
+    };
+    Point2::new(
+        lift(projected.x(), origin.x(), direction.x(), u_period),
+        lift(projected.y(), origin.y(), direction.y(), v_period),
+    )
+}
+
 /// Extract UV endpoints from a pcurve's evaluation rather than independent
 /// surface projection. This ensures consistency -- e.g. a pcurve that goes
 /// from (pi, v) to (2pi, v) won't have its end snapped to (0, v) by the
@@ -295,7 +340,12 @@ pub(super) fn uv_endpoints_from_pcurve(
             // Line2D: start is at t=0. End is estimated by projecting the
             // 3D endpoint and computing the 2D distance along the line.
             let su = line.evaluate(0.0);
-            let eu_proj = project_point_on_surface(end_3d, surface, wire_pts, None);
+            let eu_proj = lift_projection_into_period(
+                project_point_on_surface(end_3d, surface, wire_pts, None),
+                su,
+                line.tangent(0.0),
+                surface,
+            );
             let du = eu_proj.x() - su.x();
             let dv = eu_proj.y() - su.y();
             let len_2d = (du * du + dv * dv).sqrt();

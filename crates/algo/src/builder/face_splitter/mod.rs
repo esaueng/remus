@@ -2412,6 +2412,11 @@ fn split_cylinder_band_by_arrangement(
     // used only to confirm the cut is rectilinear; the removed rectangles are
     // reconstructed from the generators, whose u/v are exact projections.
     let mut sec_pieces: Vec<(f64, f64, f64)> = Vec::new(); // (u_shift, v_lo, v_hi)
+    // Ring-arc midpoints as (v, u_shift). The ring at a notch's floor/ceiling
+    // covers the sector the notch actually removes, so its midpoint says which
+    // side of the generator pair the removed rectangle is on — the one fact the
+    // generators alone cannot supply once the seam falls inside the removal.
+    let mut ring_mids: Vec<(f64, f64)> = Vec::new();
     for (i, e) in all_edges.iter().enumerate() {
         match &e.curve_3d {
             EdgeCurve::Line => {
@@ -2462,6 +2467,14 @@ fn split_cylinder_band_by_arrangement(
                     e.end_3d,
                     &mut verts,
                 );
+                if i >= n_boundary_edges {
+                    let (t0, t1) = e.curve_3d.domain_with_endpoints(e.start_3d, e.end_3d);
+                    let mid =
+                        e.curve_3d
+                            .evaluate_with_endpoints(0.5 * (t0 + t1), e.start_3d, e.end_3d);
+                    let (um, _) = proj(mid);
+                    ring_mids.push((v0p, snap_u((um - u_s).rem_euclid(TAU))));
+                }
             }
             EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return None,
         }
@@ -2512,6 +2525,49 @@ fn split_cylinder_band_by_arrangement(
     verticals.push((0.0, v_bottom, v_top));
     verticals.push((TAU, v_bottom, v_top));
 
+    // Where a generator pair's floor/ceiling ring actually runs. The sorted
+    // pair (ua, ub) brackets the sector that does NOT contain the seam, and the
+    // historic reading cuts the band there — true only while the seam sits on
+    // kept material. A boss whose seam meridian is buried inside the other
+    // operand (a cylinder crossing a wall: the far side of the boss is
+    // interior, the sliver poking through is not) has its rim on the
+    // COMPLEMENTARY sector, and cutting on the wrong side of the pair leaves
+    // the buried strip in the result — a watertight solid carrying interior
+    // surface, 3 % heavy on a plate-and-boss fuse.
+    //
+    // The ring arcs say where the cut belongs, because they ARE the cut: each
+    // arc's midpoint is inside the pair or outside it. Arcs on both sides mean
+    // the whole cross-section is present and the ring severs the band outright
+    // (a boss overhanging by more than its centre reaches both ways), so the
+    // full period is the honest span.
+    let ring_side = |v: f64, ua: f64, ub: f64| -> (bool, bool) {
+        let mut inner = false;
+        let mut outer = false;
+        for &(rv, um) in &ring_mids {
+            if (rv - v).abs() > EPS_V {
+                continue;
+            }
+            if um > ua && um < ub {
+                inner = true;
+            } else {
+                outer = true;
+            }
+        }
+        (inner, outer)
+    };
+    let push_ring = |horizontals: &mut Vec<(f64, f64, f64)>, v: f64, ua: f64, ub: f64| {
+        match ring_side(v, ua, ub) {
+            (true, true) => horizontals.push((v, 0.0, TAU)),
+            // "Outside the pair" is only unambiguous for a single pair; a
+            // multi-notch band keeps the historic inner reading.
+            (false, true) if gens.len() == 2 => {
+                horizontals.push((v, ub, TAU));
+                horizontals.push((v, 0.0, ua));
+            }
+            _ => horizontals.push((v, ua, ub)),
+        }
+    };
+
     for pair in gens.chunks_exact(2) {
         let (ua, va0, va1) = pair[0];
         let (ub, vb0, vb1) = pair[1];
@@ -2522,10 +2578,10 @@ fn split_cylinder_band_by_arrangement(
         verticals.push((ua, v_lo, v_hi));
         verticals.push((ub, v_lo, v_hi));
         if v_hi < v_top - tol {
-            horizontals.push((v_hi, ua, ub));
+            push_ring(&mut horizontals, v_hi, ua, ub);
         }
         if v_lo > v_bottom + tol {
-            horizontals.push((v_lo, ua, ub));
+            push_ring(&mut horizontals, v_lo, ua, ub);
         }
     }
 
