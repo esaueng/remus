@@ -3,6 +3,21 @@
 //! Offsets faces of a solid inward to create a hollow shell with
 //! uniform wall thickness. Optionally removes specified faces to
 //! create openings.
+//!
+//! The outer surface of the result is the input's own surface, minus the
+//! faces opened. It is therefore carried through verbatim rather than
+//! rebuilt: exact surfaces, exact curved edges, orientation, and every inner
+//! wire. A body with a bore keeps its bore.
+//!
+//! The inner surface is genuinely new geometry — each kept face displaced one
+//! wall thickness along the negative of its OUTWARD normal — so it is built
+//! from positions. A hole in a face is displaced with it, by the same miter
+//! vectors that place the face's own corners, which is why a bore's mouth in
+//! the inner cap lands exactly on the rim of the offset bore wall.
+//!
+//! "Inward" is signed by the face, not by the surface: a bore's wall faces
+//! its own axis, so offsetting into the metal WIDENS it, where the same
+//! offset on a boss narrows it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,9 +26,25 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
+use brepkit_topology::wire::OrientedEdge;
 
 use crate::boolean::{FaceSpec, assemble_solid_mixed};
 use crate::dot_normal_point;
+
+/// Operation name carried by [`crate::OperationsError::Unsupported`] refusals.
+const OP: &str = "shell";
+
+/// Deflection for the closing volume check. `solid_volume` integrates the
+/// analytic surfaces a shell is made of in closed form, so this only bounds
+/// the fallback paths.
+const VOLUME_DEFLECTION: f64 = 0.01;
+
+fn unsupported(reason: impl Into<String>) -> crate::OperationsError {
+    crate::OperationsError::Unsupported {
+        operation: OP,
+        reason: reason.into(),
+    }
+}
 
 /// Compute the inner vertex position using miter-vector offset.
 ///
@@ -117,18 +148,29 @@ fn compute_miter_offset(outer: Point3, unique_normals: &[(Vec3, bool)], thicknes
 
 /// Create a hollow shell from a solid by offsetting faces inward.
 ///
-/// Each face is offset inward by `thickness` along its outward normal.
-/// Supports planar, NURBS, and analytic surface faces.
-/// If `open_faces` is non-empty, those faces are removed from both the
-/// outer and inner shells, creating openings.
+/// Each face is offset inward by `thickness` along its OUTWARD normal, which
+/// is not its surface's normal when the face is reversed: hollowing widens a
+/// bore and narrows a boss. Supports planar, NURBS, and analytic surface
+/// faces, and carries every face's inner wires onto both skins, so a body
+/// with a bore comes back with the bore.
+///
+/// If `open_faces` is non-empty, those faces are removed from both the outer
+/// and inner shells, and the wall they expose is rimmed with one annular face
+/// per nested pair of boundary loops in the opened face's plane.
+///
+/// The result is closed: every edge is shared by exactly two face uses. A
+/// result that is not is refused rather than returned.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - `thickness` is non-positive
-/// - Any face in `open_faces` is not part of the solid
-/// - Face offset fails (e.g., negative radius for curved surfaces)
-/// - The resulting shell is degenerate
+/// Returns [`crate::OperationsError::InvalidInput`] if `thickness` is
+/// non-positive, if a face in `open_faces` is not part of the solid, or if
+/// the offset would collapse a sphere through its own centre.
+///
+/// Returns [`crate::OperationsError::Unsupported`] when the hollow body has
+/// no exact construction: an opened face that is not planar, a free boundary
+/// that lies in none of the opened faces' planes or does not close into a
+/// loop, or a result that comes back open, invalid or enclosing no volume.
 #[allow(clippy::too_many_lines)]
 pub fn shell(
     topo: &mut Topology,
@@ -160,10 +202,21 @@ pub fn shell(
     }
 
     // Collect face vertex data (samples curved edges for proper polygons).
+    // A face's holes are collected alongside its boundary: they are part of
+    // the face, they move with it, and dropping them here is what filled a
+    // shelled body's bores back in.
     let mut face_verts: Vec<(FaceId, Vec<Point3>)> = Vec::new();
+    let mut face_holes: Vec<Vec<Vec<Point3>>> = Vec::new();
     for &fid in &all_face_ids {
-        let verts = crate::boolean::face_polygon(topo, fid)?;
+        let verts =
+            crate::boolean::wire_polygon_closed_subloops(topo, topo.face(fid)?.outer_wire())?;
         face_verts.push((fid, verts));
+        let hole_wires: Vec<_> = topo.face(fid)?.inner_wires().to_vec();
+        let mut holes = Vec::with_capacity(hole_wires.len());
+        for wid in hole_wires {
+            holes.push(crate::boolean::wire_polygon(topo, wid)?);
+        }
+        face_holes.push(holes);
     }
 
     let mut result_specs: Vec<FaceSpec> = Vec::new();
@@ -185,11 +238,14 @@ pub fn shell(
 
     let mut vertex_normals: HashMap<(i64, i64, i64), Vec<(Vec3, bool)>> = HashMap::new();
 
-    for &(fid, ref verts) in &face_verts {
+    for (&(fid, ref verts), holes) in face_verts.iter().zip(&face_holes) {
         let face = topo.face(fid)?;
         let is_open = open_set.contains(&fid.index());
 
-        for v in verts {
+        // A hole's rim is normally also on the wall that bounds it, so its
+        // normals arrive twice over; a rim shared by two holed faces would
+        // otherwise contribute none at all and be left un-offset.
+        for v in verts.iter().chain(holes.iter().flatten()) {
             let (u, v_param) = face.surface().project_point(*v).unwrap_or((0.0, 0.0));
             let mut normal = face.surface().normal(u, v_param);
             // Account for the face's reversal flag: when a face is reversed,
@@ -255,54 +311,22 @@ pub fn shell(
         inner_pos.insert(key, inner);
     }
 
-    // Outer faces: the non-open faces kept as-is.
-    for &(fid, ref verts) in &face_verts {
+    // ─── Phase 3: Outer faces — the non-open faces, kept as-is ─────────────
+    //
+    // "As-is" means copied, not re-described. Rebuilding them from a list of
+    // outer-wire positions lost three things at once: every inner wire, so a
+    // bore's mouth filled in and its wall was left referenced by nothing; the
+    // face's orientation, hardcoded un-reversed, so a bore's wall came back
+    // facing into the metal; and the exact curves of its edges, so that wall
+    // was faceted into a polygon on the way.
+    for &(fid, _) in &face_verts {
         if open_set.contains(&fid.index()) {
             continue;
         }
-        let face = topo.face(fid)?;
-        match face.surface() {
-            FaceSurface::Plane { normal, d } => {
-                result_specs.push(FaceSpec::Planar {
-                    vertices: verts.clone(),
-                    normal: *normal,
-                    d: *d,
-                    inner_wires: vec![],
-                });
-            }
-            FaceSurface::Cylinder(cyl) => {
-                // Use CylindricalFace to preserve arc edges (Circle EdgeCurve)
-                // so that tessellation and volume computation remain accurate.
-                let wire = topo.wire(face.outer_wire())?;
-                let has_closed_edge = wire
-                    .edges()
-                    .iter()
-                    .any(|oe| topo.edge(oe.edge()).is_ok_and(|e| e.start() == e.end()));
-                if has_closed_edge {
-                    result_specs.push(FaceSpec::Surface {
-                        vertices: verts.clone(),
-                        surface: FaceSurface::Cylinder(cyl.clone()),
-                        reversed: false,
-                        inner_wires: vec![],
-                    });
-                } else {
-                    result_specs.push(FaceSpec::CylindricalFace {
-                        vertices: verts.clone(),
-                        cylinder: cyl.clone(),
-                        reversed: false,
-                        inner_wires: vec![],
-                    });
-                }
-            }
-            other => {
-                result_specs.push(FaceSpec::Surface {
-                    vertices: verts.clone(),
-                    surface: other.clone(),
-                    reversed: false,
-                    inner_wires: vec![],
-                });
-            }
-        }
+        result_specs.push(FaceSpec::Existing {
+            face: fid,
+            outer: None,
+        });
     }
 
     // ─── Phase 4: Inner faces (offset of non-open faces) ──────────────────
@@ -311,32 +335,45 @@ pub fn shell(
     // Phase 2. This ensures watertight geometry at ALL junctions, including
     // where planar faces meet cylindrical faces at tangent points.
 
-    for &(fid, ref outer_verts) in &face_verts {
+    for (&(fid, ref outer_verts), holes) in face_verts.iter().zip(&face_holes) {
         if open_set.contains(&fid.index()) {
             continue;
         }
         let face = topo.face(fid)?;
+        // A reversed face's outward normal is the negative of its surface's,
+        // so it is displaced the other way: a bore widens where a boss
+        // narrows, and the inner face ends up on the far side of the surface
+        // from where an un-reversed face's would.
+        let concave = face.is_reversed();
 
+        let displaced = |p: Point3| inner_pos.get(&quantize_pt(p)).copied().unwrap_or(p);
         // Reversed winding gives the inner face an inward-pointing normal.
-        let inner_verts: Vec<Point3> = outer_verts
+        let inner_verts: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).rev().collect();
+        // The holes travel with the face, through the same miter vectors, so
+        // a bore's mouth in the inner cap meets the rim of the offset bore
+        // wall rather than floating a wall thickness away from it.
+        let inner_holes: Vec<Vec<Point3>> = holes
             .iter()
-            .map(|v| inner_pos.get(&quantize_pt(*v)).copied().unwrap_or(*v))
-            .rev()
+            .map(|rim| rim.iter().map(|v| displaced(*v)).rev().collect())
             .collect();
 
         match face.surface() {
             FaceSurface::Plane { normal, .. } => {
-                let inner_normal = -*normal;
+                let inner_normal = if concave { *normal } else { -*normal };
                 let inner_d = dot_normal_point(inner_normal, inner_verts[0]);
                 result_specs.push(FaceSpec::Planar {
                     vertices: inner_verts,
                     normal: inner_normal,
                     d: inner_d,
-                    inner_wires: vec![],
+                    inner_wires: inner_holes,
                 });
             }
             FaceSurface::Cylinder(cyl) => {
-                let new_radius = cyl.radius() - thickness;
+                let new_radius = if concave {
+                    cyl.radius() + thickness
+                } else {
+                    cyl.radius() - thickness
+                };
                 if new_radius > tol.linear
                     && let Ok(new_cyl) = brepkit_math::surfaces::CylindricalSurface::new(
                         cyl.origin(),
@@ -344,45 +381,40 @@ pub fn shell(
                         new_radius,
                     )
                 {
-                    // Full-circle cylinders: use Surface (the dense sample
-                    // polygon from face_polygon contains seam-duplicate
-                    // vertices that CylindricalFace can't handle cleanly).
-                    // Partial-arc cylinders: use CylindricalFace to create
-                    // Circle edges that preserve angular range info.
-                    let wire = topo.wire(face.outer_wire())?;
-                    let has_closed_edge = wire
-                        .edges()
-                        .iter()
-                        .any(|oe| topo.edge(oe.edge()).is_ok_and(|e| e.start() == e.end()));
-                    if has_closed_edge {
-                        result_specs.push(FaceSpec::Surface {
-                            vertices: inner_verts,
-                            surface: FaceSurface::Cylinder(new_cyl),
-                            reversed: true,
-                            inner_wires: vec![],
-                        });
-                    } else {
-                        result_specs.push(FaceSpec::CylindricalFace {
-                            vertices: inner_verts,
-                            cylinder: new_cyl,
-                            reversed: true,
-                            inner_wires: vec![],
-                        });
-                    }
+                    // `CylindricalFace` mints Circle edges along the constant
+                    // -height boundaries, so the wall's rims are the arcs the
+                    // caps meeting them also trace, and both a full circle's
+                    // seam — traversed once each way — and a partial arc's
+                    // angular range survive. `Surface` would drop the seam's
+                    // second traversal as a duplicate edge and leave the rims
+                    // as free chords.
+                    result_specs.push(FaceSpec::CylindricalFace {
+                        vertices: inner_verts,
+                        cylinder: new_cyl,
+                        reversed: !concave,
+                        inner_wires: inner_holes,
+                    });
                 }
             }
-            FaceSurface::Cone(_cone) => {
-                let inner_fid = crate::offset_face::offset_face(topo, fid, -thickness, 8)?;
+            FaceSurface::Cone(_) | FaceSurface::Nurbs(_) | FaceSurface::Torus(_) => {
+                // `offset_face` moves along the SURFACE normal, which is the
+                // face's outward normal only when the face is not reversed.
+                let along_surface = if concave { thickness } else { -thickness };
+                let inner_fid = crate::offset_face::offset_face(topo, fid, along_surface, 8)?;
                 let inner_face = topo.face(inner_fid)?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts,
                     surface: inner_face.surface().clone(),
-                    reversed: true,
-                    inner_wires: vec![],
+                    reversed: !concave,
+                    inner_wires: inner_holes,
                 });
             }
             FaceSurface::Sphere(sphere) => {
-                let new_r = sphere.radius() - thickness;
+                let new_r = if concave {
+                    sphere.radius() + thickness
+                } else {
+                    sphere.radius() - thickness
+                };
                 if new_r <= 0.0 {
                     return Err(crate::OperationsError::InvalidInput {
                         reason: format!(
@@ -397,18 +429,8 @@ pub fn shell(
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts,
                     surface: FaceSurface::Sphere(new_sph),
-                    reversed: true,
-                    inner_wires: vec![],
-                });
-            }
-            FaceSurface::Nurbs(_) | FaceSurface::Torus(_) => {
-                let inner_fid = crate::offset_face::offset_face(topo, fid, -thickness, 8)?;
-                let inner_face = topo.face(inner_fid)?;
-                result_specs.push(FaceSpec::Surface {
-                    vertices: inner_verts,
-                    surface: inner_face.surface().clone(),
-                    reversed: true,
-                    inner_wires: vec![],
+                    reversed: !concave,
+                    inner_wires: inner_holes,
                 });
             }
         }
@@ -449,12 +471,12 @@ pub fn shell(
 
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).
-        return Ok(solid);
+        return gate(topo, solid);
     }
 
     // Determine the oriented direction of each boundary edge relative to its single face.
     // The rim face must use the OPPOSITE orientation so the edge is shared correctly.
-    let mut boundary_oriented: Vec<brepkit_topology::wire::OrientedEdge> = Vec::new();
+    let mut boundary_oriented: Vec<OrientedEdge> = Vec::new();
     for &eid in &boundary_edge_ids {
         let face_id = edge_face_map[&eid.index()][0];
         let face = topo.face(face_id)?;
@@ -462,10 +484,7 @@ pub fn shell(
         let mut found = false;
         for oe in wire.edges() {
             if oe.edge() == eid {
-                boundary_oriented.push(brepkit_topology::wire::OrientedEdge::new(
-                    eid,
-                    !oe.is_forward(),
-                ));
+                boundary_oriented.push(OrientedEdge::new(eid, !oe.is_forward()));
                 found = true;
                 break;
             }
@@ -475,10 +494,7 @@ pub fn shell(
                 let iw = topo.wire(iw_id)?;
                 for oe in iw.edges() {
                     if oe.edge() == eid {
-                        boundary_oriented.push(brepkit_topology::wire::OrientedEdge::new(
-                            eid,
-                            !oe.is_forward(),
-                        ));
+                        boundary_oriented.push(OrientedEdge::new(eid, !oe.is_forward()));
                         found = true;
                         break;
                     }
@@ -489,107 +505,235 @@ pub fn shell(
             }
             if !found {
                 // Fallback: use forward orientation.
-                boundary_oriented.push(brepkit_topology::wire::OrientedEdge::new(eid, true));
+                boundary_oriented.push(OrientedEdge::new(eid, true));
             }
         }
     }
 
     let loops = sort_edges_into_loops(topo, &boundary_oriented)?;
-
-    if loops.len() < 2 {
-        // Need at least 2 loops (outer + inner) for an annular face.
-        // If only 1 loop, something is wrong — return the solid as-is.
-        return Ok(solid);
+    if loops.is_empty() {
+        return Err(unsupported(
+            "the shell has free edges that do not close into any loop, so its opening \
+             cannot be rimmed",
+        ));
     }
 
-    // Classify loops: the outer loop has larger average distance from centroid.
-    let mut centroid = Vec3::new(0.0, 0.0, 0.0);
-    let mut vert_count = 0.0;
-    let mut rim_z = 0.0_f64;
-    for oe in &boundary_oriented {
-        let edge = topo.edge(oe.edge())?;
-        let p = topo.vertex(edge.start())?.point();
-        centroid += Vec3::new(p.x(), p.y(), p.z());
-        rim_z += p.z();
-        vert_count += 1.0;
-    }
-    if vert_count > 0.0 {
-        centroid = centroid * (1.0 / vert_count);
-        rim_z /= vert_count;
-    }
-
-    let mut loop_radii: Vec<(usize, f64)> = Vec::new();
-    for (i, lp) in loops.iter().enumerate() {
-        let mut avg_r = 0.0;
-        let mut n = 0.0;
-        for oe in lp {
-            let edge = topo.edge(oe.edge())?;
-            let p = topo.vertex(edge.start())?.point();
-            let dx = p.x() - centroid.x();
-            let dy = p.y() - centroid.y();
-            avg_r += (dx * dx + dy * dy).sqrt();
-            n += 1.0;
-        }
-        if n > 0.0 {
-            avg_r /= n;
-        }
-        loop_radii.push((i, avg_r));
-    }
-    loop_radii.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Largest loop is the outer wire, all others are inner wires (holes).
-    let outer_loop_idx = loop_radii[0].0;
-
-    let outer_wire = brepkit_topology::wire::Wire::new(loops[outer_loop_idx].clone(), true)
-        .map_err(crate::OperationsError::Topology)?;
-    let outer_wire_id = topo.add_wire(outer_wire);
-
-    let mut inner_wire_ids = Vec::new();
-    for &(idx, _) in &loop_radii[1..] {
-        let inner_wire = brepkit_topology::wire::Wire::new(loops[idx].clone(), true)
+    // Materialise each rim loop as a wire and sample the polygon it traces —
+    // a rim can be a single closed circle edge, which is one vertex until it
+    // is sampled and no polygon to nest at all.
+    let mut rim_wires = Vec::with_capacity(loops.len());
+    let mut rim_polys: Vec<Vec<Point3>> = Vec::with_capacity(loops.len());
+    for lp in &loops {
+        let wire = brepkit_topology::wire::Wire::new(lp.clone(), true)
             .map_err(crate::OperationsError::Topology)?;
-        inner_wire_ids.push(topo.add_wire(inner_wire));
+        let wid = topo.add_wire(wire);
+        let poly = crate::boolean::wire_polygon(topo, wid)?;
+        if poly.is_empty() {
+            return Err(unsupported(
+                "a free loop of the shelled body traces no points, so its rim has no \
+                 shape to close",
+            ));
+        }
+        rim_polys.push(poly);
+        rim_wires.push(wid);
     }
 
-    // Rim face normal: pointing away from solid center (outward at the rim).
-    // For a top-opened shell, this is typically +Z or -Z.
-    // Compute from the open face's normal.
-    let rim_normal = {
-        let mut n = Vec3::new(0.0, 0.0, 1.0);
-        for &(fid, _) in &face_verts {
-            if open_set.contains(&fid.index())
-                && let Ok(f) = topo.face(fid)
-                && let FaceSurface::Plane { normal, .. } = f.surface()
-            {
-                // The rim normal should point in the same direction as the
-                // removed face's outward normal (away from solid interior).
-                n = if f.is_reversed() { -*normal } else { *normal };
-                break;
-            }
+    // Every rim lies in the plane of a face that was opened: the outer wall's
+    // rim is that face's own boundary, and the inner wall's rim is where the
+    // miter offset ran out — offset zero in the opened face's direction, so
+    // it stays on that plane. Group the rims by the plane they belong to,
+    // because two openings — or one opening that a bore passes through —
+    // must be closed with several rim faces, not one face swallowing every
+    // other loop as a hole.
+    let mut rim_planes: Vec<(Vec3, f64)> = Vec::new();
+    for &(fid, _) in &face_verts {
+        if !open_set.contains(&fid.index()) {
+            continue;
         }
-        n
-    };
+        let f = topo.face(fid)?;
+        let FaceSurface::Plane { normal, d } = f.surface() else {
+            return Err(unsupported(format!(
+                "face {} was opened but is not planar, so the wall it exposes has no \
+                 plane to be rimmed in",
+                fid.index()
+            )));
+        };
+        // Outward, away from the material the opening exposes.
+        let plane = if f.is_reversed() {
+            (-*normal, -*d)
+        } else {
+            (*normal, *d)
+        };
+        // Two faces opened in the SAME plane expose one rim between them, not
+        // one each; a second entry for that plane would collect no loops and
+        // read as an opening that exposed nothing.
+        if !rim_planes.iter().any(|&(n, d)| {
+            (n - plane.0).length() <= tol.linear && (d - plane.1).abs() <= tol.linear
+        }) {
+            rim_planes.push(plane);
+        }
+    }
 
-    let rim_d =
-        rim_normal.x() * centroid.x() + rim_normal.y() * centroid.y() + rim_normal.z() * rim_z;
-    let rim_face = brepkit_topology::face::Face::new(
-        outer_wire_id,
-        inner_wire_ids,
-        FaceSurface::Plane {
-            normal: rim_normal,
-            d: rim_d,
-        },
-    );
-    let rim_face_id = topo.add_face(rim_face);
+    // Rim vertices reach their plane through the quantised miter grid, so
+    // allow the grid's own step rather than exact incidence.
+    let on_plane_tol = tol.linear * 16.0;
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); rim_planes.len()];
+    for (i, poly) in rim_polys.iter().enumerate() {
+        let plane = rim_planes.iter().position(|&(n, d)| {
+            poly.iter()
+                .all(|p| (dot_normal_point(n, *p) - d).abs() <= on_plane_tol)
+        });
+        let Some(plane) = plane else {
+            return Err(unsupported(
+                "a free loop of the shelled body lies in none of the opened faces' \
+                 planes, so there is no face that closes it",
+            ));
+        };
+        groups[plane].push(i);
+    }
+
+    let mut rim_face_ids = Vec::new();
+    for (plane_idx, members) in groups.iter().enumerate() {
+        let (normal, d) = rim_planes[plane_idx];
+        if members.is_empty() {
+            return Err(unsupported(
+                "an opened face left no free boundary, so the wall behind it was never \
+                 exposed",
+            ));
+        }
+        let (u, v) = plane_basis(normal);
+
+        // How many of the group's other loops enclose each loop. A loop at
+        // even depth bounds material — the rim of the wall, or the rim of a
+        // bore's own wall inside it — and the loops directly inside it are
+        // its holes.
+        let depth = |i: usize| -> usize {
+            members
+                .iter()
+                .filter(|&&j| j != i && point_in_loop(&rim_polys[j], rim_polys[i][0], u, v))
+                .count()
+        };
+        let depths: Vec<usize> = members.iter().map(|&i| depth(i)).collect();
+
+        for (slot, &i) in members.iter().enumerate() {
+            if !depths[slot].is_multiple_of(2) {
+                continue;
+            }
+            let holes: Vec<_> = members
+                .iter()
+                .enumerate()
+                .filter(|&(other, &j)| {
+                    depths[other] == depths[slot] + 1
+                        && point_in_loop(&rim_polys[i], rim_polys[j][0], u, v)
+                })
+                .map(|(_, &j)| rim_wires[j])
+                .collect();
+            let rim_face = brepkit_topology::face::Face::new(
+                rim_wires[i],
+                holes,
+                FaceSurface::Plane { normal, d },
+            );
+            rim_face_ids.push(topo.add_face(rim_face));
+        }
+    }
 
     let solid_data = topo.solid(solid)?;
     let shell_id = solid_data.outer_shell();
     let shell = topo.shell(shell_id)?;
     let mut new_faces: Vec<FaceId> = shell.faces().to_vec();
-    new_faces.push(rim_face_id);
+    new_faces.extend(rim_face_ids);
     let new_shell =
         brepkit_topology::shell::Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
+
+    gate(topo, solid)
+}
+
+/// An orthonormal pair spanning the plane with normal `n`.
+fn plane_basis(n: Vec3) -> (Vec3, Vec3) {
+    let seed = if n.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let u = n
+        .cross(seed)
+        .normalize()
+        .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+    (u, n.cross(u))
+}
+
+/// Whether `p` is inside the closed loop `poly`, both flattened onto the
+/// plane spanned by `u` and `v`. Even-odd crossing count.
+fn point_in_loop(poly: &[Point3], p: Point3, u: Vec3, v: Vec3) -> bool {
+    let flat = |q: Point3| {
+        let w = Vec3::new(q.x(), q.y(), q.z());
+        (u.dot(w), v.dot(w))
+    };
+    let (px, py) = flat(p);
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (xi, yi) = flat(poly[i]);
+        let (xj, yj) = flat(poly[(i + 1) % n]);
+        if (yi > py) != (yj > py) {
+            let t = (py - yi) / (yj - yi);
+            if px < xi + t * (xj - xi) {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// Refuse the result unless every edge of it is shared by exactly two face
+/// uses, its wires and faces are well-formed, and it encloses positive
+/// volume.
+///
+/// A shell used to be handed back whatever the assembler produced, and there
+/// were several ways for that to come back open: a wall whose rim nothing
+/// met because the cap that should have met it had its hole filled in, or a
+/// rim broken into loops that were then stitched into one impossible face.
+/// Both leave free edges, and free edges are what this refuses.
+///
+/// The manifold count is taken here rather than through
+/// [`crate::validate::validate_solid`] so that the Euler identity
+/// `V - E + F = 2 + L` is not applied: a hollow body is TWO closed surfaces,
+/// its outside and its cavity, and that identity describes one. It rejects
+/// the shell of a plain box as readily as anything else. Everything else
+/// `validate_solid` would check is checked, by way of its relaxed form plus
+/// the edge-sharing count that form leaves out.
+fn gate(topo: &Topology, solid: SolidId) -> Result<SolidId, crate::OperationsError> {
+    let edge_uses = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+    let free = edge_uses.values().filter(|f| f.len() < 2).count();
+    let non_manifold = edge_uses.values().filter(|f| f.len() > 2).count();
+    if free > 0 || non_manifold > 0 {
+        return Err(unsupported(format!(
+            "the shelled body is not closed: {free} free edges and {non_manifold} \
+             edges shared by more than two faces"
+        )));
+    }
+
+    let report = crate::validate::validate_solid_relaxed(topo, solid)?;
+    if !report.is_valid() {
+        let detail: Vec<&str> = report
+            .issues
+            .iter()
+            .filter(|i| i.severity == crate::validate::Severity::Error)
+            .map(|i| i.description.as_str())
+            .collect();
+        return Err(unsupported(format!(
+            "the shelled body failed validation ({})",
+            detail.join("; ")
+        )));
+    }
+
+    let volume = crate::measure::solid_volume(topo, solid, VOLUME_DEFLECTION)?;
+    if !volume.is_finite() || volume <= 0.0 {
+        return Err(unsupported(format!(
+            "the shelled body encloses no volume ({volume}); the walls turned inside out"
+        )));
+    }
 
     Ok(solid)
 }
@@ -600,8 +744,8 @@ pub fn shell(
 /// by following edge connectivity (end vertex → start vertex of next edge).
 fn sort_edges_into_loops(
     topo: &Topology,
-    edges: &[brepkit_topology::wire::OrientedEdge],
-) -> Result<Vec<Vec<brepkit_topology::wire::OrientedEdge>>, crate::OperationsError> {
+    edges: &[OrientedEdge],
+) -> Result<Vec<Vec<OrientedEdge>>, crate::OperationsError> {
     use brepkit_topology::vertex::VertexId;
 
     if edges.is_empty() {

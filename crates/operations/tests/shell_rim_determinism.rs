@@ -10,7 +10,8 @@
 //! This test pins the resulting structure. It cannot observe cross-process
 //! variance from inside one process, but it fails in most runs if the
 //! collection order goes back to being seed-dependent: only one decomposition
-//! matches the constants below.
+//! matches the constants below — and that one is now the right one, so the
+//! volume below is the analytic cup rather than a pinned wrong number.
 //!
 //! Keep it active alongside `perf_64cut_determinism` — divergence means
 //! topology construction has become order-dependent again. To check across
@@ -46,6 +47,8 @@ fn shelled_cylinder_rim_is_deterministic() {
     assert_eq!(faces.len(), 5, "shelled cup face count");
 
     // The field that used to vary: how the rim boundary decomposed into loops.
+    // A cup's rim is ONE annulus — the wall's outer circle with the inner
+    // circle as its hole — so exactly one face carries exactly one inner wire.
     let mut inner_counts: Vec<usize> = faces
         .iter()
         .map(|&f| topo.face(f).unwrap().inner_wires().len())
@@ -53,26 +56,21 @@ fn shelled_cylinder_rim_is_deterministic() {
     inner_counts.sort_unstable();
     assert_eq!(
         inner_counts,
-        vec![0, 0, 0, 0, 3],
+        vec![0, 0, 0, 0, 1],
         "rim loop decomposition changed — the open-boundary edge order is \
-         order-dependent again (or the rim decomposition was deliberately fixed, \
-         in which case update this and the volume below together)"
+         order-dependent again"
     );
 
-    // A stability gate, NOT a correctness one. The analytic cup volume is
-    // pi*(r^2*h - (r-wall)^2*(h-wall)) = 1425.93; this is ~20% under.
-    //
-    // The rim is genuinely mis-traced, not merely mis-ordered: the boundary
-    // handed to `sort_edges_into_loops` also contains free edges from the
-    // BOTTOM faces (points at z=0 and z=wall), because the assembled outer and
-    // inner faces are not edge-shared there. Two of the four loops it returns
-    // jump across the solid instead of ringing the opening. Ordering only
-    // decides WHICH wrong decomposition comes out; fixing it means making the
-    // bottom faces share edges. Pinned so the number cannot drift silently
-    // meanwhile.
+    // Now a correctness gate as well. This used to read 1133.39 against the
+    // analytic 1425.93, 20% under, because the boundary handed to
+    // `sort_edges_into_loops` also carried free edges from the BOTTOM faces:
+    // the wall's polygon closed neither of its rim circles, so the bottom cap
+    // had nothing to share them with, and two of the four loops that came back
+    // jumped across the solid instead of ringing the opening.
+    let analytic = std::f64::consts::PI * (r * r * h - (r - wall).powi(2) * (h - wall));
     let vol = solid_volume(&topo, shelled, 0.05).unwrap();
     assert!(
-        (vol - 1_133.391_160_851_742_6).abs() < 1e-3,
-        "shelled cup volume drifted: {vol} (expected 1133.3911608517426; analytic is 1425.93)"
+        (vol - analytic).abs() < 1e-4 * analytic,
+        "shelled cup volume {vol} is not the analytic {analytic}"
     );
 }
