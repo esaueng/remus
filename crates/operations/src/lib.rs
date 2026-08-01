@@ -117,6 +117,24 @@ pub enum OperationsError {
         reason: String,
     },
 
+    /// The input is well-formed but the operation has no exact construction
+    /// for this configuration.
+    ///
+    /// Returned in place of an approximate, degraded or invalid result, so
+    /// callers can distinguish "this cannot be built exactly" from "these
+    /// arguments are wrong" ([`InvalidInput`]) without matching on message
+    /// text. Retrying with the same inputs will not help; the caller must
+    /// either change the model or accept an explicitly approximate route.
+    ///
+    /// [`InvalidInput`]: Self::InvalidInput
+    #[error("{operation}: unsupported configuration: {reason}")]
+    Unsupported {
+        /// Name of the operation that declined.
+        operation: &'static str,
+        /// Why this configuration has no exact construction.
+        reason: String,
+    },
+
     /// A referenced topology entity was not found.
     #[error(transparent)]
     Topology(#[from] brepkit_topology::TopologyError),

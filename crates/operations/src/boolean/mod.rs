@@ -7,8 +7,8 @@
 pub mod assembly;
 mod classify;
 mod types;
+pub(crate) use assembly::assemble_solid_mixed;
 use assembly::validate_boolean_result;
-pub(crate) use assembly::{assemble_solid, assemble_solid_mixed};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
 /// Minimum distance used when healing coincident result boundaries, in mm.

@@ -640,6 +640,57 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
 /// hole-rim sample (which is exactly mid-material for an annulus), plus the
 /// centroid. Returns `None` if none of them lands in the material, leaving the
 /// caller's generic path in charge.
+/// Sample a planar face whose outer boundary is built from closed curves.
+///
+/// Such a face (a disc bounded by one circular edge) has fewer boundary
+/// vertices than it has corners, so the caller's vertex polygon degenerates.
+/// Polygonise the curve itself and hand it to the shared interior-point
+/// sampler, which prefers the ring's centroid — the point furthest from the
+/// rim, and the only stable place to probe when the rim is shared with an
+/// opposing solid's wall.
+///
+/// Returns `None` when the boundary still cannot be polygonised or the sampled
+/// point does not verify as interior, leaving the caller's generic path in
+/// charge.
+fn sample_closed_boundary_interior(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: brepkit_math::vec::Vec3,
+) -> Result<Option<Point3>, AlgoError> {
+    /// Samples per boundary edge. A closed circle spans the whole ring, so
+    /// this is the ring's resolution; the sampler only needs enough points for
+    /// the centroid and the containment test to be meaningful.
+    const RING_SAMPLES: usize = 32;
+
+    let face = topo.face(face_id)?;
+    let wire = topo.wire(face.outer_wire())?;
+    let mut pts = Vec::new();
+    for oe in wire.edges() {
+        let e = topo.edge(oe.edge())?;
+        let sp = topo.vertex(e.start())?.point();
+        let ep = topo.vertex(e.end())?.point();
+        pcurve_compute::sample_edge_uniform(
+            e.curve(),
+            sp,
+            ep,
+            RING_SAMPLES,
+            oe.is_forward(),
+            &mut pts,
+        );
+    }
+    if pts.len() < 3 {
+        return Ok(None);
+    }
+
+    let frame = plane_frame::PlaneFrame::from_plane_face(normal, &pts);
+    let poly: Vec<_> = pts.iter().map(|p| frame.project(*p)).collect();
+    let interior = classify_2d::sample_interior_point(&poly);
+    if !classify_2d::point_in_polygon_2d(interior, &poly) {
+        return Ok(None);
+    }
+    Ok(Some(frame.evaluate(interior.x(), interior.y())))
+}
+
 fn sample_holed_face_interior(
     topo: &Topology,
     face_id: FaceId,
@@ -911,10 +962,25 @@ fn sample_face_interior(
             let e = topo.edge(oe.edge())?;
             poly.push(topo.vertex(oe.oriented_start(e))?.point());
         }
+        // A boundary made of closed curves contributes one VERTEX per edge, so
+        // a disc bounded by a single circle yields a one-point "polygon" and
+        // the containment ladder below has nothing to test against. Without a
+        // polygon the fallback returns one inward offset from the rim — a hair
+        // off the disc's own boundary. Where that boundary is shared with an
+        // opposing solid (a plug dropped into a bore of its own radius, whose
+        // wall is coincident over its whole area) the sample sits ON the shared
+        // wall and the ray cast is a coin flip: on a 30x30x10 plate the plug's
+        // two caps classified differently at most bore radii, one was dropped,
+        // and the open shell sent the fuse to the mesh fallback. Polygonise the
+        // closed curve instead and take a properly interior point of the ring —
+        // for a disc, its centre.
+        if poly.len() < 3
+            && face.inner_wires().is_empty()
+            && let Some(pt) = sample_closed_boundary_interior(topo, face_id, *normal)?
+        {
+            return Ok(pt);
+        }
         // A boundary with >= 3 vertices forms a real polygon to test against.
-        // A planar face bounded by a single closed curve (one circle/ellipse
-        // edge → <3 vertices) has no polygon; its centroid is the disc center
-        // (interior), so it falls through to the centroid heuristic below.
         if inward_len > 1e-12 && poly.len() >= 3 {
             let frame = plane_frame::PlaneFrame::from_plane_face(*normal, &poly);
             let poly2d: Vec<_> = poly.iter().map(|p| frame.project(*p)).collect();
@@ -1046,35 +1112,66 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sample_face_interior_planar_disc_lands_inside() {
-        // A planar disc bounded by a single closed circle edge has < 3 boundary
-        // vertices, so the point-in-polygon path can't apply. The sample must
-        // still land inside the disc, not on the bounding circle (the
-        // degenerate-polygon failure mode).
+    /// A planar disc bounded by a single closed circle edge, radius `r`,
+    /// centred on the origin in the z=0 plane.
+    fn unit_disc(topo: &mut Topology, radius: f64) -> FaceId {
         use brepkit_topology::builder::make_circle_edge;
         use brepkit_topology::wire::{OrientedEdge, Wire};
 
-        let mut topo = Topology::new();
         let edge = make_circle_edge(
-            &mut topo,
+            topo,
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
-            1.0,
+            radius,
             1e-7,
         )
         .unwrap();
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
-        let face = make_face_from_wire(&mut topo, wire).unwrap();
+        make_face_from_wire(topo, wire).unwrap()
+    }
+
+    #[test]
+    fn sample_face_interior_planar_disc_lands_well_clear_of_the_rim() {
+        // A planar disc bounded by a single closed circle edge has < 3 boundary
+        // vertices, so the point-in-polygon path cannot apply.
+        //
+        // "Strictly inside" is not enough. This test used to allow anything
+        // below r = 1 - 1e-9, which the old sample (one inward offset from the
+        // rim, r ~ 1 - 1e-4) satisfied while sitting close enough to the
+        // boundary to land ON a coincident opposing wall — where the ray cast
+        // that classifies the face is a coin flip. That is exactly how the
+        // through-hole plug fuse degenerated into a mesh boolean. Require the
+        // sample to be robustly interior instead.
+        let mut topo = Topology::new();
+        let face = unit_disc(&mut topo, 1.0);
 
         let pt = sample_face_interior(&topo, face, Tolerance::default()).unwrap();
         let r = pt.x().hypot(pt.y());
-        // Strictly inside the unit disc. The degenerate-polygon failure mode
-        // (point_in_polygon on a single projected vertex → boundary vertex)
-        // would return a point on the circle (r == 1.0).
         assert!(
-            r < 1.0 - 1e-9,
-            "disc sample (r={r}) should be interior, not on the bounding circle"
+            r < 0.5,
+            "disc sample (r={r}) hugs the bounding circle; it must be well \
+             clear of the rim to classify reliably against a coincident wall"
         );
+        assert!(
+            pt.z().abs() < 1e-12,
+            "disc sample {pt:?} left the face's own plane"
+        );
+    }
+
+    #[test]
+    fn sample_face_interior_disc_clearance_scales_with_the_disc() {
+        // The clearance must be a property of the disc, not an absolute
+        // offset: a 0.05-radius cap in a matching bore needs the same relative
+        // margin as a 50-radius one.
+        for radius in [0.05_f64, 1.0, 50.0] {
+            let mut topo = Topology::new();
+            let face = unit_disc(&mut topo, radius);
+            let pt = sample_face_interior(&topo, face, Tolerance::default()).unwrap();
+            let r = pt.x().hypot(pt.y());
+            assert!(
+                r < 0.5 * radius,
+                "disc of radius {radius}: sample at r={r} is not robustly interior"
+            );
+        }
     }
 }
