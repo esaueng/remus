@@ -1231,6 +1231,33 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Export several solids into one STEP AP203 file.
+     *
+     * The solids stay distinct in the output — they become separate
+     * `MANIFOLD_SOLID_BREP` items of a single
+     * `ADVANCED_BREP_SHAPE_REPRESENTATION`, so a reader recovers exactly the
+     * bodies that went in. `solids` is a JS `Uint32Array` or array of solid
+     * handles.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, if any handle is invalid, or if
+     * export fails.
+     * @param {Uint32Array} solids
+     * @returns {Uint8Array}
+     */
+    exportStepMulti(solids) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportStepMulti(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Export a solid to binary STL format.
      *
      * Returns a `Uint8Array` containing the `.stl` file.

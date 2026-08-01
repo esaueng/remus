@@ -70,6 +70,7 @@ export const brepkernel_exportIges: (a: number, b: number) => [number, number, n
 export const brepkernel_exportObj: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportPly: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportStep: (a: number, b: number) => [number, number, number, number];
+export const brepkernel_exportStepMulti: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportStl: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportStlAscii: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_extrude: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];

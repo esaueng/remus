@@ -816,6 +816,21 @@ export class BrepKernel {
      */
     exportStep(solid: number): Uint8Array;
     /**
+     * Export several solids into one STEP AP203 file.
+     *
+     * The solids stay distinct in the output — they become separate
+     * `MANIFOLD_SOLID_BREP` items of a single
+     * `ADVANCED_BREP_SHAPE_REPRESENTATION`, so a reader recovers exactly the
+     * bodies that went in. `solids` is a JS `Uint32Array` or array of solid
+     * handles.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, if any handle is invalid, or if
+     * export fails.
+     */
+    exportStepMulti(solids: Uint32Array): Uint8Array;
+    /**
      * Export a solid to binary STL format.
      *
      * Returns a `Uint8Array` containing the `.stl` file.
