@@ -97,6 +97,25 @@ pub fn wire_polygon(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
 ) -> Result<Vec<Point3>, CheckError> {
+    wire_polygon_sampled(topo, wire_id, CLOSED_CURVE_SAMPLES)
+}
+
+/// [`wire_polygon`] with the number of samples a closed curved edge
+/// contributes chosen by the caller.
+///
+/// A loop that is *subtracted* from an otherwise exact measurement is worth
+/// outlining more finely than one that merely has to be walked: the chord
+/// error falls with the square of the step, so the property integrator asks
+/// for several times the default when it removes a hole from a curved face.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the wire is missing.
+pub fn wire_polygon_sampled(
+    topo: &Topology,
+    wire_id: brepkit_topology::wire::WireId,
+    closed_samples: usize,
+) -> Result<Vec<Point3>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let mut pts = Vec::new();
     let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
@@ -138,14 +157,14 @@ pub fn wire_polygon(
             let sampled: Vec<Point3> = match curve {
                 EdgeCurve::Circle(c) => {
                     let t0 = c.project(seam_pt);
-                    params(CLOSED_CURVE_SAMPLES, std::f64::consts::TAU)
+                    params(closed_samples, std::f64::consts::TAU)
                         .into_iter()
                         .map(|dt| c.evaluate(t0 + dt))
                         .collect()
                 }
                 EdgeCurve::Ellipse(e) => {
                     let t0 = e.project(seam_pt);
-                    params(CLOSED_CURVE_SAMPLES, std::f64::consts::TAU)
+                    params(closed_samples, std::f64::consts::TAU)
                         .into_iter()
                         .map(|dt| e.evaluate(t0 + dt))
                         .collect()
@@ -155,12 +174,12 @@ pub fn wire_polygon(
                     let span = u1 - u0;
                     if span.is_finite() && span > 0.0 {
                         let t0 = nurbs_seam_parameter(nc, seam_pt, u0, u1);
-                        params(CLOSED_CURVE_SAMPLES, span)
+                        params(closed_samples, span)
                             .into_iter()
                             .map(|dt| nc.evaluate(u0 + (t0 - u0 + dt).rem_euclid(span)))
                             .collect()
                     } else {
-                        let mut s = sample_edge_curve(curve, CLOSED_CURVE_SAMPLES);
+                        let mut s = sample_edge_curve(curve, closed_samples);
                         if !forward {
                             s.reverse();
                         }
@@ -194,10 +213,24 @@ pub fn face_hole_polygons(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Vec<Vec<Point3>>, CheckError> {
+    face_hole_polygons_sampled(topo, face_id, CLOSED_CURVE_SAMPLES)
+}
+
+/// [`face_hole_polygons`] with the closed-curve sample count chosen by the
+/// caller, as [`wire_polygon_sampled`] takes it.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the face is missing.
+pub fn face_hole_polygons_sampled(
+    topo: &Topology,
+    face_id: FaceId,
+    closed_samples: usize,
+) -> Result<Vec<Vec<Point3>>, CheckError> {
     let face = topo.face(face_id)?;
     let mut holes = Vec::with_capacity(face.inner_wires().len());
     for &wire_id in face.inner_wires() {
-        let poly = wire_polygon(topo, wire_id)?;
+        let poly = wire_polygon_sampled(topo, wire_id, closed_samples)?;
         if poly.len() >= 3 {
             holes.push(poly);
         }

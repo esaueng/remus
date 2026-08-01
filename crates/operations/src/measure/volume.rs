@@ -198,13 +198,18 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
                 }
                 has_bored_quadric = true;
             }
-            // A holed cylinder/cone wall that is NOT the Steinmetz lens fuse
-            // (handled above) cannot be integrated correctly here — the
-            // integrator does not subtract its holes — so defer the whole solid
-            // to tessellation.
+            // A holed cylinder/cone wall subtracts its holes in the same UV
+            // domain its quadrature runs over, so it measures here rather than
+            // being deferred: a bore's rim is removed from the wall it opens
+            // in, and the bore wall itself — bounded by one closed edge, with
+            // no analytic v extent to fall back on — takes its domain from
+            // that edge instead of from the surface's unbounded one.
             FaceSurface::Cylinder(_) | FaceSurface::Cone(_) if !face.inner_wires().is_empty() => {
-                return None;
+                has_bored_quadric = true;
             }
+            // A torus's tube is periodic in BOTH parameters, so a hole that
+            // wraps a period bounds no patch and has no "above" to count: the
+            // integrator leaves it, and the solid is deferred to tessellation.
             FaceSurface::Torus(_) if !face.inner_wires().is_empty() => return None,
             _ => {}
         }

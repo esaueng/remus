@@ -7,7 +7,7 @@
 
 use brepkit_math::quadrature::gauss_legendre_points;
 use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point3, Vec3};
+use brepkit_math::vec::{Point2, Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::face::{FaceId, FaceSurface};
@@ -67,31 +67,33 @@ pub struct FaceContribution {
 /// * **Quadric faces trimmed by a UV boundary polygon** are limited by the
 ///   chording of that polygon.
 ///
-/// Two known defects remain on the quadric path, both pre-existing and both
-/// also present in `brepkit-operations`' `solid_volume`:
+/// Inner wires ARE removed from a curved face, in the same UV domain the
+/// quadrature runs over, and the quadrature is split on their outlines so each
+/// subtracts to the accuracy of its own chording rather than to however many
+/// abscissae happen to land inside it.
 ///
-/// 1. Inner wires are not subtracted. `face_uv_bounds` takes its bounds from
-///    the outer wire alone, and the containment test in
-///    `integrate_parametric_trimmed` only tests that same outer boundary, so
-///    a hole in a curved face is integrated as material. A proper fix needs
-///    multi-polygon UV containment (outer minus holes).
-/// 2. A quadric face whose entire boundary is ONE closed edge projects its
-///    outer wire to a single UV point, so `face_uv_bounds` falls back to the
-///    full analytic domain — which for a cylinder or cone is unbounded in `v`.
-///    The infinite patch width makes every quadrature abscissa NaN, the
-///    containment test rejects them all, and the face contributes exactly zero
-///    area and zero volume.
+/// A hole that CLOSES in `u` is a patch, and rejects what it encloses. A hole
+/// that WRAPS the periodic `u` axis of a cylinder or a cone encloses no patch —
+/// it separates the wall into bands — so what it rejects is what an odd number
+/// of such loops lie above; the two rims a cross-drilled bore opens in a wall
+/// are one such pair. A wrapping hole that instead CAPS the wall, leaving the
+/// outer wire at a single `v`, clips the `v` range rather than masking, as a
+/// drilled tunnel's rim does on a sphere — see `full_revolution_hole_vs`. A
+/// wrapping hole on a torus is still not subtracted: the tube is periodic in
+/// BOTH parameters, so it has neither an "above" nor a far end to clip, and
+/// callers that can meet one defer the whole solid rather than measure it here.
 ///
-/// Reproduction for both: cut a radius-3 cylinder clean through the side of a
-/// radius-10, 30 mm one. The outer wall keeps both bore rims as material (1)
-/// and the two bore walls vanish (2); the body measures 9424.778 mm³ against a
-/// true 8859.291, 6.38 % high.
+/// A face whose whole boundary is ONE closed edge has a single boundary
+/// vertex, so it cannot bound its own domain out of the surface's analytic
+/// one — which for a cylinder and a cone is unbounded in `v`, which made every
+/// abscissa non-finite and the face's contribution exactly zero. The domain
+/// comes from the boundary curves' own 3D extent instead; see
+/// `face_boundary_v_extent`.
 ///
 /// # Errors
 ///
 /// Returns an error if topology entities are missing or the face has
 /// insufficient geometry for integration.
-#[allow(clippy::too_many_lines)]
 pub fn integrate_face(
     topo: &Topology,
     face_id: FaceId,
@@ -109,37 +111,33 @@ pub fn integrate_face(
         FaceSurface::Cylinder(s) => {
             let full = (
                 (0.0, std::f64::consts::TAU),
-                (f64::NEG_INFINITY, f64::INFINITY),
+                face_boundary_v_extent(topo, face_id, s)?,
             );
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
-            let uv_boundary = build_face_uv_boundary(topo, face_id, |p| s.project_point(p), true)?;
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
                 v_range,
                 gauss_order,
                 sign,
-                &uv_boundary,
-                true,
-                &[],
+                &uv,
             ))
         }
         FaceSurface::Cone(s) => {
             let full = (
                 (0.0, std::f64::consts::TAU),
-                (f64::NEG_INFINITY, f64::INFINITY),
+                face_boundary_v_extent(topo, face_id, s)?,
             );
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
-            let uv_boundary = build_face_uv_boundary(topo, face_id, |p| s.project_point(p), true)?;
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
                 v_range,
                 gauss_order,
                 sign,
-                &uv_boundary,
-                true,
-                &[],
+                &uv,
             ))
         }
         FaceSurface::Sphere(s) => {
@@ -148,32 +146,28 @@ pub fn integrate_face(
                 (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
             );
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
-            let uv_boundary = build_face_uv_boundary(topo, face_id, |p| s.project_point(p), true)?;
-            let hole_vs = full_revolution_hole_vs(topo, face_id, s);
+            let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false)?;
+            uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
             Ok(integrate_with_trimming(
                 s,
                 u_range,
                 v_range,
                 gauss_order,
                 sign,
-                &uv_boundary,
-                true,
-                &hole_vs,
+                &uv,
             ))
         }
         FaceSurface::Torus(s) => {
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, true, full)?;
-            let uv_boundary = build_face_uv_boundary(topo, face_id, |p| s.project_point(p), true)?;
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
                 v_range,
                 gauss_order,
                 sign,
-                &uv_boundary,
-                true,
-                &[],
+                &uv,
             ))
         }
         FaceSurface::Nurbs(s) => {
@@ -182,17 +176,14 @@ pub fn integrate_face(
             let periodic_v = s.is_periodic_v();
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, s, periodic_u, periodic_v, full)?;
-            let uv_boundary =
-                build_face_uv_boundary(topo, face_id, |p| s.project_point(p), periodic_u)?;
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), periodic_u, false)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
                 v_range,
                 gauss_order,
                 sign,
-                &uv_boundary,
-                periodic_u,
-                &[],
+                &uv,
             ))
         }
     }
@@ -200,6 +191,473 @@ pub fn integrate_face(
 
 /// UV domain bounds as `((u_min, u_max), (v_min, v_max))`.
 type UvBounds = ((f64, f64), (f64, f64));
+
+/// Samples taken along each boundary edge when measuring a face's own extent.
+const EXTENT_SAMPLES: usize = 8;
+
+/// Winding of a `u` sequence within this much of a full turn counts as
+/// wrapping the periodic axis.
+const WRAP_EPS: f64 = 1e-3;
+
+/// Shoelace area below which a UV loop encloses no patch — it has collapsed
+/// onto a line or a point, or it wraps the periodic axis instead of closing.
+const DEGENERATE_UV_AREA: f64 = 1e-12;
+
+/// Samples a closed curved edge contributes when a face's boundary or one of
+/// its holes is outlined in UV.
+///
+/// The quadrature is exact for the polylines these outlines are, so the whole
+/// residual of a trimmed curved face is their chord error. That is worth more
+/// samples than the `crate::util::CLOSED_CURVE_SAMPLES` a wire gets for merely
+/// being walked: the chord error falls with the square of the step, so four
+/// times the default buys a factor of sixteen. On a cross-drilled shaft it
+/// takes the body from 0.06 % of its closed form to 0.005 %.
+const TRIM_SAMPLES: usize = 128;
+
+/// The `v` extent a face's own boundary curves cover on its surface.
+///
+/// A cylinder's and a cone's analytic domain is unbounded in `v`, so a face
+/// whose projected boundary fails to bound a sub-region — every vertex landing
+/// on one `(u, v)`, which is what a wall closed by a single closed edge does —
+/// has no finite domain to fall back on, and integrating an infinite patch
+/// makes every abscissa non-finite and the face's contribution NaN. Its
+/// boundary curves themselves always have a finite extent, and it is the only
+/// extent the face can cover, so that is the fallback. Every wire is sampled
+/// along each edge's own span, not just at its vertices, because a single
+/// closed edge has one vertex and an arc bows away from the chord between two.
+///
+/// A boundary that really does collapse to one `v` yields a zero-width range,
+/// and the face then contributes nothing — which is what a face with no axial
+/// extent should contribute.
+fn face_boundary_v_extent<S: ParametricSurface>(
+    topo: &Topology,
+    face_id: FaceId,
+    surface: &S,
+) -> Result<(f64, f64), CheckError> {
+    let face = topo.face(face_id)?;
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wid)?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+            for k in 0..=EXTENT_SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let f = k as f64 / EXTENT_SAMPLES as f64;
+                let p = edge
+                    .curve()
+                    .evaluate_with_endpoints((t1 - t0).mul_add(f, t0), start, end);
+                let (_, v) = surface.project_point(p);
+                v_min = v_min.min(v);
+                v_max = v_max.max(v);
+            }
+        }
+    }
+
+    if v_min.is_finite() && v_max.is_finite() {
+        Ok((v_min, v_max))
+    } else {
+        Err(CheckError::IntegrationFailed(
+            "face boundary has no finite extent on its surface".into(),
+        ))
+    }
+}
+
+/// A face boundary loop projected into its surface's UV domain.
+///
+/// `u` is stored unwrapped — consecutive samples differ by less than half a
+/// period — so a loop straddling the seam stays contiguous instead of splitting
+/// in two. The window it was unwrapped into is remembered, because a quadrature
+/// abscissa has to be brought into the same branch before it can be tested
+/// against the loop.
+#[derive(Debug, Clone, Default)]
+struct UvLoop {
+    points: Vec<Point2>,
+    u_center: f64,
+}
+
+impl UvLoop {
+    /// Wrap a projected boundary into a loop, unwrapping `u` sequentially.
+    fn new(mut points: Vec<Point2>, u_periodic: bool) -> Self {
+        if u_periodic {
+            for i in 1..points.len() {
+                let u = unwrap_angle(points[i - 1].x(), points[i].x());
+                points[i] = Point2::new(u, points[i].y());
+            }
+        }
+        let u_min = points.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min);
+        let u_max = points
+            .iter()
+            .map(|p| p.x())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let u_center = if points.is_empty() {
+            0.0
+        } else {
+            f64::midpoint(u_min, u_max)
+        };
+        Self { points, u_center }
+    }
+
+    /// Absolute shoelace area. Near zero means the loop has collapsed onto a
+    /// line or a point, or it wraps the periodic axis rather than closing.
+    fn area(&self) -> f64 {
+        let n = self.points.len();
+        if n < 3 {
+            return 0.0;
+        }
+        let mut a = 0.0;
+        for i in 0..n {
+            let p = self.points[i];
+            let q = self.points[(i + 1) % n];
+            a += p.x() * q.y() - q.x() * p.y();
+        }
+        (a * 0.5).abs()
+    }
+
+    /// Signed total of the shortest `u` steps around the loop: `±2π` when it
+    /// wraps the periodic axis once, `~0` when it closes without wrapping.
+    ///
+    /// Taking each step by its shortest representative makes the total
+    /// independent of how finely the loop was sampled.
+    fn u_winding(&self) -> f64 {
+        let tau = std::f64::consts::TAU;
+        let n = self.points.len();
+        (0..n)
+            .map(|i| {
+                let d = self.points[(i + 1) % n].x() - self.points[i].x();
+                d - tau * ((d + std::f64::consts::PI) / tau).floor()
+            })
+            .sum()
+    }
+
+    /// `u` brought into the branch this loop's own coordinates live in.
+    fn wrap_u(&self, u: f64, u_periodic: bool) -> f64 {
+        if u_periodic {
+            unwrap_angle(self.u_center, u)
+        } else {
+            u
+        }
+    }
+
+    /// Whether `(u, v)` lies inside the patch this loop encloses.
+    fn encloses(&self, u: f64, v: f64, u_periodic: bool) -> bool {
+        use brepkit_math::predicates::point_in_polygon;
+        point_in_polygon(Point2::new(self.wrap_u(u, u_periodic), v), &self.points)
+    }
+
+    /// Call `f` with the `v` of every point where the vertical line at `u`
+    /// crosses this loop.
+    ///
+    /// `wraps` selects how the loop closes: a patch loop closes by a chord
+    /// from its last sample back to its first, a period-wrapping loop by the
+    /// step to its first sample one whole turn on. Each segment is taken
+    /// half-open in `u` so a shared endpoint is reported once.
+    fn for_each_v_crossing(&self, u: f64, u_periodic: bool, wraps: bool, mut f: impl FnMut(f64)) {
+        let tau = std::f64::consts::TAU;
+        let n = self.points.len();
+        if n < 2 {
+            return;
+        }
+        let uq = if wraps {
+            let u0 = self.points[0].x();
+            let d = u - u0;
+            u0 + d - tau * (d / tau).floor()
+        } else {
+            self.wrap_u(u, u_periodic)
+        };
+
+        for i in 0..n {
+            let a = self.points[i];
+            let b = if i + 1 < n {
+                self.points[i + 1]
+            } else if wraps {
+                Point2::new(self.points[0].x() + tau, self.points[0].y())
+            } else {
+                self.points[0]
+            };
+            let (lo, hi) = if a.x() <= b.x() {
+                (a.x(), b.x())
+            } else {
+                (b.x(), a.x())
+            };
+            if uq >= lo && uq < hi {
+                let t = (uq - a.x()) / (b.x() - a.x());
+                f((b.y() - a.y()).mul_add(t, a.y()));
+            }
+        }
+    }
+
+    /// Reverse the point order so the loop's net `u` step is positive.
+    fn oriented_along_u(mut self) -> Self {
+        if self.u_winding() < 0.0 {
+            self.points.reverse();
+        }
+        self
+    }
+
+    /// How many strands of a `u`-wrapping loop lie above `v` at abscissa `u`.
+    ///
+    /// A loop that wraps the period encloses no patch — it separates the wall
+    /// into bands — so it is counted rather than tested for containment. There
+    /// is no closing chord: the last sample joins the first one whole turn on,
+    /// which is what makes the count the number of times the curve is above the
+    /// abscissa rather than a polygon crossing number.
+    ///
+    /// The loop must already be [`Self::oriented_along_u`].
+    fn strands_above(&self, u: f64, v: f64) -> usize {
+        let mut count = 0;
+        self.for_each_v_crossing(u, true, true, |vc| {
+            if vc > v {
+                count += 1;
+            }
+        });
+        count
+    }
+}
+
+/// A face's boundary and holes in its surface's UV domain.
+#[derive(Debug, Clone, Default)]
+struct FaceUv {
+    /// The outer wire.
+    boundary: UvLoop,
+    /// Inner wires that enclose a patch: a hole in the ordinary sense.
+    pockets: Vec<UvLoop>,
+    /// Inner wires that wrap the periodic `u` axis of a surface whose `v` runs
+    /// to infinity. Such a loop bounds a band, not a patch.
+    bands: Vec<UvLoop>,
+    /// Whether `u` is periodic on this surface.
+    u_periodic: bool,
+    /// `v` positions of full-revolution constant-`v` holes, which clip the
+    /// integration range instead of masking abscissae (see
+    /// [`full_revolution_hole_vs`]).
+    hole_vs: Vec<f64>,
+}
+
+/// Project a face's wires into the surface's UV domain.
+///
+/// `v_unbounded` says the surface's `v` runs to infinity in both directions (a
+/// cylinder or a cone). That is what makes the band test well posed: with no
+/// far end to the wall, a sample that no band lies above is material, so
+/// counting bands above it decides the sample. A sphere's `v` ends at a pole
+/// and a torus's wraps, so a period-wrapping hole on those is left to
+/// [`full_revolution_hole_vs`] or to the caller.
+fn build_face_uv<F>(
+    topo: &Topology,
+    face_id: FaceId,
+    project: F,
+    u_periodic: bool,
+    v_unbounded: bool,
+) -> Result<FaceUv, CheckError>
+where
+    F: Fn(Point3) -> (f64, f64),
+{
+    let to_loop = |pts: &[Point3]| {
+        UvLoop::new(
+            pts.iter()
+                .map(|&p| {
+                    let (u, v) = project(p);
+                    Point2::new(u, v)
+                })
+                .collect(),
+            u_periodic,
+        )
+    };
+
+    let face = topo.face(face_id)?;
+    let outer = crate::util::wire_polygon_sampled(topo, face.outer_wire(), TRIM_SAMPLES)?;
+    let boundary = if outer.len() < 3 {
+        UvLoop::default()
+    } else {
+        to_loop(&outer)
+    };
+
+    let mut pockets = Vec::new();
+    let mut bands = Vec::new();
+    for hole in crate::util::face_hole_polygons_sampled(topo, face_id, TRIM_SAMPLES)? {
+        let loop_ = to_loop(&hole);
+        let wraps = u_periodic && loop_.u_winding().abs() >= std::f64::consts::TAU - WRAP_EPS;
+        if wraps {
+            if v_unbounded {
+                bands.push(loop_.oriented_along_u());
+            }
+        } else if loop_.area() > DEGENERATE_UV_AREA {
+            pockets.push(loop_);
+        }
+    }
+    // A face is its outer wire minus its holes; keeping the face's own wires
+    // is the only thing that keeps the two in step.
+    debug_assert!(face.inner_wires().len() >= pockets.len() + bands.len());
+
+    Ok(FaceUv {
+        boundary,
+        pockets,
+        bands,
+        u_periodic,
+        hole_vs: Vec::new(),
+    })
+}
+
+/// Where a quadrature abscissa must lie to belong to the face.
+struct UvTrim<'a> {
+    /// Boundary the abscissa must be inside. `None` when the projected
+    /// boundary cannot trim — it wraps the full period, or collapses onto a
+    /// seam or a pole — and the integration domain is the face.
+    outer: Option<&'a UvLoop>,
+    /// Holes enclosing a patch: the abscissa is out when inside one.
+    pockets: &'a [UvLoop],
+    /// Holes wrapping the periodic axis: the abscissa is out when an odd
+    /// number of them lie above it.
+    bands: &'a [UvLoop],
+    /// Whether `u` is periodic on this surface.
+    u_periodic: bool,
+}
+
+impl<'a> UvTrim<'a> {
+    /// Keep the whole domain but remove `uv`'s holes.
+    fn holes_of(uv: &'a FaceUv) -> Self {
+        Self {
+            outer: None,
+            pockets: &uv.pockets,
+            bands: &uv.bands,
+            u_periodic: uv.u_periodic,
+        }
+    }
+
+    /// Keep the whole domain and remove only the holes that enclose a patch.
+    ///
+    /// For a wall whose outer wire sits at ONE `v`, the wrapping holes are what
+    /// cap it: they have already set the `v` range being integrated over (see
+    /// [`full_revolution_hole_vs`]), and counting them again as bands would
+    /// reject the very strip they bound.
+    fn pockets_of(uv: &'a FaceUv) -> Self {
+        Self {
+            outer: None,
+            pockets: &uv.pockets,
+            bands: &[],
+            u_periodic: uv.u_periodic,
+        }
+    }
+
+    /// Trim to `uv`'s boundary and remove its holes.
+    fn boundary_of(uv: &'a FaceUv) -> Self {
+        Self {
+            outer: Some(&uv.boundary),
+            pockets: &uv.pockets,
+            bands: &uv.bands,
+            u_periodic: uv.u_periodic,
+        }
+    }
+
+    fn accepts(&self, u: f64, v: f64) -> bool {
+        if let Some(outer) = self.outer
+            && !outer.encloses(u, v, self.u_periodic)
+        {
+            return false;
+        }
+        if self
+            .pockets
+            .iter()
+            .any(|hole| hole.encloses(u, v, self.u_periodic))
+        {
+            return false;
+        }
+        let strands: usize = self.bands.iter().map(|b| b.strands_above(u, v)).sum();
+        strands.is_multiple_of(2)
+    }
+
+    /// Whether any loop cuts the domain, so the quadrature must be split on
+    /// its crossings rather than merely reject abscissae.
+    const fn splits_domain(&self) -> bool {
+        self.outer.is_some() || !self.pockets.is_empty() || !self.bands.is_empty()
+    }
+
+    /// The `u` values at which the accepted v-spans stop varying smoothly.
+    ///
+    /// A loop's UV outline is a polyline, so the `v` it cuts at moves affinely
+    /// with `u` between two of its vertices but kinks at them, and a span
+    /// appears or vanishes where a loop's `u` extremum passes. Splitting the
+    /// v-quadrature is not enough on its own — the u-integrand still has those
+    /// kinks — so every loop vertex becomes a quadrature interval boundary too,
+    /// which makes the subtraction exact for the polyline the loop is.
+    ///
+    /// Returned sorted, spanning `u_range` inclusive.
+    fn u_breaks(&self, u_range: (f64, f64)) -> Vec<f64> {
+        let tau = std::f64::consts::TAU;
+        let (lo, hi) = (u_range.0, u_range.1);
+        let mut breaks = vec![lo, hi];
+        let loops = self.outer.into_iter().chain(self.pockets).chain(self.bands);
+        for l in loops {
+            for p in &l.points {
+                // A loop unwrapped about its own window may sit a whole period
+                // away from the domain's; try both shifts and keep what lands
+                // inside.
+                let shifts: &[f64] = if self.u_periodic {
+                    &[0.0, tau, -tau]
+                } else {
+                    &[0.0]
+                };
+                for &shift in shifts {
+                    let u = p.x() + shift;
+                    if u > lo && u < hi {
+                        breaks.push(u);
+                    }
+                }
+            }
+        }
+        breaks.sort_by(f64::total_cmp);
+        breaks
+    }
+
+    /// The sub-intervals of `v_range` that belong to the face at abscissa `u`.
+    ///
+    /// Every loop is cut by the vertical line at `u`; between two consecutive
+    /// cuts no loop crosses, so [`Self::accepts`] cannot change there and the
+    /// integrand is smooth across the whole interval. Splitting the
+    /// v-quadrature on those cuts is what makes a hole subtract to the accuracy
+    /// of its own boundary chording, rather than to however many abscissae
+    /// happen to land inside it — masking alone left a 1 mm² hole in a 300 mm²
+    /// wall 8 % wrong at the default order.
+    fn v_spans(&self, u: f64, v_range: (f64, f64)) -> Vec<(f64, f64)> {
+        let (v0, v1) = if v_range.0 <= v_range.1 {
+            v_range
+        } else {
+            (v_range.1, v_range.0)
+        };
+
+        let mut cuts: Vec<f64> = vec![v0, v1];
+        if let Some(outer) = self.outer {
+            outer.for_each_v_crossing(u, self.u_periodic, false, |vc| cuts.push(vc));
+        }
+        for hole in self.pockets {
+            hole.for_each_v_crossing(u, self.u_periodic, false, |vc| cuts.push(vc));
+        }
+        for band in self.bands {
+            band.for_each_v_crossing(u, self.u_periodic, true, |vc| cuts.push(vc));
+        }
+        cuts.retain(|c| c.is_finite() && *c >= v0 && *c <= v1);
+        cuts.sort_by(f64::total_cmp);
+
+        // Cuts closer together than this carry no width worth integrating, and
+        // splitting on them would only manufacture empty spans.
+        let eps = (v1 - v0).abs() * 1e-12;
+        let mut spans: Vec<(f64, f64)> = Vec::new();
+        for w in cuts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if b - a <= eps || !self.accepts(u, f64::midpoint(a, b)) {
+                continue;
+            }
+            match spans.last_mut() {
+                Some(last) if (a - last.1).abs() <= eps => last.1 = b,
+                _ => spans.push((a, b)),
+            }
+        }
+        spans
+    }
+}
 
 /// The v-positions of a face's full-revolution inner wires (holes) on a
 /// surface periodic in u.
@@ -286,12 +744,13 @@ fn full_revolution_hole_vs<S: ParametricSurface>(
 /// When all projected vertices coincide (e.g. a full-revolution face),
 /// `full_domain` is returned instead.
 ///
-/// **Limitation:** Only the outer wire is used for UV bounds. Inner wires
-/// (holes) are handled during Gauss integration by the UV containment check
-/// in `integrate_parametric_trimmed`, but the current containment only tests
-/// against the outer boundary. Faces with holes will over-integrate the hole
-/// region. A proper fix requires multi-polygon UV containment (outer minus
-/// holes).
+/// Only the outer wire bounds the domain — a hole lies inside it by
+/// definition, so it can never widen it. The holes are removed from the
+/// integration itself, by [`UvTrim`].
+///
+/// `full_domain` must be finite on both axes. A cylinder's and a cone's
+/// analytic domain is not, so those pass their face's own boundary extent
+/// (see [`face_boundary_v_extent`]) rather than `±∞`.
 fn face_uv_bounds<S: ParametricSurface>(
     topo: &Topology,
     face_id: FaceId,
@@ -880,7 +1339,114 @@ fn integrate_planar_face_exact(
     }))
 }
 
-/// Integrate a parametric surface using Gauss quadrature over the UV domain.
+/// Running totals of a face's contribution over quadrature abscissae.
+#[derive(Default)]
+struct Accumulator {
+    area: f64,
+    vol: f64,
+    mx: f64,
+    my: f64,
+    mz: f64,
+    qxx: f64,
+    qyy: f64,
+    qzz: f64,
+    qxy: f64,
+    qxz: f64,
+    qyz: f64,
+    cx: f64,
+    cy: f64,
+    cz: f64,
+}
+
+impl Accumulator {
+    /// Add one abscissa's contribution, weighted by `w` (which already carries
+    /// the map from the reference interval to the patch).
+    fn add<S: ParametricSurface>(&mut self, surface: &S, u: f64, v: f64, w: f64) {
+        let p = surface.evaluate(u, v);
+        let du = surface.partial_u(u, v);
+        let dv = surface.partial_v(u, v);
+
+        // Normal = du x dv (unnormalized, includes Jacobian)
+        let n = Vec3::new(
+            du.y() * dv.z() - du.z() * dv.y(),
+            du.z() * dv.x() - du.x() * dv.z(),
+            du.x() * dv.y() - du.y() * dv.x(),
+        );
+        let n_len = n.length();
+
+        self.area += w * n_len;
+
+        // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
+        let pv = Vec3::new(p.x(), p.y(), p.z());
+        self.vol += w * pv.dot(n) / 3.0;
+
+        // Volume moments via divergence theorem:
+        // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
+        // n already includes Jacobian, so n.x() = N_x * |J|
+        self.mx += w * 0.5 * p.x() * p.x() * n.x();
+        self.my += w * 0.5 * p.y() * p.y() * n.y();
+        self.mz += w * 0.5 * p.z() * p.z() * n.z();
+
+        self.qxx += w * p.x().powi(3) * n.x() / 3.0;
+        self.qyy += w * p.y().powi(3) * n.y() / 3.0;
+        self.qzz += w * p.z().powi(3) * n.z() / 3.0;
+        self.qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
+        self.qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
+        self.qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
+
+        self.cx += w * p.x() * n_len;
+        self.cy += w * p.y() * n_len;
+        self.cz += w * p.z() * n_len;
+    }
+
+    fn finish(self, sign: f64) -> FaceContribution {
+        FaceContribution {
+            area: self.area,
+            volume: self.vol * sign,
+            volume_moment_x: self.mx * sign,
+            volume_moment_y: self.my * sign,
+            volume_moment_z: self.mz * sign,
+            volume_second_x: self.qxx * sign,
+            volume_second_y: self.qyy * sign,
+            volume_second_z: self.qzz * sign,
+            volume_product_xy: self.qxy * sign,
+            volume_product_xz: self.qxz * sign,
+            volume_product_yz: self.qyz * sign,
+            centroid_x: self.cx,
+            centroid_y: self.cy,
+            centroid_z: self.cz,
+        }
+    }
+}
+
+/// Composite quadrature tiles a domain axis into patches no larger than ~PI/4
+/// so one Gauss rule resolves curved and periodic integrands. A single patch
+/// over a torus's full 2*PI period in both u and v under-resolves it (~0.5%
+/// error); several patches per period converge to machine precision. The patch
+/// count is capped so a long *linear* axis (e.g. a tall cylinder/cone whose v
+/// is axial distance) cannot make integration cost scale with model size — its
+/// integrand is low-degree, so a bounded number of patches stays exact. Angular
+/// axes never exceed 2*PI (= 8 patches), well under the cap.
+const MAX_PATCHES: usize = 16;
+
+/// Number of patches an axis of the given span is tiled into.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn patch_count(span: f64) -> usize {
+    ((span.abs() / std::f64::consts::FRAC_PI_4).ceil() as usize).clamp(1, MAX_PATCHES)
+}
+
+/// Integrate a parametric surface over a UV domain by Gauss quadrature,
+/// keeping only what `trim` accepts.
+///
+/// A face no loop cuts — a full revolution with no holes, or a boundary that
+/// collapsed onto a seam — is integrated over the domain box directly. Any
+/// other face has its u-quadrature split at every loop vertex and its
+/// v-quadrature split at the loop crossings of each u abscissa (see
+/// [`UvTrim::u_breaks`] and [`UvTrim::v_spans`]), so every loop edge falls ON
+/// a quadrature interval boundary. That is what makes the result exact for the
+/// polylines the loops are, instead of leaving them to whichever abscissae
+/// happen to land inside: masking alone left the two lobes of a cross-drilled
+/// bore wall 0.16 % short of their closed form.
 #[allow(clippy::cast_precision_loss)]
 fn integrate_parametric<S: ParametricSurface>(
     surface: &S,
@@ -888,41 +1454,50 @@ fn integrate_parametric<S: ParametricSurface>(
     v_range: (f64, f64),
     gauss_order: usize,
     sign: f64,
+    trim: &UvTrim<'_>,
 ) -> FaceContribution {
-    // Composite quadrature: tile the domain into patches no larger than ~PI/4
-    // so one Gauss rule resolves curved and periodic integrands. A single patch
-    // over a torus's full 2*PI period in both u and v under-resolves it (~0.5%
-    // error); several patches per period converge to machine precision. The
-    // patch count is capped so a long *linear* axis (e.g. a tall cylinder/cone
-    // whose v is axial distance) cannot make integration cost scale with model
-    // size — its integrand is low-degree, so a bounded number of patches stays
-    // exact. Angular axes never exceed 2*PI (= 8 patches), well under the cap.
-    const MAX_PATCHES: usize = 16;
-
     let gauss_pts = gauss_legendre_points(gauss_order);
-    let patch = std::f64::consts::FRAC_PI_4;
-    let nu = (((u_range.1 - u_range.0).abs() / patch).ceil() as usize).clamp(1, MAX_PATCHES);
-    let nv = (((v_range.1 - v_range.0).abs() / patch).ceil() as usize).clamp(1, MAX_PATCHES);
+    let nu = patch_count(u_range.1 - u_range.0);
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
-    let dv_patch = (v_range.1 - v_range.0) / nv as f64;
     let u_scale = du_patch / 2.0;
+    let mut acc = Accumulator::default();
+
+    if trim.splits_domain() {
+        let breaks = trim.u_breaks(u_range);
+        let eps = (u_range.1 - u_range.0).abs() * 1e-12;
+        for w in breaks.windows(2) {
+            let (u0, u1) = (w[0], w[1]);
+            if u1 - u0 <= eps {
+                continue;
+            }
+            let nu = patch_count(u1 - u0);
+            let du_patch = (u1 - u0) / nu as f64;
+            let u_scale = du_patch / 2.0;
+            for iu in 0..nu {
+                let u_mid = du_patch.mul_add(iu as f64, u0) + u_scale;
+                for gpu in gauss_pts {
+                    let u = u_scale.mul_add(gpu.x, u_mid);
+                    for (a, b) in trim.v_spans(u, v_range) {
+                        let nv = patch_count(b - a);
+                        let dv_patch = (b - a) / nv as f64;
+                        let v_scale = dv_patch / 2.0;
+                        for iv in 0..nv {
+                            let v_mid = dv_patch.mul_add(iv as f64, a) + v_scale;
+                            for gpv in gauss_pts {
+                                let v = v_scale.mul_add(gpv.x, v_mid);
+                                acc.add(surface, u, v, gpu.w * gpv.w * u_scale * v_scale);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return acc.finish(sign);
+    }
+
+    let nv = patch_count(v_range.1 - v_range.0);
+    let dv_patch = (v_range.1 - v_range.0) / nv as f64;
     let v_scale = dv_patch / 2.0;
-
-    let mut area = 0.0;
-    let mut vol = 0.0;
-    let mut mx = 0.0;
-    let mut my = 0.0;
-    let mut mz = 0.0;
-    let mut qxx = 0.0;
-    let mut qyy = 0.0;
-    let mut qzz = 0.0;
-    let mut qxy = 0.0;
-    let mut qxz = 0.0;
-    let mut qyz = 0.0;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut cz = 0.0;
-
     for iu in 0..nu {
         let u_mid = du_patch.mul_add(iu as f64, u_range.0) + u_scale;
         for iv in 0..nv {
@@ -931,132 +1506,66 @@ fn integrate_parametric<S: ParametricSurface>(
                 let u = u_scale.mul_add(gpu.x, u_mid);
                 for gpv in gauss_pts {
                     let v = v_scale.mul_add(gpv.x, v_mid);
-                    let w = gpu.w * gpv.w * u_scale * v_scale;
-
-                    let p = surface.evaluate(u, v);
-                    let du = surface.partial_u(u, v);
-                    let dv = surface.partial_v(u, v);
-
-                    // Normal = du x dv (unnormalized, includes Jacobian)
-                    let n = Vec3::new(
-                        du.y() * dv.z() - du.z() * dv.y(),
-                        du.z() * dv.x() - du.x() * dv.z(),
-                        du.x() * dv.y() - du.y() * dv.x(),
-                    );
-                    let n_len = n.length();
-
-                    area += w * n_len;
-
-                    // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
-                    let pv = Vec3::new(p.x(), p.y(), p.z());
-                    vol += w * pv.dot(n) / 3.0;
-
-                    // Volume moments via divergence theorem:
-                    // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
-                    // n already includes Jacobian, so n.x() = N_x * |J|
-                    mx += w * 0.5 * p.x() * p.x() * n.x();
-                    my += w * 0.5 * p.y() * p.y() * n.y();
-                    mz += w * 0.5 * p.z() * p.z() * n.z();
-
-                    qxx += w * p.x().powi(3) * n.x() / 3.0;
-                    qyy += w * p.y().powi(3) * n.y() / 3.0;
-                    qzz += w * p.z().powi(3) * n.z() / 3.0;
-                    qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
-                    qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
-                    qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
-
-                    cx += w * p.x() * n_len;
-                    cy += w * p.y() * n_len;
-                    cz += w * p.z() * n_len;
+                    if !trim.accepts(u, v) {
+                        continue;
+                    }
+                    acc.add(surface, u, v, gpu.w * gpv.w * u_scale * v_scale);
                 }
             }
         }
     }
-
-    FaceContribution {
-        area,
-        volume: vol * sign,
-        volume_moment_x: mx * sign,
-        volume_moment_y: my * sign,
-        volume_moment_z: mz * sign,
-        volume_second_x: qxx * sign,
-        volume_second_y: qyy * sign,
-        volume_second_z: qzz * sign,
-        volume_product_xy: qxy * sign,
-        volume_product_xz: qxz * sign,
-        volume_product_yz: qyz * sign,
-        centroid_x: cx,
-        centroid_y: cy,
-        centroid_z: cz,
-    }
+    acc.finish(sign)
 }
 
-/// Absolute shoelace area of a UV polygon. Near-zero means the boundary has
-/// collapsed onto a line or point (a degenerate seam/pole projection).
-fn polygon_area(poly: &[(f64, f64)]) -> f64 {
-    let n = poly.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut a = 0.0;
-    for i in 0..n {
-        let (x0, y0) = poly[i];
-        let (x1, y1) = poly[(i + 1) % n];
-        a += x0 * y1 - x1 * y0;
-    }
-    (a * 0.5).abs()
-}
-
-/// Dispatch to trimmed or untrimmed parametric integration based on whether
-/// a UV boundary polygon is available.
-#[allow(clippy::too_many_arguments)]
+/// Choose the UV domain a face's quadrature runs over, and how its boundary
+/// trims it.
+///
+/// The dense boundary polygon is the reliable signal for a face's true
+/// parametric extent: `face_uv_bounds` samples only sparse edge endpoints and
+/// under-spans full-revolution faces (a cone's lateral face reports a narrow
+/// u-range though its boundary wraps the full 2pi). A face that wraps the
+/// full period in u, or whose boundary collapses onto a seam or pole, cannot
+/// be trimmed by a UV polygon — the apex/pole/seam folds the polygon and the
+/// point-in-polygon test rejects valid interior samples. Those cases integrate
+/// the analytic surface over its true domain instead, and only the face's
+/// holes are removed.
 fn integrate_with_trimming<S: ParametricSurface>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
     gauss_order: usize,
     sign: f64,
-    uv_boundary: &[(f64, f64)],
-    u_periodic: bool,
-    hole_vs: &[f64],
+    uv: &FaceUv,
 ) -> FaceContribution {
-    if uv_boundary.len() < 3 {
-        return integrate_parametric(surface, u_range, v_range, gauss_order, sign);
+    let holes_only = UvTrim::holes_of(uv);
+    if uv.boundary.points.len() < 3 {
+        return integrate_parametric(surface, u_range, v_range, gauss_order, sign, &holes_only);
     }
 
-    // The dense boundary polygon is the reliable signal for a face's true
-    // parametric extent: `face_uv_bounds` samples only sparse edge endpoints and
-    // under-spans full-revolution faces (a cone's lateral face reports a narrow
-    // u-range though its boundary wraps the full 2pi). A face that wraps the
-    // full period in u, or whose boundary collapses onto a seam or pole, cannot
-    // be trimmed by a UV polygon — the apex/pole/seam folds the polygon and the
-    // point-in-polygon test rejects valid interior samples. Integrate the
-    // analytic surface untrimmed over its true domain in those cases.
-    let u_min = uv_boundary
+    let u_min = uv
+        .boundary
+        .points
         .iter()
-        .map(|p| p.0)
+        .map(|p| p.x())
         .fold(f64::INFINITY, f64::min);
-    let v_min = uv_boundary
+    let v_min = uv
+        .boundary
+        .points
         .iter()
-        .map(|p| p.1)
+        .map(|p| p.y())
         .fold(f64::INFINITY, f64::min);
-    let v_max = uv_boundary
+    let v_max = uv
+        .boundary
+        .points
         .iter()
-        .map(|p| p.1)
+        .map(|p| p.y())
         .fold(f64::NEG_INFINITY, f64::max);
 
     // Winding number of the boundary around the periodic u-axis: ±TAU for a
     // face that wraps a full revolution, ~0 for a partially-trimmed face.
-    // Computed from shortest signed steps so it is independent of the
-    // boundary's discretization (segment count).
     let tau = std::f64::consts::TAU;
-    let winding: f64 = (0..uv_boundary.len())
-        .map(|i| {
-            let d = uv_boundary[(i + 1) % uv_boundary.len()].0 - uv_boundary[i].0;
-            d - tau * ((d + std::f64::consts::PI) / tau).floor()
-        })
-        .sum();
-    let full_revolution = u_periodic && winding.abs() >= tau - 1e-3;
+    let winding = uv.boundary.u_winding();
+    let full_revolution = uv.u_periodic && winding.abs() >= tau - WRAP_EPS;
     let v_degenerate = (v_max - v_min) <= 1e-9;
 
     if full_revolution && v_degenerate {
@@ -1068,7 +1577,8 @@ fn integrate_with_trimming<S: ParametricSurface>(
         // A full-revolution hole at a latitude between the outer circle and the
         // pole (the drilled-tunnel rim) clips the cap into a band: integrate
         // only from the outer latitude to the hole, not on to the pole.
-        let v_far = hole_vs
+        let v_far = uv
+            .hole_vs
             .iter()
             .copied()
             // Same side of v_min as the pole (strict same sign → positive
@@ -1077,7 +1587,14 @@ fn integrate_with_trimming<S: ParametricSurface>(
             .min_by(|a, b| (a - v_min).abs().total_cmp(&(b - v_min).abs()))
             .unwrap_or(v_pole);
         let v_dom = (v_min.min(v_far), v_min.max(v_far));
-        integrate_parametric(surface, (u_min, u_min + tau), v_dom, gauss_order, sign)
+        integrate_parametric(
+            surface,
+            (u_min, u_min + tau),
+            v_dom,
+            gauss_order,
+            sign,
+            &UvTrim::pockets_of(uv),
+        )
     } else if full_revolution {
         // Full-revolution band (cone/cylinder): integrate the whole revolution
         // over the band's v-extent.
@@ -1087,189 +1604,20 @@ fn integrate_with_trimming<S: ParametricSurface>(
             (v_min, v_max),
             gauss_order,
             sign,
+            &holes_only,
         )
-    } else if polygon_area(uv_boundary) <= 1e-12 {
+    } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
         // Collapsed polygon (e.g. a closed torus whose seam projects to a
         // point): trust the analytic full-domain range from `face_uv_bounds`.
-        integrate_parametric(surface, u_range, v_range, gauss_order, sign)
+        integrate_parametric(surface, u_range, v_range, gauss_order, sign, &holes_only)
     } else {
-        integrate_parametric_trimmed(
+        integrate_parametric(
             surface,
             u_range,
             v_range,
             gauss_order,
             sign,
-            uv_boundary,
-            u_periodic,
+            &UvTrim::boundary_of(uv),
         )
     }
-}
-
-/// Integrate a parametric surface with UV boundary trimming.
-///
-/// At each Gauss point, checks if the (u,v) coordinate falls inside the
-/// face's UV boundary polygon. Points outside are skipped (zero contribution).
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-fn integrate_parametric_trimmed<S: ParametricSurface>(
-    surface: &S,
-    u_range: (f64, f64),
-    v_range: (f64, f64),
-    gauss_order: usize,
-    sign: f64,
-    uv_boundary: &[(f64, f64)],
-    u_periodic: bool,
-) -> FaceContribution {
-    use brepkit_math::predicates::point_in_polygon;
-    use brepkit_math::vec::Point2;
-
-    // Composite quadrature over patches no larger than ~PI/4, mirroring
-    // `integrate_parametric`: one Gauss rule over a full 2*PI period badly
-    // under-resolves trigonometric moment integrands (a cylinder wall's
-    // second moments were ~5% off with a single order-5 grid).
-    const MAX_PATCHES: usize = 16;
-
-    let gauss_pts = gauss_legendre_points(gauss_order);
-    let patch = std::f64::consts::FRAC_PI_4;
-    let nu = (((u_range.1 - u_range.0).abs() / patch).ceil() as usize).clamp(1, MAX_PATCHES);
-    let nv = (((v_range.1 - v_range.0).abs() / patch).ceil() as usize).clamp(1, MAX_PATCHES);
-    let du_patch = (u_range.1 - u_range.0) / nu as f64;
-    let dv_patch = (v_range.1 - v_range.0) / nv as f64;
-    let u_scale = du_patch / 2.0;
-    let v_scale = dv_patch / 2.0;
-
-    let uv_poly: Vec<Point2> = uv_boundary
-        .iter()
-        .map(|(u, v)| Point2::new(*u, *v))
-        .collect();
-
-    let u_bcenter = if u_periodic {
-        let bmin = uv_boundary
-            .iter()
-            .map(|(bu, _)| *bu)
-            .fold(f64::INFINITY, f64::min);
-        let bmax = uv_boundary
-            .iter()
-            .map(|(bu, _)| *bu)
-            .fold(f64::NEG_INFINITY, f64::max);
-        (bmin + bmax) * 0.5
-    } else {
-        0.0
-    };
-
-    let mut area = 0.0;
-    let mut vol = 0.0;
-    let mut mx = 0.0;
-    let mut my = 0.0;
-    let mut mz = 0.0;
-    let mut qxx = 0.0;
-    let mut qyy = 0.0;
-    let mut qzz = 0.0;
-    let mut qxy = 0.0;
-    let mut qxz = 0.0;
-    let mut qyz = 0.0;
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    let mut cz = 0.0;
-
-    for iu in 0..nu {
-        let u_mid = du_patch.mul_add(iu as f64, u_range.0) + u_scale;
-        for iv in 0..nv {
-            let v_mid = dv_patch.mul_add(iv as f64, v_range.0) + v_scale;
-            for gpu in gauss_pts {
-                let u = u_scale.mul_add(gpu.x, u_mid);
-                for gpv in gauss_pts {
-                    let v = v_scale.mul_add(gpv.x, v_mid);
-
-                    let test_u = if u_periodic {
-                        let tau = std::f64::consts::TAU;
-                        let diff = u - u_bcenter;
-                        u_bcenter + diff - tau * ((diff + std::f64::consts::PI) / tau).floor()
-                    } else {
-                        u
-                    };
-
-                    if !point_in_polygon(Point2::new(test_u, v), &uv_poly) {
-                        continue;
-                    }
-
-                    let w = gpu.w * gpv.w * u_scale * v_scale;
-                    let p = surface.evaluate(u, v);
-                    let du = surface.partial_u(u, v);
-                    let dv = surface.partial_v(u, v);
-                    let n = Vec3::new(
-                        du.y() * dv.z() - du.z() * dv.y(),
-                        du.z() * dv.x() - du.x() * dv.z(),
-                        du.x() * dv.y() - du.y() * dv.x(),
-                    );
-                    let n_len = n.length();
-
-                    area += w * n_len;
-
-                    let pv = Vec3::new(p.x(), p.y(), p.z());
-                    vol += w * pv.dot(n) / 3.0;
-
-                    mx += w * 0.5 * p.x() * p.x() * n.x();
-                    my += w * 0.5 * p.y() * p.y() * n.y();
-                    mz += w * 0.5 * p.z() * p.z() * n.z();
-
-                    qxx += w * p.x().powi(3) * n.x() / 3.0;
-                    qyy += w * p.y().powi(3) * n.y() / 3.0;
-                    qzz += w * p.z().powi(3) * n.z() / 3.0;
-                    qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
-                    qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
-                    qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
-
-                    cx += w * p.x() * n_len;
-                    cy += w * p.y() * n_len;
-                    cz += w * p.z() * n_len;
-                }
-            }
-        }
-    }
-
-    FaceContribution {
-        area,
-        volume: vol * sign,
-        volume_moment_x: mx * sign,
-        volume_moment_y: my * sign,
-        volume_moment_z: mz * sign,
-        volume_second_x: qxx * sign,
-        volume_second_y: qyy * sign,
-        volume_second_z: qzz * sign,
-        volume_product_xy: qxy * sign,
-        volume_product_xz: qxz * sign,
-        volume_product_yz: qyz * sign,
-        centroid_x: cx,
-        centroid_y: cy,
-        centroid_z: cz,
-    }
-}
-
-/// Build a UV boundary polygon from a face's outer wire.
-///
-/// Projects each boundary vertex onto the surface to obtain (u, v) coordinates,
-/// then unwraps periodic u-coordinates to avoid seam discontinuities.
-fn build_face_uv_boundary<F>(
-    topo: &Topology,
-    face_id: FaceId,
-    project: F,
-    u_periodic: bool,
-) -> Result<Vec<(f64, f64)>, CheckError>
-where
-    F: Fn(Point3) -> (f64, f64),
-{
-    let polygon = crate::util::face_polygon(topo, face_id)?;
-    if polygon.len() < 3 {
-        return Ok(vec![]);
-    }
-
-    let mut uv: Vec<(f64, f64)> = polygon.iter().map(|&p| project(p)).collect();
-
-    for i in 1..uv.len() {
-        if u_periodic {
-            uv[i].0 = unwrap_angle(uv[i - 1].0, uv[i].0);
-        }
-    }
-
-    Ok(uv)
 }
