@@ -1,9 +1,11 @@
-//! Rolling-ball fillet algorithm producing G1-continuous NURBS blend surfaces.
+//! Rolling-ball fillet algorithm producing G1-continuous blend surfaces —
+//! exact cylinders where the swept geometry is one, NURBS elsewhere.
 
 use std::collections::{HashMap, HashSet};
 
 use brepkit_math::nurbs::surface::NurbsSurface;
 use brepkit_math::nurbs::surface_fitting::interpolate_surface;
+use brepkit_math::surfaces::CylindricalSurface;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
@@ -18,6 +20,76 @@ use super::geometry::{
     edge_v_samples, face_surface_normal_at, sample_edge_point, sample_edge_tangent,
 };
 use super::helpers::{FacePolygon, extract_inner_wire_positions};
+
+/// The exact cylinder a constant-radius rolling ball sweeps along a straight
+/// edge between two planes, or `None` if this stripe is not one.
+///
+/// A constant-radius blend along a line IS a portion of a right circular
+/// cylinder: axis parallel to the edge, offset so the surface is tangent to
+/// both neighbours. Emitting a NURBS stripe instead is a loss of exactness —
+/// the face stops answering as a quadric, which costs the analytic volume
+/// quadrature, the analytic boolean and measurement fast paths, a CIRCLE-based
+/// STEP export, and (in OpenZCAD) the analytic face fingerprint a feature
+/// reference resolves against.
+///
+/// `corners` are the stripe's wire positions in order — the two contacts at the
+/// start station, then the two at the end. The ball touches plane 1 at
+/// `corners[0]`, so its centre there is one radius along that plane's normal,
+/// on whichever side also puts it one radius from `corners[1]`.
+///
+/// Returns `None` unless the reconstructed cylinder carries all four corners.
+/// That guard keeps the swap purely representational: a stripe whose sampled
+/// geometry is not exactly this cylinder — a non-right dihedral, whose contacts
+/// this engine places at `radius` rather than `radius / tan(θ/2)`; a G1 junction
+/// whose end sections were snapped to a neighbour; a skewed setback — keeps the
+/// NURBS form it had, unchanged.
+fn rolling_ball_cylinder(
+    corners: [Point3; 4],
+    face1_normal: Vec3,
+    axis_dir: Vec3,
+    radius: f64,
+    tol: Tolerance,
+) -> Option<CylindricalSurface> {
+    let n1 = face1_normal.normalize().ok()?;
+    let centre = [radius, -radius]
+        .into_iter()
+        .map(|signed| corners[0] + n1 * signed)
+        .find(|c| ((corners[1] - *c).length() - radius).abs() <= tol.linear)?;
+
+    let cylinder = CylindricalSurface::new(centre, axis_dir, radius).ok()?;
+    let axis = cylinder.axis();
+    for corner in corners {
+        let offset = corner - centre;
+        let radial = (offset - axis * offset.dot(axis)).length();
+        if (radial - radius).abs() > tol.linear {
+            return None;
+        }
+    }
+    Some(cylinder)
+}
+
+/// Record a finished stripe's four contact points against the vertices at its
+/// two ends, so the vertex-blend pass can see which stripes meet there.
+///
+/// `contacts` is `[start-on-face1, start-on-face2, end-on-face1,
+/// end-on-face2]`; `faces` and `vertices` name face 1/2 and the start/end
+/// vertex by index.
+fn record_strip_contacts(
+    vertex_contacts: &mut HashMap<usize, Vec<(usize, Point3)>>,
+    vertices: (usize, usize),
+    faces: (usize, usize),
+    contacts: [Point3; 4],
+) {
+    let (start_vi, end_vi) = vertices;
+    let (f1, f2) = faces;
+    let [c1_start, c2_start, c1_end, c2_end] = contacts;
+    let start = vertex_contacts.entry(start_vi).or_default();
+    start.push((f1, c1_start));
+    start.push((f2, c2_start));
+    let end = vertex_contacts.entry(end_vi).or_default();
+    end.push((f1, c1_end));
+    end.push((f2, c2_end));
+}
 
 /// Fillet one or more edges of a solid using the rolling-ball algorithm.
 ///
@@ -34,8 +106,10 @@ use super::helpers::{FacePolygon, extract_inner_wire_positions};
 /// 1. Offset both face planes inward by `radius`
 /// 2. Intersect offset planes to find the fillet center line
 /// 3. Compute contact points on each face
-/// 4. Build a degree (2,1) rational NURBS surface with exact circular
-///    arc cross-section
+/// 4. Emit the blend surface: an exact [`FaceSurface::Cylinder`] when the
+///    swept geometry is a right circular cylinder (a straight edge between
+///    two planes), otherwise a degree (2,1) rational NURBS surface with a
+///    circular arc cross-section
 ///
 /// # Errors
 ///
@@ -1588,6 +1662,65 @@ pub fn fillet_rolling_ball(
         let contact1_end = grid[n_v - 1][0];
         let contact2_end = grid[n_v - 1][2];
 
+        let strip_wire = vec![contact1_start, contact2_start, contact2_end, contact1_end];
+
+        // A straight edge between two planes sweeps an exact right circular
+        // cylinder. Emit it as one — a NURBS stripe here would be an analytic
+        // result thrown away, and it also flattens the stripe's two end
+        // sections into chords, which the mating cap then inherits.
+        // `CylindricalFace` mints those ends as `Circle` edges instead, and the
+        // assembler shares them with the trimmed cap.
+        if n_v == 2
+            && both_planar
+            && let Some(cylinder) = rolling_ball_cylinder(
+                [contact1_start, contact2_start, contact2_end, contact1_end],
+                n1_start,
+                edge_dir,
+                radius,
+                tol,
+            )
+        {
+            // `grid[0][1]` is the original sharp-edge point, which sits on the
+            // far side of the axis from the material — so the radial direction
+            // through it is the stripe's own outward direction, and is
+            // well-conditioned for any dihedral this loop did not already skip.
+            let (u, v) = cylinder.project_point(grid[0][1]);
+            let outward = cylinder.normal(u, v);
+            // A wire is stored counter-clockwise about its surface's OWN
+            // normal, with `reversed` recording that the solid is on the other
+            // side. The NURBS stripe gets that for free — its (u, v) grid runs
+            // contact1→contact2 by edge start→end, so `[c1s, c2s, c2e, c1e]` is
+            // always counter-clockwise about the normal that grid induces. A
+            // cylinder's normal is instead fixed outward-radial, which that
+            // grid normal matches only for half the strips (it depends on which
+            // neighbour is face 1 and which way the edge runs). Wind the wire to
+            // suit, or every shared edge of the stripe is traversed the same way
+            // by both its faces and the shell reads as inconsistently oriented.
+            let grid_normal =
+                (contact2_start - contact1_start).cross(contact1_end - contact1_start);
+            let strip_wire = if grid_normal.dot(outward) >= 0.0 {
+                strip_wire
+            } else {
+                vec![contact2_start, contact1_start, contact1_end, contact2_end]
+            };
+            all_specs.push(FaceSpec::CylindricalFace {
+                vertices: strip_wire,
+                cylinder,
+                // Convex blends put the material inside the cylinder, so the
+                // outward-radial normal already faces out; a concave one is
+                // rounded from the far side and needs the flip.
+                reversed: outward.dot(bisector_ref) > 0.0,
+                inner_wires: vec![],
+            });
+            record_strip_contacts(
+                &mut vertex_contacts,
+                (edge.start().index(), edge.end().index()),
+                (f1.index(), f2.index()),
+                [contact1_start, contact2_start, contact1_end, contact2_end],
+            );
+            continue;
+        }
+
         let fillet_surface = if n_v == 2 {
             // Line edge: exact rational quadratic arc × linear.
             let arc_half = half_angle;
@@ -1627,31 +1760,18 @@ pub fn fillet_rolling_ball(
         let strip_reversed = strip_normal.dot(bisector_ref) > 0.0;
 
         all_specs.push(FaceSpec::Surface {
-            vertices: vec![contact1_start, contact2_start, contact2_end, contact1_end],
+            vertices: strip_wire,
             surface: FaceSurface::Nurbs(fillet_surface),
             reversed: strip_reversed,
             inner_wires: vec![],
         });
 
-        // Record contact points at each vertex for vertex blend detection.
-        let start_vi = edge.start().index();
-        let end_vi = edge.end().index();
-        vertex_contacts
-            .entry(start_vi)
-            .or_default()
-            .push((f1.index(), contact1_start));
-        vertex_contacts
-            .entry(start_vi)
-            .or_default()
-            .push((f2.index(), contact2_start));
-        vertex_contacts
-            .entry(end_vi)
-            .or_default()
-            .push((f1.index(), contact1_end));
-        vertex_contacts
-            .entry(end_vi)
-            .or_default()
-            .push((f2.index(), contact2_end));
+        record_strip_contacts(
+            &mut vertex_contacts,
+            (edge.start().index(), edge.end().index()),
+            (f1.index(), f2.index()),
+            [contact1_start, contact2_start, contact1_end, contact2_end],
+        );
     }
 
     // Phase 5b: Build vertex blend patches at junctions where 2+ fillet edges meet.

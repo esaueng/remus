@@ -335,41 +335,53 @@ pub(crate) fn assemble_solid_mixed(
 
     let mut face_ids = Vec::with_capacity(face_specs.len());
 
-    // Copied faces go first: they carry the exact curves (hole rims, bore
-    // seams) that the positional specs must share rather than re-mint as
-    // chords.
-    for spec in face_specs {
-        let FaceSpec::Existing { face, outer } = spec else {
-            continue;
-        };
-        let mut maps = CopyMaps {
-            vertex_map: &mut vertex_map,
-            edge_map: &mut edge_map,
-            edge_copies: &mut edge_copies,
-            resolution,
-            tol,
-        };
-        let new_face = clone_existing_face(topo, *face, outer.as_deref(), &mut maps)?;
-        face_ids.push(new_face);
-    }
-
-    // Process CylindricalFace and SphereCapFace specs first so circle edges
-    // populate edge_map before planar/surface faces look them up. This ensures
-    // adjacent faces share the Circle edge rather than creating a Line edge.
+    // The order faces are materialised in is load-bearing: an edge is minted by
+    // whichever face reaches it first, and every later face spanning the same
+    // two vertices reuses it. The face that knows an edge's true curve must go
+    // first, or that edge is fixed as a chord for everyone.
+    //
+    // 1. Faces copied whole, carrying the exact curves — hole rims, bore
+    //    seams — that no positional spec can express at all.
+    // 2. Arc-minting specs, so a face bounded by circles (a cylindrical wall, a
+    //    blend stripe's end sections, a corner ball patch) publishes them.
+    // 3. Copied faces whose outer wire is REBUILT: the trimmed boundary they
+    //    were cut back to runs along those stripe ends, so it has to pick the
+    //    arcs up rather than mint chords across them — which flattens the blend
+    //    into a chamfer wherever it meets a holed cap. Their inner wires are
+    //    still copied verbatim, from the same memo as pass 1.
+    // 4. Everything else, sharing whatever the earlier passes published.
+    let verbatim = |s: &&FaceSpec| matches!(s, FaceSpec::Existing { outer: None, .. });
     let arc_minting = |s: &&FaceSpec| {
         matches!(
             s,
             FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. }
         )
     };
-    let cylindrical_first = face_specs.iter().filter(arc_minting).chain(
-        face_specs
-            .iter()
-            .filter(|s| !arc_minting(s) && !matches!(s, FaceSpec::Existing { .. })),
-    );
+    let rebuilt_outer = |s: &&FaceSpec| matches!(s, FaceSpec::Existing { outer: Some(_), .. });
+    let ordered = face_specs
+        .iter()
+        .filter(verbatim)
+        .chain(face_specs.iter().filter(arc_minting))
+        .chain(face_specs.iter().filter(rebuilt_outer))
+        .chain(
+            face_specs
+                .iter()
+                .filter(|s| !verbatim(s) && !arc_minting(s) && !rebuilt_outer(s)),
+        );
 
-    for spec in cylindrical_first {
+    for spec in ordered {
         match spec {
+            FaceSpec::Existing { face, outer } => {
+                let mut maps = CopyMaps {
+                    vertex_map: &mut vertex_map,
+                    edge_map: &mut edge_map,
+                    edge_copies: &mut edge_copies,
+                    resolution,
+                    tol,
+                };
+                let new_face = clone_existing_face(topo, *face, outer.as_deref(), &mut maps)?;
+                face_ids.push(new_face);
+            }
             FaceSpec::SphereCapFace {
                 vertices,
                 sphere,

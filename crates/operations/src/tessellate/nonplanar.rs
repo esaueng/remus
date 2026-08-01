@@ -1478,19 +1478,37 @@ pub(super) fn tessellate_nonplanar_cdt(
         uv_bounds(&boundary_uv)
     };
 
+    let du = u_max - u_min;
+    let dv = v_max - v_min;
+
+    // Triangulate in a SQUARE parameter box, not the raw (u, v) one.
+    //
+    // A cylindrical or conical band is an angle across and a length along, and
+    // those are not the same units: a 90-degree blend wall 39.5 mm tall lands
+    // in a 1.57 x 39.5 box, a 25:1 sliver. The incremental Delaunay insertion
+    // loses triangles on such a box — the wall above meshes to 181.6 mm2
+    // against its own exact 186.1 — so scale the long axis down to the short
+    // one's length before inserting, and scale back when reading vertices out.
+    // The triangulation is affine-invariant in topology, so nothing else about
+    // the result changes.
+    let v_scale = if du > 1e-15 && dv > 1e-15 {
+        du / dv
+    } else {
+        1.0
+    };
+    let to_cdt = |u: f64, v: f64| Point2::new(u, v * v_scale);
+    let from_cdt = |p: Point2| (p.x(), p.y() / v_scale);
+
     let margin = 0.01;
     let bounds = (
-        Point2::new(u_min - margin, v_min - margin),
-        Point2::new(u_max + margin, v_max + margin),
+        to_cdt(u_min - margin, v_min - margin),
+        to_cdt(u_max + margin, v_max + margin),
     );
     let mut cdt = Cdt::with_capacity(bounds, n_boundary);
 
     let mut cdt_to_global: Vec<Option<u32>> = vec![None; 3]; // 3 super-triangle verts
 
-    let boundary_pts: Vec<Point2> = boundary_uv
-        .iter()
-        .map(|&(u, v)| Point2::new(u, v))
-        .collect();
+    let boundary_pts: Vec<Point2> = boundary_uv.iter().map(|&(u, v)| to_cdt(u, v)).collect();
     let boundary_cdt_ids = cdt
         .insert_points_hilbert(&boundary_pts)
         .map_err(crate::OperationsError::Math)?;
@@ -1509,8 +1527,6 @@ pub(super) fn tessellate_nonplanar_cdt(
             .map_err(crate::OperationsError::Math)?;
     }
 
-    let du = u_max - u_min;
-    let dv = v_max - v_min;
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
@@ -1521,8 +1537,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                 (1..n_v).filter_map(move |iv| {
                     let u = u_min + du * (iu as f64 / n_u as f64);
                     let v = v_min + dv * (iv as f64 / n_v as f64);
-                    let pt2 = Point2::new(u, v);
-                    point_in_polygon_2d(boundary_uv_ref, pt2).then_some(pt2)
+                    point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v)).then(|| to_cdt(u, v))
                 })
             })
             .collect();
@@ -1551,10 +1566,10 @@ pub(super) fn tessellate_nonplanar_cdt(
         if let Some(gid) = cdt_to_global[i] {
             final_global_ids[i] = gid;
         } else if i >= 3 {
-            let pt2 = cdt_verts[i];
+            let (pu, pv) = from_cdt(cdt_verts[i]);
             let surface = face_data.surface();
-            let pt3 = eval_surface_point(surface, pt2.x(), pt2.y());
-            let nrm = surface.normal(pt2.x(), pt2.y());
+            let pt3 = eval_surface_point(surface, pu, pv);
+            let nrm = surface.normal(pu, pv);
 
             let key = point_merge_key(pt3, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {

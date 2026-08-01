@@ -914,15 +914,16 @@ mod fillet_tests {
     }
 
     #[test]
-    fn try_fillet_nurbs_blend_neighbor_is_watertight() {
+    fn try_fillet_blend_neighbor_is_watertight() {
         use std::collections::HashMap;
 
         use brepkit_topology::face::FaceSurface;
         use brepkit_topology::validation::{validate_shell_closed, validate_shell_manifold};
 
-        // #834 via the consumer path: a single fillet creates a NURBS blend
-        // face; `try_fillet` on a non-tangent edge bordering it must round it
-        // into a valid watertight manifold (rather than skip it as before).
+        // #834 via the consumer path: a single fillet creates a blend face
+        // (an exact cylinder — a constant radius along a straight edge between
+        // two planes is one); `try_fillet` on a non-tangent edge bordering it
+        // must round that into a valid watertight manifold, not skip it.
         let mut topo = Topology::new();
         let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edge_ids(&topo, cube);
@@ -934,20 +935,19 @@ mod fillet_tests {
             validate_shell_closed(sh, &topo).expect("first fillet should be watertight");
         }
 
-        let nurbs: HashSet<usize> = {
+        // A box has no curved face of its own, so every cylinder here is the
+        // blend.
+        let blend: HashSet<usize> = {
             let sh = topo
                 .shell(topo.solid(first).unwrap().outer_shell())
                 .unwrap();
             sh.faces()
                 .iter()
-                .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+                .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
                 .map(|f| f.index())
                 .collect()
         };
-        assert!(
-            !nurbs.is_empty(),
-            "first fillet must create a NURBS blend face"
-        );
+        assert!(!blend.is_empty(), "first fillet must create a blend face");
 
         let mut ef: HashMap<usize, HashSet<usize>> = HashMap::new();
         {
@@ -979,21 +979,21 @@ mod fillet_tests {
                 filletable.contains(&e.index())
                     && ef
                         .get(&e.index())
-                        .is_some_and(|fs| fs.iter().any(|f| nurbs.contains(f)))
+                        .is_some_and(|fs| fs.iter().any(|f| blend.contains(f)))
             })
-            .expect("a filletable edge bordering the NURBS blend face");
+            .expect("a filletable edge bordering the blend face");
 
         let result = try_fillet(&mut topo, first, &[target], 0.5).expect("second fillet");
         assert_ne!(
             result, first,
-            "the NURBS-blend-adjacent edge should be filleted, not skipped"
+            "the blend-adjacent edge should be filleted, not skipped"
         );
         let sh = topo
             .shell(topo.solid(result).unwrap().outer_shell())
             .unwrap();
         validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
         validate_shell_closed(sh, &topo)
-            .expect("second fillet on a NURBS-blend-adjacent edge must be watertight");
+            .expect("second fillet on a blend-adjacent edge must be watertight");
     }
 
     // The OpenZCAD plate (80 x 60 x 6 with a bored hole). Corner chains and

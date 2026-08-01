@@ -173,9 +173,9 @@ mod tests {
 
     #[test]
     fn filletable_edges_keep_nontangent_blend_edges_drop_tangent() {
-        // A single rolling-ball fillet makes a watertight solid with a NURBS
-        // blend face. Its NURBS-blend-border edges split into tangent/G1 contact
-        // lines (degenerate → excluded) and real-angle end-caps (→ kept).
+        // A single rolling-ball fillet makes a watertight solid with a
+        // cylindrical blend face. Its blend-border edges split into tangent/G1
+        // contact lines (degenerate → excluded) and real-angle end-caps (→ kept).
         let mut topo = Topology::new();
         let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edges(&topo, cube).unwrap();
@@ -191,16 +191,15 @@ mod tests {
         let sh = topo
             .shell(topo.solid(filleted).unwrap().outer_shell())
             .unwrap();
-        let nurbs: HashSet<usize> = sh
+        // The box has no curved face of its own, so every cylinder in the
+        // result is the blend.
+        let blend: HashSet<usize> = sh
             .faces()
             .iter()
-            .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+            .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
             .map(|f| f.index())
             .collect();
-        assert!(
-            !nurbs.is_empty(),
-            "first fillet must create a NURBS blend face"
-        );
+        assert!(!blend.is_empty(), "first fillet must create a blend face");
 
         let mut ef: HashMap<usize, HashSet<FaceId>> = HashMap::new();
         for &fid in sh.faces() {
@@ -218,7 +217,7 @@ mod tests {
             let Some(fs) = ef.get(&e.index()) else {
                 continue;
             };
-            if fs.len() != 2 || !fs.iter().any(|f| nurbs.contains(&f.index())) {
+            if fs.len() != 2 || !fs.iter().any(|f| blend.contains(&f.index())) {
                 continue;
             }
             if edge_is_tangent(&topo, e, fs).unwrap() {

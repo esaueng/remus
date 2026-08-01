@@ -235,8 +235,12 @@ fn rolling_ball_fillet_single_edge() {
     assert_euler_genus0(&topo, result);
 }
 
+/// A constant-radius blend along a straight edge between two planes IS a right
+/// circular cylinder, so the engine emits one rather than a NURBS
+/// approximation of one. `tests/regress_fillet_analytic_cylinder.rs` records
+/// what rides on that exactness.
 #[test]
-fn rolling_ball_fillet_has_nurbs_face() {
+fn rolling_ball_fillet_has_analytic_cylinder_face() {
     let mut topo = Topology::new();
     let cube = make_unit_cube_manifold(&mut topo);
 
@@ -247,14 +251,31 @@ fn rolling_ball_fillet_has_nurbs_face() {
     let s = topo.solid(result).expect("result solid");
     let sh = topo.shell(s.outer_shell()).expect("shell");
 
-    // At least one face should be a NURBS surface (the fillet).
-    let has_nurbs = sh.faces().iter().any(|&fid| {
-        matches!(
+    let blend = sh
+        .faces()
+        .iter()
+        .find(|&&fid| {
+            matches!(
+                topo.face(fid).expect("face").surface(),
+                FaceSurface::Cylinder(_)
+            )
+        })
+        .expect("rolling-ball fillet should produce a cylindrical blend face");
+    let FaceSurface::Cylinder(cyl) = topo.face(*blend).expect("face").surface() else {
+        unreachable!("filtered to cylinders")
+    };
+    assert!(
+        (cyl.radius() - 0.1).abs() < 1e-12,
+        "the blend cylinder carries the requested radius, got {}",
+        cyl.radius()
+    );
+    assert!(
+        !sh.faces().iter().any(|&fid| matches!(
             topo.face(fid).expect("face").surface(),
             FaceSurface::Nurbs(_)
-        )
-    });
-    assert!(has_nurbs, "rolling-ball fillet should produce NURBS faces");
+        )),
+        "no face of a plane-to-plane fillet should be a b-spline"
+    );
 }
 
 #[test]
@@ -1225,12 +1246,11 @@ fn face_surface_normal_at_nurbs_via_projection() {
 }
 
 #[test]
-fn fillet_rolling_ball_second_pass_on_nurbs_solid() {
-    // After a rolling-ball fillet the result solid contains a NURBS face.
-    // A second fillet on a different manifold edge must succeed.  This
-    // verifies that face_surfaces containing NURBS entries does not crash
-    // fillet_rolling_ball even when the NURBS face is non-manifold in the
-    // current implementation (so its normal branch is not reached yet).
+fn fillet_rolling_ball_second_pass_on_blended_solid() {
+    // After a rolling-ball fillet the result solid carries a blend face whose
+    // surface is not one of the box's planes. A second fillet on a different
+    // manifold edge must succeed: this verifies that a `face_surfaces` map
+    // holding non-planar entries does not crash `fillet_rolling_ball`.
     let mut topo = Topology::new();
     let solid = make_unit_cube_manifold(&mut topo);
 
@@ -1238,15 +1258,15 @@ fn fillet_rolling_ball_second_pass_on_nurbs_solid() {
     let result1 = fillet_rolling_ball(&mut topo, solid, &[edges1[0]], 0.1)
         .expect("first rolling-ball fillet should succeed");
 
-    // Confirm NURBS face was created.
-    let has_nurbs = {
+    // Confirm the blend face was created, as the analytic cylinder it is.
+    let has_blend = {
         let s = topo.solid(result1).unwrap();
         let sh = topo.shell(s.outer_shell()).unwrap();
         sh.faces()
             .iter()
-            .any(|&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Nurbs(_)))
+            .any(|&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)))
     };
-    assert!(has_nurbs, "first fillet must produce a NURBS face");
+    assert!(has_blend, "first fillet must produce a blend face");
 
     // Second fillet on a different edge.
     let edges2 = solid_edge_ids(&topo, result1);
@@ -1409,21 +1429,21 @@ fn dihedral_deg(topo: &Topology, e: EdgeId, fs: &[FaceId]) -> f64 {
         .to_degrees()
 }
 
-/// #834: round an edge whose neighbour is a previous fillet's NURBS blend face.
+/// #834: round an edge whose neighbour is a previous fillet's blend face.
 ///
-/// A single-edge rolling-ball fillet yields a watertight solid with a NURBS
-/// blend face. Filleting a (non-tangent) edge bordering that blend face must
-/// itself produce a valid, watertight manifold — the blend's accessible
+/// A single-edge rolling-ball fillet yields a watertight solid with a blend
+/// face. Filleting a (non-tangent) edge bordering that blend face must itself
+/// produce a valid, watertight manifold — the blend's accessible
 /// non-degenerate edges are concave end-caps, so the fillet fills the seam.
 #[test]
-fn fillet_edge_adjacent_to_nurbs_blend_is_watertight() {
+fn fillet_edge_adjacent_to_blend_is_watertight() {
     use brepkit_topology::validation::validate_shell_closed;
 
     let mut topo = Topology::new();
     let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let edges = solid_edge_ids(&topo, cube);
 
-    // First fillet — one box edge → a watertight solid with a NURBS blend face.
+    // First fillet — one box edge → a watertight solid with a blend face.
     let first = fillet_rolling_ball(&mut topo, cube, &[edges[0]], 1.0).unwrap();
     {
         let sh = topo
@@ -1433,21 +1453,19 @@ fn fillet_edge_adjacent_to_nurbs_blend_is_watertight() {
     }
     let vol1 = crate::measure::solid_volume(&topo, first, 0.05).unwrap();
 
-    // Collect NURBS blend faces and edge→faces adjacency.
-    let nurbs: HashSet<usize> = {
+    // Collect blend faces and edge→faces adjacency. The box has no curved face
+    // of its own, so every cylinder in the result came from the blend.
+    let blend: HashSet<usize> = {
         let sh = topo
             .shell(topo.solid(first).unwrap().outer_shell())
             .unwrap();
         sh.faces()
             .iter()
-            .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+            .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
             .map(|f| f.index())
             .collect()
     };
-    assert!(
-        !nurbs.is_empty(),
-        "first fillet must create a NURBS blend face"
-    );
+    assert!(!blend.is_empty(), "first fillet must create a blend face");
 
     let mut ef: HashMap<usize, Vec<FaceId>> = HashMap::new();
     {
@@ -1465,27 +1483,27 @@ fn fillet_edge_adjacent_to_nurbs_blend_is_watertight() {
         }
     }
 
-    // A non-tangent edge bordering the NURBS blend face (the tangent contact
-    // lines are G1/degenerate and are not fillettable).
+    // A non-tangent edge bordering the blend face (the tangent contact lines
+    // are G1/degenerate and are not fillettable).
     let target = solid_edge_ids(&topo, first)
         .into_iter()
         .find(|&e| {
             ef.get(&e.index()).is_some_and(|fs| {
                 fs.len() == 2
-                    && fs.iter().any(|f| nurbs.contains(&f.index()))
+                    && fs.iter().any(|f| blend.contains(&f.index()))
                     && dihedral_deg(&topo, e, fs) > 5.0
             })
         })
-        .expect("a non-tangent edge bordering the NURBS blend face");
+        .expect("a non-tangent edge bordering the blend face");
 
-    // Second fillet on that NURBS-blend-adjacent edge.
+    // Second fillet on that blend-adjacent edge.
     let result = fillet_rolling_ball(&mut topo, first, &[target], 0.5).unwrap();
     let sh = topo
         .shell(topo.solid(result).unwrap().outer_shell())
         .unwrap();
     validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
     validate_shell_closed(sh, &topo)
-        .expect("second fillet on a NURBS-blend-adjacent edge must be watertight");
+        .expect("second fillet on a blend-adjacent edge must be watertight");
 
     let vol2 = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
     // Concave end-cap edge → the fillet fills; volume stays sane (between the
