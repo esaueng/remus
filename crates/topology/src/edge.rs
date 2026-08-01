@@ -1,6 +1,6 @@
 //! Edge — a curve bounded by two vertices.
 
-use brepkit_math::curves::{Circle3D, Ellipse3D};
+use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use brepkit_math::nurbs::curve::NurbsCurve;
 use brepkit_math::traits::ParametricCurve;
 use brepkit_math::vec::{Point3, Vec3};
@@ -22,6 +22,18 @@ pub enum EdgeCurve {
     Circle(Circle3D),
     /// An elliptical arc (or full ellipse when the edge is closed).
     Ellipse(Ellipse3D),
+    /// A hyperbolic arc.
+    ///
+    /// A hyperbola branch is unbounded and never closes, so the edge's
+    /// vertices always trim it: the parameter range comes from projecting
+    /// both vertices onto the curve (see
+    /// [`EdgeCurve::domain_with_endpoints`]).
+    Hyperbola(Hyperbola3D),
+    /// A parabolic arc.
+    ///
+    /// A parabola is unbounded and never closes, so the edge's vertices
+    /// always trim it (see [`EdgeCurve::domain_with_endpoints`]).
+    Parabola(Parabola3D),
 }
 
 impl EdgeCurve {
@@ -36,6 +48,8 @@ impl EdgeCurve {
             Self::Line => start + (end - start) * t,
             Self::Circle(c) => ParametricCurve::evaluate(c, t),
             Self::Ellipse(e) => ParametricCurve::evaluate(e, t),
+            Self::Hyperbola(h) => h.evaluate(t),
+            Self::Parabola(p) => p.evaluate(t),
             Self::NurbsCurve(n) => ParametricCurve::evaluate(n, t),
         }
     }
@@ -53,6 +67,8 @@ impl EdgeCurve {
             }
             Self::Circle(c) => ParametricCurve::tangent(c, t),
             Self::Ellipse(e) => ParametricCurve::tangent(e, t),
+            Self::Hyperbola(h) => h.tangent(t),
+            Self::Parabola(p) => p.tangent(t),
             Self::NurbsCurve(n) => ParametricCurve::tangent(n, t),
         }
     }
@@ -102,6 +118,16 @@ impl EdgeCurve {
                     (a0, a0 + delta)
                 }
             }
+            // Hyperbola and parabola branches are unbounded and never
+            // closed, so there is no "full curve" fallback to take: the
+            // vertices are the only thing that bounds the edge. Both
+            // parameterizations have an exact closed-form inverse
+            // (`t = asinh(v/b)` and `t = (P − vertex)·u` respectively), so
+            // the projection is tolerance-free and needs no on-curve test.
+            // A reversed span (`t₀ > t₁`) is returned as-is — it traces
+            // start → end, matching the NURBS open-curve convention below.
+            Self::Hyperbola(h) => (h.project(start), h.project(end)),
+            Self::Parabola(p) => (p.project(start), p.project(end)),
             Self::NurbsCurve(n) => {
                 let (d0, d1) = ParametricCurve::domain(n);
                 if (start - end).length() < CLOSED_EPS {
@@ -146,6 +172,8 @@ impl EdgeCurve {
             Self::Line => "line",
             Self::Circle(_) => "circle",
             Self::Ellipse(_) => "ellipse",
+            Self::Hyperbola(_) => "hyperbola",
+            Self::Parabola(_) => "parabola",
             Self::NurbsCurve(_) => "nurbs_curve",
         }
     }
@@ -441,5 +469,104 @@ mod tests {
         let pa = brepkit_math::traits::ParametricCurve::evaluate(n, ta) + off;
         let pb = brepkit_math::traits::ParametricCurve::evaluate(n, tb) + off;
         assert_full_domain(curve.domain_with_endpoints(pa, pb), d0, d1);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod conic_domain_tests {
+    use super::*;
+    use brepkit_math::curves::{Hyperbola3D, Parabola3D};
+
+    #[test]
+    fn hyperbola_domain_comes_from_the_vertices_and_is_exact() {
+        // An unbounded branch has no "full curve" fallback: the two vertices
+        // are the only trim, and `project` inverts the parameterization
+        // exactly, so the recovered span must reproduce the source
+        // parameters to round-off.
+        let h = Hyperbola3D::with_axes(
+            Point3::new(-1.0, 2.0, 0.5),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0,
+            3.0,
+        )
+        .unwrap();
+        let curve = EdgeCurve::Hyperbola(h.clone());
+        let (t0, t1) = (-1.25, 2.0);
+        let (d0, d1) = curve.domain_with_endpoints(h.evaluate(t0), h.evaluate(t1));
+        assert!((d0 - t0).abs() < 1e-13, "{d0} vs {t0}");
+        assert!((d1 - t1).abs() < 1e-13, "{d1} vs {t1}");
+
+        // Reversed endpoints yield the reversed span, tracing start -> end
+        // (the same convention the NURBS open-curve path uses).
+        let (r0, r1) = curve.domain_with_endpoints(h.evaluate(t1), h.evaluate(t0));
+        assert!((r0 - t1).abs() < 1e-13 && (r1 - t0).abs() < 1e-13);
+    }
+
+    #[test]
+    fn parabola_domain_comes_from_the_vertices_and_is_exact() {
+        let p = Parabola3D::with_axes(
+            Point3::new(3.0, -1.0, 7.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.7,
+        )
+        .unwrap();
+        let curve = EdgeCurve::Parabola(p.clone());
+        let (t0, t1) = (-2.3, 4.1);
+        let (d0, d1) = curve.domain_with_endpoints(p.evaluate(t0), p.evaluate(t1));
+        assert!((d0 - t0).abs() < 1e-13, "{d0} vs {t0}");
+        assert!((d1 - t1).abs() < 1e-13, "{d1} vs {t1}");
+    }
+
+    #[test]
+    fn conic_evaluate_with_endpoints_traces_the_trimmed_arc() {
+        // Sampling the recovered domain must land exactly on the curve, and
+        // the ends must be the vertices — a chord or full-curve fallback
+        // would fail both.
+        let h = Hyperbola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0,
+            3.0,
+        )
+        .unwrap();
+        let curve = EdgeCurve::Hyperbola(h.clone());
+        let (start, end) = (h.evaluate(-0.8), h.evaluate(1.4));
+        let (d0, d1) = curve.domain_with_endpoints(start, end);
+        assert!((curve.evaluate_with_endpoints(d0, start, end) - start).length() < 1e-12);
+        assert!((curve.evaluate_with_endpoints(d1, start, end) - end).length() < 1e-12);
+        for i in 0..=20 {
+            let t = d0 + (d1 - d0) * f64::from(i) / 20.0;
+            let q = curve.evaluate_with_endpoints(t, start, end);
+            // On-curve: re-projecting must return the same parameter.
+            assert!(
+                (h.project(q) - t).abs() < 1e-12,
+                "sample at {t} left the curve"
+            );
+        }
+    }
+
+    #[test]
+    fn conic_type_tags_are_distinct() {
+        let h = Hyperbola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        let p = Parabola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(EdgeCurve::Hyperbola(h).type_tag(), "hyperbola");
+        assert_eq!(EdgeCurve::Parabola(p).type_tag(), "parabola");
     }
 }

@@ -2027,7 +2027,10 @@ fn point_on_edge(
             }
             arc_param_contains(ang, e.project(start), e.project(end), start, end)
         }
-        EdgeCurve::NurbsCurve(_) => false,
+        // NURBS sections have no analytic on-curve test here. Hyperbola and
+        // parabola edges are unreachable: `gfa::reject_unsupported_curves`
+        // refuses them before the pipeline starts.
+        EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
     }
 }
 
@@ -2345,7 +2348,13 @@ fn arc_segment_crossings(
         // the corner-straddle path, and lines/NURBS sections have no true-arc
         // geometry — all fall back to the chord (handled by the line-line
         // crossing in the caller).
-        EdgeCurve::Ellipse(_) | EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => return Vec::new(),
+        // Hyperbola and parabola are additionally unreachable:
+        // `gfa::reject_unsupported_curves` refuses them at the entry point.
+        EdgeCurve::Ellipse(_)
+        | EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Vec::new(),
     };
     let hits = circle.intersect_segment(line_start, line_end, tol);
     if hits.is_empty() {
@@ -2431,7 +2440,12 @@ fn clip_line_to_face_boundary(
             // has no analytic arc to clip against, so neither contributes a
             // beyond-the-chord crossing; the chord segment in
             // `boundary_segments` covers them.
-            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => boundary_arcs.push(None),
+            // Hyperbola and parabola are unreachable:
+            // `gfa::reject_unsupported_curves` refuses them at the entry point.
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => boundary_arcs.push(None),
         }
     }
 

@@ -4424,6 +4424,8 @@ fn dump_boundary_edges_after_two_pocket_cuts() {
             brepkit_topology::edge::EdgeCurve::Circle(_) => "Circle",
             brepkit_topology::edge::EdgeCurve::Ellipse(_) => "Ellipse",
             brepkit_topology::edge::EdgeCurve::NurbsCurve(_) => "Nurbs",
+            brepkit_topology::edge::EdgeCurve::Hyperbola(_) => "Hyperbola",
+            brepkit_topology::edge::EdgeCurve::Parabola(_) => "Parabola",
         };
         eprintln!(
             "  Edge {eidx:>4} [{curve_kind}] ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3}) owner={owner:?}",

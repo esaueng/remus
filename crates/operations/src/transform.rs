@@ -584,6 +584,11 @@ fn transform_edges(
         let edge = topo.edge(eid)?;
         let new_curve = match edge.curve() {
             EdgeCurve::Line => None,
+            // Exact under a similarity, typed refusal otherwise — see
+            // `transform_open_conic`.
+            c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
+                Some(transform_open_conic(c, matrix)?)
+            }
             EdgeCurve::NurbsCurve(c) => {
                 let new_control_points: Vec<_> = c
                     .control_points()
@@ -824,3 +829,94 @@ fn collect_solid_entities(
 
 #[cfg(test)]
 mod tests;
+
+/// Transform an unbounded conic edge curve (`Hyperbola` / `Parabola`).
+///
+/// An affine map sends a parabola to a parabola and a hyperbola to a
+/// hyperbola, but the image is only expressible in brepkit's canonical
+/// `(centre/vertex, orthonormal axes, semi-axes/focal length)` form when
+/// the map restricted to the conic's own plane is a *similarity* — a
+/// uniform scale with a rotation and/or reflection. Under a shear or a
+/// non-uniform scale the image is still a conic of the same type, but its
+/// canonical axes are rotated by an amount this representation cannot
+/// recover without a full re-fit.
+///
+/// So: exact when the in-plane map is a similarity, and a typed refusal
+/// naming the variant otherwise. Silently keeping the untransformed
+/// parameters, or approximating with the pre-image's axes, would move the
+/// edge geometry away from its own vertices.
+///
+/// The similarity test is dimensionless — it compares axis image lengths
+/// and their mutual dot product *relative to* the scale factor — so it
+/// behaves identically at any model scale.
+pub(crate) fn transform_open_conic(
+    curve: &EdgeCurve,
+    matrix: &Mat4,
+) -> Result<EdgeCurve, crate::OperationsError> {
+    use brepkit_math::curves::{Hyperbola3D, Parabola3D};
+    use brepkit_math::vec::Point3;
+
+    /// Relative band for "same length" and "still orthogonal". Dimensionless:
+    /// both quantities are normalized by the scale factor before comparison.
+    const SIMILARITY_EPS: f64 = 1e-12;
+
+    let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
+    let dir = |d: Vec3| -> Vec3 { matrix.mul_point(Point3::new(d.x(), d.y(), d.z())) - origin };
+
+    // Uniform in-plane scale factor, or `None` if the map shears or scales
+    // the two in-plane axes differently.
+    let in_plane_scale = |a: Vec3, b: Vec3| -> Option<f64> {
+        let (ia, ib) = (dir(a), dir(b));
+        let (la, lb) = (ia.length(), ib.length());
+        let s = la.max(lb);
+        if s <= 0.0 || (la - lb).abs() > SIMILARITY_EPS * s {
+            return None;
+        }
+        if ia.dot(ib).abs() > SIMILARITY_EPS * la * lb {
+            return None;
+        }
+        Some(f64::midpoint(la, lb))
+    };
+
+    let refuse = |variant: &'static str| crate::OperationsError::Unsupported {
+        operation: "transform",
+        reason: format!(
+            "{variant} edge under a non-similarity transform: the image is a \
+             {variant} but its canonical axes cannot be recovered from this \
+             representation"
+        ),
+    };
+
+    match curve {
+        EdgeCurve::Hyperbola(h) => {
+            let s = in_plane_scale(h.u_axis(), h.v_axis()).ok_or_else(|| refuse("hyperbola"))?;
+            Ok(EdgeCurve::Hyperbola(Hyperbola3D::with_axes(
+                matrix.mul_point(h.center()),
+                dir(h.u_axis()).cross(dir(h.v_axis())),
+                dir(h.u_axis()),
+                h.semi_major() * s,
+                h.semi_minor() * s,
+            )?))
+        }
+        EdgeCurve::Parabola(p) => {
+            let s = in_plane_scale(p.axis_dir(), p.u_axis()).ok_or_else(|| refuse("parabola"))?;
+            Ok(EdgeCurve::Parabola(Parabola3D::with_axes(
+                matrix.mul_point(p.vertex()),
+                dir(p.axis_dir()),
+                dir(p.u_axis()),
+                p.focal_length() * s,
+            )?))
+        }
+        EdgeCurve::Line
+        | EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::NurbsCurve(_) => Err(crate::OperationsError::Unsupported {
+            operation: "transform",
+            reason: format!(
+                "transform_open_conic called with `{}`, which is not an \
+                     unbounded conic",
+                curve.type_tag()
+            ),
+        }),
+    }
+}

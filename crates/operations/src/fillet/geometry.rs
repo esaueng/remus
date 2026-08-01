@@ -38,6 +38,17 @@ pub(super) fn sample_edge_point(
             }
             ellipse.evaluate(ts + (te - ts) * t)
         }
+        // Unbounded branches: `project` inverts the parameterization
+        // exactly and the sub-arc is the straight parameter interval, so
+        // there is no periodic wrap to fix up as for circle/ellipse.
+        EdgeCurve::Hyperbola(hyp) => {
+            let (ts, te) = (hyp.project(p_start), hyp.project(p_end));
+            hyp.evaluate((te - ts).mul_add(t, ts))
+        }
+        EdgeCurve::Parabola(par) => {
+            let (ts, te) = (par.project(p_start), par.project(p_end));
+            par.evaluate((te - ts).mul_add(t, ts))
+        }
         EdgeCurve::NurbsCurve(nurbs) => {
             let (u0, u1) = nurbs.domain();
             nurbs.evaluate(u0 + (u1 - u0) * t)
@@ -73,6 +84,14 @@ pub(super) fn sample_edge_tangent(
             }
             ellipse.tangent(ts + (te - ts) * t)
         }
+        EdgeCurve::Hyperbola(hyp) => {
+            let (ts, te) = (hyp.project(p_start), hyp.project(p_end));
+            hyp.tangent((te - ts).mul_add(t, ts))
+        }
+        EdgeCurve::Parabola(par) => {
+            let (ts, te) = (par.project(p_start), par.project(p_end));
+            par.tangent((te - ts).mul_add(t, ts))
+        }
         EdgeCurve::NurbsCurve(nurbs) => {
             let (u0, u1) = nurbs.domain();
             let u = u0 + (u1 - u0) * t;
@@ -90,6 +109,9 @@ pub(super) fn edge_v_samples(curve: &EdgeCurve) -> usize {
     match curve {
         EdgeCurve::Line => 2,
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => 9,
+        // Same station count as the periodic conics: a hyperbolic or
+        // parabolic spine curves as strongly and needs the same resolution.
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => 9,
         EdgeCurve::NurbsCurve(_) => 7,
     }
 }

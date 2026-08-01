@@ -17,7 +17,7 @@ use crate::handles::{
 };
 use brepkit_geometry::convert::{DetectedCurveKind, detect_curve_kind, detect_surface_kind};
 
-use crate::helpers::sample_full_period_curve;
+use crate::helpers::{frenet_from_derivatives, sample_full_period_curve, sample_open_span};
 use crate::kernel::BrepKernel;
 
 #[wasm_bindgen]
@@ -207,6 +207,8 @@ impl BrepKernel {
                     EdgeCurve::Line => "line",
                     EdgeCurve::Circle(_) => "circle",
                     EdgeCurve::Ellipse(_) => "ellipse",
+                    EdgeCurve::Hyperbola(_) => "hyperbola",
+                    EdgeCurve::Parabola(_) => "parabola",
                     EdgeCurve::NurbsCurve(_) => "nurbs",
                 };
                 let curve_params = match e.curve() {
@@ -223,6 +225,19 @@ impl BrepKernel {
                         "majorAxis": [el.u_axis().x(), el.u_axis().y(), el.u_axis().z()],
                         "majorRadius": el.semi_major(),
                         "minorRadius": el.semi_minor(),
+                    }),
+                    EdgeCurve::Hyperbola(h) => serde_json::json!({
+                        "center": [h.center().x(), h.center().y(), h.center().z()],
+                        "axis": [h.normal().x(), h.normal().y(), h.normal().z()],
+                        "majorAxis": [h.u_axis().x(), h.u_axis().y(), h.u_axis().z()],
+                        "majorRadius": h.semi_major(),
+                        "minorRadius": h.semi_minor(),
+                    }),
+                    EdgeCurve::Parabola(pb) => serde_json::json!({
+                        "vertex": [pb.vertex().x(), pb.vertex().y(), pb.vertex().z()],
+                        "axis": [pb.normal().x(), pb.normal().y(), pb.normal().z()],
+                        "axisDir": [pb.axis_dir().x(), pb.axis_dir().y(), pb.axis_dir().z()],
+                        "focalLength": pb.focal_length(),
                     }),
                     EdgeCurve::NurbsCurve(n) => serde_json::json!({
                         "degree": n.degree(),
@@ -524,6 +539,8 @@ impl BrepKernel {
             },
             EdgeCurve::Circle(_) => "CIRCLE",
             EdgeCurve::Ellipse(_) => "ELLIPSE",
+            EdgeCurve::Hyperbola(_) => "HYPERBOLA",
+            EdgeCurve::Parabola(_) => "PARABOLA",
         }
         .into())
     }
@@ -549,6 +566,19 @@ impl BrepKernel {
                 Ok(vec![u_start, u_end])
             }
             EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => Ok(vec![0.0, std::f64::consts::TAU]),
+            // Unbounded branches have no intrinsic domain: the edge's own
+            // vertices are the only bound, and `project` recovers their
+            // parameters exactly.
+            EdgeCurve::Hyperbola(h) => {
+                let start = self.topo.vertex(edge_data.start())?.point();
+                let end = self.topo.vertex(edge_data.end())?.point();
+                Ok(vec![h.project(start), h.project(end)])
+            }
+            EdgeCurve::Parabola(p) => {
+                let start = self.topo.vertex(edge_data.start())?.point();
+                let end = self.topo.vertex(edge_data.end())?.point();
+                Ok(vec![p.project(start), p.project(end)])
+            }
         }
     }
 
@@ -580,6 +610,8 @@ impl BrepKernel {
             EdgeCurve::NurbsCurve(curve) => curve.evaluate(t),
             EdgeCurve::Circle(circle) => circle.evaluate(t),
             EdgeCurve::Ellipse(ellipse) => ellipse.evaluate(t),
+            EdgeCurve::Hyperbola(h) => h.evaluate(t),
+            EdgeCurve::Parabola(p) => p.evaluate(t),
         };
         Ok(vec![point.x(), point.y(), point.z()])
     }
@@ -650,6 +682,30 @@ impl BrepKernel {
             EdgeCurve::Ellipse(ellipse) => {
                 let point = ellipse.evaluate(t);
                 let tangent = ellipse.tangent(t);
+                Ok(vec![
+                    point.x(),
+                    point.y(),
+                    point.z(),
+                    tangent.x(),
+                    tangent.y(),
+                    tangent.z(),
+                ])
+            }
+            EdgeCurve::Hyperbola(h) => {
+                let point = h.evaluate(t);
+                let tangent = h.tangent(t);
+                Ok(vec![
+                    point.x(),
+                    point.y(),
+                    point.z(),
+                    tangent.x(),
+                    tangent.y(),
+                    tangent.z(),
+                ])
+            }
+            EdgeCurve::Parabola(pb) => {
+                let point = pb.evaluate(t);
+                let tangent = pb.tangent(t);
                 Ok(vec![
                     point.x(),
                     point.y(),
@@ -779,6 +835,27 @@ impl BrepKernel {
                     normal.y(),
                     normal.z(),
                 ])
+            }
+            // Both conics have a closed-form curvature and a closed-form
+            // second derivative, so this arm is exact — no finite-difference
+            // step (and therefore no step size to scale with the model) and
+            // no "point at the centre" stand-in for the principal normal.
+            //
+            //   hyperbola: r''(t) = a·cosh(t)·u + b·sinh(t)·v
+            //   parabola:  r''(t) = axis_dir / (2f)   (constant)
+            //
+            // The principal normal is the component of r'' orthogonal to the
+            // unit tangent, renormalized.
+            EdgeCurve::Hyperbola(h) => {
+                let d1 = h.tangent(t);
+                let d2 = h.u_axis() * (h.semi_major() * t.cosh())
+                    + h.v_axis() * (h.semi_minor() * t.sinh());
+                Ok(frenet_from_derivatives(h.curvature(t), d1, d2))
+            }
+            EdgeCurve::Parabola(pb) => {
+                let d1 = pb.tangent(t);
+                let d2 = pb.axis_dir() * (1.0 / (2.0 * pb.focal_length()));
+                Ok(frenet_from_derivatives(pb.curvature(t), d1, d2))
             }
         }
     }
@@ -1091,6 +1168,27 @@ impl BrepKernel {
                 let n = std::cmp::max(2, num_points as usize);
                 Ok(sample_full_period_curve(n, |t| ellipse.evaluate(t)))
             }
+            // Not periodic: sample the arc bounded by the edge's own
+            // vertices rather than a full period that does not exist.
+            EdgeCurve::Hyperbola(h) => {
+                let start = self.topo.vertex(edge_data.start())?.point();
+                let end = self.topo.vertex(edge_data.end())?.point();
+                let n = std::cmp::max(2, num_points as usize);
+                Ok(sample_open_span(n, h.project(start), h.project(end), |t| {
+                    h.evaluate(t)
+                }))
+            }
+            EdgeCurve::Parabola(pb) => {
+                let start = self.topo.vertex(edge_data.start())?.point();
+                let end = self.topo.vertex(edge_data.end())?.point();
+                let n = std::cmp::max(2, num_points as usize);
+                Ok(sample_open_span(
+                    n,
+                    pb.project(start),
+                    pb.project(end),
+                    |t| pb.evaluate(t),
+                ))
+            }
         }
     }
 
@@ -1322,7 +1420,11 @@ impl BrepKernel {
         let edge_id = self.resolve_edge(edge)?;
         let edge_data = self.topo.edge(edge_id)?;
         match edge_data.curve() {
-            EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => Ok(JsValue::NULL),
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => Ok(JsValue::NULL),
             EdgeCurve::NurbsCurve(curve) => {
                 let cp_flat: Vec<f64> = curve
                     .control_points()

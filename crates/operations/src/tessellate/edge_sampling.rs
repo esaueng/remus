@@ -28,6 +28,34 @@ pub(super) fn segments_for_chord_deviation_a(
     )
 }
 
+/// Segment count for an *open* conic (hyperbola or parabola) sub-arc.
+///
+/// These curves have no angular parameter, so the circular
+/// `segments_for_chord_deviation_a` cannot be fed their raw parameter span.
+/// Instead the arc is treated as an equivalent circular arc of the TIGHTEST
+/// osculating circle on the span: radius `min_radius`, swept angle
+/// `arc_len / min_radius`. That is conservative (every other point of the
+/// arc is flatter than the tightest one) and it is dimensionless in the
+/// right way — both inputs carry units of length, so the count is invariant
+/// when the model and `deflection` are scaled together.
+pub(super) fn open_conic_segments(
+    min_radius: f64,
+    arc_len: f64,
+    deflection: f64,
+    angular_tol: f64,
+) -> usize {
+    if !min_radius.is_finite() || min_radius <= 0.0 || !arc_len.is_finite() || arc_len <= 0.0 {
+        return 1;
+    }
+    segments_for_chord_deviation_a(
+        min_radius,
+        arc_len / min_radius,
+        deflection,
+        angular_tol,
+        false,
+    )
+}
+
 /// Compute orthogonal axes for a plane given its normal.
 ///
 /// Falls back to identity axes if the normal is degenerate (should not
@@ -92,6 +120,40 @@ pub(super) fn edge_sample_count(
                     circle_floor,
                 ) + 1
             }
+        }
+        EdgeCurve::Hyperbola(h) => {
+            let (Ok(sp), Ok(ep)) = (
+                topo.vertex(edge.start())
+                    .map(brepkit_topology::vertex::Vertex::point),
+                topo.vertex(edge.end())
+                    .map(brepkit_topology::vertex::Vertex::point),
+            ) else {
+                return 2;
+            };
+            let (t0, t1) = (h.project(sp), h.project(ep));
+            open_conic_segments(
+                h.min_curvature_radius(t0, t1),
+                h.arc_length(t0, t1),
+                deflection,
+                angular_tol,
+            ) + 1
+        }
+        EdgeCurve::Parabola(p) => {
+            let (Ok(sp), Ok(ep)) = (
+                topo.vertex(edge.start())
+                    .map(brepkit_topology::vertex::Vertex::point),
+                topo.vertex(edge.end())
+                    .map(brepkit_topology::vertex::Vertex::point),
+            ) else {
+                return 2;
+            };
+            let (t0, t1) = (p.project(sp), p.project(ep));
+            open_conic_segments(
+                p.min_curvature_radius(t0, t1),
+                p.arc_length(t0, t1),
+                deflection,
+                angular_tol,
+            ) + 1
         }
         EdgeCurve::Ellipse(ellipse) => {
             // Density is driven by the LARGEST radius of curvature (a^2/b, at the
@@ -294,6 +356,30 @@ pub(super) fn sample_edge(
             };
             sample_uniform(ellipse, t_start, t_end, n)
         }
+        EdgeCurve::Hyperbola(h) => {
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let (t0, t1) = (h.project(sp), h.project(ep));
+            (0..n)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let f = i as f64 / (n.max(2) - 1) as f64;
+                    h.evaluate((t1 - t0).mul_add(f, t0))
+                })
+                .collect()
+        }
+        EdgeCurve::Parabola(p) => {
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let (t0, t1) = (p.project(sp), p.project(ep));
+            (0..n)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let f = i as f64 / (n.max(2) - 1) as f64;
+                    p.evaluate((t1 - t0).mul_add(f, t0))
+                })
+                .collect()
+        }
         EdgeCurve::NurbsCurve(nurbs) => {
             // Endpoint-trimmed convention: a validated sub-span samples only
             // the edge's own piece of the stored curve (already start→end);
@@ -441,6 +527,48 @@ pub(super) fn sample_wire_positions(
                 sample_curve_into(
                     &|t| ellipse.evaluate(t),
                     &|i| t_start + (t_end - t_start) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    oe.is_forward(),
+                    &mut positions,
+                );
+            }
+            // Unbounded branches: `project` inverts the parameterization
+            // exactly, so the arc is the straight parameter interval between
+            // the two vertices. Density comes from the tightest osculating
+            // circle on that span (see `open_conic_segments`), never a chord.
+            EdgeCurve::Hyperbola(h) => {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (t0, t1) = (h.project(sp), h.project(ep));
+                let n_samples = open_conic_segments(
+                    h.min_curvature_radius(t0, t1),
+                    h.arc_length(t0, t1),
+                    deflection,
+                    angular_tol,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve_into(
+                    &|t| h.evaluate(t),
+                    &|i| t0 + (t1 - t0) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    oe.is_forward(),
+                    &mut positions,
+                );
+            }
+            EdgeCurve::Parabola(p) => {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (t0, t1) = (p.project(sp), p.project(ep));
+                let n_samples = open_conic_segments(
+                    p.min_curvature_radius(t0, t1),
+                    p.arc_length(t0, t1),
+                    deflection,
+                    angular_tol,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve_into(
+                    &|t| p.evaluate(t),
+                    &|i| t0 + (t1 - t0) * (i as f64) / (n_samples as f64),
                     n_samples,
                     oe.is_forward(),
                     &mut positions,

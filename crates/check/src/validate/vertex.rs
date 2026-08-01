@@ -33,6 +33,17 @@ pub fn check_vertex_on_curve(
             let t_closest = e.project(pos);
             (pos - e.evaluate(t_closest)).length()
         }
+        // `project` is an exact closed-form inverse of the
+        // parameterization for both conics, so `pos - evaluate(project(pos))`
+        // is the true distance from the vertex to the curve.
+        EdgeCurve::Hyperbola(h) => {
+            let t_closest = h.project(pos);
+            (pos - h.evaluate(t_closest)).length()
+        }
+        EdgeCurve::Parabola(p) => {
+            let t_closest = p.project(pos);
+            (pos - p.evaluate(t_closest)).length()
+        }
         EdgeCurve::NurbsCurve(nc) => {
             let (t0, t1) = nc.domain();
             let d_start = (pos - nc.evaluate(t0)).length();

@@ -197,24 +197,39 @@ fn curves_compatible(a: &EdgeCurve, b: &EdgeCurve, tol: Tolerance) -> bool {
                 && (ea.center() - eb.center()).length() < tol.linear
                 && ea.normal().dot(eb.normal()).abs() > 1.0 - tol.angular
         }
+        // Same-type conic coincidence: identical placement implies
+        // identical point sets, since both parameterizations are injective
+        // over the whole real line.
+        (EdgeCurve::Hyperbola(ha), EdgeCurve::Hyperbola(hb)) => {
+            (ha.semi_major() - hb.semi_major()).abs() < tol.linear
+                && (ha.semi_minor() - hb.semi_minor()).abs() < tol.linear
+                && (ha.center() - hb.center()).length() < tol.linear
+                && ha.normal().dot(hb.normal()).abs() > 1.0 - tol.angular
+                // Sign matters here: `Hyperbola3D` models a single branch,
+                // so an anti-parallel real axis is the OTHER branch.
+                && ha.u_axis().dot(hb.u_axis()) > 1.0 - tol.angular
+        }
+        (EdgeCurve::Parabola(pa), EdgeCurve::Parabola(pb)) => {
+            (pa.focal_length() - pb.focal_length()).abs() < tol.linear
+                && (pa.vertex() - pb.vertex()).length() < tol.linear
+                && pa.axis_dir().dot(pb.axis_dir()) > 1.0 - tol.angular
+                // A parabola is symmetric about its axis, so only the PLANE
+                // matters, not the sign of its normal.
+                && pa.normal().dot(pb.normal()).abs() > 1.0 - tol.angular
+        }
         // NurbsCurve overlap detection deferred — needs parametric comparison.
         (EdgeCurve::NurbsCurve(_), EdgeCurve::NurbsCurve(_)) => false,
-        // Different curve types cannot be geometrically coincident.
+        // Different curve types cannot be geometrically coincident. Every
+        // left-hand variant is listed rather than using `_`, so adding an
+        // `EdgeCurve` variant still makes the compiler flag this site.
         (
-            EdgeCurve::Line,
-            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_),
-        )
-        | (
-            EdgeCurve::Circle(_),
-            EdgeCurve::Line | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_),
-        )
-        | (
-            EdgeCurve::Ellipse(_),
-            EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_),
-        )
-        | (
-            EdgeCurve::NurbsCurve(_),
-            EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_),
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_),
+            _,
         ) => false,
     }
 }

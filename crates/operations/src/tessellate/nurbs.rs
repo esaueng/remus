@@ -213,6 +213,19 @@ where
                             let (u, _) = project(mid);
                             angles.push(u);
                         }
+                        // Midpoint of the trimmed sub-arc; `project` is an
+                        // exact inverse for both, so no wrap correction is
+                        // needed as for the periodic conics above.
+                        EdgeCurve::Hyperbola(h) => {
+                            let (ts, te) = (h.project(sv.point()), h.project(ev.point()));
+                            let (u, _) = project(h.evaluate(f64::midpoint(ts, te)));
+                            angles.push(u);
+                        }
+                        EdgeCurve::Parabola(pb) => {
+                            let (ts, te) = (pb.project(sv.point()), pb.project(ev.point()));
+                            let (u, _) = project(pb.evaluate(f64::midpoint(ts, te)));
+                            angles.push(u);
+                        }
                         EdgeCurve::Line => {}
                     }
                 }

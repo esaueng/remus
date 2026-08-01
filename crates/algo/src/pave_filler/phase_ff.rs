@@ -331,9 +331,9 @@ pub fn perform(
             let bb_a = bbox_a.expanded(tol.linear * 10.0);
             let bb_b = bbox_b.expanded(tol.linear * 10.0);
             if traced {
-                let [ln, ci, el, nu] = kind_counts(&raw_curves);
+                let [ln, ci, el, nu, hy, pa] = kind_counts(&raw_curves);
                 log::debug!(
-                    "FF_TRACE afterF1 a={} b={} n={} line={ln} circle={ci} ellipse={el} nurbs={nu}",
+                    "FF_TRACE afterF1 a={} b={} n={} line={ln} circle={ci} ellipse={el} nurbs={nu} hyperbola={hy} parabola={pa}",
                     surf_a.type_tag(),
                     surf_b.type_tag(),
                     raw_curves.len()
@@ -422,9 +422,9 @@ pub fn perform(
                 })
                 .collect();
             if traced {
-                let [ln, ci, el, nu] = kind_counts(&raw_curves);
+                let [ln, ci, el, nu, hy, pa] = kind_counts(&raw_curves);
                 log::debug!(
-                    "FF_TRACE afterF2 a={} b={} n={} line={ln} circle={ci} ellipse={el} nurbs={nu}",
+                    "FF_TRACE afterF2 a={} b={} n={} line={ln} circle={ci} ellipse={el} nurbs={nu} hyperbola={hy} parabola={pa}",
                     surf_a.type_tag(),
                     surf_b.type_tag(),
                     raw_curves.len()
@@ -968,18 +968,25 @@ fn point_to_polygon_dist(p: brepkit_math::vec::Point2, poly: &[brepkit_math::vec
 
 /// Per-kind counts of raw section curves, for the `BK_FF_TRACE` diagnostics.
 ///
-/// Returns `[line, circle, ellipse, nurbs]`. A fixed histogram keeps the trace
-/// line short and allocation-free even when a pair yields many curves, and it
-/// is what the reader actually wants — which KINDS survived a filter, not the
-/// order they happened to be in.
-fn kind_counts(curves: &[RawCurve]) -> [usize; 4] {
-    let mut n = [0usize; 4];
+/// Returns `[line, circle, ellipse, nurbs, hyperbola, parabola]`. A fixed
+/// histogram keeps the trace line short and allocation-free even when a pair
+/// yields many curves, and it is what the reader actually wants — which KINDS
+/// survived a filter, not the order they happened to be in.
+///
+/// The hyperbola and parabola buckets should always read zero: no FF phase
+/// mints those curve types, and `gfa::reject_unsupported_curves` refuses
+/// inputs carrying them. A non-zero count in the trace means one of those two
+/// invariants broke.
+fn kind_counts(curves: &[RawCurve]) -> [usize; 6] {
+    let mut n = [0usize; 6];
     for c in curves {
         let i = match c.curve {
             EdgeCurve::Line => 0,
             EdgeCurve::Circle(_) => 1,
             EdgeCurve::Ellipse(_) => 2,
             EdgeCurve::NurbsCurve(_) => 3,
+            EdgeCurve::Hyperbola(_) => 4,
+            EdgeCurve::Parabola(_) => 5,
         };
         n[i] += 1;
     }
@@ -3451,7 +3458,12 @@ fn find_boundary_vertex_on_curve(
                 let t = e.project(p);
                 Some((t, e.evaluate(t)))
             }
-            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => None,
+            // Hyperbola and parabola are unreachable:
+            // `gfa::reject_unsupported_curves` refuses them at the entry point.
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
         }
     };
 
@@ -3545,7 +3557,13 @@ fn closed_circle_crosses_face_boundaries(
                             return true;
                         }
                     }
-                    EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {}
+                    // Hyperbola and parabola are unreachable:
+                    // `gfa::reject_unsupported_curves` refuses them at
+                    // the entry point.
+                    EdgeCurve::Ellipse(_)
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => {}
                 }
             }
         }

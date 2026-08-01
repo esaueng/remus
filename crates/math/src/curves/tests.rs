@@ -664,3 +664,341 @@ fn circle_intersect_circle_disjoint_and_non_coplanar_empty() {
     let e = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
     assert!(a.intersect_circle(&e, 1e-9).is_empty());
 }
+
+// ── Unbounded conics: closed-form and scale-invariance checks ──────
+//
+// Every assertion below is either a HAND-DERIVED closed form or an
+// independently-implemented numerical integral. Nothing here is checked
+// against another routine that shares an implementation with the code
+// under test.
+
+/// Composite Simpson's rule, implemented here rather than reused from the
+/// kernel, so an arc-length check is genuinely independent of
+/// `Hyperbola3D::arc_length` (which uses Gauss-Legendre).
+fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let n = if n.is_multiple_of(2) { n } else { n + 1 };
+    #[allow(clippy::cast_precision_loss)]
+    let h = (b - a) / n as f64;
+    let mut total = f(a) + f(b);
+    for i in 1..n {
+        #[allow(clippy::cast_precision_loss)]
+        let x = h.mul_add(i as f64, a);
+        total += f(x) * if i.is_multiple_of(2) { 2.0 } else { 4.0 };
+    }
+    total * h / 3.0
+}
+
+#[test]
+fn parabola_arc_length_matches_hand_derived_closed_form() {
+    // With focal length f = 1/4 the parameterization
+    //   P(t) = V + (t^2 / 4f) * axis + t * u
+    // becomes (u, axis) = (t, t^2), i.e. the plane curve y = x^2.
+    //
+    // Arc length of y = x^2 from x = 0 to x = 1 is
+    //   integral_0^1 sqrt(1 + 4x^2) dx
+    //     = [ x*sqrt(1+4x^2)/2 + asinh(2x)/4 ]_0^1
+    //     = sqrt(5)/2 + asinh(2)/4
+    //     = 1.4789428575445975...
+    let p = Parabola3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        0.25,
+    )
+    .unwrap();
+
+    let expected = 5.0_f64.sqrt() / 2.0 + 2.0_f64.asinh() / 4.0;
+    let got = p.arc_length(0.0, 1.0);
+    assert!(
+        (got - expected).abs() < 1e-14 * expected,
+        "parabola arc length {got} vs closed form {expected}"
+    );
+
+    // Sanity on the closed form itself, to three decimals, so a wrong
+    // formula on BOTH sides could not agree by construction.
+    assert!(
+        (expected - 1.478_942_857_544_597_5).abs() < 1e-12,
+        "hand-derived constant drifted: {expected}"
+    );
+}
+
+#[test]
+fn parabola_arc_length_matches_independent_quadrature() {
+    let p = Parabola3D::with_axes(
+        Point3::new(3.0, -1.0, 7.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.7,
+    )
+    .unwrap();
+    let (t0, t1) = (-2.3, 4.1);
+    // |P'(t)| = sqrt(1 + (t/2f)^2)
+    let f = p.focal_length();
+    let numeric = simpson(
+        |t| {
+            let s = t / (2.0 * f);
+            s.mul_add(s, 1.0).sqrt()
+        },
+        t0,
+        t1,
+        20_000,
+    );
+    let got = p.arc_length(t0, t1);
+    assert!(
+        (got - numeric).abs() < 1e-11 * numeric,
+        "parabola arc length {got} vs Simpson {numeric}"
+    );
+}
+
+#[test]
+fn hyperbola_arc_length_matches_independent_quadrature() {
+    // No elementary antiderivative exists, so the reference is a
+    // separately-implemented Simpson rule on the same integrand.
+    let a = 2.0;
+    let b = 3.0;
+    let h = Hyperbola3D::with_axes(
+        Point3::new(-1.0, 2.0, 0.5),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        a,
+        b,
+    )
+    .unwrap();
+    let (t0, t1) = (-1.25, 2.0);
+    let numeric = simpson(|t| (a * t.sinh()).hypot(b * t.cosh()), t0, t1, 200_000);
+    let got = h.arc_length(t0, t1);
+    assert!(
+        (got - numeric).abs() < 1e-9 * numeric,
+        "hyperbola arc length {got} vs Simpson {numeric}"
+    );
+}
+
+#[test]
+fn conic_arc_length_is_scale_covariant() {
+    // Length carries one power of L: scaling the curve by k must scale the
+    // length by exactly k, at 1x, 1000x and 0.001x.
+    for k in [1.0_f64, 1000.0, 0.001] {
+        let p = Parabola3D::with_axes(
+            Point3::new(k, 2.0 * k, 3.0 * k),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            0.25 * k,
+        )
+        .unwrap();
+        // The parabola's parameter carries units of length, so the
+        // equivalent span scales with k too.
+        let got = p.arc_length(0.0, k);
+        let expected = k * (5.0_f64.sqrt() / 2.0 + 2.0_f64.asinh() / 4.0);
+        assert!(
+            (got - expected).abs() < 1e-12 * expected,
+            "parabola length at {k}x: {got} vs {expected}"
+        );
+
+        let h = Hyperbola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0 * k,
+            3.0 * k,
+        )
+        .unwrap();
+        // The hyperbola's parameter is DIMENSIONLESS, so the same span is
+        // used at every scale and the length must scale purely with k.
+        let base = Hyperbola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0,
+            3.0,
+        )
+        .unwrap();
+        let got_h = h.arc_length(-1.25, 2.0);
+        let expected_h = k * base.arc_length(-1.25, 2.0);
+        assert!(
+            (got_h - expected_h).abs() < 1e-12 * expected_h,
+            "hyperbola length at {k}x: {got_h} vs {expected_h}"
+        );
+    }
+}
+
+#[test]
+fn conic_project_inverts_evaluate_exactly() {
+    let p = Parabola3D::with_axes(
+        Point3::new(3.0, -1.0, 7.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.7,
+    )
+    .unwrap();
+    let h = Hyperbola3D::with_axes(
+        Point3::new(-1.0, 2.0, 0.5),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 1.0),
+        2.0,
+        3.0,
+    )
+    .unwrap();
+    for &t in &[-3.0, -0.7, 0.0, 0.4, 2.9] {
+        let tp = p.project(p.evaluate(t));
+        assert!((tp - t).abs() < 1e-13, "parabola project({t}) -> {tp}");
+        let th = h.project(h.evaluate(t));
+        assert!((th - t).abs() < 1e-13, "hyperbola project({t}) -> {th}");
+    }
+}
+
+#[test]
+fn with_axes_preserves_the_plane_that_new_loses() {
+    // `Parabola3D::new` fixes the symmetry axis but picks an ARBITRARY
+    // in-plane direction, so it cannot represent a caller's chosen plane.
+    // `with_axes` must.
+    let vertex = Point3::new(0.0, 0.0, 0.0);
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let u = Vec3::new(1.0, 0.0, 0.0);
+    let with = Parabola3D::with_axes(vertex, axis, u, 1.0).unwrap();
+    assert!((with.u_axis() - u).length() < 1e-15);
+    // The arbitrary-frame constructor lands on a different in-plane axis
+    // for this axis direction, which is exactly the information loss
+    // `with_axes` exists to avoid.
+    let arb = Parabola3D::new(vertex, axis, 1.0).unwrap();
+    assert!(
+        (arb.u_axis() - u).length() > 1e-9,
+        "test premise broken: `new` happened to pick the same u_axis"
+    );
+
+    // Same story for the hyperbola's REAL axis, where the choice also
+    // decides which branch is modelled.
+    let hyp = Hyperbola3D::with_axes(vertex, axis, u, 2.0, 3.0).unwrap();
+    assert!((hyp.u_axis() - u).length() < 1e-15);
+    // t = 0 is the vertex of the +u branch.
+    let v0 = hyp.evaluate(0.0);
+    assert!((v0 - (vertex + u * 2.0)).length() < 1e-15, "{v0:?}");
+}
+
+#[test]
+fn with_axes_rejects_a_degenerate_in_plane_axis() {
+    // A u_axis parallel to the primary axis carries no plane information;
+    // silently substituting an arbitrary perpendicular is the bug this
+    // constructor exists to prevent, so it must refuse.
+    assert!(
+        Parabola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, 5.0),
+            1.0,
+        )
+        .is_err()
+    );
+    assert!(
+        Hyperbola3D::with_axes(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, -2.0),
+            1.0,
+            1.0,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn conic_tangent_intersection_bounds_the_arc() {
+    // A conic arc lies inside the triangle formed by its endpoints and the
+    // tangent intersection (the exact degree-2 Bezier control polygon).
+    // Verified by barycentric containment of dense samples.
+    let h = Hyperbola3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        2.0,
+        3.0,
+    )
+    .unwrap();
+    let (t0, t1) = (-0.8, 1.4);
+    let (p0, p2) = (h.evaluate(t0), h.evaluate(t1));
+    let p1 = h.tangent_intersection(t0, t1);
+    for i in 0..=100 {
+        let t = t0 + (t1 - t0) * f64::from(i) / 100.0;
+        let q = h.evaluate(t);
+        assert!(
+            point_in_triangle_2d(q, p0, p1, p2),
+            "hyperbola sample at t={t} escaped its Bezier hull"
+        );
+    }
+
+    let p = Parabola3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        0.7,
+    )
+    .unwrap();
+    let (s0, s1) = (-1.9, 2.6);
+    let (q0, q2) = (p.evaluate(s0), p.evaluate(s1));
+    let q1 = p.tangent_intersection(s0, s1);
+    for i in 0..=100 {
+        let t = s0 + (s1 - s0) * f64::from(i) / 100.0;
+        assert!(
+            point_in_triangle_2d(p.evaluate(t), q0, q1, q2),
+            "parabola sample at t={t} escaped its Bezier hull"
+        );
+    }
+}
+
+/// Barycentric containment for coplanar points, with a relative slack.
+fn point_in_triangle_2d(q: Point3, a: Point3, b: Point3, c: Point3) -> bool {
+    let v0 = c - a;
+    let v1 = b - a;
+    let v2 = q - a;
+    let d00 = v0.dot(v0);
+    let d01 = v0.dot(v1);
+    let d11 = v1.dot(v1);
+    let d20 = v2.dot(v0);
+    let d21 = v2.dot(v1);
+    let denom = d00.mul_add(d11, -(d01 * d01));
+    if denom.abs() < 1e-30 {
+        return false;
+    }
+    let u = d11.mul_add(d20, -(d01 * d21)) / denom;
+    let v = d00.mul_add(d21, -(d01 * d20)) / denom;
+    let eps = 1e-12;
+    u >= -eps && v >= -eps && u + v <= 1.0 + eps
+}
+
+#[test]
+fn hyperbola_min_curvature_radius_matches_the_vertex_value() {
+    // kappa is maximal at the vertex t = 0 with kappa = a / b^2, so the
+    // smallest radius of curvature on any span containing 0 is b^2 / a.
+    let (a, b) = (2.0, 3.0);
+    let h = Hyperbola3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        a,
+        b,
+    )
+    .unwrap();
+    let expected = b * b / a;
+    let got = h.min_curvature_radius(-1.0, 1.0);
+    assert!(
+        (got - expected).abs() < 1e-12 * expected,
+        "{got} vs {expected}"
+    );
+
+    // A span that excludes the vertex is flatter, so its minimum radius
+    // must be strictly larger.
+    assert!(h.min_curvature_radius(1.0, 2.0) > expected);
+
+    // Parabola: kappa(0) = 1/(2f), so R_min = 2f.
+    let f = 0.7;
+    let p = Parabola3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        f,
+    )
+    .unwrap();
+    let want = 2.0 * f;
+    let r = p.min_curvature_radius(-0.5, 0.5);
+    assert!((r - want).abs() < 1e-12 * want, "{r} vs {want}");
+    assert!(p.min_curvature_radius(1.0, 3.0) > want);
+}

@@ -1000,6 +1000,29 @@ impl BrepKernel {
                         points.push(ellipse.evaluate(t));
                     }
                 }
+                // Unbounded branches: `project` inverts the parameterization
+                // exactly, so the sampled span is the arc between the edge's
+                // two vertices — no periodic wrap correction.
+                EdgeCurve::Hyperbola(h) => {
+                    let end_pt = self.topo.vertex(edge_data.end())?.point();
+                    let (t_start, t_end) = (h.project(start), h.project(end_pt));
+                    let n_samples = 8;
+                    for i in 1..n_samples {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = t_start + (t_end - t_start) * (i as f64) / (n_samples as f64);
+                        points.push(h.evaluate(t));
+                    }
+                }
+                EdgeCurve::Parabola(pb) => {
+                    let end_pt = self.topo.vertex(edge_data.end())?.point();
+                    let (t_start, t_end) = (pb.project(start), pb.project(end_pt));
+                    let n_samples = 8;
+                    for i in 1..n_samples {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = t_start + (t_end - t_start) * (i as f64) / (n_samples as f64);
+                        points.push(pb.evaluate(t));
+                    }
+                }
                 EdgeCurve::Line => {}
             }
 

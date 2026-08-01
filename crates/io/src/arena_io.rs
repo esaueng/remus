@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D};
+use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use brepkit_math::curves2d::Curve2D;
 use brepkit_math::nurbs::curve::NurbsCurve;
 use brepkit_math::nurbs::surface::NurbsSurface;
@@ -47,6 +47,8 @@ enum SerEdgeCurve {
     NurbsCurve(NurbsCurve),
     Circle(Circle3D),
     Ellipse(Ellipse3D),
+    Hyperbola(Hyperbola3D),
+    Parabola(Parabola3D),
 }
 
 impl SerEdgeCurve {
@@ -56,6 +58,8 @@ impl SerEdgeCurve {
             EdgeCurve::NurbsCurve(c) => Self::NurbsCurve(c.clone()),
             EdgeCurve::Circle(c) => Self::Circle(c.clone()),
             EdgeCurve::Ellipse(e) => Self::Ellipse(e.clone()),
+            EdgeCurve::Hyperbola(h) => Self::Hyperbola(h.clone()),
+            EdgeCurve::Parabola(pb) => Self::Parabola(pb.clone()),
         }
     }
 
@@ -65,6 +69,8 @@ impl SerEdgeCurve {
             Self::NurbsCurve(c) => EdgeCurve::NurbsCurve(c),
             Self::Circle(c) => EdgeCurve::Circle(c),
             Self::Ellipse(e) => EdgeCurve::Ellipse(e),
+            Self::Hyperbola(h) => EdgeCurve::Hyperbola(h),
+            Self::Parabola(pb) => EdgeCurve::Parabola(pb),
         }
     }
 }

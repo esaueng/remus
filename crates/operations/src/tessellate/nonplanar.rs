@@ -223,10 +223,14 @@ pub(super) fn tessellate_torus_two_rim_band(
                 Some((eid, uses)) if *eid == oe.edge() => *uses += 1,
                 Some(_) => return Ok(false),
             },
+            // Anything else means this wire is not the torus-band pattern
+            // this fast path recognises, so it declines rather than guessing.
             EdgeCurve::Circle(_)
             | EdgeCurve::NurbsCurve(_)
             | EdgeCurve::Line
-            | EdgeCurve::Ellipse(_) => return Ok(false),
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(false),
         }
     }
     let Some((seam_eid, 2)) = seam else {

@@ -19,10 +19,12 @@
 
 use std::f64::consts::TAU;
 
+use crate::construct::convert_curve::{hyperbola_to_nurbs, parabola_to_nurbs};
 use brepkit_geometry::convert::curve_to_nurbs::{circle_to_nurbs, ellipse_to_nurbs, line_to_nurbs};
 use brepkit_geometry::convert::surface_to_nurbs::{
     cone_to_nurbs, cylinder_to_nurbs, sphere_to_nurbs, torus_to_nurbs,
 };
+
 use brepkit_math::nurbs::surface::NurbsSurface;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
@@ -139,6 +141,28 @@ fn convert_edge_curve(topo: &mut Topology, eid: EdgeId) -> Result<bool, HealErro
                 };
                 ellipse_to_nurbs(&e, t_start, t_end)?
             }
+        }
+        // Unbounded conics: `hyperbola_to_nurbs` / `parabola_to_nurbs` are
+        // the exact 3-control-point conic Bézier forms, and `project`
+        // inverts the parameterization exactly, so the arc bounded by the
+        // two vertices converts without approximation. A zero-span arc
+        // (both vertices projecting to the same parameter) is refused
+        // rather than widened, mirroring `arc_param_range` below.
+        EdgeCurve::Hyperbola(h) => {
+            let (t0, t1) = (h.project(start_pt), h.project(end_pt));
+            let (lo, hi) = (t0.min(t1), t0.max(t1));
+            if hi <= lo {
+                return Ok(false);
+            }
+            hyperbola_to_nurbs(&h, lo, hi)?
+        }
+        EdgeCurve::Parabola(p) => {
+            let (t0, t1) = (p.project(start_pt), p.project(end_pt));
+            let (lo, hi) = (t0.min(t1), t0.max(t1));
+            if hi <= lo {
+                return Ok(false);
+            }
+            parabola_to_nurbs(&p, lo, hi)?
         }
         EdgeCurve::NurbsCurve(_) => return Ok(false),
     };

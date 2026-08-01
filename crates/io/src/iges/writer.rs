@@ -129,6 +129,36 @@ impl IgesWriteContext {
                         prev = cur;
                     }
                 }
+                // Unbounded branches, written as polyline segments on the
+                // TRUE curve — the same lossy treatment this writer already
+                // gives circles and ellipses (see below), not a chord
+                // substitution unique to these types. `project` inverts the
+                // parameterization exactly, so the sampled span is precisely
+                // the arc between the edge's two vertices.
+                EdgeCurve::Hyperbola(hyp) => {
+                    let n = 32;
+                    let t0 = hyp.project(start_pt);
+                    let t1 = hyp.project(end_pt);
+                    let dt = (t1 - t0) / f64::from(n);
+                    let mut prev = hyp.evaluate(t0);
+                    for i in 1..=n {
+                        let cur = hyp.evaluate(dt.mul_add(f64::from(i), t0));
+                        self.write_line_entity(prev, cur);
+                        prev = cur;
+                    }
+                }
+                EdgeCurve::Parabola(par) => {
+                    let n = 32;
+                    let t0 = par.project(start_pt);
+                    let t1 = par.project(end_pt);
+                    let dt = (t1 - t0) / f64::from(n);
+                    let mut prev = par.evaluate(t0);
+                    for i in 1..=n {
+                        let cur = par.evaluate(dt.mul_add(f64::from(i), t0));
+                        self.write_line_entity(prev, cur);
+                        prev = cur;
+                    }
+                }
                 EdgeCurve::Ellipse(ellipse) => {
                     // Approximate as polyline segments
                     let n = 32;

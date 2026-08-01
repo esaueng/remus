@@ -740,6 +740,15 @@ pub fn boolean(
                 validate_boolean_result(topo, result).err()
             );
         }
+        // An input carrying a curve type the engine cannot represent is NOT
+        // a fallback case. The mesh route would tessellate the conic and
+        // hand back a faceted solid that looks like a successful boolean,
+        // which is exactly the silent degradation the refusal exists to
+        // prevent. Every other GFA failure is a robustness problem where an
+        // approximate result still beats none, so those still fall through.
+        Err(e @ brepkit_algo::error::AlgoError::UnsupportedCurve { .. }) => {
+            return Err(crate::OperationsError::Algo(e));
+        }
         Err(e) => {
             log::warn!(
                 "GFA boolean failed in {:.1}ms ({e}), falling back",
@@ -3836,7 +3845,9 @@ pub(crate) fn sample_edge_curve(curve: &EdgeCurve, n: usize) -> Vec<Point3> {
                 })
                 .collect()
         }
-        EdgeCurve::Line => vec![],
+        // Never closed: an unbounded branch has no periodic domain, and
+        // this entry point carries no endpoints to trim with.
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => vec![],
     }
 }
 

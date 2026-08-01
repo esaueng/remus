@@ -1136,7 +1136,33 @@ fn planar_wire_monomial_moments(
                     );
                 }
             }
-            EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return Ok(None),
+            EdgeCurve::Parabola(p) => {
+                // A parabola is polynomial of degree 2 in its parameter, so
+                // every moment integrand `s^{i+1}/(i+1) · t^j · t'(u)` is a
+                // polynomial of degree ≤ 2·4 + 2·3 + 1 = 15. A 16-point
+                // Gauss rule is exact through degree 31, so a single
+                // segment integrates the arc exactly — no chunking, and no
+                // dependence on the arc's extent or on model scale.
+                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                accumulate_green_segment(
+                    &mut moments,
+                    (t0, t1),
+                    16,
+                    dir_sign,
+                    |u| (p.evaluate(u), p.tangent(u)),
+                    origin,
+                    e1,
+                    e2,
+                );
+            }
+            // Refused, not approximated. A hyperbola's integrand is
+            // transcendental (cosh/sinh), so no fixed Gauss rule is exact
+            // for it the way it is for circles and parabolas. Returning
+            // `None` routes the whole face to the sampled fallback rather
+            // than reporting a quadrature error as an exact result.
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {
+                return Ok(None);
+            }
         }
     }
 
@@ -1246,7 +1272,20 @@ fn wire_newell_normal(
                     pts.push(c.evaluate((to - from).mul_add(f, from)));
                 }
             }
-            EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return Ok(None),
+            EdgeCurve::Parabola(p) => {
+                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
+                for k in 0..ARC_SAMPLES {
+                    let f = k as f64 / ARC_SAMPLES as f64;
+                    pts.push(p.evaluate((to - from).mul_add(f, from)));
+                }
+            }
+            // Matches the refusal in `planar_wire_monomial_moments`: the
+            // exact path does not handle these edge types, so the normal it
+            // would produce is never used.
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {
+                return Ok(None);
+            }
         }
     }
     if pts.len() < 3 {

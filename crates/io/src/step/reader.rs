@@ -951,6 +951,19 @@ impl<'a> StepBuilder<'a> {
                         "swept profile #{curve_ref} resolved to a line with no placement"
                     ),
                 }),
+                // `SweptProfile` has no unbounded-conic case: sweeping one
+                // would need a surface of extrusion/revolution that
+                // `FaceSurface` cannot yet hold. Refused by name rather than
+                // approximated into a NURBS profile whose sweep would be a
+                // different surface from the one the file describes.
+                other @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
+                    Err(IoError::UnsupportedEntity {
+                        entity: format!(
+                            "swept profile #{curve_ref}: `{}` profiles are not supported",
+                            other.type_tag()
+                        ),
+                    })
+                }
             },
         }
     }
@@ -1277,6 +1290,68 @@ impl<'a> StepBuilder<'a> {
                     reason: format!("ELLIPSE #{curve_ref}: {e}"),
                 })?;
                 Ok(EdgeCurve::Ellipse(ellipse))
+            }
+            // HYPERBOLA('name', #axis2_placement_3d, semi_axis,
+            // imaginary_semi_axis) — ISO 10303-42. The placement's z is the
+            // plane normal and its ref_direction is the REAL axis, giving
+            // exactly brepkit's `H(t) = C + a·cosh(t)·u + b·sinh(t)·v` with
+            // `v = z × u`. The ref_direction is passed through explicitly
+            // (`with_axes`, not `new`): `Hyperbola3D::new` would pick an
+            // arbitrary in-plane axis and rotate the branch inside its plane.
+            "HYPERBOLA" => {
+                let refs = parse_refs(&attrs);
+                let floats = parse_floats(&attrs);
+                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
+                    reason: format!("HYPERBOLA #{curve_ref} missing axis reference"),
+                })?;
+                if floats.len() < 2 {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "HYPERBOLA #{curve_ref} needs semi_axis and imaginary_semi_axis"
+                        ),
+                    });
+                }
+                let (center, normal, u_axis) = self.build_axis2_placement(axis_ref)?;
+                let hyp = brepkit_math::curves::Hyperbola3D::with_axes(
+                    center,
+                    normal,
+                    u_axis,
+                    floats[0] * self.units.length,
+                    floats[1] * self.units.length,
+                )
+                .map_err(|e| IoError::ParseError {
+                    reason: format!("HYPERBOLA #{curve_ref}: {e}"),
+                })?;
+                Ok(EdgeCurve::Hyperbola(hyp))
+            }
+            // PARABOLA('name', #axis2_placement_3d, focal_dist) — ISO
+            // 10303-42. The placement's location is the apex, its
+            // ref_direction (x) points apex→focus, and z is the plane normal,
+            // so the in-plane direction is `y = z × x`. STEP parameterizes as
+            // `λ(u) = V + f·u²·x + 2f·u·y`; brepkit uses
+            // `P(t) = V + (t²/4f)·axis + t·u_axis`, which is the same curve
+            // under `t = 2f·u` — the same point SET, which is what the edge's
+            // vertices trim.
+            "PARABOLA" => {
+                let refs = parse_refs(&attrs);
+                let floats = parse_floats(&attrs);
+                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
+                    reason: format!("PARABOLA #{curve_ref} missing axis reference"),
+                })?;
+                let focal = floats.first().copied().ok_or_else(|| IoError::ParseError {
+                    reason: format!("PARABOLA #{curve_ref} missing focal_dist"),
+                })? * self.units.length;
+                let (vertex, normal, axis_dir) = self.build_axis2_placement(axis_ref)?;
+                let par = brepkit_math::curves::Parabola3D::with_axes(
+                    vertex,
+                    axis_dir,
+                    normal.cross(axis_dir),
+                    focal,
+                )
+                .map_err(|e| IoError::ParseError {
+                    reason: format!("PARABOLA #{curve_ref}: {e}"),
+                })?;
+                Ok(EdgeCurve::Parabola(par))
             }
             "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve(curve_ref, &attrs, false),
             _ if entity_type.is_empty() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {

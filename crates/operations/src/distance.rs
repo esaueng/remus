@@ -300,6 +300,10 @@ pub fn point_to_edge(
                     (t0, t1)
                 }
             }
+            // Unbounded branches: `project` inverts the parameterization
+            // exactly, so the vertices give the arc's true parameter span.
+            brepkit_topology::edge::EdgeCurve::Hyperbola(h) => (h.project(start), h.project(end)),
+            brepkit_topology::edge::EdgeCurve::Parabola(p) => (p.project(start), p.project(end)),
             // Line was handled above (early return via `if` branch).
             brepkit_topology::edge::EdgeCurve::Line => (0.0, 0.0),
         };
@@ -312,6 +316,8 @@ pub fn point_to_edge(
                 brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.evaluate(t),
                 brepkit_topology::edge::EdgeCurve::Circle(c) => c.evaluate(t),
                 brepkit_topology::edge::EdgeCurve::Ellipse(e) => e.evaluate(t),
+                brepkit_topology::edge::EdgeCurve::Hyperbola(h) => h.evaluate(t),
+                brepkit_topology::edge::EdgeCurve::Parabola(p) => p.evaluate(t),
                 // Line was handled above.
                 brepkit_topology::edge::EdgeCurve::Line => start,
             };

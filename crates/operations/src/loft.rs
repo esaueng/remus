@@ -579,6 +579,8 @@ fn try_loft_matching_curved_profiles(
         EdgeCurve::Circle(_) => 1,
         EdgeCurve::Ellipse(_) => 2,
         EdgeCurve::NurbsCurve(_) => 3,
+        EdgeCurve::Hyperbola(_) => 4,
+        EdgeCurve::Parabola(_) => 5,
     };
     for p in &profs {
         if p.len() != n || (0..n).any(|i| kind(&p[i].curve) != kind(&profs[0][i].curve)) {

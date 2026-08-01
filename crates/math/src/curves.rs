@@ -662,6 +662,7 @@ impl Ellipse3D {
 ///
 /// The parameter `t` ranges over all reals; `t = 0` is the vertex.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Parabola3D {
     vertex: Point3,
     axis_dir: Vec3,
@@ -693,6 +694,116 @@ impl Parabola3D {
             focal_length,
             u_axis: f.x,
         })
+    }
+
+    /// Creates a parabola with an explicit in-plane `u_axis`.
+    ///
+    /// [`Parabola3D::new`] derives `u_axis` from an arbitrary perpendicular
+    /// of `axis_dir`, which pins the symmetry axis but leaves the parabola's
+    /// *plane* unspecified — two parabolas sharing a vertex, axis and focal
+    /// length but lying in different planes are different point sets. Use
+    /// this constructor whenever the plane is known (recognition, import,
+    /// transform) so the orientation survives the round trip.
+    ///
+    /// `u_axis` is orthogonalized against `axis_dir`; only its component
+    /// perpendicular to the axis is retained.
+    ///
+    /// # Errors
+    /// Returns an error if `focal_length` is not positive, `axis_dir` is
+    /// zero, or `u_axis` is zero or parallel to `axis_dir`.
+    pub fn with_axes(
+        vertex: Point3,
+        axis_dir: Vec3,
+        u_axis: Vec3,
+        focal_length: f64,
+    ) -> Result<Self, MathError> {
+        if focal_length <= 0.0 {
+            return Err(MathError::ParameterOutOfRange {
+                value: focal_length,
+                min: f64::EPSILON,
+                max: f64::MAX,
+            });
+        }
+        let axis = axis_dir.normalize()?;
+        // Gram-Schmidt: drop the component of u along the axis. If u is
+        // parallel to the axis the remainder is zero and `normalize`
+        // reports `ZeroVector` rather than silently inventing a plane.
+        let u = (u_axis - axis * u_axis.dot(axis)).normalize()?;
+        Ok(Self {
+            vertex,
+            axis_dir: axis,
+            focal_length,
+            u_axis: u,
+        })
+    }
+
+    /// Projects a point onto the parabola, returning the parameter `t`.
+    ///
+    /// Exact inverse of [`Parabola3D::evaluate`] for on-curve points: the
+    /// parameterization is `P(t) = vertex + (t²/4f)·axis + t·u_axis`, so
+    /// `t = (P − vertex)·u_axis`. The result is scale-covariant (`t` carries
+    /// units of length) and involves no tolerance. For off-curve points this
+    /// returns the parameter matching the point's `u_axis` coordinate, which
+    /// is not in general the closest point on the curve.
+    #[must_use]
+    pub fn project(&self, point: Point3) -> f64 {
+        (point - self.vertex).dot(self.u_axis)
+    }
+
+    /// The normal of the plane containing the parabola.
+    ///
+    /// Equal to `axis_dir × u_axis`, a unit vector.
+    #[must_use]
+    pub fn normal(&self) -> Vec3 {
+        self.axis_dir.cross(self.u_axis)
+    }
+
+    /// Intersection of the tangent lines at parameters `t0` and `t1`.
+    ///
+    /// This is the middle control point of the arc's exact degree-2 Bézier
+    /// form. Because a parabola is convex, the arc `[t0, t1]` lies inside
+    /// the triangle `P(t0), tangent_intersection(t0, t1), P(t1)` — which
+    /// makes those three points an exact convex hull for bounding-box and
+    /// culling purposes, with no sampling and no tolerance.
+    #[must_use]
+    pub fn tangent_intersection(&self, t0: f64, t1: f64) -> Point3 {
+        self.vertex
+            + self.axis_dir * (t0 * t1 / (4.0 * self.focal_length))
+            + self.u_axis * f64::midpoint(t0, t1)
+    }
+
+    /// Smallest radius of curvature over the parameter span `[t0, t1]`.
+    ///
+    /// Curvature is maximal at the vertex (`t = 0`, `κ = 1/2f`) and
+    /// decreases monotonically with `|t|`, so the tightest point of any
+    /// span is whichever of `0`, `t0`, `t1` lies in the span and is closest
+    /// to zero. Carries units of length.
+    #[must_use]
+    pub fn min_curvature_radius(&self, t0: f64, t1: f64) -> f64 {
+        let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        let k = self.curvature(0.0_f64.clamp(lo, hi));
+        if k > 0.0 && k.is_finite() {
+            1.0 / k
+        } else {
+            f64::INFINITY
+        }
+    }
+
+    /// Exact arc length of the parabola between parameters `t0` and `t1`.
+    ///
+    /// For `P(t) = vertex + (t²/4f)·axis + t·u_axis` the speed is
+    /// `|P'(t)| = sqrt(1 + (t/2f)²)`, whose antiderivative is
+    /// `f·(s·sqrt(1+s²) + asinh(s))` with `s = t/(2f)`. Returned length is
+    /// always non-negative.
+    #[must_use]
+    pub fn arc_length(&self, t0: f64, t1: f64) -> f64 {
+        let two_f = 2.0 * self.focal_length;
+        // F(t) = f * ( s*sqrt(1+s^2) + asinh(s) ), s = t / (2f)
+        let antideriv = |t: f64| {
+            let s = t / two_f;
+            self.focal_length * s.mul_add((1.0 + s * s).sqrt(), s.asinh())
+        };
+        (antideriv(t1) - antideriv(t0)).abs()
     }
 
     /// Evaluates the parabola at parameter `t`.
@@ -760,6 +871,7 @@ impl Parabola3D {
 /// The parameter `t` ranges over all reals; `t = 0` gives the vertex
 /// closest to center on the positive branch.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Hyperbola3D {
     center: Point3,
     normal: Vec3,
@@ -799,6 +911,148 @@ impl Hyperbola3D {
             u_axis: f.x,
             v_axis: f.y,
         })
+    }
+
+    /// Creates a hyperbola with an explicit real-axis direction.
+    ///
+    /// [`Hyperbola3D::new`] derives `u_axis` from an arbitrary perpendicular
+    /// of `normal`, so the branch is rotated to an unspecified direction
+    /// within its plane — a different point set from the intended one
+    /// whenever the real axis is not that arbitrary choice. Use this
+    /// constructor whenever the real axis is known.
+    ///
+    /// `u_axis` is orthogonalized against `normal`; only its in-plane
+    /// component is retained. `v_axis` is `normal × u_axis`.
+    ///
+    /// # Errors
+    /// Returns an error if either semi-axis is non-positive, `normal` is
+    /// zero, or `u_axis` is zero or parallel to `normal`.
+    pub fn with_axes(
+        center: Point3,
+        normal: Vec3,
+        u_axis: Vec3,
+        semi_major: f64,
+        semi_minor: f64,
+    ) -> Result<Self, MathError> {
+        if semi_major <= 0.0 || semi_minor <= 0.0 {
+            return Err(MathError::ParameterOutOfRange {
+                value: semi_major.min(semi_minor),
+                min: f64::EPSILON,
+                max: f64::MAX,
+            });
+        }
+        let n = normal.normalize()?;
+        let u = (u_axis - n * u_axis.dot(n)).normalize()?;
+        Ok(Self {
+            center,
+            normal: n,
+            semi_major,
+            semi_minor,
+            u_axis: u,
+            v_axis: n.cross(u),
+        })
+    }
+
+    /// Projects a point onto the hyperbola, returning the parameter `t`.
+    ///
+    /// Exact inverse of [`Hyperbola3D::evaluate`] for on-curve points: with
+    /// `P(t) = center + a·cosh(t)·u + b·sinh(t)·v`, the `v` coordinate gives
+    /// `sinh(t) = ((P − center)·v)/b`, so `t = asinh(…)`. `asinh` is a
+    /// bijection on ℝ, so the branch is unambiguous and no tolerance is
+    /// involved. The result is dimensionless and scale-invariant: scaling
+    /// the hyperbola and the point together leaves `t` unchanged.
+    #[must_use]
+    pub fn project(&self, point: Point3) -> f64 {
+        ((point - self.center).dot(self.v_axis) / self.semi_minor).asinh()
+    }
+
+    /// Curvature at parameter `t`.
+    ///
+    /// For `r(t) = (a·cosh t, b·sinh t)` the cross product `r' × r''` is the
+    /// constant `−ab`, so `κ(t) = ab / |r'(t)|³`. Curvature carries units of
+    /// 1/length and is largest at the vertex (`t = 0`, `κ = a/b²`).
+    #[must_use]
+    pub fn curvature(&self, t: f64) -> f64 {
+        let speed = (self.semi_major * t.sinh()).hypot(self.semi_minor * t.cosh());
+        if speed <= 0.0 {
+            return f64::INFINITY;
+        }
+        self.semi_major * self.semi_minor / (speed * speed * speed)
+    }
+
+    /// Smallest radius of curvature over the parameter span `[t0, t1]`.
+    ///
+    /// Curvature is maximal at the vertex (`t = 0`) and decreases
+    /// monotonically with `|t|`, so the tightest point of any span is
+    /// whichever of `0`, `t0`, `t1` lies in the span and is closest to zero.
+    /// The result carries units of length and scales with the model, which
+    /// makes it a safe extent-relative basis for tessellation density.
+    #[must_use]
+    pub fn min_curvature_radius(&self, t0: f64, t1: f64) -> f64 {
+        let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        let t_star = 0.0_f64.clamp(lo, hi);
+        let k = self.curvature(t_star);
+        if k > 0.0 && k.is_finite() {
+            1.0 / k
+        } else {
+            f64::INFINITY
+        }
+    }
+
+    /// Arc length of the hyperbola between parameters `t0` and `t1`.
+    ///
+    /// The speed is `|H'(t)| = sqrt(a²sinh²t + b²cosh²t)`, an incomplete
+    /// elliptic integral with no elementary antiderivative — unlike
+    /// [`Parabola3D::arc_length`], this is quadrature, not a closed form.
+    /// The span is split into chunks of at most `0.5` in `t` (a
+    /// dimensionless parameter, so the chunking is scale-invariant) and
+    /// each chunk gets a 20-point Gauss–Legendre rule, which resolves the
+    /// integrand to near machine precision. Returned length is always
+    /// non-negative and scales linearly with the model.
+    #[must_use]
+    pub fn arc_length(&self, t0: f64, t1: f64) -> f64 {
+        use crate::quadrature::gauss_legendre_points;
+        const MAX_CHUNK: f64 = 0.5;
+        let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        let span = hi - lo;
+        if !span.is_finite() || span <= 0.0 {
+            return 0.0;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let chunks = ((span / MAX_CHUNK).ceil() as usize).max(1);
+        #[allow(clippy::cast_precision_loss)]
+        let dt = span / chunks as f64;
+        let speed = |t: f64| {
+            let (sh, ch) = (t.sinh(), t.cosh());
+            (self.semi_major * sh).hypot(self.semi_minor * ch)
+        };
+        let mut total = 0.0;
+        for k in 0..chunks {
+            #[allow(clippy::cast_precision_loss)]
+            let a = dt.mul_add(k as f64, lo);
+            let b = a + dt;
+            let half = 0.5 * (b - a);
+            let mid = f64::midpoint(a, b);
+            for gp in gauss_legendre_points(20) {
+                total += gp.w * half * speed(half.mul_add(gp.x, mid));
+            }
+        }
+        total
+    }
+
+    /// Intersection of the tangent lines at parameters `t0` and `t1`.
+    ///
+    /// This is the middle control point of the arc's exact rational
+    /// degree-2 Bézier form (Piegl–Tiller §7.4). A single hyperbola branch
+    /// is convex, so the arc `[t0, t1]` lies inside the triangle
+    /// `H(t0), tangent_intersection(t0, t1), H(t1)` — an exact convex hull
+    /// for bounding and culling, with no sampling and no tolerance.
+    #[must_use]
+    pub fn tangent_intersection(&self, t0: f64, t1: f64) -> Point3 {
+        let tanh_b = (0.5 * (t1 - t0)).tanh();
+        let x = self.semi_major * t0.cosh().mul_add(1.0, tanh_b * t0.sinh());
+        let y = self.semi_minor * t0.sinh().mul_add(1.0, tanh_b * t0.cosh());
+        self.center + self.u_axis * x + self.v_axis * y
     }
 
     /// Evaluates the hyperbola at parameter `t`.

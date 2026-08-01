@@ -17,6 +17,30 @@ pub fn check_edge_range(
     match edge.curve() {
         EdgeCurve::Line => Ok(vec![]), // Line geometry defined by vertices
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => Ok(vec![]), // Full curves, always valid
+        // Hyperbola and parabola branches are unbounded, so the edge's
+        // whole extent comes from its vertices. Compare the chord (a
+        // length) against the linear tolerance (a length) rather than the
+        // parameter span: hyperbola parameters are dimensionless and
+        // parabola parameters carry units of length, so a parameter-space
+        // threshold would not be scale-invariant across the two.
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            let p0 = topo.vertex(edge.start())?.point();
+            let p1 = topo.vertex(edge.end())?.point();
+            let chord = (p1 - p0).length();
+            if chord < tolerance {
+                return Ok(vec![ValidationIssue {
+                    check: CheckId::EdgeRangeValid,
+                    severity: Severity::Error,
+                    entity: EntityRef::Edge(edge_id),
+                    description: format!(
+                        "{} edge has zero extent: endpoints coincide (chord {chord:.3e})",
+                        edge.curve().type_tag()
+                    ),
+                    deviation: Some(chord),
+                }]);
+            }
+            Ok(vec![])
+        }
         EdgeCurve::NurbsCurve(nc) => {
             let (t0, t1) = nc.domain();
             if (t1 - t0).abs() < tolerance {
@@ -48,6 +72,22 @@ pub fn check_edge_degenerate(
     // Closed edges (full circles) are not degenerate
     match edge.curve() {
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => return Ok(vec![]),
+        // Unlike circles and ellipses, a hyperbola branch or parabola can
+        // never close, so `start == end` always means a zero-extent arc —
+        // no length sampling is needed to know that.
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            return Ok(vec![ValidationIssue {
+                check: CheckId::EdgeDegenerate,
+                severity: Severity::Warning,
+                entity: EntityRef::Edge(edge_id),
+                description: format!(
+                    "degenerate {} edge: start and end vertex are the same, \
+                     but an unbounded conic branch never closes",
+                    edge.curve().type_tag()
+                ),
+                deviation: Some(0.0),
+            }]);
+        }
         EdgeCurve::Line => {
             let p0 = topo.vertex(edge.start())?.point();
             let p1 = topo.vertex(edge.end())?.point();

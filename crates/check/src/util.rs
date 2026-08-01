@@ -38,7 +38,12 @@ pub const CLOSED_CURVE_SAMPLES: usize = 32;
 
 /// Sample a closed-edge curve at `n` evenly spaced parameter values.
 ///
-/// Returns an empty vector for `Line` edges (geometry determined by vertices).
+/// Returns an empty vector for `Line` edges (geometry determined by
+/// vertices) and for `Hyperbola` / `Parabola` edges, which are unbounded
+/// and can never be closed — there is no periodic domain to sample and
+/// this entry point carries no endpoints to trim with. Callers that need
+/// the geometry of an open conic edge must go through
+/// [`EdgeCurve::domain_with_endpoints`].
 #[must_use]
 pub fn sample_edge_curve(curve: &EdgeCurve, n: usize) -> Vec<Point3> {
     match curve {
@@ -67,7 +72,8 @@ pub fn sample_edge_curve(curve: &EdgeCurve, n: usize) -> Vec<Point3> {
                 })
                 .collect()
         }
-        EdgeCurve::Line => vec![],
+        // Never closed: an unbounded branch has no periodic domain.
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => vec![],
     }
 }
 
@@ -216,7 +222,10 @@ pub fn wire_polygon_curve_sampled(
                         s
                     }
                 }
-                EdgeCurve::Line => vec![],
+                // Unreachable: `is_closed_edge` above only admits Circle,
+                // Ellipse and NurbsCurve. Hyperbola and parabola branches
+                // are unbounded and never satisfy start == end.
+                EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => vec![],
             };
             pts.extend(sampled);
             prev_end = Some(start_vid);
@@ -426,9 +435,22 @@ fn nurbs_seam_parameter(
 /// offered to the classifier's BVH, dropping its ray crossings). Circle
 /// and ellipse use the exact full-curve extent (a conservative superset
 /// for partial arcs); NURBS uses the control-point convex hull.
-fn expand_aabb_for_curve(aabb: &mut Aabb3, curve: &EdgeCurve) {
+///
+/// Hyperbola and parabola branches are unbounded, so there is no
+/// full-curve extent to fall back on: they are bounded by the exact
+/// degree-2 Bézier control triangle of the trimmed arc, which requires
+/// the edge's `start`/`end` positions.
+fn expand_aabb_for_curve(aabb: &mut Aabb3, curve: &EdgeCurve, start: Point3, end: Point3) {
     match curve {
         EdgeCurve::Line => {}
+        EdgeCurve::Hyperbola(h) => {
+            let (t0, t1) = (h.project(start), h.project(end));
+            aabb_include(aabb, h.tangent_intersection(t0, t1));
+        }
+        EdgeCurve::Parabola(p) => {
+            let (t0, t1) = (p.project(start), p.project(end));
+            aabb_include(aabb, p.tangent_intersection(t0, t1));
+        }
         EdgeCurve::Circle(c) => {
             let cen = c.center();
             let r = c.radius();
@@ -494,7 +516,12 @@ pub fn face_aabb(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> 
         .ok_or_else(|| CheckError::ClassificationFailed("face has no vertices".into()))?;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        expand_aabb_for_curve(&mut aabb, edge.curve());
+        expand_aabb_for_curve(
+            &mut aabb,
+            edge.curve(),
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
     }
     expand_aabb_for_surface(&mut aabb, face.surface());
     Ok(aabb)

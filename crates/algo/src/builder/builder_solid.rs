@@ -2182,7 +2182,12 @@ fn split_arc_edges_at_collinear_vertices(
         let radius_scale = match &curve {
             EdgeCurve::Circle(c) => c.radius(),
             EdgeCurve::Ellipse(e) => e.semi_major(),
-            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => continue,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            // Unreachable: `gfa::reject_unsupported_curves` refuses these
+            // curve types before the pipeline starts.
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => continue,
         };
         if radius_scale < snap {
             continue;

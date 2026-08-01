@@ -132,6 +132,35 @@ pub(super) fn collect_wire_positions(
                     &mut positions,
                 );
             }
+            // Unbounded branches: `project` inverts the parameterization
+            // exactly, so the arc is the straight parameter interval between
+            // the two vertices — no periodic wrap correction.
+            EdgeCurve::Hyperbola(h) => {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                sample_edge_curve(
+                    &|t| h.evaluate(t),
+                    h.project(sp),
+                    h.project(ep),
+                    n_samples,
+                    oe.is_forward(),
+                    tol,
+                    &mut positions,
+                );
+            }
+            EdgeCurve::Parabola(p) => {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                sample_edge_curve(
+                    &|t| p.evaluate(t),
+                    p.project(sp),
+                    p.project(ep),
+                    n_samples,
+                    oe.is_forward(),
+                    tol,
+                    &mut positions,
+                );
+            }
             EdgeCurve::NurbsCurve(nc) => {
                 let (u0, u1) = nc.domain();
                 sample_edge_curve(

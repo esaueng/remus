@@ -398,6 +398,31 @@ fn collect_solid_edge_segments(
                                 prev = curr;
                             }
                         }
+                        EdgeCurve::Hyperbola(h) => {
+                            // Unbounded branch: the vertices are the only
+                            // trim, and `project` inverts the
+                            // parameterization exactly, so the arc is the
+                            // straight parameter interval — no periodic
+                            // wrap-around to correct for.
+                            let (t0, t1) = (h.project(start_pt), h.project(end_pt));
+                            let mut prev = h.evaluate(t0);
+                            for i in 1..=n_samples {
+                                let t = t0 + (t1 - t0) * (i as f64) / (n_samples as f64);
+                                let curr = h.evaluate(t);
+                                segments.push((prev, curr));
+                                prev = curr;
+                            }
+                        }
+                        EdgeCurve::Parabola(p) => {
+                            let (t0, t1) = (p.project(start_pt), p.project(end_pt));
+                            let mut prev = p.evaluate(t0);
+                            for i in 1..=n_samples {
+                                let t = t0 + (t1 - t0) * (i as f64) / (n_samples as f64);
+                                let curr = p.evaluate(t);
+                                segments.push((prev, curr));
+                                prev = curr;
+                            }
+                        }
                         EdgeCurve::NurbsCurve(nc) => {
                             let (t0, t1) = nc.domain();
                             let mut prev = nc.evaluate(t0);

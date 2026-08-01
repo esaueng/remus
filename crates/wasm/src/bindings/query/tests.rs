@@ -238,6 +238,19 @@ fn build_brep_json(k: &crate::kernel::BrepKernel, solid: u32) -> serde_json::Val
                     "majorRadius": el.semi_major(),
                     "minorRadius": el.semi_minor(),
                 }),
+                EdgeCurve::Hyperbola(h) => serde_json::json!({
+                    "center": [h.center().x(), h.center().y(), h.center().z()],
+                    "axis": [h.normal().x(), h.normal().y(), h.normal().z()],
+                    "majorAxis": [h.u_axis().x(), h.u_axis().y(), h.u_axis().z()],
+                    "majorRadius": h.semi_major(),
+                    "minorRadius": h.semi_minor(),
+                }),
+                EdgeCurve::Parabola(pb) => serde_json::json!({
+                    "vertex": [pb.vertex().x(), pb.vertex().y(), pb.vertex().z()],
+                    "axis": [pb.normal().x(), pb.normal().y(), pb.normal().z()],
+                    "axisDir": [pb.axis_dir().x(), pb.axis_dir().y(), pb.axis_dir().z()],
+                    "focalLength": pb.focal_length(),
+                }),
                 EdgeCurve::NurbsCurve(n) => serde_json::json!({
                     "degree": n.degree(),
                     "controlPoints": n.control_points().iter()

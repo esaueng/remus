@@ -64,6 +64,23 @@ pub fn edge_length(
                 Ok(length)
             }
         }
+        // Unbounded branches: the vertices are the only trim, and both
+        // projections invert the parameterization exactly. The parabola
+        // length is the analytic integral of `sqrt(1 + (t/2f)²)`; the
+        // hyperbola length is Gauss quadrature of an elliptic integrand
+        // (documented as such on `Hyperbola3D::arc_length`). Neither is a
+        // chord sum, so neither under-reports the way the ellipse arm above
+        // does.
+        brepkit_topology::edge::EdgeCurve::Hyperbola(h) => {
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            Ok(h.arc_length(h.project(start), h.project(end)))
+        }
+        brepkit_topology::edge::EdgeCurve::Parabola(p) => {
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            Ok(p.arc_length(p.project(start), p.project(end)))
+        }
     }
 }
 

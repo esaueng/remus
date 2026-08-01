@@ -37,6 +37,17 @@ fn sample_edge_tangent(curve: &EdgeCurve, p_start: Point3, p_end: Point3, t: f64
             }
             ParametricCurve::tangent(ellipse, ts + (te - ts) * t)
         }
+        // Unbounded branches: `project` inverts the parameterization
+        // exactly and the sub-arc is the straight parameter interval, so
+        // there is no periodic wrap to fix up as for circle/ellipse.
+        EdgeCurve::Hyperbola(hyp) => {
+            let (ts, te) = (hyp.project(p_start), hyp.project(p_end));
+            hyp.tangent((te - ts).mul_add(t, ts))
+        }
+        EdgeCurve::Parabola(par) => {
+            let (ts, te) = (par.project(p_start), par.project(p_end));
+            par.tangent((te - ts).mul_add(t, ts))
+        }
         EdgeCurve::NurbsCurve(nurbs) => {
             let (u0, u1) = nurbs.domain();
             let u = u0 + (u1 - u0) * t;

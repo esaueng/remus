@@ -442,6 +442,35 @@ pub fn sample_full_period_curve(n: usize, evaluate: impl Fn(f64) -> Point3) -> V
     result
 }
 
+/// Sample an aperiodic curve over the closed parameter span `[t0, t1]`,
+/// endpoints included.
+///
+/// The counterpart of [`sample_full_period_curve`] for curves with no
+/// period — an unbounded conic branch has no `TAU` to wrap around, and its
+/// extent comes entirely from the edge's two vertices, so both ends must be
+/// emitted (unlike the periodic sampler, where the last sample would repeat
+/// the first). Returns a flattened `[x, y, z, ...]` array.
+#[must_use]
+pub fn sample_open_span(n: usize, t0: f64, t1: f64, evaluate: impl Fn(f64) -> Point3) -> Vec<f64> {
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        let p = evaluate(t0);
+        return vec![p.x(), p.y(), p.z()];
+    }
+    let mut result = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        #[allow(clippy::cast_precision_loss)]
+        let f = i as f64 / (n - 1) as f64;
+        let p = evaluate((t1 - t0).mul_add(f, t0));
+        result.push(p.x());
+        result.push(p.y());
+        result.push(p.z());
+    }
+    result
+}
+
 /// Create a tiny degenerate polygon face at a point, matching the vertex
 /// count of the first existing profile. Used for loft start/end points.
 pub fn create_apex_face(
@@ -1310,4 +1339,29 @@ mod fillet_tests {
             }
         }
     }
+}
+
+/// Pack a `[curvature, tangent…, principal normal…]` result from a curve's
+/// first and second derivatives.
+///
+/// The principal normal is the component of `d2` orthogonal to the unit
+/// tangent, renormalized — the true Frenet normal, not the direction to a
+/// centre point (which coincides with it only for a circle). Degenerate
+/// cases (zero speed, or `d2` parallel to the tangent, i.e. an inflection)
+/// fall back to a fixed axis, matching the other arms' convention.
+#[must_use]
+pub fn frenet_from_derivatives(curvature: f64, d1: Vec3, d2: Vec3) -> Vec<f64> {
+    let tangent = d1.normalize().unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+    let normal = (d2 - tangent * d2.dot(tangent))
+        .normalize()
+        .unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+    vec![
+        curvature,
+        tangent.x(),
+        tangent.y(),
+        tangent.z(),
+        normal.x(),
+        normal.y(),
+        normal.z(),
+    ]
 }

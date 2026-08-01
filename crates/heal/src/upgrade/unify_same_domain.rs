@@ -856,7 +856,12 @@ fn merge_collinear_edges(
             EdgeCurve::Line => EdgeKind::Line,
             EdgeCurve::Circle(c) => EdgeKind::Circle(c.clone()),
             EdgeCurve::Ellipse(e) => EdgeKind::Ellipse(e.clone()),
-            EdgeCurve::NurbsCurve(_) => EdgeKind::Other,
+            // `EdgeKind::Other` never joins a merge run, so an unbounded
+            // conic edge is left untouched rather than folded into a
+            // neighbouring line or arc.
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) | EdgeCurve::NurbsCurve(_) => {
+                EdgeKind::Other
+            }
         };
         let start_vid = oe.oriented_start(edge);
         let end_vid = oe.oriented_end(edge);

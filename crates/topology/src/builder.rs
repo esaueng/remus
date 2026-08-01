@@ -426,6 +426,34 @@ fn sample_wire_for_planarity(
                 );
                 ordered.extend_from_slice(&points[before..]);
             }
+            EdgeCurve::Hyperbola(h) => {
+                if conic_plane.is_none() {
+                    conic_plane = Some(plane_from(h.center(), h.normal()));
+                }
+                let before = points.len();
+                sample_open_conic(
+                    start_pt,
+                    end_pt,
+                    &mut points,
+                    |t| h.evaluate(t),
+                    |p| h.project(p),
+                );
+                ordered.extend_from_slice(&points[before..]);
+            }
+            EdgeCurve::Parabola(p) => {
+                if conic_plane.is_none() {
+                    conic_plane = Some(plane_from(p.vertex(), p.normal()));
+                }
+                let before = points.len();
+                sample_open_conic(
+                    start_pt,
+                    end_pt,
+                    &mut points,
+                    |t| p.evaluate(t),
+                    |q| p.project(q),
+                );
+                ordered.extend_from_slice(&points[before..]);
+            }
             EdgeCurve::NurbsCurve(nc) => {
                 points.extend_from_slice(nc.control_points());
                 ordered.push(start_pt);
@@ -440,6 +468,26 @@ fn sample_wire_for_planarity(
         tol_sq: tol * tol,
         conic_plane,
     })
+}
+
+/// Sample an *open* (unbounded, non-periodic) conic — hyperbola or
+/// parabola — at four points between its endpoints.
+///
+/// Unlike [`sample_conic`] there is no wrap-around to disambiguate: both
+/// parameterizations are injective over ℝ, so the sub-arc is exactly the
+/// straight parameter interval `[t_a, t_b]`.
+fn sample_open_conic(
+    start_pt: Point3,
+    end_pt: Point3,
+    out: &mut Vec<Point3>,
+    evaluate: impl Fn(f64) -> Point3,
+    project: impl Fn(Point3) -> f64,
+) {
+    let t_a = project(start_pt);
+    let t_b = project(end_pt);
+    for i in 0..=3 {
+        out.push(evaluate(t_a + (t_b - t_a) * f64::from(i) / 3.0));
+    }
 }
 
 /// Sample an oriented conic sub-arc at four points along the short way

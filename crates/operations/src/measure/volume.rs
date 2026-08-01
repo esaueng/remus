@@ -1650,7 +1650,12 @@ fn planar_wire_signed_area2(
             // sign·ρ²·(|α| − sin|α|), α the signed sweep about the arc centre.
             let arc = match edge.curve() {
                 brepkit_topology::edge::EdgeCurve::Line => None,
-                brepkit_topology::edge::EdgeCurve::Ellipse(_) => return Ok(None),
+                // The exact bulge correction below is circular-arc only.
+                // These types have no circular bulge, so the whole exact path
+                // declines rather than applying a wrong correction.
+                brepkit_topology::edge::EdgeCurve::Ellipse(_)
+                | brepkit_topology::edge::EdgeCurve::Hyperbola(_)
+                | brepkit_topology::edge::EdgeCurve::Parabola(_) => return Ok(None),
                 brepkit_topology::edge::EdgeCurve::Circle(c) => Some((c.center(), c.radius())),
                 brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
                     let tol = brepkit_math::tolerance::Tolerance::default().linear * 100.0;

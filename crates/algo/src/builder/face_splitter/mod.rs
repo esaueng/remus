@@ -253,6 +253,9 @@ fn split_sections_at_t_junctions(
             EdgeCurve::Line => {
                 find_splits_on_line(&edge, &candidates_near(edge.start_3d, edge.end_3d), tol)
             }
+            // Unreachable: `gfa::reject_unsupported_curves` refuses these
+            // curve types before the pipeline starts.
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => Vec::new(),
         };
         if splits.is_empty() {
             // Keep the original source id so an unsplit pair stays paired.
@@ -361,7 +364,12 @@ fn split_plane_boundary_arcs_at_points(
             EdgeCurve::Ellipse(e) => (e.project(p), e.evaluate(e.project(p))),
             // Only arc edges have a circle/ellipse parameter; a line or NURBS
             // edge is never split by this arc-only path.
-            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => return None,
+            // Hyperbola and parabola are unreachable:
+            // `gfa::reject_unsupported_curves` refuses them at the entry point.
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
         };
         if (p - on_curve).length() > tol {
             return None;
@@ -369,7 +377,10 @@ fn split_plane_boundary_arcs_at_points(
         let (a0, a_end) = match curve {
             EdgeCurve::Circle(c) => (c.project(start), c.project(end)),
             EdgeCurve::Ellipse(e) => (e.project(start), e.project(end)),
-            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => return None,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
         };
         let span = super::pcurve_compute::shorter_arc_delta(a_end - a0);
         if span.abs() < 1e-12 {
@@ -403,7 +414,11 @@ fn split_plane_boundary_arcs_at_points(
                         .collect()
                 }
             }
-            EdgeCurve::NurbsCurve(_) => Vec::new(),
+            // Hyperbola and parabola are unreachable:
+            // `gfa::reject_unsupported_curves` refuses them at the entry point.
+            EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                Vec::new()
+            }
         };
         splits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         splits.dedup_by(|a, b| (*a - *b).abs() < tol);
@@ -469,7 +484,13 @@ fn edge_curve_is_straight(curve: &EdgeCurve) -> bool {
                 dev_sq < 1e-14
             })
         }
-        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => false,
+        // An unbounded conic is never a straight segment. (Also unreachable
+        // inside the GFA: `gfa::reject_unsupported_curves` refuses these
+        // curve types at the entry point.)
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => false,
     }
 }
 
@@ -2476,7 +2497,12 @@ fn split_cylinder_band_by_arrangement(
                     ring_mids.push((v0p, snap_u((um - u_s).rem_euclid(TAU))));
                 }
             }
-            EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return None,
+            // Hyperbola and parabola are unreachable:
+            // `gfa::reject_unsupported_curves` refuses them at the entry point.
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
         }
     }
     if sec_pieces.is_empty() {
@@ -5857,9 +5883,13 @@ fn plane_internal_line_loops(
             // a box wall crossing a socket-profile stack receives its
             // silhouette as hyperbola pieces chained with lines (the
             // snap-slot wall), which must carve an internal loop.
-            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {
-                (s.start - s.end).length() > tol_linear
-            }
+            // Hyperbola and parabola are unreachable:
+            // `gfa::reject_unsupported_curves` refuses them at the entry point.
+            EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => (s.start - s.end).length() > tol_linear,
         })
     {
         return None;

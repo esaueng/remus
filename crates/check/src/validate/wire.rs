@@ -191,6 +191,34 @@ pub fn check_wire_self_intersection(
                 }
                 edge_segments.push(pts);
             }
+            brepkit_topology::edge::EdgeCurve::Hyperbola(h) => {
+                // Unbounded branch: the vertices are the only trim, and
+                // `project` inverts the parameterization exactly, so the
+                // sub-arc is the straight parameter interval — no
+                // wrap-around correction as for the periodic conics.
+                let (ta, tb) = (h.project(p0), h.project(p1));
+                let mut pts = Vec::with_capacity(samples_per_edge + 1);
+                for k in 0..=samples_per_edge {
+                    let t = ta + (tb - ta) * (k as f64) / (samples_per_edge as f64);
+                    pts.push(h.evaluate(t));
+                }
+                if !oe.is_forward() {
+                    pts.reverse();
+                }
+                edge_segments.push(pts);
+            }
+            brepkit_topology::edge::EdgeCurve::Parabola(p) => {
+                let (ta, tb) = (p.project(p0), p.project(p1));
+                let mut pts = Vec::with_capacity(samples_per_edge + 1);
+                for k in 0..=samples_per_edge {
+                    let t = ta + (tb - ta) * (k as f64) / (samples_per_edge as f64);
+                    pts.push(p.evaluate(t));
+                }
+                if !oe.is_forward() {
+                    pts.reverse();
+                }
+                edge_segments.push(pts);
+            }
             brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
                 let (t0, t1) = nc.domain();
                 let mut pts = Vec::with_capacity(samples_per_edge + 1);

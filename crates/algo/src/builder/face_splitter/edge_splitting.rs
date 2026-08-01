@@ -41,6 +41,10 @@ pub(super) fn split_boundary_edges_at_3d_points(
             // one face and split on the other (cross-face desync).
             EdgeCurve::NurbsCurve(_) => find_splits_on_nurbs_section(&edge, split_pts_3d, tol),
             EdgeCurve::Line => find_splits_on_line(&edge, split_pts_3d, tol),
+            // Unreachable: `gfa::reject_unsupported_curves` refuses these
+            // curve types before the pipeline starts. A chord-based fallback
+            // here would desync the split against the neighbouring face.
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => Vec::new(),
         };
 
         if splits.is_empty() {

@@ -67,6 +67,15 @@ pub fn boolean_with_tolerance(
     solid_b: SolidId,
     tol: Tolerance,
 ) -> Result<SolidId, AlgoError> {
+    // Refuse unsupported curve types up front, by name. The pave filler,
+    // face splitter and classifier all lack hyperbola/parabola support;
+    // letting such an input through would make them fall back to a chord
+    // or a straight line and return a plausible but geometrically wrong
+    // solid. Failing closed here is the only honest option until the
+    // intersection phases learn these conics.
+    reject_unsupported_curves(topo, solid_a)?;
+    reject_unsupported_curves(topo, solid_b)?;
+
     // Create an isolated shape store with deep-copied input solids.
     // The GFA pipeline operates entirely within the store, avoiding
     // vertex/edge identity conflicts with the caller's topology.
@@ -119,6 +128,10 @@ pub fn boolean_with_tolerance(
 ///
 /// Returns [`AlgoError`] if `sources` is empty or any GFA stage fails.
 pub fn fuse_n(topo: &mut Topology, sources: &[SolidId]) -> Result<SolidId, AlgoError> {
+    // Same up-front refusal as `boolean_with_tolerance`; see that function.
+    for &sid in sources {
+        reject_unsupported_curves(topo, sid)?;
+    }
     match sources {
         [] => Err(AlgoError::AssemblyFailed(
             "fuse_n needs at least one source solid".into(),
@@ -167,6 +180,10 @@ pub fn boolean_with_face_origins(
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<(SolidId, FaceOriginIndices), AlgoError> {
+    // Same up-front refusal as `boolean_with_tolerance`; see that function.
+    reject_unsupported_curves(topo, solid_a)?;
+    reject_unsupported_curves(topo, solid_b)?;
+
     let tol = Tolerance::default();
     let mut store = crate::ds::GfaShapeStore::new(topo, solid_a, solid_b)?;
 
@@ -214,4 +231,40 @@ pub fn boolean_with_face_origins(
     }
 
     Ok((result, origins))
+}
+
+/// Refuse a solid whose edges carry a curve type the GFA pipeline cannot
+/// handle, naming the variant.
+///
+/// The pave filler's EE/EF/FF phases, the face splitter's split searches
+/// and the analytic classifier all enumerate `EdgeCurve` explicitly and
+/// have no hyperbola or parabola support. Without this gate those sites
+/// would take their line/chord fallbacks and produce a result that looks
+/// like a solid but has the wrong geometry — the failure mode that is
+/// hardest to notice downstream. Refusing here fails closed instead.
+fn reject_unsupported_curves(topo: &Topology, solid_id: SolidId) -> Result<(), AlgoError> {
+    use brepkit_topology::edge::EdgeCurve;
+    use brepkit_topology::explorer::solid_faces;
+
+    for fid in solid_faces(topo, solid_id)? {
+        let face = topo.face(fid)?;
+        for &wid in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+            let wire = topo.wire(wid)?;
+            for oe in wire.edges() {
+                let curve = topo.edge(oe.edge())?.curve();
+                match curve {
+                    EdgeCurve::Line
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::NurbsCurve(_) => {}
+                    EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                        return Err(AlgoError::UnsupportedCurve {
+                            variant: curve.type_tag(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

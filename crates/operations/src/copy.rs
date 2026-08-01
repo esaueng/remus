@@ -411,6 +411,11 @@ pub fn copy_and_transform_solid(
         let new_end = vertex_map[&esnap.end_index];
         let new_curve = match &esnap.curve {
             EdgeCurve::Line => EdgeCurve::Line,
+            // Exact under a similarity, typed refusal otherwise — see
+            // `transform::transform_open_conic`.
+            c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
+                crate::transform::transform_open_conic(c, matrix)?
+            }
             EdgeCurve::NurbsCurve(c) => {
                 let new_cps: Vec<_> = c
                     .control_points()

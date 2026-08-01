@@ -95,7 +95,9 @@ pub(crate) fn maybe_split_closed_wire_with(
 fn curve_is_analytic_circle(curve: &EdgeCurve) -> bool {
     let tol = Tolerance::new().linear;
     match curve {
-        EdgeCurve::Line => false,
+        // A hyperbola or parabola is unbounded and never closed, so it can
+        // never be a closed analytic ring for the extrude side-wall path.
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => true,
         EdgeCurve::NurbsCurve(nc) => matches!(
             brepkit_geometry::convert::recognize_curve(nc, tol * 100.0),
@@ -187,8 +189,9 @@ fn closed_edge_segments(curve: &EdgeCurve, deflection: f64) -> usize {
             brepkit_math::chord::segments_for_chord_deviation(radius_est, TAU, deflection)
         }
         // Lines can't be closed with start==end in a meaningful way;
-        // split_closed_edge already returns early for them.
-        EdgeCurve::Line => 8,
+        // split_closed_edge already returns early for them. The same is
+        // true of the unbounded conics, which never close at all.
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => 8,
     }
 }
 
@@ -212,8 +215,11 @@ pub fn split_closed_edge(
         EdgeCurve::NurbsCurve(nc) => nc.domain(),
         EdgeCurve::Circle(_) => (0.0, std::f64::consts::TAU),
         EdgeCurve::Ellipse(_) => (0.0, std::f64::consts::TAU),
-        EdgeCurve::Line => {
-            // Lines can't be closed with start==end in a meaningful way.
+        // Lines can't be closed with start==end in a meaningful way, and an
+        // unbounded conic branch never closes either — there is nothing to
+        // split, so the edge is returned whole rather than being cut at
+        // invented parameters.
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
             return Ok(vec![edge_id]);
         }
     };
@@ -223,8 +229,11 @@ pub fn split_closed_edge(
             EdgeCurve::NurbsCurve(nc) => nc.evaluate(u),
             EdgeCurve::Circle(c) => c.evaluate(u),
             EdgeCurve::Ellipse(e) => e.evaluate(u),
-            // Line was handled above (early return).
-            EdgeCurve::Line => Point3::new(0.0, 0.0, 0.0),
+            // Line and the unbounded conics were handled above (early
+            // return), so these arms are unreachable.
+            EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                Point3::new(0.0, 0.0, 0.0)
+            }
         }
     };
 
@@ -495,6 +504,21 @@ fn side_face_surface(
                 return Ok((FaceSurface::Cylinder(cyl), reversed));
             }
             let surface = ruled_nurbs_surface(nc, offset)?;
+            let reversed = nurbs_needs_reversal(&surface, p0, p1, offset, outer_is_cw);
+            Ok((FaceSurface::Nurbs(surface), reversed))
+        }
+        // An unbounded conic sweeps an exact surface of extrusion. Until
+        // `FaceSurface` carries that variant, build it from the arc's exact
+        // rational-Bezier form (`{hyperbola,parabola}_to_nurbs` are the
+        // 3-control-point conic constructions, not sampled fits) and rule
+        // that along the offset. The geometry is exact, and — unlike a
+        // chord fallback — the side face meets the caps at the same
+        // boundary the trimmed arc has.
+        c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
+            let (t_start, t_end) = c.domain_with_endpoints(curve_start, curve_end);
+            let (lo, hi) = (t_start.min(t_end), t_start.max(t_end));
+            let nc = open_conic_to_nurbs(c, lo, hi)?;
+            let surface = ruled_nurbs_surface(&nc, offset)?;
             let reversed = nurbs_needs_reversal(&surface, p0, p1, offset, outer_is_cw);
             Ok((FaceSurface::Nurbs(surface), reversed))
         }
@@ -1030,6 +1054,34 @@ pub fn extrude(
     Ok(solid)
 }
 
+/// Exact rational-Bezier NURBS for an unbounded conic arc over `[t0, t1]`.
+///
+/// Thin wrapper over the heal crate's conic constructions so the extrude
+/// path has one place to convert. Both constructions are exact 3-control-
+/// point conic Beziers, not sampled fits.
+fn open_conic_to_nurbs(
+    curve: &EdgeCurve,
+    t0: f64,
+    t1: f64,
+) -> Result<brepkit_math::nurbs::curve::NurbsCurve, crate::OperationsError> {
+    use brepkit_heal::construct::convert_curve::{hyperbola_to_nurbs, parabola_to_nurbs};
+    match curve {
+        EdgeCurve::Hyperbola(h) => Ok(hyperbola_to_nurbs(h, t0, t1)?),
+        EdgeCurve::Parabola(p) => Ok(parabola_to_nurbs(p, t0, t1)?),
+        EdgeCurve::Line
+        | EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::NurbsCurve(_) => Err(crate::OperationsError::Unsupported {
+            operation: "extrude",
+            reason: format!(
+                "open_conic_to_nurbs called with `{}`, which is not an \
+                     unbounded conic",
+                curve.type_tag()
+            ),
+        }),
+    }
+}
+
 /// Translate an `EdgeCurve` by an offset vector.
 ///
 /// # Errors
@@ -1069,6 +1121,25 @@ fn translate_edge_curve(
                 .map_err(crate::OperationsError::Math)?,
             )
         }
+        EdgeCurve::Hyperbola(h) => EdgeCurve::Hyperbola(
+            brepkit_math::curves::Hyperbola3D::with_axes(
+                h.center() + offset,
+                h.normal(),
+                h.u_axis(),
+                h.semi_major(),
+                h.semi_minor(),
+            )
+            .map_err(crate::OperationsError::Math)?,
+        ),
+        EdgeCurve::Parabola(pb) => EdgeCurve::Parabola(
+            brepkit_math::curves::Parabola3D::with_axes(
+                pb.vertex() + offset,
+                pb.axis_dir(),
+                pb.u_axis(),
+                pb.focal_length(),
+            )
+            .map_err(crate::OperationsError::Math)?,
+        ),
         EdgeCurve::NurbsCurve(nc) => {
             let translated_cps: Vec<Point3> =
                 nc.control_points().iter().map(|&p| p + offset).collect();
@@ -1115,6 +1186,31 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
                 e.semi_minor(),
                 e.u_axis(),
                 -e.v_axis(),
+            )
+            .map_err(crate::OperationsError::Math)?,
+        ),
+        // Negating the in-plane axis that carries the `sinh` / linear term
+        // maps `t` to `-t`, tracing the same point set backwards. For the
+        // hyperbola that is `v_axis` (equivalently, flipping `normal`); for
+        // the parabola it is `u_axis`. `semi_major`/`focal_length` and the
+        // real axis are untouched, so the branch and the opening direction
+        // are preserved.
+        EdgeCurve::Hyperbola(h) => EdgeCurve::Hyperbola(
+            brepkit_math::curves::Hyperbola3D::with_axes(
+                h.center(),
+                -h.normal(),
+                h.u_axis(),
+                h.semi_major(),
+                h.semi_minor(),
+            )
+            .map_err(crate::OperationsError::Math)?,
+        ),
+        EdgeCurve::Parabola(pb) => EdgeCurve::Parabola(
+            brepkit_math::curves::Parabola3D::with_axes(
+                pb.vertex(),
+                pb.axis_dir(),
+                -pb.u_axis(),
+                pb.focal_length(),
             )
             .map_err(crate::OperationsError::Math)?,
         ),

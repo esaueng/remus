@@ -320,7 +320,13 @@ fn profile_arc_center_radius(
                 _ => None,
             }
         }
-        EdgeCurve::Line | EdgeCurve::Ellipse(_) => None,
+        // Not circular arcs: a revolved hyperbola or parabola sweeps a
+        // surface of revolution, not a torus band, so the caller keeps its
+        // NURBS band rather than being handed a wrong analytic surface.
+        EdgeCurve::Line
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
     }
 }
 

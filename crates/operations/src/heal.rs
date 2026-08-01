@@ -1135,7 +1135,12 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
                             q(e.semi_major()),
                         ))
                     }
+                    // No geometric key is minted for these, so they fall back
+                    // to topological edge identity rather than being merged by
+                    // a coarse quantized key.
                     brepkit_topology::edge::EdgeCurve::Line
+                    | brepkit_topology::edge::EdgeCurve::Hyperbola(_)
+                    | brepkit_topology::edge::EdgeCurve::Parabola(_)
                     | brepkit_topology::edge::EdgeCurve::NurbsCurve(_) => None,
                 };
                 if let Some(k) = key {

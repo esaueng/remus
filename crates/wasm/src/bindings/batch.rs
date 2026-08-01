@@ -186,6 +186,31 @@ impl BrepKernel {
                     })?,
                 )
             }
+            // Exact 3-control-point conic Beziers over the arc bounded by the
+            // edge's two vertices. `project` inverts the parameterization
+            // exactly, so no sampling or fitting is involved.
+            EdgeCurve::Hyperbola(h) => {
+                let (t0, t1) = (h.project(start_pt), h.project(end_pt));
+                let (lo, hi) = (t0.min(t1), t0.max(t1));
+                Ok(
+                    brepkit_heal::construct::convert_curve::hyperbola_to_nurbs(h, lo, hi).map_err(
+                        |err| WasmError::InvalidInput {
+                            reason: format!("hyperbola_to_nurbs failed: {err}"),
+                        },
+                    )?,
+                )
+            }
+            EdgeCurve::Parabola(pb) => {
+                let (t0, t1) = (pb.project(start_pt), pb.project(end_pt));
+                let (lo, hi) = (t0.min(t1), t0.max(t1));
+                Ok(
+                    brepkit_heal::construct::convert_curve::parabola_to_nurbs(pb, lo, hi).map_err(
+                        |err| WasmError::InvalidInput {
+                            reason: format!("parabola_to_nurbs failed: {err}"),
+                        },
+                    )?,
+                )
+            }
         }
     }
 
@@ -742,7 +767,11 @@ impl BrepKernel {
                 let edge_data = self.topo.edge(edge_id).map_err(|e| e.to_string())?;
                 let curve = match edge_data.curve() {
                     EdgeCurve::NurbsCurve(c) => c.clone(),
-                    EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                    EdgeCurve::Line
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => {
                         return Err("sweep path must be a NURBS edge".into());
                     }
                 };
@@ -770,7 +799,11 @@ impl BrepKernel {
                 let edge_data = self.topo.edge(edge_id).map_err(|e| e.to_string())?;
                 let spine = match edge_data.curve() {
                     EdgeCurve::NurbsCurve(c) => c.clone(),
-                    EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                    EdgeCurve::Line
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => {
                         return Err("multiSectionSweep spine must be a NURBS edge".into());
                     }
                 };
@@ -803,7 +836,11 @@ impl BrepKernel {
                         let edge_data = this.topo.edge(edge_id).map_err(|e| e.to_string())?;
                         match edge_data.curve() {
                             EdgeCurve::NurbsCurve(c) => Ok(c.clone()),
-                            EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                            EdgeCurve::Line
+                            | EdgeCurve::Circle(_)
+                            | EdgeCurve::Ellipse(_)
+                            | EdgeCurve::Hyperbola(_)
+                            | EdgeCurve::Parabola(_) => {
                                 Err(format!("guidedSweep {label} must be a NURBS edge"))
                             }
                         }
@@ -1441,7 +1478,11 @@ impl BrepKernel {
                 let edge_data = self.topo.edge(edge_id).map_err(|e| e.to_string())?;
                 let curve = match edge_data.curve() {
                     EdgeCurve::NurbsCurve(c) => c.clone(),
-                    EdgeCurve::Line | EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                    EdgeCurve::Line
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => {
                         return Err("pipe path must be a NURBS edge".into());
                     }
                 };

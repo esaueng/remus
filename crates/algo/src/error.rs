@@ -26,4 +26,22 @@ pub enum AlgoError {
     /// Classification could not determine inside/outside state.
     #[error("classification failed: {0}")]
     ClassificationFailed(String),
+
+    /// An input carries a curve type the GFA pipeline cannot intersect,
+    /// split, or classify yet.
+    ///
+    /// Raised up front by [`crate::gfa::boolean_with_tolerance`] rather
+    /// than deep inside the pipeline, so the operation refuses by name
+    /// instead of falling back to a chord or a line and returning a
+    /// plausible but wrong solid. `variant` is the
+    /// [`EdgeCurve`](brepkit_topology::edge::EdgeCurve) type tag, e.g.
+    /// `"hyperbola"`.
+    #[error(
+        "unsupported edge curve type `{variant}`: the boolean engine cannot \
+         intersect or split this curve yet"
+    )]
+    UnsupportedCurve {
+        /// The `EdgeCurve::type_tag()` of the offending curve.
+        variant: &'static str,
+    },
 }

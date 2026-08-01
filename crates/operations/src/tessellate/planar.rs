@@ -363,6 +363,48 @@ pub(super) fn tessellate_planar(
                     &mut positions,
                 );
             }
+            // Unbounded branches: `project` inverts the parameterization
+            // exactly, so the arc is the straight parameter interval between
+            // the two vertices. Density comes from the tightest osculating
+            // circle on that span (see `open_conic_segments`), never a chord.
+            EdgeCurve::Hyperbola(h) => {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (t0, t1) = (h.project(sp), h.project(ep));
+                let n_samples = super::edge_sampling::open_conic_segments(
+                    h.min_curvature_radius(t0, t1),
+                    h.arc_length(t0, t1),
+                    deflection,
+                    angular_tol,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve(
+                    &|t| h.evaluate(t),
+                    &|i| t0 + (t1 - t0) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    oe.is_forward(),
+                    &mut positions,
+                );
+            }
+            EdgeCurve::Parabola(p) => {
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (t0, t1) = (p.project(sp), p.project(ep));
+                let n_samples = super::edge_sampling::open_conic_segments(
+                    p.min_curvature_radius(t0, t1),
+                    p.arc_length(t0, t1),
+                    deflection,
+                    angular_tol,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                sample_curve(
+                    &|t| p.evaluate(t),
+                    &|i| t0 + (t1 - t0) * (i as f64) / (n_samples as f64),
+                    n_samples,
+                    oe.is_forward(),
+                    &mut positions,
+                );
+            }
             EdgeCurve::NurbsCurve(nurbs) => {
                 let (u0, u1) = nurbs.domain();
                 let n_spans = nurbs

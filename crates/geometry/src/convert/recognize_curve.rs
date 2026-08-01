@@ -70,6 +70,37 @@ pub enum RecognizedCurve {
     NotRecognized,
 }
 
+/// Dimensionless band for the conic discriminant `B² − 4AC`.
+///
+/// The classification is a SIGN test (`< 0` ellipse, `= 0` parabola, `> 0`
+/// hyperbola) on a quantity that is exactly zero only for a parabola, so the
+/// band only has to exceed the fit's round-off. Measured normalized
+/// discriminants are ~1e-13 for an exact parabola and ~25 for a typical
+/// hyperbola, so this sits nine orders of magnitude clear of both.
+const CONIC_DISCRIMINANT_EPS: f64 = 1e-9;
+
+/// Scale-invariant conic discriminant.
+///
+/// The raw discriminant `B² − 4AC` of a conic fitted in the `F = −1`
+/// normalization carries units of `L⁻⁴`, so comparing it against a LINEAR
+/// tolerance (units `L`) makes the classification depend on how large the
+/// model happens to be — a genuine hyperbola whose normalized discriminant
+/// is 25.3 at every scale has a raw discriminant of 2.6e12 at one model
+/// scale and 2.6e-12 a millionfold larger, and any fixed threshold cuts
+/// that range in an arbitrary place.
+///
+/// Dividing by the square of the quadratic form's magnitude (itself `L⁻²`)
+/// removes the units, so the result depends only on the SHAPE of the conic.
+/// Returns `None` when the quadratic part is degenerate (no conic at all).
+fn normalized_conic_discriminant(a_c: f64, b_c: f64, c_c: f64) -> Option<f64> {
+    let norm = a_c.abs().max(c_c.abs()).max(0.5 * b_c.abs());
+    if !norm.is_finite() || norm <= 0.0 {
+        return None;
+    }
+    let disc = b_c.mul_add(b_c, -(4.0 * a_c * c_c));
+    Some(disc / (4.0 * norm * norm))
+}
+
 /// Attempt to recognize a NURBS curve as an elementary analytic curve.
 ///
 /// Samples the curve at 16 points in its parameter domain and checks:
@@ -553,9 +584,12 @@ fn try_recognize_hyperbola(
     let theta = solve_5x5(&mat, &rhs)?;
     let (a_c, b_c, c_c, d_c, e_c) = (theta[0], theta[1], theta[2], theta[3], theta[4]);
 
-    // For a hyperbola: B² − 4AC > 0.
-    let disc = b_c * b_c - 4.0 * a_c * c_c;
-    if disc <= tolerance {
+    // For a hyperbola: B² − 4AC > 0. Tested on the SCALE-INVARIANT
+    // discriminant — the raw value carries units of L⁻⁴, so comparing it
+    // against the linear tolerance made recognition depend on model scale
+    // (the same hyperbola was recognized at 1x and rejected at 100x).
+    let disc = normalized_conic_discriminant(a_c, b_c, c_c)?;
+    if disc <= CONIC_DISCRIMINANT_EPS {
         return None;
     }
 
@@ -712,12 +746,16 @@ fn try_recognize_parabola(samples: &[Point3], tolerance: f64) -> Option<(Point3,
     // d_c, e_c (linear terms) aren't needed once we rotate into the
     // axis-aligned frame and refit there.
 
-    // Parabola: |B² − 4AC| < tolerance. Use a tolerance scaled to
-    // the magnitude of the coefficients to avoid false positives on
-    // small conics.
-    let disc = b_c * b_c - 4.0 * a_c * c_c;
-    let scale = a_c.abs().max(c_c.abs()).max(1.0);
-    if disc.abs() > tolerance * scale {
+    // Parabola: the discriminant B² − 4AC vanishes. Tested on the
+    // SCALE-INVARIANT discriminant: the raw value carries units of L⁻⁴ and
+    // the old threshold `tolerance * max(|A|, |C|, 1)` carried units of
+    // L⁻¹, so the comparison was dimensionally inconsistent by L⁻³ and
+    // rejected genuine parabolas on small models (normalized discriminant
+    // 2.2e-13, i.e. pure fit round-off, against a threshold of 4.9e-8).
+    // The `max(1.0)` in that threshold was itself an absolute magnitude
+    // inside a quantity with units of L⁻².
+    let disc = normalized_conic_discriminant(a_c, b_c, c_c)?;
+    if disc.abs() > CONIC_DISCRIMINANT_EPS {
         return None;
     }
 
@@ -1300,5 +1338,122 @@ mod tests {
             recognize_curve(&nurbs, 1e-6),
             RecognizedCurve::Ellipse { .. }
         ));
+    }
+
+    // ── Scale invariance of the conic classification ──────────────────
+    //
+    // The conic discriminant carries units of L^-4. Comparing it against a
+    // LINEAR tolerance made recognition depend on how large the model
+    // happened to be: the same hyperbola was recognized at 1x and rejected
+    // at 100x, and the same parabola was recognized at 1x and rejected at
+    // 0.001x. Both failed CLOSED (`NotRecognized`), so a small or large
+    // model silently kept its NURBS representation instead of converting.
+
+    /// Scales spanning nine orders of magnitude around unity.
+    const SCALE_SWEEP: [f64; 7] = [1e-3, 1e-2, 1e-1, 1.0, 1e1, 1e2, 1e3];
+
+    #[test]
+    fn parabola_recognition_is_scale_invariant() {
+        for k in SCALE_SWEEP {
+            let par = Parabola3D::with_axes(
+                Point3::new(1.0 * k, -2.0 * k, 0.5 * k),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                0.6 * k,
+            )
+            .unwrap();
+            let nurbs = parabola_to_nurbs_inline(&par, -1.5 * k, 2.0 * k);
+            match recognize_curve(&nurbs, 1e-7) {
+                RecognizedCurve::Parabola { focal_length, .. } => {
+                    let want = 0.6 * k;
+                    assert!(
+                        (focal_length - want).abs() < 1e-9 * want,
+                        "focal length {focal_length} vs {want} at scale {k}"
+                    );
+                }
+                other => panic!("parabola not recognized at scale {k}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn hyperbola_recognition_is_scale_invariant() {
+        for k in SCALE_SWEEP {
+            let hyp = Hyperbola3D::with_axes(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                2.0 * k,
+                1.5 * k,
+            )
+            .unwrap();
+            let nurbs = hyperbola_to_nurbs_inline(&hyp, -0.9, 1.1);
+            match recognize_curve(&nurbs, 1e-7) {
+                RecognizedCurve::Hyperbola {
+                    semi_major,
+                    semi_minor,
+                    ..
+                } => {
+                    assert!(
+                        (semi_major - 2.0 * k).abs() < 1e-9 * 2.0 * k,
+                        "semi_major {semi_major} vs {} at scale {k}",
+                        2.0 * k
+                    );
+                    assert!(
+                        (semi_minor - 1.5 * k).abs() < 1e-9 * 1.5 * k,
+                        "semi_minor {semi_minor} vs {} at scale {k}",
+                        1.5 * k
+                    );
+                }
+                other => panic!("hyperbola not recognized at scale {k}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_ellipse_is_not_misread_as_a_hyperbola_or_parabola_at_any_scale() {
+        // The looser (scale-free) discriminant band must not let the
+        // ellipse case leak into the open-conic branches.
+        for k in SCALE_SWEEP {
+            let ell = Ellipse3D::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0 * k,
+                1.0 * k,
+            )
+            .unwrap();
+            let nurbs = ellipse_arc_nurbs_inline(&ell, 0.2, 2.0);
+            let got = recognize_curve(&nurbs, 1e-7 * k);
+            assert!(
+                !matches!(
+                    got,
+                    RecognizedCurve::Hyperbola { .. } | RecognizedCurve::Parabola { .. }
+                ),
+                "ellipse misclassified at scale {k}: {got:?}"
+            );
+        }
+    }
+
+    /// Rational-quadratic Bezier for an elliptic arc, built here so the test
+    /// does not depend on the crate's own converters.
+    fn ellipse_arc_nurbs_inline(ell: &Ellipse3D, t0: f64, t1: f64) -> NurbsCurve {
+        let half = 0.5 * (t1 - t0);
+        let w1 = half.cos();
+        let (a, b) = (ell.semi_major(), ell.semi_minor());
+        let (u, v) = (ell.u_axis(), ell.v_axis());
+        let p0 = ell.evaluate(t0);
+        let p2 = ell.evaluate(t1);
+        // Tangent intersection of an elliptic arc, in scaled coordinates.
+        let tan_half = half.tan();
+        let p1x = a * (t0.cos() - tan_half * t0.sin());
+        let p1y = b * (t0.sin() + tan_half * t0.cos());
+        let p1 = ell.center() + u * p1x + v * p1y;
+        NurbsCurve::new(
+            2,
+            vec![t0, t0, t0, t1, t1, t1],
+            vec![p0, p1, p2],
+            vec![1.0, w1, 1.0],
+        )
+        .unwrap()
     }
 }

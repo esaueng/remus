@@ -327,6 +327,41 @@ impl StepWriteContext {
                 );
                 eid
             }
+            // ISO 10303-42 HYPERBOLA: the placement's z is the plane normal
+            // and its ref_direction is the REAL axis, which is exactly how
+            // `Hyperbola3D` is stored, so the round trip through
+            // `Hyperbola3D::with_axes` in the reader is exact.
+            EdgeCurve::Hyperbola(hyp) => {
+                let placement =
+                    self.write_axis2_placement(hyp.center(), hyp.normal(), hyp.u_axis());
+                let hid = self.next_id();
+                self.write_entity(
+                    hid,
+                    "HYPERBOLA",
+                    &format!(
+                        "'', #{placement}, {}, {})",
+                        fmt_f64(hyp.semi_major()),
+                        fmt_f64(hyp.semi_minor())
+                    ),
+                );
+                hid
+            }
+            // ISO 10303-42 PARABOLA: the placement's location is the apex and
+            // its ref_direction points apex→focus (the symmetry axis), with z
+            // the plane normal. STEP's own parameter differs from brepkit's by
+            // the constant factor `t = 2f·u`, but the point SET is identical
+            // and the edge's vertices — not a parameter range — carry the trim.
+            EdgeCurve::Parabola(par) => {
+                let placement =
+                    self.write_axis2_placement(par.vertex(), par.normal(), par.axis_dir());
+                let pid = self.next_id();
+                self.write_entity(
+                    pid,
+                    "PARABOLA",
+                    &format!("'', #{placement}, {})", fmt_f64(par.focal_length())),
+                );
+                pid
+            }
         };
 
         let edge_curve = self.next_id();
