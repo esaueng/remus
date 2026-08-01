@@ -157,10 +157,19 @@ pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, JsError> {
 /// no longer reproduces).
 ///
 /// Every candidate is validated as a closed (watertight) solid before being
-/// accepted, so a malformed result is rejected in favour of the next engine
-/// and, if none qualifies, the solid is returned unchanged. This guard lets
-/// `filter_filletable_edges` be permissive about curved neighbours without ever
-/// returning a degenerate solid.
+/// accepted, so a malformed result is rejected in favour of the next engine.
+/// This guard lets `filter_filletable_edges` be permissive about curved
+/// neighbours without ever returning a degenerate solid.
+///
+/// # Errors
+///
+/// When no engine produces a valid closed solid, returns the v2 walking
+/// engine's typed error — the engine with meaningful diagnostics
+/// (`UnsupportedVertexBlend`, `TrimmingFailure`, `RadiusTooLarge`, …) —
+/// rather than the historical silent input-handle no-op, which left callers
+/// unable to distinguish "radius too large" from "unsupported topology"
+/// (`try_chamfer`'s doc comment calls that the no-op trap). The input solid
+/// is always rolled back to its untouched pre-attempt state on failure.
 #[allow(deprecated)]
 pub fn try_fillet(
     topo: &mut brepkit_topology::Topology,
@@ -168,11 +177,17 @@ pub fn try_fillet(
     edge_ids: &[brepkit_topology::edge::EdgeId],
     radius: f64,
 ) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
-    // Drop tangent / degenerate edges (e.g. a fillet face's G1 contact line with
-    // its planar neighbour). If none qualify, the solid is returned unchanged.
+    // Drop tangent / degenerate edges (e.g. a fillet face's G1 contact line
+    // with its planar neighbour). If none qualify there is nothing to blend,
+    // which is a selection problem the caller must hear about — not a
+    // success.
     let edges = brepkit_operations::query::filter_filletable_edges(topo, solid_id, edge_ids)?;
     if edges.is_empty() {
-        return Ok(solid_id);
+        return Err(brepkit_operations::OperationsError::InvalidInput {
+            reason:
+                "no filletable edges in the selection (tangent and degenerate edges are skipped)"
+                    .into(),
+        });
     }
     let edges = edges.as_slice();
 
@@ -194,23 +209,27 @@ pub fn try_fillet(
     // `propagate_split` rewrites the wires of each face touching a split
     // edge; the rolling-ball rebuild rewrites cap wires). A rejected attempt
     // therefore leaves the INPUT solid partly filleted — rounded corners plus
-    // free edges where a split was applied but never closed. Since this
-    // function reports failure by returning the input handle, the caller then
-    // ships that corrupted body: the OpenZCAD demo bracket meshed with 42
-    // boundary edges even though its fillet had "failed".
+    // free edges where a split was applied but never closed. A caller that
+    // reports the failure and keeps using its original handle then ships
+    // that corrupted body: the OpenZCAD demo bracket meshed with 42 boundary
+    // edges even though its fillet had "failed".
     //
     // Snapshot once, roll back after every rejected attempt so the next
-    // engine starts clean and a total failure is a true no-op. Handle slots
-    // are preserved, so IDs held by the caller stay valid.
+    // engine starts clean and a total failure is a true no-op on the input.
+    // Handle slots are preserved, so IDs held by the caller stay valid.
     let snapshot = topo.clone();
 
     // v2 (the walking blend) is tried first: it is the engine under active
-    // development and matches v1 on every measured case.
-    if let Ok(r) = brepkit_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius)
-        && is_valid(topo, r.solid)
-    {
-        return Ok(r.solid);
-    }
+    // development and matches v1 on every measured case. Its failure is
+    // remembered verbatim — if the fallback engines cannot rescue the call,
+    // that typed diagnosis is what the caller receives.
+    let v2_failure = match brepkit_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius) {
+        Ok(r) if is_valid(topo, r.solid) => return Ok(r.solid),
+        Ok(_) => brepkit_operations::OperationsError::InvalidInput {
+            reason: "fillet produced an open shell".into(),
+        },
+        Err(e) => e,
+    };
     topo.restore_preserving_handle_slots(&snapshot);
 
     if let Ok(s) = brepkit_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
@@ -227,8 +246,9 @@ pub fn try_fillet(
     }
     topo.restore_preserving_handle_slots(&snapshot);
 
-    // No engine produced a valid solid — the input is unchanged.
-    Ok(solid_id)
+    // No engine produced a valid solid — the input is unchanged, and the
+    // walking engine's diagnosis names the blocker.
+    Err(v2_failure)
 }
 
 /// Chamfer edges, falling back to the v2 walking engine when the v1 flat-bevel
@@ -291,6 +311,18 @@ pub fn try_chamfer(
             Err(e)
         }
     }
+}
+
+/// Convert a fillet/chamfer failure into a `JsError` whose message starts
+/// with the stable machine-readable code from
+/// [`brepkit_operations::blend_ops::blend_failure_code`], e.g.
+/// `unsupported-vertex-blend: blend: unsupported vertex blend at Id(16): 2
+/// stripes meet`. Callers across the WASM boundary branch on the prefix.
+pub fn fillet_failure_js_error(error: &brepkit_operations::OperationsError) -> JsError {
+    JsError::new(&format!(
+        "{}: {error}",
+        brepkit_operations::blend_ops::blend_failure_code(error)
+    ))
 }
 
 /// Extract a human-readable message from a `catch_unwind` panic payload.
@@ -637,12 +669,13 @@ mod fillet_tests {
         edges
     }
 
-    // A rejected fillet must be a true no-op. Every engine mutates the arena
-    // in place, so a partly-applied attempt used to leave the INPUT solid
-    // rounded at some corners and split-but-unclosed at others — and since
-    // `try_fillet` signals failure by returning the input handle, the caller
-    // kept using that corrupted body (the OpenZCAD bracket meshed with 42
-    // boundary edges despite reporting "fillet could not be created").
+    // A rejected fillet must be a typed error AND a true no-op on the input.
+    // Every engine mutates the arena in place, so a partly-applied attempt
+    // used to leave the INPUT solid rounded at some corners and
+    // split-but-unclosed at others; and when failure was signalled by
+    // returning the input handle, callers could not distinguish "radius too
+    // large" from "unsupported topology" (the OpenZCAD plate misdiagnosis,
+    // docs/qa 2026-08-01 in that repo).
     // A radius far too large for the box guarantees every engine fails.
     #[test]
     fn try_fillet_failure_leaves_the_input_untouched() {
@@ -654,8 +687,12 @@ mod fillet_tests {
         let vol_before = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
 
         // r = 20 on a 10³ box: no engine can produce a valid solid.
-        let result = try_fillet(&mut topo, cube, &edges, 20.0).expect("try_fillet");
-        assert_eq!(result, cube, "a failed fillet must return the input handle");
+        let error = try_fillet(&mut topo, cube, &edges, 20.0)
+            .expect_err("an all-engine failure must be a typed error, not a silent no-op");
+        assert!(
+            !brepkit_operations::blend_ops::blend_failure_code(&error).is_empty(),
+            "every failure maps to a machine-readable code"
+        );
 
         let after =
             brepkit_topology::explorer::solid_entity_counts(&topo, cube).expect("counts after");
@@ -853,7 +890,16 @@ mod fillet_tests {
         let r_edges = solid_edge_ids(&topo, first);
         for &e in &r_edges {
             let mut t = topo.clone();
-            let s = try_fillet(&mut t, first, &[e], 0.5).expect("second fillet");
+            // Tangent/degenerate selections (the blend's G1 contact lines)
+            // are a typed refusal now, not a silent no-op; the refusal must
+            // leave the input solid intact.
+            let Ok(s) = try_fillet(&mut t, first, &[e], 0.5) else {
+                let ssd = t.solid(first).expect("input solid");
+                let ssh = t.shell(ssd.outer_shell()).expect("shell");
+                brepkit_topology::validation::validate_shell_manifold(ssh, &t)
+                    .expect("a refused second fillet must leave a manifold solid");
+                continue;
+            };
             let v2 = brepkit_operations::measure::solid_volume(&t, s, 0.05).unwrap();
             assert!(
                 v2 <= 1000.0 + 0.1,
@@ -948,5 +994,85 @@ mod fillet_tests {
         validate_shell_manifold(sh, &topo).expect("second fillet must be manifold");
         validate_shell_closed(sh, &topo)
             .expect("second fillet on a NURBS-blend-adjacent edge must be watertight");
+    }
+
+    // The OpenZCAD plate (80 x 60 x 6 with a bored hole): corner chains and
+    // hole rims fail in every engine, and the caller must receive the
+    // walking engine's typed diagnosis — not a silent no-op — with the input
+    // rolled back untouched.
+    #[test]
+    fn try_fillet_failure_reports_the_walking_engine_diagnosis() {
+        use brepkit_math::mat::Mat4;
+        use brepkit_operations::blend_ops::{BlendError, blend_failure_code};
+        use brepkit_operations::boolean::{BooleanOp, boolean};
+        use brepkit_operations::primitives::{make_box, make_cylinder};
+        use brepkit_operations::transform::transform_solid;
+
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 80.0, 60.0, 6.0).unwrap();
+        let hole = make_cylinder(&mut topo, 2.25, 6.0).unwrap();
+        transform_solid(&mut topo, hole, &Mat4::translation(10.0, 10.0, 0.0)).unwrap();
+        let solid = boolean(&mut topo, BooleanOp::Cut, plate, hole).unwrap();
+
+        let on_top = |topo: &Topology, eid: EdgeId| {
+            let e = topo.edge(eid).unwrap();
+            (topo.vertex(e.start()).unwrap().point().z() - 6.0).abs() < 1e-9
+                && (topo.vertex(e.end()).unwrap().point().z() - 6.0).abs() < 1e-9
+        };
+        let edge_len = |topo: &Topology, eid: EdgeId| {
+            let e = topo.edge(eid).unwrap();
+            let a = topo.vertex(e.start()).unwrap().point();
+            let b = topo.vertex(e.end()).unwrap().point();
+            (a - b).length()
+        };
+        let edges = solid_edge_ids(&topo, solid);
+        let long = *edges
+            .iter()
+            .find(|&&e| on_top(&topo, e) && (edge_len(&topo, e) - 80.0).abs() < 1e-6)
+            .unwrap();
+        let short = *edges
+            .iter()
+            .find(|&&e| on_top(&topo, e) && (edge_len(&topo, e) - 60.0).abs() < 1e-6)
+            .unwrap();
+        let rim = *edges
+            .iter()
+            .find(|&&e| {
+                on_top(&topo, e)
+                    && matches!(
+                        topo.edge(e).unwrap().curve(),
+                        brepkit_topology::edge::EdgeCurve::Circle(_)
+                    )
+            })
+            .unwrap();
+
+        let before =
+            brepkit_topology::explorer::solid_entity_counts(&topo, solid).expect("counts before");
+
+        let corner_error = try_fillet(&mut topo, solid, &[long, short], 2.0)
+            .expect_err("corner chain on a boolean body must fail typed");
+        assert!(
+            matches!(
+                corner_error,
+                brepkit_operations::OperationsError::Blend(
+                    BlendError::UnsupportedVertexBlend { .. }
+                )
+            ),
+            "expected UnsupportedVertexBlend, got: {corner_error}"
+        );
+        assert_eq!(
+            blend_failure_code(&corner_error),
+            "unsupported-vertex-blend"
+        );
+
+        let rim_error = try_fillet(&mut topo, solid, &[rim], 1.0)
+            .expect_err("hole rim on a boolean body must fail typed");
+        assert!(
+            !blend_failure_code(&rim_error).is_empty(),
+            "rim failure must map to a code, got: {rim_error}"
+        );
+
+        let after =
+            brepkit_topology::explorer::solid_entity_counts(&topo, solid).expect("counts after");
+        assert_eq!(before, after, "failed fillets mutated the input topology");
     }
 }

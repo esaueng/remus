@@ -1,5 +1,6 @@
 //! Thin wrappers around `brepkit-blend` for the operations API.
 
+pub use brepkit_blend::BlendError;
 use brepkit_blend::BlendResult;
 use brepkit_blend::chamfer_builder::ChamferBuilder;
 use brepkit_blend::fillet_builder::FilletBuilder;
@@ -358,6 +359,29 @@ pub fn fillet_v2(
         validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
         Ok(result)
     })
+}
+
+/// Stable machine-readable code for a blend failure.
+///
+/// Consumers on the far side of the WASM boundary (e.g. the OpenZCAD
+/// adapter) receive errors as strings, so the bindings prefix messages with
+/// this code to let callers branch on the cause without matching prose.
+/// Codes are API: never rename one, only add.
+#[must_use]
+pub fn blend_failure_code(error: &OperationsError) -> &'static str {
+    match error {
+        OperationsError::Blend(BlendError::UnsupportedVertexBlend { .. }) => {
+            "unsupported-vertex-blend"
+        }
+        OperationsError::Blend(BlendError::TrimmingFailure { .. }) => "trimming-failure",
+        OperationsError::Blend(BlendError::RadiusTooLarge { .. }) => "radius-too-large",
+        OperationsError::Blend(BlendError::CornerFailure { .. }) => "corner-failure",
+        OperationsError::Blend(BlendError::UnsupportedSurface { .. }) => "unsupported-surface",
+        OperationsError::Blend(_) => "blend-failed",
+        OperationsError::PartialResult { .. } => "partial-result",
+        OperationsError::InvalidInput { .. } => "invalid-input",
+        _ => "fillet-failed",
+    }
 }
 
 /// Chamfer edges with two distances (v2 engine).

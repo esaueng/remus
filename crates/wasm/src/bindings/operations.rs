@@ -18,7 +18,8 @@ use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to
 use brepkit_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
-    TOL, classify_to_string, create_apex_face, panic_message, parse_points, try_fillet,
+    TOL, classify_to_string, create_apex_face, fillet_failure_js_error, panic_message,
+    parse_points, try_fillet,
 };
 use crate::kernel::BrepKernel;
 
@@ -269,24 +270,26 @@ impl BrepKernel {
         // blend surfaces. Falls back to the planar fillet if rolling-ball fails.
         // If the full set of edges fails (e.g. edges adjacent to NURBS faces from
         // a prior fillet), filter to edges between two planar faces and retry.
+        // A failure of both attempts surfaces the first attempt's typed error,
+        // prefixed with its `blend_failure_code` so callers can branch on the
+        // cause without matching prose.
         //
         // Wrap in catch_unwind to prevent panics from propagating across the
         // WASM FFI boundary, which would abort the entire WASM instance.
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<u32, JsError> {
-                let solid = if let Ok(s) = try_fillet(self.topo_mut(), solid_id, &edge_ids, radius)
-                {
-                    s
-                } else {
-                    // Filter to edges where both adjacent faces are planar.
-                    let planar_edges = brepkit_operations::query::filter_planar_edges(
-                        &self.topo, solid_id, &edge_ids,
-                    )?;
-                    if planar_edges.is_empty() {
-                        solid_id
-                    } else {
+                let solid = match try_fillet(self.topo_mut(), solid_id, &edge_ids, radius) {
+                    Ok(s) => s,
+                    Err(primary) => {
+                        // Filter to edges where both adjacent faces are planar.
+                        let planar_edges = brepkit_operations::query::filter_planar_edges(
+                            &self.topo, solid_id, &edge_ids,
+                        )?;
+                        if planar_edges.is_empty() || planar_edges.len() == edge_ids.len() {
+                            return Err(fillet_failure_js_error(&primary));
+                        }
                         try_fillet(self.topo_mut(), solid_id, &planar_edges, radius)
-                            .map_err(|e| JsError::new(&e.to_string()))?
+                            .map_err(|_| fillet_failure_js_error(&primary))?
                     }
                 };
                 Ok(solid_id_to_u32(solid))
@@ -333,7 +336,8 @@ impl BrepKernel {
             || -> Result<String, JsError> {
                 let input_faces =
                     brepkit_operations::boolean::collect_face_signatures(&self.topo, solid_id)?;
-                let result = try_fillet(self.topo_mut(), solid_id, &edge_ids, radius)?;
+                let result = try_fillet(self.topo_mut(), solid_id, &edge_ids, radius)
+                    .map_err(|e| fillet_failure_js_error(&e))?;
                 let output_faces =
                     brepkit_operations::boolean::collect_face_signatures(&self.topo, result)?;
                 let evo = brepkit_operations::evolution::build_evolution_by_geometry(
