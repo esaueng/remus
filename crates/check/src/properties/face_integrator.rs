@@ -54,6 +54,39 @@ pub struct FaceContribution {
 /// partial derivatives on a Gauss-point grid over the UV domain derived
 /// from the face's boundary vertices.
 ///
+/// # Accuracy
+///
+/// * **Planar faces** bounded entirely by lines and circular arcs are exact:
+///   `integrate_planar_face_exact` integrates the boundary in closed form by
+///   Green's theorem, holes included. Any other edge type on any of the face's
+///   wires drops the whole face to the chord-polygon fan path, which
+///   under-counts a circular cap by its sagitta area.
+/// * **Quadric faces** that span a full revolution, or whose boundary does not
+///   trim the analytic domain, are integrated over that domain by composite
+///   Gauss quadrature, converged to machine precision at the default order.
+/// * **Quadric faces trimmed by a UV boundary polygon** are limited by the
+///   chording of that polygon.
+///
+/// Two known defects remain on the quadric path, both pre-existing and both
+/// also present in `brepkit-operations`' `solid_volume`:
+///
+/// 1. Inner wires are not subtracted. `face_uv_bounds` takes its bounds from
+///    the outer wire alone, and the containment test in
+///    `integrate_parametric_trimmed` only tests that same outer boundary, so
+///    a hole in a curved face is integrated as material. A proper fix needs
+///    multi-polygon UV containment (outer minus holes).
+/// 2. A quadric face whose entire boundary is ONE closed edge projects its
+///    outer wire to a single UV point, so `face_uv_bounds` falls back to the
+///    full analytic domain — which for a cylinder or cone is unbounded in `v`.
+///    The infinite patch width makes every quadrature abscissa NaN, the
+///    containment test rejects them all, and the face contributes exactly zero
+///    area and zero volume.
+///
+/// Reproduction for both: cut a radius-3 cylinder clean through the side of a
+/// radius-10, 30 mm one. The outer wall keeps both bore rims as material (1)
+/// and the two bore walls vanish (2); the body measures 9424.778 mm³ against a
+/// true 8859.291, 6.38 % high.
+///
 /// # Errors
 ///
 /// Returns an error if topology entities are missing or the face has
@@ -697,22 +730,48 @@ fn accumulate_green_segment<F>(
 /// consisting of a single closed circle (one vertex) still determines its
 /// plane. Returns `None` when the boundary is degenerate (collapsed to a
 /// point or line) or contains an edge type the exact path does not handle.
+///
+/// The wire is walked in traversal order, exactly like
+/// [`planar_wire_monomial_moments`] and [`crate::util::wire_polygon`]: each
+/// edge emits the point the wire ARRIVES at (and, for an arc, the interior
+/// samples that follow it), stopping one step short of the point it leaves
+/// at, which the next edge supplies. Emitting `edge.start()` regardless of
+/// traversal direction collapses any wire whose stored orientation flags
+/// alternate — a four-line rectangle flagged `(fwd, rev, fwd, rev)` samples
+/// as `A, B, B, A`, whose Newell normal is zero — and a zero normal here
+/// rejects the exact path for the WHOLE face, holes included.
 fn wire_newell_normal(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
 ) -> Result<Option<Vec3>, CheckError> {
+    /// Samples emitted per arc, enough that a wire of one closed circle
+    /// (a single vertex) still spans its plane.
+    const ARC_SAMPLES: usize = 4;
+
     let wire = topo.wire(wire_id)?;
     let mut pts: Vec<Point3> = Vec::new();
+    let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        let start = topo.vertex(edge.start())?.point();
-        let end = topo.vertex(edge.end())?.point();
+        let start_vid = edge.start();
+        let end_vid = edge.end();
+        let forward = match prev_end {
+            Some(pe) if start_vid == pe && end_vid != pe => true,
+            Some(pe) if end_vid == pe && start_vid != pe => false,
+            _ => oe.is_forward(),
+        };
+        prev_end = Some(if forward { end_vid } else { start_vid });
+
+        let start = topo.vertex(start_vid)?.point();
+        let end = topo.vertex(end_vid)?.point();
         match edge.curve() {
-            EdgeCurve::Line => pts.push(start),
+            EdgeCurve::Line => pts.push(if forward { start } else { end }),
             EdgeCurve::Circle(c) => {
                 let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
-                for k in 0..4 {
-                    pts.push(c.evaluate(t0 + (t1 - t0) * f64::from(k) / 4.0));
+                let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
+                for k in 0..ARC_SAMPLES {
+                    let f = k as f64 / ARC_SAMPLES as f64;
+                    pts.push(c.evaluate((to - from).mul_add(f, from)));
                 }
             }
             EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => return Ok(None),
