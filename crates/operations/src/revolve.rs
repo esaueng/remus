@@ -2983,4 +2983,129 @@ mod tests {
             "full revolve of a non-planar boundary should have positive volume, got {vol}"
         );
     }
+
+    /// The segmented revolve must emit an OUTWARD solid for either profile
+    /// winding AND either stored plane normal, like the analytic
+    /// full-revolution path already does.
+    ///
+    /// Wound the inward way it used to emit a consistently-wound but globally
+    /// inverted shell: every downstream orientation test classified it as a
+    /// hole, so GFA found no outer shell and every boolean against it dropped
+    /// to the mesh fallback. `solid_volume` reports a magnitude, so only
+    /// `solid_is_inverted` can see it.
+    ///
+    /// Ported from upstream andymai/brepkit#1237, which fixed this by
+    /// normalizing the traversal; this fork fixes it by mirroring the
+    /// construction on the sweep handedness (#59). The guarantee is the same,
+    /// so the upstream case is kept as coverage.
+    #[test]
+    fn revolve_segmented_is_outward_for_either_winding() {
+        // The kumiko corner wedge: radius 1.55..4.75, height 2.7..20.8, in the
+        // XZ plane (which contains the Z axis), revolved 45°.
+        let (r0, r1, z0, z1) = (1.55, 4.75, 2.7, 20.8);
+        let angle = PI / 4.0;
+
+        for ccw in [true, false] {
+            for normal_y in [-1.0, 1.0] {
+                let mut topo = Topology::new();
+                let mut pts = vec![
+                    Point3::new(r0, 0.0, z0),
+                    Point3::new(r1, 0.0, z0),
+                    Point3::new(r1, 0.0, z1),
+                    Point3::new(r0, 0.0, z1),
+                ];
+                if !ccw {
+                    pts.reverse();
+                }
+                let wire =
+                    brepkit_topology::builder::make_polygon_wire(&mut topo, &pts, 1e-7).unwrap();
+                let face = topo.add_face(brepkit_topology::face::Face::new(
+                    wire,
+                    vec![],
+                    FaceSurface::Plane {
+                        normal: Vec3::new(0.0, normal_y, 0.0),
+                        d: 0.0,
+                    },
+                ));
+                let solid = revolve(
+                    &mut topo,
+                    face,
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    angle,
+                )
+                .unwrap();
+
+                assert!(
+                    !crate::measure::solid_is_inverted(&topo, solid).unwrap(),
+                    "wedge (ccw={ccw} normal_y={normal_y}) must be outward-oriented"
+                );
+
+                // Pappus: V = Δθ × centroid_radius × area.
+                let expected = angle * (0.5 * (r0 + r1)) * ((r1 - r0) * (z1 - z0));
+                let vol = crate::measure::solid_volume(&topo, solid, 0.02).unwrap();
+                let rel_err = (vol - expected).abs() / expected;
+                assert!(
+                    rel_err < 0.05,
+                    "wedge (ccw={ccw} normal_y={normal_y}) volume should be ~{expected:.2}, \
+                     got {vol:.2} (rel_err={rel_err:.2e})"
+                );
+            }
+        }
+    }
+
+    /// The segmented path also owns FULL revolutions whose profile surface is
+    /// non-planar (the analytic path takes planar profiles only), so the
+    /// outward guarantee must cover them too.
+    ///
+    /// Ported from upstream andymai/brepkit#1237.
+    #[test]
+    fn revolve_segmented_full_turn_is_outward_for_either_winding() {
+        for ccw in [true, false] {
+            let mut topo = Topology::new();
+            let mut pts = vec![
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+                Point3::new(4.0, 3.0, 0.0),
+                Point3::new(2.0, 3.0, 0.0),
+            ];
+            if !ccw {
+                pts.reverse();
+            }
+            let wire = brepkit_topology::builder::make_polygon_wire(&mut topo, &pts, 1e-7).unwrap();
+            let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+            )
+            .unwrap();
+            let face = topo.add_face(brepkit_topology::face::Face::new(
+                wire,
+                vec![],
+                FaceSurface::Cylinder(cyl),
+            ));
+            let solid = revolve(
+                &mut topo,
+                face,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                2.0 * PI,
+            )
+            .unwrap();
+
+            assert!(
+                !crate::measure::solid_is_inverted(&topo, solid).unwrap(),
+                "full segmented revolve (ccw={ccw}) must be outward-oriented"
+            );
+
+            let expected = 2.0 * PI * 3.0 * 6.0;
+            let vol = crate::measure::solid_volume(&topo, solid, 0.02).unwrap();
+            let rel_err = (vol - expected).abs() / expected;
+            assert!(
+                rel_err < 0.05,
+                "full segmented revolve (ccw={ccw}) volume should be ~{expected:.2}, \
+                 got {vol:.2} (rel_err={rel_err:.2e})"
+            );
+        }
+    }
 }

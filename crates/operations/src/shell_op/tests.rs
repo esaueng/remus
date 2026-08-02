@@ -861,3 +861,219 @@ fn shell_rounded_rect_watertight() {
         );
     }
 }
+
+/// CW-wound rounded-rect prism (the brepjs bin profile): half-extents `w/2` and
+/// `d/2`, corner radius `r`, extruded `h` in +Z.
+fn rounded_rect_prism(topo: &mut Topology, w: f64, d: f64, h: f64, r: f64) -> SolidId {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::Face;
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let tol = Tolerance::new();
+    let hw = w / 2.0;
+    let hd = d / 2.0;
+    let pts = [
+        Point3::new(-hw + r, -hd, 0.0),
+        Point3::new(hw - r, -hd, 0.0),
+        Point3::new(hw, -hd + r, 0.0),
+        Point3::new(hw, hd - r, 0.0),
+        Point3::new(hw - r, hd, 0.0),
+        Point3::new(-hw + r, hd, 0.0),
+        Point3::new(-hw, hd - r, 0.0),
+        Point3::new(-hw, -hd + r, 0.0),
+    ];
+    let vids: Vec<_> = pts
+        .iter()
+        .map(|p| topo.add_vertex(Vertex::new(*p, tol.linear)))
+        .collect();
+
+    let z_axis = Vec3::new(0.0, 0.0, 1.0);
+    let mk_line = |topo: &mut Topology, s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+    let mk_arc = |topo: &mut Topology, s, e, center: Point3| {
+        let circle = Circle3D::new(center, z_axis, r).unwrap();
+        topo.add_edge(Edge::new(s, e, EdgeCurve::Circle(circle)))
+    };
+
+    let e_bot = mk_line(topo, vids[0], vids[1]);
+    let e_br = mk_arc(topo, vids[1], vids[2], Point3::new(hw - r, -hd + r, 0.0));
+    let e_right = mk_line(topo, vids[2], vids[3]);
+    let e_tr = mk_arc(topo, vids[3], vids[4], Point3::new(hw - r, hd - r, 0.0));
+    let e_top = mk_line(topo, vids[4], vids[5]);
+    let e_tl = mk_arc(topo, vids[5], vids[6], Point3::new(-hw + r, hd - r, 0.0));
+    let e_left = mk_line(topo, vids[6], vids[7]);
+    let e_bl = mk_arc(topo, vids[7], vids[0], Point3::new(-hw + r, -hd + r, 0.0));
+
+    let wire = Wire::new(
+        vec![
+            OrientedEdge::new(e_bot, true),
+            OrientedEdge::new(e_br, true),
+            OrientedEdge::new(e_right, true),
+            OrientedEdge::new(e_tr, true),
+            OrientedEdge::new(e_top, true),
+            OrientedEdge::new(e_tl, true),
+            OrientedEdge::new(e_left, true),
+            OrientedEdge::new(e_bl, true),
+        ],
+        true,
+    )
+    .unwrap();
+    let wire_id = topo.add_wire(wire);
+    let face = Face::new(
+        wire_id,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+        },
+    );
+    let face_id = topo.add_face(face);
+    crate::extrude::extrude(topo, face_id, Vec3::new(0.0, 0.0, 1.0), h).unwrap()
+}
+
+/// Below the corner radius, the cavity corner must land on the miter of the two
+/// neighbouring offset walls — `half - thickness` — not on the fillet's own
+/// tangent extent `half - radius`.
+///
+/// Upstream (andymai/brepkit#1243) reached this only after handling the
+/// swallowed fillet; this fork's miter already places it, which is what makes
+/// the collapse case below the only one still open here. Pinned so a future
+/// change to the collapse handling cannot regress the working range.
+#[test]
+fn shell_cavity_corner_is_mitered_below_the_corner_radius() {
+    let w = 41.5_f64;
+    let r = 3.75_f64;
+    let half = w / 2.0;
+
+    for thickness in [1.2_f64, 3.0, 3.7, 3.74] {
+        let mut topo = Topology::new();
+        let solid = rounded_rect_prism(&mut topo, w, w, 21.0, r);
+        let top = find_faces_by_normal(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+        let shelled = shell(&mut topo, solid, thickness, &top).unwrap();
+
+        let mitered = half - thickness;
+        let tangent = half - r;
+        assert!(
+            mitered > tangent,
+            "the test geometry must distinguish the two, got {mitered} vs {tangent}"
+        );
+
+        let mut worst = 0.0_f64;
+        for fid in brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    let e = topo.edge(oe.edge()).unwrap();
+                    for vid in [e.start(), e.end()] {
+                        let p = topo.vertex(vid).unwrap().point();
+                        // Only the INNER cavity is at issue; outer walls sit at `half`.
+                        if p.x().abs() <= half - 0.001 && p.y().abs() <= half - 0.001 {
+                            worst = worst.max(p.x().abs().max(p.y().abs()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            (worst - mitered).abs() <= 1e-6,
+            "thickness {thickness}: cavity reaches {worst:.4}, expected the miter at \
+             {mitered:.4} (the un-collapsed tangent extent is {tangent:.4})"
+        );
+    }
+}
+
+/// A thickness that reaches the corner radius has no exact construction here
+/// yet, and `shell` refuses rather than returning an open body.
+///
+/// The corner fillet's offset radius is zero or negative, so no inner cylinder
+/// face is emitted at all (`new_radius > tol.linear` has no `else`). The two
+/// neighbouring inner walls are then separated by a full-height gap at each
+/// corner, and those free edges chain into one loop that spans the cavity floor
+/// AND the opening plane — so no single rim face closes it.
+///
+/// This is the documented contract ("The result is closed: every edge is shared
+/// by exactly two face uses. A result that is not is refused rather than
+/// returned"), and it is stricter than upstream's, which returns the open body.
+#[test]
+fn shell_thickness_reaching_corner_radius_is_refused() {
+    let w = 41.5_f64;
+    let r = 3.75_f64;
+
+    for thickness in [r, 3.8, 4.0] {
+        let mut topo = Topology::new();
+        let solid = rounded_rect_prism(&mut topo, w, w, 21.0, r);
+        let top = find_faces_by_normal(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+        let err = shell(&mut topo, solid, thickness, &top)
+            .expect_err("a swallowed corner fillet has no closed construction yet");
+        assert!(
+            matches!(
+                err,
+                crate::OperationsError::Unsupported {
+                    operation: "shell",
+                    ..
+                }
+            ),
+            "thickness {thickness}: expected an Unsupported refusal, got {err}"
+        );
+    }
+}
+
+/// Ready repro for the open case above: a swallowed corner fillet should
+/// collapse to a sharp vertical EDGE at the intersection of the two offset
+/// walls, `(half - thickness, half - thickness)`, closing the corner.
+///
+/// Upstream andymai/brepkit#1243 moves the cavity vertices to within the sharp
+/// corner but does NOT close it — its own measurement records STL boundary
+/// edges falling 149 -> 23 at `wallThickness` 3.8, "a large improvement, not a
+/// closure". Feeding both extreme normals to the miter (ported in that commit,
+/// and active here) places each tangent vertex at the miter of the two walls,
+/// but the two tangent vertices are at different places, so they land at
+/// `(16.95, -13.20)` and `(13.20, -16.95)` rather than both at the corner
+/// `(16.95, -16.95)` — a diagonal cut, not a meeting.
+///
+/// Closing it needs the collapsing face's boundary vertices merged onto that
+/// single intersection point, which is new construction rather than a
+/// re-miter, so it is left as a repro rather than guessed at during a sync.
+#[test]
+#[ignore = "ready repro: a swallowed corner fillet leaves a full-height gap at each corner"]
+fn shell_thickness_past_corner_radius_gives_a_sharp_corner() {
+    let w = 41.5_f64;
+    let r = 3.75_f64;
+    let thickness = 3.8_f64;
+    let half = w / 2.0;
+
+    let mut topo = Topology::new();
+    let solid = rounded_rect_prism(&mut topo, w, w, 21.0, r);
+    let top = find_faces_by_normal(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let shelled = shell(&mut topo, solid, thickness, &top).unwrap();
+
+    // Every cavity vertex must lie inside the sharp corner, i.e. no coordinate
+    // may exceed `half - thickness`. The overshoot put them at `half - r`.
+    let sharp = half - thickness;
+    let tangent = half - r;
+    assert!(tangent > sharp, "the test geometry must actually collapse");
+
+    let mut worst = 0.0_f64;
+    for fid in brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+        let face = topo.face(fid).unwrap();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                let e = topo.edge(oe.edge()).unwrap();
+                for vid in [e.start(), e.end()] {
+                    let p = topo.vertex(vid).unwrap().point();
+                    // Only the INNER cavity is at issue; outer walls sit at `half`.
+                    if p.x().abs() <= half - 0.001 && p.y().abs() <= half - 0.001 {
+                        worst = worst.max(p.x().abs().max(p.y().abs()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        worst <= sharp + 0.01,
+        "cavity reaches {worst:.4}, past the sharp corner at {sharp:.4} \
+         (the collapsed-fillet overshoot lands at {tangent:.4})"
+    );
+}
