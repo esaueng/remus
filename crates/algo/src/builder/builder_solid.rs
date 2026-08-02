@@ -2568,6 +2568,16 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
 /// pair with one identical boundary always cancels, so dropping the whole group
 /// is sound. Inner wires are ignored — a doubled hole boundary is not a
 /// manifold defect on its own and removing the holed face would be unsafe.
+///
+/// **Exception — complementary patches of a closed curved surface.** A shared
+/// edge multiset does NOT imply a shared region once the surface is closed: the
+/// two hemispheres of a sphere are bounded by the SAME equatorial loop yet
+/// cover opposite halves. They are adjacent faces, not coincident copies, and
+/// they announce it by walking that loop in opposite senses (the manifold
+/// gluing condition). [`group_is_complementary_curved_patches`] spots exactly
+/// that case and keeps the group. Planar groups are unaffected — a planar loop
+/// bounds exactly one finite region, so a shared planar boundary really does
+/// mean a shared region, which is the documented dovetail-corner case above.
 fn remove_doubled_faces(
     topo: &Topology,
     face_ids: &mut Vec<FaceId>,
@@ -2597,7 +2607,7 @@ fn remove_doubled_faces(
 
     let mut drop_idx: HashSet<usize> = HashSet::new();
     for members in groups.values() {
-        if members.len() >= 2 {
+        if members.len() >= 2 && !group_is_complementary_curved_patches(topo, face_ids, members) {
             for &m in members {
                 drop_idx.insert(m);
             }
@@ -2623,6 +2633,63 @@ fn remove_doubled_faces(
     }
     *face_ids = keep;
     *sources = keep_sources;
+}
+
+/// Whether a shared-edge-multiset group is COMPLEMENTARY patches of a closed
+/// curved surface rather than coincident copies.
+///
+/// True when every member is non-planar and some pair walks the shared
+/// boundary in strictly opposite senses. Two faces meeting along an edge use it
+/// once in each direction — that is the manifold gluing condition — whereas two
+/// coincident copies of one region trace their common boundary the same way.
+/// Only a closed (or otherwise non-simply-connected) surface can host two
+/// distinct patches with one shared boundary, hence the non-planar requirement.
+///
+/// Purely topological: edge IDs have already been unified by
+/// [`merge_duplicate_edges`], so this compares identity, not position, and
+/// introduces no tolerance or length constant of any kind.
+fn group_is_complementary_curved_patches(
+    topo: &Topology,
+    face_ids: &[FaceId],
+    members: &[usize],
+) -> bool {
+    use brepkit_topology::edge::EdgeId;
+    use brepkit_topology::face::FaceSurface;
+
+    let mut walks: Vec<HashSet<(EdgeId, bool)>> = Vec::with_capacity(members.len());
+    for &m in members {
+        let Some(&fid) = face_ids.get(m) else {
+            return false;
+        };
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        if matches!(face.surface(), FaceSurface::Plane { .. }) {
+            return false;
+        }
+        let Ok(wire) = topo.wire(face.outer_wire()) else {
+            return false;
+        };
+        walks.push(
+            wire.edges()
+                .iter()
+                .map(|oe| (oe.edge(), oe.is_forward()))
+                .collect(),
+        );
+    }
+
+    for (mi, wi) in walks.iter().enumerate() {
+        for wj in &walks[mi + 1..] {
+            // Strictly opposite: every directed use in one appears flipped in
+            // the other, and none appears with the same direction.
+            let all_flipped = wi.iter().all(|&(e, f)| wj.contains(&(e, !f)));
+            let none_shared = !wi.iter().any(|k| wj.contains(k));
+            if !wi.is_empty() && all_flipped && none_shared {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

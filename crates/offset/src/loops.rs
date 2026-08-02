@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::vec::Point3;
+use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 use brepkit_topology::face::{FaceId, FaceSurface};
@@ -150,7 +150,15 @@ fn build_loops_for_face(
         return build_loops_via_line_intersection(topo, data, face_id, corner_cache, edge_cache);
     }
 
-    if let Some(wires) = try_direct_chain(topo, &face_edges)? {
+    // The chained walk below starts at an arbitrary edge, so it fixes the
+    // loop's traversal sense arbitrarily. On an open surface that is harmless
+    // — a loop bounds one finite region whichever way it is walked. On a
+    // CLOSED one the sense IS the region: the same equatorial loop bounds the
+    // northern hemisphere walked one way and the southern hemisphere walked
+    // the other. Hand the walk the source face's own sense so the offset face
+    // covers the offset image of the region the source face covered.
+    let source_sense = source_loop_sense(topo, face_id)?;
+    if let Some(wires) = try_direct_chain(topo, &face_edges, source_sense)? {
         return Ok((wires, Vec::new()));
     }
 
@@ -241,13 +249,68 @@ fn build_torus_wire(
     Ok(vec![topo.add_wire(wire)])
 }
 
+/// Vector area (Newell) of a boundary walk, from the vertices in traversal
+/// order.
+///
+/// Only the DIRECTION carries information here: it flips when the walk is
+/// reversed. Two walks of the same boundary are compared through the sign of a
+/// dot product of two such vectors, so the test is a pure sign — no length
+/// constant, no tolerance, identical at every model scale.
+fn traversal_vector_area(topo: &Topology, walk: &[OrientedEdge]) -> Result<Vec3, OffsetError> {
+    let mut points = Vec::with_capacity(walk.len());
+    for oriented in walk {
+        let edge = topo.edge(oriented.edge())?;
+        let vertex = if oriented.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        };
+        points.push(topo.vertex(vertex)?.point());
+    }
+    let mut area = Vec3::new(0.0, 0.0, 0.0);
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        area = Vec3::new(
+            area.x() + (current.y() - next.y()) * (current.z() + next.z()),
+            area.y() + (current.z() - next.z()) * (current.x() + next.x()),
+            area.z() + (current.x() - next.x()) * (current.y() + next.y()),
+        );
+    }
+    Ok(area)
+}
+
+/// The traversal sense of a source face's outer boundary, as a vector area.
+///
+/// `None` when the face carries inner wires or its boundary is too degenerate
+/// to give a direction — in those cases the reconstructed loop keeps whatever
+/// sense the walk produced (the behaviour before this was added). Inner wires
+/// wind opposite to the outer one, so a single outer-wire reference cannot
+/// orient a multi-loop reconstruction and must not try.
+fn source_loop_sense(topo: &Topology, face_id: FaceId) -> Result<Option<Vec3>, OffsetError> {
+    let face = topo.face(face_id)?;
+    if !face.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let walk = topo.wire(face.outer_wire())?.edges().to_vec();
+    let area = traversal_vector_area(topo, &walk)?;
+    Ok((area.length() > 0.0).then_some(area))
+}
+
 /// Try to chain edges into closed loops using vertex adjacency.
 ///
 /// Works when edges already share vertices (e.g., projected polygon edges
 /// for sphere faces). Returns `None` if edges can't form closed loops.
+///
+/// `source_sense`, when present and when exactly one loop is reconstructed,
+/// fixes that loop's traversal direction to agree with the source face's own
+/// (see the call site). Without it the direction falls out of the walk's
+/// arbitrary start edge, which on a closed surface silently selects the wrong
+/// half of the surface.
 fn try_direct_chain(
     topo: &mut Topology,
     edges: &[EdgeId],
+    source_sense: Option<Vec3>,
 ) -> Result<Option<Vec<WireId>>, OffsetError> {
     let edge_info: Vec<(EdgeId, VertexId, VertexId)> = edges
         .iter()
@@ -334,6 +397,20 @@ fn try_direct_chain(
     let non_closed = edge_info.iter().filter(|(_, s, e)| s != e).count();
     if visited.len() != non_closed {
         return Ok(None);
+    }
+
+    // One reconstructed loop and a known source sense: make the walk agree
+    // with it. With several loops the outer/inner pairing is ambiguous, so
+    // leave them as walked.
+    if all_loops.len() == 1
+        && let Some(sense) = source_sense
+        && let Some(loop_edges) = all_loops.first_mut()
+        && traversal_vector_area(topo, loop_edges)?.dot(sense) < 0.0
+    {
+        loop_edges.reverse();
+        for oriented in loop_edges.iter_mut() {
+            *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
+        }
     }
 
     let mut wire_ids = Vec::new();

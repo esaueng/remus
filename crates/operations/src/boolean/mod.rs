@@ -405,6 +405,29 @@ pub fn boolean(
     // overlapping operands fall through to GFA, which welds the shared
     // geometry. The result is independent of the inputs (each operand is
     // deep-copied before merging), preserving the boolean contract.
+    // Disjoint-cut fast path, the Cut twin of the fuse path above and resting
+    // on the same witness: `A - B = A` whenever `A` and `B` do not meet. That
+    // is the definition of set difference, not an approximation, so nothing
+    // downstream can improve on returning `A` — while everything downstream
+    // can lose to it. Routing a disjoint cut through GFA made the answer
+    // depend on how well the pipeline happened to reassemble an untouched
+    // solid, and on a sphere it did not: the two hemispheres share their whole
+    // equatorial loop, several stages keyed faces on the direction-agnostic
+    // edge set, and the operation fell out into the mesh fallback with the
+    // exact spherical surfaces replaced by an inscribed polyhedron. The
+    // fallback's own deflection is an absolute length, so the damage varied
+    // with model scale: -0.286% at r = 10, -38.8% at r = 0.01, and outright
+    // refusal ("mesh boolean work limit exceeded") at r = 10 000.
+    //
+    // Disjointness is decided per connected component with a positive
+    // tolerance margin (see `solids_provably_disjoint`), so only a clear gap
+    // fires this; touching or overlapping operands fall through to GFA. The
+    // result is a deep copy, so it does not alias the input.
+    if op == BooleanOp::Cut && solids_provably_disjoint(topo, a, b, tol.linear) {
+        log::debug!("Cut short-circuited: tool is provably disjoint from the blank");
+        return crate::copy::copy_solid(topo, a);
+    }
+
     if op == BooleanOp::Fuse && solids_provably_disjoint(topo, a, b, tol.linear) {
         let copy_a = crate::copy::copy_solid(topo, a)?;
         let copy_b = crate::copy::copy_solid(topo, b)?;

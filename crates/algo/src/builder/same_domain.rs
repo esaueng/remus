@@ -164,6 +164,14 @@ fn build_sd_grouping(
         .map(|sf| compute_edge_set_quantized(topo, arena, sf.face_id, scale))
         .collect();
 
+    // Same boundary, but walked in traversal order. Distinguishes ADJACENT
+    // (glued) patches from COINCIDENT (duplicate) ones — see
+    // `opposite_boundary_traversal`.
+    let directed: Vec<Option<DirectedBoundary>> = sub_faces
+        .iter()
+        .map(|sf| compute_directed_boundary_quantized(topo, arena, sf.face_id, scale))
+        .collect();
+
     // Key = edge set, Value = list of sub-face indices with that set.
     let mut groups: HashMap<EdgeSet, Vec<usize>> = HashMap::new();
     for (idx, edge_set) in edge_sets.iter().enumerate() {
@@ -241,6 +249,32 @@ fn build_sd_grouping(
                     // sample); distinct glued patches have far-apart interiors.
                     // Skip the union when their interior samples disagree.
                     if !planar(surf_i) && distinct_curved_regions(sub_faces, i, j, tol) {
+                        continue;
+                    }
+                    // Two faces of ONE input solid that share their whole
+                    // boundary and walk it in OPPOSITE senses are ADJACENT
+                    // patches glued along it, not coincident duplicates.
+                    // This is the manifold gluing condition itself — the two
+                    // faces meeting at an edge use it once in each direction —
+                    // so it holds no matter how the patches are trimmed, and
+                    // it needs no length constant beyond the vertex-weld
+                    // quantization already used for the edge set.
+                    //
+                    // `make_sphere`'s two hemispheres are exactly this case:
+                    // one spherical surface, one shared equatorial loop,
+                    // opposite traversal. Without this test they hash to the
+                    // same edge set, pass `surfaces_same_domain` (identical
+                    // spheres), and one is dropped as within-rank residue.
+                    //
+                    // Restricted to same-rank pairs: two coincident faces from
+                    // OPPOSING solids (a plug's wall and the bore it fills)
+                    // legitimately walk their shared boundary in opposite
+                    // senses because their outward normals oppose, and those
+                    // are genuine same-domain pairs.
+                    if sub_faces[i].rank == sub_faces[j].rank
+                        && let (Some(di), Some(dj)) = (directed[i].as_ref(), directed[j].as_ref())
+                        && opposite_boundary_traversal(di, dj)
+                    {
                         continue;
                     }
                     uf.union(i, j);
@@ -720,6 +754,70 @@ fn compute_edge_set_quantized(
 
     pairs.sort_unstable();
     Some(pairs)
+}
+
+/// A face's outer wire walked in traversal order: quantized `(from, to)`
+/// vertex pairs, one per oriented edge, in wire order.
+///
+/// Complements [`EdgeSet`], which is deliberately direction-agnostic (it
+/// canonicalises each pair so a shared edge matches from either side).
+type DirectedBoundary = Vec<(QVert, QVert)>;
+
+/// Walk a face's outer wire in traversal order, quantizing each oriented
+/// edge's `(from, to)` vertex pair.
+///
+/// Uses the same weld quantization and the same `arena.resolve_vertex`
+/// indirection as [`compute_edge_set_quantized`], so a boundary shared by two
+/// faces yields keys that compare exactly.
+fn compute_directed_boundary_quantized(
+    topo: &Topology,
+    arena: &GfaArena,
+    face_id: FaceId,
+    scale: f64,
+) -> Option<DirectedBoundary> {
+    let face = topo.face(face_id).ok()?;
+    let wire = topo.wire(face.outer_wire()).ok()?;
+
+    let mut walk = Vec::with_capacity(wire.edges().len());
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let from = topo
+            .vertex(arena.resolve_vertex(oe.oriented_start(edge)))
+            .ok()?
+            .point();
+        let to = topo
+            .vertex(arena.resolve_vertex(oe.oriented_end(edge)))
+            .ok()?
+            .point();
+        walk.push((quantize_point(from, scale), quantize_point(to, scale)));
+    }
+    Some(walk)
+}
+
+/// Whether two faces walk the same boundary in OPPOSITE senses.
+///
+/// True when every directed edge of `a` appears reversed in `b` and none
+/// appears forward in `b`. That is the manifold gluing relation: two faces
+/// adjacent along an edge traverse it once in each direction, whereas two
+/// faces covering the SAME region traverse their common boundary the same way
+/// (when their normals agree) — so an opposite walk within one solid means the
+/// faces are neighbours, not duplicates.
+///
+/// Deliberately conservative:
+/// - Unequal lengths return `false` (the boundaries are not the same walk).
+/// - A boundary containing a CLOSED edge (`from == to`, e.g. a full-circle
+///   seam) reads as both forward and reversed, so the `no forward key` clause
+///   rejects it and the caller keeps its existing behaviour.
+///
+/// Uses only the caller's quantized vertex keys — no length constant of its
+/// own, so the verdict is identical at every model scale.
+fn opposite_boundary_traversal(a: &DirectedBoundary, b: &DirectedBoundary) -> bool {
+    if a.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    let forward: HashSet<(QVert, QVert)> = b.iter().copied().collect();
+    let reversed: HashSet<(QVert, QVert)> = b.iter().map(|&(s, e)| (e, s)).collect();
+    a.iter().all(|k| reversed.contains(k)) && !a.iter().any(|k| forward.contains(k))
 }
 
 /// Number of samples used for the closed-edge centroid discriminator.
