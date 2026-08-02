@@ -262,12 +262,7 @@ pub fn copy_and_transform_solid(
     use brepkit_math::nurbs::{NurbsCurve, NurbsSurface};
     use brepkit_math::vec::Vec3;
 
-    let tol = brepkit_math::tolerance::Tolerance::new();
-    if tol.approx_eq(matrix.determinant(), 0.0) {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "transform matrix is degenerate (zero determinant)".into(),
-        });
-    }
+    crate::transform::reject_degenerate_transform(matrix)?;
     let normal_matrix = matrix.inverse()?.transpose();
 
     let transform_dir = |dir: Vec3| -> Result<Vec3, crate::OperationsError> {

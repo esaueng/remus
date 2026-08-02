@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use brepkit_math::mat::Mat4;
 use brepkit_math::nurbs::curve::NurbsCurve;
 use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::Vec3;
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{EdgeCurve, EdgeId};
@@ -14,10 +13,76 @@ use brepkit_topology::solid::SolidId;
 use brepkit_topology::vertex::VertexId;
 use brepkit_topology::wire::WireId;
 
+/// Dimensionless floor below which a transform is treated as collapsing the
+/// model rather than moving it.
+///
+/// The quantity compared against it is the linear part's **Hadamard ratio**,
+/// `|det| / (‖c₀‖·‖c₁‖·‖c₂‖)` over the three columns — equivalently the
+/// determinant of the same matrix with every column normalized to unit
+/// length. It is the volume of the unit cube's image divided by the volume
+/// those columns would span if they were mutually orthogonal, so it is `1`
+/// for any similarity (rotation, uniform scale, reflection), `0` for a matrix
+/// that flattens space onto a plane, line or point, and — being a quotient of
+/// two volumes — dimensionless. It is therefore identical for a model in
+/// metres and the same model in nanometres, which is the whole point: a
+/// transform is degenerate because of its *shape*, never because of its size.
+///
+/// `1e-12` sits far below any transform a user means (every non-degenerate
+/// matrix in the suite below, uniform or not, measures between 0.14 and 1.0)
+/// and far above the `f64::EPSILON`-relative algebraic test inside
+/// `Mat4::inverse`, which remains the backstop. This guard exists to name the
+/// failure before the inverse-transpose normal update starts amplifying
+/// round-off.
+const DEGENERATE_SHAPE_RATIO: f64 = 1e-12;
+
+/// Reject a transform that collapses the model; accept every one that does not.
+///
+/// Tests the 3×3 linear part only. Translation cannot make a transform
+/// singular, and `Mat4::mul_point` ignores the bottom row, so the linear part
+/// is exactly what gets applied.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError::InvalidInput`] when a linear column is
+/// zero or non-finite, or when the Hadamard ratio is at or below
+/// [`DEGENERATE_SHAPE_RATIO`].
+pub(crate) fn reject_degenerate_transform(matrix: &Mat4) -> Result<(), crate::OperationsError> {
+    let degenerate = |reason: &str| crate::OperationsError::InvalidInput {
+        reason: format!("transform matrix is degenerate ({reason})"),
+    };
+
+    let m = &matrix.0;
+    // Normalize each column before taking the determinant, rather than
+    // dividing the determinant by the product of the norms afterwards: the
+    // product of three norms can overflow or underflow to 0/∞ for extreme
+    // (but perfectly valid) matrices, and the quotient would then be NaN.
+    let mut unit = [Vec3::new(0.0, 0.0, 0.0); 3];
+    for (j, slot) in unit.iter_mut().enumerate() {
+        let col = Vec3::new(m[0][j], m[1][j], m[2][j]);
+        let Ok(n) = col.normalize() else {
+            return Err(degenerate("a linear column is zero or non-finite"));
+        };
+        *slot = n;
+    }
+
+    // Scalar triple product of the unit columns = the Hadamard ratio, in
+    // [0, 1] by construction. Reflections give a negative triple product and
+    // a ratio of 1 — they are proper transforms and must keep passing.
+    let ratio = unit[0].dot(unit[1].cross(unit[2])).abs();
+    if ratio <= DEGENERATE_SHAPE_RATIO {
+        return Err(degenerate(
+            "it collapses the model onto a plane, line or point",
+        ));
+    }
+    Ok(())
+}
+
 /// Apply an affine transform to a solid, modifying vertex positions and
 /// face surface geometry in place.
 ///
-/// The transform matrix must be non-degenerate (non-zero determinant).
+/// The transform matrix must be non-degenerate — see
+/// `reject_degenerate_transform`, which tests the matrix's *shape* and so
+/// accepts a uniform scale of any size, in either direction.
 /// All unique vertices reachable from the solid's shells are transformed,
 /// NURBS edge curves and face surfaces have their control points updated,
 /// and all planar face normals are updated using the inverse transpose.
@@ -31,12 +96,7 @@ pub fn transform_solid(
     solid: SolidId,
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
-    let tol = Tolerance::new();
-    if tol.approx_eq(matrix.determinant(), 0.0) {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "transform matrix is degenerate (zero determinant)".into(),
-        });
-    }
+    reject_degenerate_transform(matrix)?;
 
     // Collect all unique vertex IDs, edge IDs, and face IDs in a read phase.
     let (vertex_ids, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
@@ -677,12 +737,7 @@ pub fn transform_wire(
     wire_id: WireId,
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
-    let tol = Tolerance::new();
-    if tol.approx_eq(matrix.determinant(), 0.0) {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "transform matrix is degenerate (zero determinant)".into(),
-        });
-    }
+    reject_degenerate_transform(matrix)?;
 
     let (vertex_ids, edge_ids) = collect_wire_entities(topo, wire_id)?;
 
@@ -714,12 +769,7 @@ pub fn transform_face(
     face_id: FaceId,
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
-    let tol = Tolerance::new();
-    if tol.approx_eq(matrix.determinant(), 0.0) {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "transform matrix is degenerate (zero determinant)".into(),
-        });
-    }
+    reject_degenerate_transform(matrix)?;
 
     // Collect all vertices and edges from the face's wires.
     let (vertex_ids, edge_ids) = collect_face_entities(topo, face_id)?;

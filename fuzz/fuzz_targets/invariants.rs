@@ -594,25 +594,28 @@ pub fn assert_deflection_stable(what: &str, topo: &Topology, solid: SolidId, coa
 /// * **A body whose defect is scale-free — most of them — passes at every
 ///   scale.** This isolates one class, and earns its cost only because that
 ///   class is otherwise invisible.
-/// * **It cannot currently reach the small end.** `transform_solid` rejects a
-///   matrix whose determinant is under `Tolerance.linear` (1e-7). A determinant
-///   is a *volume* ratio and that tolerance is a *length*, so for a uniform
-///   scale the test reduces to `s³ <= 1e-7` and every `s <= 0.00464` is called
-///   degenerate — a metres-to-millimetres conversion among them. Measured: 1×,
-///   0.1×, 0.01×, 0.005× and 0.0047× all transform; 0.0046× and 0.001× are
-///   refused. So the sweep uses 0.01 and the interesting sub-millimetre regime
-///   stays out of reach.
-///
-/// That second limit is why this function must not be read as proving scale
-/// invariance in general. It also means the pointed-cone merge failure — which
-/// *is* scale-dependent, and is watertight when a cone is **constructed** at
-/// 0.001× — is not reproduced by scaling a 1× cone down, because the transform
-/// cannot go that far.
+/// * **The small end now reaches about 1e-5, not below.** `transform_solid`
+///   used to reject any matrix whose determinant fell under `Tolerance.linear`
+///   (1e-7) — a volume ratio measured against a length — so for a uniform
+///   scale the test reduced to `s³ <= 1e-7` and every `s <= 0.00464` was
+///   called degenerate, a metres-to-millimetres conversion among them.
+///   Measured then: 1×, 0.1×, 0.01×, 0.005× and 0.0047× transformed; 0.0046×
+///   and 0.001× were refused. That guard is now a dimensionless test on the
+///   matrix's *shape* and a uniform scale of any size passes, so the sweep
+///   below runs 0.001×. The floor that remains is the tessellator's absolute
+///   `MERGE_GRID` (1e-7 in `operations::tessellate`): at a model scale near
+///   1e-6 that grid becomes comparable to the model's own feature size and
+///   welds distinct vertices, and a 1.7-radius sphere's mesh picks up 485
+///   free edges. It does so identically whether the sphere is **built** at
+///   1e-6 or scaled down to it, so it is not the transform — but it is the
+///   next thing this oracle would report, and it is why the sweep stops at
+///   0.001 rather than going further.
 ///
 /// Non-finite or degenerate scaled geometry, and any refusal from the
 /// transform, are passes. A refusal makes the check silently inert, which is
 /// exactly the failure mode this harness hunts elsewhere; it is tolerated only
-/// because the alternative is a false positive on every case.
+/// because the alternative is a false positive on every case. With the
+/// determinant band gone, a uniform scale never takes that exit.
 ///
 /// # Panics
 ///

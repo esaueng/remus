@@ -1,10 +1,11 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use brepkit_math::mat::Mat4;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_topology::Topology;
 use brepkit_topology::face::FaceSurface;
 use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+use std::ops::Mul;
 
 use super::*;
 
@@ -561,6 +562,262 @@ fn translate_wire_with_circle_edge() {
             tol.approx_eq(c.center().x(), 5.0),
             "circle center should be at x=5, got {}",
             c.center().x()
+        );
+    }
+}
+
+// ── Degeneracy is a matter of shape, not of size ────────────────────────
+//
+// The guard used to compare the matrix DETERMINANT against
+// `Tolerance.linear` (1e-7). A determinant is a volume ratio and that
+// tolerance is a length, so for a uniform scale the test collapsed to
+// `s³ <= 1e-7` and every `s <= 0.0046415888` was called degenerate — a
+// millimetres-to-metres conversion among them. It failed CLOSED: a valid
+// transform was refused outright.
+//
+// The cases below pin both halves: everything that merely resizes or
+// reflects the model must be accepted at any magnitude, and everything that
+// actually flattens it must still be refused.
+
+/// A 2x3x5 box: volume 30 by hand, before anything in the kernel is asked.
+const BOX_DIMS: (f64, f64, f64) = (2.0, 3.0, 5.0);
+const BOX_VOLUME: f64 = 30.0;
+
+/// Every corner of that box, written out rather than read back.
+const BOX_CORNERS: [(f64, f64, f64); 8] = [
+    (0.0, 0.0, 0.0),
+    (2.0, 0.0, 0.0),
+    (2.0, 3.0, 0.0),
+    (0.0, 3.0, 0.0),
+    (0.0, 0.0, 5.0),
+    (2.0, 0.0, 5.0),
+    (2.0, 3.0, 5.0),
+    (0.0, 3.0, 5.0),
+];
+
+/// Apply `matrix` to a fresh box and check everything that must survive it:
+/// each corner lands where the matrix says it does, the shell is still a
+/// closed 2-manifold with no free or non-manifold edges, and the volume is
+/// `|det| * 30` — the closed form, not another route through the kernel.
+fn transformed_box_is_sound(matrix: &Mat4, what: &str) {
+    use brepkit_math::vec::Point3;
+    use brepkit_topology::adjacency::AdjacencyIndex;
+
+    let (dx, dy, dz) = BOX_DIMS;
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, dx, dy, dz).unwrap();
+
+    transform_solid(&mut topo, solid, matrix)
+        .unwrap_or_else(|e| panic!("{what}: refused a non-degenerate transform: {e}"));
+
+    // 1. Vertices. Hand-applied matrix vs the kernel's, corner by corner.
+    let mut placed = vec![false; BOX_CORNERS.len()];
+    let far = matrix.mul_point(Point3::new(dx, dy, dz));
+    let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
+    let extent = (far - origin).length().max(f64::MIN_POSITIVE);
+    for (_, v) in topo.vertices().iter() {
+        let p = v.point();
+        let hit = BOX_CORNERS.iter().position(|&(x, y, z)| {
+            let want = matrix.mul_point(Point3::new(x, y, z));
+            (p - want).length() <= 1e-12 * extent
+        });
+        let Some(i) = hit else {
+            panic!("{what}: vertex {p:?} is not the image of any box corner");
+        };
+        assert!(!placed[i], "{what}: two vertices landed on corner {i}");
+        placed[i] = true;
+    }
+    assert!(placed.iter().all(|&b| b), "{what}: a corner went missing");
+
+    // 2. Topology. Resizing a body cannot change what it is.
+    let adj = AdjacencyIndex::build(&topo, solid).unwrap();
+    assert!(adj.is_manifold(), "{what}: shell is no longer 2-manifold");
+    assert!(
+        adj.boundary_edges().is_empty(),
+        "{what}: {} free edge(s) after the transform",
+        adj.boundary_edges().len()
+    );
+    assert!(
+        adj.non_manifold_edges().is_empty(),
+        "{what}: {} non-manifold edge(s) after the transform",
+        adj.non_manifold_edges().len()
+    );
+
+    // 3. Volume. An affine map multiplies every volume by |det|.
+    let want = BOX_VOLUME * matrix.determinant().abs();
+    let diag = extent;
+    let got = crate::measure::solid_volume(&topo, solid, diag * 1e-4).unwrap();
+    let rel = (got.abs() - want).abs() / want;
+    assert!(
+        rel <= 1e-9,
+        "{what}: volume {got:e} vs the closed form {want:e} (relative {rel:.3e})",
+    );
+}
+
+#[test]
+fn uniform_scales_are_accepted_across_every_decade() {
+    // The old band's edge sat at s = 1e-7^(1/3) = 0.0046415888: 0.00465 was
+    // the last accepted scale and 0.00464 the first refused. The sweep pins
+    // both sides of it and then runs six more decades past, so the edge is
+    // recorded rather than described. 1e-3 is the millimetres-to-metres case
+    // the old band swallowed whole.
+    for s in [
+        1e3, 1e1, 1.0, 1e-1, 1e-2, 4.7e-3, 4.65e-3, 4.64e-3, 4.6e-3, 1e-3, 1e-4, 1e-6, 1e-9,
+    ] {
+        transformed_box_is_sound(&Mat4::scale(s, s, s), &format!("uniform {s:e}"));
+    }
+}
+
+#[test]
+fn anisotropic_scales_are_accepted_however_small_the_determinant() {
+    // A determinant is a product, so an anisotropic scale reaches the old
+    // band from a different direction: (1e-4, 1e-2, 1e-2) has |det| = 1e-8
+    // and was refused even though nothing about it is degenerate. The
+    // Hadamard ratio of every one of these is exactly 1.
+    for (sx, sy, sz) in [
+        (1e-4, 1e-2, 1e-2),
+        (1e-6, 1.0, 1.0),
+        (1e3, 1e-3, 1.0),
+        (1e-5, 1e-5, 1e3),
+        (2.0, 3.0, 5.0),
+    ] {
+        transformed_box_is_sound(
+            &Mat4::scale(sx, sy, sz),
+            &format!("anisotropic ({sx:e}, {sy:e}, {sz:e})"),
+        );
+    }
+}
+
+#[test]
+fn reflections_are_accepted_at_every_scale_and_stay_accepted() {
+    // Negative determinant. These were accepted before at 1x and must still
+    // be — the fix must not change how orientation-reversing maps are
+    // classified, only how small ones are.
+    for (sx, sy, sz) in [
+        (-1.0, 1.0, 1.0),
+        (1.0, -1.0, 1.0),
+        (-1.0, -1.0, -1.0),
+        (-1e-3, 1e-3, 1e-3),
+        (-1e-9, -1e-9, 1e-9),
+    ] {
+        transformed_box_is_sound(
+            &Mat4::scale(sx, sy, sz),
+            &format!("reflection ({sx:e}, {sy:e}, {sz:e})"),
+        );
+    }
+}
+
+#[test]
+fn a_rotated_and_sheared_transform_is_still_accepted() {
+    // Neither a pure scale nor axis-aligned: rotate, shear, scale down past
+    // the old band, and translate. The shear's Hadamard ratio is 0.14 — well
+    // clear of the floor, and the point is that the floor does not care what
+    // the uniform factor in front of it is.
+    let shear = Mat4([
+        [1.0, 0.7, 0.3, 0.0],
+        [0.0, 1.0, 0.9, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    // The translation scales with the body. It has to: `solid_volume`
+    // integrates P·n over the faces in absolute coordinates, so parking a
+    // 1e-4-sized body 7 units from the origin costs (7/6e-4)³ ~ 1e12 of the
+    // 1e-16 relative precision to cancellation and the volume comes back
+    // 5.6e-5 wrong — an offset-to-size conditioning limit of the divergence
+    // integral, not anything about the transform. Scaling the placement with
+    // the body keeps the configuration geometrically similar, which is what
+    // this test is actually about; the residual is then ~1e-16 at every k.
+    for k in [1.0f64, 1e-2, 1e-4, 1e-6, 1e-9] {
+        let m = Mat4::translation(4.0 * k, -2.0 * k, 7.0 * k)
+            .mul(Mat4::rotation_z(0.7))
+            .mul(Mat4::rotation_x(-0.4))
+            .mul(shear)
+            .mul(Mat4::scale(k, k, k));
+        transformed_box_is_sound(&m, &format!("rotate+shear+{k:e}"));
+    }
+}
+
+#[test]
+fn genuinely_degenerate_matrices_are_still_refused() {
+    // Losing the real degeneracy check while removing the false one would be
+    // the bad outcome. Each of these collapses space onto a plane, a line or
+    // a point, at a range of magnitudes so that no absolute threshold could
+    // be doing the work.
+    let flatten_to_plane = |k: f64| Mat4::scale(k, k, 0.0);
+    let flatten_to_line = |k: f64| Mat4::scale(k, 0.0, 0.0);
+    // Rank 2: the third column is the sum of the first two, so the image is
+    // a plane even though no single column is zero and every entry is O(1).
+    let rank_two = Mat4([
+        [1.0, 0.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    // Rank 2 to within 1e-14 — degenerate in shape, not in size, and the
+    // magnitude is deliberately huge so that a determinant test would call
+    // it healthy (|det| = 1e-2).
+    let nearly_rank_two = Mat4([
+        [1e6, 0.0, 1e6, 0.0],
+        [0.0, 1e6, 1e6, 0.0],
+        [0.0, 0.0, 1e-8, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+
+    let cases: [(&str, Mat4); 8] = [
+        ("flatten to plane 1x", flatten_to_plane(1.0)),
+        ("flatten to plane 1000x", flatten_to_plane(1e3)),
+        ("flatten to plane 0.001x", flatten_to_plane(1e-3)),
+        ("flatten to line", flatten_to_line(1.0)),
+        ("collapse to point", Mat4::scale(0.0, 0.0, 0.0)),
+        ("rank two", rank_two),
+        ("nearly rank two, large", nearly_rank_two),
+        ("non-finite column", Mat4::scale(f64::NAN, 1.0, 1.0)),
+    ];
+
+    for (what, m) in cases {
+        let mut topo = Topology::new();
+        let (dx, dy, dz) = BOX_DIMS;
+        let solid = crate::primitives::make_box(&mut topo, dx, dy, dz).unwrap();
+        assert!(
+            transform_solid(&mut topo, solid, &m).is_err(),
+            "{what}: a matrix that collapses the model must be refused",
+        );
+        // The same verdict from every entry point that takes a matrix.
+        let mut t2 = Topology::new();
+        let s2 = crate::primitives::make_box(&mut t2, dx, dy, dz).unwrap();
+        assert!(
+            crate::copy::copy_and_transform_solid(&mut t2, s2, &m).is_err(),
+            "{what}: copy_and_transform_solid must refuse it too",
+        );
+    }
+}
+
+#[test]
+fn the_degeneracy_verdict_does_not_move_with_the_units() {
+    // The guard's whole contract in one assertion: multiplying a matrix by a
+    // uniform scale changes |det| by s³ but never changes whether the
+    // transform is degenerate.
+    let proper = Mat4([
+        [1.0, 0.2, 0.0, 0.0],
+        [0.0, 1.0, 0.4, 0.0],
+        [0.3, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    let flat = Mat4([
+        [1.0, 0.2, 1.2, 0.0],
+        [0.0, 1.0, 1.0, 0.0],
+        [0.3, 0.0, 0.3, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    for k in [1e6, 1e3, 1.0, 1e-3, 1e-6, 1e-9] {
+        let s = Mat4::scale(k, k, k);
+        assert!(
+            reject_degenerate_transform(&proper.mul(s)).is_ok(),
+            "a proper transform became degenerate at {k:e}",
+        );
+        assert!(
+            reject_degenerate_transform(&flat.mul(s)).is_err(),
+            "a rank-deficient transform became proper at {k:e}",
         );
     }
 }

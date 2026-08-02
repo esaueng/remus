@@ -120,7 +120,9 @@ pub fn convert_to_elementary(
 /// recognized in-plane axis explicitly (via `with_axes`), because
 /// `Hyperbola3D::new` / `Parabola3D::new` derive that axis from an
 /// arbitrary perpendicular and would silently rotate the curve within
-/// its plane.
+/// its plane. Ellipses carry it for the same reason: `Ellipse3D::new`
+/// would put `semi_major` along a frame of its own choosing, which is a
+/// rotation for every ellipse that is not a circle.
 ///
 /// # Errors
 ///
@@ -176,17 +178,30 @@ pub fn convert_edges_to_elementary(
             RecognizedCurve::Ellipse {
                 center,
                 normal,
-                u_axis: _,
+                u_axis,
                 semi_major,
                 semi_minor,
             } => {
-                // Ellipse3D::new takes (center, normal, semi_major, semi_minor)
-                // and derives u_axis internally from the normal via
-                // Frame3::from_normal — so the recognized u_axis isn't
-                // directly used (the analytic form's frame may differ
-                // from the recognizer's, but both describe the same
-                // ellipse SET in 3D).
-                if let Ok(e) = Ellipse3D::new(center, normal, semi_major, semi_minor) {
+                // `with_axes`, not `new`: `Ellipse3D::new` derives its own
+                // in-plane frame from the normal alone (`Frame3::from_normal`)
+                // and puts `semi_major` along it, so the recognized major-axis
+                // direction is replaced by an arbitrary one. That rotates the
+                // ellipse inside its plane by the angle between the two
+                // frames — a different point set, published as an exact
+                // analytic conversion. Only a circle is exempt, because
+                // rotation about its own normal is the identity on it.
+                //
+                // The recognizer's `u_axis` is an eigenvector, so its sign is
+                // arbitrary, but unlike the hyperbola that costs nothing
+                // here: taking `v = normal × u` flips `v` with `u`, and a
+                // 180° rotation maps an ellipse onto itself. Only the
+                // parameter origin moves, and `domain_with_endpoints`
+                // re-projects the edge's vertices onto whatever frame it is
+                // given, so the trimmed arc is unaffected.
+                let v_axis = normal.cross(u_axis);
+                if let Ok(e) =
+                    Ellipse3D::with_axes(center, normal, semi_major, semi_minor, u_axis, v_axis)
+                {
                     let edge_mut = topo.edge_mut(eid)?;
                     edge_mut.set_curve(EdgeCurve::Ellipse(e));
                     converted += 1;
@@ -427,6 +442,98 @@ mod tests {
                 );
             }
             other => panic!("expected inner-shell face to be Sphere, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn converts_a_rotated_ellipse_without_rotating_it() {
+        // The recognizer returns the major-axis direction it measured.
+        // `Ellipse3D::new` ignores it and derives its own in-plane frame
+        // from the normal alone, which rotates the ellipse inside its
+        // plane by whatever angle separates the two frames. The result is
+        // published as an exact analytic conversion with no refusal.
+        //
+        // This case is built deliberately OFF the axes (major axis at 37°
+        // in its plane) and deliberately non-circular (a/b = 2.5). Both
+        // matter: an axis-aligned ellipse passes whether or not the u_axis
+        // survives, and rotation is the identity on a circle.
+        //
+        // Swept at 1x/1000x/0.001x because the recognizer's conic residual
+        // is compared against a LINEAR tolerance.
+        use brepkit_geometry::convert::curve_to_nurbs::ellipse_to_nurbs;
+
+        for k in [1.0_f64, 1000.0, 0.001] {
+            // Closed form, written out here rather than taken from the
+            // kernel: the source frame is stated, not derived.
+            let theta = 37.0_f64.to_radians();
+            let normal = Vec3::new(0.0, 0.0, 1.0);
+            let u_src = Vec3::new(theta.cos(), theta.sin(), 0.0);
+            let v_src = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+            let center = Point3::new(0.4 * k, -0.7 * k, 1.1 * k);
+            let (a, b) = (3.0 * k, 1.2 * k);
+
+            let src = Ellipse3D::with_axes(center, normal, a, b, u_src, v_src).unwrap();
+            let (t0, t1) = (0.3, 2.4);
+            let nurbs = ellipse_to_nurbs(&src, t0, t1).unwrap();
+
+            let mut topo = Topology::new();
+            let v0 = topo.add_vertex(Vertex::new(src.evaluate(t0), 1e-7 * k));
+            let v1 = topo.add_vertex(Vertex::new(src.evaluate(t1), 1e-7 * k));
+            let eid = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs)));
+            let solid_id = scaffold(&mut topo, eid);
+
+            let mut tol = Tolerance::new();
+            tol.linear *= k;
+            let n = convert_edges_to_elementary(&mut topo, solid_id, &tol).unwrap();
+            assert_eq!(n, 1, "expected one conversion at {k}x, got {n}");
+
+            let EdgeCurve::Ellipse(got) = topo.edge(eid).unwrap().curve() else {
+                panic!(
+                    "expected Ellipse at {k}x, got {:?}",
+                    topo.edge(eid).unwrap().curve()
+                );
+            };
+
+            assert!(
+                (got.semi_major() - a).abs() < 1e-6 * a && (got.semi_minor() - b).abs() < 1e-6 * b,
+                "semi-axes {}/{} vs {a}/{b} at {k}x",
+                got.semi_major(),
+                got.semi_minor()
+            );
+
+            // The major axis must point along the source's, up to sign —
+            // a 180° flip maps an ellipse onto itself, a 37° one does not.
+            let align = got.u_axis().dot(u_src).abs();
+            assert!(
+                align > 1.0 - 1e-9,
+                "recovered major axis {:?} is rotated off the source {u_src:?} by {:.3}° at {k}x",
+                got.u_axis(),
+                align.clamp(-1.0, 1.0).acos().to_degrees()
+            );
+
+            // Point-set check against a hand-derived closed form: every
+            // point of the SOURCE ellipse must satisfy the recovered
+            // ellipse's implicit equation (x/a)² + (y/b)² = 1 and lie in
+            // its plane. This is what "the same ellipse set" would mean.
+            for i in 0..24 {
+                let t = f64::from(i) * std::f64::consts::TAU / 24.0;
+                let p = center + u_src * (a * t.cos()) + v_src * (b * t.sin());
+                let d = p - got.center();
+                let x = d.dot(got.u_axis());
+                let y = d.dot(got.v_axis());
+                let z = d.dot(got.normal());
+                assert!(
+                    z.abs() < 1e-9 * k,
+                    "source point is {z} out of the recovered plane at {k}x"
+                );
+                let resid = (x / got.semi_major()).hypot(y / got.semi_minor()) - 1.0;
+                assert!(
+                    resid.abs() < 1e-9,
+                    "source point at t={t:.3} misses the recovered ellipse by \
+                     implicit residual {resid:.3e} at {k}x — the converted curve \
+                     is a different point set",
+                );
+            }
         }
     }
 

@@ -432,9 +432,16 @@ fn try_recognize_ellipse(
     let theta = solve_5x5(&mat, &rhs)?;
     let (a_c, b_c, c_c, d_c, e_c) = (theta[0], theta[1], theta[2], theta[3], theta[4]);
 
-    // For an ellipse: B² < 4AC (positive discriminant for ellipse).
-    let disc = b_c * b_c - 4.0 * a_c * c_c;
-    if disc >= -tolerance {
+    // For an ellipse: B² − 4AC < 0. Tested on the SCALE-INVARIANT
+    // discriminant, for the same reason as the hyperbola and parabola arms:
+    // the raw value carries units of L⁻⁴ (its magnitude is ~4/(a²b²) here),
+    // so measuring it against a LINEAR tolerance made a large ellipse
+    // vanish — a 3:1.2 ellipse classified up to semi-major ≈ 234 at the
+    // default 1e-7 and was rejected from ≈ 240 upward, which is every such
+    // ellipse in a model drawn in millimetres. It failed closed, so the
+    // edge silently kept its NURBS form.
+    let disc = normalized_conic_discriminant(a_c, b_c, c_c)?;
+    if disc >= -CONIC_DISCRIMINANT_EPS {
         return None; // Not an ellipse (could be parabola/hyperbola/degenerate).
     }
 
@@ -1406,6 +1413,46 @@ mod tests {
                     );
                 }
                 other => panic!("hyperbola not recognized at scale {k}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn ellipse_recognition_is_scale_invariant() {
+        // The ellipse arm classified on the RAW discriminant, which carries
+        // L^-4, against the LINEAR tolerance. `B² − 4AC` for an ellipse has
+        // magnitude ~4/(a²b²), so it shrinks as the model GROWS: a 3-unit
+        // ellipse classifies, the same ellipse at 1000x has |disc| ~ 4e-13
+        // and is rejected. It fails CLOSED — the edge silently keeps its
+        // NURBS form — which is why the sibling assertion below (only "not
+        // a hyperbola or parabola") passed straight through it.
+        for k in SCALE_SWEEP {
+            let ell = Ellipse3D::new(
+                Point3::new(1.0 * k, -2.0 * k, 0.5 * k),
+                Vec3::new(0.0, 0.0, 1.0),
+                3.0 * k,
+                1.2 * k,
+            )
+            .unwrap();
+            let nurbs = ellipse_arc_nurbs_inline(&ell, 0.2, 2.0);
+            match recognize_curve(&nurbs, 1e-7 * k) {
+                RecognizedCurve::Ellipse {
+                    semi_major,
+                    semi_minor,
+                    ..
+                } => {
+                    assert!(
+                        (semi_major - 3.0 * k).abs() < 1e-9 * 3.0 * k,
+                        "semi_major {semi_major} vs {} at scale {k}",
+                        3.0 * k
+                    );
+                    assert!(
+                        (semi_minor - 1.2 * k).abs() < 1e-9 * 1.2 * k,
+                        "semi_minor {semi_minor} vs {} at scale {k}",
+                        1.2 * k
+                    );
+                }
+                other => panic!("ellipse not recognized at scale {k}: {other:?}"),
             }
         }
     }
