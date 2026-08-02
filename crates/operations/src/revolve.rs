@@ -1142,11 +1142,10 @@ pub fn revolve(
     // derives the normal from the boundary's Newell normal. Partial revolutions
     // close the ends with planar caps, so a non-planar boundary is only allowed
     // for a full revolution.
-    let input_normal = {
+    let wire_positions: Vec<Point3> = {
         let wire = topo.wire(input_wire_id)?;
         let oes: Vec<_> = wire.edges().to_vec();
-        let wire_positions: Vec<Point3> = oes
-            .iter()
+        oes.iter()
             .map(|oe| -> Result<Point3, crate::OperationsError> {
                 let edge = topo.edge(oe.edge())?;
                 let vid = if oe.is_forward() {
@@ -1156,7 +1155,9 @@ pub fn revolve(
                 };
                 Ok(topo.vertex(vid)?.point())
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<_, _>>()?
+    };
+    let input_normal = {
         if let Some(normal) = stored_plane_normal {
             // Planar profile: keep the stored normal, corrected to CCW.
             if crate::winding::is_cw_winding(&wire_positions, &normal) {
@@ -1198,6 +1199,53 @@ pub fn revolve(
             }
             normal
         }
+    };
+
+    // Sweep-orientation reference. The revolution's tangent at a profile point
+    // `p` is `axis × (p − axis_origin)`; the profile plane contains the axis, so
+    // that tangent is perpendicular to the plane — it is `±input_normal`.
+    // Sampled at the profile's farthest-off-axis point, the largest and so most
+    // numerically robust sample (and the same reference the analytic full-turn
+    // path derives its `e_r` chart from).
+    //
+    // Every face below is oriented off the swept NURBS band's
+    // `du × dv = (profile tangent) × (sweep tangent)`, and the caps off
+    // `input_normal`. For a wire wound CCW about `input_normal` those agree with
+    // the material-outward direction only when the sweep runs along
+    // `+input_normal`. When the revolution runs the other way round the axis —
+    // a right-handed sweep about `axis` and a wire winding that together give
+    // `input_normal · sweep < 0` — EVERY face, band and cap alike, comes out
+    // facing inward. The shell stays closed, consistently wound and
+    // correct-volume, so only its winding SIGN sees it; `writeAsciiStl` then
+    // exports the solid inside-out. Detect the handedness here and mirror the
+    // construction. `try_analytic_full_revolution` already derives its
+    // orientation this way — from the profile's winding in the (radial, axial)
+    // chart — which is why a full turn of a plain profile looked correct while
+    // every partial one, and every full turn that defers to this path, did not.
+    let sweep_normal = {
+        let mut best = None;
+        let mut best_r2 = 0.0_f64;
+        for &p in &wire_positions {
+            let sweep = axis.cross(p - axis_origin);
+            let r2 = sweep.length_squared();
+            if r2 > best_r2 {
+                best_r2 = r2;
+                best = sweep.normalize().ok();
+            }
+        }
+        best
+    };
+    // `true` ⇒ the sweep runs against `input_normal`, so the whole construction
+    // (band `reversed` flags, cap normals and cap wire directions) is mirrored.
+    // A profile entirely on the axis sweeps nothing and keeps the old path.
+    let sweep_opposes = sweep_normal.is_some_and(|s| input_normal.dot(s) < 0.0);
+    // The profile normal re-oriented to point along the sweep, so `-cap_normal`
+    // is the start cap's material-outward direction and `+cap_normal` (rotated)
+    // is the end cap's, for either handedness.
+    let cap_normal_ref = if sweep_opposes {
+        -input_normal
+    } else {
+        input_normal
     };
 
     let (num_segs, seg_angle) = arc_segmentation(angle);
@@ -1317,31 +1365,35 @@ pub fn revolve(
 
     let mut all_faces = Vec::new();
 
-    // Start cap (bottom): reversed copy of input face for partial revolution.
+    // Start cap (bottom): a copy of the input face facing AGAINST the sweep.
+    // Its outer wire must wind CCW about that outward normal: the input wire is
+    // CCW about `input_normal`, so it is reversed for the usual handedness and
+    // kept as-is when the sweep opposes `input_normal`.
     if !is_full {
-        let reversed_edges: Vec<OrientedEdge> = outer
-            .input_oriented
-            .iter()
-            .rev()
-            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
-            .collect();
-        let wire = Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?;
+        let orient_cap = |oes: &[OrientedEdge]| -> Vec<OrientedEdge> {
+            if sweep_opposes {
+                oes.to_vec()
+            } else {
+                oes.iter()
+                    .rev()
+                    .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                    .collect()
+            }
+        };
+        let wire = Wire::new(orient_cap(&outer.input_oriented), true)
+            .map_err(crate::OperationsError::Topology)?;
         let wid = topo.add_wire(wire);
 
-        // Create inner wire holes for the bottom cap.
+        // Create inner wire holes for the bottom cap. They follow the outer
+        // wire's flip, so a hole stays wound opposite its cap.
         let mut bottom_inner_wires = Vec::new();
         for iwd in &inner_data {
-            let inner_reversed: Vec<OrientedEdge> = iwd
-                .input_oriented
-                .iter()
-                .rev()
-                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
-                .collect();
-            let iw = Wire::new(inner_reversed, true).map_err(crate::OperationsError::Topology)?;
+            let iw = Wire::new(orient_cap(&iwd.input_oriented), true)
+                .map_err(crate::OperationsError::Topology)?;
             bottom_inner_wires.push(topo.add_wire(iw));
         }
 
-        let bottom_normal = -input_normal;
+        let bottom_normal = -cap_normal_ref;
         let bottom_d = dot_normal_point(bottom_normal, input_positions[0]);
         let fid = topo.add_face(Face::new(
             wid,
@@ -1402,10 +1454,13 @@ pub fn revolve(
                 seg_angle,
             )?;
 
-            let fid = if reversed {
-                topo.add_face(Face::new_reversed(side_wire_id, vec![], surface))
-            } else {
+            // `reversed` aligns an analytic band with the NURBS band's
+            // `du × dv`; `sweep_opposes` then turns that consistent orientation
+            // outward when the sweep runs against the profile winding.
+            let fid = if reversed == sweep_opposes {
                 topo.add_face(Face::new(side_wire_id, vec![], surface))
+            } else {
+                topo.add_face(Face::new_reversed(side_wire_id, vec![], surface))
             };
             all_faces.push(fid);
         }
@@ -1459,38 +1514,53 @@ pub fn revolve(
                     seg_angle,
                 )?;
 
-                let fid =
-                    topo.add_face(Face::new(side_wire_id, vec![], FaceSurface::Nurbs(surface)));
+                // The hole wire runs opposite the outer wire, so its band's
+                // `du × dv` already points into the bore (material-outward);
+                // only the sweep handedness still has to be applied.
+                let fid = if sweep_opposes {
+                    topo.add_face(Face::new_reversed(
+                        side_wire_id,
+                        vec![],
+                        FaceSurface::Nurbs(surface),
+                    ))
+                } else {
+                    topo.add_face(Face::new(side_wire_id, vec![], FaceSurface::Nurbs(surface)))
+                };
                 all_faces.push(fid);
             }
         }
     }
 
-    // End cap (top): rotated copy of the profile for partial revolution.
+    // End cap (top): a rotated copy of the profile facing ALONG the sweep. Its
+    // ring edges follow the input wire's traversal order, so they wind CCW about
+    // the rotated `input_normal` — reversed when the sweep opposes it.
     if !is_full {
         let last_ring = num_boundaries - 1;
-        let top_wire = Wire::new(
-            outer.ring_edges[last_ring]
-                .iter()
-                .map(|&eid| OrientedEdge::new(eid, true))
-                .collect(),
-            true,
-        )
-        .map_err(crate::OperationsError::Topology)?;
+        let orient_cap = |eids: &[brepkit_topology::edge::EdgeId]| -> Vec<OrientedEdge> {
+            if sweep_opposes {
+                eids.iter()
+                    .rev()
+                    .map(|&eid| OrientedEdge::new(eid, false))
+                    .collect()
+            } else {
+                eids.iter()
+                    .map(|&eid| OrientedEdge::new(eid, true))
+                    .collect()
+            }
+        };
+        let top_wire = Wire::new(orient_cap(&outer.ring_edges[last_ring]), true)
+            .map_err(crate::OperationsError::Topology)?;
         let top_wire_id = topo.add_wire(top_wire);
 
         // Create inner wire holes for the top cap.
         let mut top_inner_wires = Vec::new();
         for iwd in &inner_data {
-            let inner_top_edges: Vec<OrientedEdge> = iwd.ring_edges[last_ring]
-                .iter()
-                .map(|&eid| OrientedEdge::new(eid, true))
-                .collect();
-            let iw = Wire::new(inner_top_edges, true).map_err(crate::OperationsError::Topology)?;
+            let iw = Wire::new(orient_cap(&iwd.ring_edges[last_ring]), true)
+                .map_err(crate::OperationsError::Topology)?;
             top_inner_wires.push(topo.add_wire(iw));
         }
 
-        let rotated_normal = rotate_vec(input_normal, axis, angle);
+        let rotated_normal = rotate_vec(cap_normal_ref, axis, angle);
         let top_pos = topo.vertex(outer.ring_verts[last_ring][0])?.point();
         let top_d = dot_normal_point(rotated_normal, top_pos);
 
