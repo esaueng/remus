@@ -278,7 +278,10 @@ impl BrepKernel {
         tolerance_scale: f64,
     ) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let options = brepkit_operations::validate::ValidationOptions { tolerance_scale };
+        let options = brepkit_operations::validate::ValidationOptions {
+            tolerance_scale,
+            ..brepkit_operations::validate::ValidationOptions::default()
+        };
         let report = brepkit_operations::validate::validate_solid_with_options(
             &self.topo, solid_id, &options,
         )?;

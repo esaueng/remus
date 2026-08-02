@@ -2405,3 +2405,61 @@ fn holed_cylindrical_wall_is_rendered_without_its_holes() {
         "the rendered wall should be the drilled wall {expected:.6}, got {area:.6}"
     );
 }
+
+/// A CLOSED conic edge's shared polyline has to begin at the edge's own start
+/// vertex.
+///
+/// The polyline is what neighbouring faces stitch to: the boundary walk that
+/// builds a face's CDT enters the rim from whichever edge ends at that vertex,
+/// and then follows the rim's cached points. Sampling the rim from the curve's
+/// intrinsic `t = 0` instead put the vertex somewhere in the middle of the ring
+/// — usually not even on a sample — so the walk jumped by the angle between the
+/// two. On a periodic surface that jump unwraps into an extra turn and the
+/// triangulation folds; see `tests/regress_seam_split_rim_band_mesh.rs` for what
+/// that cost a measurement.
+///
+/// Asserted for both closed conics, at a seam deliberately placed a quarter turn
+/// away from the curve's own origin so a polyline that ignores the vertex cannot
+/// coincidentally start in the right place.
+#[test]
+fn a_closed_conic_edge_samples_from_its_own_seam_vertex() {
+    use brepkit_math::curves::{Circle3D, Ellipse3D};
+
+    let center = Point3::new(3.0, 12.0, 7.0);
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let quarter = std::f64::consts::FRAC_PI_2;
+
+    let circle = Circle3D::new(center, normal, 6.0).unwrap();
+    let ellipse = Ellipse3D::new(center, normal, 6.0, 4.0).unwrap();
+
+    for (name, curve) in [
+        ("circle", EdgeCurve::Circle(circle)),
+        ("ellipse", EdgeCurve::Ellipse(ellipse)),
+    ] {
+        let seam = match &curve {
+            EdgeCurve::Circle(c) => c.evaluate(quarter),
+            EdgeCurve::Ellipse(e) => e.evaluate(quarter),
+            _ => unreachable!(),
+        };
+        let mut topo = Topology::new();
+        let vid = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let eid = topo.add_edge(Edge::new(vid, vid, curve));
+        let edge = topo.edge(eid).unwrap();
+
+        let pts = super::edge_sampling::sample_edge(&topo, edge, 0.01, 0.0, false).unwrap();
+        assert!(pts.len() > 3, "{name}: only {} sample(s)", pts.len());
+
+        let head = (pts[0] - seam).length();
+        let tail = (pts[pts.len() - 1] - seam).length();
+        // Relative to the curve's own size, not an absolute millimetre figure.
+        let tol = 1e-9 * 6.0;
+        assert!(
+            head < tol,
+            "{name}: polyline starts {head:.9} away from the edge's seam vertex"
+        );
+        assert!(
+            tail < tol,
+            "{name}: polyline ends {tail:.9} away from the edge's seam vertex"
+        );
+    }
+}

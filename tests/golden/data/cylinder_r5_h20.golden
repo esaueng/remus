@@ -1,5 +1,5 @@
 # cylinder r=5 h=20
-vertices: 38
+vertices: 36
 triangles: 68
 volume: 1570.796327
 bbox_min: (-5.000000, -5.000000, 0.000000)

@@ -287,6 +287,15 @@ pub(super) fn measure_max_segment_turn(
 
 /// Get the parameter range for a circle edge.
 ///
+/// A CLOSED circle edge still has a start vertex, and the polyline has to begin
+/// there: the boundary walk that consumes it enters through that vertex from the
+/// neighbouring edge. Starting at the curve's own parameter origin instead puts
+/// the seam vertex somewhere in the middle of the ring — usually not even on a
+/// sample — so the walk jumps by whatever angle separates the two, and on a
+/// periodic surface the jump unwraps into an extra turn. Hence `t_start` is the
+/// start vertex's parameter, not `0`; the range is a full `TAU` either way, so
+/// the sample count is unchanged.
+///
 /// # Errors
 ///
 /// Returns an error if vertex lookup fails.
@@ -296,7 +305,8 @@ pub(super) fn circle_param_range(
     circle: &brepkit_math::curves::Circle3D,
 ) -> Result<(f64, f64), crate::OperationsError> {
     if edge.is_closed() {
-        Ok((0.0, std::f64::consts::TAU))
+        let ts = circle.project(topo.vertex(edge.start())?.point());
+        Ok((ts, ts + std::f64::consts::TAU))
     } else {
         let sp = topo.vertex(edge.start())?.point();
         let ep = topo.vertex(edge.end())?.point();
@@ -343,7 +353,10 @@ pub(super) fn sample_edge(
         }
         EdgeCurve::Ellipse(ellipse) => {
             let (t_start, t_end) = if edge.is_closed() {
-                (0.0, std::f64::consts::TAU)
+                // Same as `circle_param_range`: begin at the edge's own start
+                // vertex so the polyline joins its neighbours without a jump.
+                let ts = ellipse.project(topo.vertex(edge.start())?.point());
+                (ts, ts + std::f64::consts::TAU)
             } else {
                 let sp = topo.vertex(edge.start())?.point();
                 let ep = topo.vertex(edge.end())?.point();

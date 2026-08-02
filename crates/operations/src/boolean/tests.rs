@@ -1856,10 +1856,21 @@ fn fuse_two_cylinders() {
     );
 }
 
-/// Cut a large cylinder by a smaller overlapping one.
+/// Cut a large cylinder by a smaller one standing wholly inside it.
 ///
-/// V(A-B) = V(A) - V(A∩B). Since B partially overlaps A,
-/// the result must be positive and less than V(A).
+/// `V(A-B) = V(A) - V(B)` exactly, because B's whole footprint is inside A's:
+/// the r=3 axis at `x = 1.5` puts B's disc in `x` in `[-1.5, 4.5]`, clear of the
+/// r=5 boundary on both sides.
+///
+/// The axis used to stand at `x = 2`, where `2 + 3 = 5` makes B internally
+/// TANGENT to A. That is not the "partially overlapping" cut this was written
+/// for, and it has no manifold answer: `A - B` there is a crescent pinched to
+/// zero width along the whole tangent line, so the boolean is right to refuse
+/// it. It used to come back with a body of 1003.27 against the 1005.31 the
+/// contained case has exactly — the pinch rounded away because the two
+/// tessellations happened not to share a vertex on the tangent line. They do
+/// share one now, and the refusal is the honest answer, so the case moved off
+/// the knife edge to the containment it was always measuring.
 #[test]
 fn cut_cylinder_by_cylinder() {
     use std::f64::consts::PI;
@@ -1868,17 +1879,18 @@ fn cut_cylinder_by_cylinder() {
     let cyl1 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
     let cyl2 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
 
-    let mat = brepkit_math::mat::Mat4::translation(2.0, 0.0, 0.0);
+    let mat = brepkit_math::mat::Mat4::translation(1.5, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, cyl1, cyl2).unwrap();
     let vol = crate::measure::solid_volume(&topo, result, 0.1).unwrap();
 
-    let vol_cyl1 = PI * 25.0 * 20.0; // ≈ 1570.8
-    assert!(vol > 0.0, "cut volume should be positive, got {vol}");
+    let want = PI * (25.0 - 9.0) * 20.0;
+    let rel = (vol - want).abs() / want;
     assert!(
-        vol < vol_cyl1,
-        "cut volume {vol:.1} should be < original cylinder {vol_cyl1:.1}"
+        rel < 1e-9,
+        "cut volume {vol:.6} against the closed form {want:.6} ({:.6} %)",
+        rel * 100.0
     );
 }
 

@@ -993,7 +993,20 @@ pub(super) fn validate_boolean_result_lenient(
     // minor topological imperfections (e.g., boundary edges on analytic faces)
     // that don't prevent downstream use. Hard-failing here would reject ~25%
     // of currently working booleans. The long-term fix is post-boolean healing.
-    match crate::validate::validate_solid(topo, solid) {
+    // The orientation check is turned down to Gauss order 1 here. It is the
+    // only part of `validate_solid` that integrates, and integrating one
+    // trimmed quadric face costs ~900 us at the default order 5 — on
+    // `cut_cylinder_through_box` that was 45 % of the whole boolean, for a
+    // report this site only LOGS. A sign needs far less accuracy than a mass
+    // property (the verdict has to clear `diag^3 * 1e-9`), so the coarse order
+    // keeps the coverage at a fraction of the cost. Callers that ACT on the
+    // report — defeature, draft, split, chamfer, and `validateSolid` in the
+    // app — keep the default order.
+    let options = crate::validate::ValidationOptions {
+        orientation: crate::validate::OrientationCheck::Order(1),
+        ..crate::validate::ValidationOptions::default()
+    };
+    match crate::validate::validate_solid_with_options(topo, solid, &options) {
         Ok(report) if !report.is_valid() => {
             let errors: Vec<_> = report
                 .issues

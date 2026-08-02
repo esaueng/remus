@@ -1153,6 +1153,80 @@ fn volume_tessellation_deflection(topo: &Topology, solid: SolidId, requested: f6
     requested.min((diag * 5e-5).max(1e-9))
 }
 
+/// The signed volume a shell's faces enclose, `(1/3) integral P.n dA` summed
+/// over the exact face geometry.
+///
+/// Positive when the shell is wound OUTWARD, negative when it faces inward.
+/// `integrate_face` already applies each face's stored reversal, so a cavity
+/// shell — every face reversed — comes back negative, which is what makes it
+/// subtract in [`solid_volume`].
+///
+/// Returns `None` when any face fails to integrate, which is a "cannot say"
+/// rather than a verdict: callers must not read that as "correctly wound".
+pub fn shell_signed_volume(
+    topo: &Topology,
+    shell: brepkit_topology::shell::ShellId,
+    gauss_order: usize,
+) -> Option<f64> {
+    let mut total = 0.0;
+    for &fid in topo.shell(shell).ok()?.faces() {
+        total += brepkit_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
+            .ok()?
+            .volume;
+    }
+    Some(total)
+}
+
+/// The smallest volume this model can distinguish from zero: the cube of its
+/// own vertex-bounding-box diagonal, scaled by a dimensionless epsilon.
+///
+/// A volume is `L^3`, so the yardstick has to be too — an absolute `1e-9 mm^3`
+/// would call a 0.001x model inverted and a 1000x one flat. Returns `None` when
+/// the model has no measurable extent.
+pub fn negligible_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
+    /// Dimensionless: the fraction of the model's own extent-cubed below which
+    /// a signed volume says nothing about orientation.
+    const RELATIVE_FLOOR: f64 = 1e-9;
+
+    let pts = collect_solid_vertex_points(topo, solid).ok()?;
+    let (&first, rest) = pts.split_first()?;
+    let (mut lo, mut hi) = (first, first);
+    for p in rest {
+        lo = Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z()));
+        hi = Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z()));
+    }
+    let diag = (hi - lo).length();
+    (diag.is_finite() && diag > 0.0).then_some(diag * diag * diag * RELATIVE_FLOOR)
+}
+
+/// Whether the solid's outer shell is turned inside out.
+///
+/// A shell can be closed, 2-manifold and consistently wound and still face
+/// inward — brepkit#59's segmented revolve built exactly that, and nothing in
+/// the measurement layer could see it, because [`solid_volume`] reports the
+/// magnitude of its integral and so reads an inverted body at its correct
+/// positive volume. The sign is what an STL facet normal is derived from, so
+/// such a body exports inside out.
+///
+/// Returns `false` when the answer cannot be established — a face that will not
+/// integrate, or a body with no measurable extent. This is a detector, not a
+/// proof of correctness: `false` means "not shown to be inverted".
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate::OperationsError> {
+    let outer = topo.solid(solid)?.outer_shell();
+    let order = brepkit_check::properties::PropertiesOptions::default().gauss_order;
+    let (Some(signed), Some(floor)) = (
+        shell_signed_volume(topo, outer, order),
+        negligible_volume(topo, solid),
+    ) else {
+        return Ok(false);
+    };
+    Ok(signed < -floor)
+}
+
 /// Compute the volume of a solid using the signed tetrahedra method
 /// (divergence theorem on a surface tessellation).
 ///
@@ -1161,6 +1235,16 @@ fn volume_tessellation_deflection(topo: &Topology, solid: SolidId, requested: f6
 ///
 /// For pure-primitive solids (sphere, cylinder, cone, torus), uses exact
 /// analytic formulas instead of tessellation.
+///
+/// # Orientation
+///
+/// The result is a MAGNITUDE: an inside-out solid reports the same positive
+/// number its correctly-wound twin would. That is deliberate — a volume is a
+/// positive quantity and every caller reads it as one — but it means this
+/// function cannot be used to ask whether a body is inverted. Ask
+/// [`solid_is_inverted`], or run [`crate::validate::validate_solid`], which
+/// reports an inverted outer shell (and a cavity wound the wrong way) as an
+/// error.
 ///
 /// # Errors
 ///
@@ -2438,7 +2522,12 @@ pub fn solid_volume_from_faces(
         let b = Vec3::new(pts[1].x(), pts[1].y(), pts[1].z());
         let c = Vec3::new(pts[2].x(), pts[2].y(), pts[2].z());
 
-        total += a.dot(b.cross(c));
+        // Enumerating the cavity shells is not enough on its own: a cavity's
+        // faces are stored REVERSED, and the wire winding alone does not say
+        // so. Without this the void's tetrahedra add instead of subtract and a
+        // hollow triangulated body reads as the outer body PLUS the void.
+        let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
+        total += orientation * a.dot(b.cross(c));
     }
 
     if all_planar_triangles {
@@ -2484,6 +2573,12 @@ pub fn mass_properties(
 /// `centroid += signed_vol * (a + b + c)`, then divides by
 /// `4 * total_volume`.
 ///
+/// Cavity shells count. Their faces are stored reversed, so `tessellate`
+/// flips their winding and their signed tetrahedra subtract both the void's
+/// volume and its first moment — which is what makes the result the composite
+/// centroid `(V_out*c_out - V_void*c_void) / (V_out - V_void)` rather than the
+/// outer body's own.
+///
 /// # Errors
 ///
 /// Returns an error if the solid has zero volume or tessellation fails.
@@ -2500,15 +2595,15 @@ pub fn solid_center_of_mass(
 
     // tessellate() already handles face reversal (flips winding),
     // so signed tetrahedra sum is correct without winding heuristics.
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    // Outer shell plus every cavity shell.
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_vol: f64 = 0.0;
     let mut cx = 0.0;
     let mut cy = 0.0;
     let mut cz = 0.0;
 
-    for &fid in shell.faces() {
+    for fid in faces {
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
         let idx = &mesh.indices;
         let pos = &mesh.positions;
@@ -2550,6 +2645,10 @@ pub fn solid_center_of_mass(
 
 /// Compute center of mass directly from face vertex positions for
 /// solids composed entirely of planar triangular faces.
+///
+/// Enumerates outer shell plus every cavity shell, and applies each face's
+/// stored reversal to the tetrahedron sign, so a void subtracts its volume AND
+/// its first moment.
 fn center_of_mass_from_faces(
     topo: &Topology,
     solid: SolidId,
@@ -2557,15 +2656,14 @@ fn center_of_mass_from_faces(
     use brepkit_topology::edge::EdgeCurve;
     use brepkit_topology::face::FaceSurface;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_vol = 0.0;
     let mut cx = 0.0;
     let mut cy = 0.0;
     let mut cz = 0.0;
 
-    for &fid in shell.faces() {
+    for fid in faces {
         let face = topo.face(fid)?;
         if !matches!(face.surface(), FaceSurface::Plane { .. }) {
             return Err(crate::OperationsError::InvalidInput {
@@ -2600,7 +2698,11 @@ fn center_of_mass_from_faces(
         let b = Vec3::new(pts[1].x(), pts[1].y(), pts[1].z());
         let c = Vec3::new(pts[2].x(), pts[2].y(), pts[2].z());
 
-        let signed_vol = a.dot(b.cross(c));
+        // A face carried reversed points its wire the other way round, so its
+        // tetrahedra count with the opposite sign. Cavity shells are stored
+        // exactly that way.
+        let orientation = if face.is_reversed() { -1.0 } else { 1.0 };
+        let signed_vol = orientation * a.dot(b.cross(c));
         total_vol += signed_vol;
         cx += signed_vol * (pts[0].x() + pts[1].x() + pts[2].x());
         cy += signed_vol * (pts[0].y() + pts[1].y() + pts[2].y());

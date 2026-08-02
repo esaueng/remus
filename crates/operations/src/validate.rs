@@ -59,6 +59,23 @@ impl ValidationReport {
     }
 }
 
+/// How much quadrature the shell-orientation check may spend.
+///
+/// The check establishes a SIGN, and a sign needs far less accuracy than a
+/// mass property: the verdict only has to clear a floor of `diag^3 * 1e-9`, so
+/// a low order is enough wherever the cost matters. Integrating a trimmed
+/// quadric face is expensive out of proportion to everything around it — on a
+/// box with one cylindrical bore, one cylinder face costs 898 us at order 5
+/// against under 3.6 us for each of the six planes — so the order is the knob
+/// that decides whether a caller can afford the check at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrientationCheck {
+    /// Do not run it. For callers that do not act on the answer.
+    Skip,
+    /// Run it at this Gauss order.
+    Order(usize),
+}
+
 /// Options for controlling validation tolerance.
 ///
 /// Operations like fillet and shell produce NURBS faces where geometric
@@ -71,12 +88,20 @@ pub struct ValidationOptions {
     /// length check and the degenerate face area check. Default is `1.0`.
     /// A value of `10.0` means tolerances are 10x more permissive.
     pub tolerance_scale: f64,
+    /// What the shell-orientation check is allowed to cost. Defaults to the
+    /// same Gauss order `mass_properties` uses, so the default validation is
+    /// the strict one; a caller that does not act on the report can turn it
+    /// down or off.
+    pub orientation: OrientationCheck,
 }
 
 impl Default for ValidationOptions {
     fn default() -> Self {
         Self {
             tolerance_scale: 1.0,
+            orientation: OrientationCheck::Order(
+                brepkit_check::properties::PropertiesOptions::default().gauss_order,
+            ),
         }
     }
 }
@@ -99,6 +124,68 @@ pub fn euler_characteristic(
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     Ok(euler)
+}
+
+/// Report a shell that is turned the wrong way round.
+///
+/// A shell can be closed, 2-manifold and consistently wound and still face
+/// inward; every check above passes on such a body, and so does
+/// `measure::solid_volume`, which returns the magnitude of its integral and so
+/// reads an inside-out solid at its correct positive volume. brepkit#59 built
+/// exactly that from a segmented revolve and nothing in the kernel could say
+/// so. The winding sign is what an STL facet normal is derived from, so the
+/// body exported inside out.
+///
+/// Two statements, one per shell role:
+///
+/// * the OUTER shell must enclose a positive signed volume;
+/// * every INNER shell is a cavity and must enclose a negative one — a cavity
+///   wound outward adds its void to the body instead of removing it.
+///
+/// Both are silent when the answer cannot be established (a face that will not
+/// integrate, a body with no measurable extent) rather than guessing.
+fn shell_orientation_issues(
+    topo: &Topology,
+    solid: SolidId,
+    check: OrientationCheck,
+) -> Result<Vec<ValidationIssue>, crate::OperationsError> {
+    let OrientationCheck::Order(order) = check else {
+        return Ok(Vec::new());
+    };
+    let Some(floor) = crate::measure::negligible_volume(topo, solid) else {
+        return Ok(Vec::new());
+    };
+    let solid_data = topo.solid(solid)?;
+    let mut issues = Vec::new();
+
+    if let Some(signed) = crate::measure::shell_signed_volume(topo, solid_data.outer_shell(), order)
+        && signed < -floor
+    {
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            description: format!(
+                "the outer shell is inside out: it encloses a signed volume of {signed}, \
+                 so every face points into the body"
+            ),
+        });
+    }
+
+    for &inner in solid_data.inner_shells() {
+        if let Some(signed) = crate::measure::shell_signed_volume(topo, inner, order)
+            && signed > floor
+        {
+            issues.push(ValidationIssue {
+                severity: Severity::Error,
+                description: format!(
+                    "cavity shell {} is wound outward: it encloses a signed volume of \
+                     {signed}, so the void adds to the body instead of removing from it",
+                    inner.index()
+                ),
+            });
+        }
+    }
+
+    Ok(issues)
 }
 
 /// Validate a solid, returning a report of all issues found.
@@ -239,6 +326,8 @@ pub fn validate_solid_with_options(
             description: format!("{non_manifold_edges} non-manifold edge(s) found"),
         });
     }
+
+    issues.extend(shell_orientation_issues(topo, solid, options.orientation)?);
 
     // Only faces on a planar surface bounded entirely by straight edges
     // require ≥3 unique vertices. Faces with curved edges (Circle,
@@ -502,6 +591,8 @@ pub fn validate_solid_with_options(
 /// - Boundary edges (faces from different operations may not share edges)
 /// - Non-manifold edges (edge duplication is expected in assembled geometry)
 /// - Shell connectivity (multiple disconnected face groups are valid)
+/// - Shell orientation (a shell that is not closed encloses no signed volume to
+///   take the sign of, so [`ValidationOptions::orientation`] is not read here)
 ///
 /// # Errors
 ///
