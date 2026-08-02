@@ -278,6 +278,34 @@ fn rolling_ball_fillet_has_analytic_cylinder_face() {
     );
 }
 
+/// A cylinder's closed circular rim collapses its blend strip to zero area, and
+/// `try_fillet` relies on the rolling-ball engine ERRORING to fall through to
+/// the walking engine. The degeneracy guard now clears healthy faces on a cheap
+/// boundary-polygon area first, so this pins that the shortcut cannot turn that
+/// refusal into an acceptance and silently ship the corrupt solid.
+///
+/// Ported from upstream andymai/brepkit#1248, which asserts the guard's own
+/// "degenerate face" `InvalidInput`. This fork refuses the same input EARLIER
+/// and more specifically — `Blend(EdgesNotBlended)` from edge selection, before
+/// any face is measured — so the assertion is on the refusal that matters to
+/// the dispatcher rather than on which stage produced it.
+#[test]
+fn rolling_ball_rejects_closed_rim_so_dispatcher_falls_through() {
+    let mut topo = Topology::new();
+    let cyl = crate::primitives::make_cylinder(&mut topo, 10.0, 20.0).expect("cylinder");
+    let edges = solid_edge_ids(&topo, cyl);
+
+    let err = fillet_rolling_ball(&mut topo, cyl, &edges, 0.5)
+        .expect_err("rolling-ball must reject a closed circular rim");
+    assert!(
+        matches!(
+            err,
+            crate::OperationsError::Blend(_) | crate::OperationsError::InvalidInput { .. }
+        ),
+        "the refusal must be one `try_fillet` falls through on, got: {err:?}"
+    );
+}
+
 #[test]
 fn rolling_ball_fillet_surface_is_circular_arc() {
     let mut topo = Topology::new();

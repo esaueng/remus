@@ -2138,6 +2138,14 @@ pub fn fillet_rolling_ball(
                 let cap_norm = cap_surface.normal(0.5, 0.5).unwrap_or(outward);
                 let cap_reversed = cap_norm.dot(outward) < 0.0;
 
+                // This corner is geometrically a spherical triangle, but it is
+                // NOT emitted as `FaceSurface::Sphere`: a sphere face bounded by
+                // a triangular wire measures its own area over the wrong extent
+                // (9.42 = 3pi per corner instead of the octant's pi/2), which
+                // drops a filleted 10-cube from 975.59 to 973.70. Until sphere
+                // faces carry a correct trimmed extent, the rational patch above
+                // is the accurate representation even though it only tracks the
+                // sphere to within a few percent.
                 all_specs.push(FaceSpec::Surface {
                     vertices: ordered_points,
                     surface: FaceSurface::Nurbs(cap_surface),
@@ -2376,6 +2384,18 @@ pub fn fillet_rolling_ball(
         .map_err(crate::OperationsError::Topology)?;
     let area_floor = (radius * radius) * 1e-6;
     for fid in faces {
+        // Fast accept first. `face_area` tessellates NURBS faces, and the
+        // corner patch's degenerate column subdivides far past what its
+        // curvature warrants (up to 1490 triangles for a patch the size of a
+        // sphere octant), so measuring every face that way cost more than
+        // building the whole fillet. A boundary wire that already encloses real
+        // area cannot bound a collapsed face, so clearing the floor on the
+        // cheap polygon is conclusive; anything it cannot clear still goes
+        // through the exact measurement below, leaving the guard's verdict
+        // unchanged.
+        if boundary_polygon_area(topo, fid)? > area_floor {
+            continue;
+        }
         let area = crate::measure::face_area(topo, fid, radius * 0.1)?;
         if area <= area_floor {
             return Err(crate::OperationsError::InvalidInput {
@@ -2697,4 +2717,26 @@ fn build_two_edge_corner_patch(
         reversed,
         inner_wires: vec![],
     })
+}
+
+/// Area of a face's outer boundary wire, via Newell's method.
+///
+/// A lower bound on the face's true area for the blend patches this engine
+/// emits, used only as a fast "clearly not degenerate" test.
+fn boundary_polygon_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::OperationsError> {
+    let pts = crate::boolean::face_polygon(topo, face_id)?;
+    if pts.len() < 3 {
+        return Ok(0.0);
+    }
+    let mut n = Vec3::new(0.0, 0.0, 0.0);
+    for i in 0..pts.len() {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        n += Vec3::new(
+            a.y() * b.z() - a.z() * b.y(),
+            a.z() * b.x() - a.x() * b.z(),
+            a.x() * b.y() - a.y() * b.x(),
+        );
+    }
+    Ok(n.length() * 0.5)
 }
