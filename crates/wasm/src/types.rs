@@ -213,6 +213,23 @@ pub struct GcsSolveDiagnostics {
     pub classification: String,
 }
 
+/// Typed result for `polygonUnion2d` and `polygonBoolean2d`.
+///
+/// Each loop is a flat `[x0, y0, x1, y1, ...]` array of 2D coordinates.
+/// `outer` loops are counter-clockwise, `holes` are clockwise; a loop is
+/// implicitly closed (the last point is not repeated). Keeping the two
+/// lists separate is the whole point of this type — a downstream consumer
+/// building a face with holes must know which loops bound material and
+/// which remove it.
+#[derive(Debug, Default, serde::Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct PolygonBoolean2dResult {
+    /// Counter-clockwise outer boundary loops, each a flat `[x, y, ...]` array.
+    pub outer: Vec<Vec<f64>>,
+    /// Clockwise hole loops, each a flat `[x, y, ...]` array.
+    pub holes: Vec<Vec<f64>>,
+}
+
 /// Typed result for `gcsDof`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]

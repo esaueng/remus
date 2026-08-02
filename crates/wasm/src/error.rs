@@ -34,6 +34,10 @@ pub enum WasmError {
     /// A math error (e.g. singular matrix).
     #[error(transparent)]
     Math(#[from] brepkit_math::MathError),
+
+    /// An error from a geometric check (outlining, containment, distance).
+    #[error(transparent)]
+    Check(#[from] brepkit_check::CheckError),
 }
 
 /// Validate that a `f64` value is finite (not NaN or infinite).

@@ -112,6 +112,45 @@ pub fn get_f64(args: &serde_json::Value, key: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("missing or invalid '{key}'"))
 }
 
+/// Extract a required array of `f64` from a JSON object.
+///
+/// # Errors
+///
+/// Returns a message naming `key` if it is missing or not an array, or
+/// naming the offending index if an element is not a number.
+pub fn get_f64_array(args: &serde_json::Value, key: &str) -> Result<Vec<f64>, String> {
+    args[key]
+        .as_array()
+        .ok_or_else(|| format!("missing or invalid '{key}' array"))?
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.as_f64()
+                .ok_or_else(|| format!("{key}[{i}] is not a number"))
+        })
+        .collect()
+}
+
+/// Extract a required array of `u32` from a JSON object.
+///
+/// # Errors
+///
+/// Returns a message naming `key` if it is missing or not an array, or
+/// naming the offending index if an element is not a `u32`.
+pub fn get_u32_array(args: &serde_json::Value, key: &str) -> Result<Vec<u32>, String> {
+    args[key]
+        .as_array()
+        .ok_or_else(|| format!("missing or invalid '{key}' array"))?
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| format!("{key}[{i}] is not a u32"))
+        })
+        .collect()
+}
+
 /// Extract a required `u32` value from a JSON object.
 pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, String> {
     args[key]
@@ -679,11 +718,30 @@ pub fn parse_sketch_constraint(
 
 /// Parse flat `[x,y, ...]` coordinates into `Vec<Point2>`.
 pub fn parse_polygon_2d(coords: &[f64]) -> Result<Vec<Point2>, JsError> {
+    Ok(parse_polygon_2d_checked(coords, "polygon")?)
+}
+
+/// [`parse_polygon_2d`] returning a [`WasmError`] instead of a `JsError`.
+///
+/// `JsError` cannot be constructed on non-wasm targets, so any parsing that
+/// must stay reachable from native unit tests or from `executeBatch`
+/// dispatch has to go through this form. `name` is used in the message so a
+/// two-operand call can say which operand was malformed.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if the length is odd, fewer than
+/// three points are supplied, or any coordinate is not finite.
+pub fn parse_polygon_2d_checked(coords: &[f64], name: &str) -> Result<Vec<Point2>, WasmError> {
     if !coords.len().is_multiple_of(2) || coords.len() < 6 {
         return Err(WasmError::InvalidInput {
-            reason: "polygon needs at least 3 points (6 coordinates)".into(),
-        }
-        .into());
+            reason: format!("{name} needs at least 3 points (6 coordinates)"),
+        });
+    }
+    if let Some(pos) = coords.iter().position(|v| !v.is_finite()) {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} coordinate at index {pos} is not finite"),
+        });
     }
     Ok(coords
         .chunks_exact(2)

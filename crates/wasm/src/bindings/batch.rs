@@ -22,7 +22,8 @@ use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_f64, get_u32, panic_message, try_chamfer, try_fillet,
+    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array, panic_message,
+    try_chamfer, try_fillet,
 };
 use crate::kernel::BrepKernel;
 
@@ -1634,6 +1635,110 @@ impl BrepKernel {
                 )
                 .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(wire_id_to_u32(result)))
+            }
+            // ── Shape construction ──────────────────────────────
+            // Building one glyph outline costs dozens of these calls; a
+            // 20-character word costs roughly a thousand. Batching them
+            // collapses that into a single boundary crossing.
+            "makeLineEdge" => {
+                let eid = brepkit_topology::builder::make_line_edge(
+                    self.topo_mut(),
+                    Point3::new(
+                        get_f64(args, "x1")?,
+                        get_f64(args, "y1")?,
+                        get_f64(args, "z1")?,
+                    ),
+                    Point3::new(
+                        get_f64(args, "x2")?,
+                        get_f64(args, "y2")?,
+                        get_f64(args, "z2")?,
+                    ),
+                    TOL,
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(edge_id_to_u32(eid)))
+            }
+            "makeNurbsEdge" => {
+                let eid = self
+                    .make_nurbs_edge_impl(
+                        get_f64(args, "startX")?,
+                        get_f64(args, "startY")?,
+                        get_f64(args, "startZ")?,
+                        get_f64(args, "endX")?,
+                        get_f64(args, "endY")?,
+                        get_f64(args, "endZ")?,
+                        get_u32(args, "degree")?,
+                        get_f64_array(args, "knots")?,
+                        get_f64_array(args, "controlPoints")?,
+                        get_f64_array(args, "weights")?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(eid))
+            }
+            "makeWire" => {
+                let edges = get_u32_array(args, "edges")?;
+                // Absent `closed` means "closed"; a present but non-boolean
+                // one is a caller error. `as_bool().unwrap_or(true)` would
+                // turn `"closed": 0` / `"false"` into a CLOSED wire — the
+                // opposite of the intent — and `Wire::new` does not validate
+                // closure, so nothing downstream would catch it.
+                let closed = match args.get("closed") {
+                    None | Some(serde_json::Value::Null) => true,
+                    Some(v) => v.as_bool().ok_or("invalid 'closed' boolean")?,
+                };
+                let wid = self
+                    .make_wire_impl(&edges, closed)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(wid))
+            }
+            "makePlanarFaceFromWire" => {
+                let w = get_u32(args, "wire")?;
+                let wid = self.resolve_wire(w).map_err(|e| e.to_string())?;
+                let fid =
+                    brepkit_topology::builder::make_planar_face_from_wire(self.topo_mut(), wid)
+                        .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(face_id_to_u32(fid)))
+            }
+            "makeFaceFromWires" => {
+                let outer = get_u32(args, "outerWire")?;
+                let inner = match args.get("innerWires") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(_) => get_u32_array(args, "innerWires")?,
+                };
+                let fid = self
+                    .make_face_from_wires_impl(outer, &inner)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(fid))
+            }
+            "addHolesToFace" => {
+                let face = get_u32(args, "face")?;
+                let holes = get_u32_array(args, "holeWires")?;
+                let fid = self
+                    .add_holes_to_face_impl(face, &holes)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::json!(fid))
+            }
+            "polygonUnion2d" | "polygonBoolean2d" => {
+                let coords_a = get_f64_array(args, "coordsA")?;
+                let coords_b = get_f64_array(args, "coordsB")?;
+                let op = if op == "polygonUnion2d" {
+                    brepkit_math::polygon_boolean::BooleanOp::Union
+                } else {
+                    let name = args["operation"]
+                        .as_str()
+                        .ok_or("missing or invalid 'operation' string")?;
+                    super::polygon2d::parse_polygon_boolean_op(name).map_err(|e| e.to_string())?
+                };
+                // Absent `tolerance` means "kernel default"; a present but
+                // non-numeric one is a caller error, not a default request.
+                let tolerance = match args.get("tolerance") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(v) => Some(v.as_f64().ok_or("invalid 'tolerance'")?),
+                };
+                let result =
+                    super::polygon2d::polygon_boolean_2d_impl(&coords_a, &coords_b, op, tolerance)
+                        .map_err(|e| e.to_string())?;
+                serde_json::to_value(result).map_err(|e| e.to_string())
             }
             "getNurbsCurveData" => {
                 let edge = get_u32(args, "edge")?;

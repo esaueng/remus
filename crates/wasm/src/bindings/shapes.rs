@@ -569,35 +569,18 @@ impl BrepKernel {
         control_points: Vec<f64>,
         weights: Vec<f64>,
     ) -> Result<u32, JsError> {
-        if !control_points.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "control_points length must be a multiple of 3, got {}",
-                    control_points.len()
-                ),
-            }
-            .into());
-        }
-        let cp: Vec<Point3> = control_points
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
-        let curve = NurbsCurve::new(degree as usize, knots, cp, weights)?;
-
-        let start_pt = Point3::new(start_x, start_y, start_z);
-        let end_pt = Point3::new(end_x, end_y, end_z);
-        let v_start = self.topo_mut().add_vertex(Vertex::new(start_pt, TOL));
-        // When start ≈ end (closed curve), reuse the same vertex so
-        // downstream code correctly identifies the edge as closed.
-        let v_end = if (start_pt - end_pt).length() < TOL * 100.0 {
-            v_start
-        } else {
-            self.topo_mut().add_vertex(Vertex::new(end_pt, TOL))
-        };
-        let eid = self
-            .topo_mut()
-            .add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve)));
-        Ok(edge_id_to_u32(eid))
+        Ok(self.make_nurbs_edge_impl(
+            start_x,
+            start_y,
+            start_z,
+            end_x,
+            end_y,
+            end_z,
+            degree,
+            knots,
+            control_points,
+            weights,
+        )?)
     }
 
     /// Create a circular arc edge defined by start point, tangent direction
@@ -677,54 +660,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makeWire")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn make_wire(&mut self, edge_handles: Vec<u32>, closed: bool) -> Result<u32, JsError> {
-        let tol = brepkit_math::tolerance::Tolerance::new();
-
-        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
-            .iter()
-            .map(|&h| self.resolve_edge(h))
-            .collect::<Result<_, WasmError>>()?;
-
-        // Merge coincident vertices between adjacent edges.
-        // When edge[i].end is at the same position as edge[i+1].start,
-        // replace edge[i+1].start with edge[i].end so they share a vertex.
-        if edge_ids.len() > 1 {
-            for i in 0..edge_ids.len() {
-                let next = if i + 1 < edge_ids.len() {
-                    i + 1
-                } else if closed {
-                    0 // wrap around for closed wires
-                } else {
-                    continue;
-                };
-                if next == i {
-                    continue; // single-edge closed wire
-                }
-
-                let end_vid = self.topo.edge(edge_ids[i])?.end();
-                let start_vid = self.topo.edge(edge_ids[next])?.start();
-
-                if end_vid == start_vid {
-                    continue; // already shared
-                }
-
-                let end_pos = self.topo.vertex(end_vid)?.point();
-                let start_pos = self.topo.vertex(start_vid)?.point();
-
-                let dist = (end_pos - start_pos).length();
-                if dist < tol.linear {
-                    // Merge: replace the next edge's start with the current edge's end
-                    self.topo_mut().edge_mut(edge_ids[next])?.set_start(end_vid);
-                }
-            }
-        }
-
-        let oriented: Vec<OrientedEdge> = edge_ids
-            .iter()
-            .map(|&eid| OrientedEdge::new(eid, true))
-            .collect();
-        let wire = Wire::new(oriented, closed)?;
-        let wid = self.topo_mut().add_wire(wire);
-        Ok(wire_id_to_u32(wid))
+        Ok(self.make_wire_impl(&edge_handles, closed)?)
     }
 
     /// Create a face from a wire.
@@ -754,6 +690,33 @@ impl BrepKernel {
         let wid = self.resolve_wire(wire)?;
         let fid = brepkit_topology::builder::make_planar_face_from_wire(self.topo_mut(), wid)?;
         Ok(face_id_to_u32(fid))
+    }
+
+    /// Create a planar face from an outer wire and zero or more hole wires
+    /// in one call.
+    ///
+    /// Equivalent to `makePlanarFaceFromWire` followed by `addHolesToFace`,
+    /// but it builds a single face instead of two and runs the same hole
+    /// validation once. The outer wire must be planar; each hole wire must
+    /// be a closed loop lying on that plane, inside the outer wire, and
+    /// disjoint from the other holes (see
+    /// [`holed_face`](crate::holed_face)). Hole winding is not
+    /// constrained.
+    ///
+    /// Returns a face handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a handle is invalid, the outer wire is not
+    /// planar, or a hole wire fails validation.
+    #[wasm_bindgen(js_name = "makeFaceFromWires")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn make_face_from_wires(
+        &mut self,
+        outer_wire: u32,
+        inner_wire_handles: Vec<u32>,
+    ) -> Result<u32, JsError> {
+        Ok(self.make_face_from_wires_impl(outer_wire, &inner_wire_handles)?)
     }
 
     /// Create a solid from a shell.
@@ -893,6 +856,146 @@ impl BrepKernel {
             radius,
             segments as usize,
             TOL,
+        )?;
+        Ok(face_id_to_u32(fid))
+    }
+}
+
+// Non-exported helpers. `JsError` cannot be constructed on non-wasm targets,
+// so the real work lives here behind a `WasmError` and stays reachable from
+// native tests and from `executeBatch` dispatch.
+impl BrepKernel {
+    /// Implementation behind `makeNurbsEdge`.
+    ///
+    /// # Errors
+    ///
+    /// See [`make_nurbs_edge`](Self::make_nurbs_edge).
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn make_nurbs_edge_impl(
+        &mut self,
+        start_x: f64,
+        start_y: f64,
+        start_z: f64,
+        end_x: f64,
+        end_y: f64,
+        end_z: f64,
+        degree: u32,
+        knots: Vec<f64>,
+        control_points: Vec<f64>,
+        weights: Vec<f64>,
+    ) -> Result<u32, WasmError> {
+        if !control_points.len().is_multiple_of(3) {
+            return Err(WasmError::InvalidInput {
+                reason: format!(
+                    "control_points length must be a multiple of 3, got {}",
+                    control_points.len()
+                ),
+            });
+        }
+        let cp: Vec<Point3> = control_points
+            .chunks_exact(3)
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let curve = NurbsCurve::new(degree as usize, knots, cp, weights)?;
+
+        let start_pt = Point3::new(start_x, start_y, start_z);
+        let end_pt = Point3::new(end_x, end_y, end_z);
+        let v_start = self.topo_mut().add_vertex(Vertex::new(start_pt, TOL));
+        // When start ≈ end (closed curve), reuse the same vertex so
+        // downstream code correctly identifies the edge as closed.
+        let v_end = if (start_pt - end_pt).length() < TOL * 100.0 {
+            v_start
+        } else {
+            self.topo_mut().add_vertex(Vertex::new(end_pt, TOL))
+        };
+        let eid = self
+            .topo_mut()
+            .add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve)));
+        Ok(edge_id_to_u32(eid))
+    }
+
+    /// Implementation behind `makeWire`.
+    ///
+    /// # Errors
+    ///
+    /// See [`make_wire`](Self::make_wire).
+    pub fn make_wire_impl(&mut self, edge_handles: &[u32], closed: bool) -> Result<u32, WasmError> {
+        let tol = brepkit_math::tolerance::Tolerance::new();
+
+        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+            .iter()
+            .map(|&h| self.resolve_edge(h))
+            .collect::<Result<_, WasmError>>()?;
+
+        // Merge coincident vertices between adjacent edges.
+        // When edge[i].end is at the same position as edge[i+1].start,
+        // replace edge[i+1].start with edge[i].end so they share a vertex.
+        if edge_ids.len() > 1 {
+            for i in 0..edge_ids.len() {
+                let next = if i + 1 < edge_ids.len() {
+                    i + 1
+                } else if closed {
+                    0 // wrap around for closed wires
+                } else {
+                    continue;
+                };
+                if next == i {
+                    continue; // single-edge closed wire
+                }
+
+                let end_vid = self.topo.edge(edge_ids[i])?.end();
+                let start_vid = self.topo.edge(edge_ids[next])?.start();
+
+                if end_vid == start_vid {
+                    continue; // already shared
+                }
+
+                let end_pos = self.topo.vertex(end_vid)?.point();
+                let start_pos = self.topo.vertex(start_vid)?.point();
+
+                let dist = (end_pos - start_pos).length();
+                if dist < tol.linear {
+                    // Merge: replace the next edge's start with the current edge's end
+                    self.topo_mut().edge_mut(edge_ids[next])?.set_start(end_vid);
+                }
+            }
+        }
+
+        let oriented: Vec<OrientedEdge> = edge_ids
+            .iter()
+            .map(|&eid| OrientedEdge::new(eid, true))
+            .collect();
+        let wire = Wire::new(oriented, closed)?;
+        let wid = self.topo_mut().add_wire(wire);
+        Ok(wire_id_to_u32(wid))
+    }
+
+    /// Implementation behind `makeFaceFromWires`.
+    ///
+    /// # Errors
+    ///
+    /// See [`make_face_from_wires`](Self::make_face_from_wires).
+    pub fn make_face_from_wires_impl(
+        &mut self,
+        outer_wire: u32,
+        inner_wire_handles: &[u32],
+    ) -> Result<u32, WasmError> {
+        let outer = self.resolve_wire(outer_wire)?;
+        let holes: Vec<brepkit_topology::wire::WireId> = inner_wire_handles
+            .iter()
+            .map(|&h| self.resolve_wire(h))
+            .collect::<Result<_, _>>()?;
+
+        // Derive the plane before allocating anything, so a non-planar outer
+        // wire fails without leaving a half-built face in the arena.
+        let (normal, d) = brepkit_topology::builder::wire_plane(&self.topo, outer)?;
+
+        let fid = crate::holed_face::build_holed_face(
+            self.topo_mut(),
+            brepkit_topology::face::FaceSurface::Plane { normal, d },
+            outer,
+            &[],
+            &holes,
         )?;
         Ok(face_id_to_u32(fid))
     }

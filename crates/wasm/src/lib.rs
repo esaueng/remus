@@ -11,6 +11,7 @@ mod bindings;
 pub mod error;
 mod handles;
 mod helpers;
+pub mod holed_face;
 pub mod kernel;
 mod logging;
 pub mod panics;

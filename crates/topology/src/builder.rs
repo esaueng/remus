@@ -335,6 +335,22 @@ pub fn make_planar_face_from_wire(
     topo: &mut Topology,
     wire_id: WireId,
 ) -> Result<FaceId, crate::TopologyError> {
+    let (normal, d) = wire_plane(topo, wire_id)?;
+    Ok(topo.add_face(Face::new(wire_id, vec![], FaceSurface::Plane { normal, d })))
+}
+
+/// The plane `normal · x = d` a wire lies in, without creating a face.
+///
+/// This is the plane [`make_planar_face_from_wire`] would attach, exposed
+/// separately so a caller assembling a face with inner wires can derive the
+/// surface once and build a single face — rather than build a throwaway
+/// face just to read its surface back.
+///
+/// # Errors
+///
+/// Returns an error if the wire has no edges, has fewer than 3 usable sample
+/// points, or its samples do not lie within tolerance of any single plane.
+pub fn wire_plane(topo: &Topology, wire_id: WireId) -> Result<(Vec3, f64), crate::TopologyError> {
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges();
     if edges.is_empty() {
@@ -344,9 +360,7 @@ pub fn make_planar_face_from_wire(
     }
 
     let sampled = sample_wire_for_planarity(topo, edges)?;
-    let (normal, d) = verified_plane(&sampled).ok_or(crate::TopologyError::NotPlanar)?;
-
-    Ok(topo.add_face(Face::new(wire_id, vec![], FaceSurface::Plane { normal, d })))
+    verified_plane(&sampled).ok_or(crate::TopologyError::NotPlanar)
 }
 
 /// Sample points and tolerance gathered from a wire for planarity testing.

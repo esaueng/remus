@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{Face, FaceSurface};
+use brepkit_topology::face::FaceSurface;
 
 use crate::error::{WasmError, validate_finite};
 use crate::handles::{
@@ -1387,7 +1387,21 @@ impl BrepKernel {
     /// Add hole wires to an existing face, creating a new face with the same
     /// surface but additional inner wires.
     ///
-    /// Returns a new face handle (`u32`).
+    /// Every hole wire is validated before the face is built: it must be a
+    /// closed loop, lie on the face's surface within tolerance, and — on a
+    /// planar face — be contained in the outer wire and disjoint from the
+    /// face's other holes. The scope of these checks, and why containment is
+    /// planar-only, is documented on
+    /// [`holed_face`](crate::holed_face). Hole winding is not
+    /// constrained; `extrude` handles either.
+    ///
+    /// The source face is left untouched — this returns a NEW face handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any handle is invalid, or if a hole wire is open,
+    /// off-surface, outside the outer wire, duplicated, or overlapping
+    /// another hole.
     #[wasm_bindgen(js_name = "addHolesToFace")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn add_holes_to_face(
@@ -1395,20 +1409,7 @@ impl BrepKernel {
         face: u32,
         hole_wire_handles: Vec<u32>,
     ) -> Result<u32, JsError> {
-        let face_id = self.resolve_face(face)?;
-        let face_data = self.topo.face(face_id)?;
-        let outer_wire = face_data.outer_wire();
-        let surface = face_data.surface().clone();
-        let mut inner_wires: Vec<brepkit_topology::wire::WireId> = face_data.inner_wires().to_vec();
-
-        for &wh in &hole_wire_handles {
-            let wid = self.resolve_wire(wh)?;
-            inner_wires.push(wid);
-        }
-
-        let new_face = Face::new(outer_wire, inner_wires, surface);
-        let fid = self.topo_mut().add_face(new_face);
-        Ok(face_id_to_u32(fid))
+        Ok(self.add_holes_to_face_impl(face, &hole_wire_handles)?)
     }
 
     /// Build an edge's NURBS curve data for JS consumption.
@@ -1607,6 +1608,42 @@ impl BrepKernel {
             }),
         };
         Ok(json.to_string())
+    }
+}
+
+// Non-exported helpers. `JsError` cannot be constructed on non-wasm targets,
+// so the real work lives here behind a `WasmError` and stays reachable from
+// native tests and from `executeBatch` dispatch.
+impl BrepKernel {
+    /// Implementation behind `addHolesToFace`.
+    ///
+    /// # Errors
+    ///
+    /// See [`add_holes_to_face`](Self::add_holes_to_face).
+    pub fn add_holes_to_face_impl(
+        &mut self,
+        face: u32,
+        hole_wire_handles: &[u32],
+    ) -> Result<u32, WasmError> {
+        let face_id = self.resolve_face(face)?;
+        let face_data = self.topo.face(face_id)?;
+        let outer_wire = face_data.outer_wire();
+        let surface = face_data.surface().clone();
+        let existing_inner: Vec<brepkit_topology::wire::WireId> = face_data.inner_wires().to_vec();
+
+        let new_holes: Vec<brepkit_topology::wire::WireId> = hole_wire_handles
+            .iter()
+            .map(|&wh| self.resolve_wire(wh))
+            .collect::<Result<_, _>>()?;
+
+        let fid = crate::holed_face::build_holed_face(
+            self.topo_mut(),
+            surface,
+            outer_wire,
+            &existing_inner,
+            &new_holes,
+        )?;
+        Ok(face_id_to_u32(fid))
     }
 }
 
