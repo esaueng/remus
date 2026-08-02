@@ -145,13 +145,64 @@ pub(super) fn compute_axial_range(
     }
 }
 
+/// Where a full-revolution analytic grid must put its `u` origin.
+///
+/// A closed rim edge's polyline starts at the edge's own start vertex
+/// (`edge_sampling::circle_param_range`), because the face boundary walk enters
+/// the rim through that vertex. The analytic grid that fills the face between
+/// its rims has to agree: its columns are what
+/// `tessellate::nonplanar::tessellate_nonplanar_snap` reconciles against the
+/// shared edge pool by 1 um proximity, and a grid anchored anywhere else lands
+/// every column between two pool samples, snaps nothing, and leaves the face
+/// sharing no rim vertex at all with its neighbours.
+///
+/// So the anchor is the start vertex of the first CLOSED conic edge on the
+/// outer wire -- the same vertex `circle_param_range` anchors the polyline on.
+///
+/// `None` when the wire has no such edge, and then the caller keeps the old
+/// `(0, TAU)`. That restraint is load-bearing, not caution: an anchor is only
+/// safe when the two faces that must agree on it derive it from the SAME
+/// entity. A closed rim edge is shared by both faces that meet on it, so both
+/// read one vertex. Anything else is per-face — `make_sphere`'s two hemispheres
+/// share one equatorial loop but walk it in opposite directions, so "the first
+/// boundary vertex" is a different point on each, and anchoring there pulls
+/// their grids apart instead of together (measured: two tangent unit balls
+/// fused read 6.03 against 8.38).
+fn full_turn_anchor<F>(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    project: &F,
+) -> Option<f64>
+where
+    F: Fn(Point3) -> (f64, f64),
+{
+    use brepkit_topology::edge::EdgeCurve;
+
+    let wire = topo.wire(face_data.outer_wire()).ok()?;
+    for oe in wire.edges() {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            continue;
+        };
+        if edge.start() != edge.end()
+            || !matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+        {
+            continue;
+        }
+        if let Ok(sv) = topo.vertex(edge.start()) {
+            return Some(project(sv.point()).0);
+        }
+    }
+    None
+}
+
 /// Compute the angular (u) range for an analytic face from its wire boundary.
 ///
 /// Projects boundary edge vertices -- and midpoints of curved edges -- onto
 /// the surface and collects their u-parameters. If the face doesn't span
 /// the full revolution, returns the tighter `[u_min, u_max]` range.
-/// Returns `(0, 2*pi)` for full-circle faces or when fewer than 3 boundary
-/// vertices exist.
+/// Returns a full `2*pi` for full-circle faces and when fewer than 3 boundary
+/// vertices exist — ANCHORED AT THE FACE'S SEAM when the wire names one (see
+/// [`full_turn_anchor`]), at the surface frame's `u = 0` when it does not.
 pub(super) fn compute_angular_range<F>(
     topo: &Topology,
     face_data: &brepkit_topology::face::Face,
@@ -162,6 +213,11 @@ where
 {
     use brepkit_topology::edge::EdgeCurve;
     use std::f64::consts::TAU;
+
+    let full_turn = || {
+        let a = full_turn_anchor(topo, face_data, &project).unwrap_or(0.0);
+        (a, a + TAU)
+    };
 
     let mut angles: Vec<f64> = Vec::new();
 
@@ -234,14 +290,14 @@ where
     }
 
     if angles.len() < 3 {
-        return (0.0, TAU);
+        return full_turn();
     }
 
     angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     angles.dedup_by(|a, b| (*a - *b).abs() < brepkit_math::tolerance::Tolerance::default().linear);
 
     if angles.len() < 3 {
-        return (0.0, TAU);
+        return full_turn();
     }
 
     let mut max_gap = 0.0_f64;
@@ -263,7 +319,7 @@ where
     let even_gap = TAU / n_angles;
     let gap_threshold = (2.5 * even_gap).min(TAU / 3.0);
     if max_gap < gap_threshold {
-        return (0.0, TAU);
+        return full_turn();
     }
 
     let u_start = angles[gap_end_idx];

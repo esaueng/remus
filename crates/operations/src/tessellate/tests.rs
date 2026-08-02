@@ -2463,3 +2463,78 @@ fn a_closed_conic_edge_samples_from_its_own_seam_vertex() {
         );
     }
 }
+
+/// And its sibling: the full-turn analytic grid has to be anchored on the SAME
+/// vertex.
+///
+/// The grid columns are what `tessellate_nonplanar_snap` reconciles with the
+/// shared edge pool by 1 µm proximity. A face spanning a whole revolution has
+/// no boundary constraint on `u`, so `compute_angular_range` used to return the
+/// surface frame's own `(0, TAU)` — which after a transform or a boolean has
+/// nothing to do with where the face's seam sits. Every column then lands
+/// between two pool samples, nothing snaps, and the face shares no rim vertex
+/// with either neighbour.
+///
+/// The seam here is a quarter turn off the cylinder frame's `u = 0`, so a range
+/// that ignores the rim vertex cannot coincidentally start in the right place.
+#[test]
+fn a_full_turn_analytic_range_is_anchored_on_the_rims_seam_vertex() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::surfaces::CylindricalSurface;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+
+    let origin = Point3::new(2.0, -5.0, 1.0);
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let radius = 6.0;
+    let height = 4.0;
+    let cyl = CylindricalSurface::new(origin, axis, radius).unwrap();
+
+    // Two closed rim circles a quarter turn off the surface frame's u = 0,
+    // joined by a seam line: the standard full-revolution band.
+    let mut topo = Topology::new();
+    let mut rim = |z: f64| {
+        let c = Point3::new(origin.x(), origin.y(), origin.z() + z);
+        let circle = Circle3D::new(c, axis, radius).unwrap();
+        let seam = cyl.evaluate(FRAC_PI_2, z);
+        let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let e = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        (v, e)
+    };
+    let (v_lo, e_lo) = rim(0.0);
+    let (v_hi, e_hi) = rim(height);
+    let e_seam = topo.add_edge(Edge::new(v_lo, v_hi, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e_lo, true),
+                OrientedEdge::new(e_seam, true),
+                OrientedEdge::new(e_hi, true),
+                OrientedEdge::new(e_seam, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(
+        wire,
+        Vec::new(),
+        FaceSurface::Cylinder(cyl.clone()),
+    ));
+    let face_data = topo.face(face).unwrap();
+
+    let (u0, u1) = super::nurbs::compute_angular_range(&topo, face_data, |p| cyl.project_point(p));
+
+    assert!(
+        (u1 - u0 - TAU).abs() < 1e-12,
+        "the band spans a whole revolution; got a span of {}",
+        u1 - u0
+    );
+    // The seam vertex is at u = pi/2 by construction. Compare on the circle so
+    // a representative differing by a whole turn still counts as the same ray.
+    let off = (u0 - FRAC_PI_2).rem_euclid(TAU);
+    let off = off.min(TAU - off);
+    assert!(
+        off < 1e-12,
+        "the grid starts at u = {u0}, {off} away from the rim's seam vertex at pi/2"
+    );
+}
