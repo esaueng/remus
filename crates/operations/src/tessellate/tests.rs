@@ -2538,3 +2538,154 @@ fn a_full_turn_analytic_range_is_anchored_on_the_rims_seam_vertex() {
         "the grid starts at u = {u0}, {off} away from the rim's seam vertex at pi/2"
     );
 }
+
+/// A cross-drilled shaft whose bore radius is smaller than the shaft's, so the
+/// bore leaves a wall of its own. `cross_drilled_shaft` above drills at the
+/// shaft's own radius, where the two cylinders are tangent and the bore wall is
+/// the degenerate Steinmetz case; these tests need the ordinary one.
+fn shaft_drilled_with(bore: f64) -> (Topology, brepkit_topology::solid::SolidId) {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let shaft = crate::primitives::make_cylinder(&mut topo, 3.0, 30.0).unwrap();
+    let len = 30.0 + 4.0 * 3.0;
+    let tool = crate::primitives::make_cylinder(&mut topo, bore, len).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    crate::transform::transform_solid(&mut topo, tool, &Mat4::translation(-len / 2.0, 0.0, 15.0))
+        .unwrap();
+    let res =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, shaft, tool).unwrap();
+    (topo, res)
+}
+
+/// Triangle count and summed area of every cylindrical face of radius `bore`.
+fn bore_wall_mesh(
+    topo: &Topology,
+    solid: brepkit_topology::solid::SolidId,
+    bore: f64,
+    deflection: f64,
+) -> (usize, f64) {
+    let shell = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
+    let mut tris = 0;
+    let mut area = 0.0;
+    for &fid in shell.faces() {
+        let face = topo.face(fid).unwrap();
+        let FaceSurface::Cylinder(cyl) = face.surface() else {
+            continue;
+        };
+        if (cyl.radius() - bore).abs() > 1e-9 {
+            continue;
+        }
+        let mesh = crate::tessellate::tessellate(topo, fid, deflection).unwrap();
+        tris += mesh.indices.len() / 3;
+        area += mesh
+            .indices
+            .chunks_exact(3)
+            .map(|t| {
+                let a = mesh.positions[t[0] as usize];
+                let b = mesh.positions[t[1] as usize];
+                let c = mesh.positions[t[2] as usize];
+                (b - a).cross(c - a).length() / 2.0
+            })
+            .sum::<f64>();
+    }
+    (tris, area)
+}
+
+/// The exact area of a through bore's wall.
+///
+/// A bore of radius `b` along x through a shaft of radius `r` about z: a point
+/// on the bore wall is `(x, b sin t, b cos t)` relative to the bore axis, and
+/// it lies inside the shaft while `x^2 + (b sin t)^2 <= r^2`. So each t
+/// contributes an axial run of `2 sqrt(r^2 - b^2 sin^2 t)` and an arc `b dt`:
+///
+///     A = integral over 0..2pi of 2 b sqrt(r^2 - b^2 sin^2 t) dt
+///
+/// At `b = r` this is `2 r^2 * integral |cos t| dt = 8 r^2` — 72 at r = 3,
+/// which is exactly what `holed_cylindrical_wall_is_rendered_without_its_holes`
+/// independently derives as the area the bore REMOVES from the shaft wall. The
+/// two closed forms agreeing at the tangent case is the check on this one.
+fn exact_bore_wall_area(bore: f64, shaft: f64) -> f64 {
+    let n = 2_000_000;
+    let mut sum = 0.0;
+    for i in 0..n {
+        let t = std::f64::consts::TAU * (f64::from(i) + 0.5) / f64::from(n);
+        sum += 2.0 * bore * (shaft * shaft - (bore * t.sin()).powi(2)).sqrt();
+    }
+    sum * std::f64::consts::TAU / f64::from(n)
+}
+
+#[test]
+fn a_through_bore_wall_is_drawn_at_all() {
+    // THE REGRESSION. `tessellate_analytic_with_boundary` built its UV boundary
+    // from one vertex per edge, which equals the real boundary only when every
+    // boundary edge is straight — and the dispatcher sends a cylinder here
+    // precisely when its outer wire carries a NURBS edge, i.e. a boolean
+    // intersection curve.
+    //
+    // A bore cut clean through a shaft leaves a wall bounded by ONE closed such
+    // curve. One edge, one vertex read, so the entire boundary collapsed to a
+    // single point, fell under the three-point floor, and the function returned
+    // `TriangleMeshUV::default()` — an EMPTY mesh, with no error. Measured
+    // before the fix: 0 triangles and 0.0 area at EVERY deflection and both
+    // bore radii. The drilled hole rendered as nothing at all.
+    //
+    // Asserted as a property rather than a triangle count, because the count is
+    // a function of the deflection and says nothing on its own.
+    for bore in [1.0, 2.0] {
+        let (topo, solid) = shaft_drilled_with(bore);
+        for deflection in [0.05, 0.01, 0.002] {
+            let (tris, area) = bore_wall_mesh(&topo, solid, bore, deflection);
+            assert!(
+                tris > 0 && area > 0.0,
+                "bore {bore} at deflection {deflection} drew {tris} triangles \
+                 of area {area} — the wall is invisible"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "a through bore's wall is drawn too large; see this test's note"]
+fn a_through_bore_wall_is_drawn_at_its_true_area() {
+    // What the fix above did NOT settle, kept visible rather than asserted
+    // away. Making the wall non-empty made it DRAWABLE, not correct: the
+    // boundary is now the real polyline, but the CDT still fills it in the
+    // cylinder's (u, v) parameters, and the closed bore curve wraps u by a full
+    // turn — so the tessellator pastes over part of the domain it should leave
+    // open, in the same family as
+    // `holed_cylindrical_wall_is_rendered_without_its_holes`.
+    //
+    // Measured against the closed form, and NOT a constant factor, which is why
+    // no single correction is applied here:
+    //
+    //   bore r | drawn  | exact  | error
+    //   -------|--------|--------|-------
+    //      1   | 63.526 | 36.629 | +73.4%
+    //      2   | 69.021 | 66.149 |  +4.3%
+    //
+    // The error grows as the bore narrows — the narrower the bore, the larger
+    // the share of its wall that is paste. Both figures at deflection 0.05 and
+    // stable to 0.01; at 0.002 they move by under 0.6%, so this is a modelling
+    // error and not a tessellation-density one.
+    for (bore, drawn) in [(1.0, 63.526), (2.0, 69.021)] {
+        let (topo, solid) = shaft_drilled_with(bore);
+        let (_, area) = bore_wall_mesh(&topo, solid, bore, 0.05);
+        assert!(
+            (area - drawn).abs() / drawn < 1e-3,
+            "bore {bore} drew {area}, pinned at {drawn}"
+        );
+        let exact = exact_bore_wall_area(bore, 3.0);
+        assert!(
+            (area - exact).abs() / exact < 0.01,
+            "bore {bore} drew {area} against an exact {exact}"
+        );
+    }
+}

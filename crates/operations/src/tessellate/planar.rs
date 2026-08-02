@@ -13,27 +13,34 @@ use super::{AnalyticKind, MERGE_GRID, TriangleMesh, TriangleMeshUV, point_merge_
 /// Tessellate a cylindrical face using its actual boundary polygon (CDT-based).
 ///
 /// Used for faces with non-rectangular boundaries (e.g., boolean sub-faces
-/// bounded by intersection curves). Projects boundary to UV, CDT-triangulates,
-/// then evaluates each vertex on the cylinder surface.
-/// Only the outer wire is read. No holed face reaches here: the caller routes a
-/// cylinder to this function on a non-standard boundary — a NURBS edge, or more
-/// than four line edges — and the boolean's holed cylindrical faces keep an
-/// ordinary circle-and-seam boundary, which goes to the analytic grid instead.
-/// `crates/operations/tests/regress_holed_cylinder_tessellation.rs` pins that
-/// split, so this stays true or that test says so.
+/// bounded by intersection curves). Projects the boundary POLYLINES to UV,
+/// CDT-triangulates, then evaluates each vertex on the cylinder surface.
 ///
-/// This is not a statement that holes are handled. They are dropped, on the
-/// analytic-grid branch that does take them — see that test for the measured
-/// gap. An earlier note here claimed holed faces were safe because the holed
-/// "outside" sub-face of `split_face_with_internal_loops` is discarded by
-/// classification; the face that actually carries holes is the one the cut
-/// KEEPS, so that reasoning did not hold.
+/// The boundary is the wire's tessellated polyline, not its corner vertices.
+/// Reading one vertex per edge (what this did before) is only equivalent when
+/// every boundary edge is straight, and the faces routed here are precisely the
+/// ones whose edges are NOT: the caller sends a cylinder this way when its outer
+/// wire carries a NURBS edge — a boolean intersection curve. A bore wall cut
+/// clean through a shaft is bounded by ONE closed such curve, which collapsed to
+/// a single point, fell under the three-point floor, and returned an EMPTY mesh:
+/// the drilled hole rendered as nothing at all. (In `tessellate_solid` that only
+/// showed at deflections coarse enough for `tessellate_nonplanar_cdt` to decline
+/// the face first; the single-face `tessellate` path had no cover and drew
+/// nothing at any deflection.)
+///
+/// Only the outer wire is read. Inner wires are DROPPED — a hole on a face that
+/// arrives here renders filled. That gap is real but it is not reachable from
+/// the dispatcher today: a holed cylindrical face keeps its ordinary
+/// circle-and-seam outer boundary and goes to the analytic grid instead, which
+/// drops holes as well. `tessellate::tests::a_holed_cylindrical_face_does_not_
+/// take_the_boundary_tessellator` pins that routing, so this stays true or that
+/// test says so.
 pub(super) fn tessellate_analytic_with_boundary(
     topo: &Topology,
     face_data: &brepkit_topology::face::Face,
     cyl: &brepkit_math::surfaces::CylindricalSurface,
-    _deflection: f64,
-    _angular_tol: f64,
+    deflection: f64,
+    angular_tol: f64,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
     // NOTE: Do NOT handle is_reversed here -- `tessellate_with_uvs` applies
     // a common reversal pass for all face types after this function returns.
@@ -42,25 +49,45 @@ pub(super) fn tessellate_analytic_with_boundary(
     let mut uv_pts: Vec<(f64, f64)> = Vec::new();
     let mut positions_3d: Vec<Point3> = Vec::new();
 
+    // Joint tolerance: the polylines of two consecutive edges repeat the vertex
+    // between them, and a closed edge repeats its seam vertex at both ends.
+    let tol_dup = brepkit_math::tolerance::Tolerance::default().linear;
+
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        let vid = if oe.is_forward() {
-            edge.start()
+        let pts = super::edge_sampling::sample_edge(topo, edge, deflection, angular_tol, false)?;
+        let ordered: Vec<Point3> = if oe.is_forward() {
+            pts
         } else {
-            edge.end()
+            pts.into_iter().rev().collect()
         };
-        let pos = topo.vertex(vid)?.point();
-        let (mut u, v) = cyl.project_point(pos);
+        for pos in ordered {
+            if let Some(&last) = positions_3d.last()
+                && (last - pos).length() < tol_dup
+            {
+                continue;
+            }
+            let (mut u, v) = cyl.project_point(pos);
 
-        // Unwrap u to be continuous with the previous sample.
-        if let Some(&(prev_u, _)) = uv_pts.last() {
-            let diff = u - prev_u;
-            let shifts = (diff / std::f64::consts::TAU + 0.5).floor();
-            u -= shifts * std::f64::consts::TAU;
+            // Unwrap u to be continuous with the previous sample.
+            if let Some(&(prev_u, _)) = uv_pts.last() {
+                let diff = u - prev_u;
+                let shifts = (diff / std::f64::consts::TAU + 0.5).floor();
+                u -= shifts * std::f64::consts::TAU;
+            }
+
+            uv_pts.push((u, v));
+            positions_3d.push(pos);
         }
+    }
 
-        uv_pts.push((u, v));
-        positions_3d.push(pos);
+    // Drop the closing repeat of the first point, if the walk came back to it.
+    if positions_3d.len() > 2
+        && let (Some(&first), Some(&last)) = (positions_3d.first(), positions_3d.last())
+        && (first - last).length() < tol_dup
+    {
+        positions_3d.pop();
+        uv_pts.pop();
     }
 
     if uv_pts.len() < 3 {
