@@ -170,6 +170,7 @@ export const brepkernel_makeEllipseEdge: (a: number, b: number, c: number, d: nu
 export const brepkernel_makeEllipseEdgeWithRef: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
 export const brepkernel_makeEllipsoid: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_makeFaceFromWire: (a: number, b: number) => [number, number, number];
+export const brepkernel_makeFaceFromWires: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_makeLineEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_makeNurbsEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
 export const brepkernel_makePlanarFaceFromWire: (a: number, b: number) => [number, number, number];
@@ -206,6 +207,8 @@ export const brepkernel_pointInPolygon2d: (a: number, b: number, c: number, d: n
 export const brepkernel_pointToEdgeDistance: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_pointToFaceDistance: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const brepkernel_pointToSolidDistance: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const brepkernel_polygonBoolean2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
+export const brepkernel_polygonUnion2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const brepkernel_polygonsIntersect2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_projectEdges: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
 export const brepkernel_projectPointOnSurface: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

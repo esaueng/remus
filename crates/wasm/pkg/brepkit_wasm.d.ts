@@ -243,6 +243,27 @@ export interface MeshQualityResult {
 }
 
 /**
+ * Typed result for `polygonUnion2d` and `polygonBoolean2d`.
+ *
+ * Each loop is a flat `[x0, y0, x1, y1, ...]` array of 2D coordinates.
+ * `outer` loops are counter-clockwise, `holes` are clockwise; a loop is
+ * implicitly closed (the last point is not repeated). Keeping the two
+ * lists separate is the whole point of this type — a downstream consumer
+ * building a face with holes must know which loops bound material and
+ * which remove it.
+ */
+export interface PolygonBoolean2dResult {
+    /**
+     * Counter-clockwise outer boundary loops, each a flat `[x, y, ...]` array.
+     */
+    outer: number[][];
+    /**
+     * Clockwise hole loops, each a flat `[x, y, ...]` array.
+     */
+    holes: number[][];
+}
+
+/**
  * Typed result for `runHealPipeline`.
  */
 export interface HealPipelineResult {
@@ -308,7 +329,21 @@ export class BrepKernel {
      * Add hole wires to an existing face, creating a new face with the same
      * surface but additional inner wires.
      *
-     * Returns a new face handle (`u32`).
+     * Every hole wire is validated before the face is built: it must be a
+     * closed loop, lie on the face's surface within tolerance, and — on a
+     * planar face — be contained in the outer wire and disjoint from the
+     * face's other holes. The scope of these checks, and why containment is
+     * planar-only, is documented on
+     * [`holed_face`](crate::holed_face). Hole winding is not
+     * constrained; `extrude` handles either.
+     *
+     * The source face is left untouched — this returns a NEW face handle.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, or if a hole wire is open,
+     * off-surface, outside the outer wire, duplicated, or overlapping
+     * another hole.
      */
     addHolesToFace(face: number, hole_wire_handles: Uint32Array): number;
     /**
@@ -1860,6 +1895,26 @@ export class BrepKernel {
      */
     makeFaceFromWire(wire: number): number;
     /**
+     * Create a planar face from an outer wire and zero or more hole wires
+     * in one call.
+     *
+     * Equivalent to `makePlanarFaceFromWire` followed by `addHolesToFace`,
+     * but it builds a single face instead of two and runs the same hole
+     * validation once. The outer wire must be planar; each hole wire must
+     * be a closed loop lying on that plane, inside the outer wire, and
+     * disjoint from the other holes (see
+     * [`holed_face`](crate::holed_face)). Hole winding is not
+     * constrained.
+     *
+     * Returns a face handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the outer wire is not
+     * planar, or a hole wire fails validation.
+     */
+    makeFaceFromWires(outer_wire: number, inner_wire_handles: Uint32Array): number;
+    /**
      * Create a straight-line edge between two points.
      *
      * Returns an edge handle (`u32`).
@@ -2208,6 +2263,34 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid.
      */
     pointToSolidDistance(px: number, py: number, pz: number, solid: number): Float64Array;
+    /**
+     * Boolean of two 2D polygons: `"union"`, `"intersection"`, or
+     * `"difference"` (`A \ B`).
+     *
+     * Encoding, winding, and tolerance semantics are identical to
+     * [`polygonUnion2d`](Self::polygon_union_2d).
+     */
+    polygonBoolean2d(coords_a: Float64Array, coords_b: Float64Array, operation: string, tolerance?: number | null): any;
+    /**
+     * Union two 2D polygons with the robust arrangement-based engine.
+     *
+     * Both polygons are flat arrays `[x,y, x,y, ...]`; either winding is
+     * accepted (orientation is normalized internally). `tolerance` is an
+     * absolute linear tolerance in the polygons' own units; pass `null`
+     * or `undefined` for the kernel default (1e-7).
+     *
+     * Returns a JSON string
+     * `{"outer": [[x,y,...], ...], "holes": [[x,y,...], ...]}`
+     * (the `PolygonBoolean2dResult` TypeScript type). Outer loops are
+     * counter-clockwise, hole loops clockwise, and each loop is implicitly
+     * closed. A disjoint union yields several `outer` loops; a union that
+     * encloses a void yields a `holes` entry — unlike
+     * [`intersectPolygons2d`](Self::intersect_polygons_2d), which is a
+     * convex-only Sutherland–Hodgman clipper returning a single loop.
+     *
+     * Both result lists are empty when the operation produces no geometry.
+     */
+    polygonUnion2d(coords_a: Float64Array, coords_b: Float64Array, tolerance?: number | null): any;
     /**
      * Test if two 2D polygons intersect (overlap).
      *

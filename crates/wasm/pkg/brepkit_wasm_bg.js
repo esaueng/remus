@@ -19,7 +19,21 @@ export class BrepKernel {
      * Add hole wires to an existing face, creating a new face with the same
      * surface but additional inner wires.
      *
-     * Returns a new face handle (`u32`).
+     * Every hole wire is validated before the face is built: it must be a
+     * closed loop, lie on the face's surface within tolerance, and — on a
+     * planar face — be contained in the outer wire and disjoint from the
+     * face's other holes. The scope of these checks, and why containment is
+     * planar-only, is documented on
+     * [`holed_face`](crate::holed_face). Hole winding is not
+     * constrained; `extrude` handles either.
+     *
+     * The source face is left untouched — this returns a NEW face handle.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, or if a hole wire is open,
+     * off-surface, outside the outer wire, duplicated, or overlapping
+     * another hole.
      * @param {number} face
      * @param {Uint32Array} hole_wire_handles
      * @returns {number}
@@ -3445,6 +3459,37 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Create a planar face from an outer wire and zero or more hole wires
+     * in one call.
+     *
+     * Equivalent to `makePlanarFaceFromWire` followed by `addHolesToFace`,
+     * but it builds a single face instead of two and runs the same hole
+     * validation once. The outer wire must be planar; each hole wire must
+     * be a closed loop lying on that plane, inside the outer wire, and
+     * disjoint from the other holes (see
+     * [`holed_face`](crate::holed_face)). Hole winding is not
+     * constrained.
+     *
+     * Returns a face handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the outer wire is not
+     * planar, or a hole wire fails validation.
+     * @param {number} outer_wire
+     * @param {Uint32Array} inner_wire_handles
+     * @returns {number}
+     */
+    makeFaceFromWires(outer_wire, inner_wire_handles) {
+        const ptr0 = passArray32ToWasm0(inner_wire_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_makeFaceFromWires(this.__wbg_ptr, outer_wire, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Create a straight-line edge between two points.
      *
      * Returns an edge handle (`u32`).
@@ -4228,6 +4273,65 @@ export class BrepKernel {
         var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v1;
+    }
+    /**
+     * Boolean of two 2D polygons: `"union"`, `"intersection"`, or
+     * `"difference"` (`A \ B`).
+     *
+     * Encoding, winding, and tolerance semantics are identical to
+     * [`polygonUnion2d`](Self::polygon_union_2d).
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @param {string} operation
+     * @param {number | null} [tolerance]
+     * @returns {any}
+     */
+    polygonBoolean2d(coords_a, coords_b, operation, tolerance) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_polygonBoolean2d(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(tolerance), isLikeNone(tolerance) ? 0 : tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Union two 2D polygons with the robust arrangement-based engine.
+     *
+     * Both polygons are flat arrays `[x,y, x,y, ...]`; either winding is
+     * accepted (orientation is normalized internally). `tolerance` is an
+     * absolute linear tolerance in the polygons' own units; pass `null`
+     * or `undefined` for the kernel default (1e-7).
+     *
+     * Returns a JSON string
+     * `{"outer": [[x,y,...], ...], "holes": [[x,y,...], ...]}`
+     * (the `PolygonBoolean2dResult` TypeScript type). Outer loops are
+     * counter-clockwise, hole loops clockwise, and each loop is implicitly
+     * closed. A disjoint union yields several `outer` loops; a union that
+     * encloses a void yields a `holes` entry — unlike
+     * [`intersectPolygons2d`](Self::intersect_polygons_2d), which is a
+     * convex-only Sutherland–Hodgman clipper returning a single loop.
+     *
+     * Both result lists are empty when the operation produces no geometry.
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @param {number | null} [tolerance]
+     * @returns {any}
+     */
+    polygonUnion2d(coords_a, coords_b, tolerance) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_polygonUnion2d(this.__wbg_ptr, ptr0, len0, ptr1, len1, !isLikeNone(tolerance), isLikeNone(tolerance) ? 0 : tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Test if two 2D polygons intersect (overlap).
