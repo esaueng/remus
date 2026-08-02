@@ -170,22 +170,24 @@ fn parabolic_prism_area_matches_the_closed_form_at_every_scale() {
         let got = solid_area(&topo, solid, &PropertiesOptions::default()).unwrap();
         let rel = (got - expected).abs() / expected;
 
-        // NOT scale-invariant, and the cause is a PRE-EXISTING defect
-        // outside this change: `face_integrator::patch_count` tiles a
+        // ONE bound at every scale.
+        //
+        // This assertion used to be split — 1e-5 at and above unit scale,
+        // 1e-3 below — because `face_integrator::patch_count` tiled a
         // quadrature axis by comparing the RAW parameter span against the
         // absolute constant PI/4. That is dimensionless only for an angular
-        // parameter; a NURBS surface's u/v are knot values, which here carry
-        // units of length. The ruled parabolic wall therefore gets 16
-        // patches on a large model and 1 patch on a small one, and its area
-        // error jumps 530x (8.5e-7 -> 4.5e-4) as the span crosses PI/4.
+        // parameter; this wall's NURBS v axis is the parabola's own
+        // parameter, whose domain is exactly (-w, w) and so carries length.
+        // The wall got 16 patches on a large model and 1 on a small one, and
+        // its area error jumped 530x (8.5e-7 -> 4.5e-4) as the span crossed
+        // PI/4. The split bound was stated as an UPPER bound so it would keep
+        // holding once the defect was fixed, which is what happened.
         //
-        // The planar caps, which go through the exact Green's-theorem path
-        // this change extended, are exact to ~1e-16 at every scale — so the
-        // bound below is loose only because of the NURBS wall.
-        //
-        // Stated as an UPPER bound so it still holds once `patch_count`
-        // becomes scale-invariant.
-        let bound = if k >= 1.0 { 1e-5 } else { 1e-3 };
+        // A NURBS axis is now tiled per KNOT SPAN, which is a property of the
+        // surface rather than of the model's units, so the reading no longer
+        // moves with scale: 9.885e-13, 9.889e-13 and 9.893e-13 at 1x, 1000x
+        // and 0.001x. The planar caps were always exact to ~1e-16.
+        let bound = 1e-11;
         assert!(
             rel < bound,
             "parabolic prism area at {k}x: got {got}, closed form {expected} (rel {rel:.3e})"

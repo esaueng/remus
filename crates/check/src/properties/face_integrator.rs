@@ -122,6 +122,7 @@ pub fn integrate_face(
                 gauss_order,
                 sign,
                 &uv,
+                PatchScale::ANGULAR,
             ))
         }
         FaceSurface::Cone(s) => {
@@ -138,6 +139,7 @@ pub fn integrate_face(
                 gauss_order,
                 sign,
                 &uv,
+                PatchScale::ANGULAR,
             ))
         }
         FaceSurface::Sphere(s) => {
@@ -155,6 +157,7 @@ pub fn integrate_face(
                 gauss_order,
                 sign,
                 &uv,
+                PatchScale::ANGULAR,
             ))
         }
         FaceSurface::Torus(s) => {
@@ -168,6 +171,7 @@ pub fn integrate_face(
                 gauss_order,
                 sign,
                 &uv,
+                PatchScale::ANGULAR,
             ))
         }
         FaceSurface::Nurbs(s) => {
@@ -184,6 +188,10 @@ pub fn integrate_face(
                 gauss_order,
                 sign,
                 &uv,
+                PatchScale {
+                    u: knot_axis_patch_scale(s.knots_u(), s.domain_u()),
+                    v: knot_axis_patch_scale(s.knots_v(), s.domain_v()),
+                },
             ))
         }
     }
@@ -1481,10 +1489,79 @@ impl Accumulator {
 /// axes never exceed 2*PI (= 8 patches), well under the cap.
 const MAX_PATCHES: usize = 16;
 
+/// Patches per knot span on a NURBS axis.
+///
+/// A knot span is one polynomial (here rational) piece of the surface, so it is
+/// the natural quadrature cell: the integrand is smooth inside one and only
+/// finitely differentiable across the join. Subdividing each piece converges
+/// cleanly — measured on the single-span ruled parabolic wall of
+/// `conic_prism_closed_form`, relative area error against its closed form:
+///
+///   2 per span  8.5e-7    6 per span  7.4e-11
+///   4 per span  2.2e-9    8 per span  2.1e-12
+///
+/// identical at 1x, 1000x and 0.001x in every row. Eight is taken: it is three
+/// orders past what any consumer needs and, against `MAX_PATCHES`, costs no
+/// more than the previous worst case — a surface of two or more knot spans
+/// clamps to 16 either way, so the cost ceiling is unchanged.
+const PATCHES_PER_KNOT_SPAN: usize = 8;
+
+/// The parameter-space length of one quadrature patch, per axis.
+///
+/// This is what makes a patch count dimensionless. Dividing a span by an
+/// ABSOLUTE constant is only meaningful when the parameter is an angle, because
+/// radians are dimensionless. A NURBS knot vector carries whatever units its
+/// control points were built in, so the same surface, uniformly scaled, would
+/// otherwise be tiled into a different number of patches purely because of
+/// model size — and return a different area with no error and no warning.
+#[derive(Clone, Copy)]
+struct PatchScale {
+    u: f64,
+    v: f64,
+}
+
+impl PatchScale {
+    /// Both axes measured in radians.
+    ///
+    /// PI/4 keeps eight patches per full turn. A quadric's non-angular axis
+    /// (a cylinder's or cone's axial `v`) is deliberately measured the same
+    /// way: its integrands are low-degree polynomials in `v`, exact under one
+    /// Gauss rule at any patch count, so the tiling there affects cost only and
+    /// the historical density is kept.
+    const ANGULAR: Self = Self {
+        u: std::f64::consts::FRAC_PI_4,
+        v: std::f64::consts::FRAC_PI_4,
+    };
+}
+
+/// Patch scale for a NURBS axis: one knot span, subdivided.
+///
+/// Expressed as a fraction of the axis's own domain, so it carries the same
+/// units the span does and their ratio is a pure number. A surface and its
+/// uniform scaling get identical patch counts.
+fn knot_axis_patch_scale(knots: &[f64], domain: (f64, f64)) -> f64 {
+    let extent = (domain.1 - domain.0).abs();
+    if !extent.is_finite() || extent <= 0.0 {
+        return std::f64::consts::FRAC_PI_4;
+    }
+    // Distinct knot values strictly inside the domain split it into spans;
+    // repeated knots (which only lower continuity) must not each count.
+    let eps = extent * 1e-12;
+    let mut spans = 1usize;
+    let mut last = f64::NEG_INFINITY;
+    for &k in knots {
+        if k > domain.0 + eps && k < domain.1 - eps && (k - last).abs() > eps {
+            spans += 1;
+            last = k;
+        }
+    }
+    extent / (spans * PATCHES_PER_KNOT_SPAN) as f64
+}
+
 /// Number of patches an axis of the given span is tiled into.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn patch_count(span: f64) -> usize {
-    ((span.abs() / std::f64::consts::FRAC_PI_4).ceil() as usize).clamp(1, MAX_PATCHES)
+fn patch_count(span: f64, scale: f64) -> usize {
+    ((span.abs() / scale).ceil() as usize).clamp(1, MAX_PATCHES)
 }
 
 /// Integrate a parametric surface over a UV domain by Gauss quadrature,
@@ -1507,9 +1584,10 @@ fn integrate_parametric<S: ParametricSurface>(
     gauss_order: usize,
     sign: f64,
     trim: &UvTrim<'_>,
+    scale: PatchScale,
 ) -> FaceContribution {
     let gauss_pts = gauss_legendre_points(gauss_order);
-    let nu = patch_count(u_range.1 - u_range.0);
+    let nu = patch_count(u_range.1 - u_range.0, scale.u);
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
     let mut acc = Accumulator::default();
@@ -1522,7 +1600,7 @@ fn integrate_parametric<S: ParametricSurface>(
             if u1 - u0 <= eps {
                 continue;
             }
-            let nu = patch_count(u1 - u0);
+            let nu = patch_count(u1 - u0, scale.u);
             let du_patch = (u1 - u0) / nu as f64;
             let u_scale = du_patch / 2.0;
             for iu in 0..nu {
@@ -1530,7 +1608,7 @@ fn integrate_parametric<S: ParametricSurface>(
                 for gpu in gauss_pts {
                     let u = u_scale.mul_add(gpu.x, u_mid);
                     for (a, b) in trim.v_spans(u, v_range) {
-                        let nv = patch_count(b - a);
+                        let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
                         let v_scale = dv_patch / 2.0;
                         for iv in 0..nv {
@@ -1547,7 +1625,7 @@ fn integrate_parametric<S: ParametricSurface>(
         return acc.finish(sign);
     }
 
-    let nv = patch_count(v_range.1 - v_range.0);
+    let nv = patch_count(v_range.1 - v_range.0, scale.v);
     let dv_patch = (v_range.1 - v_range.0) / nv as f64;
     let v_scale = dv_patch / 2.0;
     for iu in 0..nu {
@@ -1588,10 +1666,19 @@ fn integrate_with_trimming<S: ParametricSurface>(
     gauss_order: usize,
     sign: f64,
     uv: &FaceUv,
+    scale: PatchScale,
 ) -> FaceContribution {
     let holes_only = UvTrim::holes_of(uv);
     if uv.boundary.points.len() < 3 {
-        return integrate_parametric(surface, u_range, v_range, gauss_order, sign, &holes_only);
+        return integrate_parametric(
+            surface,
+            u_range,
+            v_range,
+            gauss_order,
+            sign,
+            &holes_only,
+            scale,
+        );
     }
 
     let u_min = uv
@@ -1646,6 +1733,7 @@ fn integrate_with_trimming<S: ParametricSurface>(
             gauss_order,
             sign,
             &UvTrim::pockets_of(uv),
+            scale,
         )
     } else if full_revolution {
         // Full-revolution band (cone/cylinder): integrate the whole revolution
@@ -1657,11 +1745,20 @@ fn integrate_with_trimming<S: ParametricSurface>(
             gauss_order,
             sign,
             &holes_only,
+            scale,
         )
     } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
         // Collapsed polygon (e.g. a closed torus whose seam projects to a
         // point): trust the analytic full-domain range from `face_uv_bounds`.
-        integrate_parametric(surface, u_range, v_range, gauss_order, sign, &holes_only)
+        integrate_parametric(
+            surface,
+            u_range,
+            v_range,
+            gauss_order,
+            sign,
+            &holes_only,
+            scale,
+        )
     } else {
         integrate_parametric(
             surface,
@@ -1670,6 +1767,7 @@ fn integrate_with_trimming<S: ParametricSurface>(
             gauss_order,
             sign,
             &UvTrim::boundary_of(uv),
+            scale,
         )
     }
 }

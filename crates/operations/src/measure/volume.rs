@@ -768,6 +768,15 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     use std::f64::consts::PI;
 
     let solid_data = topo.solid(solid).ok()?;
+    // Every closed form below is the volume of a WHOLE primitive, derived from
+    // the outer shell alone. An inner shell is a cavity: its faces are part of
+    // the boundary and remove material, but nothing here can see them, so the
+    // recogniser would happily match the outer wall and report the body as if
+    // it had never been hollowed. Refuse, and let the shell-complete paths the
+    // caller tries next (which enumerate `explorer::solid_faces`) measure it.
+    if !solid_data.inner_shells().is_empty() {
+        return None;
+    }
     let shell = topo.shell(solid_data.outer_shell()).ok()?;
 
     let mut sphere_r: Option<f64> = None;
@@ -1239,6 +1248,18 @@ pub fn solid_volume(
     // use direct per-face tessellation with signed-volume summation.
     // tessellate() handles face reversal (flips winding + normals), so raw
     // signed tets are correct even without a globally watertight mesh.
+    //
+    // This scan, and the two below it, deliberately look at the OUTER shell
+    // only. They are not integrating — they are choosing between two paths that
+    // are both shell-complete, and the fallthrough (the whole-solid mesh) is the
+    // safer of the two. Widening them to every shell re-routes bodies that the
+    // whole-solid mesh already measures correctly: a box with an enclosed
+    // spherical void has a clean outer shell, but its cavity contributes a
+    // reversed FULL sphere face, which would flip this to `true` and hand the
+    // body to the direct path — where `analytic_sphere_signed_volume` reads the
+    // patch window off the wire's vertices, finds a closed seam with no distinct
+    // u extent, and credits the whole void with zero. Measured: the void's
+    // 523.6 mm³ vanished and a 20 mm cube with a r5 void read a flat 8000.
     let needs_direct_tessellation = {
         let s = topo.solid(solid)?;
         let sh = topo.shell(s.outer_shell())?;
@@ -1351,11 +1372,13 @@ fn volume_from_per_face_tessellation(
     solid: SolidId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    // Outer shell plus every cavity shell. `tessellate()` applies the face's
+    // stored reversal to the winding, so a cavity face's signed tetrahedra
+    // subtract the void without any extra sign handling here.
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total: f64 = 0.0;
-    for &fid in shell.faces() {
+    for fid in faces {
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
         let idx = &mesh.indices;
         let pos = &mesh.positions;
@@ -2184,14 +2207,16 @@ fn analytic_torus_signed_volume(
 ///   * every planar face's closed form AGREES with the area of its own mesh to
 ///     within the chord budget — see [`planar_face_area_is_consistent`].
 fn exact_analytic_face_volume(topo: &Topology, solid: SolidId, deflection: f64) -> Option<f64> {
-    let solid_data = topo.solid(solid).ok()?;
-    let shell = topo.shell(solid_data.outer_shell()).ok()?;
-    if shell.faces().is_empty() {
+    // Cavity faces are boundary too, and their stored reversal makes each one's
+    // signed contribution subtract. Enumerating only the outer shell would
+    // integrate the un-hollowed body.
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid).ok()?;
+    if faces.is_empty() {
         return None;
     }
 
     let mut total = 0.0;
-    for &fid in shell.faces() {
+    for fid in faces {
         let face = topo.face(fid).ok()?;
         let holed = !face.inner_wires().is_empty();
         total += match face.surface() {
@@ -2297,11 +2322,12 @@ pub fn volume_from_direct_face_tessellation(
         return Ok(v);
     }
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    // Outer shell plus every cavity shell: a reversed cavity face's signed
+    // contribution subtracts the void.
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total: f64 = 0.0;
-    for &fid in shell.faces() {
+    for fid in faces {
         let face = topo.face(fid)?;
 
         // Use exact analytical volume for analytic surface faces.
@@ -2368,13 +2394,13 @@ pub fn solid_volume_from_faces(
     use brepkit_topology::edge::EdgeCurve;
     use brepkit_topology::face::FaceSurface;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
+    // Outer shell plus every cavity shell.
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total = 0.0;
     let mut all_planar_triangles = true;
 
-    for &fid in shell.faces() {
+    for fid in faces {
         let face = topo.face(fid)?;
 
         // Only use the fast path for planar faces with exactly 3 line edges.
