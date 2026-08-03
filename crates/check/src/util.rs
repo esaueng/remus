@@ -36,6 +36,10 @@ pub fn polygon_normal(verts: &[Point3]) -> Vec3 {
 /// Number of sample points for closed-curve edges.
 pub const CLOSED_CURVE_SAMPLES: usize = 32;
 
+/// Number of samples for an OPEN curved edge (arc or marched conic piece) in
+/// wire polygons; sized for sub-degree angular steps on typical arcs.
+pub const OPEN_CURVE_SAMPLES: usize = 32;
+
 /// Sample a closed-edge curve at `n` evenly spaced parameter values.
 ///
 /// Returns an empty vector for `Line` edges (geometry determined by
@@ -88,8 +92,8 @@ pub fn face_polygon(topo: &Topology, face_id: FaceId) -> Result<Vec<Point3>, Che
     wire_polygon(topo, face.outer_wire())
 }
 
-/// Build a polygon from a wire by sampling vertex positions and closed-edge
-/// curves.
+/// Build a polygon from a wire by sampling vertex positions plus closed and
+/// open curved edges.
 ///
 /// Wires store edges in loop order, but the per-edge orientation flags are
 /// not guaranteed to chain head-to-tail; each edge's traversal direction is
@@ -103,7 +107,12 @@ pub fn wire_polygon(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
 ) -> Result<Vec<Point3>, CheckError> {
-    wire_polygon_sampled(topo, wire_id, CLOSED_CURVE_SAMPLES)
+    wire_polygon_curve_sampled(
+        topo,
+        wire_id,
+        CLOSED_CURVE_SAMPLES,
+        OPEN_CURVE_SAMPLES,
+    )
 }
 
 /// [`wire_polygon`] with the number of samples a closed curved edge
@@ -153,7 +162,7 @@ pub fn wire_polygon_curve_sampled(
     open_samples: usize,
 ) -> Result<Vec<Point3>, CheckError> {
     let wire = topo.wire(wire_id)?;
-    let mut pts = Vec::new();
+    let mut pts: Vec<Point3> = Vec::new();
     let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
 
     for oe in wire.edges() {
@@ -164,7 +173,24 @@ pub fn wire_polygon_curve_sampled(
         let forward = match prev_end {
             Some(pe) if start_vid == pe && end_vid != pe => true,
             Some(pe) if end_vid == pe && start_vid != pe => false,
-            _ => oe.is_forward(),
+            // A closed edge's endpoints coincide, so positional chaining is
+            // meaningless — keep the stored traversal flag (the partial-turn
+            // torus band's rim phase coherence depends on it).
+            _ if start_vid == end_vid => oe.is_forward(),
+            // OPEN edges: consecutive wire edges can hold position-equal but
+            // DISTINCT vertex ids (assembly refinement mints sub-edge
+            // vertices from a different pool than the neighbours). Fall back
+            // to positional chaining against the last emitted point; an
+            // orientation-flag guess can bow-tie the polygon and flip
+            // containment inside the mis-ordered region.
+            _ => match pts.last() {
+                Some(&last) => {
+                    let sp = topo.vertex(start_vid)?.point();
+                    let ep = topo.vertex(end_vid)?.point();
+                    (sp - last).length_squared() <= (ep - last).length_squared()
+                }
+                None => oe.is_forward(),
+            },
         };
         let is_closed_edge = start_vid == end_vid
             && matches!(
@@ -243,21 +269,26 @@ pub fn wire_polygon_curve_sampled(
                 let start_pt = topo.vertex(start_vid)?.point();
                 let end_pt = topo.vertex(end_vid)?.point();
                 let (t0, t1) = curve.domain_with_endpoints(start_pt, end_pt);
+                let traversal_start = topo.vertex(from_vid)?.point();
                 #[allow(clippy::cast_precision_loss)]
-                let step =
-                    |i: usize| -> f64 { (t1 - t0).mul_add(i as f64 / open_samples as f64, t0) };
-                if forward {
-                    pts.extend(
-                        (0..open_samples)
-                            .map(|i| curve.evaluate_with_endpoints(step(i), start_pt, end_pt)),
-                    );
-                } else {
-                    pts.extend(
-                        (1..=open_samples)
-                            .rev()
-                            .map(|i| curve.evaluate_with_endpoints(step(i), start_pt, end_pt)),
-                    );
+                let mut seq: Vec<Point3> = (0..=open_samples)
+                    .map(|i| {
+                        let t = (t1 - t0)
+                            .mul_add(i as f64 / open_samples as f64, t0);
+                        curve.evaluate_with_endpoints(t, start_pt, end_pt)
+                    })
+                    .collect();
+                // A marched conic's stored curve direction can oppose its
+                // vertex order. Orient the sampled span positionally to the
+                // actual wire traversal, then leave the far endpoint for the
+                // next edge so the polygon stays half-open.
+                if (seq[0] - traversal_start).length_squared()
+                    > (seq[open_samples] - traversal_start).length_squared()
+                {
+                    seq.reverse();
                 }
+                seq.pop();
+                pts.extend(seq);
             } else {
                 pts.push(topo.vertex(from_vid)?.point());
             }
