@@ -946,6 +946,31 @@ export class BrepKernel {
      */
     exportStepMulti(solids: Uint32Array): Uint8Array;
     /**
+     * Export several solids into one STEP AP203 file with optional metadata.
+     *
+     * The JSON shape and defaults match
+     * [`exportStepWithOptions`](Self::export_step_with_options).
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the options
+     * JSON is malformed, or export fails.
+     */
+    exportStepMultiWithOptions(solids: Uint32Array, options?: string | null): Uint8Array;
+    /**
+     * Export a solid to STEP AP203 with optional header metadata.
+     *
+     * `options` is an optional JSON string with `productName`, `fileName`,
+     * and `timestamp` fields. Missing fields retain the defaults used by
+     * [`exportStep`](Self::export_step).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, the options JSON is
+     * malformed, or export fails.
+     */
+    exportStepWithOptions(solid: number, options?: string | null): Uint8Array;
+    /**
      * Export a solid to binary STL format.
      *
      * Returns a `Uint8Array` containing the `.stl` file.

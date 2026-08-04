@@ -889,11 +889,14 @@ impl<'a> StepBuilder<'a> {
             }
             _ if entity_type.is_empty() || attrs.contains("B_SPLINE_SURFACE_WITH_KNOTS") => {
                 let is_rational = attrs.contains("RATIONAL");
-                let bspline_attrs = find_composite_bspline_attrs(&attrs, "B_SPLINE_SURFACE")
+                let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_SURFACE")
+                    .or_else(|| {
+                        find_composite_bspline_attrs(&attrs, "B_SPLINE_SURFACE").map(str::to_string)
+                    })
                     .ok_or_else(|| IoError::UnsupportedEntity {
                         entity: format!("composite surface #{surface_ref}"),
                     })?;
-                self.build_bspline_surface(surface_ref, bspline_attrs, is_rational)
+                self.build_bspline_surface(surface_ref, &bspline_attrs, is_rational)
             }
             _ => Err(IoError::UnsupportedEntity {
                 entity: entity_type,
@@ -1356,11 +1359,14 @@ impl<'a> StepBuilder<'a> {
             "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve(curve_ref, &attrs, false),
             _ if entity_type.is_empty() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {
                 let is_rational = attrs.contains("RATIONAL");
-                let bspline_attrs = find_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE")
+                let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE")
+                    .or_else(|| {
+                        find_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE").map(str::to_string)
+                    })
                     .ok_or_else(|| IoError::UnsupportedEntity {
                         entity: format!("composite curve #{curve_ref}"),
                     })?;
-                self.build_bspline_curve(curve_ref, bspline_attrs, is_rational)
+                self.build_bspline_curve(curve_ref, &bspline_attrs, is_rational)
             }
             _ => Err(IoError::UnsupportedEntity {
                 entity: format!("{entity_type} (curve #{curve_ref})"),
@@ -2154,6 +2160,40 @@ fn find_composite_bspline_attrs<'a>(attrs: &'a str, base_name: &str) -> Option<&
     None
 }
 
+/// Recombine the partial entities of a canonical complex B-spline instance
+/// into the flattened attribute order used by the existing parsers.
+///
+/// ISO 10303 complex instances put inherited attributes in
+/// `B_SPLINE_CURVE(...)` / `B_SPLINE_SURFACE(...)` and knot attributes in a
+/// separate `*_WITH_KNOTS(...)` component. Older reader fixtures also accept
+/// a flattened component, so this canonical path is additive.
+fn canonical_composite_bspline_attrs(attrs: &str, base_name: &str) -> Option<String> {
+    let base_attrs = find_exact_composite_component(attrs, base_name)?;
+    let with_knots = format!("{base_name}_WITH_KNOTS");
+    let knot_attrs = find_exact_composite_component(attrs, &with_knots)?;
+    Some(format!("'', {base_attrs}, {knot_attrs}, {attrs}"))
+}
+
+/// Find one exact partial-entity component without matching the same name as
+/// a suffix of `RATIONAL_B_SPLINE_*`.
+fn find_exact_composite_component<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}(");
+    let mut from = 0usize;
+    while let Some(relative) = attrs[from..].find(&needle) {
+        let start = from + relative;
+        let is_boundary = start == 0
+            || attrs[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| !ch.is_ascii_alphanumeric() && ch != '_');
+        if is_boundary {
+            return balanced_group_after(&attrs[start..], name);
+        }
+        from = start + needle.len();
+    }
+    None
+}
+
 /// Parse integers from a parenthesized list like `(4, 4)`.
 fn parse_ints_in_parens(s: &str) -> Vec<u32> {
     let mut result = Vec::new();
@@ -2250,8 +2290,7 @@ fn parse_weight_list(s: &str) -> Vec<f64> {
 /// Returns uniform weights if parsing fails.
 fn extract_rational_weight_grid(attrs: &str, n_rows: usize, n_cols: usize) -> Vec<Vec<f64>> {
     let flat = extract_rational_weights(attrs, n_rows * n_cols);
-    let tol = brepkit_math::tolerance::Tolerance::new();
-    if flat.len() == n_rows * n_cols && flat.iter().any(|&w| !tol.approx_eq(w, 1.0)) {
+    if n_cols > 0 && flat.len() == n_rows * n_cols {
         flat.chunks(n_cols).map(<[f64]>::to_vec).collect()
     } else {
         vec![vec![1.0; n_cols]; n_rows]
