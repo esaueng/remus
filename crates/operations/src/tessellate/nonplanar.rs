@@ -1915,6 +1915,124 @@ fn interior_grid_resolution(
     }
 }
 
+/// Fill a spherical polar cap from a shared constant-latitude boundary.
+///
+/// A primitive sphere's hemispheres meet on one faceted equatorial wire. After
+/// a box removes part of only one hemisphere, the retained band is tessellated
+/// from that shared wire while the untouched hemisphere used to fall back to an
+/// independent analytic grid. Its different longitude count cracked the
+/// equator. This path keeps the boundary IDs verbatim, inserts latitude rows for
+/// the requested deflection, and closes them with one pole vertex.
+///
+/// Returns false without emitting anything unless boundary is a
+/// full-revolution loop at one constant sphere latitude.
+#[allow(clippy::too_many_lines)]
+fn fill_sphere_latitude_cap(
+    sphere: &brepkit_math::surfaces::SphericalSurface,
+    boundary: &[u32],
+    deflection: f64,
+    angular_tol: f64,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> bool {
+    let n = boundary.len();
+    let radius = sphere.radius();
+    if n < 3 || radius <= 0.0 {
+        return false;
+    }
+
+    let mut seen: DetHashSet<u32> = DetHashSet::default();
+    let mut ring: LatRing = Vec::with_capacity(n);
+    let mut v_sum = 0.0;
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    let mut winding = 0.0;
+
+    for i in 0..n {
+        let gid = boundary[i];
+        let next_gid = boundary[(i + 1) % n];
+        let p = merged.positions[gid as usize];
+        let next = merged.positions[next_gid as usize];
+        let radial = p - sphere.center();
+        if (radial.length() - radius).abs() > radius * 1e-6 {
+            return false;
+        }
+        winding += radial.cross(next - sphere.center()).dot(sphere.z_axis());
+
+        if seen.insert(gid) {
+            let (u, v) = sphere.project_point(p);
+            v_sum += v;
+            v_min = v_min.min(v);
+            v_max = v_max.max(v);
+            ring.push((u, gid));
+        }
+    }
+    if ring.len() < 3 || v_max - v_min > 1e-6 {
+        return false;
+    }
+    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let max_gap = ring
+        .windows(2)
+        .map(|w| w[1].0 - w[0].0)
+        .chain(std::iter::once(
+            ring[0].0 + std::f64::consts::TAU - ring[ring.len() - 1].0,
+        ))
+        .fold(0.0_f64, f64::max);
+    if max_gap > std::f64::consts::PI {
+        return false;
+    }
+
+    let winding_tol = radius * radius * 1e-10;
+    let pole_v = if winding > winding_tol {
+        std::f64::consts::FRAC_PI_2
+    } else if winding < -winding_tol {
+        -std::f64::consts::FRAC_PI_2
+    } else {
+        return false;
+    };
+    let boundary_v = v_sum / ring.len() as f64;
+    let v_span = (pole_v - boundary_v).abs();
+    if v_span < 1e-9 {
+        return false;
+    }
+
+    let n_v = segments_for_chord_deviation_a(radius, v_span, deflection, angular_tol, true).max(1);
+    let n_u = ring.len().max(segments_for_chord_deviation_a(
+        radius,
+        std::f64::consts::TAU,
+        deflection,
+        angular_tol,
+        true,
+    ));
+    let surf_eval = |u, v| sphere.evaluate(u, v);
+    let surf_normal = |u, v| sphere.normal(u, v);
+    let project = |p| sphere.project_point(p);
+    let emit = make_band_emit(&project, &surf_normal);
+
+    let mut prev = ring;
+    for iv in 1..n_v {
+        let t = iv as f64 / n_v as f64;
+        let v = boundary_v + (pole_v - boundary_v) * t;
+        let row = build_interior_row(v, n_u, &surf_eval, &surf_normal, merged, point_to_global);
+        stitch_rings(merged, &prev, &row, &emit);
+        prev = row;
+    }
+
+    let pole = sphere.evaluate(0.0, pole_v);
+    let pole_key = point_merge_key(pole, MERGE_GRID);
+    let pole_gid = *point_to_global.entry(pole_key).or_insert_with(|| {
+        let idx = merged.positions.len() as u32;
+        merged.positions.push(pole);
+        merged.normals.push(sphere.normal(0.0, pole_v));
+        idx
+    });
+    for i in 0..prev.len() {
+        emit(merged, prev[i].1, prev[(i + 1) % prev.len()].1, pole_gid);
+    }
+    true
+}
+
 /// Fill a spherical cap as a structured "web": concentric rings slerped from
 /// the boundary loop toward the patch's spherical centroid, closed by a fan to
 /// the centroid vertex.
@@ -2147,24 +2265,29 @@ fn collect_boundary_loop(
     Ok(boundary)
 }
 
-/// Tessellate a spherical vertex-blend cap (a sphere face with no inner wires,
-/// e.g. the corner ball patch a fillet leaves at a box corner) as a structured
-/// web from the shared boundary samples.
+/// Tessellate a spherical face with no inner wires from shared boundary samples.
 ///
-/// The CDT path degrades on these caps: their boundary arcs project to
-/// (near-)collinear UV polylines, and collinear constraint chains drive the
-/// planar CDT into zero-UV-area triangles that carry real 3D area (rendered as
-/// flaps across the cap) and, at unlucky deflections, cracks. The web needs no
-/// parameterization at all — the rim reuses the shared edge-pool vertices
-/// verbatim, so seams stay watertight by construction.
+/// Constant-latitude polar caps use structured latitude rows. Other suitable
+/// caps (for example, the corner ball patch a fillet leaves at a box corner)
+/// use a structured web. The CDT path degrades on these caps: their boundary
+/// arcs project to (near-)collinear UV polylines, and collinear constraint
+/// chains drive the planar CDT into zero-UV-area triangles that carry real 3D
+/// area (rendered as flaps across the cap) and, at unlucky deflections, cracks.
+/// Both structured paths reuse the shared edge-pool vertices verbatim, so seams
+/// stay watertight by construction. The latitude-cap path is enabled only when
+/// solid-level adjacency finds a trimmed face on the same sphere. It remains
+/// disabled for primitive/standalone sphere tessellation and the mesh-boolean
+/// fallback, preserving their triangle semantics and boolean acceptance.
 ///
 /// Returns `Ok(true)` when the face is such a cap and was tessellated here;
 /// `Ok(false)` defers to the CDT/snap path.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_sphere_cap_shared(
     topo: &Topology,
     face_data: &brepkit_topology::face::Face,
     deflection: f64,
     angular_tol: f64,
+    allow_latitude_cap: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
@@ -2188,15 +2311,25 @@ pub(super) fn tessellate_sphere_cap_shared(
         point_to_global,
     )?;
 
-    if fill_sphere_cap_web(
-        sphere.center(),
-        sphere.radius(),
-        &boundary,
-        deflection,
-        angular_tol,
-        merged,
-        point_to_global,
-    ) {
+    if (allow_latitude_cap
+        && fill_sphere_latitude_cap(
+            sphere,
+            &boundary,
+            deflection,
+            angular_tol,
+            merged,
+            point_to_global,
+        ))
+        || fill_sphere_cap_web(
+            sphere.center(),
+            sphere.radius(),
+            &boundary,
+            deflection,
+            angular_tol,
+            merged,
+            point_to_global,
+        )
+    {
         Ok(true)
     } else {
         // Roll back any boundary vertices this attempt interned so the CDT
@@ -2240,6 +2373,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
         face_data,
         deflection,
         angular_tol,
+        false,
         &empty_pool,
         &mut merged,
         &mut point_to_global,

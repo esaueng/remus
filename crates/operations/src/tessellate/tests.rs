@@ -656,6 +656,87 @@ fn tessellate_boolean_cut_cone_watertight() {
     );
 }
 
+/// A box that removes the sphere above z=5 modifies only the north
+/// hemisphere. The untouched south hemisphere and the trimmed north band still
+/// share the primitive's equatorial wire, so both faces must emit exactly one
+/// opposite-oriented copy of every equator segment at every mesh density.
+#[test]
+fn sphere_box_cut_equatorial_seam_is_closed_across_deflections() {
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let sphere = crate::primitives::make_sphere(&mut topo, 10.0, 32).unwrap();
+    let cutter = crate::primitives::make_box(&mut topo, 30.0, 30.0, 10.0).unwrap();
+    crate::transform::transform_solid(&mut topo, cutter, &Mat4::translation(-15.0, -15.0, 5.0))
+        .unwrap();
+    let result =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, sphere, cutter).unwrap();
+
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert_eq!(faces.len(), 3, "cut must keep the exact three-face B-rep");
+    let (sphere_faces, plane_faces, other_faces) =
+        faces
+            .iter()
+            .fold((0, 0, 0), |(spheres, planes, others), &fid| {
+                match topo.face(fid).unwrap().surface() {
+                    FaceSurface::Sphere(_) => (spheres + 1, planes, others),
+                    FaceSurface::Plane { .. } => (spheres, planes + 1, others),
+                    _ => (spheres, planes, others + 1),
+                }
+            });
+    assert_eq!(
+        (sphere_faces, plane_faces, other_faces),
+        (2, 1, 0),
+        "cut introduced an inexact surface"
+    );
+    let shell_id = topo.solid(result).unwrap().outer_shell();
+    let shell = topo.shell(shell_id).unwrap();
+    assert!(
+        brepkit_topology::validation::validate_shell_closed(shell, &topo).is_ok(),
+        "exact cut shell must be closed"
+    );
+    assert!(
+        brepkit_topology::validation::validate_shell_manifold(shell, &topo).is_ok(),
+        "exact cut shell must be manifold"
+    );
+    let exact_volume = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    let expected_volume = 4.0 * std::f64::consts::PI * 10.0_f64.powi(3) / 3.0
+        - std::f64::consts::PI * 5.0_f64.powi(2) * (10.0 - 5.0 / 3.0);
+    assert!(
+        (exact_volume - expected_volume).abs() < 1e-8,
+        "exact cut volume changed: {exact_volume} vs {expected_volume}"
+    );
+
+    for &defl in &[0.1_f64, 0.05, 0.01, 0.005] {
+        let mesh = tessellate_solid(&topo, result, defl).unwrap();
+        assert!(
+            !mesh.indices.is_empty(),
+            "mesh is empty at deflection {defl}"
+        );
+        assert_eq!(mesh.indices.len() % 3, 0);
+        for tri in mesh.indices.chunks_exact(3) {
+            assert!(
+                tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2],
+                "degenerate triangle indices at deflection {defl}: {tri:?}"
+            );
+            let a = mesh.positions[tri[1] as usize] - mesh.positions[tri[0] as usize];
+            let b = mesh.positions[tri[2] as usize] - mesh.positions[tri[0] as usize];
+            assert!(
+                a.cross(b).length() > 1e-12,
+                "zero-area triangle at deflection {defl}: {tri:?}"
+            );
+        }
+        let boundary = boundary_edge_count(&mesh);
+        let non_manifold = non_manifold_edge_count(&mesh);
+        assert_eq!(
+            (boundary, non_manifold),
+            (0, 0),
+            "sphere-box cut must be watertight at deflection {defl}, got \
+             boundary={boundary} non-manifold={non_manifold}"
+        );
+    }
+}
+
 /// A cylinder bored through a sphere yields two spherical latitude bands (each a
 /// `Sphere` face whose only inner wire is the tunnel rim, bounded by the equator)
 /// plus an inner cylinder wall. Those bands degenerate in UV (each constant-v
