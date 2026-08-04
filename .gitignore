@@ -55,3 +55,22 @@ tarpaulin-report.html
 ISSUES-*.md
 ROADMAP.md
 .claude/scheduled_tasks.lock
+
+# Secrets and credentials (prevent accidental commits)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.npmrc
+.pypirc
+.netrc
+credentials.json
+service-account*.json
+firebase*.json
+google-services.json
+GoogleService-Info.plist
