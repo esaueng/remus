@@ -21,7 +21,7 @@ permissions:
 jobs:
   release-please:
     name: Release Please
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     if: ${{ github.event_name == 'push' }}
     permissions:
       contents: write
@@ -64,7 +64,7 @@ jobs:
 
   auto-merge:
     name: Auto-merge Release PR
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [release-please]
     if: ${{ needs.release-please.outputs.prs_created == 'true' }}
     permissions:
@@ -102,7 +102,7 @@ jobs:
   # ran a months-old kernel while main looked current.
   sync-committed-package:
     name: Refresh committed WASM package
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Skip the bot's own commit so this cannot loop. `[skip ci]` in the commit
     # message already suppresses the re-run; this is the belt-and-braces half.
     #
@@ -208,7 +208,7 @@ jobs:
         (github.event_name == 'workflow_dispatch' && inputs.publish_version != '') ||
         needs.release-please.outputs.release_created == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       id-token: write
