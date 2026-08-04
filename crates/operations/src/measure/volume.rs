@@ -2,6 +2,7 @@
 
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
+use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
@@ -228,10 +229,25 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
 
     let mut has_bored_quadric = false;
     for &fid in &faces {
-        if quadric_wall_is_notched_band(topo, fid) {
+        let notched_quadric = quadric_wall_is_notched_band(topo, fid);
+        if notched_quadric {
             has_bored_quadric = true;
         }
         let face = topo.face(fid).ok()?;
+        // A notched quadric with a marched NURBS rim is the periodic wavy-band
+        // topology produced by circle-outside cone/box fuses. Its analytic
+        // bounding rectangle over-counts the removed lobes; the solid-level
+        // structured tessellator follows the actual rim, so defer to it.
+        let has_nurbs_rim = notched_quadric
+            && topo.wire(face.outer_wire()).ok().is_some_and(|wire| {
+                wire.edges().iter().any(|oe| {
+                    topo.edge(oe.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
+                })
+            });
+        if has_nurbs_rim {
+            return None;
+        }
         match face.surface() {
             FaceSurface::Nurbs(_) => return None,
             // Sphere only: the per-face integrator's hole-clipping is wired up
