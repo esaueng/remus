@@ -71,7 +71,9 @@ pub(super) fn tessellate_band_face_local(
                 }
             }
             EdgeCurve::Line => {}
-            EdgeCurve::Ellipse(_) => return Ok(None),
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(None);
+            }
         }
     }
     let mut by_vertex: std::collections::HashMap<brepkit_topology::vertex::VertexId, Vec<usize>> =
@@ -332,7 +334,9 @@ pub(super) fn tessellate_revolution_band_shared(
             }
             EdgeCurve::Line => {}
             // Ellipse rims keep the CDT path.
-            EdgeCurve::Ellipse(_) => return Ok(false),
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(false);
+            }
         }
     }
     // Walk cycles by shared vertices (vertex→edge adjacency built once).
