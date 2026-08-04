@@ -21,7 +21,7 @@ use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
 use crate::boolean::{BooleanOp, boolean};
-use crate::copy::copy_face;
+use crate::copy::{copy_face, copy_solid_with_face_map};
 use crate::extrude::extrude;
 use crate::heal::unify_faces;
 use crate::measure::solid_volume;
@@ -137,6 +137,68 @@ pub fn resize_cylindrical_face(
     new_radius: f64,
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
+    if !new_radius.is_finite() || new_radius <= tol.linear {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("cylinder radius must be positive, got {new_radius}"),
+        });
+    }
+    ensure_face_in_solid(topo, solid, face)?;
+    let face_data = topo.face(face)?;
+    let FaceSurface::Cylinder(cyl) = face_data.surface() else {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "resize requires a cylindrical face, face {} is {}",
+                face.index(),
+                face_data.surface().type_tag()
+            ),
+        });
+    };
+    let cyl = cyl.clone();
+    if (new_radius - cyl.radius()).abs() <= tol.linear {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("cylinder radius is already {}", cyl.radius()),
+        });
+    }
+
+    let axis = unit(cyl.axis())?;
+    if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
+        return resize_cylindrical_face_aligned(topo, solid, face, new_radius);
+    }
+
+    // The analytic boolean pipeline is most robust in its canonical +Z frame.
+    // Rigidly normalize a copied operand, perform the exact edit there, then
+    // return the result to world space. The face map keeps selection exact;
+    // no geometric re-matching is involved.
+    let (base, _) = axial_extent(topo, face, &cyl)?;
+    let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
+    let to_world = frame_matrix(base, axis, seam_direction)?;
+    let to_local = to_world.inverse().map_err(crate::OperationsError::Math)?;
+    let (local_solid, face_map) = copy_solid_with_face_map(topo, solid)?;
+    let local_face_index = face_map.get(&face.index()).copied().ok_or_else(|| {
+        crate::OperationsError::InvalidInput {
+            reason: format!("copied solid lost cylindrical face {}", face.index()),
+        }
+    })?;
+    let local_face = topo.face_id_from_index(local_face_index).ok_or_else(|| {
+        crate::OperationsError::InvalidInput {
+            reason: format!("copied cylindrical face {local_face_index} is unavailable"),
+        }
+    })?;
+    transform_solid(topo, local_solid, &to_local)?;
+    let result = resize_cylindrical_face_aligned(topo, local_solid, local_face, new_radius)?;
+    transform_solid(topo, result, &to_world)?;
+    Ok(result)
+}
+
+/// [`resize_cylindrical_face`] after any required rigid normalization has put
+/// the selected cylinder on the canonical +Z axis.
+fn resize_cylindrical_face_aligned(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    let tol = Tolerance::new();
 
     if !new_radius.is_finite() || new_radius <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
@@ -183,6 +245,7 @@ pub fn resize_cylindrical_face(
     }
 
     let axis = unit(cyl.axis())?;
+    let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
     let grows = new_radius > old_radius;
     let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
     // Sweeping the wall outward adds material on a boss and removes it from a
@@ -203,19 +266,35 @@ pub fn resize_cylindrical_face(
     let (op, tool) = match (concavity, grows) {
         (Concavity::Boss, true) => (
             BooleanOp::Fuse,
-            place_cylinder(topo, base, axis, new_radius, height)?,
+            place_cylinder(topo, base, axis, seam_direction, new_radius, height)?,
         ),
         (Concavity::Hole, true) => (
             BooleanOp::Cut,
-            place_cylinder(topo, base, axis, new_radius, height)?,
+            place_cylinder(topo, base, axis, seam_direction, new_radius, height)?,
         ),
         (Concavity::Hole, false) => (
             BooleanOp::Fuse,
-            make_tube(topo, base, axis, new_radius, old_radius, height)?,
+            make_tube(
+                topo,
+                base,
+                axis,
+                seam_direction,
+                new_radius,
+                old_radius,
+                height,
+            )?,
         ),
         (Concavity::Boss, false) => (
             BooleanOp::Cut,
-            make_tube(topo, base, axis, new_radius, old_radius, height)?,
+            make_tube(
+                topo,
+                base,
+                axis,
+                seam_direction,
+                new_radius,
+                old_radius,
+                height,
+            )?,
         ),
     };
 
@@ -224,7 +303,96 @@ pub fn resize_cylindrical_face(
     drop_stranded_inner_wires(topo, result)?;
     ensure_closed_shell(topo, result, "cylindrical resize")?;
     ensure_volume(topo, result, expected, "cylindrical resize")?;
+    ensure_resized_cylinder(topo, result, base, axis, height, old_radius, new_radius)?;
     Ok(result)
+}
+
+/// Require the resized wall to remain exact analytic cylinder geometry.
+///
+/// Volume and shell closure do not distinguish a cylinder from a faceted
+/// boolean fallback. Accept multiple coaxial bands when their union covers the
+/// selected wall's full axial span, but reject an old-radius band that still
+/// overlaps that span.
+fn ensure_resized_cylinder(
+    topo: &Topology,
+    solid: SolidId,
+    base: Point3,
+    axis: Vec3,
+    height: f64,
+    old_radius: f64,
+    new_radius: f64,
+) -> Result<(), crate::OperationsError> {
+    let tol = Tolerance::new();
+    let axis = unit(axis)?;
+    let model_scale = [
+        base.x().abs(),
+        base.y().abs(),
+        base.z().abs(),
+        height.abs(),
+        old_radius.abs(),
+        new_radius.abs(),
+    ]
+    .into_iter()
+    .fold(1.0_f64, f64::max);
+    let linear_tol = tol.linear.max(model_scale * tol.relative);
+    let mut requested = Vec::new();
+    let mut seen = Vec::new();
+
+    for fid in solid_faces(topo, solid)? {
+        let face = topo.face(fid)?;
+        let FaceSurface::Cylinder(candidate) = face.surface() else {
+            continue;
+        };
+        seen.push((candidate.radius(), candidate.origin(), candidate.axis()));
+        let candidate_axis = unit(candidate.axis())?;
+        if candidate_axis.dot(axis).abs() < 1.0 - tol.angular {
+            continue;
+        }
+        let origin_offset = candidate.origin() - base;
+        let perpendicular = origin_offset - axis * origin_offset.dot(axis);
+        if perpendicular.length() > linear_tol {
+            continue;
+        }
+
+        let (candidate_base, candidate_height) = axial_extent(topo, fid, candidate)?;
+        let candidate_end = candidate_base + candidate_axis * candidate_height;
+        let t0 = (candidate_base - base).dot(axis);
+        let t1 = (candidate_end - base).dot(axis);
+        let interval = (t0.min(t1), t0.max(t1));
+        let overlap = interval.1.min(height) - interval.0.max(0.0);
+        if overlap <= linear_tol {
+            continue;
+        }
+
+        if tol.approx_eq(candidate.radius(), old_radius) {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "cylindrical resize left the old radius {old_radius} over the edited span"
+                ),
+            });
+        }
+        if tol.approx_eq(candidate.radius(), new_radius) {
+            requested.push(interval);
+        }
+    }
+
+    requested.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut covered = 0.0;
+    for &(lo, hi) in &requested {
+        if lo > covered + linear_tol {
+            break;
+        }
+        covered = covered.max(hi);
+        if covered >= height - linear_tol {
+            return Ok(());
+        }
+    }
+
+    Err(crate::OperationsError::InvalidInput {
+        reason: format!(
+            "cylindrical resize did not preserve an analytic radius {new_radius} wall over height {height}; coaxial spans: {requested:?}; cylinders: {seen:?}"
+        ),
+    })
 }
 
 /// The tube between `inner_r` and `outer_r` over the wall's axial span.
@@ -237,16 +405,18 @@ fn make_tube(
     topo: &mut Topology,
     base: Point3,
     axis: Vec3,
+    x_axis: Vec3,
     inner_r: f64,
     outer_r: f64,
     height: f64,
 ) -> Result<SolidId, crate::OperationsError> {
-    let outer = place_cylinder(topo, base, axis, outer_r, height)?;
+    let outer = place_cylinder(topo, base, axis, x_axis, outer_r, height)?;
     let overshoot = (height * 0.1).max(1e-3);
     let inner = place_cylinder(
         topo,
         base - unit(axis)? * overshoot,
         axis,
+        x_axis,
         inner_r,
         overshoot.mul_add(2.0, height),
     )?;
@@ -424,27 +594,52 @@ fn axial_extent(
     Ok((origin + axis * lo, hi - lo))
 }
 
+/// The radial direction of the selected cylindrical face's stored seam.
+///
+/// A [`CylindricalSurface`]'s parameter-frame X axis is not necessarily where
+/// the face's closed seam edge was constructed. Read the topology itself so a
+/// rigidly transformed resize tool reuses the exact seam angle.
+fn cylinder_seam_direction(
+    topo: &Topology,
+    face: FaceId,
+    cyl: &CylindricalSurface,
+) -> Result<Vec3, crate::OperationsError> {
+    let axis = unit(cyl.axis())?;
+    let face_data = topo.face(face)?;
+    for wid in
+        std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+    {
+        for oriented in topo.wire(wid)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            for vertex in [edge.start(), edge.end()] {
+                let offset = topo.vertex(vertex)?.point() - cyl.origin();
+                let radial = offset - axis * offset.dot(axis);
+                if radial.length() > Tolerance::new().linear {
+                    return unit(radial);
+                }
+            }
+        }
+    }
+    Err(crate::OperationsError::InvalidInput {
+        reason: format!("cylindrical face {} has no seam direction", face.index()),
+    })
+}
+
 /// Normalize a direction, mapping a degenerate one onto an operations error.
 fn unit(v: Vec3) -> Result<Vec3, crate::OperationsError> {
     v.normalize().map_err(crate::OperationsError::Math)
 }
 
-/// Build the matrix taking the canonical +Z cylinder to `base`/`axis`.
-fn frame_matrix(base: Point3, axis: Vec3) -> Result<Mat4, crate::OperationsError> {
+/// Build the matrix taking the canonical +Z cylinder to the selected
+/// cylinder's own analytic frame at `base`.
+fn frame_matrix(base: Point3, axis: Vec3, x_axis: Vec3) -> Result<Mat4, crate::OperationsError> {
     let z = unit(axis)?;
-    // Any vector not parallel to the axis gives a usable reference direction;
-    // the tube is rotationally symmetric so the choice is arbitrary.
-    let seed = if z.x().abs() < 0.9 {
-        Vec3::new(1.0, 0.0, 0.0)
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    // Gram-Schmidt, not a cross product: for the common +Z axis this yields the
-    // identity frame, so the tool's seam sits at the same angle as the seam on
-    // the wall it is replacing. A rotated frame puts the two coincident
-    // cylindrical faces' seams at different angles, and the pair no longer
-    // merges cleanly.
-    let x = unit(seed - z * seed.dot(z))?;
+    // Preserve the source surface's radial frame rather than choosing an
+    // arbitrary perpendicular direction. The cylinder is rotationally
+    // symmetric geometrically, but its closed seam is topological: rotating
+    // that seam relative to the selected wall prevents coincident edges from
+    // merging and can force a faceted boolean fallback.
+    let x = unit(x_axis - z * x_axis.dot(z))?;
     let y = z.cross(x);
     Ok(Mat4([
         [x.x(), y.x(), z.x(), base.x()],
@@ -459,11 +654,12 @@ fn place_cylinder(
     topo: &mut Topology,
     base: Point3,
     axis: Vec3,
+    x_axis: Vec3,
     radius: f64,
     height: f64,
 ) -> Result<SolidId, crate::OperationsError> {
     let solid = make_cylinder(topo, radius, height)?;
-    transform_solid(topo, solid, &frame_matrix(base, axis)?)?;
+    transform_solid(topo, solid, &frame_matrix(base, axis, x_axis)?)?;
     Ok(solid)
 }
 
@@ -755,6 +951,91 @@ mod tests {
         );
         assert_watertight(&topo, narrow);
         assert_eq!(face_count(&topo, narrow, "cylinder"), 1);
+    }
+
+    #[test]
+    fn resizing_a_rigidly_transformed_bore_preserves_an_exact_wall() {
+        let transforms = [
+            Mat4::translation(6.0, 11.0, -3.0) * Mat4::rotation_z(0.63),
+            Mat4::translation(12.0, -7.0, 5.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
+            Mat4::translation(-9.0, 4.0, 13.0) * Mat4::rotation_x(0.7) * Mat4::rotation_y(-0.4),
+            Mat4::translation(3.0, 8.0, 21.0) * Mat4::rotation_x(PI),
+        ];
+
+        for transform in transforms {
+            let mut topo = Topology::new();
+            let drilled = drilled_block(&mut topo);
+            transform_solid(&mut topo, drilled, &transform).unwrap();
+
+            let bore = only_cylinder(&topo, drilled);
+            let wide = resize_cylindrical_face(&mut topo, drilled, bore, 5.0).unwrap();
+            let wide_bore = only_cylinder(&topo, wide);
+            let narrow = resize_cylindrical_face(&mut topo, wide, wide_bore, 4.0).unwrap();
+
+            assert_volume(
+                &topo,
+                narrow,
+                40.0f64.mul_add(40.0 * 10.0, -(PI * 16.0 * 10.0)),
+            );
+            assert_watertight(&topo, narrow);
+            let FaceSurface::Cylinder(cyl) =
+                topo.face(only_cylinder(&topo, narrow)).unwrap().surface()
+            else {
+                unreachable!();
+            };
+            assert!(Tolerance::new().approx_eq(cyl.radius(), 4.0));
+        }
+    }
+
+    #[test]
+    fn resizing_a_bore_is_scale_aware() {
+        for scale in [1e-3_f64, 1e3_f64] {
+            let mut topo = Topology::new();
+            let block = make_box(&mut topo, 40.0 * scale, 40.0 * scale, 10.0 * scale).unwrap();
+            let drill = cylinder_at(
+                &mut topo,
+                3.0 * scale,
+                10.0 * scale,
+                20.0 * scale,
+                20.0 * scale,
+                0.0,
+            );
+            let drilled = boolean(&mut topo, BooleanOp::Cut, block, drill).unwrap();
+            let bore = only_cylinder(&topo, drilled);
+            let wide = resize_cylindrical_face(&mut topo, drilled, bore, 5.0 * scale).unwrap();
+            let wide_bore = only_cylinder(&topo, wide);
+            let narrow = resize_cylindrical_face(&mut topo, wide, wide_bore, 4.0 * scale).unwrap();
+
+            let expected = (40.0 * scale).mul_add(
+                40.0 * scale * 10.0 * scale,
+                -(PI * (4.0 * scale).powi(2) * 10.0 * scale),
+            );
+            let deflection = (DEFLECTION * scale).clamp(1e-6, 10.0);
+            let actual = solid_volume(&topo, narrow, deflection).unwrap();
+            assert!(
+                (actual - expected).abs() <= expected.abs().max(scale.powi(3)) * 1e-3,
+                "scale {scale}: volume {actual} != {expected}"
+            );
+            assert_watertight(&topo, narrow);
+            let FaceSurface::Cylinder(cyl) =
+                topo.face(only_cylinder(&topo, narrow)).unwrap().surface()
+            else {
+                unreachable!();
+            };
+            assert!(Tolerance::new().approx_eq(cyl.radius(), 4.0 * scale));
+        }
+    }
+
+    #[test]
+    fn widening_a_bore_into_other_geometry_fails_closed() {
+        let mut topo = Topology::new();
+        let drilled = drilled_block(&mut topo);
+        let bore = only_cylinder(&topo, drilled);
+        let before = solid_volume(&topo, drilled, DEFLECTION).unwrap();
+
+        assert!(resize_cylindrical_face(&mut topo, drilled, bore, 25.0).is_err());
+        assert_volume(&topo, drilled, before);
+        assert_watertight(&topo, drilled);
     }
 
     /// Regression: an annular sleeve fused into a matching bore.
