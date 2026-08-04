@@ -382,15 +382,14 @@ fn planar_chamfer_result(
     d1: f64,
     d2: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let result_solid = crate::chamfer::chamfer_asymmetric(topo, solid, edges, d1, d2)?;
+    let (result_solid, face_origins) =
+        crate::chamfer::chamfer_asymmetric_with_origins(topo, solid, edges, d1, d2)?;
     let result = BlendResult {
         solid: result_solid,
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
-        // The planar rebuild re-mints the faces it touches instead of trimming
-        // them, so it holds no input-face-to-output-face record to report.
-        face_origins: None,
+        face_origins: Some(face_origins),
     };
     validate_complete_blend(topo, "chamfer", solid, &result)?;
     // The fast path gets the same volume guard as the walking path. Closedness
@@ -400,6 +399,19 @@ fn planar_chamfer_result(
     Ok(result)
 }
 
+/// Run the production planar chamfer engine and return its construction
+/// history. This exists for the WASM engine cascade, which must preserve the
+/// same first-choice geometry as `chamfer` while exposing provenance.
+#[doc(hidden)]
+pub fn planar_chamfer_with_origins(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    distance: f64,
+) -> Result<(SolidId, BlendFaceOrigins), OperationsError> {
+    crate::chamfer::chamfer_with_origins(topo, solid, edges, distance)
+}
+
 #[allow(deprecated)]
 fn planar_fillet_result(
     topo: &mut Topology,
@@ -407,15 +419,14 @@ fn planar_fillet_result(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let result_solid = crate::fillet::fillet_rolling_ball(topo, solid, edges, radius)?;
+    let (result_solid, face_origins) =
+        crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius)?;
     let result = BlendResult {
         solid: result_solid,
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
-        // The rolling-ball rebuild re-mints the loops of every cap it rebuilds,
-        // so there is no face-to-face record to carry out of it.
-        face_origins: None,
+        face_origins: Some(face_origins),
     };
     validate_complete_blend(topo, "fillet", solid, &result)?;
     // The fast path gets the same volume guard as the walking path — and needs
@@ -908,6 +919,9 @@ pub fn evolution_from_blend_origins(
             );
         }
     }
+    for &src in &origins.deleted {
+        evo.add_deleted(src.index());
+    }
     for (face, sources) in &origins.created {
         if !result_faces.contains(&face.index()) {
             continue;
@@ -944,10 +958,12 @@ pub fn evolution_from_blend_origins(
 /// base faces every blend band was built between. When that builder ran, the
 /// returned map is [`EvolutionOrigin::Construction`] — fact, not inference.
 ///
-/// The planar rolling-ball fast path and the per-feature fallback rebuild faces
-/// instead, keeping no such record; those return an
-/// [`EvolutionOrigin::Geometry`] map from matching face normals and centroids,
-/// with anything the matcher cannot separate left in
+/// The planar rolling-ball path records each face specification through
+/// assembly and same-surface unification, so it is construction-derived too.
+/// The per-feature fallback composes independently rebuilt operations and
+/// cannot yet compose their histories; that route returns an
+/// [`EvolutionOrigin::Geometry`] map in the Rust API, with anything the matcher
+/// cannot separate left in
 /// [`EvolutionMap::unresolved`]. Check
 /// [`EvolutionMap::origin`](crate::evolution::EvolutionMap::origin) before
 /// binding a persistent reference.

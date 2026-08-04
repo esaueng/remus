@@ -365,6 +365,37 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Chamfer edges and return versioned face-evolution tracking data.
+     *
+     * This runs the same production engine cascade as [`chamfer`](Self::chamfer_solid):
+     * the established planar bevel first, then the walking builder for
+     * supported curved topology. The returned solid is therefore the same
+     * exact B-Rep the non-evolution entry point produces.
+     *
+     * Generated bevel/corner faces name the input faces the builder used to
+     * construct them. If an engine cannot provide construction history, the
+     * payload reports explicit unresolved source/result sets instead of
+     * inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * or the chamfer fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    chamferWithEvolution(solid, edge_handles, distance) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_chamferWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Save a snapshot of the current kernel state.
      *
      * Returns a checkpoint ID (zero-based index) that can be passed to
@@ -1496,10 +1527,8 @@ class BrepKernel {
     /**
      * Apply a constant-radius fillet and return face-evolution tracking data.
      *
-     * Returns a JSON string `{"solid": <u32>, "evolution": {modified,
-     * generated, deleted, unresolved, origin}}` — the same shape as
-     * `fuseWithEvolution`. Blend faces appear under `generated` and surviving
-     * faces under `modified`.
+     * Returns a validated [`FaceEvolutionPayloadV1`] object. Blend faces
+     * appear under `generated` and surviving faces under `modified`.
      *
      * A blend band is listed under **both** faces its rounded edge separated.
      * It was built between them, so both are its origin; `generated` is an
@@ -1508,18 +1537,10 @@ class BrepKernel {
      * not any input face cut back, and a selection stored against one of those
      * faces must not acquire it.
      *
-     * `origin` says how far the answer can be trusted. `"construction"` means
-     * the blend engine recorded the correspondence while assembling the
-     * result; `"geometry"` means it was matched from face normals and
-     * centroids, because the engine that ran rebuilds faces instead of
-     * trimming them and keeps no record. The two agree on where a band belongs;
-     * `origin` distinguishes a recorded fact from an inference that happens to
-     * reach the same answer.
-     *
-     * Either way, `unresolved` lists result faces with no established origin
-     * (with the input faces that tied, when there were any) — a caller holding
-     * a persistent face reference must fail closed on those rather than pick
-     * from the candidates. For a fillet of a box or a cylinder rim it is empty.
+     * The payload exposes construction history only. If an engine cannot
+     * report history, every source/result is explicit under the unresolved
+     * sets with `provenance: "unavailable"`; the binding never infers lineage
+     * from proximity, traversal order, or approximate surface matching.
      *
      * # Errors
      *
@@ -1528,7 +1549,7 @@ class BrepKernel {
      * @param {number} solid
      * @param {Uint32Array} edge_handles
      * @param {number} radius
-     * @returns {any}
+     * @returns {FaceEvolutionPayloadV1}
      */
     filletWithEvolution(solid, edge_handles, radius) {
         const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
@@ -5852,6 +5873,30 @@ function clearLastPanicMessage() {
 exports.clearLastPanicMessage = clearLastPanicMessage;
 
 /**
+ * Decode and validate a serialized version-1 face-evolution payload.
+ *
+ * This is intended for persisted or transported payloads. It rejects unknown
+ * fields, unsupported versions, incomplete source/result coverage, handles
+ * outside the declared domains, duplicate pairs, and contradictory claims.
+ *
+ * # Errors
+ *
+ * Returns an error if `json` is malformed or violates the version-1 contract.
+ * @param {string} json
+ * @returns {FaceEvolutionPayloadV1}
+ */
+function decodeEvolutionPayload(json) {
+    const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeEvolutionPayload(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+exports.decodeEvolutionPayload = decodeEvolutionPayload;
+
+/**
  * Returns the message and source location of the most recent panic inside
  * the kernel, or `undefined` if none has occurred.
  *
@@ -5905,6 +5950,13 @@ function __wbg_get_imports() {
             const ret = Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
+        __wbg_String_8564e559799eccda: function(arg0, arg1) {
+            const ret = String(arg1);
+            const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
         __wbg___wbindgen_debug_string_c25d447a39f5578f: function(arg0, arg1) {
             const ret = debugString(arg1);
             const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -5929,10 +5981,29 @@ function __wbg_get_imports() {
         __wbg_log_a27d0e78be23f4f0: function(arg0, arg1) {
             console.log(getStringFromWasm0(arg0, arg1));
         },
+        __wbg_new_32b398fb48b6d94a: function() {
+            const ret = new Array();
+            return ret;
+        },
+        __wbg_new_da52cf8fe3429cb2: function() {
+            const ret = new Object();
+            return ret;
+        },
+        __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
+            arg0[arg1] = arg2;
+        },
+        __wbg_set_8a16b38e4805b298: function(arg0, arg1, arg2) {
+            arg0[arg1 >>> 0] = arg2;
+        },
         __wbg_warn_fab2c6da0dbeb591: function(arg0, arg1) {
             console.warn(getStringFromWasm0(arg0, arg1));
         },
-        __wbindgen_cast_0000000000000001: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return ret;
+        },
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return ret;

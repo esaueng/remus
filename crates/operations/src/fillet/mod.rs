@@ -36,6 +36,7 @@ pub use brepkit_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 pub(crate) use geometry::face_surface_normal_at;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
+pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
 
 use std::collections::{HashMap, HashSet};
 

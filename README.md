@@ -115,6 +115,9 @@ A few areas are still maturing. Worth knowing before you build on them:
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
 - **Beta subsystems.** Feature recognition, assemblies, evolution tracking, and defeaturing work but are still maturing. Defeaturing handles planar faces only.
 
+The versioned WASM fillet/chamfer provenance payload and its strict decoder are
+documented in [WASM face evolution](docs/wasm-face-evolution.md).
+
 ## Scope
 
 brepkit deliberately does not:

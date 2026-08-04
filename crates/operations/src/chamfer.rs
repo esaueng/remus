@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use brepkit_blend::BlendFaceOrigins;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
@@ -26,7 +27,7 @@ use brepkit_topology::vertex::VertexId;
 use brepkit_topology::wire::WireId;
 
 use crate::OperationsError;
-use crate::boolean::{FaceSpec, assemble_solid_mixed};
+use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
@@ -40,6 +41,21 @@ const VOLUME_DEFLECTION: f64 = 0.05;
 /// bevel cuts into it. Matches the boolean pipeline's own sampling so a bore
 /// rim is tested against the same polygon the rest of the kernel sees.
 const HOLE_SAMPLES: usize = 32;
+
+enum FaceSpecOrigin {
+    Modified(FaceId),
+    Generated(Vec<FaceId>),
+}
+
+fn push_face_spec(
+    specs: &mut Vec<FaceSpec>,
+    origins: &mut Vec<FaceSpecOrigin>,
+    spec: FaceSpec,
+    origin: FaceSpecOrigin,
+) {
+    specs.push(spec);
+    origins.push(origin);
+}
 
 fn unsupported(reason: impl Into<String>) -> OperationsError {
     OperationsError::Unsupported {
@@ -78,6 +94,16 @@ pub fn chamfer(
     edges: &[EdgeId],
     distance: f64,
 ) -> Result<SolidId, crate::OperationsError> {
+    Ok(chamfer_with_origins(topo, solid, edges, distance)?.0)
+}
+
+/// [`chamfer`] with construction-derived face provenance.
+pub(crate) fn chamfer_with_origins(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    distance: f64,
+) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
     if distance <= 0.0 {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("chamfer distance must be positive, got {distance}"),
@@ -113,6 +139,17 @@ pub fn chamfer_asymmetric(
     d1: f64,
     d2: f64,
 ) -> Result<SolidId, crate::OperationsError> {
+    Ok(chamfer_asymmetric_with_origins(topo, solid, edges, d1, d2)?.0)
+}
+
+/// [`chamfer_asymmetric`] with construction-derived face provenance.
+pub(crate) fn chamfer_asymmetric_with_origins(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
     if d1 <= 0.0 || d2 <= 0.0 {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("chamfer distances must be positive, got d1={d1}, d2={d2}"),
@@ -176,7 +213,7 @@ fn chamfer_core(
     solid: SolidId,
     edges: &[EdgeId],
     distances: ChamferDistances,
-) -> Result<SolidId, crate::OperationsError> {
+) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
     let tol = Tolerance::new();
 
     // Measured before anything is built so the closing gate can insist the
@@ -380,6 +417,7 @@ fn chamfer_core(
 
     let mut chamfer_data: HashMap<usize, ChamferEdgeData> = HashMap::new();
     let mut result_specs: Vec<FaceSpec> = Vec::new();
+    let mut result_spec_origins: Vec<FaceSpecOrigin> = Vec::new();
 
     // Track corner vertices where all adjacent edges are chamfered.
     // Maps vertex_id → the (face, trim-plane intersection) each face contributed.
@@ -403,10 +441,15 @@ fn chamfer_core(
         // every configuration that would need one re-trimmed — so it travels
         // verbatim: exact surface, curved edges, orientation, inner wires.
         let Some(poly) = face_polygons.get(&face_id.index()) else {
-            result_specs.push(FaceSpec::Existing {
-                face: face_id,
-                outer: None,
-            });
+            push_face_spec(
+                &mut result_specs,
+                &mut result_spec_origins,
+                FaceSpec::Existing {
+                    face: face_id,
+                    outer: None,
+                },
+                FaceSpecOrigin::Modified(face_id),
+            );
             continue;
         };
         // A planar face none of whose corners the bevel disturbs is likewise
@@ -417,10 +460,15 @@ fn chamfer_core(
             .iter()
             .any(|v| vertex_chamfer_endpoints.contains(&v.index()))
         {
-            result_specs.push(FaceSpec::Existing {
-                face: face_id,
-                outer: None,
-            });
+            push_face_spec(
+                &mut result_specs,
+                &mut result_spec_origins,
+                FaceSpec::Existing {
+                    face: face_id,
+                    outer: None,
+                },
+                FaceSpecOrigin::Modified(face_id),
+            );
             continue;
         }
         // This face's boundary is about to be rebuilt from corner positions,
@@ -651,10 +699,15 @@ fn chamfer_core(
         }
         require_holes_clear_of_trim(topo, face_id, poly, &new_verts, eps)?;
         // Replacement outer wire; inner wires copied verbatim, holes and all.
-        result_specs.push(FaceSpec::Existing {
-            face: face_id,
-            outer: Some(new_verts),
-        });
+        push_face_spec(
+            &mut result_specs,
+            &mut result_spec_origins,
+            FaceSpec::Existing {
+                face: face_id,
+                outer: Some(new_verts),
+            },
+            FaceSpecOrigin::Modified(face_id),
+        );
     }
 
     for &edge_id in &filtered_edges {
@@ -706,12 +759,17 @@ fn chamfer_core(
         };
 
         let d = dot_normal_point(normal, quad[0]);
-        result_specs.push(FaceSpec::Planar {
-            vertices: quad,
-            normal,
-            d,
-            inner_wires: vec![],
-        });
+        push_face_spec(
+            &mut result_specs,
+            &mut result_spec_origins,
+            FaceSpec::Planar {
+                vertices: quad,
+                normal,
+                d,
+                inner_wires: vec![],
+            },
+            FaceSpecOrigin::Generated(vec![f1, f2]),
+        );
     }
 
     // At each original vertex where ALL adjacent edges are chamfered,
@@ -797,15 +855,21 @@ fn chamfer_core(
         let cd = dot_normal_point(cn, corner_verts[0]);
         // Newly minted geometry: a corner patch is a fresh polygon spanning
         // the gap the bevels leave, so it has no hole to carry.
-        result_specs.push(FaceSpec::Planar {
-            vertices: corner_verts,
-            normal: cn,
-            d: cd,
-            inner_wires: vec![],
-        });
+        push_face_spec(
+            &mut result_specs,
+            &mut result_spec_origins,
+            FaceSpec::Planar {
+                vertices: corner_verts,
+                normal: cn,
+                d: cd,
+                inner_wires: vec![],
+            },
+            FaceSpecOrigin::Generated(entries.iter().map(|(face, _)| *face).collect()),
+        );
     }
 
-    let result = assemble_solid_mixed(topo, &result_specs, tol)?;
+    let assembly = assemble_solid_mixed_with_history(topo, &result_specs, tol)?;
+    let result = assembly.solid;
 
     let report = crate::validate::validate_solid(topo, result)?;
     if !report.is_valid() {
@@ -837,7 +901,44 @@ fn chamfer_core(
         )));
     }
 
-    Ok(result)
+    let mut face_origins = BlendFaceOrigins::default();
+    let mut named: HashSet<usize> = HashSet::new();
+    let mut modified_presence: HashMap<usize, (FaceId, bool)> = HashMap::new();
+    for (origin, face) in result_spec_origins.iter().zip(&assembly.faces_by_spec) {
+        if let FaceSpecOrigin::Modified(source) = origin {
+            modified_presence
+                .entry(source.index())
+                .and_modify(|(_, present)| *present |= face.is_some())
+                .or_insert_with(|| (*source, face.is_some()));
+        }
+        let Some(face) = face else { continue };
+        named.insert(face.index());
+        match origin {
+            FaceSpecOrigin::Modified(source) => face_origins.survived.push((*source, *face)),
+            FaceSpecOrigin::Generated(sources) => {
+                let mut sources = sources.clone();
+                sources.sort_by_key(|source| source.index());
+                sources.dedup();
+                if sources.is_empty() {
+                    face_origins.created_unattributed.push(*face);
+                } else {
+                    face_origins.created.push((*face, sources));
+                }
+            }
+        }
+    }
+    face_origins.deleted = modified_presence
+        .into_values()
+        .filter_map(|(source, present)| (!present).then_some(source))
+        .collect();
+    face_origins.deleted.sort_by_key(|source| source.index());
+    for face in brepkit_topology::explorer::solid_faces(topo, result)? {
+        if !named.contains(&face.index()) {
+            face_origins.created_unattributed.push(face);
+        }
+    }
+
+    Ok((result, face_origins))
 }
 
 /// Per-face polygon data collected from the solid.

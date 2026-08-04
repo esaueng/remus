@@ -281,6 +281,17 @@ fn build_inner_wires(
     Ok(inner_wire_ids)
 }
 
+/// A solid assembled from face specifications, with the final face produced by
+/// each specification.
+///
+/// The association is recorded while faces are materialised and carried
+/// through assembly refinement. It is construction history, not a geometric
+/// correspondence recovered after the fact.
+pub(crate) struct MixedAssemblyResult {
+    pub(crate) solid: SolidId,
+    pub(crate) faces_by_spec: Vec<Option<FaceId>>,
+}
+
 /// Assemble a solid from a set of face specifications with mixed surface types.
 ///
 /// Like [`assemble_solid`], but supports faces with NURBS, analytic, or any
@@ -295,6 +306,16 @@ pub(crate) fn assemble_solid_mixed(
     face_specs: &[FaceSpec],
     tol: Tolerance,
 ) -> Result<SolidId, crate::OperationsError> {
+    Ok(assemble_solid_mixed_with_history(topo, face_specs, tol)?.solid)
+}
+
+/// [`assemble_solid_mixed`] with construction-derived face history.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn assemble_solid_mixed_with_history(
+    topo: &mut Topology,
+    face_specs: &[FaceSpec],
+    tol: Tolerance,
+) -> Result<MixedAssemblyResult, crate::OperationsError> {
     // Pre-allocate topology arenas based on expected output size.
     // Typical face → ~2 unique vertices, ~3 edges, 1 wire, 1 face.
     let n = face_specs.len();
@@ -334,6 +355,7 @@ pub(crate) fn assemble_solid_mixed(
     let mut edge_copies: HashMap<EdgeId, EdgeId> = HashMap::default();
 
     let mut face_ids = Vec::with_capacity(face_specs.len());
+    let mut face_spec_indices = Vec::with_capacity(face_specs.len());
 
     // The order faces are materialised in is load-bearing: an edge is minted by
     // whichever face reaches it first, and every later face spanning the same
@@ -350,26 +372,39 @@ pub(crate) fn assemble_solid_mixed(
     //    into a chamfer wherever it meets a holed cap. Their inner wires are
     //    still copied verbatim, from the same memo as pass 1.
     // 4. Everything else, sharing whatever the earlier passes published.
-    let verbatim = |s: &&FaceSpec| matches!(s, FaceSpec::Existing { outer: None, .. });
-    let arc_minting = |s: &&FaceSpec| {
+    let verbatim = |s: &FaceSpec| matches!(s, FaceSpec::Existing { outer: None, .. });
+    let arc_minting = |s: &FaceSpec| {
         matches!(
             s,
             FaceSpec::CylindricalFace { .. } | FaceSpec::SphereCapFace { .. }
         )
     };
-    let rebuilt_outer = |s: &&FaceSpec| matches!(s, FaceSpec::Existing { outer: Some(_), .. });
-    let ordered = face_specs
-        .iter()
-        .filter(verbatim)
-        .chain(face_specs.iter().filter(arc_minting))
-        .chain(face_specs.iter().filter(rebuilt_outer))
-        .chain(
-            face_specs
-                .iter()
-                .filter(|s| !verbatim(s) && !arc_minting(s) && !rebuilt_outer(s)),
-        );
+    let rebuilt_outer = |s: &FaceSpec| matches!(s, FaceSpec::Existing { outer: Some(_), .. });
+    let mut ordered_indices = Vec::with_capacity(face_specs.len());
+    ordered_indices.extend(
+        face_specs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, spec)| verbatim(spec).then_some(i)),
+    );
+    ordered_indices.extend(
+        face_specs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, spec)| arc_minting(spec).then_some(i)),
+    );
+    ordered_indices.extend(
+        face_specs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, spec)| rebuilt_outer(spec).then_some(i)),
+    );
+    ordered_indices.extend(face_specs.iter().enumerate().filter_map(|(i, spec)| {
+        (!verbatim(spec) && !arc_minting(spec) && !rebuilt_outer(spec)).then_some(i)
+    }));
 
-    for spec in ordered {
+    for spec_index in ordered_indices {
+        let spec = &face_specs[spec_index];
         match spec {
             FaceSpec::Existing { face, outer } => {
                 let mut maps = CopyMaps {
@@ -381,6 +416,7 @@ pub(crate) fn assemble_solid_mixed(
                 };
                 let new_face = clone_existing_face(topo, *face, outer.as_deref(), &mut maps)?;
                 face_ids.push(new_face);
+                face_spec_indices.push(spec_index);
             }
             FaceSpec::SphereCapFace {
                 vertices,
@@ -469,6 +505,7 @@ pub(crate) fn assemble_solid_mixed(
                     topo.add_face(Face::new(wire_id, inner_wire_ids, surface))
                 };
                 face_ids.push(face);
+                face_spec_indices.push(spec_index);
             }
             FaceSpec::CylindricalFace {
                 vertices,
@@ -582,6 +619,7 @@ pub(crate) fn assemble_solid_mixed(
                     topo.add_face(Face::new(wire_id, inner_wire_ids, surface))
                 };
                 face_ids.push(face);
+                face_spec_indices.push(spec_index);
             }
             spec => {
                 // Planar or Surface: extract (verts, surface, reversed)
@@ -680,6 +718,7 @@ pub(crate) fn assemble_solid_mixed(
                     topo.add_face(Face::new(wire_id, inner_wire_ids, surface))
                 };
                 face_ids.push(face);
+                face_spec_indices.push(spec_index);
             }
         }
     }
@@ -713,7 +752,23 @@ pub(crate) fn assemble_solid_mixed(
     // Split spurious non-manifold edges (rim junctions with opposing normals)
     // using direction-based pairing. Legitimate 3-face junctions (vertex
     // blends at corners) are left for angular-based split_nonmanifold_edges.
+    let spec_index_by_face: HashMap<usize, usize> = face_ids
+        .iter()
+        .zip(&face_spec_indices)
+        .map(|(face, spec_index)| (face.index(), *spec_index))
+        .collect();
     let mut shell_face_ids = build_manifold_shell(topo, &face_ids)?;
+    let shell_spec_indices: Vec<usize> = shell_face_ids
+        .iter()
+        .map(|face| {
+            spec_index_by_face
+                .get(&face.index())
+                .copied()
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "solid assembly returned a face without a source specification".into(),
+                })
+        })
+        .collect::<Result<_, _>>()?;
 
     // Handle remaining non-manifold edges (legitimate vertex blend junctions)
     // using the angular pairing approach.
@@ -721,9 +776,18 @@ pub(crate) fn assemble_solid_mixed(
         split_nonmanifold_edges(topo, &mut shell_face_ids)?;
     }
 
+    let mut faces_by_spec = vec![None; face_specs.len()];
+    for (&spec_index, &face_id) in shell_spec_indices.iter().zip(&shell_face_ids) {
+        faces_by_spec[spec_index] = Some(face_id);
+    }
+
     let shell = Shell::new(shell_face_ids).map_err(crate::OperationsError::Topology)?;
     let shell_id = topo.add_shell(shell);
-    Ok(topo.add_solid(Solid::new(shell_id, vec![])))
+    let solid = topo.add_solid(Solid::new(shell_id, vec![]));
+    Ok(MixedAssemblyResult {
+        solid,
+        faces_by_spec,
+    })
 }
 
 /// Resolve non-manifold edges using manifold pairing.

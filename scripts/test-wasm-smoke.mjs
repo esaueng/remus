@@ -6,31 +6,49 @@
  * Usage: node scripts/test-wasm-smoke.mjs
  */
 
-import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = resolve(__dirname, "..");
+const projectRoot = resolve(__dirname, '..');
 
 // Use createRequire to load the CJS node entry from an ESM context.
 // The node entry uses CommonJS (exports.X = ...) and is renamed to .cjs
 // so Node treats it correctly even with "type": "module" in package.json.
 const require = createRequire(import.meta.url);
-const { BrepKernel } = require(
-  resolve(projectRoot, "crates/wasm/pkg/brepkit_wasm_node.cjs"),
+const { BrepKernel, decodeEvolutionPayload } = require(
+  resolve(projectRoot, 'crates/wasm/pkg/brepkit_wasm_node.cjs'),
 );
 
 const DEFLECTION = 0.1;
 
+const assertCompleteEvolution = (payload, label) => {
+  assert.equal(payload.schemaVersion, 1, `${label}: schema version`);
+  const source = new Set(payload.source.faces);
+  const result = new Set(payload.result.faces);
+  const accountedSources = new Set([
+    ...payload.evolution.modified.map((claim) => claim.source),
+    ...payload.evolution.deleted,
+    ...payload.evolution.unresolvedSources,
+  ]);
+  const accountedResults = new Set([
+    ...payload.evolution.modified.flatMap((claim) => claim.results),
+    ...payload.evolution.generated.flatMap((claim) => claim.results),
+    ...payload.evolution.unresolvedResults.map((claim) => claim.result),
+  ]);
+  assert.deepEqual(accountedSources, source, `${label}: source coverage`);
+  assert.deepEqual(accountedResults, result, `${label}: result coverage`);
+};
+
 // 1. Kernel creation
 const kernel = new BrepKernel();
-console.log("ok - BrepKernel created");
+console.log('ok - BrepKernel created');
 
 // 2. Make a box
 const boxId = kernel.makeBox(10, 20, 30);
-assert.equal(typeof boxId, "number", "makeBox should return a number handle");
+assert.equal(typeof boxId, 'number', 'makeBox should return a number handle');
 console.log(`ok - makeBox(10, 20, 30) -> handle ${boxId}`);
 
 // 3. Volume check
@@ -40,10 +58,10 @@ console.log(`ok - volume = ${vol}`);
 
 // 4. Tessellation
 const mesh = kernel.tessellateSolid(boxId, DEFLECTION);
-assert.ok(mesh.positions.length > 0, "mesh should have positions");
-assert.ok(mesh.indices.length > 0, "mesh should have indices");
-assert.equal(mesh.positions.length % 3, 0, "positions should be a multiple of 3");
-assert.equal(mesh.indices.length % 3, 0, "indices should be a multiple of 3");
+assert.ok(mesh.positions.length > 0, 'mesh should have positions');
+assert.ok(mesh.indices.length > 0, 'mesh should have indices');
+assert.equal(mesh.positions.length % 3, 0, 'positions should be a multiple of 3');
+assert.equal(mesh.indices.length % 3, 0, 'indices should be a multiple of 3');
 console.log(
   `ok - tessellation: ${mesh.positions.length / 3} verts, ${mesh.indices.length / 3} tris`,
 );
@@ -55,40 +73,34 @@ assert.ok(
   `massProperties.volume=${props.volume}, expected ~6000`,
 );
 // 10x20x30 box about its CoM: Ixx = m/12 * (20^2 + 30^2) = 650000.
-assert.ok(
-  Math.abs(props.inertia[0] - 650000) < 1e-3,
-  `Ixx=${props.inertia[0]}, expected ~650000`,
-);
-assert.equal(props.principalAxes.length, 9, "principalAxes should have 9 entries");
+assert.ok(Math.abs(props.inertia[0] - 650000) < 1e-3, `Ixx=${props.inertia[0]}, expected ~650000`);
+assert.equal(props.principalAxes.length, 9, 'principalAxes should have 9 entries');
 console.log(`ok - massProperties: volume=${props.volume}, Ixx=${props.inertia[0]}`);
 
 // 6. Mesh quality
 const quality = JSON.parse(kernel.meshQuality(boxId, DEFLECTION));
-assert.equal(quality.boundaryEdges, 0, "box mesh should have no boundary edges");
-assert.equal(quality.isWatertight, true, "box mesh should be watertight");
-console.log(
-  `ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`,
-);
+assert.equal(quality.boundaryEdges, 0, 'box mesh should have no boundary edges');
+assert.equal(quality.isWatertight, true, 'box mesh should be watertight');
+console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`);
 
 // 7. STL export (only if io feature is compiled in)
-if (typeof kernel.exportStl === "function") {
+if (typeof kernel.exportStl === 'function') {
   const stl = kernel.exportStl(boxId, DEFLECTION);
-  assert.ok(stl.length > 0, "STL export should not be empty");
+  assert.ok(stl.length > 0, 'STL export should not be empty');
   console.log(`ok - STL export: ${stl.length} bytes`);
 } else {
-  console.log("skip - exportStl not available (io feature not enabled)");
+  console.log('skip - exportStl not available (io feature not enabled)');
 }
 
 // 8. PLY round trip (only if io feature is compiled in)
-if (typeof kernel.importPly === "function") {
+if (typeof kernel.importPly === 'function') {
   const ply = kernel.exportPly(boxId, DEFLECTION);
   const reimported = kernel.importPly(ply);
   const vol2 = kernel.volume(reimported, DEFLECTION);
   assert.ok(Math.abs(vol2 - 6000) < 60, `PLY round-trip volume=${vol2}`);
   console.log(`ok - PLY round trip: volume=${vol2}`);
 } else {
-  console.log("skip - importPly not available (io feature not enabled)");
-
+  console.log('skip - importPly not available (io feature not enabled)');
 }
 
 // 9. Direct face editing: push/pull a planar face.
@@ -97,34 +109,32 @@ if (typeof kernel.importPly === "function") {
   const faces = Array.from(kernel.getSolidFaces(block));
   let topFace = null;
   for (const f of faces) {
-    if (kernel.getSurfaceType(f) !== "plane") continue;
+    if (kernel.getSurfaceType(f) !== 'plane') continue;
     const n = kernel.getFaceNormal(f);
     if (Math.abs(n[2] - 1) < 1e-6) {
       topFace = f;
       break;
     }
   }
-  assert.ok(topFace !== null, "expected a +Z planar face on the box");
+  assert.ok(topFace !== null, 'expected a +Z planar face on the box');
   const pulled = kernel.pushPullFace(block, topFace, 5);
   const pulledVol = kernel.volume(pulled, DEFLECTION);
-  assert.ok(
-    Math.abs(pulledVol - 1500) < 1,
-    `pushPullFace volume=${pulledVol}, expected ~1500`,
-  );
+  assert.ok(Math.abs(pulledVol - 1500) < 1, `pushPullFace volume=${pulledVol}, expected ~1500`);
   console.log(`ok - pushPullFace(+5) -> volume ${pulledVol}`);
 }
 
 // 10. Direct face editing: resize a cylindrical bore.
 {
   const block = kernel.makeBox(40, 40, 10);
-  const drill = kernel.copyAndTransformSolid(kernel.makeCylinder(3, 10), [
-    1, 0, 0, 20, 0, 1, 0, 20, 0, 0, 1, 0, 0, 0, 0, 1,
-  ]);
+  const drill = kernel.copyAndTransformSolid(
+    kernel.makeCylinder(3, 10),
+    [1, 0, 0, 20, 0, 1, 0, 20, 0, 0, 1, 0, 0, 0, 0, 1],
+  );
   const drilled = kernel.cut(block, drill);
   const bore = Array.from(kernel.getSolidFaces(drilled)).find(
-    (f) => kernel.getSurfaceType(f) === "cylinder",
+    (f) => kernel.getSurfaceType(f) === 'cylinder',
   );
-  assert.ok(bore !== undefined, "expected a cylindrical bore face");
+  assert.ok(bore !== undefined, 'expected a cylindrical bore face');
   const widened = kernel.resizeCylindricalFace(drilled, bore, 5);
   const widenedVol = kernel.volume(widened, DEFLECTION);
   const expected = 40 * 40 * 10 - Math.PI * 25 * 10;
@@ -134,9 +144,9 @@ if (typeof kernel.importPly === "function") {
   );
   console.log(`ok - resizeCylindricalFace(5) -> volume ${widenedVol}`);
 
-  if (typeof kernel.exportStep === "function") {
+  if (typeof kernel.exportStep === 'function') {
     const step = kernel.exportStep(widened);
-    assert.ok(step.length > 0, "STEP export of the resized bore should not be empty");
+    assert.ok(step.length > 0, 'STEP export of the resized bore should not be empty');
     console.log(`ok - resized bore STEP export: ${step.length} bytes`);
   }
 }
@@ -197,24 +207,20 @@ if (typeof kernel.importPly === "function") {
   // Both operands must be analytic going in, or the assertion below proves
   // nothing about the boolean.
   for (const [label, solid] of [
-    ["rim", rim],
-    ["hub", hub],
+    ['rim', rim],
+    ['hub', hub],
   ]) {
-    const kinds = Array.from(kernel.getSolidFaces(solid)).map((f) =>
-      kernel.getSurfaceType(f),
-    );
+    const kinds = Array.from(kernel.getSolidFaces(solid)).map((f) => kernel.getSurfaceType(f));
     assert.equal(
-      kinds.filter((t) => t === "cylinder").length,
+      kinds.filter((t) => t === 'cylinder').length,
       2,
       `${label} operand should have 2 cylindrical walls, got ${JSON.stringify(kinds)}`,
     );
   }
 
   const fused = kernel.fuse(rim, hub);
-  const faceKinds = Array.from(kernel.getSolidFaces(fused)).map((f) =>
-    kernel.getSurfaceType(f),
-  );
-  const cylinders = faceKinds.filter((t) => t === "cylinder").length;
+  const faceKinds = Array.from(kernel.getSolidFaces(fused)).map((f) => kernel.getSurfaceType(f));
+  const cylinders = faceKinds.filter((t) => t === 'cylinder').length;
 
   // Face count is the only reliable fallback signal: the mesh fallback is
   // watertight and valid, and its volume is close, so neither exposes it.
@@ -230,8 +236,7 @@ if (typeof kernel.importPly === "function") {
   );
 
   const fusedVol = kernel.volume(fused, DEFLECTION);
-  const expectedVol =
-    Math.PI * ((45 * 45 - 24 * 24) * 10 + (24 * 24 - 12 * 12) * 26);
+  const expectedVol = Math.PI * ((45 * 45 - 24 * 24) * 10 + (24 * 24 - 12 * 12) * 26);
   assert.ok(
     Math.abs(fusedVol - expectedVol) < 50,
     `coaxial annulus fuse volume=${fusedVol}, expected ~${expectedVol}`,
@@ -242,4 +247,102 @@ if (typeof kernel.importPly === "function") {
   );
 }
 
-console.log("\nAll smoke tests passed");
+// 12. Versioned fillet/chamfer evolution contract on the shipped package.
+//
+// Run the ordinary and evolution entry points in fresh kernels so their arena
+// allocation is identical, then compare serialized B-Reps byte-for-byte. This
+// pins the requirement that provenance does not change exact geometry,
+// topology post-processing, tolerances, or engine selection.
+for (const operation of ['fillet', 'chamfer']) {
+  const plainKernel = new BrepKernel();
+  const plainSource = plainKernel.makeBox(10, 10, 10);
+  const plainEdge = plainKernel.getSolidEdges(plainSource)[0];
+  const plainResult = plainKernel[operation](plainSource, Uint32Array.of(plainEdge), 1);
+
+  const evolutionKernel = new BrepKernel();
+  const evolutionSource = evolutionKernel.makeBox(10, 10, 10);
+  const evolutionEdge = evolutionKernel.getSolidEdges(evolutionSource)[0];
+  const method = `${operation}WithEvolution`;
+  const payload = evolutionKernel[method](evolutionSource, Uint32Array.of(evolutionEdge), 1);
+
+  assert.equal(typeof payload, 'object', `${method} must return a typed object`);
+  assert.equal(payload.source.solid, evolutionSource, `${method}: source solid`);
+  assert.equal(payload.result.solid >= 0, true, `${method}: result solid`);
+  assert.equal(payload.evolution.provenance, 'construction', `${method}: box provenance`);
+  assert.equal(payload.evolution.unresolvedSources.length, 0, `${method}: sources`);
+  assert.equal(payload.evolution.unresolvedResults.length, 0, `${method}: results`);
+  assert.ok(payload.evolution.generated.length > 0, `${method}: generated face`);
+  assertCompleteEvolution(payload, method);
+
+  const decoded = decodeEvolutionPayload(JSON.stringify(payload));
+  assert.deepEqual(decoded, payload, `${method}: decoder round trip`);
+  assert.deepEqual(
+    evolutionKernel.serializeSolid(payload.result.solid),
+    plainKernel.serializeSolid(plainResult),
+    `${method}: evolution path changed the exact serialized B-Rep`,
+  );
+
+  const generatedFaces = new Set(payload.evolution.generated.flatMap((claim) => claim.results));
+  const generatedSurfaceTypes = [...generatedFaces].map((face) =>
+    evolutionKernel.getSurfaceType(face),
+  );
+  if (operation === 'fillet') {
+    assert.ok(
+      generatedSurfaceTypes.includes('cylinder'),
+      `${method}: generated blend face must remain analytic`,
+    );
+  } else {
+    assert.ok(
+      generatedSurfaceTypes.every((surface) => surface === 'plane'),
+      `${method}: generated bevel faces must remain planar`,
+    );
+  }
+
+  const quality = JSON.parse(evolutionKernel.meshQuality(payload.result.solid, DEFLECTION));
+  assert.equal(quality.isWatertight, true, `${method}: watertight mesh`);
+  assert.ok(
+    evolutionKernel.volume(payload.result.solid, DEFLECTION) > 0,
+    `${method}: positive volume`,
+  );
+  const step = evolutionKernel.exportStep(payload.result.solid);
+  assert.ok(step.length > 0, `${method}: STEP export`);
+  console.log(`ok - ${method}: typed, complete, exact-geometry parity`);
+}
+
+// A stored/transported payload is untrusted input: malformed versions,
+// incomplete coverage and contradictory result claims must fail closed.
+{
+  const source = kernel.makeBox(10, 10, 10);
+  const edge = kernel.getSolidEdges(source)[0];
+  const payload = kernel.filletWithEvolution(source, Uint32Array.of(edge), 1);
+
+  const badVersion = structuredClone(payload);
+  badVersion.schemaVersion = 2;
+  assert.throws(
+    () => decodeEvolutionPayload(JSON.stringify(badVersion)),
+    /unsupported face evolution schema version/,
+  );
+
+  const contradictory = structuredClone(payload);
+  contradictory.evolution.generated[0].results = [contradictory.evolution.modified[0].results[0]];
+  assert.throws(
+    () => decodeEvolutionPayload(JSON.stringify(contradictory)),
+    /contradictory claims/,
+  );
+
+  const failureKernel = new BrepKernel();
+  const failureSource = failureKernel.makeBox(10, 10, 10);
+  const failureEdge = failureKernel.getSolidEdges(failureSource)[0];
+  const before = failureKernel.volume(failureSource, DEFLECTION);
+  assert.throws(
+    () => failureKernel.filletWithEvolution(failureSource, Uint32Array.of(failureEdge), 0),
+    /radius|fillet|blend/i,
+  );
+  assert.ok(
+    Math.abs(failureKernel.volume(failureSource, DEFLECTION) - before) < 1e-9,
+    'failed evolution fillet must leave the input unchanged',
+  );
+  console.log('ok - evolution decoder and degenerate-operation rejection');
+}
+
+console.log('\nAll smoke tests passed');

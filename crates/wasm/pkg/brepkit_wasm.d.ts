@@ -1,6 +1,31 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * A final-result face whose source could not be established.
+ */
+export interface UnresolvedEvolutionResultV1 {
+    result: number;
+    candidates: number[];
+}
+
+/**
+ * A solid and the complete set of face handles relevant to one side of an
+ * evolution operation.
+ */
+export interface EvolutionShapeV1 {
+    solid: number;
+    faces: number[];
+}
+
+/**
+ * One source face and the final-result faces related to it.
+ */
+export interface EvolutionRelationV1 {
+    source: number;
+    results: number[];
+}
+
+/**
  * Per-step entry in a `HealPipelineResult`.
  */
 export interface HealStepResult {
@@ -42,6 +67,34 @@ export interface GcsConstraintResidual {
      * survives marks where it could not.
      */
     maxResidual: number;
+}
+
+/**
+ * Stable, versioned WASM contract returned by fillet/chamfer evolution APIs.
+ *
+ * `source.faces` and `result.faces` are the complete handle domains. A valid
+ * payload accounts for every source as modified, deleted, or unresolved and
+ * every result as modified, generated, or unresolved. The decoder rejects
+ * handles outside those domains, duplicate pairs, overlaps between claim
+ * kinds, and incomplete coverage.
+ */
+export interface FaceEvolutionPayloadV1 {
+    /**
+     * Contract version; currently always `1`.
+     */
+    schemaVersion: number;
+    /**
+     * Input solid and its complete source-face handle set.
+     */
+    source: EvolutionShapeV1;
+    /**
+     * Final solid and its complete final-face handle set.
+     */
+    result: EvolutionShapeV1;
+    /**
+     * Validated evolution claims between the two handle domains.
+     */
+    evolution: FaceEvolutionClaimsV1;
 }
 
 /**
@@ -307,13 +360,21 @@ export interface UvMeshResult {
 }
 
 /**
- * Typed result for boolean operations with evolution tracking.
+ * Version 1 face-evolution claims.
  */
-export interface EvolutionResult {
-    solid: number;
-    generated: number[];
-    modified: number[];
+export interface FaceEvolutionClaimsV1 {
+    provenance: EvolutionProvenanceV1;
+    modified: EvolutionRelationV1[];
+    generated: EvolutionRelationV1[];
+    deleted: number[];
+    unresolvedResults: UnresolvedEvolutionResultV1[];
+    unresolvedSources: number[];
 }
+
+/**
+ * Whether the payload contains construction history or an explicit refusal.
+ */
+export type EvolutionProvenanceV1 = "construction" | "unavailable";
 
 
 /**
@@ -458,6 +519,25 @@ export class BrepKernel {
      * blend computation fails.
      */
     chamferV2(solid: number, edge_handles: Uint32Array, d1: number, d2: number): number;
+    /**
+     * Chamfer edges and return versioned face-evolution tracking data.
+     *
+     * This runs the same production engine cascade as [`chamfer`](Self::chamfer_solid):
+     * the established planar bevel first, then the walking builder for
+     * supported curved topology. The returned solid is therefore the same
+     * exact B-Rep the non-evolution entry point produces.
+     *
+     * Generated bevel/corner faces name the input faces the builder used to
+     * construct them. If an engine cannot provide construction history, the
+     * payload reports explicit unresolved source/result sets instead of
+     * inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * or the chamfer fails.
+     */
+    chamferWithEvolution(solid: number, edge_handles: Uint32Array, distance: number): FaceEvolutionPayloadV1;
     /**
      * Save a snapshot of the current kernel state.
      *
@@ -968,10 +1048,8 @@ export class BrepKernel {
     /**
      * Apply a constant-radius fillet and return face-evolution tracking data.
      *
-     * Returns a JSON string `{"solid": <u32>, "evolution": {modified,
-     * generated, deleted, unresolved, origin}}` — the same shape as
-     * `fuseWithEvolution`. Blend faces appear under `generated` and surviving
-     * faces under `modified`.
+     * Returns a validated [`FaceEvolutionPayloadV1`] object. Blend faces
+     * appear under `generated` and surviving faces under `modified`.
      *
      * A blend band is listed under **both** faces its rounded edge separated.
      * It was built between them, so both are its origin; `generated` is an
@@ -980,25 +1058,17 @@ export class BrepKernel {
      * not any input face cut back, and a selection stored against one of those
      * faces must not acquire it.
      *
-     * `origin` says how far the answer can be trusted. `"construction"` means
-     * the blend engine recorded the correspondence while assembling the
-     * result; `"geometry"` means it was matched from face normals and
-     * centroids, because the engine that ran rebuilds faces instead of
-     * trimming them and keeps no record. The two agree on where a band belongs;
-     * `origin` distinguishes a recorded fact from an inference that happens to
-     * reach the same answer.
-     *
-     * Either way, `unresolved` lists result faces with no established origin
-     * (with the input faces that tied, when there were any) — a caller holding
-     * a persistent face reference must fail closed on those rather than pick
-     * from the candidates. For a fillet of a box or a cylinder rim it is empty.
+     * The payload exposes construction history only. If an engine cannot
+     * report history, every source/result is explicit under the unresolved
+     * sets with `provenance: "unavailable"`; the binding never infers lineage
+     * from proximity, traversal order, or approximate surface matching.
      *
      * # Errors
      *
      * Returns an error if a handle is invalid, the radius is non-positive, or
      * the fillet fails.
      */
-    filletWithEvolution(solid: number, edge_handles: Uint32Array, radius: number): any;
+    filletWithEvolution(solid: number, edge_handles: Uint32Array, radius: number): FaceEvolutionPayloadV1;
     /**
      * Fix face orientations to ensure consistent outward normals.
      *
@@ -2983,6 +3053,19 @@ export class JsVec3 {
  * Clears the stored panic message so later reads reflect only new panics.
  */
 export function clearLastPanicMessage(): void;
+
+/**
+ * Decode and validate a serialized version-1 face-evolution payload.
+ *
+ * This is intended for persisted or transported payloads. It rejects unknown
+ * fields, unsupported versions, incomplete source/result coverage, handles
+ * outside the declared domains, duplicate pairs, and contradictory claims.
+ *
+ * # Errors
+ *
+ * Returns an error if `json` is malformed or violates the version-1 contract.
+ */
+export function decodeEvolutionPayload(json: string): FaceEvolutionPayloadV1;
 
 /**
  * Returns the message and source location of the most recent panic inside

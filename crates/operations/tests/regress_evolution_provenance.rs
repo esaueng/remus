@@ -245,9 +245,9 @@ fn plane_of(topo: &Topology, face: brepkit_topology::face::FaceId) -> (Vec3, f64
     }
 }
 
-/// A box-edge fillet takes the planar rolling-ball rebuild, which keeps no
-/// construction record, so the map falls back to geometric matching and must
-/// say so.
+/// A box-edge fillet takes the planar rolling-ball rebuild. Its face-spec
+/// history is carried through assembly and same-surface unification, so the map
+/// is construction-derived just like the walking-builder path.
 ///
 /// The blend face is the interesting one, and it has had two wrong answers.
 ///
@@ -281,8 +281,8 @@ fn a_rebuilt_fillet_attributes_its_blend_face_to_both_base_faces() {
 
     assert_eq!(
         evo.origin,
-        EvolutionOrigin::Geometry,
-        "the rolling-ball rebuild keeps no record; the map must not claim it does"
+        EvolutionOrigin::Construction,
+        "the rolling-ball builder must carry its assembly history through unification"
     );
 
     let after = face_indices(&topo, result.solid);
