@@ -906,12 +906,7 @@ pub(super) fn tessellate_face_with_shared_edges(
         // Line/Circle boundary; without it, odd rim sample counts crack the
         // cone at its base.
         let apex_handled = is_standard_rect
-            && tessellate_cone_apex_fan_shared(
-                topo,
-                face_data,
-                edge_global_indices,
-                merged,
-            )?;
+            && tessellate_cone_apex_fan_shared(topo, face_data, edge_global_indices, merged)?;
 
         if band_handled || apex_handled {
             // done — watertight structured band or apex fan emitted

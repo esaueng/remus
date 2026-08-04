@@ -107,12 +107,7 @@ pub fn wire_polygon(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
 ) -> Result<Vec<Point3>, CheckError> {
-    wire_polygon_curve_sampled(
-        topo,
-        wire_id,
-        CLOSED_CURVE_SAMPLES,
-        OPEN_CURVE_SAMPLES,
-    )
+    wire_polygon_curve_sampled(topo, wire_id, CLOSED_CURVE_SAMPLES, OPEN_CURVE_SAMPLES)
 }
 
 /// [`wire_polygon`] with the number of samples a closed curved edge
@@ -273,8 +268,7 @@ pub fn wire_polygon_curve_sampled(
                 #[allow(clippy::cast_precision_loss)]
                 let mut seq: Vec<Point3> = (0..=open_samples)
                     .map(|i| {
-                        let t = (t1 - t0)
-                            .mul_add(i as f64 / open_samples as f64, t0);
+                        let t = (t1 - t0).mul_add(i as f64 / open_samples as f64, t0);
                         curve.evaluate_with_endpoints(t, start_pt, end_pt)
                     })
                     .collect();
