@@ -23,6 +23,49 @@ use super::planar::{
 };
 use super::{MERGE_GRID, point_merge_key};
 
+fn has_trimmed_same_sphere_neighbor<V, S>(
+    topo: &Topology,
+    face_id: FaceId,
+    edge_face_map: &std::collections::HashMap<usize, V, S>,
+) -> Result<bool, crate::OperationsError>
+where
+    V: std::ops::Deref<Target = [FaceId]>,
+    S: std::hash::BuildHasher,
+{
+    let face = topo.face(face_id)?;
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return Ok(false);
+    };
+    if !face.inner_wires().is_empty() {
+        return Ok(false);
+    }
+
+    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+    let wire = topo.wire(face.outer_wire())?;
+    for oriented_edge in wire.edges() {
+        let Some(neighbors) = edge_face_map.get(&oriented_edge.edge().index()) else {
+            continue;
+        };
+        for &neighbor_id in &**neighbors {
+            if neighbor_id == face_id {
+                continue;
+            }
+            let neighbor = topo.face(neighbor_id)?;
+            let FaceSurface::Sphere(other) = neighbor.surface() else {
+                continue;
+            };
+            let centers_match = (other.center() - sphere.center()).length_squared() < tol * tol;
+            if neighbor.inner_wires().len() == 1
+                && (other.radius() - sphere.radius()).abs() < tol
+                && centers_match
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Tessellate all faces of a solid into a single watertight triangle mesh.
 ///
 /// Unlike per-face `tessellate()`, this function coordinates tessellation across
@@ -551,12 +594,15 @@ fn tessellate_solid_core(
     }
 
     for &fi in &other_face_indices {
+        let allow_latitude_cap =
+            !circle_floor && has_trimmed_same_sphere_neighbor(topo, all_faces[fi], &edge_face_map)?;
         tessellate_face_with_shared_edges(
             topo,
             all_faces[fi],
             deflection,
             angular_tol,
             circle_floor,
+            allow_latitude_cap,
             &edge_global_indices,
             &mut merged,
             &mut point_to_global,
@@ -673,6 +719,7 @@ pub(super) fn tessellate_face_with_shared_edges(
     deflection: f64,
     angular_tol: f64,
     circle_floor: bool,
+    allow_latitude_cap: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
@@ -995,6 +1042,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                     face_data,
                     deflection,
                     angular_tol,
+                    allow_latitude_cap,
                     edge_global_indices,
                     merged,
                     point_to_global,
