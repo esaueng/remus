@@ -24,12 +24,17 @@
 
 use std::collections::HashMap;
 
+use brepkit_blend::BlendError;
 use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use brepkit_math::mat::Mat4;
 use brepkit_math::vec::Point3;
+use brepkit_operations::OperationsError;
 use brepkit_operations::blend_ops;
+use brepkit_operations::boolean::{BooleanOp, boolean};
 use brepkit_operations::measure;
 use brepkit_operations::primitives;
 use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
+use brepkit_operations::transform::transform_solid;
 use brepkit_topology::Topology;
 use brepkit_topology::edge::EdgeId;
 use brepkit_topology::explorer::solid_faces;
@@ -448,23 +453,17 @@ const MESH_TOLERANCES: [(f64, f64); 5] = [
     (0.1, 0.5),
 ];
 
-/// A 20x20x6 plate with an r=3 bore straight through it.
-fn drilled_plate(topo: &mut Topology) -> SolidId {
+/// A 20x20x6 plate with an r=3 bore straight through it at `(x, y)`.
+fn drilled_plate_at(topo: &mut Topology, x: f64, y: f64) -> SolidId {
     let plate = primitives::make_box(topo, 20.0, 20.0, 6.0).unwrap();
     let tool = primitives::make_cylinder(topo, 3.0, 20.0).unwrap();
-    brepkit_operations::transform::transform_solid(
-        topo,
-        tool,
-        &brepkit_math::mat::Mat4::translation(10.0, 10.0, -5.0),
-    )
-    .unwrap();
-    brepkit_operations::boolean::boolean(
-        topo,
-        brepkit_operations::boolean::BooleanOp::Cut,
-        plate,
-        tool,
-    )
-    .unwrap()
+    transform_solid(topo, tool, &Mat4::translation(x, y, -5.0)).unwrap();
+    boolean(topo, BooleanOp::Cut, plate, tool).unwrap()
+}
+
+/// A 20x20x6 plate with a centred r=3 bore straight through it.
+fn drilled_plate(topo: &mut Topology) -> SolidId {
+    drilled_plate_at(topo, 10.0, 10.0)
 }
 
 /// Material removed by a symmetric chamfer of setback `d` at the mouth of a
@@ -584,5 +583,101 @@ fn bore_mouth_chamfer_wider_than_the_plate_is_declined() {
         result.is_err(),
         "a chamfer that outgrows the face must fail, not produce a cap whose \
          wires cross"
+    );
+}
+
+/// The reported off-axis crossing sits exactly between two of the old fixed
+/// samples on the plate's x=0 edge. The bore centre is 3.2 mm from that edge,
+/// so an r=3.0 mouth has 0.2 mm of real clearance. A 0.3 mm chamfer grows the
+/// contact to r=3.3 and crosses the boundary, even though samples at y=5 and
+/// y=7.5 are both more than 3.4 mm from the bore axis.
+#[test]
+fn off_axis_bore_mouth_chamfer_crossing_is_refused() {
+    const CLEARANCE: f64 = 0.2;
+
+    let mut topo = Topology::new();
+    let drilled = drilled_plate_at(&mut topo, 3.2, 6.25);
+    let rim = closed_rims(&topo, drilled)
+        .into_iter()
+        .find(|&e| {
+            let edge = topo.edge(e).unwrap();
+            (topo.vertex(edge.start()).unwrap().point().z() - 6.0).abs() < 1e-9
+        })
+        .expect("the off-axis bore has a top mouth");
+
+    // Guard the adversarial premise: the obsolete nine-point scan really
+    // misses this crossing on the actual post-boolean cap wire.
+    let cap = solid_faces(&topo, drilled)
+        .unwrap()
+        .into_iter()
+        .find(|&face_id| {
+            let face = topo.face(face_id).unwrap();
+            face.surface().type_tag() == "plane"
+                && face.inner_wires().iter().any(|&wire_id| {
+                    topo.wire(wire_id)
+                        .unwrap()
+                        .edges()
+                        .iter()
+                        .any(|edge| edge.edge() == rim)
+                })
+        })
+        .expect("the top cap carries the bore rim as an inner wire");
+    let mut legacy_min = f64::INFINITY;
+    for oriented in topo
+        .wire(topo.face(cap).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+    {
+        let edge = topo.edge(oriented.edge()).unwrap();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        for k in 0..=8 {
+            let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+            let point = edge.curve().evaluate_with_endpoints(t, start, end);
+            legacy_min = legacy_min.min((point.x() - 3.2).hypot(point.y() - 6.25));
+        }
+    }
+    assert!(
+        legacy_min > 3.3,
+        "the fixture must evade the obsolete samples, got minimum {legacy_min}"
+    );
+
+    // Preserve supported blends immediately below the exact clearance.
+    {
+        let mut supported = topo.clone();
+        let ok = blend_ops::chamfer_v2(&mut supported, drilled, &[rim], 0.19, 0.19)
+            .expect("a chamfer below the exact boundary clearance must remain supported");
+        assert!(!ok.is_partial);
+        assert_eq!(brep_edge_health(&supported, ok.solid), (0, 0));
+        assert_eq!(mesh_edge_health(&supported, ok.solid), (0, 0));
+        assert_eq!(
+            surface_census(&supported, ok.solid)
+                .get("cone")
+                .copied()
+                .unwrap_or(0),
+            1,
+            "the supported path must still use one exact cone band"
+        );
+    }
+
+    let before = measure::solid_volume(&topo, drilled, 0.01).unwrap();
+    let err = blend_ops::chamfer_v2(&mut topo, drilled, &[rim], 0.3, 0.3)
+        .err()
+        .expect("the r=3.3 plate contact crosses the x=0 boundary");
+    match err {
+        OperationsError::Blend(BlendError::RadiusTooLarge { edge, max_radius }) => {
+            assert_eq!(edge, rim);
+            assert!(
+                (max_radius - CLEARANCE).abs() < 1e-12,
+                "the exact curve-to-axis minimum gives max={CLEARANCE}, got {max_radius}"
+            );
+        }
+        other => panic!("crossing must be a typed radius refusal, got {other:?}"),
+    }
+    let after = measure::solid_volume(&topo, drilled, 0.01).unwrap();
+    assert!(
+        (after - before).abs() < 1e-9,
+        "the refused chamfer must leave the input untouched"
     );
 }

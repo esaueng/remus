@@ -31,7 +31,7 @@ use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
 use brepkit_operations::transform::transform_solid;
 use brepkit_topology::Topology;
 use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
-use brepkit_topology::edge::EdgeId;
+use brepkit_topology::edge::{EdgeCurve, EdgeId};
 use brepkit_topology::explorer::solid_faces;
 use brepkit_topology::solid::SolidId;
 
@@ -385,6 +385,132 @@ fn rim_fillet_reaching_a_hole_is_refused() {
         "a radius that reaches the bolt circle must be refused"
     );
     let after = measure::solid_volume(&topo, body, 0.05).unwrap();
+    assert!(
+        (after - before).abs() < 1e-9,
+        "the refused fillet must leave the input untouched"
+    );
+}
+
+/// A circular cap hole can hide its farthest point between the old nine fixed
+/// samples just as a straight plate edge can hide its nearest point. Put an
+/// r=3 hole 34 mm off the r=45 cap axis at 22.5 degrees: its true radial reach
+/// is 37 mm, while samples every 45 degrees see at most about 36.79 mm. An
+/// outer-rim fillet of 8.1 mm shrinks the cap contact to r=36.9 and therefore
+/// crosses the hole.
+#[test]
+fn off_axis_cap_hole_crossing_is_refused_without_losing_supported_fillet() {
+    const BODY_R: f64 = 45.0;
+    const BODY_H: f64 = 10.0;
+    const HOLE_R: f64 = 3.0;
+    const OFFSET: f64 = 34.0;
+    const CLEARANCE: f64 = BODY_R - OFFSET - HOLE_R;
+
+    let angle = std::f64::consts::PI / 8.0;
+    let hole_x = OFFSET * angle.cos();
+    let hole_y = OFFSET * angle.sin();
+
+    let mut topo = Topology::new();
+    let blank = {
+        let points = [
+            Point3::new(12.0, 0.0, 0.0),
+            Point3::new(BODY_R, 0.0, 0.0),
+            Point3::new(BODY_R, 0.0, BODY_H),
+            Point3::new(12.0, 0.0, BODY_H),
+        ];
+        let wire = make_polygon_wire(&mut topo, &points, 1e-7).unwrap();
+        let face = make_planar_face_from_wire(&mut topo, wire).unwrap();
+        revolve(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::TAU,
+        )
+        .unwrap()
+    };
+    let drill = primitives::make_cylinder(&mut topo, HOLE_R, BODY_H + 4.0).unwrap();
+    transform_solid(&mut topo, drill, &Mat4::translation(hole_x, hole_y, -2.0)).unwrap();
+    let body = boolean(&mut topo, BooleanOp::Cut, blank, drill).unwrap();
+
+    let rim = solid_edge_list(&topo, body)
+        .into_iter()
+        .find(|&e| {
+            let edge = topo.edge(e).unwrap();
+            let p = topo.vertex(edge.start()).unwrap().point();
+            edge.start() == edge.end()
+                && matches!(edge.curve(), EdgeCurve::Circle(c) if (c.radius() - BODY_R).abs() < 1e-9)
+                && (p.z() - BODY_H).abs() < 1e-9
+        })
+        .expect("the holed cylinder has a top outer rim");
+
+    // Guard the adversarial premise: the obsolete nine-point scan really
+    // misses this crossing on the actual post-boolean hole circle.
+    let cap = solid_faces(&topo, body)
+        .unwrap()
+        .into_iter()
+        .find(|&face_id| {
+            let face = topo.face(face_id).unwrap();
+            face.surface().type_tag() == "plane"
+                && topo
+                    .wire(face.outer_wire())
+                    .unwrap()
+                    .edges()
+                    .iter()
+                    .any(|edge| edge.edge() == rim)
+        })
+        .expect("the top cap uses the selected outer rim");
+    let hole_edge = topo
+        .face(cap)
+        .unwrap()
+        .inner_wires()
+        .iter()
+        .flat_map(|&wire_id| topo.wire(wire_id).unwrap().edges())
+        .map(|edge| topo.edge(edge.edge()).unwrap())
+        .find(|edge| {
+            matches!(edge.curve(), EdgeCurve::Circle(circle)
+                if (circle.radius() - HOLE_R).abs() < 1e-9)
+        })
+        .expect("the cap keeps the off-axis circular hole");
+    let start = topo.vertex(hole_edge.start()).unwrap().point();
+    let end = topo.vertex(hole_edge.end()).unwrap().point();
+    let (t0, t1) = hole_edge.curve().domain_with_endpoints(start, end);
+    let mut legacy_max: f64 = 0.0;
+    for k in 0..=8 {
+        let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
+        let point = hole_edge.curve().evaluate_with_endpoints(t, start, end);
+        legacy_max = legacy_max.max(point.x().hypot(point.y()));
+    }
+    let rejected_contact = BODY_R - (CLEARANCE + 0.1);
+    assert!(
+        legacy_max < rejected_contact,
+        "the fixture must evade the obsolete samples: max={legacy_max}, contact={rejected_contact}"
+    );
+
+    // Preserve the same analytic rebuild just below the exact clearance.
+    {
+        let mut supported = topo.clone();
+        let ok = blend_ops::fillet_v2(&mut supported, body, &[rim], CLEARANCE - 0.1)
+            .expect("an outer-rim fillet below the exact hole clearance must remain supported");
+        assert!(!ok.is_partial);
+        assert_eq!(brep_edge_health(&supported, ok.solid), (0, 0));
+        assert_eq!(mesh_edge_health(&supported, ok.solid), (0, 0));
+        assert_eq!(
+            surface_census(&supported, ok.solid)
+                .get("torus")
+                .copied()
+                .unwrap_or(0),
+            1,
+            "the supported path must still use one exact torus band"
+        );
+    }
+
+    let before = measure::solid_volume(&topo, body, 0.01).unwrap();
+    let outcome = blend_ops::fillet_v2(&mut topo, body, &[rim], CLEARANCE + 0.1);
+    assert!(
+        outcome.is_err(),
+        "the r=36.9 cap contact crosses a hole reaching r=37 and must be refused"
+    );
+    let after = measure::solid_volume(&topo, body, 0.01).unwrap();
     assert!(
         (after - before).abs() < 1e-9,
         "the refused fillet must leave the input untouched"
