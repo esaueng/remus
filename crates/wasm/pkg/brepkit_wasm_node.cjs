@@ -1303,6 +1303,59 @@ class BrepKernel {
         return v2;
     }
     /**
+     * Export several solids into one STEP AP203 file with optional metadata.
+     *
+     * The JSON shape and defaults match
+     * [`exportStepWithOptions`](Self::export_step_with_options).
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the options
+     * JSON is malformed, or export fails.
+     * @param {Uint32Array} solids
+     * @param {string | null} [options]
+     * @returns {Uint8Array}
+     */
+    exportStepMultiWithOptions(solids, options) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(options) ? 0 : passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportStepMultiWithOptions(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v3;
+    }
+    /**
+     * Export a solid to STEP AP203 with optional header metadata.
+     *
+     * `options` is an optional JSON string with `productName`, `fileName`,
+     * and `timestamp` fields. Missing fields retain the defaults used by
+     * [`exportStep`](Self::export_step).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, the options JSON is
+     * malformed, or export fails.
+     * @param {number} solid
+     * @param {string | null} [options]
+     * @returns {Uint8Array}
+     */
+    exportStepWithOptions(solid, options) {
+        var ptr0 = isLikeNone(options) ? 0 : passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportStepWithOptions(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Export a solid to binary STL format.
      *
      * Returns a `Uint8Array` containing the `.stl` file.

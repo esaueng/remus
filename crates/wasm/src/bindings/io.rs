@@ -37,6 +37,18 @@ fn import_limits_from(
     Ok(limits)
 }
 
+/// Parse optional JSON metadata for STEP export.
+fn step_write_options_from_json(
+    options: Option<&str>,
+) -> Result<brepkit_io::step::StepWriteOptions, WasmError> {
+    match options {
+        None => Ok(brepkit_io::step::StepWriteOptions::default()),
+        Some(json) => serde_json::from_str(json).map_err(|error| WasmError::InvalidInput {
+            reason: format!("invalid STEP write options JSON: {error}"),
+        }),
+    }
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Export ─────────────────────────────────────────────────────
@@ -331,6 +343,29 @@ impl BrepKernel {
         Ok(step_str.into_bytes())
     }
 
+    /// Export a solid to STEP AP203 with optional header metadata.
+    ///
+    /// `options` is an optional JSON string with `productName`, `fileName`,
+    /// and `timestamp` fields. Missing fields retain the defaults used by
+    /// [`exportStep`](Self::export_step).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid, the options JSON is
+    /// malformed, or export fails.
+    #[wasm_bindgen(js_name = "exportStepWithOptions")]
+    pub fn export_step_with_options(
+        &self,
+        solid: u32,
+        options: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let options = step_write_options_from_json(options.as_deref())?;
+        let step =
+            brepkit_io::step::writer::write_step_with_options(&self.topo, &[solid_id], &options)?;
+        Ok(step.into_bytes())
+    }
+
     /// Export several solids into one STEP AP203 file.
     ///
     /// The solids stay distinct in the output — they become separate
@@ -351,6 +386,31 @@ impl BrepKernel {
             .collect::<Result<Vec<_>, _>>()?;
         let step_str = brepkit_io::step::writer::write_step(&self.topo, &solid_ids)?;
         Ok(step_str.into_bytes())
+    }
+
+    /// Export several solids into one STEP AP203 file with optional metadata.
+    ///
+    /// The JSON shape and defaults match
+    /// [`exportStepWithOptions`](Self::export_step_with_options).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the options
+    /// JSON is malformed, or export fails.
+    #[wasm_bindgen(js_name = "exportStepMultiWithOptions")]
+    pub fn export_step_multi_with_options(
+        &self,
+        solids: &[u32],
+        options: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let options = step_write_options_from_json(options.as_deref())?;
+        let step =
+            brepkit_io::step::writer::write_step_with_options(&self.topo, &solid_ids, &options)?;
+        Ok(step.into_bytes())
     }
 
     /// Import a STEP file and return solid handles.
@@ -458,6 +518,39 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn step_options_json_is_optional_and_supports_partial_overrides() {
+        assert_eq!(
+            step_write_options_from_json(None).unwrap(),
+            brepkit_io::step::StepWriteOptions::default()
+        );
+        let options = step_write_options_from_json(Some(
+            r#"{"productName":"Custom part","fileName":"part.step"}"#,
+        ))
+        .unwrap();
+        assert_eq!(options.product_name, "Custom part");
+        assert_eq!(options.file_name, "part.step");
+        assert_eq!(options.timestamp, "2024-01-01T00:00:00");
+    }
+
+    #[test]
+    fn step_options_binding_writes_custom_metadata() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let bytes = kernel
+            .export_step_with_options(
+                solid,
+                Some(
+                    r#"{"productName":"Custom part","fileName":"part.step","timestamp":"2026-08-03T00:00:00"}"#
+                        .to_string(),
+                ),
+            )
+            .unwrap();
+        let step = String::from_utf8(bytes).unwrap();
+        assert!(step.contains("PRODUCT('Custom part', 'Custom part'"));
+        assert!(step.contains("FILE_NAME('part.step', '2026-08-03T00:00:00'"));
+    }
 
     #[test]
     fn imports_ascii_ply_tetrahedron() {

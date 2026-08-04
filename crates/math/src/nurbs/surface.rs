@@ -120,6 +120,15 @@ impl NurbsSurface {
         self.degree_v
     }
 
+    /// Whether the surface is rational (any weight differs from 1.0).
+    #[must_use]
+    pub fn is_rational(&self) -> bool {
+        self.weights
+            .iter()
+            .flatten()
+            .any(|&weight| weight.to_bits() != 1.0f64.to_bits())
+    }
+
     /// Return the valid parameter domain in u: `[u_min, u_max]`.
     #[must_use]
     pub fn domain_u(&self) -> (f64, f64) {
@@ -503,6 +512,28 @@ use super::basis::binomial;
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rationality_follows_the_weight_grid() {
+        let points = vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ];
+        let make = |weights| {
+            NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                points.clone(),
+                weights,
+            )
+            .expect("test surface should be valid")
+        };
+
+        assert!(!make(vec![vec![1.0; 2]; 2]).is_rational());
+        assert!(make(vec![vec![1.0, 0.5], vec![1.0, 1.0]]).is_rational());
+    }
 
     #[test]
     fn rejects_nonpositive_and_nonfinite_weights() {

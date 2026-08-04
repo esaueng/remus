@@ -16,6 +16,31 @@ use brepkit_topology::wire::WireId;
 
 use crate::IoError;
 
+/// Metadata written into the STEP header and product structure.
+///
+/// Defaults preserve the historical brepkit export values so callers of
+/// [`write_step`] remain byte-compatible.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StepWriteOptions {
+    /// Product identifier and name stored in the `PRODUCT` entity.
+    pub product_name: String,
+    /// File name stored in the `FILE_NAME` header entity.
+    pub file_name: String,
+    /// Timestamp stored in the `FILE_NAME` header entity.
+    pub timestamp: String,
+}
+
+impl Default for StepWriteOptions {
+    fn default() -> Self {
+        Self {
+            product_name: "brepkit_solid".to_string(),
+            file_name: "output.stp".to_string(),
+            timestamp: "2024-01-01T00:00:00".to_string(),
+        }
+    }
+}
+
 /// Write one or more solids to STEP AP203 format.
 ///
 /// Returns the STEP file as a UTF-8 string.
@@ -28,13 +53,31 @@ use crate::IoError;
 /// - An unsupported geometry type is encountered
 #[allow(clippy::too_many_lines)]
 pub fn write_step(topo: &Topology, solids: &[SolidId]) -> Result<String, IoError> {
+    write_step_with_options(topo, solids, &StepWriteOptions::default())
+}
+
+/// Write one or more solids to STEP AP203 format with caller-supplied metadata.
+///
+/// Geometry and topology encoding are identical to [`write_step`]. Apostrophes
+/// in metadata are escaped according to STEP Part 21 string rules.
+///
+/// # Errors
+///
+/// Returns an error if `solids` is empty, a topology lookup fails, or an
+/// unsupported geometry type is encountered.
+#[allow(clippy::too_many_lines)]
+pub fn write_step_with_options(
+    topo: &Topology,
+    solids: &[SolidId],
+    options: &StepWriteOptions,
+) -> Result<String, IoError> {
     if solids.is_empty() {
         return Err(IoError::InvalidTopology {
             reason: "no solids to export".to_string(),
         });
     }
 
-    let mut ctx = StepWriteContext::new();
+    let mut ctx = StepWriteContext::new(options.clone());
 
     let repr_context_id = ctx.write_geometric_context();
     let product_ids = ctx.write_product_structure();
@@ -78,6 +121,7 @@ pub fn write_step(topo: &Topology, solids: &[SolidId]) -> Result<String, IoError
 struct StepWriteContext {
     next: u64,
     entities: String,
+    options: StepWriteOptions,
     /// Vertex index to STEP entity ID.
     vertex_map: HashMap<u64, u64>,
     /// Edge index to STEP entity ID.
@@ -90,10 +134,11 @@ struct ProductIds {
 }
 
 impl StepWriteContext {
-    fn new() -> Self {
+    fn new(options: StepWriteOptions) -> Self {
         Self {
             next: 1,
             entities: String::new(),
+            options,
             vertex_map: HashMap::new(),
             edge_map: HashMap::new(),
         }
@@ -219,10 +264,11 @@ impl StepWriteContext {
         );
 
         let product = self.next_id();
+        let product_name = step_string_literal(&self.options.product_name);
         self.write_entity(
             product,
             "PRODUCT",
-            &format!("'brepkit_solid', 'brepkit_solid', '', (#{mech_context}))"),
+            &format!("{product_name}, {product_name}, '', (#{mech_context}))"),
         );
 
         let formation = self.next_id();
@@ -391,15 +437,32 @@ impl StepWriteContext {
         let vals_str: Vec<String> = knot_vals.iter().map(|v| fmt_f64(*v)).collect();
 
         let id = self.next_id();
-        let _ = writeln!(
-            self.entities,
-            "#{id} = B_SPLINE_CURVE_WITH_KNOTS('', {}, ({}), \
-             .UNSPECIFIED., .F., .F., ({}), ({}), .UNSPECIFIED.);",
-            nurbs.degree(),
-            cp_refs.join(", "),
-            mults_str.join(", "),
-            vals_str.join(", "),
-        );
+        if nurbs.is_rational() {
+            let weights: Vec<String> = nurbs.weights().iter().map(|&w| fmt_f64(w)).collect();
+            let _ = writeln!(
+                self.entities,
+                "#{id} = ( BOUNDED_CURVE() \
+                 B_SPLINE_CURVE({}, ({}), .UNSPECIFIED., .F., .F.) \
+                 B_SPLINE_CURVE_WITH_KNOTS(({}), ({}), .UNSPECIFIED.) \
+                 CURVE() GEOMETRIC_REPRESENTATION_ITEM() \
+                 RATIONAL_B_SPLINE_CURVE(({})) REPRESENTATION_ITEM('') );",
+                nurbs.degree(),
+                cp_refs.join(", "),
+                mults_str.join(", "),
+                vals_str.join(", "),
+                weights.join(", "),
+            );
+        } else {
+            let _ = writeln!(
+                self.entities,
+                "#{id} = B_SPLINE_CURVE_WITH_KNOTS('', {}, ({}), \
+                 .UNSPECIFIED., .F., .F., ({}), ({}), .UNSPECIFIED.);",
+                nurbs.degree(),
+                cp_refs.join(", "),
+                mults_str.join(", "),
+                vals_str.join(", "),
+            );
+        }
 
         id
     }
@@ -568,18 +631,45 @@ impl StepWriteContext {
         let v_vals_str: Vec<String> = v_vals.iter().map(|v| fmt_f64(*v)).collect();
 
         let id = self.next_id();
-        let _ = writeln!(
-            self.entities,
-            "#{id} = B_SPLINE_SURFACE_WITH_KNOTS('', {}, {}, ({}), \
-             .UNSPECIFIED., .F., .F., .F., ({}), ({}), ({}), ({}), .UNSPECIFIED.);",
-            nurbs.degree_u(),
-            nurbs.degree_v(),
-            cp_grid_refs.join(", "),
-            u_mults_str.join(", "),
-            v_mults_str.join(", "),
-            u_vals_str.join(", "),
-            v_vals_str.join(", "),
-        );
+        if nurbs.is_rational() {
+            let weight_rows: Vec<String> = nurbs
+                .weights()
+                .iter()
+                .map(|row| {
+                    let values: Vec<String> = row.iter().map(|&weight| fmt_f64(weight)).collect();
+                    format!("({})", values.join(", "))
+                })
+                .collect();
+            let _ = writeln!(
+                self.entities,
+                "#{id} = ( BOUNDED_SURFACE() \
+                 B_SPLINE_SURFACE({}, {}, ({}), .UNSPECIFIED., .F., .F., .F.) \
+                 B_SPLINE_SURFACE_WITH_KNOTS(({}), ({}), ({}), ({}), .UNSPECIFIED.) \
+                 GEOMETRIC_REPRESENTATION_ITEM() \
+                 RATIONAL_B_SPLINE_SURFACE(({})) REPRESENTATION_ITEM('') SURFACE() );",
+                nurbs.degree_u(),
+                nurbs.degree_v(),
+                cp_grid_refs.join(", "),
+                u_mults_str.join(", "),
+                v_mults_str.join(", "),
+                u_vals_str.join(", "),
+                v_vals_str.join(", "),
+                weight_rows.join(", "),
+            );
+        } else {
+            let _ = writeln!(
+                self.entities,
+                "#{id} = B_SPLINE_SURFACE_WITH_KNOTS('', {}, {}, ({}), \
+                 .UNSPECIFIED., .F., .F., .F., ({}), ({}), ({}), ({}), .UNSPECIFIED.);",
+                nurbs.degree_u(),
+                nurbs.degree_v(),
+                cp_grid_refs.join(", "),
+                u_mults_str.join(", "),
+                v_mults_str.join(", "),
+                u_vals_str.join(", "),
+                v_vals_str.join(", "),
+            );
+        }
 
         Ok(id)
     }
@@ -654,12 +744,14 @@ impl StepWriteContext {
 
     fn finish(self) -> String {
         let mut out = String::new();
+        let file_name = step_string_literal(&self.options.file_name);
+        let timestamp = step_string_literal(&self.options.timestamp);
         let _ = writeln!(out, "ISO-10303-21;");
         let _ = writeln!(out, "HEADER;");
         let _ = writeln!(out, "FILE_DESCRIPTION(('brepkit STEP export'), '2;1');");
         let _ = writeln!(
             out,
-            "FILE_NAME('output.stp', '2024-01-01T00:00:00', (''), (''), \
+            "FILE_NAME({file_name}, {timestamp}, (''), (''), \
              'brepkit', 'brepkit', '');"
         );
         let _ = writeln!(out, "FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));");
@@ -670,6 +762,11 @@ impl StepWriteContext {
         let _ = writeln!(out, "END-ISO-10303-21;");
         out
     }
+}
+
+/// Quote a string for a STEP Part 21 string literal.
+fn step_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 /// Format a float for STEP output with sufficient precision.
@@ -776,6 +873,32 @@ mod tests {
         assert!(step_str.contains("PRODUCT_DEFINITION("));
         assert!(step_str.contains("SHAPE_DEFINITION_REPRESENTATION"));
         assert!(step_str.contains("ADVANCED_BREP_SHAPE_REPRESENTATION"));
+    }
+
+    #[test]
+    fn default_options_preserve_the_existing_output() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+
+        assert_eq!(
+            write_step(&topo, &[solid]).unwrap(),
+            write_step_with_options(&topo, &[solid], &StepWriteOptions::default()).unwrap()
+        );
+    }
+
+    #[test]
+    fn options_override_and_escape_header_metadata() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+        let options = StepWriteOptions {
+            product_name: "Owner's bracket".to_string(),
+            file_name: "owner's-bracket.step".to_string(),
+            timestamp: "2026-08-03T12:34:56-04:00".to_string(),
+        };
+
+        let step = write_step_with_options(&topo, &[solid], &options).unwrap();
+        assert!(step.contains("FILE_NAME('owner''s-bracket.step', '2026-08-03T12:34:56-04:00'"));
+        assert!(step.contains("PRODUCT('Owner''s bracket', 'Owner''s bracket'"));
     }
 
     #[test]

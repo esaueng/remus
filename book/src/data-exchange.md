@@ -2,7 +2,7 @@
 
 | Format | Geometry | Import | Export | Notes |
 | --- | --- | --- | --- | --- |
-| STEP | Exact B-Rep | Yes | Yes | Preferred for analytic/NURBS interchange |
+| STEP | Exact B-Rep | Yes | Yes | Analytic and rational NURBS interchange; configurable file/product metadata |
 | IGES | B-Rep | Preview | Lossy | Experimental subset |
 | STL | Triangle mesh | Yes | Yes | Binary and ASCII |
 | 3MF | Triangle mesh | Yes | Yes | ZIP container; multiple objects on import |
@@ -11,8 +11,12 @@
 | GLB | Triangle mesh | Yes | Yes | No materials or scene graph |
 
 STEP preserves planes, cylinders, cones, spheres, tori, NURBS surfaces, and
-supported curve types. Mesh imports reconstruct planar triangle faces; they do
-not recover the original analytic surfaces.
+supported curve types, including rational curve and surface weights. Rust
+callers can use `write_step_with_options` with `StepWriteOptions` to set the
+product name, file name, and timestamp. WASM callers use
+`exportStepWithOptions` or `exportStepMultiWithOptions` and pass the same fields
+as a JSON string. Mesh imports reconstruct planar triangle faces; they do not
+recover the original analytic surfaces.
 
 Every public reader uses `ImportLimits::default()` to bound encoded input and
 entity counts. Use the corresponding `*_with_limits` entry point for a stricter
