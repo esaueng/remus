@@ -1647,6 +1647,8 @@ fn wire_loops_duplicate_cover(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bo
             EdgeCurve::Circle(_) => 1,
             EdgeCurve::Ellipse(_) => 2,
             EdgeCurve::NurbsCurve(_) => 3,
+            EdgeCurve::Hyperbola(_) => 4,
+            EdgeCurve::Parabola(_) => 5,
         };
         if a <= b { (a, b, kind) } else { (b, a, kind) }
     };
