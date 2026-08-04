@@ -132,6 +132,11 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           token: ${{ steps.app-token.outputs.token || github.token }}
+          # The build below compiles third-party crates' build scripts; do not
+          # leave a write token in .git/config where they could read it. The
+          # commit step authenticates with a token-embedded URL instead (same
+          # pattern as benchmark.yml).
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -140,7 +145,7 @@ jobs:
       # rust-toolchain.toml provides the pinned Rust version + wasm32 target
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.62.30
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: wasm-pack
 
@@ -161,6 +166,8 @@ jobs:
             homepage=https://github.com/${GITHUB_REPOSITORY}
 
       - name: Commit refreshed package
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -177,8 +184,11 @@ jobs:
           VERSION=$(jq -r .version crates/wasm/pkg/package.json)
           git commit -m "chore(wasm): refresh committed package to v${VERSION} from ${GITHUB_SHA:0:7} [skip ci]"
           # Land on top of anything that merged while the build was running.
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # Authenticate with a token-embedded URL: checkout ran with
+          # persist-credentials: false, so origin carries no credentials.
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git pull --rebase --autostash "$remote" "${GITHUB_REF_NAME}"
+          git push "$remote" "HEAD:${GITHUB_REF_NAME}"
           echo "::notice::Committed brepkit-wasm ${VERSION}; consumers on #main pick it up on the next install."
 
   # Publish triggers on three events:
