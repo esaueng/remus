@@ -6,6 +6,8 @@ use brepkit_topology::Topology;
 use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::face::{FaceId, FaceSurface};
 
+use std::f64::consts::TAU;
+
 use super::edge_sampling::{sample_edge, segments_for_chord_deviation_a};
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
 
@@ -15,6 +17,245 @@ type ProjectFn = Box<dyn Fn(Point3) -> (f64, f64)>;
 type EvalFn = Box<dyn Fn(f64, f64) -> Point3>;
 /// Maps `(u, v)` surface parameters to the outward surface normal.
 type NormalFn = Box<dyn Fn(f64, f64) -> Vec3>;
+
+/// Per-face variant of the cycle-rim structured band: rims are sampled
+/// LOCALLY at the requested deflection instead of pulled from the solid
+/// tessellation's shared edge pool, so the `tessellate(topo, face, defl)`
+/// route (which feeds `classify_point`'s meshes) gets the same watertight
+/// wavy-band handling as the solid path. Returns `Ok(None)` when the face is
+/// not a two-full-winding-rim band; the caller falls back.
+pub(super) fn tessellate_band_face_local(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<Option<super::TriangleMeshUV>, crate::OperationsError> {
+    if !face_data.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let (project, surf_normal): (ProjectFn, NormalFn) = match face_data.surface() {
+        FaceSurface::Cylinder(c) => {
+            let (c1, c2) = (c.clone(), c.clone());
+            (
+                Box::new(move |p| c1.project_point(p)),
+                Box::new(move |u, v| c2.normal(u, v)),
+            )
+        }
+        FaceSurface::Cone(c) => {
+            let (c1, c2) = (c.clone(), c.clone());
+            (
+                Box::new(move |p| c1.project_point(p)),
+                Box::new(move |u, v| c2.normal(u, v)),
+            )
+        }
+        _ => return Ok(None),
+    };
+
+    // Curved wire edges → endpoint-connected cycles (the pool version's
+    // structure; a closed single-edge NURBS loop has no by-construction
+    // winding, so decline).
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut curved: Vec<(
+        brepkit_topology::edge::EdgeId,
+        brepkit_topology::vertex::VertexId,
+        brepkit_topology::vertex::VertexId,
+    )> = Vec::new();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for oe in wire.edges() {
+        let e = topo.edge(oe.edge())?;
+        match e.curve() {
+            EdgeCurve::NurbsCurve(_) if e.start() == e.end() => return Ok(None),
+            EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_) => {
+                if seen.insert(oe.edge().index()) {
+                    curved.push((oe.edge(), e.start(), e.end()));
+                }
+            }
+            EdgeCurve::Line => {}
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(None);
+            }
+        }
+    }
+    let mut by_vertex: std::collections::HashMap<brepkit_topology::vertex::VertexId, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (j, &(_, sv, ev)) in curved.iter().enumerate() {
+        by_vertex.entry(sv).or_default().push(j);
+        by_vertex.entry(ev).or_default().push(j);
+    }
+    let mut used = vec![false; curved.len()];
+    let mut cycles: Vec<Vec<usize>> = Vec::new();
+    for start in 0..curved.len() {
+        if used[start] {
+            continue;
+        }
+        let (_, origin, mut at) = curved[start];
+        used[start] = true;
+        let mut cycle = vec![start];
+        let mut closed = curved[start].1 == curved[start].2 || at == origin;
+        while !closed {
+            let Some(&next) = by_vertex
+                .get(&at)
+                .and_then(|c| c.iter().find(|&&j| !used[j]))
+            else {
+                break;
+            };
+            used[next] = true;
+            at = if curved[next].1 == at {
+                curved[next].2
+            } else {
+                curved[next].1
+            };
+            cycle.push(next);
+            closed = at == origin;
+        }
+        if !closed {
+            return Ok(None);
+        }
+        cycles.push(cycle);
+    }
+    if cycles.len() != 2 {
+        return Ok(None);
+    }
+    let wrap_pi = |d: f64| -> f64 { (d + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0 };
+    for cycle in &cycles {
+        let mut winding = 0.0_f64;
+        let mut whole_turn = false;
+        let mut at: Option<brepkit_topology::vertex::VertexId> = None;
+        for &ci in cycle {
+            let (_, sv, ev) = curved[ci];
+            if sv == ev {
+                whole_turn = true;
+                continue;
+            }
+            let (from, to) = match at {
+                None => (sv, ev),
+                Some(v) if v == sv => (sv, ev),
+                Some(_) => (ev, sv),
+            };
+            let (u0, _) = project(topo.vertex(from)?.point());
+            let (u1, _) = project(topo.vertex(to)?.point());
+            winding += wrap_pi(u1 - u0);
+            at = Some(to);
+        }
+        if !whole_turn && (winding.abs() - TAU).abs() > 1e-6 {
+            return Ok(None);
+        }
+    }
+
+    // Sample each rim's edges locally, dedup by quantized position, sort by
+    // angle around the axis.
+    let mut rims: Vec<Vec<Point3>> = Vec::with_capacity(2);
+    for cycle in &cycles {
+        let mut pts: Vec<Point3> = Vec::new();
+        let mut keys: std::collections::HashSet<(i64, i64, i64)> = std::collections::HashSet::new();
+        for &ci in cycle {
+            let edge = topo.edge(curved[ci].0)?;
+            for p in sample_edge(topo, edge, deflection, angular_tol, false)? {
+                let k = point_merge_key(p, MERGE_GRID);
+                if keys.insert(k) {
+                    pts.push(p);
+                }
+            }
+        }
+        if pts.len() < 3 {
+            return Ok(None);
+        }
+        pts.sort_by(|a, b| {
+            project(*a)
+                .0
+                .partial_cmp(&project(*b).0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        rims.push(pts);
+    }
+
+    // Assemble the vertex arrays: ring 0 then ring 1.
+    let n = rims[0].len();
+    let m = rims[1].len();
+    let mut positions: Vec<Point3> = Vec::with_capacity(n + m);
+    positions.extend_from_slice(&rims[0]);
+    positions.extend_from_slice(&rims[1]);
+    let mut normals: Vec<Vec3> = Vec::with_capacity(n + m);
+    let mut uvs: Vec<[f64; 2]> = Vec::with_capacity(n + m);
+    for p in &positions {
+        let (u, v) = project(*p);
+        normals.push(surf_normal(u, v));
+        uvs.push([u, v]);
+    }
+
+    // Angular zipper (the pool version's sweep, on local indices). Rotate
+    // ring 1 to start just after ring 0's start angle.
+    let ang = |i: usize| -> f64 { uvs[i][0] };
+    let base = ang(0);
+    let start1 = (0..m)
+        .min_by(|&a, &b| {
+            let ka = (ang(n + a) - base).rem_euclid(TAU);
+            let kb = (ang(n + b) - base).rem_euclid(TAU);
+            ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(0);
+    let ring0: Vec<usize> = (0..n).collect();
+    let mut ring1: Vec<usize> = (n..n + m).collect();
+    ring1.rotate_left(start1);
+    let unwrap = |a: f64| (a - base).rem_euclid(TAU);
+    let a0: Vec<f64> = ring0.iter().map(|&i| unwrap(ang(i))).collect();
+    let a1: Vec<f64> = ring1.iter().map(|&i| unwrap(ang(i))).collect();
+
+    let mut indices: Vec<u32> = Vec::with_capacity((n + m) * 3);
+    let mut emit = |a: usize, b: usize, c: usize| {
+        let (pa, pb, pc) = (positions[a], positions[b], positions[c]);
+        let geo = (pb - pa).cross(pc - pa);
+        if geo.length() < 1e-20 {
+            return;
+        }
+        let (u, v) = project(pa);
+        let outward = surf_normal(u, v);
+        #[allow(clippy::cast_possible_truncation)]
+        let mut tri = [a as u32, b as u32, c as u32];
+        if geo.dot(outward) < 0.0 {
+            tri.swap(1, 2);
+        }
+        indices.extend_from_slice(&tri);
+    };
+    let (mut i, mut j) = (0usize, 0usize);
+    let (mut done0, mut done1) = (0usize, 0usize);
+    while done0 < n || done1 < m {
+        let next0 = if done0 >= n {
+            f64::INFINITY
+        } else if i + 1 < n {
+            a0[i + 1]
+        } else {
+            a0[0] + TAU
+        };
+        let next1 = if done1 >= m {
+            f64::INFINITY
+        } else if j + 1 < m {
+            a1[j + 1]
+        } else {
+            a1[0] + TAU
+        };
+        if next0 <= next1 {
+            let ni = (i + 1) % n;
+            emit(ring0[i], ring1[j], ring0[ni]);
+            i = ni;
+            done0 += 1;
+        } else {
+            let nj = (j + 1) % m;
+            emit(ring0[i], ring1[j], ring1[nj]);
+            j = nj;
+            done1 += 1;
+        }
+    }
+
+    Ok(Some(super::TriangleMeshUV {
+        mesh: TriangleMesh {
+            positions,
+            normals,
+            indices,
+        },
+        uvs,
+    }))
+}
 
 /// Tessellate a cylinder/cone lateral "standard band" face directly from the
 /// shared rim edge vertices, bypassing the snap path's proximity reconciliation.
@@ -29,9 +270,15 @@ type NormalFn = Box<dyn Fn(f64, f64) -> Vec3>;
 ///
 /// Returns `Ok(true)` when the face is a simple two-rim band that was handled
 /// here, `Ok(false)` when it is not (the caller then falls back to the snap or
-/// CDT path). A "simple band" has no inner wires, exactly two **closed**
-/// rim-circle edges (everything else a seam line), and matching shared-vertex
-/// counts on the two rims.
+/// CDT path). A "simple band" has no inner wires and exactly two rims
+/// (everything else a seam line). Each rim is either one **closed** circle
+/// edge or a CHAIN of open circle arcs at one constant `v` whose spans sum to
+/// a full revolution — a boolean that splits a rim at tangency or crossing
+/// points (e.g. the cone∪box inscribed-rim fuse, whose z=6 rim arrives as
+/// four arcs each shared with a different corner face) still gets the
+/// structured watertight band. Rims with equal shared-vertex counts sweep
+/// index-paired exactly as before; unequal counts (each rim's sampling is
+/// dictated by its own neighbours) are stitched with an angular zipper merge.
 pub(super) fn tessellate_revolution_band_shared(
     topo: &Topology,
     face_data: &brepkit_topology::face::Face,
@@ -60,43 +307,121 @@ pub(super) fn tessellate_revolution_band_shared(
         _ => return Ok(false),
     };
 
-    // Collect the two closed rim-circle edges; everything else must be a seam line.
+    // Collect rim edges as endpoint-connected CYCLES of curved edges;
+    // everything else must be a seam line. A rim is any cycle whose net
+    // surface-u winding is a full revolution: one closed circle, a chain of
+    // ring arcs, or a wavy mixed circle+NURBS chain (the winding-chain band
+    // separator). A cycle that does not wind — a lens hole, a partial band
+    // arc run bounded by non-seam generators — declines the structured
+    // sweep, which would otherwise skin across the removed region.
     let wire = topo.wire(face_data.outer_wire())?;
-    let mut rim_edge_ids: Vec<usize> = Vec::new();
+    let mut curved: Vec<(
+        usize,
+        brepkit_topology::vertex::VertexId,
+        brepkit_topology::vertex::VertexId,
+    )> = Vec::new();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for oe in wire.edges() {
         let e = topo.edge(oe.edge())?;
-        let closed = e.start() == e.end();
         match e.curve() {
-            // Only closed circles are rims here. The caller gates this path on
-            // `is_standard_rect` (Line | Circle edges only), so ellipse rims
-            // never reach it — they take the CDT path instead.
-            EdgeCurve::Circle(_) if closed => {
-                let idx = oe.edge().index();
-                if !rim_edge_ids.contains(&idx) {
-                    rim_edge_ids.push(idx);
+            // A closed single-edge NURBS loop has no by-construction winding
+            // (unlike a closed circle) — decline rather than guess.
+            EdgeCurve::NurbsCurve(_) if e.start() == e.end() => return Ok(false),
+            EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_) => {
+                if seen.insert(oe.edge().index()) {
+                    curved.push((oe.edge().index(), e.start(), e.end()));
                 }
             }
             EdgeCurve::Line => {}
-            // An open arc rim, a NURBS boundary, or an open circle is not a
-            // simple full-revolution band — let the caller handle it.
-            _ => return Ok(false),
+            // Ellipse rims keep the CDT path.
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(false);
+            }
         }
     }
-    if rim_edge_ids.len() != 2 {
+    // Walk cycles by shared vertices (vertex→edge adjacency built once).
+    let mut by_vertex: std::collections::HashMap<brepkit_topology::vertex::VertexId, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (j, &(_, sv, ev)) in curved.iter().enumerate() {
+        by_vertex.entry(sv).or_default().push(j);
+        by_vertex.entry(ev).or_default().push(j);
+    }
+    let mut used = vec![false; curved.len()];
+    let mut cycles: Vec<Vec<usize>> = Vec::new();
+    for start in 0..curved.len() {
+        if used[start] {
+            continue;
+        }
+        let (_, origin, mut at) = curved[start];
+        used[start] = true;
+        let mut cycle = vec![start];
+        let mut closed = curved[start].1 == curved[start].2 || at == origin;
+        while !closed {
+            let Some(&next) = by_vertex
+                .get(&at)
+                .and_then(|c| c.iter().find(|&&j| !used[j]))
+            else {
+                break;
+            };
+            used[next] = true;
+            at = if curved[next].1 == at {
+                curved[next].2
+            } else {
+                curved[next].1
+            };
+            cycle.push(next);
+            closed = at == origin;
+        }
+        if !closed {
+            return Ok(false); // open curved run — not a rim structure
+        }
+        cycles.push(cycle);
+    }
+    if cycles.len() != 2 {
         return Ok(false);
     }
-
-    // Pull each rim's shared global vertex IDs, drop the closing duplicate, and
-    // require matching counts so the rings connect index-for-index.
-    let mut rims: Vec<Vec<u32>> = Vec::with_capacity(2);
-    for &re in &rim_edge_ids {
-        let Some(ids) = edge_global_indices.get(&re) else {
-            return Ok(false);
-        };
-        let mut ids = ids.clone();
-        if ids.len() > 1 && ids.first() == ids.last() {
-            ids.pop();
+    // Net winding per cycle from surface-projected endpoint deltas; a closed
+    // single edge (start == end vertex) winds a full turn by construction.
+    let wrap_pi = |d: f64| -> f64 { (d + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0 };
+    for cycle in &cycles {
+        let mut winding = 0.0_f64;
+        let mut whole_turn = false;
+        let mut at: Option<brepkit_topology::vertex::VertexId> = None;
+        for &ci in cycle {
+            let (_, sv, ev) = curved[ci];
+            if sv == ev {
+                whole_turn = true;
+                continue;
+            }
+            let (from, to) = match at {
+                None => (sv, ev),
+                Some(v) if v == sv => (sv, ev),
+                Some(_) => (ev, sv),
+            };
+            let (u0, _) = project(topo.vertex(from)?.point());
+            let (u1, _) = project(topo.vertex(to)?.point());
+            winding += wrap_pi(u1 - u0);
+            at = Some(to);
         }
+        if !whole_turn && (winding.abs() - TAU).abs() > 1e-6 {
+            return Ok(false);
+        }
+    }
+
+    // Pull each rim's shared global vertex IDs. Chained pieces share their
+    // joint vertices through the pool, so id-dedup merges the chain into one
+    // ring; a closed circle carries its closing duplicate instead.
+    let mut rims: Vec<Vec<u32>> = Vec::with_capacity(2);
+    for cycle in &cycles {
+        let mut ids: Vec<u32> = Vec::new();
+        for &ci in cycle {
+            let Some(edge_ids) = edge_global_indices.get(&curved[ci].0) else {
+                return Ok(false);
+            };
+            ids.extend_from_slice(edge_ids);
+        }
+        ids.sort_unstable();
+        ids.dedup();
         if ids.len() < 3 {
             return Ok(false);
         }
@@ -139,6 +464,8 @@ pub(super) fn tessellate_revolution_band_shared(
     };
 
     if equal_counts {
+        // Equal counts: the historical index-paired sweep (kept byte-identical
+        // for the calibrated closed-rim cases).
         for i in 0..n {
             let j = (i + 1) % n;
             let (b0, b1) = (rims[0][i], rims[0][j]);

@@ -1041,6 +1041,666 @@ fn wire_loops_self_cross(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bool {
     false
 }
 
+/// Break co-endpoint circle-arc collisions inside adopted loops by splitting
+/// every colliding arc at its angular midpoint — the sanctioned splitter-side
+/// pattern for [`merge_duplicate_edges`]'s endpoint-pair key. Two
+/// complementary half-rims share both endpoints; left whole, the merge
+/// collapses them into one edge used out-and-back, the spur excision then
+/// removes that pair, and the freed seam pair becomes wrap-adjacent and is
+/// excised too — the cone∪box inscribed-rim fuse lost its entire base rim
+/// and base disc this way. Splitting at midpoints gives every piece a unique
+/// endpoint pair; `split_arc_edges_at_collinear_vertices` propagates the same
+/// cuts to the neighbouring face's coincident rim so both partitions match.
+///
+/// Only groups whose members have DISTINCT arc midpoints are split: identical
+/// twins (the same rim arc appearing once per adjacent band) must stay whole
+/// so the merge can weld them, and complementary halves are exactly the
+/// distinct-midpoint case. Line pairs are never touched — a cut-annulus band
+/// legitimately traverses its seam edge twice, and that pair merging into one
+/// edge used forward+reverse is correct topology.
+fn split_coendpoint_loop_arcs(loops: &mut [Vec<OrientedPCurveEdge>], surface: &FaceSurface) {
+    use std::collections::HashMap;
+    use std::f64::consts::TAU;
+
+    type QP = (i64, i64, i64);
+    const QSCALE: f64 = 1e7;
+    let q3 = |p: Point3| -> (i64, i64, i64) {
+        (
+            (p.x() * QSCALE).round() as i64,
+            (p.y() * QSCALE).round() as i64,
+            (p.z() * QSCALE).round() as i64,
+        )
+    };
+    let arc_mid = |e: &OrientedPCurveEdge| -> Option<Point3> {
+        let EdgeCurve::Circle(ref c) = e.curve_3d else {
+            return None;
+        };
+        let (ns, ne) = if e.forward {
+            (e.start_3d, e.end_3d)
+        } else {
+            (e.end_3d, e.start_3d)
+        };
+        let s_ang = c.project(ns);
+        let span = (c.project(ne) - s_ang).rem_euclid(TAU);
+        if span < 1e-9 {
+            return None; // closed or degenerate arc
+        }
+        Some(c.evaluate(s_ang + 0.5 * span))
+    };
+
+    let mut pair_mids: HashMap<(QP, QP), Vec<QP>> = HashMap::new();
+    for lp in loops.iter() {
+        for e in lp {
+            let Some(mid) = arc_mid(e) else { continue };
+            let (a, b) = (q3(e.start_3d), q3(e.end_3d));
+            let key = if a <= b { (a, b) } else { (b, a) };
+            pair_mids.entry(key).or_default().push(q3(mid));
+        }
+    }
+    let colliding: std::collections::HashSet<(QP, QP)> = pair_mids
+        .into_iter()
+        .filter(|(_, mids)| mids.iter().any(|m| *m != mids[0]))
+        .map(|(k, _)| k)
+        .collect();
+    if colliding.is_empty() {
+        return;
+    }
+
+    for lp in loops.iter_mut() {
+        let mut rebuilt: Vec<OrientedPCurveEdge> = Vec::with_capacity(lp.len() + 2);
+        for e in lp.drain(..) {
+            let (a, b) = (q3(e.start_3d), q3(e.end_3d));
+            let key = if a <= b { (a, b) } else { (b, a) };
+            let mid = if colliding.contains(&key) {
+                arc_mid(&e)
+            } else {
+                None
+            };
+            let Some(mid_3d) = mid else {
+                rebuilt.push(e);
+                continue;
+            };
+            let Some((mu_raw, mv)) = surface.project_point(mid_3d) else {
+                rebuilt.push(e);
+                continue;
+            };
+            // Each piece takes the period copy of the projected mid-u nearest
+            // its OWN retained endpoint. A seam-wrapping arc (stored e.g.
+            // 4.71→1.57 through 2π) has its true midpoint at the wrap; the
+            // endpoints' average sits half a period away and would fold the
+            // piece across the middle of the domain. The two pieces may
+            // legitimately land on different copies — that is exactly the
+            // unwrapped representation of a seam-crossing split.
+            let nearest_copy = |anchor: f64| -> f64 {
+                anchor + (mu_raw - anchor + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0
+            };
+            let mid_uv_first = Point2::new(nearest_copy(e.start_uv.x()), mv);
+            let mid_uv_second = Point2::new(nearest_copy(e.end_uv.x()), mv);
+            // A cross-section rim arc's UV image is a straight constant-v
+            // segment, so the pieces get an exact Line pcurve. Keeping the
+            // parent's curved pcurve would make period-aware samplers walk
+            // the WHOLE parent curve per piece (they sample non-Line pcurves
+            // over their full range), folding the loop polygon to zero area.
+            let piece_pcurve = |a: Point2, b: Point2| -> Option<brepkit_math::curves2d::Curve2D> {
+                if (a.y() - b.y()).abs() > 1e-9 {
+                    return None;
+                }
+                let d = b - a;
+                if d.length() < 1e-12 {
+                    return None;
+                }
+                brepkit_math::curves2d::Line2D::new(a, d)
+                    .ok()
+                    .map(brepkit_math::curves2d::Curve2D::Line)
+            };
+            // Pieces drop the parent's pave block id, matching
+            // `presplit_sections_at_registry`: the id keys a cross-face
+            // edge-sharing cache, so two distinct sub-spans carrying the
+            // parent's id could alias; the position-based merge welds the
+            // shared pieces instead.
+            let mut first = e.clone();
+            first.end_3d = mid_3d;
+            first.end_uv = mid_uv_first;
+            first.source_edge_idx = None;
+            first.pave_block_id = None;
+            if let Some(pc) = piece_pcurve(first.start_uv, first.end_uv) {
+                first.pcurve = pc;
+            }
+            let mut second = e;
+            second.start_3d = mid_3d;
+            second.start_uv = mid_uv_second;
+            second.source_edge_idx = None;
+            second.pave_block_id = None;
+            if let Some(pc) = piece_pcurve(second.start_uv, second.end_uv) {
+                second.pcurve = pc;
+            }
+            rebuilt.push(first);
+            rebuilt.push(second);
+        }
+        *lp = rebuilt;
+    }
+}
+
+/// The seam meridian's `u` from a face's boundary edges: the (unique)
+/// non-degenerate boundary Line whose endpoints project to one `u` is the
+/// generator the periodic face was cut open along.
+fn boundary_seam_u(
+    boundary_edges: &[OrientedPCurveEdge],
+    surface: &FaceSurface,
+    tol: f64,
+) -> Option<f64> {
+    use std::f64::consts::TAU;
+    for e in boundary_edges {
+        if !matches!(e.curve_3d, EdgeCurve::Line) || (e.start_3d - e.end_3d).length() <= tol {
+            continue;
+        }
+        let (Some((u0, _)), Some((u1, _))) = (
+            surface.project_point(e.start_3d),
+            surface.project_point(e.end_3d),
+        ) else {
+            continue;
+        };
+        let d = (u1 - u0).rem_euclid(TAU);
+        if d.min(TAU - d) < 1e-4 {
+            return Some(u0);
+        }
+    }
+    None
+}
+
+/// Split every section piece that crosses the seam meridian at the crossing
+/// point (bisected on the piece's own curve). Pieces are assumed u-monotone
+/// between their endpoints (chain pieces subtend well under a half-turn);
+/// pieces already ending on the seam, or not straddling it, pass through
+/// unchanged. Split halves clear their UV hints and pave block id, matching
+/// `presplit_sections_at_registry`.
+fn split_sections_at_seam_meridian(
+    sections: &[SectionEdge],
+    surface: &FaceSurface,
+    seam_u: f64,
+    tol: f64,
+) -> Vec<SectionEdge> {
+    use std::f64::consts::{PI, TAU};
+    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+    let delta_u =
+        |p: Point3| -> Option<f64> { surface.project_point(p).map(|(u, _)| wrap(u - seam_u)) };
+    let mut out = Vec::with_capacity(sections.len() + 2);
+    for s in sections {
+        let (Some(d0), Some(d1)) = (delta_u(s.start), delta_u(s.end)) else {
+            out.push(s.clone());
+            continue;
+        };
+        let straddles = d0 * d1 < 0.0 && (d0 - d1).abs() < PI && d0.abs() > 1e-9 && d1.abs() > 1e-9;
+        if !straddles {
+            out.push(s.clone());
+            continue;
+        }
+        let (t0, t1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
+        let (mut lo, mut hi, f_lo) = (t0, t1, d0);
+        for _ in 0..60 {
+            let tm = 0.5 * (lo + hi);
+            let Some(fm) = delta_u(s.curve_3d.evaluate_with_endpoints(tm, s.start, s.end)) else {
+                break;
+            };
+            if (fm > 0.0) == (f_lo > 0.0) {
+                lo = tm;
+            } else {
+                hi = tm;
+            }
+        }
+        let p = s
+            .curve_3d
+            .evaluate_with_endpoints(0.5 * (lo + hi), s.start, s.end);
+        if (p - s.start).length() <= tol * 10.0 || (p - s.end).length() <= tol * 10.0 {
+            out.push(s.clone());
+            continue;
+        }
+        let mut first = s.clone();
+        first.end = p;
+        let mut second = s.clone();
+        second.start = p;
+        for piece in [&mut first, &mut second] {
+            piece.start_uv_a = None;
+            piece.end_uv_a = None;
+            piece.start_uv_b = None;
+            piece.end_uv_b = None;
+            piece.pave_block_id = None;
+        }
+        out.push(first);
+        out.push(second);
+    }
+    out
+}
+
+/// Split a u-periodic cylinder/cone lateral into TWO bands along a
+/// seam-anchored section chain that winds the periodic direction — the chain
+/// generalization of [`split_periodic_face_into_bands`], whose separator must
+/// be a closed circle. Mirrors its structure: same boundary preconditions
+/// (two closed rim circles + seam lines), same per-band wire shape
+/// (rim, seam, separator, seam), same precomputed interior points.
+///
+/// Returns `None` (caller falls through) unless: the boundary is exactly two
+/// closed rims + seam edges; ALL sections belong to one winding chain; the
+/// chain has a vertex on the seam meridian (the seam-anchoring pre-step
+/// guarantees this for winding chains); and every chain sample stays
+/// strictly between the rims.
+#[allow(clippy::too_many_lines)]
+fn split_periodic_face_by_winding_chain(
+    surface: &FaceSurface,
+    boundary_edges: &[OrientedPCurveEdge],
+    sections: &[SectionEdge],
+    rank: Rank,
+    reversed: bool,
+    face_id: FaceId,
+    tol: f64,
+) -> Option<Vec<SplitSubFace>> {
+    use std::f64::consts::{PI, TAU};
+
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+        return None;
+    }
+    let close_tol = tol * 100.0;
+
+    let (chain, _winding) = winding_section_chain(sections, surface, tol)?;
+    if chain.len() != sections.len() {
+        // Sections outside the chain would be silently dropped — defer.
+        return None;
+    }
+
+    // Boundary: exactly two closed rim circles plus seam Line edges.
+    let mut boundary_circles: Vec<&OrientedPCurveEdge> = Vec::new();
+    let mut seam_edges: Vec<&OrientedPCurveEdge> = Vec::new();
+    for e in boundary_edges {
+        let is_closed = (e.start_3d - e.end_3d).length() < close_tol;
+        match (&e.curve_3d, is_closed) {
+            (EdgeCurve::Circle(_), true) => boundary_circles.push(e),
+            (EdgeCurve::Line, false) => seam_edges.push(e),
+            _ => return None,
+        }
+    }
+    if boundary_circles.len() != 2 || seam_edges.is_empty() {
+        return None;
+    }
+    let (seam_u, _) = surface.project_point(seam_edges[0].start_3d)?;
+    let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+
+    let circle_v = |e: &OrientedPCurveEdge| -> Option<f64> {
+        let (_, v) = surface.project_point(e.start_3d)?;
+        let on_seam = surface.evaluate(seam_u, v)?;
+        ((on_seam - e.start_3d).length() < close_tol).then_some(v)
+    };
+    let v0 = circle_v(boundary_circles[0])?;
+    let v1 = circle_v(boundary_circles[1])?;
+    let (v_bot, bot_edge, v_top, top_edge) = if v0 < v1 {
+        (v0, boundary_circles[0], v1, boundary_circles[1])
+    } else {
+        (v1, boundary_circles[1], v0, boundary_circles[0])
+    };
+    if v_top - v_bot < close_tol {
+        return None;
+    }
+
+    // Rotate the chain to start at its seam-anchored vertex.
+    let traversal_start = |&(idx, fwd): &(usize, bool)| -> Point3 {
+        let s = &sections[idx];
+        if fwd { s.start } else { s.end }
+    };
+    let seam_pos = chain.iter().position(|entry| {
+        surface
+            .project_point(traversal_start(entry))
+            .is_some_and(|(u, _)| wrap_pi(u - seam_u).abs() < 1e-6)
+    })?;
+    let mut chain: Vec<(usize, bool)> = chain;
+    chain.rotate_left(seam_pos);
+    let (_, v_x) = surface.project_point(traversal_start(&chain[0]))?;
+
+    // Every chain sample must sit strictly between the rims, and the chain's
+    // v profile is recorded per sample for the interior-point lookup below.
+    let mut samples_uv: Vec<(f64, f64)> = Vec::new();
+    for &(idx, _) in &chain {
+        let s = &sections[idx];
+        for k in 0..=8 {
+            let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
+            let t = d0 + (d1 - d0) * (f64::from(k) / 8.0);
+            let p = s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
+            let (u, v) = surface.project_point(p)?;
+            if v < v_bot + close_tol || v > v_top - close_tol {
+                return None;
+            }
+            samples_uv.push((u, v));
+        }
+    }
+
+    // Traversal tangent of the chain at its seam start, compared with the
+    // bottom rim's traversal tangent there (the circle-band rule): the chain
+    // list as ordered plays the LOWER role when aligned, else it is flipped.
+    let ref_tan = {
+        let EdgeCurve::Circle(c) = &bot_edge.curve_3d else {
+            return None;
+        };
+        let t = c.tangent(c.project(bot_edge.start_3d));
+        if bot_edge.forward { t } else { -t }
+    };
+    let chain_tan = {
+        let (idx, fwd) = chain[0];
+        let s = &sections[idx];
+        let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
+        let t_at = if fwd { d0 } else { d1 };
+        let tan = s.curve_3d.tangent_with_endpoints(t_at, s.start, s.end);
+        if fwd { tan } else { -tan }
+    };
+    let chain_is_lower_role = chain_tan.dot(ref_tan) > 0.0;
+
+    // Materialize the chain as pcurve edges in a given traversal direction,
+    // walking UV u with nearest-copy continuity from the seam.
+    let build_chain = |as_ordered: bool| -> Option<Vec<OrientedPCurveEdge>> {
+        let entries: Vec<(usize, bool)> = if as_ordered {
+            chain.clone()
+        } else {
+            chain.iter().rev().map(|&(i, f)| (i, !f)).collect()
+        };
+        let mut out = Vec::with_capacity(entries.len());
+        let mut u_prev = seam_u;
+        for (idx, fwd) in entries {
+            let s = &sections[idx];
+            let (from, to) = if fwd {
+                (s.start, s.end)
+            } else {
+                (s.end, s.start)
+            };
+            let (u_raw0, v0) = surface.project_point(from)?;
+            let (u_raw1, v1) = surface.project_point(to)?;
+            let u0 = u_prev + wrap_pi(u_raw0 - u_prev);
+            let u1 = u0 + wrap_pi(u_raw1 - u_raw0);
+            u_prev = u1;
+            let pcurve = match rank {
+                Rank::A => s.pcurve_a.clone(),
+                Rank::B => s.pcurve_b.clone(),
+            };
+            out.push(OrientedPCurveEdge {
+                curve_3d: s.curve_3d.clone(),
+                pcurve,
+                start_uv: Point2::new(u0, v0),
+                end_uv: Point2::new(u1, v1),
+                start_3d: from,
+                end_3d: to,
+                forward: fwd,
+                source_edge_idx: None,
+                pave_block_id: s.pave_block_id,
+            });
+        }
+        Some(out)
+    };
+    let chain_lower = build_chain(chain_is_lower_role)?;
+    let chain_upper = build_chain(!chain_is_lower_role)?;
+
+    let mk_seam = |va: f64, vb: f64| -> Option<OrientedPCurveEdge> {
+        let pa = surface.evaluate(seam_u, va)?;
+        let pb = surface.evaluate(seam_u, vb)?;
+        let dir = brepkit_math::vec::Vec2::new(0.0, if vb > va { 1.0 } else { -1.0 });
+        let pcurve = brepkit_math::curves2d::Curve2D::Line(
+            brepkit_math::curves2d::Line2D::new(Point2::new(seam_u, va), dir).ok()?,
+        );
+        Some(OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            pcurve,
+            start_uv: Point2::new(seam_u, va),
+            end_uv: Point2::new(seam_u, vb),
+            start_3d: pa,
+            end_3d: pb,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+        })
+    };
+
+    // Interior points: the chain's v at the antipodal meridian, from the
+    // sample nearest u = seam_u + π.
+    let u_q = (seam_u + PI).rem_euclid(TAU);
+    let v_at_q = samples_uv
+        .iter()
+        .min_by(|a, b| {
+            wrap_pi(a.0 - u_q)
+                .abs()
+                .partial_cmp(&wrap_pi(b.0 - u_q).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|&(_, v)| v)?;
+    let lower_interior = surface.evaluate(u_q, f64::midpoint(v_bot, v_at_q))?;
+    let upper_interior = surface.evaluate(u_q, f64::midpoint(v_at_q, v_top))?;
+
+    // Lower band: bottom rim, seam up to the chain's seam vertex, the chain
+    // in the upper role, seam back down. Upper band symmetric.
+    let mut lower_wire = vec![bot_edge.clone(), mk_seam(v_bot, v_x)?];
+    lower_wire.extend(chain_upper);
+    lower_wire.push(mk_seam(v_x, v_bot)?);
+    let mut upper_wire = chain_lower;
+    upper_wire.push(mk_seam(v_x, v_top)?);
+    upper_wire.push(top_edge.clone());
+    upper_wire.push(mk_seam(v_top, v_x)?);
+
+    Some(vec![
+        SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: lower_wire,
+            inner_wires: Vec::new(),
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(lower_interior),
+        },
+        SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: upper_wire,
+            inner_wires: Vec::new(),
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(upper_interior),
+        },
+    ])
+}
+
+/// Whether the sections chain into a loop that WINDS the surface's periodic
+/// u direction. See [`winding_section_chain`].
+fn sections_form_winding_chain(sections: &[SectionEdge], surface: &FaceSurface, tol: f64) -> bool {
+    winding_section_chain(sections, surface, tol).is_some()
+}
+
+/// The ordered section chain forming a loop that WINDS the surface's
+/// periodic u direction (|net signed u-progress| > π after chaining by
+/// endpoint position), as `(piece index, traversed start→end)` entries, with
+/// the signed winding. Non-periodic surfaces never wind. Chains that fail to
+/// close are conservatively reported as non-winding — the internal-loops
+/// path has its own closure requirements.
+fn winding_section_chain(
+    sections: &[SectionEdge],
+    surface: &FaceSurface,
+    tol: f64,
+) -> Option<(Vec<(usize, bool)>, f64)> {
+    use std::collections::HashMap;
+    use std::f64::consts::{PI, TAU};
+
+    let (Some(_), _) = super::pcurve_compute::surface_periods(surface) else {
+        return None;
+    };
+    if sections.len() < 2 {
+        return None;
+    }
+    let proj_u = |p: Point3| -> Option<f64> { surface.project_point(p).map(|(u, _)| u) };
+    let qscale = 1.0 / tol.max(1e-12);
+    let q3 = |p: Point3| -> (i64, i64, i64) {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+            (p.z() * qscale).round() as i64,
+        )
+    };
+    let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+
+    // Endpoint-keyed adjacency: (piece index, leaves-from-start).
+    let mut adj: HashMap<(i64, i64, i64), Vec<(usize, bool)>> = HashMap::new();
+    for (i, s) in sections.iter().enumerate() {
+        adj.entry(q3(s.start)).or_default().push((i, true));
+        adj.entry(q3(s.end)).or_default().push((i, false));
+    }
+
+    let mut used = vec![false; sections.len()];
+    for start in 0..sections.len() {
+        if used[start] {
+            continue;
+        }
+        let mut winding = 0.0_f64;
+        let mut cur = start;
+        let mut forward = true;
+        let origin = q3(sections[start].start);
+        let mut closed = false;
+        let mut chain: Vec<(usize, bool)> = Vec::new();
+        for _ in 0..sections.len() {
+            used[cur] = true;
+            chain.push((cur, forward));
+            let s = &sections[cur];
+            let (from, to) = if forward {
+                (s.start, s.end)
+            } else {
+                (s.end, s.start)
+            };
+            let (Some(u0), Some(u1)) = (proj_u(from), proj_u(to)) else {
+                return None;
+            };
+            winding += wrap_pi(u1 - u0);
+            let to_key = q3(to);
+            if to_key == origin {
+                closed = true;
+                break;
+            }
+            let Some(next) = adj
+                .get(&to_key)
+                .and_then(|c| c.iter().find(|(j, _)| !used[*j]))
+            else {
+                break;
+            };
+            forward = next.1;
+            cur = next.0;
+        }
+        if closed && winding.abs() > PI {
+            return Some((chain, winding));
+        }
+    }
+    None
+}
+
+/// [`wire_loops_have_degenerate_area`] with period-aware sampling: a valid
+/// full-period band loop's raw UV polygon folds to ~zero area at the seam
+/// crossing, so the absolute check misjudges it. Downstream classification
+/// measures periodic loops with the same period-aware sampler, so this is the
+/// faithful degeneracy judgment for a periodic face.
+fn wire_loops_have_degenerate_area_periodic(
+    loops: &[Vec<OrientedPCurveEdge>],
+    tol: f64,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> bool {
+    loops.iter().any(|wl| {
+        let pts = sample_wire_loop_uv_periodic(wl, u_period, v_period);
+        if pts.len() < 3 {
+            return true;
+        }
+        let area = signed_area_2d(&pts);
+        let mut perimeter: f64 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+        if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+            perimeter += (*last - *first).length();
+        }
+        area.abs() <= perimeter * tol
+    })
+}
+
+/// Whether one loop's edges are entirely duplicated by another loop — the
+/// signature of a full ring section whose twin copies closed as a bare circle
+/// while a band tour consumed the same arcs (a box tangent to a cone/cylinder
+/// on all four walls: the section circle splits into four arcs, the greedy
+/// spends them on an out-and-back seam tour, and the twins close as a
+/// duplicate ring that later nests as an inner wire equal to the outer's own
+/// rim while the true far rim is dropped from every loop).
+///
+/// Edge identity is the unordered pair of quantized UV endpoints plus the 3D
+/// curve kind, so a chord and its co-endpoint arc never alias.
+///
+/// Also detects the WITHIN-loop form: the same geometric circle arc traversed
+/// twice inside one loop (the 2-tangency grand tour, where the greedy hands
+/// back a single loop that rides the section ring out and back instead of
+/// splitting). Within-loop identity additionally includes the arc's 3D
+/// midpoint: the two half-rims of one full circle share both endpoints inside
+/// a perfectly valid band loop, and only a repeat of the SAME arc is broken.
+fn wire_loops_duplicate_cover(loops: &[Vec<OrientedPCurveEdge>], tol: f64) -> bool {
+    let qscale = 1.0 / tol.max(1e-12);
+    let qkey = |p: Point2| -> (i64, i64) {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+        )
+    };
+    let ekey = |e: &OrientedPCurveEdge| -> ((i64, i64), (i64, i64), u8) {
+        let (a, b) = (qkey(e.start_uv), qkey(e.end_uv));
+        let kind = match e.curve_3d {
+            EdgeCurve::Line => 0u8,
+            EdgeCurve::Circle(_) => 1,
+            EdgeCurve::Ellipse(_) => 2,
+            EdgeCurve::NurbsCurve(_) => 3,
+            EdgeCurve::Hyperbola(_) => 4,
+            EdgeCurve::Parabola(_) => 5,
+        };
+        if a <= b { (a, b, kind) } else { (b, a, kind) }
+    };
+    let q3 = |p: Point3| -> (i64, i64, i64) {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+            (p.z() * qscale).round() as i64,
+        )
+    };
+    let arc_mid_key = |e: &OrientedPCurveEdge| -> Option<(i64, i64, i64)> {
+        let EdgeCurve::Circle(ref c) = e.curve_3d else {
+            return None;
+        };
+        let (ns, ne) = if e.forward {
+            (e.start_3d, e.end_3d)
+        } else {
+            (e.end_3d, e.start_3d)
+        };
+        let s_ang = c.project(ns);
+        let span = (c.project(ne) - s_ang).rem_euclid(std::f64::consts::TAU);
+        if span < 1e-9 {
+            return None;
+        }
+        Some(q3(c.evaluate(s_ang + 0.5 * span)))
+    };
+    for lp in loops {
+        let mut seen: std::collections::HashSet<_> = std::collections::HashSet::new();
+        for e in lp {
+            let Some(mid) = arc_mid_key(e) else { continue };
+            if !seen.insert((ekey(e), mid)) {
+                return true;
+            }
+        }
+    }
+    for (i, small) in loops.iter().enumerate() {
+        if small.is_empty() {
+            continue;
+        }
+        for (j, big) in loops.iter().enumerate() {
+            if i == j || big.len() < small.len() {
+                continue;
+            }
+            let keys: std::collections::HashSet<_> = big.iter().map(&ekey).collect();
+            if small.iter().all(|e| keys.contains(&ekey(e))) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Whether the greedy wire loops form an INVALID (overlapping) partition: one
 /// OUTER (positive-area) loop's material directly covers another outer loop,
 /// with no hole region between them.
@@ -1166,6 +1826,102 @@ struct ArrInput {
     is_section: bool,
 }
 
+/// Split co-endpoint SECTION arc pairs in an arrangement's input list at
+/// their geometric midpoints (see the call site in
+/// [`split_plane_face_by_arrangement`]). Only section arcs with a colliding
+/// unordered chord-endpoint pair AND distinct midpoints are split; boundary
+/// edges and identical duplicates are left untouched.
+fn split_coendpoint_section_arc_inputs(inputs: &mut Vec<ArrInput>, frame: &PlaneFrame, tol: f64) {
+    use std::collections::HashMap;
+    type Q2 = (i64, i64);
+    let qscale = 1.0 / tol.max(1e-12);
+    let q2 = |p: Point2| -> Q2 {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+        )
+    };
+    let arc_mid = |e: &OrientedPCurveEdge| -> Option<Point3> {
+        let EdgeCurve::Circle(ref c) = e.curve_3d else {
+            return None;
+        };
+        let (ns, ne) = if e.forward {
+            (e.start_3d, e.end_3d)
+        } else {
+            (e.end_3d, e.start_3d)
+        };
+        let s_ang = c.project(ns);
+        let span = (c.project(ne) - s_ang).rem_euclid(std::f64::consts::TAU);
+        if span < 1e-9 {
+            return None;
+        }
+        Some(c.evaluate(s_ang + 0.5 * span))
+    };
+    let mut pair_mids: HashMap<(Q2, Q2), Vec<Q2>> = HashMap::new();
+    for inp in inputs.iter() {
+        if !(inp.is_section && inp.is_arc) {
+            continue;
+        }
+        let Some(mid) = arc_mid(&inp.edge) else {
+            continue;
+        };
+        let (a, b) = (q2(inp.a), q2(inp.b));
+        let key = if a <= b { (a, b) } else { (b, a) };
+        pair_mids
+            .entry(key)
+            .or_default()
+            .push(q2(frame.project(mid)));
+    }
+    let colliding: std::collections::HashSet<(Q2, Q2)> = pair_mids
+        .into_iter()
+        .filter(|(_, mids)| mids.iter().any(|m| *m != mids[0]))
+        .map(|(k, _)| k)
+        .collect();
+    if colliding.is_empty() {
+        return;
+    }
+    let mut rebuilt: Vec<ArrInput> = Vec::with_capacity(inputs.len() + 2);
+    for inp in inputs.drain(..) {
+        let (a, b) = (q2(inp.a), q2(inp.b));
+        let key = if a <= b { (a, b) } else { (b, a) };
+        let mid3 = if inp.is_section && inp.is_arc && colliding.contains(&key) {
+            arc_mid(&inp.edge)
+        } else {
+            None
+        };
+        let Some(mid_3d) = mid3 else {
+            rebuilt.push(inp);
+            continue;
+        };
+        let mid_uv = frame.project(mid_3d);
+        let mut first_edge = inp.edge.clone();
+        first_edge.end_3d = mid_3d;
+        first_edge.end_uv = mid_uv;
+        first_edge.source_edge_idx = None;
+        first_edge.pave_block_id = None;
+        let mut second_edge = inp.edge;
+        second_edge.start_3d = mid_3d;
+        second_edge.start_uv = mid_uv;
+        second_edge.source_edge_idx = None;
+        second_edge.pave_block_id = None;
+        rebuilt.push(ArrInput {
+            a: inp.a,
+            b: mid_uv,
+            edge: first_edge,
+            is_arc: true,
+            is_section: true,
+        });
+        rebuilt.push(ArrInput {
+            a: mid_uv,
+            b: inp.b,
+            edge: second_edge,
+            is_arc: true,
+            is_section: true,
+        });
+    }
+    *inputs = rebuilt;
+}
+
 /// Decompose a planar face into its minimal interior regions via a 2D
 /// arrangement of its boundary and section edges.
 ///
@@ -1246,6 +2002,16 @@ fn split_plane_face_by_arrangement(
             is_section: true,
         });
     }
+    // Two SECTION arcs sharing both endpoints (a 2-tangency section circle's
+    // half-rims) have the SAME CHORD, so the chord-based subdivision would
+    // collapse them into one segment and lose the region between them (the
+    // box∪cylinder 2-tangency bottom face lost its far half this way). Split
+    // each such arc at its geometric midpoint: the quarter chords are
+    // distinct, the subdivision sees the ring, and each piece is still a
+    // whole arc input emitted with true geometry. Identical duplicates (same
+    // midpoint) stay whole — their chord collapse is the intended dedup.
+    split_coendpoint_section_arc_inputs(&mut inputs, frame, tol);
+
     // Section-only entry point: keep the historical max-area drop + flat
     // emission (these faces have no integrated holes).
     arrangement_regions_from_inputs(
@@ -1395,14 +2161,64 @@ fn arrangement_regions_from_inputs(
     // any other chord's endpoint that lands on its interior. Collect the
     // resulting break parameters, then emit sub-segments between consecutive
     // breaks.
+    //
+    // A computed break must UNIFY with the vertex set, not merely quantize: a
+    // proper crossing is re-derived independently from each input's chord
+    // fraction, and for nearly-parallel inputs (adjacent facet chains) the
+    // two derivations scatter by crossing-noise/sin(angle) — far above the
+    // quantization cell — leaving two degree-2 vertices where one degree-4
+    // vertex belongs. Worse, a break landing near an input ENDPOINT splits
+    // the chord at the scattered point while the neighbouring face keeps the
+    // exact operand vertex, minting a near-copy boundary edge that never
+    // welds. So: input endpoints register FIRST (ground truth), and every
+    // later point within the snap band adopts the earliest registered vertex
+    // via a coarse hash (first-wins).
+    let snap_band = tol * 1000.0;
+    let ckey = |p: Point2| -> (i64, i64) {
+        (
+            (p.x() / snap_band).round() as i64,
+            (p.y() / snap_band).round() as i64,
+        )
+    };
     let mut vert_pos: std::collections::HashMap<(i64, i64), Point2> =
         std::collections::HashMap::new();
-    let register =
+    let mut coarse: std::collections::HashMap<(i64, i64), Point2> =
+        std::collections::HashMap::new();
+    let mut register =
         |p: Point2, map: &mut std::collections::HashMap<(i64, i64), Point2>| -> (i64, i64) {
+            let (cx, cy) = ckey(p);
+            let mut adopted: Option<(f64, Point2)> = None;
+            for dx in -1..=1_i64 {
+                for dy in -1..=1_i64 {
+                    if let Some(&q) = coarse.get(&(cx + dx, cy + dy)) {
+                        let d = (q - p).length();
+                        if d <= snap_band && adopted.is_none_or(|(bd, _)| d < bd) {
+                            adopted = Some((d, q));
+                        }
+                    }
+                }
+            }
+            let p = adopted.map_or(p, |(_, q)| q);
             let k = qkey(p);
             map.entry(k).or_insert(p);
+            coarse.entry(ckey(p)).or_insert(p);
             k
         };
+    // Exact 3D per registered input-endpoint vertex. The generic emission
+    // reconstructs 3D as frame.evaluate(uv), which PROJECTS the point onto
+    // the stored plane — but an operand's facet-chain vertex can sit ~1e-5
+    // OFF that plane, and collapsing it moves the sub-face boundary off the
+    // neighbouring faces' copy of the same vertex, minting a twin edge that
+    // never welds. Boundary inputs register first, so their exact positions
+    // win over section endpoints at the same vertex.
+    let mut exact3d: std::collections::HashMap<(i64, i64), Point3> =
+        std::collections::HashMap::new();
+    for inp in &inputs {
+        let ka = register(inp.a, &mut vert_pos);
+        exact3d.entry(ka).or_insert(inp.edge.start_3d);
+        let kb = register(inp.b, &mut vert_pos);
+        exact3d.entry(kb).or_insert(inp.edge.end_3d);
+    }
 
     // True when a UV point lies on input `idx`'s actual arc geometry (within
     // `tol`). A break parameter is computed against an arc's straight CHORD, so
@@ -1899,8 +2715,14 @@ fn arrangement_regions_from_inputs(
                 // `evaluate_with_endpoints`/`domain_with_endpoints`). Vertices
                 // came from exact true-crossing/T registration, so the 3D from
                 // the frame matches the neighbouring pieces.
-                let s3 = frame.evaluate(su.x(), su.y());
-                let e3 = frame.evaluate(eu.x(), eu.y());
+                let s3 = exact3d
+                    .get(&from)
+                    .copied()
+                    .unwrap_or_else(|| frame.evaluate(su.x(), su.y()));
+                let e3 = exact3d
+                    .get(&to)
+                    .copied()
+                    .unwrap_or_else(|| frame.evaluate(eu.x(), eu.y()));
                 let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
                     &inp.edge.curve_3d,
                     s3,
@@ -1979,8 +2801,14 @@ fn arrangement_regions_from_inputs(
             pcurve,
             start_uv: su,
             end_uv: eu,
-            start_3d: frame.evaluate(su.x(), su.y()),
-            end_3d: frame.evaluate(eu.x(), eu.y()),
+            start_3d: exact3d
+                .get(&from)
+                .copied()
+                .unwrap_or_else(|| frame.evaluate(su.x(), su.y())),
+            end_3d: exact3d
+                .get(&to)
+                .copied()
+                .unwrap_or_else(|| frame.evaluate(eu.x(), eu.y())),
             forward: true,
             source_edge_idx: Some(seg_id),
             pave_block_id: None,
@@ -3946,6 +4774,27 @@ fn split_face_2d_impl(
         return band;
     }
 
+    // Seam-anchor a winding section chain: a chain that winds the periodic
+    // direction must connect to the seam in the trace graph, or it floats as
+    // an island and every wire builder mis-handles it (the closed-circle
+    // band shortcut gets this via the seam-anchor pre-pass; a chain of arcs
+    // and conic pieces gets it here). Splitting the crossing piece at the
+    // seam meridian makes the crossing point a section ENDPOINT, so the
+    // boundary-splitting below anchors the seam edge at the same 3D point
+    // and the graphs share a vertex.
+    let seam_anchored_sections: Vec<SectionEdge>;
+    let sections: &[SectionEdge] = if !is_plane
+        && super::pcurve_compute::surface_periods(&surface).0.is_some()
+        && sections_form_winding_chain(sections, &surface, tol.linear)
+        && let Some(seam_u) = boundary_seam_u(&boundary_edges, &surface, tol.linear)
+    {
+        seam_anchored_sections =
+            split_sections_at_seam_meridian(sections, &surface, seam_u, tol.linear);
+        &seam_anchored_sections
+    } else {
+        sections
+    };
+
     // Band shortcut: closed section circles on a u-periodic face split it
     // into stacked bands, not discs. Requires seam-anchored circles (see
     // the seam-anchor pre-pass in fill_images_faces); falls through to the
@@ -3954,6 +4803,28 @@ fn split_face_2d_impl(
         && !is_plane
         && original_inner_wires.is_empty()
         && let Some(bands) = split_periodic_face_into_bands(
+            &surface,
+            &boundary_edges,
+            sections,
+            rank,
+            reversed,
+            face_id,
+            tol.linear,
+        )
+    {
+        return bands;
+    }
+
+    // Chain-band shortcut: a seam-anchored section chain that WINDS the
+    // periodic direction separates the lateral into two bands, exactly like
+    // a closed section circle but with a wavy separator (the circle-outside
+    // cone∪box fuse: 4 corner ring-arcs + 4 wall arches). The greedy and
+    // DCEL both mistrace the chain's identical-tangent parallel twins, so
+    // the bands are emitted directly.
+    if u_periodic
+        && !is_plane
+        && original_inner_wires.is_empty()
+        && let Some(bands) = split_periodic_face_by_winding_chain(
             &surface,
             &boundary_edges,
             sections,
@@ -4007,12 +4878,23 @@ fn split_face_2d_impl(
         // Non-plane faces: check if all section endpoints are off the
         // boundary in UV space.
         let uv_tol = 0.01; // ~0.6 deg in angular coordinates
-        sections.iter().all(|s| {
+        let endpoints_internal = sections.iter().all(|s| {
             let start_on_boundary =
                 is_point_on_boundary_uv(s.start, &surface, &boundary_edges, uv_tol);
             let end_on_boundary = is_point_on_boundary_uv(s.end, &surface, &boundary_edges, uv_tol);
             !start_on_boundary && !end_on_boundary
-        })
+        });
+        // Winding veto: on a u-periodic lateral, a section chain that winds
+        // the full period is a band separator, not a contractible hole — an
+        // annulus loop with winding number 1 bounds no disc. Treating it as
+        // internal attaches the chain as an inner wire on the UNSPLIT face
+        // (the "circle outside" cone∪box fuse: 4 corner ring-arcs + 4 wall
+        // arches chain into one winding loop, and the whole lateral was kept
+        // with the loop as a hole, orphaning the top rim). Winding chains
+        // fall through to the general splitter, whose band machinery handles
+        // them. A genuine lens hole (a tube poking the wall) has winding 0
+        // and keeps the internal path.
+        endpoints_internal && !sections_form_winding_chain(sections, &surface, tol.linear)
     };
 
     if all_sections_internal {
@@ -4858,7 +5740,6 @@ fn split_face_2d_impl(
 
     // Build wire loops via angular-sorting traversal.
     let mut loops = build_wire_loops(&all_edges, tol.linear, u_periodic, v_periodic);
-
     // Clockwise-boundary handling: this face's UV frame derives from the raw
     // surface normal, not the effective face orientation, so an inner-shell
     // (cavity) wall winds CW in UV while the outer wall winds CCW. Two effects
@@ -5067,6 +5948,12 @@ fn split_face_2d_impl(
     let greedy_broken = wire_loops_self_cross(&loops, tol.linear)
         || greedy_outer_loops_nested(&loops, cw_loops)
         || wire_loops_have_degenerate_area(&loops, tol.linear);
+    // A ring section's twin copies closed as a bare duplicate of arcs another
+    // loop already consumed (box tangent on all four walls). The partition
+    // double-covers the ring and orphans the far rim, so it is broken even
+    // though no loop self-crosses. Detected separately from `greedy_broken`
+    // so the cone arm below can gate on exactly this signature.
+    let ring_duplicated = wire_loops_duplicate_cover(&loops, tol.linear);
     // Sector rescue for an UNDER-split u-periodic lateral: one full-height
     // ruling plus the glued seam should sector the strip, but to the glued
     // walker an annulus cut once is a single wrapped region (the mid-wall
@@ -5094,8 +5981,8 @@ fn split_face_2d_impl(
     if u_periodic
         && !v_periodic
         && !sections.is_empty()
-        && matches!(&surface, FaceSurface::Cylinder(_))
-        && greedy_broken
+        && (matches!(&surface, FaceSurface::Cylinder(_)) && (greedy_broken || ring_duplicated)
+            || matches!(&surface, FaceSurface::Cone(_)) && ring_duplicated)
     {
         if let Some(result) = split_cylinder_band_by_arrangement(
             &surface,
@@ -5114,21 +6001,50 @@ fn split_face_2d_impl(
         // (an early loop steals edges from later regions — the grand tour);
         // the DCEL trace's successor is a pure function of the graph, so try
         // it first and adopt when strictly healthier.
-        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, u_periodic, v_periodic);
+        //
+        // On the duplicated-ring signature, split co-endpoint arc pairs in
+        // the trace INPUT first: two half-rims sharing both endpoints (a
+        // 2-tangency section circle, or a primitive's half-circle rims) are
+        // PARALLEL edges, which make the angular successor at those nodes
+        // ill-defined — the raw trace grand-tours the whole face and
+        // re-emits the duplicate ring. The same split is required downstream
+        // anyway (the endpoint-pair merge key), so this only moves it before
+        // the trace.
+        let dcel_input: Vec<OrientedPCurveEdge> = if ring_duplicated {
+            let mut wrapped = vec![all_edges.clone()];
+            split_coendpoint_loop_arcs(&mut wrapped, &surface);
+            wrapped.swap_remove(0)
+        } else {
+            all_edges.clone()
+        };
+        let dcel = build_wire_loops_dcel(&dcel_input, tol.linear, u_periodic, v_periodic);
         // No pinch-split on the DCEL result: this branch is u-periodic by its
         // gate, and on a full-period face the band orbit legitimately
         // revisits the glued seam node with both visits stored at the same
         // period copy — the pinch splitter would shear the band there into
         // wrong fragments (three over-shared wall sub-faces on the lite
         // diagonal-pad fuse).
-        let dcel_adopted = !wire_loops_have_degenerate_area(&dcel, tol.linear)
+        // The duplicated-ring rescue judges the DCEL's area health with
+        // period-aware sampling (a full-period band folds under the raw
+        // sampler); every other path keeps the original absolute veto.
+        let dcel_ring_ok = ring_duplicated
+            && !wire_loops_duplicate_cover(&dcel, tol.linear)
+            && !wire_loops_have_degenerate_area_periodic(
+                &dcel,
+                tol.linear,
+                Some(std::f64::consts::TAU),
+                None,
+            );
+        let dcel_adopted = ((!wire_loops_have_degenerate_area(&dcel, tol.linear)
+            && (dcel.len() > loops.len() || wire_loops_have_degenerate_area(&loops, tol.linear)))
+            || dcel_ring_ok)
             && (!wire_loops_self_cross(&dcel, tol.linear)
                 || wire_loops_self_cross(&loops, tol.linear))
             && (!greedy_outer_loops_nested(&dcel, cw_loops)
-                || greedy_outer_loops_nested(&loops, cw_loops))
-            && (dcel.len() > loops.len() || wire_loops_have_degenerate_area(&loops, tol.linear));
+                || greedy_outer_loops_nested(&loops, cw_loops));
         if dcel_adopted {
             loops = dcel;
+            split_coendpoint_loop_arcs(&mut loops, &surface);
         } else {
             // The mirrored turn rule as a legacy fallback: adopt the retry only
             // when it is strictly healthier — more loops and none of the broken

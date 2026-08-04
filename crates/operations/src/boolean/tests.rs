@@ -392,6 +392,51 @@ fn cut_disjoint_returns_a() {
     assert_eq!(check_result(&topo, result), 6);
 }
 
+/// A two-piece accumulator whose overall box spans the tool: whole-solid
+/// AABBs overlap, so only the per-component witness can prove the tool
+/// touches nothing. The cut must return the target unchanged.
+#[test]
+fn cut_disjoint_tool_between_multi_piece_target_returns_target() {
+    use crate::boolean::assembly::face_components;
+
+    let mut topo = Topology::new();
+    let p1 = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let p2 = make_unit_cube_manifold_at(&mut topo, 10.0, 0.0, 0.0);
+    let acc = boolean(&mut topo, BooleanOp::Fuse, p1, p2).unwrap();
+    let tool = make_unit_cube_manifold_at(&mut topo, 5.0, 0.0, 0.0);
+
+    let result = boolean(&mut topo, BooleanOp::Cut, acc, tool).unwrap();
+    let comps = face_components(&topo, result);
+    assert_eq!(
+        comps.len(),
+        2,
+        "disjoint cut must keep both target pieces, got {}",
+        comps.len()
+    );
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - 2.0).abs() < 1e-6,
+        "disjoint cut must preserve target volume 2.0, got {vol}"
+    );
+}
+
+/// The disjoint-cut fast path must NOT fire on an overlapping tool: if it
+/// did, the result would keep the full target volume instead of losing the
+/// overlap.
+#[test]
+fn cut_overlapping_tool_removes_material_via_gfa() {
+    let mut topo = Topology::new();
+    let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
+
+    let result = boolean(&mut topo, BooleanOp::Cut, a, b).unwrap();
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - 0.5).abs() < 1e-3,
+        "overlapping cut must remove the shared half, got {vol}"
+    );
+}
+
 #[test]
 fn intersect_disjoint_returns_empty() {
     use brepkit_topology::explorer::solid_faces;
@@ -6473,31 +6518,24 @@ fn compound_cut_coaxial_pair_clusters_match_sequential() {
     assert_eq!(count_non_manifold_edges(&topo, result), 0);
 }
 
-/// Ready-repro for the `cone ∪ box` GFA rejection — the only remaining
-/// primitive-boolean mesh fallback in `approx_census`.
+/// `cone ∪ box` with the section circle INSCRIBED in the box square — tangent
+/// to all four walls, the recurring tangential-contact class and formerly the
+/// last primitive-boolean mesh fallback in `approx_census`.
 ///
 /// `make_cone(6, 2, 12)` has radius exactly 4 at z=6, where the 8×8 box's
-/// bottom face sits, so the section circle is INSCRIBED in the box square and
-/// TANGENT to all four walls — the recurring tangential-contact class.
+/// bottom face sits. The four tangency points split the section circle into
+/// four arcs; the greedy wire trace spent them on an out-and-back seam tour
+/// and their twin copies closed as a bare duplicate ring, orphaning the z=0
+/// base rim (and with it the base disc). Three pieces close it:
 ///
-/// Raw GFA very nearly succeeds: F=10, 1 cone + 9 planes, zero free edges. The
-/// box side of the split is CORRECT — the pinched square-minus-inscribed-circle
-/// region becomes 4 curvilinear-triangle faces, and each wall splits at its
-/// tangency point. Two things go wrong on the cone side:
-///
-///   1. Both of the cone solid's PLANE faces vanish. The z=12 top disc is
-///      correctly absorbed (it lies inside the box), but the z=0 base disc
-///      (r=6, nowhere near the box) must survive and does not — all 9 result
-///      planes are box-derived.
-///   2. The cone lateral keeps the z=6 rim TWICE: its outer wire is the four
-///      z=6 arcs and its single inner wire is those same four edge ids, rather
-///      than the z=0 base rim. That is what makes each arc used 3× (twice by
-///      the cone, once by its corner plane) and trips the non-manifold gate.
-///
-/// Both point at the same missing piece — the z=0 base rim — so the cone
-/// remainder is being closed by duplicating the wrong rim.
+///   1. the duplicated-ring signature triggers the DCEL trace rescue on
+///      periodic cone/cylinder laterals (`wire_loops_duplicate_cover`),
+///   2. the adopted band's co-endpoint half-rim arcs are split at their
+///      midpoints so `merge_duplicate_edges`' endpoint-pair key cannot
+///      collapse them (`split_coendpoint_loop_arcs`),
+///   3. the structured band tessellator accepts rims that are CHAINS of arcs
+///      and zips rims of unequal shared-vertex counts.
 #[test]
-#[ignore = "ready-repro — cone∪box falls back to mesh; see doc comment"]
 fn cone_union_box_should_be_analytic() {
     use brepkit_math::mat::Mat4;
     let mut topo = Topology::new();
@@ -6526,6 +6564,64 @@ fn cone_union_box_should_be_analytic() {
         "the cone's z=0 base disc must survive the fuse"
     );
     assert_eq!(count_non_manifold_edges(&topo, result), 0);
+    // Exact analytic result: base disc + cone band + 4 curvilinear corner
+    // triangles + 4 walls + top = 11 typed faces, no NURBS, no mesh fallback.
+    assert_eq!(faces.len(), 11, "expected 11 analytic faces");
+    assert!(
+        faces
+            .iter()
+            .all(|&fid| topo.face(fid).unwrap().surface().type_tag() != "nurbs"),
+        "all faces must stay analytic"
+    );
+    let mesh = crate::tessellate::tessellate_solid(&topo, result, 0.05).unwrap();
+    assert_eq!(
+        crate::tessellate::boundary_edge_count(&mesh),
+        0,
+        "fused solid must tessellate watertight"
+    );
+    // box 8×8×8 + frustum r 6→4 over z 0..6: 512 + 152π = 989.51…
+    let expected = 152.0 * std::f64::consts::PI + 512.0;
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - expected).abs() < 1.0,
+        "volume {vol} should be ~{expected}"
+    );
+}
+
+/// The cylinder twin of the inscribed-rim fuse: `cylinder r=4 ∪ 8×8 box`,
+/// tangent on all four walls. Same duplicated-ring failure family; pinned
+/// with the same oracles.
+#[test]
+fn cylinder_union_inscribed_box_is_analytic_watertight() {
+    use brepkit_math::mat::Mat4;
+    let mut topo = Topology::new();
+    let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
+    let b = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+    crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-4.0, -4.0, 6.0)).unwrap();
+
+    let result =
+        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b).unwrap();
+    assert_eq!(count_non_manifold_edges(&topo, result), 0);
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert!(
+        faces
+            .iter()
+            .all(|&fid| topo.face(fid).unwrap().surface().type_tag() != "nurbs"),
+        "all faces must stay analytic"
+    );
+    let mesh = crate::tessellate::tessellate_solid(&topo, result, 0.05).unwrap();
+    assert_eq!(
+        crate::tessellate::boundary_edge_count(&mesh),
+        0,
+        "fused solid must tessellate watertight"
+    );
+    // cylinder 16π·12 + box 512 − overlap (inscribed circle · height 6): 96π + 512
+    let expected = 96.0 * std::f64::consts::PI + 512.0;
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - expected).abs() < 1.0,
+        "volume {vol} should be ~{expected}"
+    );
 }
 
 #[test]
@@ -6850,6 +6946,132 @@ fn a_piece_in_a_rings_hole_is_disjoint() {
     assert!(
         super::components_are_disjoint_pieces(&topo, &comps),
         "a plug in the ring's hole is not enclosed by the ring's material"
+    );
+}
+
+/// The 2-tangency siblings of the inscribed-rim fuse: the box is tangent to
+/// the section circle on only two walls, splitting it into two half-arcs
+/// that share BOTH endpoints. Three parallel-edge weaknesses stacked here:
+/// the plane arrangement collapsed the halves' identical chords into one
+/// segment (losing the far half of the box bottom), the DCEL trace
+/// grand-toured through the parallel pair, and the greedy handed the cone a
+/// single self-covering loop (the within-loop duplicate form). Pinned with
+/// the full oracles for both quadrics.
+#[test]
+fn two_tangency_box_fuse_is_analytic_watertight() {
+    use brepkit_math::mat::Mat4;
+    for &cone in &[false, true] {
+        let mut topo = Topology::new();
+        let quad = if cone {
+            crate::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap()
+        } else {
+            crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap()
+        };
+        let b = crate::primitives::make_box(&mut topo, 8.0, 18.0, 8.0).unwrap();
+        crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-4.0, -9.0, 6.0))
+            .unwrap();
+        let result =
+            brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, quad, b)
+                .unwrap();
+        assert_eq!(count_non_manifold_edges(&topo, result), 0);
+        let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+        assert!(
+            faces
+                .iter()
+                .all(|&fid| topo.face(fid).unwrap().surface().type_tag() != "nurbs"),
+            "all faces must stay analytic (cone={cone})"
+        );
+        let mesh = crate::tessellate::tessellate_solid(&topo, result, 0.05).unwrap();
+        assert_eq!(
+            crate::tessellate::boundary_edge_count(&mesh),
+            0,
+            "fused solid must tessellate watertight (cone={cone})"
+        );
+        let expected = if cone {
+            152.0 * std::f64::consts::PI + 1152.0
+        } else {
+            96.0 * std::f64::consts::PI + 1152.0
+        };
+        let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+        assert!(
+            (vol - expected).abs() < 1.0,
+            "volume {vol} should be ~{expected} (cone={cone})"
+        );
+    }
+}
+
+/// The "circle outside" cone∪box fuse — the last member of the tangent-circle
+/// family (box SMALLER than the section circle, corners poking out). The
+/// cone's fuse boundary is a single closed chain WINDING the lateral: 4
+/// corner ring-arcs alternating with 4 wall arches (plane×cone conic pieces,
+/// marched and NURBS-fit by phase-FF; a hyperbola has no exact `EdgeCurve`
+/// representation).
+///
+/// Five pieces close it: the winding veto on the internal-loops shortcut (an
+/// annulus loop with winding 1 bounds no disc), seam-meridian anchoring of
+/// winding chains, the chain-band splitter
+/// (`split_periodic_face_by_winding_chain` — greedy and DCEL both mistrace
+/// the chain's identical-tangent parallel twins), NURBS edge refinement at
+/// collinear vertices in assembly (the cone side splits its arch at the seam
+/// apex; the wall side's copy must match), and the cycle-based structured
+/// band tessellator (rims as full-winding cycles rather than constant-v
+/// circle groups, so a wavy mixed rim still sweeps watertight — the snap
+/// fallback used to skin the full parametric band, covering the dropped
+/// region and cutting off the wall lobes).
+///
+/// Known residual: the PER-FACE tessellation route (no shared edge pool —
+/// `classify_point`'s meshes) still snap-skins wavy-band faces; the solid
+/// path is correct and is what volume, export, and parity consume.
+#[test]
+fn circle_outside_cone_box_fuse_is_watertight() {
+    use brepkit_math::mat::Mat4;
+    let mut topo = Topology::new();
+    let cone = crate::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
+    let b = crate::primitives::make_box(&mut topo, 6.0, 6.0, 8.0).unwrap();
+    crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-3.0, -3.0, 6.0)).unwrap();
+    let result =
+        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
+
+    assert_eq!(count_non_manifold_edges(&topo, result), 0);
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert!(
+        faces
+            .iter()
+            .all(|&fid| topo.face(fid).unwrap().surface().type_tag() != "nurbs"),
+        "faces must stay analytic (edges may be marched NURBS)"
+    );
+    let mesh = crate::tessellate::tessellate_solid(&topo, result, 0.05).unwrap();
+    assert_eq!(
+        crate::tessellate::boundary_edge_count(&mesh),
+        0,
+        "fused solid must tessellate watertight"
+    );
+    // Per-face route (feeds classify_point's analytic ray casting): the wavy
+    // band must not be snap-skinned and the wall polygons must follow their
+    // arch bites; every wall lobe classifies Inside through both rays.
+    for (x, y, z) in [
+        (3.3, 0.0, 6.8),
+        (-3.3, 0.0, 6.8),
+        (0.0, 3.3, 6.8),
+        (0.0, -3.3, 6.8),
+    ] {
+        let p = brepkit_math::vec::Point3::new(x, y, z);
+        let c = crate::classify::classify_point(&topo, result, p, 0.001, 1e-7).unwrap();
+        assert_eq!(
+            c,
+            crate::classify::PointClassification::Inside,
+            "lobe point ({x},{y},{z}) must classify inside"
+        );
+    }
+
+    // Closed form: cone 208π + box 288 − overlap 159.00 = 782.449. The tight
+    // band pins the wall lobes' presence — losing even one (≈4.2) fails it;
+    // the historical broken results measured 921.7 (whole lateral kept) and
+    // 318.4 (cone dropped).
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - 782.449).abs() < 1.0,
+        "volume {vol} should be ~782.449"
     );
 }
 
