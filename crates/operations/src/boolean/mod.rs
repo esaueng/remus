@@ -62,8 +62,9 @@ pub fn boolean(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = brepkit_math::tolerance::Tolerance::new();
 
-    // Detect A⊂B or B⊂A (including A=B) and handle directly.
-    // Only applies when BOTH solids have simple analytic classifiers.
+    // Detect A⊂B or B⊂A (including A=B) and handle directly. A positive
+    // containment result requires an analytic classifier for the containing
+    // operand; AABB enclosure alone is only a necessary condition.
     {
         use brepkit_algo::classifier::try_build_analytic_classifier;
         let ca = try_build_analytic_classifier(topo, a);
@@ -2249,29 +2250,6 @@ fn detect_trivial_relation(
                 && i_max.y() <= o_max.y() + margin
                 && i_max.z() <= o_max.z() + margin
         };
-    // AABB-strictly-contains (strict): outer must also be ≥10% larger in
-    // ALL 3 dims. Used as the no-classifier fallback to detect true
-    // nested containment (e.g., a ring fully inside a shell's cavity)
-    // without false-positives on sparse multi-shell solids (e.g., a
-    // fuse of disjoint boxes whose AABB technically encloses another
-    // solid's AABB while mostly being empty space).
-    let aabb_strictly_contains =
-        |inner: &Option<(Point3, Point3)>, outer: &Option<(Point3, Point3)>| -> bool {
-            if !aabb_encloses(inner, outer) {
-                return false;
-            }
-            let Some(((i_min, i_max), (o_min, o_max))) = inner.zip(*outer) else {
-                return false;
-            };
-            let dims = [
-                (o_max.x() - o_min.x(), i_max.x() - i_min.x()),
-                (o_max.y() - o_min.y(), i_max.y() - i_min.y()),
-                (o_max.z() - o_min.z(), i_max.z() - i_min.z()),
-            ];
-            dims.iter()
-                .all(|(outer_d, inner_d)| *outer_d > *inner_d * 1.1)
-        };
-
     // AABB enclosure is necessary but NOT sufficient for solid
     // containment: a non-convex container (notched or hollow) can
     // AABB-enclose a solid that actually lies in its empty region.
@@ -2380,24 +2358,16 @@ fn detect_trivial_relation(
         })
         .unwrap_or(false);
 
-    // Containment: A contains B when all B vertices are inside-or-on A AND
-    // A's AABB encloses B's. Falls back to a strict AABB-only check when the
-    // containing solid has no classifier — the strict check requires ≥10%
-    // larger in ALL three dims so that sparse multi-shell solids (e.g., a
-    // fuse of two disjoint boxes) don't false-positive as "contains another
-    // solid".
-    // Both the analytic-classifier term and the AABB-only fallback can
-    // false-positive when the container is non-convex: the analytic
-    // classifier may mis-report notch points as inside-or-on, and an
-    // AABB encloses a notch's empty volume. Guard the whole determination
-    // with the `center_outside` witness — sound for every path because it
-    // only fires on proven non-containment (see the lemma above).
-    let b_in_a = ((all_b_verts_in_a && aabb_encloses(&aabb_b, &aabb_a))
-        || (ca.is_none() && aabb_strictly_contains(&aabb_b, &aabb_a)))
-        && !center_outside(topo, b, a, &aabb_b);
-    let a_in_b = ((all_a_verts_in_b && aabb_encloses(&aabb_a, &aabb_b))
-        || (cb.is_none() && aabb_strictly_contains(&aabb_a, &aabb_b)))
-        && !center_outside(topo, a, b, &aabb_a);
+    // Containment: A contains B only when A's analytic classifier accepts all
+    // of B's vertices, A's AABB encloses B's, and no sampled point proves the
+    // contrary. In particular, absence of a classifier is NOT evidence of
+    // containment: a complex, holed solid can enclose a tool's complete AABB
+    // while the tool still occupies the hole. Uncertain cases must proceed to
+    // the real boolean pipeline instead of silently copying one operand.
+    let b_in_a =
+        all_b_verts_in_a && aabb_encloses(&aabb_b, &aabb_a) && !center_outside(topo, b, a, &aabb_b);
+    let a_in_b =
+        all_a_verts_in_b && aabb_encloses(&aabb_a, &aabb_b) && !center_outside(topo, a, b, &aabb_a);
 
     TrivialRelation {
         identical: aabbs_match && all_b_verts_in_a && all_a_verts_in_b,

@@ -6852,3 +6852,78 @@ fn a_piece_in_a_rings_hole_is_disjoint() {
         "a plug in the ring's hole is not enclosed by the ring's material"
     );
 }
+
+/// A no-classifier target whose AABB encloses an annular tool does not prove
+/// that the tool is contained in the target's material.
+///
+/// The tall wall makes the L-bracket AABB more than 10% larger than the sleeve
+/// in every dimension. The sleeve still occupies the widened mounting bore,
+/// so fusing it must add the annulus instead of copying the target unchanged.
+#[test]
+fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
+    use std::f64::consts::PI;
+
+    use brepkit_algo::classifier::try_build_analytic_classifier;
+    use brepkit_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let base = crate::primitives::make_box(&mut topo, 80.0, 40.0, 8.0).unwrap();
+    let wall = crate::primitives::make_box(&mut topo, 80.0, 8.0, 32.0).unwrap();
+    crate::transform::transform_solid(&mut topo, wall, &Mat4::translation(0.0, 32.0, 7.5)).unwrap();
+    let blank = boolean(&mut topo, BooleanOp::Fuse, base, wall).unwrap();
+
+    let wide_drill = crate::primitives::make_cylinder(&mut topo, 4.8, 12.0).unwrap();
+    crate::transform::transform_solid(&mut topo, wide_drill, &Mat4::translation(16.0, 20.0, -2.0))
+        .unwrap();
+    let wide = boolean(&mut topo, BooleanOp::Cut, blank, wide_drill).unwrap();
+
+    let other_drill = crate::primitives::make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+    crate::transform::transform_solid(&mut topo, other_drill, &Mat4::translation(64.0, 20.0, -2.0))
+        .unwrap();
+    let target = boolean(&mut topo, BooleanOp::Cut, wide, other_drill).unwrap();
+
+    let outer = crate::primitives::make_cylinder(&mut topo, 4.8, 8.0).unwrap();
+    crate::transform::transform_solid(&mut topo, outer, &Mat4::translation(16.0, 20.0, 0.0))
+        .unwrap();
+    let inner = crate::primitives::make_cylinder(&mut topo, 3.8, 10.0).unwrap();
+    crate::transform::transform_solid(&mut topo, inner, &Mat4::translation(16.0, 20.0, -1.0))
+        .unwrap();
+    let sleeve = boolean(&mut topo, BooleanOp::Cut, outer, inner).unwrap();
+
+    assert!(
+        try_build_analytic_classifier(&topo, target).is_none(),
+        "the drilled L-bracket must exercise no-classifier containment"
+    );
+    assert!(
+        try_build_analytic_classifier(&topo, sleeve).is_none(),
+        "an annulus has no simple analytic solid classifier"
+    );
+
+    let before = crate::measure::solid_volume(&topo, target, 0.05).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Fuse, target, sleeve).unwrap();
+    crate::heal::unify_faces(&mut topo, result).unwrap();
+    check_result(&topo, result);
+
+    let actual = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
+    let expected = before + PI * (4.8_f64.powi(2) - 3.8_f64.powi(2)) * 8.0;
+    assert!(
+        (actual - expected).abs() <= expected.abs().max(1.0) * 1e-9,
+        "annulus was not incorporated: before={before}, actual={actual}, expected={expected}"
+    );
+
+    let radii: Vec<f64> = brepkit_topology::explorer::solid_faces(&topo, result)
+        .unwrap()
+        .into_iter()
+        .filter_map(|fid| match topo.face(fid).unwrap().surface() {
+            FaceSurface::Cylinder(cyl)
+                if (cyl.origin().x() - 16.0).abs() < 1e-8
+                    && (cyl.origin().y() - 20.0).abs() < 1e-8 =>
+            {
+                Some(cyl.radius())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(radii.len(), 1, "one analytic mounting wall: {radii:?}");
+    assert!((radii[0] - 3.8).abs() < 1e-8, "radii {radii:?}");
+}
