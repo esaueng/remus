@@ -7,6 +7,8 @@
 //! The primary entry point is [`kernel::BrepKernel`], which owns all modeling
 //! state and exposes shape creation, operations, and tessellation to JS.
 
+use wasm_bindgen::prelude::*;
+
 mod bindings;
 pub mod error;
 mod handles;
@@ -18,3 +20,19 @@ pub mod panics;
 pub mod shapes;
 mod state;
 mod types;
+
+pub use types::FaceEvolutionPayloadV1;
+
+/// Decode and validate a serialized version-1 face-evolution payload.
+///
+/// This is intended for persisted or transported payloads. It rejects unknown
+/// fields, unsupported versions, incomplete source/result coverage, handles
+/// outside the declared domains, duplicate pairs, and contradictory claims.
+///
+/// # Errors
+///
+/// Returns an error if `json` is malformed or violates the version-1 contract.
+#[wasm_bindgen(js_name = "decodeEvolutionPayload")]
+pub fn decode_evolution_payload(json: &str) -> Result<FaceEvolutionPayloadV1, JsError> {
+    FaceEvolutionPayloadV1::decode(json).map_err(|error| JsError::new(&error))
+}

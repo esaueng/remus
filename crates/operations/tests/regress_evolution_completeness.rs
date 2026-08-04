@@ -307,8 +307,8 @@ fn multi_edge_fillet_lets_one_face_generate_several_bands() {
 
 /// A fillet whose band is built against a curved face rather than two planes.
 /// This one goes to the walking builder, which keeps its own construction
-/// record — so it is the reference answer the geometry-matched cases above are
-/// held to, not just another case.
+/// record — so it is the reference answer the planar builder's assembly record
+/// above is held to, not just another case.
 #[test]
 fn cylinder_rim_fillet_lineage_is_complete_and_construction_derived() {
     for scale in SCALES {
@@ -493,7 +493,7 @@ fn the_binding_route_reports_the_same_map_as_the_in_process_api() {
         direct.to_json(),
         "{\"modified\":{\"0\":[7],\"1\":[8],\"2\":[9],\"3\":[10],\"4\":[11],\"5\":[12]},\
          \"generated\":{\"0\":[6],\"2\":[6]},\"deleted\":[],\
-         \"unresolved\":{},\"origin\":\"geometry\"}",
+         \"unresolved\":{},\"origin\":\"construction\"}",
         "the reported map for the box-edge fillet changed"
     );
 }
@@ -591,4 +591,39 @@ fn filleted_cube_volume_matches_the_hand_derived_closed_form() {
         (actual - expected).abs() < 1e-3,
         "filleted cube volume {actual} != closed form {expected}"
     );
+}
+
+#[test]
+fn failed_blend_evolution_calls_leave_source_topology_unchanged() {
+    for operation in ["fillet", "chamfer"] {
+        let mut topo = Topology::new();
+        let cube = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edge = solid_edges(&topo, cube).unwrap()[0];
+        let before_faces = faces_of(&topo, cube);
+        let before_volume = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+
+        let failed = match operation {
+            "fillet" => {
+                blend_ops::fillet_with_evolution(&mut topo, cube, &[edge], 100.0).map(|_| ())
+            }
+            "chamfer" => blend_ops::chamfer_with_evolution(&mut topo, cube, &[edge], 100.0, 100.0)
+                .map(|_| ()),
+            _ => unreachable!(),
+        };
+        assert!(failed.is_err(), "degenerate {operation} must be rejected");
+
+        assert_eq!(
+            faces_of(&topo, cube),
+            before_faces,
+            "failed {operation} changed the source face set"
+        );
+        let after_volume = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+        assert!(
+            (after_volume - before_volume).abs() < 1e-9,
+            "failed {operation} changed source volume: {before_volume} -> {after_volume}"
+        );
+        let shell = topo.solid(cube).unwrap().outer_shell();
+        brepkit_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+            .unwrap();
+    }
 }

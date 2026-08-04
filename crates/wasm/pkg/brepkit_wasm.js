@@ -5,5 +5,5 @@ import { __wbg_set_wasm } from "./brepkit_wasm_bg.js";
 __wbg_set_wasm(wasm);
 wasm.__wbindgen_start();
 export {
-    BrepKernel, JsEdgeLines, JsGroupedMesh, JsMesh, JsPoint3, JsVec3, clearLastPanicMessage, lastPanicMessage, setLogLevel
+    BrepKernel, JsEdgeLines, JsGroupedMesh, JsMesh, JsPoint3, JsVec3, clearLastPanicMessage, decodeEvolutionPayload, lastPanicMessage, setLogLevel
 } from "./brepkit_wasm_bg.js";

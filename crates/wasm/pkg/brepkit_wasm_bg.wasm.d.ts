@@ -28,6 +28,7 @@ export const brepkernel_chamfer: (a: number, b: number, c: number, d: number, e:
 export const brepkernel_chamfer2d: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_chamferDistanceAngle: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_chamferV2: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const brepkernel_chamferWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_checkpoint: (a: number) => number;
 export const brepkernel_checkpointCount: (a: number) => number;
 export const brepkernel_circularPattern: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
@@ -262,6 +263,7 @@ export const brepkernel_validateSolidWithOptions: (a: number, b: number, c: numb
 export const brepkernel_volume: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_weldShellsAndFaces: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_wireLength: (a: number, b: number) => [number, number, number];
+export const decodeEvolutionPayload: (a: number, b: number) => [number, number, number];
 export const jsedgelines_edgeCount: (a: number) => number;
 export const jsedgelines_offsets: (a: number) => [number, number];
 export const jsedgelines_packedBuffer: (a: number) => [number, number];

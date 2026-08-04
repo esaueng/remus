@@ -203,6 +203,7 @@ impl<'a> ChamferBuilder<'a> {
                 // every face is itself.
                 face_origins: Some(BlendFaceOrigins {
                     survived: original_faces.iter().map(|&f| (f, f)).collect(),
+                    deleted: Vec::new(),
                     created: Vec::new(),
                     created_unattributed: Vec::new(),
                 }),
@@ -347,6 +348,7 @@ impl<'a> ChamferBuilder<'a> {
         }
         let face_origins = BlendFaceOrigins {
             survived,
+            deleted: Vec::new(),
             created: blend_face_origins,
             created_unattributed: Vec::new(),
         };

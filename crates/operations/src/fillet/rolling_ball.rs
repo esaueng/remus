@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use brepkit_blend::BlendFaceOrigins;
 use brepkit_math::nurbs::surface::NurbsSurface;
 use brepkit_math::nurbs::surface_fitting::interpolate_surface;
 use brepkit_math::surfaces::CylindricalSurface;
@@ -20,6 +21,112 @@ use super::geometry::{
     edge_v_samples, face_surface_normal_at, sample_edge_point, sample_edge_tangent,
 };
 use super::helpers::{FacePolygon, extract_inner_wire_positions};
+
+#[derive(Clone)]
+enum FaceSpecOrigin {
+    Modified(FaceId),
+    Generated(Vec<FaceId>),
+    Unattributed,
+}
+
+fn push_face_spec(
+    specs: &mut Vec<FaceSpec>,
+    origins: &mut Vec<FaceSpecOrigin>,
+    spec: FaceSpec,
+    origin: FaceSpecOrigin,
+) {
+    specs.push(spec);
+    origins.push(origin);
+}
+
+fn origins_from_face_specs(
+    spec_origins: &[FaceSpecOrigin],
+    faces_by_spec: &[Option<FaceId>],
+    final_faces: &[(FaceId, FaceId)],
+) -> BlendFaceOrigins {
+    let final_by_assembled: HashMap<usize, FaceId> = final_faces
+        .iter()
+        .map(|&(assembled, final_face)| (assembled.index(), final_face))
+        .collect();
+    let mut modified_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::new();
+    let mut generated_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::new();
+    let mut unattributed: HashMap<usize, FaceId> = HashMap::new();
+    let mut modified_presence: HashMap<usize, (FaceId, bool)> = HashMap::new();
+
+    for (origin, assembled) in spec_origins.iter().zip(faces_by_spec) {
+        if let FaceSpecOrigin::Modified(source) = origin {
+            modified_presence
+                .entry(source.index())
+                .and_modify(|(_, present)| *present |= assembled.is_some())
+                .or_insert_with(|| (*source, assembled.is_some()));
+        }
+        let Some(assembled) = assembled else { continue };
+        let Some(&final_face) = final_by_assembled.get(&assembled.index()) else {
+            continue;
+        };
+        match origin {
+            FaceSpecOrigin::Modified(source) => modified_by_result
+                .entry(final_face.index())
+                .or_insert_with(|| (final_face, Vec::new()))
+                .1
+                .push(*source),
+            FaceSpecOrigin::Generated(sources) => generated_by_result
+                .entry(final_face.index())
+                .or_insert_with(|| (final_face, Vec::new()))
+                .1
+                .extend(sources),
+            FaceSpecOrigin::Unattributed => {
+                unattributed.insert(final_face.index(), final_face);
+            }
+        }
+    }
+
+    let mut result_indices: Vec<usize> = modified_by_result
+        .keys()
+        .chain(generated_by_result.keys())
+        .chain(unattributed.keys())
+        .copied()
+        .collect();
+    result_indices.sort_unstable();
+    result_indices.dedup();
+
+    let mut origins = BlendFaceOrigins::default();
+    for result_index in result_indices {
+        let modified = modified_by_result.remove(&result_index);
+        let generated = generated_by_result.remove(&result_index);
+        let unknown = unattributed.remove(&result_index);
+        match (modified, generated, unknown) {
+            (Some((result, mut sources)), None, None) => {
+                sources.sort_by_key(|face| face.index());
+                sources.dedup();
+                origins
+                    .survived
+                    .extend(sources.into_iter().map(|source| (source, result)));
+            }
+            (None, Some((result, mut sources)), None) if !sources.is_empty() => {
+                sources.sort_by_key(|face| face.index());
+                sources.dedup();
+                origins.created.push((result, sources));
+            }
+            (modified, generated, unknown) => {
+                let result = modified
+                    .as_ref()
+                    .map(|(face, _)| *face)
+                    .or_else(|| generated.as_ref().map(|(face, _)| *face))
+                    .or(unknown);
+                if let Some(result) = result {
+                    origins.created_unattributed.push(result);
+                }
+            }
+        }
+    }
+    origins.deleted = modified_presence
+        .into_values()
+        .filter_map(|(source, present)| (!present).then_some(source))
+        .collect();
+    origins.deleted.sort_by_key(|source| source.index());
+    origins
+}
 
 /// The exact cylinder a constant-radius rolling ball sweeps along a straight
 /// edge between two planes, or `None` if this stripe is not one.
@@ -130,6 +237,16 @@ pub fn fillet_rolling_ball(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<SolidId, crate::OperationsError> {
+    Ok(fillet_rolling_ball_with_origins(topo, solid, edges, radius)?.0)
+}
+
+/// [`fillet_rolling_ball`] with construction-derived face provenance.
+pub fn fillet_rolling_ball_with_origins(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if radius <= tol.linear {
@@ -1000,6 +1117,7 @@ pub fn fillet_rolling_ball(
 
     // Phase 3: Build modified (trimmed) planar faces.
     let mut all_specs: Vec<FaceSpec> = Vec::new();
+    let mut all_spec_origins: Vec<FaceSpecOrigin> = Vec::new();
 
     // At a corner where exactly two filleted edges meet (sharing one face), the
     // strips are set back from the vertex and a corner patch fills the gap (see
@@ -1016,10 +1134,15 @@ pub fn fillet_rolling_ball(
         // express: copy it whole. Its edges join the assembly's shared pool, so
         // the trimmed cap that keeps the same hole reuses the very same rim.
         if verbatim_faces.contains(&face_id.index()) && untouched_faces.contains(&face_id.index()) {
-            all_specs.push(FaceSpec::Existing {
-                face: face_id,
-                outer: None,
-            });
+            push_face_spec(
+                &mut all_specs,
+                &mut all_spec_origins,
+                FaceSpec::Existing {
+                    face: face_id,
+                    outer: None,
+                },
+                FaceSpecOrigin::Modified(face_id),
+            );
             continue;
         }
 
@@ -1056,19 +1179,29 @@ pub fn fillet_rolling_ball(
                 if let FaceSurface::Cylinder(cyl) = &surface
                     && !has_closed_edge
                 {
-                    all_specs.push(FaceSpec::CylindricalFace {
-                        vertices: verts,
-                        cylinder: cyl.clone(),
-                        reversed: false,
-                        inner_wires: np_inner,
-                    });
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        FaceSpec::CylindricalFace {
+                            vertices: verts,
+                            cylinder: cyl.clone(),
+                            reversed: false,
+                            inner_wires: np_inner,
+                        },
+                        FaceSpecOrigin::Modified(face_id),
+                    );
                 } else {
-                    all_specs.push(FaceSpec::Surface {
-                        vertices: verts,
-                        surface,
-                        reversed: false,
-                        inner_wires: np_inner,
-                    });
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        FaceSpec::Surface {
+                            vertices: verts,
+                            surface,
+                            reversed: false,
+                            inner_wires: np_inner,
+                        },
+                        FaceSpecOrigin::Modified(face_id),
+                    );
                 }
                 continue;
             }
@@ -1094,12 +1227,17 @@ pub fn fillet_rolling_ball(
                 // Degenerate non-planar face: pass through unchanged.
                 let verts = crate::boolean::face_polygon(topo, face_id)?;
                 let np_inner = extract_inner_wire_positions(topo, face)?;
-                all_specs.push(FaceSpec::Surface {
-                    vertices: verts,
-                    surface,
-                    reversed: false,
-                    inner_wires: np_inner,
-                });
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    FaceSpec::Surface {
+                        vertices: verts,
+                        surface,
+                        reversed: false,
+                        inner_wires: np_inner,
+                    },
+                    FaceSpecOrigin::Modified(face_id),
+                );
                 continue;
             }
 
@@ -1251,19 +1389,29 @@ pub fn fillet_rolling_ball(
             if let FaceSurface::Cylinder(cyl) = &surface
                 && !has_closed_edge
             {
-                all_specs.push(FaceSpec::CylindricalFace {
-                    vertices: trimmed_verts,
-                    cylinder: cyl.clone(),
-                    reversed: false,
-                    inner_wires: np_inner,
-                });
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    FaceSpec::CylindricalFace {
+                        vertices: trimmed_verts,
+                        cylinder: cyl.clone(),
+                        reversed: false,
+                        inner_wires: np_inner,
+                    },
+                    FaceSpecOrigin::Modified(face_id),
+                );
             } else {
-                all_specs.push(FaceSpec::Surface {
-                    vertices: trimmed_verts,
-                    surface,
-                    reversed: false,
-                    inner_wires: np_inner,
-                });
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    FaceSpec::Surface {
+                        vertices: trimmed_verts,
+                        surface,
+                        reversed: false,
+                        inner_wires: np_inner,
+                    },
+                    FaceSpecOrigin::Modified(face_id),
+                );
             }
             continue;
         };
@@ -1273,17 +1421,27 @@ pub fn fillet_rolling_ball(
         // single closed circular edge where start==end vertex).
         if n < 3 {
             if verbatim_faces.contains(&face_id.index()) {
-                all_specs.push(FaceSpec::Existing {
-                    face: face_id,
-                    outer: None,
-                });
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    FaceSpec::Existing {
+                        face: face_id,
+                        outer: None,
+                    },
+                    FaceSpecOrigin::Modified(face_id),
+                );
             } else {
-                all_specs.push(FaceSpec::Planar {
-                    vertices: poly.positions.clone(),
-                    normal: poly.normal,
-                    d: poly.d,
-                    inner_wires: poly.inner_wires.clone(),
-                });
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    FaceSpec::Planar {
+                        vertices: poly.positions.clone(),
+                        normal: poly.normal,
+                        d: poly.d,
+                        inner_wires: poly.inner_wires.clone(),
+                    },
+                    FaceSpecOrigin::Modified(face_id),
+                );
             }
             continue;
         }
@@ -1450,18 +1608,28 @@ pub fn fillet_rolling_ball(
             // A trimmed cap that carries holes: the outer wire is rebuilt from
             // the blend contacts, but every inner loop is carried through as
             // topology so its rim stays the edge its bore wall is bounded by.
-            all_specs.push(FaceSpec::Existing {
-                face: face_id,
-                outer: Some(new_verts),
-            });
+            push_face_spec(
+                &mut all_specs,
+                &mut all_spec_origins,
+                FaceSpec::Existing {
+                    face: face_id,
+                    outer: Some(new_verts),
+                },
+                FaceSpecOrigin::Modified(face_id),
+            );
         } else {
             let new_d = dot_normal_point(poly.normal, new_verts[0]);
-            all_specs.push(FaceSpec::Planar {
-                vertices: new_verts,
-                normal: poly.normal,
-                d: new_d,
-                inner_wires: poly.inner_wires.clone(),
-            });
+            push_face_spec(
+                &mut all_specs,
+                &mut all_spec_origins,
+                FaceSpec::Planar {
+                    vertices: new_verts,
+                    normal: poly.normal,
+                    d: new_d,
+                    inner_wires: poly.inner_wires.clone(),
+                },
+                FaceSpecOrigin::Modified(face_id),
+            );
         }
     }
 
@@ -1712,15 +1880,20 @@ pub fn fillet_rolling_ball(
             } else {
                 vec![contact2_start, contact1_start, contact1_end, contact2_end]
             };
-            all_specs.push(FaceSpec::CylindricalFace {
-                vertices: strip_wire,
-                cylinder,
-                // Convex blends put the material inside the cylinder, so the
-                // outward-radial normal already faces out; a concave one is
-                // rounded from the far side and needs the flip.
-                reversed: outward.dot(bisector_ref) > 0.0,
-                inner_wires: vec![],
-            });
+            push_face_spec(
+                &mut all_specs,
+                &mut all_spec_origins,
+                FaceSpec::CylindricalFace {
+                    vertices: strip_wire,
+                    cylinder,
+                    // Convex blends put the material inside the cylinder, so the
+                    // outward-radial normal already faces out; a concave one is
+                    // rounded from the far side and needs the flip.
+                    reversed: outward.dot(bisector_ref) > 0.0,
+                    inner_wires: vec![],
+                },
+                FaceSpecOrigin::Generated(vec![f1, f2]),
+            );
             record_strip_contacts(
                 &mut vertex_contacts,
                 (edge.start().index(), edge.end().index()),
@@ -1769,12 +1942,17 @@ pub fn fillet_rolling_ball(
         let strip_normal = fillet_surface.normal(0.5, 0.5).unwrap_or(bisector_ref);
         let strip_reversed = strip_normal.dot(bisector_ref) > 0.0;
 
-        all_specs.push(FaceSpec::Surface {
-            vertices: strip_wire,
-            surface: FaceSurface::Nurbs(fillet_surface),
-            reversed: strip_reversed,
-            inner_wires: vec![],
-        });
+        push_face_spec(
+            &mut all_specs,
+            &mut all_spec_origins,
+            FaceSpec::Surface {
+                vertices: strip_wire,
+                surface: FaceSurface::Nurbs(fillet_surface),
+                reversed: strip_reversed,
+                inner_wires: vec![],
+            },
+            FaceSpecOrigin::Generated(vec![f1, f2]),
+        );
 
         record_strip_contacts(
             &mut vertex_contacts,
@@ -1844,6 +2022,22 @@ pub fn fillet_rolling_ball(
         if blend_points.len() < 3 {
             continue;
         }
+        let mut corner_sources: Vec<FaceId> = contacts
+            .iter()
+            .filter_map(|(face_index, _)| {
+                shell_face_ids
+                    .iter()
+                    .copied()
+                    .find(|face| face.index() == *face_index)
+            })
+            .collect();
+        corner_sources.sort_by_key(|face| face.index());
+        corner_sources.dedup();
+        let corner_origin = if corner_sources.is_empty() {
+            FaceSpecOrigin::Unattributed
+        } else {
+            FaceSpecOrigin::Generated(corner_sources)
+        };
 
         // The original (about to be rounded away) vertex position.
         let original_vertex = face_polygons
@@ -1980,15 +2174,27 @@ pub fn fillet_rolling_ball(
                 // Preferred: the exact two-face corner (ball octant + ledge).
                 // The approximating patch stays as the fallback for corners
                 // whose faces do not meet squarely.
-                if let Some(mut specs) = build_two_edge_corner_exact(
+                if let Some(specs) = build_two_edge_corner_exact(
                     p_pt, near[0], far, near[1], centre, radius, is_concave, tol,
                 ) {
-                    all_specs.append(&mut specs);
+                    for spec in specs {
+                        push_face_spec(
+                            &mut all_specs,
+                            &mut all_spec_origins,
+                            spec,
+                            corner_origin.clone(),
+                        );
+                    }
                     built = true;
                 } else if let Some(spec) =
                     build_two_edge_corner_patch(p_pt, near[0], far, near[1], centre, is_concave)
                 {
-                    all_specs.push(spec);
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        spec,
+                        corner_origin.clone(),
+                    );
                     built = true;
                 }
             }
@@ -2047,7 +2253,12 @@ pub fn fillet_rolling_ball(
             if let Some(spec) =
                 build_three_edge_sphere_cap(&ordered_points, sphere_center, is_concave)
             {
-                all_specs.push(spec);
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    spec,
+                    corner_origin.clone(),
+                );
                 continue;
             }
 
@@ -2146,12 +2357,17 @@ pub fn fillet_rolling_ball(
                 // faces carry a correct trimmed extent, the rational patch above
                 // is the accurate representation even though it only tracks the
                 // sphere to within a few percent.
-                all_specs.push(FaceSpec::Surface {
-                    vertices: ordered_points,
-                    surface: FaceSurface::Nurbs(cap_surface),
-                    reversed: cap_reversed,
-                    inner_wires: vec![],
-                });
+                push_face_spec(
+                    &mut all_specs,
+                    &mut all_spec_origins,
+                    FaceSpec::Surface {
+                        vertices: ordered_points,
+                        surface: FaceSurface::Nurbs(cap_surface),
+                        reversed: cap_reversed,
+                        inner_wires: vec![],
+                    },
+                    corner_origin.clone(),
+                );
                 continue;
             }
         }
@@ -2162,12 +2378,17 @@ pub fn fillet_rolling_ball(
             "fillet(rolling-ball): corner patch fell back to flat planar blend (non-triangular/degenerate corner)"
         );
         let blend_d = dot_normal_point(blend_normal, ordered_points[0]);
-        all_specs.push(FaceSpec::Planar {
-            vertices: ordered_points,
-            normal: blend_normal,
-            d: blend_d,
-            inner_wires: vec![],
-        });
+        push_face_spec(
+            &mut all_specs,
+            &mut all_spec_origins,
+            FaceSpec::Planar {
+                vertices: ordered_points,
+                normal: blend_normal,
+                d: blend_d,
+                inner_wires: vec![],
+            },
+            corner_origin,
+        );
     }
 
     // Phase 5c: Remove zero-length edges from face specs.
@@ -2318,7 +2539,7 @@ pub fn fillet_rolling_ball(
     // At a single-arc runout the strip end cross-section (contact A → contact B)
     // is joined to the original corner C via two legs (C→A on one fillet face,
     // C→B on the other, both kept in Phase 3). The triangle A–C–B fills the gap.
-    for (&vi, &(c, ca, _fa, cb, _fb)) in &arc_runout {
+    for (&vi, &(c, ca, fa, cb, fb)) in &arc_runout {
         // Outward direction: along the filleted arc's tangent at C, pointing
         // away from the edge interior (out of the solid at the runout).
         let outward = vertex_fillet_edges
@@ -2352,23 +2573,43 @@ pub fn fillet_rolling_ball(
             Err(_) => continue,
         };
         let d = dot_normal_point(normal, verts[0]);
-        all_specs.push(FaceSpec::Planar {
-            vertices: verts,
-            normal,
-            d,
-            inner_wires: vec![],
-        });
+        let sources: Vec<FaceId> = [fa, fb]
+            .into_iter()
+            .filter_map(|face_index| {
+                shell_face_ids
+                    .iter()
+                    .copied()
+                    .find(|face| face.index() == face_index)
+            })
+            .collect();
+        let origin = if sources.is_empty() {
+            FaceSpecOrigin::Unattributed
+        } else {
+            FaceSpecOrigin::Generated(sources)
+        };
+        push_face_spec(
+            &mut all_specs,
+            &mut all_spec_origins,
+            FaceSpec::Planar {
+                vertices: verts,
+                normal,
+                d,
+                inner_wires: vec![],
+            },
+            origin,
+        );
     }
 
     // Phase 6: Assemble the solid using mixed-surface assembly.  Each fillet
     // strip and corner-patch spec already carries the `reversed` flag needed
     // for an outward-facing normal, so no post-assembly fix-up is required.
-    let solid_id = crate::boolean::assemble_solid_mixed(topo, &all_specs, tol)?;
+    let assembly = crate::boolean::assemble_solid_mixed_with_history(topo, &all_specs, tol)?;
+    let solid_id = assembly.solid;
 
     // Merge co-surface faces that the fillet may have split. This keeps the
     // face count minimal, preventing the downstream boolean from triggering
     // the mesh boolean fallback on moderate-complexity filleted solids.
-    let _ = crate::heal::unify_faces(topo, solid_id);
+    let unify_history = crate::heal::unify_faces_with_history(topo, solid_id).ok();
 
     // Reject a geometrically-degenerate assembly. This engine is built around
     // polygonal wires with distinct corner vertices; a closed circular edge
@@ -2407,7 +2648,22 @@ pub fn fillet_rolling_ball(
         }
     }
 
-    Ok(solid_id)
+    let face_origins = if let Some(history) = unify_history {
+        origins_from_face_specs(
+            &all_spec_origins,
+            &assembly.faces_by_spec,
+            &history.modified,
+        )
+    } else {
+        BlendFaceOrigins {
+            survived: Vec::new(),
+            deleted: Vec::new(),
+            created: Vec::new(),
+            created_unattributed: brepkit_topology::explorer::solid_faces(topo, solid_id)?,
+        }
+    };
+
+    Ok((solid_id, face_origins))
 }
 
 /// Whether a corner vertex is concave (rolling-ball sphere centre on the

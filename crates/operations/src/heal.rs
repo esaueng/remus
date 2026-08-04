@@ -1070,8 +1070,27 @@ fn uf_union(parent: &mut [usize], a: usize, b: usize) {
 /// # Errors
 ///
 /// Returns an error if topology lookups fail.
-#[allow(clippy::too_many_lines)]
 pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::OperationsError> {
+    Ok(unify_faces_with_history(topo, solid)?.faces_merged)
+}
+
+/// Construction history for [`unify_faces`].
+pub(crate) struct FaceUnifyHistory {
+    pub(crate) faces_merged: usize,
+    pub(crate) modified: Vec<(FaceId, FaceId)>,
+}
+
+/// [`unify_faces`] with the exact input-face to final-face association recorded
+/// by the merge groups that rebuild the shell.
+///
+/// # Errors
+///
+/// Returns an error if topology lookups fail.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn unify_faces_with_history(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<FaceUnifyHistory, crate::OperationsError> {
     /// Maximum boundary edges for a merged face. Groups whose boundary
     /// exceeds this are skipped to prevent O(N²) slowdowns in subsequent
     /// boolean intersection computations. 200 edges is generous for any
@@ -1085,7 +1104,10 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
     let original_count = all_face_ids.len();
 
     if original_count < 2 {
-        return Ok(0);
+        return Ok(FaceUnifyHistory {
+            faces_merged: 0,
+            modified: all_face_ids.iter().map(|&face| (face, face)).collect(),
+        });
     }
 
     // Step 1: Build edge→face map (topology-shared edges).
@@ -1310,7 +1332,10 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
     merge_groups.sort_unstable_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
 
     if merge_groups.is_empty() {
-        return Ok(0);
+        return Ok(FaceUnifyHistory {
+            faces_merged: 0,
+            modified: all_face_ids.iter().map(|&face| (face, face)).collect(),
+        });
     }
 
     // Step 4: Pre-compute boundary edges for all merge groups and build
@@ -1467,6 +1492,7 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
     // Step 5: For each merge group, form loops and build merged faces.
     let mut merged_face_ids: Vec<FaceId> = Vec::new();
     let mut consumed: HashSet<usize> = HashSet::new();
+    let mut modified: Vec<(FaceId, FaceId)> = Vec::with_capacity(all_face_ids.len());
 
     for gd in group_data {
         // Apply edge replacements to boundary edges.
@@ -1539,25 +1565,40 @@ pub fn unify_faces(topo: &mut Topology, solid: SolidId) -> Result<usize, crate::
 
         for &fid in &gd.face_ids {
             consumed.insert(fid.index());
+            modified.push((fid, new_face_id));
         }
     }
 
     if consumed.is_empty() {
-        return Ok(0);
+        return Ok(FaceUnifyHistory {
+            faces_merged: 0,
+            modified: all_face_ids.iter().map(|&face| (face, face)).collect(),
+        });
     }
 
     // Step 6: Rebuild the shell with unmerged faces + new merged faces.
     let mut new_faces: Vec<FaceId> = all_face_ids
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|f| !consumed.contains(&f.index()))
         .collect();
     new_faces.extend(merged_face_ids);
+    modified.extend(
+        all_face_ids
+            .iter()
+            .copied()
+            .filter(|face| !consumed.contains(&face.index()))
+            .map(|face| (face, face)),
+    );
 
     let new_shell = Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
     let final_count = topo.shell(shell_id)?.faces().len();
-    Ok(original_count - final_count)
+    Ok(FaceUnifyHistory {
+        faces_merged: original_count - final_count,
+        modified,
+    })
 }
 
 /// Compute the enclosed 3D area of a loop of oriented edges using Newell's method.

@@ -3,11 +3,14 @@
 //! Types annotated with `Tsify` automatically generate TypeScript definitions
 //! and can be serialized via `serde-wasm-bindgen` for zero-copy JS interop.
 
+use std::collections::HashSet;
+
+use brepkit_operations::evolution::{EvolutionMap, EvolutionOrigin};
 use tsify::Tsify;
 
 /// Typed result for `tessellateSolidGrouped`.
 #[derive(serde::Serialize, Tsify)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[tsify(into_wasm_abi)]
 pub struct GroupedMeshResult {
     pub positions: Vec<f64>,
@@ -38,14 +41,587 @@ pub struct BoundingBoxResult {
     pub max_z: f64,
 }
 
-/// Typed result for boolean operations with evolution tracking.
-#[derive(serde::Serialize, Tsify)]
+/// Current version of the WASM face-evolution payload.
+pub const FACE_EVOLUTION_SCHEMA_VERSION: u32 = 1;
+
+/// A solid and the complete set of face handles relevant to one side of an
+/// evolution operation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct EvolutionShapeV1 {
+    pub solid: u32,
+    pub faces: Vec<u32>,
+}
+
+/// One source face and the final-result faces related to it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct EvolutionRelationV1 {
+    pub source: u32,
+    pub results: Vec<u32>,
+}
+
+/// A final-result face whose source could not be established.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct UnresolvedEvolutionResultV1 {
+    pub result: u32,
+    pub candidates: Vec<u32>,
+}
+
+/// Whether the payload contains construction history or an explicit refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 #[tsify(into_wasm_abi)]
-pub struct EvolutionResult {
-    pub solid: u32,
-    pub generated: Vec<u32>,
-    pub modified: Vec<u32>,
+pub enum EvolutionProvenanceV1 {
+    Construction,
+    Unavailable,
+}
+
+/// Version 1 face-evolution claims.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct FaceEvolutionClaimsV1 {
+    pub provenance: EvolutionProvenanceV1,
+    pub modified: Vec<EvolutionRelationV1>,
+    pub generated: Vec<EvolutionRelationV1>,
+    pub deleted: Vec<u32>,
+    pub unresolved_results: Vec<UnresolvedEvolutionResultV1>,
+    pub unresolved_sources: Vec<u32>,
+}
+
+/// Stable, versioned WASM contract returned by fillet/chamfer evolution APIs.
+///
+/// `source.faces` and `result.faces` are the complete handle domains. A valid
+/// payload accounts for every source as modified, deleted, or unresolved and
+/// every result as modified, generated, or unresolved. The decoder rejects
+/// handles outside those domains, duplicate pairs, overlaps between claim
+/// kinds, and incomplete coverage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct FaceEvolutionPayloadV1 {
+    /// Contract version; currently always `1`.
+    pub schema_version: u32,
+    /// Input solid and its complete source-face handle set.
+    pub source: EvolutionShapeV1,
+    /// Final solid and its complete final-face handle set.
+    pub result: EvolutionShapeV1,
+    /// Validated evolution claims between the two handle domains.
+    pub evolution: FaceEvolutionClaimsV1,
+}
+
+impl FaceEvolutionPayloadV1 {
+    /// Build and validate a payload from a kernel evolution map.
+    pub(crate) fn from_map(
+        source_solid: u32,
+        result_solid: u32,
+        source_faces: Vec<u32>,
+        result_faces: Vec<u32>,
+        map: &EvolutionMap,
+    ) -> Result<Self, String> {
+        let mut source_faces = sorted_unique(source_faces);
+        let mut result_faces = sorted_unique(result_faces);
+
+        let evolution = if map.origin == EvolutionOrigin::Construction {
+            let modified = relations(&map.modified)?;
+            let generated = relations(&map.generated)?;
+            let deleted = sorted_unique(
+                map.deleted
+                    .iter()
+                    .copied()
+                    .map(index_to_u32)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            let mut unresolved_results: Vec<UnresolvedEvolutionResultV1> = map
+                .unresolved
+                .iter()
+                .map(|(&result, candidates)| {
+                    Ok(UnresolvedEvolutionResultV1 {
+                        result: index_to_u32(result)?,
+                        candidates: sorted_unique(
+                            candidates
+                                .iter()
+                                .copied()
+                                .map(index_to_u32)
+                                .collect::<Result<Vec<_>, _>>()?,
+                        ),
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+
+            let claimed_results: HashSet<u32> = modified
+                .iter()
+                .chain(&generated)
+                .flat_map(|claim| claim.results.iter().copied())
+                .chain(unresolved_results.iter().map(|claim| claim.result))
+                .collect();
+            for &result in &result_faces {
+                if !claimed_results.contains(&result) {
+                    unresolved_results.push(UnresolvedEvolutionResultV1 {
+                        result,
+                        candidates: Vec::new(),
+                    });
+                }
+            }
+            unresolved_results.sort_by_key(|claim| claim.result);
+
+            let accounted_sources: HashSet<u32> = modified
+                .iter()
+                .map(|claim| claim.source)
+                .chain(deleted.iter().copied())
+                .collect();
+            let unresolved_sources = source_faces
+                .iter()
+                .copied()
+                .filter(|source| !accounted_sources.contains(source))
+                .collect();
+
+            FaceEvolutionClaimsV1 {
+                provenance: EvolutionProvenanceV1::Construction,
+                modified,
+                generated,
+                deleted,
+                unresolved_results,
+                unresolved_sources,
+            }
+        } else {
+            // A geometric match is deliberately not promoted into the stable
+            // contract. Proximity, traversal order and approximate surface
+            // matching are not construction history, so expose uncertainty
+            // explicitly while preserving the successful solid.
+            FaceEvolutionClaimsV1 {
+                provenance: EvolutionProvenanceV1::Unavailable,
+                modified: Vec::new(),
+                generated: Vec::new(),
+                deleted: Vec::new(),
+                unresolved_results: result_faces
+                    .iter()
+                    .copied()
+                    .map(|result| UnresolvedEvolutionResultV1 {
+                        result,
+                        candidates: Vec::new(),
+                    })
+                    .collect(),
+                unresolved_sources: source_faces.clone(),
+            }
+        };
+
+        let payload = Self {
+            schema_version: FACE_EVOLUTION_SCHEMA_VERSION,
+            source: EvolutionShapeV1 {
+                solid: source_solid,
+                faces: std::mem::take(&mut source_faces),
+            },
+            result: EvolutionShapeV1 {
+                solid: result_solid,
+                faces: std::mem::take(&mut result_faces),
+            },
+            evolution,
+        };
+        payload.validate()?;
+        Ok(payload)
+    }
+
+    /// Decode JSON and enforce every version-1 structural invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed JSON, unsupported schema versions, or
+    /// any duplicate, contradictory, out-of-domain, or incomplete claim.
+    pub fn decode(json: &str) -> Result<Self, String> {
+        let payload: Self = serde_json::from_str(json)
+            .map_err(|error| format!("malformed face evolution payload: {error}"))?;
+        payload.validate()?;
+        Ok(payload)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != FACE_EVOLUTION_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported face evolution schema version {}",
+                self.schema_version
+            ));
+        }
+
+        let source_faces = unique_set("source.faces", &self.source.faces)?;
+        let result_faces = unique_set("result.faces", &self.result.faces)?;
+        let modified = validate_relations(
+            "modified",
+            &self.evolution.modified,
+            &source_faces,
+            &result_faces,
+        )?;
+        let generated = validate_relations(
+            "generated",
+            &self.evolution.generated,
+            &source_faces,
+            &result_faces,
+        )?;
+        let deleted = unique_set("deleted", &self.evolution.deleted)?;
+        ensure_subset("deleted", &deleted, "source.faces", &source_faces)?;
+        let unresolved_sources =
+            unique_set("unresolvedSources", &self.evolution.unresolved_sources)?;
+        ensure_subset(
+            "unresolvedSources",
+            &unresolved_sources,
+            "source.faces",
+            &source_faces,
+        )?;
+
+        let mut unresolved_results = HashSet::new();
+        for claim in &self.evolution.unresolved_results {
+            if !result_faces.contains(&claim.result) {
+                return Err(format!(
+                    "unresolved result {} is not in result.faces",
+                    claim.result
+                ));
+            }
+            if !unresolved_results.insert(claim.result) {
+                return Err(format!(
+                    "unresolved result {} is claimed more than once",
+                    claim.result
+                ));
+            }
+            let candidates = unique_set("unresolved result candidates", &claim.candidates)?;
+            ensure_subset(
+                "unresolved result candidates",
+                &candidates,
+                "source.faces",
+                &source_faces,
+            )?;
+        }
+
+        ensure_disjoint(
+            "modified results",
+            &modified.results,
+            "generated results",
+            &generated.results,
+        )?;
+        ensure_disjoint(
+            "modified results",
+            &modified.results,
+            "unresolved results",
+            &unresolved_results,
+        )?;
+        ensure_disjoint(
+            "generated results",
+            &generated.results,
+            "unresolved results",
+            &unresolved_results,
+        )?;
+        let claimed_results: HashSet<u32> = modified
+            .results
+            .union(&generated.results)
+            .copied()
+            .chain(unresolved_results.iter().copied())
+            .collect();
+        ensure_equal(
+            "result claims",
+            &claimed_results,
+            "result.faces",
+            &result_faces,
+        )?;
+
+        ensure_disjoint("modified sources", &modified.sources, "deleted", &deleted)?;
+        ensure_disjoint(
+            "modified sources",
+            &modified.sources,
+            "unresolvedSources",
+            &unresolved_sources,
+        )?;
+        ensure_disjoint(
+            "deleted",
+            &deleted,
+            "unresolvedSources",
+            &unresolved_sources,
+        )?;
+        let accounted_sources: HashSet<u32> = modified
+            .sources
+            .union(&deleted)
+            .copied()
+            .chain(unresolved_sources.iter().copied())
+            .collect();
+        ensure_equal(
+            "source claims",
+            &accounted_sources,
+            "source.faces",
+            &source_faces,
+        )?;
+
+        if self.evolution.provenance == EvolutionProvenanceV1::Unavailable
+            && (!self.evolution.modified.is_empty()
+                || !self.evolution.generated.is_empty()
+                || !self.evolution.deleted.is_empty())
+        {
+            return Err(
+                "unavailable provenance cannot contain modified, generated, or deleted claims"
+                    .into(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
+struct RelationSets {
+    sources: HashSet<u32>,
+    results: HashSet<u32>,
+}
+
+fn relations(
+    map: &std::collections::HashMap<usize, Vec<usize>>,
+) -> Result<Vec<EvolutionRelationV1>, String> {
+    let mut claims: Vec<EvolutionRelationV1> = map
+        .iter()
+        .map(|(&source, results)| {
+            Ok(EvolutionRelationV1 {
+                source: index_to_u32(source)?,
+                results: sorted_unique(
+                    results
+                        .iter()
+                        .copied()
+                        .map(index_to_u32)
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    claims.sort_by_key(|claim| claim.source);
+    Ok(claims)
+}
+
+fn validate_relations(
+    label: &str,
+    claims: &[EvolutionRelationV1],
+    source_faces: &HashSet<u32>,
+    result_faces: &HashSet<u32>,
+) -> Result<RelationSets, String> {
+    let mut sources = HashSet::new();
+    let mut results = HashSet::new();
+    let mut pairs = HashSet::new();
+    for claim in claims {
+        if !source_faces.contains(&claim.source) {
+            return Err(format!(
+                "{label} source {} is not in source.faces",
+                claim.source
+            ));
+        }
+        if !sources.insert(claim.source) {
+            return Err(format!(
+                "{label} source {} has more than one relation entry",
+                claim.source
+            ));
+        }
+        if claim.results.is_empty() {
+            return Err(format!("{label} source {} has no results", claim.source));
+        }
+        let relation_results = unique_set(&format!("{label} results"), &claim.results)?;
+        ensure_subset(
+            &format!("{label} results"),
+            &relation_results,
+            "result.faces",
+            result_faces,
+        )?;
+        for &result in &relation_results {
+            if !pairs.insert((claim.source, result)) {
+                return Err(format!(
+                    "duplicate {label} claim {} -> {result}",
+                    claim.source
+                ));
+            }
+            results.insert(result);
+        }
+    }
+    Ok(RelationSets { sources, results })
+}
+
+fn unique_set(label: &str, values: &[u32]) -> Result<HashSet<u32>, String> {
+    let set: HashSet<u32> = values.iter().copied().collect();
+    if set.len() != values.len() {
+        return Err(format!("{label} contains duplicate handles"));
+    }
+    Ok(set)
+}
+
+fn ensure_subset(
+    label: &str,
+    values: &HashSet<u32>,
+    domain_label: &str,
+    domain: &HashSet<u32>,
+) -> Result<(), String> {
+    let mut outside: Vec<u32> = values.difference(domain).copied().collect();
+    outside.sort_unstable();
+    if outside.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} contains handles outside {domain_label}: {outside:?}"
+        ))
+    }
+}
+
+fn ensure_disjoint(
+    left_label: &str,
+    left: &HashSet<u32>,
+    right_label: &str,
+    right: &HashSet<u32>,
+) -> Result<(), String> {
+    let mut overlap: Vec<u32> = left.intersection(right).copied().collect();
+    overlap.sort_unstable();
+    if overlap.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{left_label} and {right_label} make contradictory claims for {overlap:?}"
+        ))
+    }
+}
+
+fn ensure_equal(
+    left_label: &str,
+    left: &HashSet<u32>,
+    right_label: &str,
+    right: &HashSet<u32>,
+) -> Result<(), String> {
+    let mut missing: Vec<u32> = right.difference(left).copied().collect();
+    let mut extra: Vec<u32> = left.difference(right).copied().collect();
+    missing.sort_unstable();
+    extra.sort_unstable();
+    if missing.is_empty() && extra.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{left_label} do not equal {right_label}: missing {missing:?}, extra {extra:?}"
+        ))
+    }
+}
+
+fn sorted_unique(mut values: Vec<u32>) -> Vec<u32> {
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
+fn index_to_u32(index: usize) -> Result<u32, String> {
+    u32::try_from(index).map_err(|_| format!("face handle {index} exceeds the u32 range"))
+}
+
+#[cfg(test)]
+mod evolution_payload_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn valid_payload() -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "source": { "solid": 1, "faces": [10, 11, 12] },
+            "result": { "solid": 2, "faces": [20, 21] },
+            "evolution": {
+                "provenance": "construction",
+                "modified": [{ "source": 10, "results": [20] }],
+                "generated": [{ "source": 11, "results": [21] }],
+                "deleted": [11],
+                "unresolvedResults": [],
+                "unresolvedSources": [12]
+            }
+        })
+    }
+
+    fn reject(mutator: impl FnOnce(&mut serde_json::Value)) {
+        let mut value = valid_payload();
+        mutator(&mut value);
+        assert!(
+            FaceEvolutionPayloadV1::decode(&value.to_string()).is_err(),
+            "malformed payload was accepted: {value}"
+        );
+    }
+
+    #[test]
+    fn decoder_accepts_complete_modified_generated_deleted_payload() {
+        let value = valid_payload();
+        let payload = FaceEvolutionPayloadV1::decode(&value.to_string()).unwrap();
+        assert_eq!(payload.schema_version, 1);
+        assert_eq!(payload.evolution.deleted, vec![11]);
+    }
+
+    #[test]
+    fn decoder_rejects_unknown_version_and_fields() {
+        reject(|value| value["schemaVersion"] = 2.into());
+        reject(|value| value["unexpected"] = true.into());
+        reject(|value| value["evolution"]["unexpected"] = true.into());
+    }
+
+    #[test]
+    fn decoder_rejects_duplicate_and_out_of_domain_handles() {
+        reject(|value| value["source"]["faces"] = serde_json::json!([10, 10, 11, 12]));
+        reject(|value| value["evolution"]["modified"][0]["results"] = serde_json::json!([20, 20]));
+        reject(|value| {
+            let duplicate = value["evolution"]["modified"][0].clone();
+            value["evolution"]["modified"]
+                .as_array_mut()
+                .unwrap()
+                .push(duplicate);
+        });
+        reject(|value| value["evolution"]["modified"][0]["results"] = serde_json::json!([99]));
+        reject(|value| value["evolution"]["generated"][0]["source"] = 99.into());
+    }
+
+    #[test]
+    fn decoder_rejects_contradictory_claims() {
+        reject(|value| value["evolution"]["generated"][0]["results"] = serde_json::json!([20]));
+        reject(|value| value["evolution"]["deleted"] = serde_json::json!([10, 11]));
+        reject(|value| {
+            value["evolution"]["unresolvedResults"] = serde_json::json!([
+                { "result": 20, "candidates": [10] }
+            ]);
+        });
+    }
+
+    #[test]
+    fn decoder_rejects_incomplete_source_and_result_coverage() {
+        reject(|value| value["evolution"]["unresolvedSources"] = serde_json::json!([]));
+        reject(|value| value["evolution"]["generated"] = serde_json::json!([]));
+    }
+
+    #[test]
+    fn decoder_rejects_claims_disguised_as_unavailable_provenance() {
+        reject(|value| value["evolution"]["provenance"] = "unavailable".into());
+    }
+
+    #[test]
+    fn encoder_preserves_explicit_deletions_and_validates_itself() {
+        let mut map = EvolutionMap::exact();
+        map.add_modified(10, 20);
+        map.add_generated(11, 21);
+        map.add_deleted(11);
+        let payload =
+            FaceEvolutionPayloadV1::from_map(1, 2, vec![10, 11], vec![20, 21], &map).unwrap();
+        assert_eq!(payload.evolution.deleted, vec![11]);
+        assert!(payload.evolution.unresolved_sources.is_empty());
+        assert!(payload.evolution.unresolved_results.is_empty());
+    }
+
+    #[test]
+    fn encoder_refuses_to_promote_geometric_inference() {
+        let mut inferred = EvolutionMap::new();
+        inferred.add_modified(10, 20);
+        let payload =
+            FaceEvolutionPayloadV1::from_map(1, 2, vec![10], vec![20], &inferred).unwrap();
+
+        assert_eq!(
+            payload.evolution.provenance,
+            EvolutionProvenanceV1::Unavailable
+        );
+        assert!(payload.evolution.modified.is_empty());
+        assert_eq!(payload.evolution.unresolved_sources, vec![10]);
+        assert_eq!(payload.evolution.unresolved_results[0].result, 20);
+    }
 }
 
 /// Typed result for `massProperties`.

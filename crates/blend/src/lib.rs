@@ -138,6 +138,8 @@ pub struct BlendFaceOrigins {
     /// Input face -> the output face that carries it. An untouched face maps to
     /// itself; a trimmed one maps to its replacement.
     pub survived: Vec<(FaceId, FaceId)>,
+    /// Input faces the builder proved do not survive in the result.
+    pub deleted: Vec<FaceId>,
     /// A face that did not exist in the input -> the input faces it was built
     /// between (the two base faces of the stripe, for a blend band).
     pub created: Vec<(FaceId, Vec<FaceId>)>,

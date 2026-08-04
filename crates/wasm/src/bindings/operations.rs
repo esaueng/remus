@@ -19,15 +19,30 @@ use brepkit_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
     TOL, classify_to_string, create_apex_face, fillet_failure_js_error, panic_message,
-    parse_points, try_fillet_with_origins,
+    parse_points, try_chamfer_with_origins, try_fillet_with_origins,
 };
 use crate::kernel::BrepKernel;
+use crate::types::FaceEvolutionPayloadV1;
 
 use brepkit_operations::extrude::extrude;
 use brepkit_operations::offset_wire::JoinType;
 use brepkit_operations::push_pull::{push_pull_face, resize_cylindrical_face};
 use brepkit_operations::revolve::revolve;
 use brepkit_operations::sweep::sweep;
+
+fn wasm_blend_evolution(
+    topo: &brepkit_topology::Topology,
+    result: brepkit_topology::solid::SolidId,
+    origins: Option<&brepkit_operations::blend_ops::BlendFaceOrigins>,
+) -> Result<brepkit_operations::evolution::EvolutionMap, brepkit_operations::OperationsError> {
+    let Some(origins) = origins else {
+        // The stable WASM contract never runs the legacy normal/centroid
+        // matcher. An engine without construction history is an explicit
+        // refusal, which the payload expands to complete unresolved domains.
+        return Ok(brepkit_operations::evolution::EvolutionMap::new());
+    };
+    brepkit_operations::blend_ops::evolution_from_blend_origins(topo, result, Some(origins), &[])
+}
 
 /// Parse a join type string into a [`JoinType`] enum value.
 ///
@@ -243,6 +258,57 @@ impl BrepKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    /// Chamfer edges and return versioned face-evolution tracking data.
+    ///
+    /// This runs the same production engine cascade as [`chamfer`](Self::chamfer_solid):
+    /// the established planar bevel first, then the walking builder for
+    /// supported curved topology. The returned solid is therefore the same
+    /// exact B-Rep the non-evolution entry point produces.
+    ///
+    /// Generated bevel/corner faces name the input faces the builder used to
+    /// construct them. If an engine cannot provide construction history, the
+    /// payload reports explicit unresolved source/result sets instead of
+    /// inferring lineage geometrically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a handle is invalid, the distance is non-positive,
+    /// or the chamfer fails.
+    #[wasm_bindgen(js_name = "chamferWithEvolution")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn chamfer_with_evolution(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+    ) -> Result<FaceEvolutionPayloadV1, JsError> {
+        validate_positive(distance, "distance")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+            .iter()
+            .map(|&handle| self.resolve_edge(handle))
+            .collect::<Result<_, _>>()?;
+        let source_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
+        let (result, origins) =
+            try_chamfer_with_origins(self.topo_mut(), solid_id, &edge_ids, distance)?;
+        let evolution = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
+        let result_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, result)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
+        FaceEvolutionPayloadV1::from_map(
+            solid,
+            solid_id_to_u32(result),
+            source_faces,
+            result_faces,
+            &evolution,
+        )
+        .map_err(|error| JsError::new(&error))
+    }
+
     // ── Fillet ────────────────────────────────────────────────────
 
     /// Fillet (round) edges of a solid.
@@ -286,10 +352,8 @@ impl BrepKernel {
 
     /// Apply a constant-radius fillet and return face-evolution tracking data.
     ///
-    /// Returns a JSON string `{"solid": <u32>, "evolution": {modified,
-    /// generated, deleted, unresolved, origin}}` — the same shape as
-    /// `fuseWithEvolution`. Blend faces appear under `generated` and surviving
-    /// faces under `modified`.
+    /// Returns a validated [`FaceEvolutionPayloadV1`] object. Blend faces
+    /// appear under `generated` and surviving faces under `modified`.
     ///
     /// A blend band is listed under **both** faces its rounded edge separated.
     /// It was built between them, so both are its origin; `generated` is an
@@ -298,18 +362,10 @@ impl BrepKernel {
     /// not any input face cut back, and a selection stored against one of those
     /// faces must not acquire it.
     ///
-    /// `origin` says how far the answer can be trusted. `"construction"` means
-    /// the blend engine recorded the correspondence while assembling the
-    /// result; `"geometry"` means it was matched from face normals and
-    /// centroids, because the engine that ran rebuilds faces instead of
-    /// trimming them and keeps no record. The two agree on where a band belongs;
-    /// `origin` distinguishes a recorded fact from an inference that happens to
-    /// reach the same answer.
-    ///
-    /// Either way, `unresolved` lists result faces with no established origin
-    /// (with the input faces that tied, when there were any) — a caller holding
-    /// a persistent face reference must fail closed on those rather than pick
-    /// from the candidates. For a fillet of a box or a cylinder rim it is empty.
+    /// The payload exposes construction history only. If an engine cannot
+    /// report history, every source/result is explicit under the unresolved
+    /// sets with `provenance: "unavailable"`; the binding never infers lineage
+    /// from proximity, traversal order, or approximate surface matching.
     ///
     /// # Errors
     ///
@@ -322,7 +378,7 @@ impl BrepKernel {
         solid: u32,
         edge_handles: Vec<u32>,
         radius: f64,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<FaceEvolutionPayloadV1, JsError> {
         validate_positive(radius, "radius")?;
         let solid_id = self.resolve_solid(solid)?;
         let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
@@ -332,31 +388,33 @@ impl BrepKernel {
 
         // Wrap in catch_unwind like `fillet` does: a fillet panic must not
         // abort the whole WASM instance.
+        let source_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-            || -> Result<String, JsError> {
-                // Snapshot the input faces BEFORE the blend: a successful blend
-                // trims them in place, so collecting afterwards would compare
-                // the result against itself.
-                let input_faces =
-                    brepkit_operations::boolean::collect_face_signatures(&self.topo, solid_id)?;
+            || -> Result<FaceEvolutionPayloadV1, JsError> {
                 let (result, origins) =
                     try_fillet_with_origins(self.topo_mut(), solid_id, &edge_ids, radius)
                         .map_err(|e| fillet_failure_js_error(&e))?;
-                let evo = brepkit_operations::blend_ops::evolution_from_blend_origins(
-                    &self.topo,
-                    result,
-                    origins.as_ref(),
-                    &input_faces,
-                )?;
-                Ok(format!(
-                    "{{\"solid\":{},\"evolution\":{}}}",
+                let evo = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
+                let result_faces: Vec<u32> =
+                    brepkit_topology::explorer::solid_faces(&self.topo, result)?
+                        .into_iter()
+                        .map(face_id_to_u32)
+                        .collect();
+                FaceEvolutionPayloadV1::from_map(
+                    solid,
                     solid_id_to_u32(result),
-                    evo.to_json()
-                ))
+                    source_faces.clone(),
+                    result_faces,
+                    &evo,
+                )
+                .map_err(|error| JsError::new(&error))
             },
         ));
         match result {
-            Ok(inner) => inner.map(|json| JsValue::from_str(&json)),
+            Ok(inner) => inner,
             Err(panic_info) => Err(JsError::new(&panic_message(&panic_info, "Fillet"))),
         }
     }
@@ -1805,6 +1863,8 @@ impl BrepKernel {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use std::collections::HashSet;
+
     use brepkit_math::vec::Point3;
     use brepkit_topology::builder::make_polygon_wire;
 
@@ -1883,6 +1943,113 @@ mod tests {
     fn rim_chamfer_volume(d: f64) -> f64 {
         let full = std::f64::consts::PI * RIM_R * RIM_R * RIM_H;
         full - 0.5 * d * d * std::f64::consts::TAU * (RIM_R - d / 3.0)
+    }
+
+    fn assert_complete_evolution(payload: &crate::types::FaceEvolutionPayloadV1) {
+        let source: HashSet<u32> = payload.source.faces.iter().copied().collect();
+        let result: HashSet<u32> = payload.result.faces.iter().copied().collect();
+        let accounted_sources: HashSet<u32> = payload
+            .evolution
+            .modified
+            .iter()
+            .map(|claim| claim.source)
+            .chain(payload.evolution.deleted.iter().copied())
+            .chain(payload.evolution.unresolved_sources.iter().copied())
+            .collect();
+        let accounted_results: HashSet<u32> = payload
+            .evolution
+            .modified
+            .iter()
+            .chain(&payload.evolution.generated)
+            .flat_map(|claim| claim.results.iter().copied())
+            .chain(
+                payload
+                    .evolution
+                    .unresolved_results
+                    .iter()
+                    .map(|claim| claim.result),
+            )
+            .collect();
+        assert_eq!(accounted_sources, source);
+        assert_eq!(accounted_results, result);
+    }
+
+    #[test]
+    fn fillet_evolution_payload_covers_single_and_multi_edge_boxes() {
+        for edge_slots in [&[0_usize][..], &[0_usize, 2][..]] {
+            let mut kernel = BrepKernel::new();
+            let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+            let edges = kernel.get_solid_edges(solid).unwrap();
+            let selected: Vec<u32> = edge_slots.iter().map(|&slot| edges[slot]).collect();
+            let payload = kernel.fillet_with_evolution(solid, selected, 1.0).unwrap();
+
+            assert_eq!(payload.schema_version, 1);
+            assert_eq!(payload.source.solid, solid);
+            assert_eq!(
+                payload.evolution.provenance,
+                crate::types::EvolutionProvenanceV1::Construction
+            );
+            assert!(payload.evolution.deleted.is_empty());
+            assert!(payload.evolution.unresolved_sources.is_empty());
+            assert!(payload.evolution.unresolved_results.is_empty());
+            let generated: HashSet<u32> = payload
+                .evolution
+                .generated
+                .iter()
+                .flat_map(|claim| claim.results.iter().copied())
+                .collect();
+            assert_eq!(generated.len(), edge_slots.len());
+            assert_complete_evolution(&payload);
+        }
+    }
+
+    #[test]
+    fn fillet_and_chamfer_evolution_cover_cylinder_rims() {
+        let mut fillet_kernel = BrepKernel::new();
+        let (fillet_solid, fillet_rims) = rim_cylinder(&mut fillet_kernel);
+        let fillet = fillet_kernel
+            .fillet_with_evolution(fillet_solid, vec![fillet_rims[0]], 2.0)
+            .unwrap();
+        assert_eq!(
+            fillet.evolution.provenance,
+            crate::types::EvolutionProvenanceV1::Construction
+        );
+        assert!(!fillet.evolution.generated.is_empty());
+        assert_complete_evolution(&fillet);
+
+        let mut chamfer_kernel = BrepKernel::new();
+        let (chamfer_solid, chamfer_rims) = rim_cylinder(&mut chamfer_kernel);
+        let chamfer = chamfer_kernel
+            .chamfer_with_evolution(chamfer_solid, vec![chamfer_rims[0]], 2.0)
+            .unwrap();
+        assert_eq!(
+            chamfer.evolution.provenance,
+            crate::types::EvolutionProvenanceV1::Construction
+        );
+        assert!(!chamfer.evolution.generated.is_empty());
+        assert_complete_evolution(&chamfer);
+    }
+
+    #[test]
+    fn chamfer_evolution_payload_covers_box_bevels() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let payload = kernel
+            .chamfer_with_evolution(solid, vec![edge], 1.0)
+            .unwrap();
+        assert_eq!(
+            payload.evolution.provenance,
+            crate::types::EvolutionProvenanceV1::Construction
+        );
+        let bevels: HashSet<u32> = payload
+            .evolution
+            .generated
+            .iter()
+            .flat_map(|claim| claim.results.iter().copied())
+            .collect();
+        assert_eq!(bevels.len(), 1);
+        assert_complete_evolution(&payload);
     }
 
     /// Which JS entry point ran the chamfer. Both must reach the same engine
