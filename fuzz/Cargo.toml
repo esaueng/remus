@@ -69,6 +69,13 @@ test = false
 [[bin]]
 bench = false
 doc = false
+name = "arena_reader"
+path = "fuzz_targets/arena_reader.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
 name = "boolean_tree"
 path = "fuzz_targets/boolean_tree.rs"
 test = false

@@ -761,13 +761,25 @@ export class BrepKernel {
      */
     defeature(solid: number, face_handles: Uint32Array): number;
     /**
-     * Reconstruct a solid from a buffer produced by [`Self::serialize_solid`].
+     * Reconstruct one solid from a version 1 or single-root version 2 buffer.
      *
      * # Errors
      *
      * Returns an error if the buffer is malformed or reconstruction fails.
      */
     deserializeSolid(data: Uint8Array): number;
+    /**
+     * Reconstruct solid roots from a version 1 or version 2 arena document.
+     *
+     * Every restored entity receives a fresh kernel handle. Documents with
+     * compound roots must be loaded through the native Rust document API.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, exceeds import limits,
+     * contains compound roots, or reconstruction fails.
+     */
+    deserializeSolids(data: Uint8Array): Uint32Array;
     /**
      * Detect surface-level coincident face pairs between two solids
      * without performing a boolean operation.
@@ -2539,13 +2551,27 @@ export class BrepKernel {
      * and replaying them in a native Rust harness to reproduce
      * sub-ULP-sensitive boolean behavior.
      *
-     * Returns a `Uint8Array` consumable by `brepkit_io::arena_io::deserialize_solid`.
+     * This writer emits a single-root version 2 document. Returns a
+     * `Uint8Array` consumable by
+     * `brepkit_io::arena_io::deserialize_solid`.
      *
      * # Errors
      *
      * Returns an error if the solid handle is invalid or serialization fails.
      */
     serializeSolid(solid: number): Uint8Array;
+    /**
+     * Serialize several solids into one version 2 arena document.
+     *
+     * Shared topology is encoded once with dense local indices. Input order
+     * and duplicate handles are preserved as document roots. This format
+     * intentionally excludes unrelated kernel session state.
+     *
+     * # Errors
+     *
+     * Returns an error if any solid handle is invalid or serialization fails.
+     */
+    serializeSolids(solids: Uint32Array): Uint8Array;
     /**
      * Sew loose faces into a connected solid.
      *
