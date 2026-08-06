@@ -1,10 +1,10 @@
-//! Exact serialization of a single solid's topology sub-arena.
+//! Exact serialization of solid and compound topology sub-arenas.
 //!
-//! Captures every entity reachable from a [`SolidId`] — vertices (with exact
-//! `Point3` and tolerance), edges (curve + analytic params), wires, faces
-//! (surface + analytic params + reversed flag), shells, the solid, and the
-//! pcurves on the captured (edge, face) pairs — and replays them into a fresh
-//! [`Topology`] with byte-identical f64 values.
+//! Captures every entity reachable from selected solid and compound roots —
+//! vertices (with exact `Point3` and tolerance), edges (curve + analytic
+//! params), wires, faces (surface + analytic params + reversed flag), shells,
+//! solids, compounds, and the pcurves on captured (edge, face) pairs — and
+//! replays them into a [`Topology`] with byte-identical f64 values.
 //!
 //! Unlike the geometry-exchange formats (STEP, IGES), this preserves the
 //! kernel's in-memory representation verbatim: no curve/surface re-derivation,
@@ -15,7 +15,9 @@
 //!
 //! Entity ids are remapped to dense local indices in deterministic discovery
 //! order, so the dump is compact and self-contained (independent of the
-//! source arena's global id layout).
+//! source arena's global id layout). Deserialization always allocates fresh
+//! ids; session state, retired slots, assemblies, GCS sketches, and checkpoints
+//! are deliberately outside this format.
 
 use std::collections::HashMap;
 
@@ -27,11 +29,12 @@ use brepkit_math::surfaces::{
     ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
 };
 use brepkit_math::vec::{Point3, Vec3};
+use brepkit_topology::compound::{Compound, CompoundId};
 use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 use brepkit_topology::face::{Face, FaceSurface};
 use brepkit_topology::pcurve::PCurve;
 use brepkit_topology::shell::{Shell, ShellId};
-use brepkit_topology::solid::SolidId;
+use brepkit_topology::solid::{Solid, SolidId};
 use brepkit_topology::topology::Topology;
 use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
@@ -152,6 +155,17 @@ struct SerShell {
     faces: Vec<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerSolid {
+    outer_shell: usize,
+    inner_shells: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerCompound {
+    solids: Vec<usize>,
+}
+
 /// A pcurve attached to a captured (edge, face) pair, keyed by local indices.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SerPCurve {
@@ -162,9 +176,9 @@ struct SerPCurve {
     t_end: f64,
 }
 
-/// Self-contained, byte-exact dump of a solid's topology sub-arena.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SerializedSolid {
+/// Frozen version 1 single-solid schema, retained for read compatibility.
+#[derive(Debug, Deserialize)]
+struct SerializedSolidV1 {
     /// Format version, so a future change can be detected on load.
     version: u32,
     vertices: Vec<SerVertex>,
@@ -179,7 +193,55 @@ struct SerializedSolid {
     pcurves: Vec<SerPCurve>,
 }
 
-const FORMAT_VERSION: u32 = 1;
+/// Version 2 is additive: it retains v1 entity encodings and adds solid and
+/// compound root tables. Released versions are read forever. Existing fields
+/// and enum encodings must not change in place; incompatible additions require
+/// a new version and a dedicated read path, while the v1 schema stays frozen.
+const FORMAT_VERSION: u32 = 2;
+const LEGACY_SINGLE_SOLID_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializedDocumentV2 {
+    version: u32,
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdge>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFace>,
+    shells: Vec<SerShell>,
+    /// Dense table of every solid directly selected or referenced by a compound.
+    solids: Vec<SerSolid>,
+    /// Entries in `solids` that were explicitly selected as solid roots.
+    solid_roots: Vec<usize>,
+    /// Explicitly selected compound roots, referencing the dense solid table.
+    compounds: Vec<SerCompound>,
+    pcurves: Vec<SerPCurve>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VersionHeader {
+    version: u32,
+}
+
+struct ParsedDocument {
+    vertices: Vec<SerVertex>,
+    edges: Vec<SerEdge>,
+    wires: Vec<SerWire>,
+    faces: Vec<SerFace>,
+    shells: Vec<SerShell>,
+    solids: Vec<SerSolid>,
+    solid_roots: Vec<usize>,
+    compounds: Vec<SerCompound>,
+    pcurves: Vec<SerPCurve>,
+}
+
+/// Fresh topology roots reconstructed from an arena document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeserializedDocument {
+    /// Explicit solid roots, preserving document order and duplicates.
+    pub solids: Vec<SolidId>,
+    /// Explicit compound roots, preserving document order.
+    pub compounds: Vec<CompoundId>,
+}
 
 /// Discovers and remaps a solid's reachable entities into dense local indices.
 struct Builder<'a> {
@@ -194,6 +256,8 @@ struct Builder<'a> {
     wire_map: HashMap<usize, usize>,
     face_map: HashMap<usize, usize>,
     shell_map: HashMap<usize, usize>,
+    solids: Vec<SerSolid>,
+    solid_map: HashMap<usize, usize>,
 }
 
 impl<'a> Builder<'a> {
@@ -210,6 +274,8 @@ impl<'a> Builder<'a> {
             wire_map: HashMap::new(),
             face_map: HashMap::new(),
             shell_map: HashMap::new(),
+            solids: Vec::new(),
+            solid_map: HashMap::new(),
         }
     }
 
@@ -305,6 +371,27 @@ impl<'a> Builder<'a> {
         Ok(local)
     }
 
+    fn intern_solid(&mut self, id: SolidId) -> Result<usize, IoError> {
+        if let Some(&local) = self.solid_map.get(&id.index()) {
+            return Ok(local);
+        }
+        let solid = self.topo.solid(id)?;
+        let outer_shell_id = solid.outer_shell();
+        let inner_shell_ids = solid.inner_shells().to_vec();
+        let outer_shell = self.intern_shell(outer_shell_id)?;
+        let mut inner_shells = Vec::with_capacity(inner_shell_ids.len());
+        for shell in inner_shell_ids {
+            inner_shells.push(self.intern_shell(shell)?);
+        }
+        let local = self.solids.len();
+        self.solids.push(SerSolid {
+            outer_shell,
+            inner_shells,
+        });
+        self.solid_map.insert(id.index(), local);
+        Ok(local)
+    }
+
     /// Collects all pcurves whose (edge, face) are both in the captured set.
     fn collect_pcurves(&self) -> Vec<SerPCurve> {
         let mut out = Vec::new();
@@ -342,25 +429,67 @@ impl<'a> Builder<'a> {
 /// Returns [`IoError`] if any referenced entity is missing or serialization
 /// fails.
 pub fn serialize_solid(topo: &Topology, solid_id: SolidId) -> Result<Vec<u8>, IoError> {
-    let solid = topo.solid(solid_id)?;
+    serialize_solids(topo, &[solid_id])
+}
+
+/// Serializes explicit solid roots into a version 2 arena document.
+///
+/// Shared topology is emitted once using dense local indices. Root order and
+/// duplicate roots are preserved. Use [`serialize_document`] when compound
+/// roots must be included as well.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if any root or referenced entity is missing, or JSON
+/// serialization fails.
+pub fn serialize_solids(topo: &Topology, solid_ids: &[SolidId]) -> Result<Vec<u8>, IoError> {
+    serialize_document(topo, solid_ids, &[])
+}
+
+/// Serializes solid and compound roots into one version 2 arena document.
+///
+/// Every solid referenced by a selected compound is included in the dense
+/// solid table. Only `solid_ids` are returned as explicit solid roots after
+/// deserialization; compound members remain accessible through their restored
+/// [`Compound`] roots. Global arena indices and unrelated session state are
+/// not serialized.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if any root or referenced entity is missing, or JSON
+/// serialization fails.
+pub fn serialize_document(
+    topo: &Topology,
+    solid_ids: &[SolidId],
+    compound_ids: &[CompoundId],
+) -> Result<Vec<u8>, IoError> {
     let mut builder = Builder::new(topo);
-
-    let outer_shell = builder.intern_shell(solid.outer_shell())?;
-    let mut inner_shells = Vec::with_capacity(solid.inner_shells().len());
-    for &sh in solid.inner_shells() {
-        inner_shells.push(builder.intern_shell(sh)?);
+    let mut solid_roots = Vec::with_capacity(solid_ids.len());
+    for &solid in solid_ids {
+        solid_roots.push(builder.intern_solid(solid)?);
     }
-    let pcurves = builder.collect_pcurves();
 
-    let dump = SerializedSolid {
+    let mut compounds = Vec::with_capacity(compound_ids.len());
+    for &compound_id in compound_ids {
+        let member_ids = builder.topo.compound(compound_id)?.solids().to_vec();
+        let mut members = Vec::with_capacity(member_ids.len());
+        for solid in member_ids {
+            members.push(builder.intern_solid(solid)?);
+        }
+        compounds.push(SerCompound { solids: members });
+    }
+
+    let pcurves = builder.collect_pcurves();
+    let dump = SerializedDocumentV2 {
         version: FORMAT_VERSION,
         vertices: builder.vertices,
         edges: builder.edges,
         wires: builder.wires,
         faces: builder.faces,
         shells: builder.shells,
-        outer_shell,
-        inner_shells,
+        solids: builder.solids,
+        solid_roots,
+        compounds,
         pcurves,
     };
 
@@ -369,13 +498,12 @@ pub fn serialize_solid(topo: &Topology, solid_id: SolidId) -> Result<Vec<u8>, Io
     })
 }
 
-/// Reconstructs a solid from a buffer produced by [`serialize_solid`] into
-/// `topo`, returning the new [`SolidId`].
+/// Reconstructs one solid from a version 1 or single-root version 2 document.
 ///
 /// All entities are appended to `topo` as fresh ids. Floating-point values are
 /// restored byte-for-byte; analytic curves and surfaces are rebuilt by direct
 /// field population (no constructor re-derivation), so the parametric frame is
-/// preserved exactly.
+/// preserved exactly. Version 1 documents remain supported permanently.
 ///
 /// # Errors
 ///
@@ -400,56 +528,242 @@ pub fn deserialize_solid_with_limits(
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<SolidId, IoError> {
-    ensure_input_size(bytes.len(), limits)?;
-    let dump: SerializedSolid = serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
-        reason: format!("arena deserialization failed: {e}"),
-    })?;
-    if dump.version != FORMAT_VERSION {
+    let document = parse_document(bytes, limits)?;
+    if document.solids.len() != 1
+        || document.solid_roots.as_slice() != [0]
+        || !document.compounds.is_empty()
+    {
         return Err(IoError::ParseError {
-            reason: format!(
-                "unsupported arena dump version {} (expected {FORMAT_VERSION})",
-                dump.version
-            ),
+            reason: "single-solid deserialization requires exactly one solid root and no compounds"
+                .to_owned(),
         });
     }
+    let restored = replay_document(document, topo)?;
+    restored
+        .solids
+        .into_iter()
+        .next()
+        .ok_or_else(|| index_err("solid", 0))
+}
 
+/// Reconstructs explicit solid roots from a version 1 or version 2 document.
+///
+/// Version 1 input produces a one-element vector. Version 2 input must not
+/// contain compound roots; use [`deserialize_document`] for mixed roots.
+/// Every entity receives a fresh topology id.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if the document is malformed, contains compounds, or
+/// reconstruction fails.
+pub fn deserialize_solids(bytes: &[u8], topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
+    deserialize_solids_with_limits(bytes, topo, ImportLimits::default())
+}
+
+/// Reconstructs solid roots with explicit hostile-input resource limits.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] when the document exceeds a configured
+/// budget, or [`IoError::ParseError`] when it contains compound roots.
+pub fn deserialize_solids_with_limits(
+    bytes: &[u8],
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<Vec<SolidId>, IoError> {
+    let document = parse_document(bytes, limits)?;
+    if !document.compounds.is_empty() {
+        return Err(IoError::ParseError {
+            reason: "solid-only deserialization does not accept compound roots".to_owned(),
+        });
+    }
+    Ok(replay_document(document, topo)?.solids)
+}
+
+/// Reconstructs solid and compound roots from a version 1 or version 2 arena
+/// document.
+///
+/// Version 1 input is represented as one solid root and no compounds. All
+/// restored topology entities receive fresh ids.
+///
+/// # Errors
+///
+/// Returns [`IoError`] if the document is malformed, exceeds default resource
+/// limits, references an out-of-range local index, or reconstruction fails.
+pub fn deserialize_document(
+    bytes: &[u8],
+    topo: &mut Topology,
+) -> Result<DeserializedDocument, IoError> {
+    deserialize_document_with_limits(bytes, topo, ImportLimits::default())
+}
+
+/// Reconstructs solid and compound roots with explicit hostile-input limits.
+///
+/// Limits are checked before any topology mutation. The encoded byte limit
+/// bounds allocations performed by JSON parsing; model-entity limits bound
+/// the topology allocations that follow.
+///
+/// # Errors
+///
+/// Returns [`IoError::LimitExceeded`] when the document exceeds a configured
+/// budget, or another [`IoError`] when parsing or reconstruction fails.
+pub fn deserialize_document_with_limits(
+    bytes: &[u8],
+    topo: &mut Topology,
+    limits: ImportLimits,
+) -> Result<DeserializedDocument, IoError> {
+    let document = parse_document(bytes, limits)?;
+    replay_document(document, topo)
+}
+
+fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, IoError> {
+    ensure_input_size(bytes.len(), limits)?;
+    let header: VersionHeader = serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
+        reason: format!("arena deserialization failed: {e}"),
+    })?;
+    let document = match header.version {
+        LEGACY_SINGLE_SOLID_VERSION => {
+            let dump: SerializedSolidV1 =
+                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
+                    reason: format!("arena v1 deserialization failed: {e}"),
+                })?;
+            if dump.version != LEGACY_SINGLE_SOLID_VERSION {
+                return Err(IoError::ParseError {
+                    reason: format!("arena v1 document reported version {}", dump.version),
+                });
+            }
+            ParsedDocument {
+                vertices: dump.vertices,
+                edges: dump.edges,
+                wires: dump.wires,
+                faces: dump.faces,
+                shells: dump.shells,
+                solids: vec![SerSolid {
+                    outer_shell: dump.outer_shell,
+                    inner_shells: dump.inner_shells,
+                }],
+                solid_roots: vec![0],
+                compounds: Vec::new(),
+                pcurves: dump.pcurves,
+            }
+        }
+        FORMAT_VERSION => {
+            let dump: SerializedDocumentV2 =
+                serde_json::from_slice(bytes).map_err(|e| IoError::ParseError {
+                    reason: format!("arena v2 deserialization failed: {e}"),
+                })?;
+            ParsedDocument {
+                vertices: dump.vertices,
+                edges: dump.edges,
+                wires: dump.wires,
+                faces: dump.faces,
+                shells: dump.shells,
+                solids: dump.solids,
+                solid_roots: dump.solid_roots,
+                compounds: dump.compounds,
+                pcurves: dump.pcurves,
+            }
+        }
+        version => {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "unsupported arena dump version {version} (supported: {LEGACY_SINGLE_SOLID_VERSION}, {FORMAT_VERSION})"
+                ),
+            });
+        }
+    };
+    check_document_limits(&document, limits)?;
+    Ok(document)
+}
+
+fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Result<(), IoError> {
+    let inner_shell_refs = checked_reference_count(
+        "arena inner shell references",
+        document.solids.iter().map(|solid| solid.inner_shells.len()),
+        limits.max_model_entities,
+    )?;
+    let compound_refs = checked_reference_count(
+        "arena compound solid references",
+        document
+            .compounds
+            .iter()
+            .map(|compound| compound.solids.len()),
+        limits.max_model_entities,
+    )?;
     for (resource, actual) in [
-        ("arena vertices", dump.vertices.len()),
-        ("arena edges", dump.edges.len()),
-        ("arena wires", dump.wires.len()),
-        ("arena faces", dump.faces.len()),
-        ("arena shells", dump.shells.len()),
-        ("arena inner shells", dump.inner_shells.len()),
-        ("arena pcurves", dump.pcurves.len()),
+        ("arena vertices", document.vertices.len()),
+        ("arena edges", document.edges.len()),
+        ("arena wires", document.wires.len()),
+        ("arena faces", document.faces.len()),
+        ("arena shells", document.shells.len()),
+        ("arena solids", document.solids.len()),
+        ("arena solid roots", document.solid_roots.len()),
+        ("arena compounds", document.compounds.len()),
+        ("arena inner shell references", inner_shell_refs),
+        ("arena compound solid references", compound_refs),
+        ("arena pcurves", document.pcurves.len()),
     ] {
         ensure_limit(resource, actual, limits.max_model_entities)?;
     }
-    let total_entities = dump
-        .vertices
-        .len()
-        .checked_add(dump.edges.len())
-        .and_then(|n| n.checked_add(dump.wires.len()))
-        .and_then(|n| n.checked_add(dump.faces.len()))
-        .and_then(|n| n.checked_add(dump.shells.len()))
-        .and_then(|n| n.checked_add(dump.pcurves.len()))
-        .ok_or(IoError::LimitExceeded {
-            resource: "arena total entities",
-            limit: limits.max_model_entities,
-            actual: usize::MAX,
-        })?;
+    let total_entities = checked_reference_count(
+        "arena total entities",
+        [
+            document.vertices.len(),
+            document.edges.len(),
+            document.wires.len(),
+            document.faces.len(),
+            document.shells.len(),
+            document.solids.len(),
+            document.compounds.len(),
+            document.pcurves.len(),
+        ],
+        limits.max_model_entities,
+    )?;
     ensure_limit(
         "arena total entities",
         total_entities,
         limits.max_model_entities,
     )?;
+    Ok(())
+}
 
-    let mut vertex_ids = Vec::with_capacity(dump.vertices.len());
-    for v in dump.vertices {
+fn checked_reference_count(
+    resource: &'static str,
+    counts: impl IntoIterator<Item = usize>,
+    limit: usize,
+) -> Result<usize, IoError> {
+    counts.into_iter().try_fold(0_usize, |total, count| {
+        total.checked_add(count).ok_or(IoError::LimitExceeded {
+            resource,
+            limit,
+            actual: usize::MAX,
+        })
+    })
+}
+
+fn replay_document(
+    document: ParsedDocument,
+    topo: &mut Topology,
+) -> Result<DeserializedDocument, IoError> {
+    let ParsedDocument {
+        vertices,
+        edges,
+        wires,
+        faces,
+        shells,
+        solids,
+        solid_roots,
+        compounds,
+        pcurves,
+    } = document;
+
+    let mut vertex_ids = Vec::with_capacity(vertices.len());
+    for v in vertices {
         vertex_ids.push(topo.add_vertex(Vertex::new(v.point, v.tolerance)));
     }
 
-    let mut edge_ids = Vec::with_capacity(dump.edges.len());
-    for e in dump.edges {
+    let mut edge_ids = Vec::with_capacity(edges.len());
+    for e in edges {
         let start = *vertex_ids
             .get(e.start)
             .ok_or_else(|| index_err("vertex", e.start))?;
@@ -471,8 +785,8 @@ pub fn deserialize_solid_with_limits(
         )));
     }
 
-    let mut wire_ids = Vec::with_capacity(dump.wires.len());
-    for w in dump.wires {
+    let mut wire_ids = Vec::with_capacity(wires.len());
+    for w in wires {
         let mut oriented = Vec::with_capacity(w.edges.len());
         for oe in w.edges {
             let edge = *edge_ids
@@ -483,8 +797,8 @@ pub fn deserialize_solid_with_limits(
         wire_ids.push(topo.add_wire(Wire::new(oriented, w.closed)?));
     }
 
-    let mut face_ids = Vec::with_capacity(dump.faces.len());
-    for f in dump.faces {
+    let mut face_ids = Vec::with_capacity(faces.len());
+    for f in faces {
         let outer = *wire_ids
             .get(f.outer_wire)
             .ok_or_else(|| index_err("wire", f.outer_wire))?;
@@ -504,16 +818,21 @@ pub fn deserialize_solid_with_limits(
         face_ids.push(topo.add_face(face));
     }
 
-    let mut shell_ids = Vec::with_capacity(dump.shells.len());
-    for s in dump.shells {
+    let mut shell_ids = Vec::with_capacity(shells.len());
+    for s in shells {
         let mut faces = Vec::with_capacity(s.faces.len());
         for fid in s.faces {
             faces.push(*face_ids.get(fid).ok_or_else(|| index_err("face", fid))?);
         }
-        shell_ids.push(topo.add_shell(Shell::new(faces)?));
+        let shell = if faces.is_empty() {
+            Shell::empty()
+        } else {
+            Shell::new(faces)?
+        };
+        shell_ids.push(topo.add_shell(shell));
     }
 
-    for pc in dump.pcurves {
+    for pc in pcurves {
         let edge = *edge_ids
             .get(pc.edge)
             .ok_or_else(|| index_err("edge", pc.edge))?;
@@ -524,21 +843,53 @@ pub fn deserialize_solid_with_limits(
             .set(edge, face, PCurve::new(pc.curve, pc.t_start, pc.t_end));
     }
 
-    let outer = *shell_ids
-        .get(dump.outer_shell)
-        .ok_or_else(|| index_err("shell", dump.outer_shell))?;
-    let inner = dump
-        .inner_shells
-        .iter()
-        .map(|&i| {
-            shell_ids
-                .get(i)
+    let mut solid_ids = Vec::with_capacity(solids.len());
+    for solid in solids {
+        let outer = *shell_ids
+            .get(solid.outer_shell)
+            .ok_or_else(|| index_err("shell", solid.outer_shell))?;
+        let inner = solid
+            .inner_shells
+            .iter()
+            .map(|&index| {
+                shell_ids
+                    .get(index)
+                    .copied()
+                    .ok_or_else(|| index_err("shell", index))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        solid_ids.push(topo.add_solid(Solid::new(outer, inner)));
+    }
+
+    let restored_solids = solid_roots
+        .into_iter()
+        .map(|index| {
+            solid_ids
+                .get(index)
                 .copied()
-                .ok_or_else(|| index_err("shell", i))
+                .ok_or_else(|| index_err("solid", index))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(topo.add_solid(brepkit_topology::solid::Solid::new(outer, inner)))
+    let mut restored_compounds = Vec::with_capacity(compounds.len());
+    for compound in compounds {
+        let members = compound
+            .solids
+            .into_iter()
+            .map(|index| {
+                solid_ids
+                    .get(index)
+                    .copied()
+                    .ok_or_else(|| index_err("solid", index))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        restored_compounds.push(topo.add_compound(Compound::new(members)));
+    }
+
+    Ok(DeserializedDocument {
+        solids: restored_solids,
+        compounds: restored_compounds,
+    })
 }
 
 fn index_err(kind: &str, index: usize) -> IoError {
@@ -573,6 +924,12 @@ mod tests {
         let solid = make_box(&mut topo, 10.0, 20.0, 30.0).unwrap();
 
         let bytes = serialize_solid(&topo, solid).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<VersionHeader>(&bytes)
+                .unwrap()
+                .version,
+            FORMAT_VERSION
+        );
         let mut topo2 = Topology::new();
         let solid2 = deserialize_solid(&bytes, &mut topo2).unwrap();
 
@@ -696,5 +1053,106 @@ mod tests {
             assert_eq!(a.x_axis().0[i].to_bits(), b.x_axis().0[i].to_bits());
             assert_eq!(a.y_axis().0[i].to_bits(), b.y_axis().0[i].to_bits());
         }
+    }
+
+    #[test]
+    fn v1_minimal_document_remains_readable() {
+        let bytes = br#"{"version":1,"vertices":[],"edges":[],"wires":[],"faces":[],"shells":[{"faces":[]}],"outer_shell":0,"inner_shells":[],"pcurves":[]}"#;
+        let mut topo = Topology::new();
+
+        let solid = deserialize_solid(bytes, &mut topo).unwrap();
+
+        assert!(topo.is_empty_solid(solid));
+        assert_eq!(topo.num_solids(), 1);
+        assert_eq!(topo.num_shells(), 1);
+    }
+
+    #[test]
+    fn deserialize_solid_accepts_single_root_v2_document() {
+        let mut source = Topology::new();
+        let solid = source.add_empty_solid();
+        let bytes = serialize_solids(&source, &[solid]).unwrap();
+        let mut destination = Topology::new();
+
+        let restored = deserialize_solid(&bytes, &mut destination).unwrap();
+
+        assert!(destination.is_empty_solid(restored));
+    }
+
+    #[test]
+    fn v2_multi_solid_roundtrip_preserves_root_order_and_duplicates() {
+        let mut source = Topology::new();
+        let first = make_box(&mut source, 1.0, 2.0, 3.0).unwrap();
+        let second = make_cylinder(&mut source, 2.0, 4.0).unwrap();
+        let bytes = serialize_solids(&source, &[second, first, second]).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<VersionHeader>(&bytes)
+                .unwrap()
+                .version,
+            FORMAT_VERSION
+        );
+
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+        let roots = deserialize_solids(&bytes, &mut destination).unwrap();
+
+        assert_eq!(roots.len(), 3);
+        assert_eq!(roots[0], roots[2]);
+        assert_ne!(roots[0], roots[1]);
+        assert!(roots[0].index() > sentinel.index());
+        assert_eq!(
+            face_type_histogram(&destination, roots[0]),
+            face_type_histogram(&source, second)
+        );
+        assert_eq!(
+            face_type_histogram(&destination, roots[1]),
+            face_type_histogram(&source, first)
+        );
+    }
+
+    #[test]
+    fn v2_roundtrip_preserves_topology_shared_by_distinct_solids() {
+        let mut source = Topology::new();
+        let first = make_box(&mut source, 1.0, 2.0, 3.0).unwrap();
+        let shared_shell = source.solid(first).unwrap().outer_shell();
+        let second = source.add_solid(Solid::new(shared_shell, Vec::new()));
+        let bytes = serialize_solids(&source, &[first, second]).unwrap();
+        let mut destination = Topology::new();
+
+        let restored = deserialize_solids(&bytes, &mut destination).unwrap();
+
+        assert_eq!(restored.len(), 2);
+        assert_ne!(restored[0], restored[1]);
+        assert_eq!(destination.num_shells(), 1);
+        assert_eq!(
+            destination.solid(restored[0]).unwrap().outer_shell(),
+            destination.solid(restored[1]).unwrap().outer_shell()
+        );
+    }
+
+    #[test]
+    fn v2_mixed_roots_match_golden_and_roundtrip() {
+        let mut source = Topology::new();
+        let direct = source.add_empty_solid();
+        let member = source.add_empty_solid();
+        let compound = source.add_compound(Compound::new(vec![member]));
+
+        let bytes = serialize_document(&source, &[direct], &[compound]).unwrap();
+        let golden = include_str!("../tests/data/arena_v2_multi_compound.json").trim_end();
+        assert_eq!(std::str::from_utf8(&bytes).unwrap(), golden);
+
+        let mut destination = Topology::new();
+        let restored = deserialize_document(&bytes, &mut destination).unwrap();
+        assert_eq!(restored.solids.len(), 1);
+        assert_eq!(restored.compounds.len(), 1);
+        assert!(destination.is_empty_solid(restored.solids[0]));
+        let restored_compound = destination.compound(restored.compounds[0]).unwrap();
+        assert_eq!(restored_compound.solids().len(), 1);
+        assert!(destination.is_empty_solid(restored_compound.solids()[0]));
+        assert_ne!(restored.solids[0], restored_compound.solids()[0]);
+
+        let roundtrip =
+            serialize_document(&destination, &restored.solids, &restored.compounds).unwrap();
+        assert_eq!(roundtrip, bytes);
     }
 }

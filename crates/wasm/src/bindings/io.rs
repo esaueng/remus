@@ -480,6 +480,41 @@ impl BrepKernel {
 
     // ── Arena debug serialization ─────────────────────────────────
 
+    /// Serialize several solids into one version 2 arena document.
+    ///
+    /// Shared topology is encoded once with dense local indices. Input order
+    /// and duplicate handles are preserved as document roots. This format
+    /// intentionally excludes unrelated kernel session state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any solid handle is invalid or serialization fails.
+    #[wasm_bindgen(js_name = "serializeSolids")]
+    pub fn serialize_solids(&self, solids: &[u32]) -> Result<Vec<u8>, JsError> {
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(brepkit_io::arena_io::serialize_solids(
+            &self.topo, &solid_ids,
+        )?)
+    }
+
+    /// Reconstruct solid roots from a version 1 or version 2 arena document.
+    ///
+    /// Every restored entity receives a fresh kernel handle. Documents with
+    /// compound roots must be loaded through the native Rust document API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is malformed, exceeds import limits,
+    /// contains compound roots, or reconstruction fails.
+    #[wasm_bindgen(js_name = "deserializeSolids")]
+    pub fn deserialize_solids(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
+        let solid_ids = brepkit_io::arena_io::deserialize_solids(data, self.topo_mut())?;
+        Ok(solid_ids.into_iter().map(solid_id_to_u32).collect())
+    }
+
     /// Serialize a solid's complete in-memory topology sub-arena to bytes.
     ///
     /// Captures every vertex, edge, wire, face, shell reachable from the
@@ -489,7 +524,9 @@ impl BrepKernel {
     /// and replaying them in a native Rust harness to reproduce
     /// sub-ULP-sensitive boolean behavior.
     ///
-    /// Returns a `Uint8Array` consumable by `brepkit_io::arena_io::deserialize_solid`.
+    /// This writer emits a single-root version 2 document. Returns a
+    /// `Uint8Array` consumable by
+    /// `brepkit_io::arena_io::deserialize_solid`.
     ///
     /// # Errors
     ///
@@ -501,7 +538,7 @@ impl BrepKernel {
         Ok(bytes)
     }
 
-    /// Reconstruct a solid from a buffer produced by [`Self::serialize_solid`].
+    /// Reconstruct one solid from a version 1 or single-root version 2 buffer.
     ///
     /// # Errors
     ///
@@ -607,5 +644,24 @@ mod tests {
             matches!(result, Err(brepkit_io::IoError::LimitExceeded { .. })),
             "expected LimitExceeded, got {result:?}"
         );
+    }
+
+    #[test]
+    fn multi_solid_arena_roundtrip_preserves_order_and_fresh_handles() {
+        let mut source = BrepKernel::new();
+        let first = source.make_box_solid(1.0, 2.0, 3.0).unwrap();
+        let second = source.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let bytes = source.serialize_solids(&[second, first, second]).unwrap();
+
+        let mut destination = BrepKernel::new();
+        let sentinel = destination.make_box_solid(0.5, 0.5, 0.5).unwrap();
+        let restored = destination.deserialize_solids(&bytes).unwrap();
+
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored[0], restored[2]);
+        assert_ne!(restored[0], restored[1]);
+        assert!(restored[0] > sentinel);
+        assert!((destination.volume(restored[0], 0.1).unwrap() - 24.0).abs() < 1e-9);
+        assert!((destination.volume(restored[1], 0.1).unwrap() - 6.0).abs() < 1e-9);
     }
 }

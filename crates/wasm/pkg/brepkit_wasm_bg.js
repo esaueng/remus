@@ -886,7 +886,7 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
-     * Reconstruct a solid from a buffer produced by [`Self::serialize_solid`].
+     * Reconstruct one solid from a version 1 or single-root version 2 buffer.
      *
      * # Errors
      *
@@ -902,6 +902,30 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Reconstruct solid roots from a version 1 or version 2 arena document.
+     *
+     * Every restored entity receives a fresh kernel handle. Documents with
+     * compound roots must be loaded through the native Rust document API.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, exceeds import limits,
+     * contains compound roots, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {Uint32Array}
+     */
+    deserializeSolids(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_deserializeSolids(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
     }
     /**
      * Detect surface-level coincident face pairs between two solids
@@ -4726,7 +4750,9 @@ export class BrepKernel {
      * and replaying them in a native Rust harness to reproduce
      * sub-ULP-sensitive boolean behavior.
      *
-     * Returns a `Uint8Array` consumable by `brepkit_io::arena_io::deserialize_solid`.
+     * This writer emits a single-root version 2 document. Returns a
+     * `Uint8Array` consumable by
+     * `brepkit_io::arena_io::deserialize_solid`.
      *
      * # Errors
      *
@@ -4742,6 +4768,30 @@ export class BrepKernel {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Serialize several solids into one version 2 arena document.
+     *
+     * Shared topology is encoded once with dense local indices. Input order
+     * and duplicate handles are preserved as document roots. This format
+     * intentionally excludes unrelated kernel session state.
+     *
+     * # Errors
+     *
+     * Returns an error if any solid handle is invalid or serialization fails.
+     * @param {Uint32Array} solids
+     * @returns {Uint8Array}
+     */
+    serializeSolids(solids) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_serializeSolids(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * Sew loose faces into a connected solid.
