@@ -1,0 +1,90 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('hand-written fixture: AXIS2_PLACEMENT_3D with omitted OPTIONAL attributes'), '2;1');
+FILE_NAME('axis2_optional_attrs_cylinder.step', '2026-01-01T00:00:00', ('brepkit'), ('brepkit'), 'brepkit test fixture', 'brepkit test fixture', '');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+/* A radius-4, height-10 cylinder whose placements exercise every form of
+   omitted OPTIONAL attribute a real CAD export uses. ISO 10303-42 declares
+   axis2_placement_3d's `axis` and `ref_direction` OPTIONAL, so `$` is legal
+   in either slot:
+
+     #18  ('Circle Axis2P3D', #15, $,   #17)  omitted axis, reference AFTER it
+     #33  ('Circle Axis2P3D', #30, #31, $)    the trailing form
+     #43  ('Bore, ...',       #40, $,   $)    both omitted, awkward name
+     #52  ('Plane Axis2P3D',  #49, #50, $)    trailing, non-default axis
+     #61  ('Plane Axis2P3D',  #58, $,   $)    both omitted
+
+   #18 is the one that cannot be read by scanning for `#NNN`: such a scan
+   yields (#15, #17) and binds the ref_direction (0,1,0) as the AXIS, which
+   turns the bottom circle into the xz plane without reporting anything.
+   #43's name carries a comma, parentheses, a `#`, a `$` and STEP's `''`
+   escape, none of which are syntax inside a string literal.
+
+   Entity ids are those of the equivalent all-explicit export, with the
+   DIRECTION entities that the omissions made unreachable removed; the gaps
+   are deliberate. */
+#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );
+#2 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+#3 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );
+#4 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), #1, 'distance_accuracy_value', 'confusion accuracy');
+#5 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#4)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2,#3)) REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );
+#6 = APPLICATION_CONTEXT('configuration controlled 3D design of mechanical parts and assemblies');
+#7 = MECHANICAL_CONTEXT('', #6, 'mechanical');
+#8 = APPLICATION_PROTOCOL_DEFINITION('international standard', 'automotive_design', 1994, #6);
+#9 = PRODUCT('Pad.1', 'Pad.1', '', (#7));
+#10 = PRODUCT_DEFINITION_FORMATION('', '', #9);
+#11 = PRODUCT_DEFINITION_CONTEXT('part definition', #6, 'design');
+#12 = PRODUCT_DEFINITION('design', '', #10, #11);
+#13 = CARTESIAN_POINT('Vertex.1', (4.000000000000000E0, 0., 0.));
+#14 = VERTEX_POINT('', #13);
+#15 = CARTESIAN_POINT('Circle Center', (0., 0., 0.));
+#17 = DIRECTION('Circle RefDir', (0., 1.000000000000000E0, 0.));
+#18 = AXIS2_PLACEMENT_3D('Circle Axis2P3D', #15, $, #17);
+#19 = CIRCLE('Circle.1', #18, 4.000000000000000E0);
+#20 = EDGE_CURVE('', #14, #14, #19, .T.);
+#21 = ORIENTED_EDGE('', *, *, #20, .T.);
+#22 = CARTESIAN_POINT('Vertex.2', (4.000000000000000E0, 0., 1.000000000000000E1));
+#23 = VERTEX_POINT('', #22);
+#24 = CARTESIAN_POINT('Line Origin', (4.000000000000000E0, 0., 0.));
+#25 = DIRECTION('Line Dir', (0., 0., 1.000000000000000E0));
+#26 = VECTOR('Line Vec', #25, 1.000000000000000E1);
+#27 = LINE('Line.1', #24, #26);
+#28 = EDGE_CURVE('', #14, #23, #27, .T.);
+#29 = ORIENTED_EDGE('', *, *, #28, .T.);
+#30 = CARTESIAN_POINT('Circle Center', (0., 0., 1.000000000000000E1));
+#31 = DIRECTION('Circle Axis', (0., 0., 1.000000000000000E0));
+#33 = AXIS2_PLACEMENT_3D('Circle Axis2P3D', #30, #31, $);
+#34 = CIRCLE('Circle.2', #33, 4.000000000000000E0);
+#35 = EDGE_CURVE('', #23, #23, #34, .T.);
+#36 = ORIENTED_EDGE('', *, *, #35, .F.);
+#37 = ORIENTED_EDGE('', *, *, #28, .F.);
+#38 = EDGE_LOOP('', (#21, #29, #36, #37));
+#39 = FACE_OUTER_BOUND('', #38, .T.);
+#40 = CARTESIAN_POINT('Cylinder Center', (0., 0., 0.));
+#43 = AXIS2_PLACEMENT_3D('Bore, O''Brien rev.2 (#7) $', #40, $, $);
+#44 = CYLINDRICAL_SURFACE('Cylinder.1', #43, 4.000000000000000E0);
+#45 = ADVANCED_FACE('Face.1', (#39), #44, .T.);
+#46 = ORIENTED_EDGE('', *, *, #20, .F.);
+#47 = EDGE_LOOP('', (#46));
+#48 = FACE_OUTER_BOUND('', #47, .T.);
+#49 = CARTESIAN_POINT('Plane Origin', (0., 0., 0.));
+#50 = DIRECTION('Plane Axis', (0., 0., -1.000000000000000E0));
+#52 = AXIS2_PLACEMENT_3D('Plane Axis2P3D', #49, #50, $);
+#53 = PLANE('Plane.1', #52);
+#54 = ADVANCED_FACE('Face.2', (#48), #53, .T.);
+#55 = ORIENTED_EDGE('', *, *, #35, .T.);
+#56 = EDGE_LOOP('', (#55));
+#57 = FACE_OUTER_BOUND('', #56, .T.);
+#58 = CARTESIAN_POINT('Plane Origin', (0., 0., 1.000000000000000E1));
+#61 = AXIS2_PLACEMENT_3D('Plane Axis2P3D', #58, $, $);
+#62 = PLANE('Plane.2', #61);
+#63 = ADVANCED_FACE('Face.3', (#57), #62, .T.);
+#64 = CLOSED_SHELL('', (#45, #54, #63));
+#65 = MANIFOLD_SOLID_BREP('Pad.1', #64);
+#66 = ADVANCED_BREP_SHAPE_REPRESENTATION('Pad.1', (#65), #5);
+#67 = PRODUCT_DEFINITION_SHAPE('', '', #12);
+#68 = SHAPE_DEFINITION_REPRESENTATION(#67, #66);
+ENDSEC;
+END-ISO-10303-21;

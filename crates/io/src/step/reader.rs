@@ -1017,17 +1017,89 @@ impl<'a> StepBuilder<'a> {
 
     /// Read `AXIS1_PLACEMENT('name', #location, #axis)`.
     ///
-    /// The axis is optional in STEP and defaults to the z direction.
+    /// The axis is OPTIONAL in ISO 10303-42 and defaults to the z direction.
+    /// Read positionally for the same reason as
+    /// [`Self::build_axis2_placement`]: the omission is written `$` in its
+    /// own slot, so a reference scan would take a later reference — here the
+    /// location, when *it* is the attribute written `$` — from the wrong
+    /// place instead of reporting the file as malformed.
+    ///
+    /// A parameter list that stops before the axis slot still defaults to z,
+    /// because a truncated `AXIS1_PLACEMENT` has always imported that way.
+    /// Anything else in the slot means the statement is not laid out the way
+    /// this reading assumes, and hands the entity to
+    /// [`Self::axis1_placement_by_reference_scan`].
     fn build_axis1_placement(&self, axis_ref: u64) -> Result<(Point3, Vec3), IoError> {
-        let attrs = self.get_entity(axis_ref)?.attrs.clone();
-        let refs = parse_refs(&attrs);
+        let entity = self.get_entity(axis_ref)?;
+        let attrs = entity.attrs.clone();
+        let is_complex = entity.entity_type.is_empty();
+
+        let slots = placement_slots(&attrs, is_complex, "AXIS1_PLACEMENT");
+        match self.axis1_placement_from_slots(axis_ref, &slots) {
+            Ok(placement) => Ok(placement),
+            Err(positional) => match self.axis1_placement_by_reference_scan(axis_ref, &attrs) {
+                Ok(placement) => Ok(placement),
+                Err(_) => Err(positional),
+            },
+        }
+    }
+
+    /// Read an `AXIS1_PLACEMENT` from its positional attribute slots.
+    fn axis1_placement_from_slots(
+        &self,
+        axis_ref: u64,
+        slots: &[AttrSlot<'_>],
+    ) -> Result<(Point3, Vec3), IoError> {
+        // `axis1_placement` is (name, location, axis).
+        let location_slot = placement_location_slot(slots);
+        let axis_slot = location_slot + 1;
+
+        let location_ref = slots
+            .get(location_slot)
+            .and_then(AttrSlot::as_ref_id)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "AXIS1_PLACEMENT #{axis_ref} missing its location, got {}",
+                    describe_slot(slots.get(location_slot))
+                ),
+            })?;
+        let location = self.build_cartesian_point(location_ref)?;
+        let direction = match slots.get(axis_slot) {
+            Some(&AttrSlot::Ref(dir_ref)) => self.build_direction(dir_ref)?,
+            // `$` and `*` are the file declining to state the axis; a slot
+            // that is not there at all is a truncated statement, which has
+            // always defaulted here too.
+            None | Some(AttrSlot::Omitted | AttrSlot::Derived) => DEFAULT_PLACEMENT_AXIS,
+            Some(other) => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "AXIS1_PLACEMENT #{axis_ref} needs a reference or `$` for its axis, got {}",
+                        other.describe()
+                    ),
+                });
+            }
+        };
+        Ok((location, direction))
+    }
+
+    /// Read an `AXIS1_PLACEMENT` by scanning its text for `#NNN` tokens, the
+    /// way this reader did before the attributes were read by position.
+    ///
+    /// See [`Self::axis2_placement_by_reference_scan`] for why the old
+    /// reading is kept.
+    fn axis1_placement_by_reference_scan(
+        &self,
+        axis_ref: u64,
+        attrs: &str,
+    ) -> Result<(Point3, Vec3), IoError> {
+        let refs = parse_refs(attrs);
         let location_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
             reason: format!("AXIS1_PLACEMENT #{axis_ref} missing its location"),
         })?;
         let location = self.build_cartesian_point(location_ref)?;
         let direction = match refs.get(1) {
             Some(&dir_ref) => self.build_direction(dir_ref)?,
-            None => Vec3::new(0.0, 0.0, 1.0),
+            None => DEFAULT_PLACEMENT_AXIS,
         };
         Ok((location, direction))
     }
@@ -1263,6 +1335,14 @@ impl<'a> StepBuilder<'a> {
             "POLYLINE" => self.build_polyline(curve_ref, &attrs),
             "LINE" => Ok(EdgeCurve::Line),
             "CIRCLE" => {
+                // Reading a placement's OWN attributes by position does not
+                // change how the entities POINTING AT one find it: every call
+                // site here still takes the first `#NNN` token in its text.
+                // That scan cannot see string boundaries, so
+                // `CIRCLE('Bore #9',#4,4.)` resolves placement #9 rather than
+                // #4 — silently, when #9 happens to be a placement too.
+                // Every reference in this reader is found that way, so fixing
+                // it is a change to the reference layer, not to this arm.
                 let refs = parse_refs(&attrs);
                 let floats = parse_floats(&attrs);
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
@@ -1707,18 +1787,212 @@ impl<'a> StepBuilder<'a> {
         Ok(Vec3::new(coords[0], coords[1], coords[2]))
     }
 
+    /// Read `AXIS2_PLACEMENT_3D('name', #location, #axis, #ref_direction)`
+    /// as `(location, z, x)`.
+    ///
+    /// Only the location is required. ISO 10303-42 declares `axis` and
+    /// `ref_direction` OPTIONAL and CATIA among others exercises that, so a
+    /// slot may hold `$` — including a slot before a reference, where a
+    /// reference scan would bind the *next* attribute as the axis and turn
+    /// the frame without reporting anything. The attributes are therefore
+    /// read positionally.
+    ///
+    /// A DECLARED axis or ref_direction is returned exactly as written —
+    /// unnormalized, unprojected, and degenerate if that is what the file
+    /// says — so a file that imports today keeps the geometry it has, and
+    /// one that is refused today is refused by the same constructor with the
+    /// same error. Only a slot the file legally declined to fill is supplied
+    /// here, with ISO 10303-42's own defaults: z of (0,0,1) and x from
+    /// [`first_proj_axis`].
+    ///
+    /// ISO 10303-21 writes every attribute of an entity, `$` included, so a
+    /// slot that is absent altogether is a truncated parameter list rather
+    /// than an omission, and is not read as one.
+    ///
+    /// A statement this positional reading cannot make sense of is handed to
+    /// [`Self::axis2_placement_by_reference_scan`] rather than refused; see
+    /// there for why, and for why that cannot undo any of the above.
     fn build_axis2_placement(&self, axis_ref: u64) -> Result<(Point3, Vec3, Vec3), IoError> {
-        let attrs = self.get_entity(axis_ref)?.attrs.clone();
-        let refs = parse_refs(&attrs);
-        if refs.len() < 3 {
+        let entity = self.get_entity(axis_ref)?;
+        let attrs = entity.attrs.clone();
+        let is_complex = entity.entity_type.is_empty();
+
+        let slots = placement_slots(&attrs, is_complex, "AXIS2_PLACEMENT_3D");
+        match self.axis2_placement_from_slots(axis_ref, &slots) {
+            Ok(placement) => Ok(placement),
+            Err(positional) => match self.axis2_placement_by_reference_scan(axis_ref, &attrs) {
+                Ok(placement) => Ok(placement),
+                // Neither reading found a placement, so the file is malformed
+                // whichever way it is read. Report the positional error: it
+                // names the attribute that is wrong and which slot it is in,
+                // where the scan can only say how many `#NNN` tokens it saw.
+                Err(_) => Err(positional),
+            },
+        }
+    }
+
+    /// Read an `AXIS2_PLACEMENT_3D` from its positional attribute slots.
+    fn axis2_placement_from_slots(
+        &self,
+        axis_ref: u64,
+        slots: &[AttrSlot<'_>],
+    ) -> Result<(Point3, Vec3, Vec3), IoError> {
+        // `axis2_placement_3d` is (name, location, axis, ref_direction).
+        let location_slot = placement_location_slot(slots);
+        let axis_slot = location_slot + 1;
+        let ref_direction_slot = location_slot + 2;
+
+        let location_ref = slots
+            .get(location_slot)
+            .and_then(AttrSlot::as_ref_id)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "AXIS2_PLACEMENT_3D #{axis_ref} needs a location reference, got {}",
+                    describe_slot(slots.get(location_slot))
+                ),
+            })?;
+        let origin = self.build_cartesian_point(location_ref)?;
+
+        let declared_axis =
+            self.optional_placement_direction(axis_ref, slots, axis_slot, "axis")?;
+        let declared_ref_dir = self.optional_placement_direction(
+            axis_ref,
+            slots,
+            ref_direction_slot,
+            "ref_direction",
+        )?;
+        let axis = declared_axis.unwrap_or(DEFAULT_PLACEMENT_AXIS);
+
+        // A DECLARED zero-length axis leaves every consumer that does not
+        // renormalize — `PLANE`, `SPHERICAL_SURFACE` — building a surface with
+        // no orientation and putting it into topology. That is worth refusing,
+        // but only where the refusal cannot cost anything, and this is the one
+        // such place: a placement that omits an OPTIONAL attribute reaches
+        // here only through the positional reading, because the reference scan
+        // counts one `#NNN` too few for it. Failing here is an `Err` from a
+        // positional reading like any other, so the scan still gets its turn —
+        // where the scan *can* read the statement (a `#NNN` in the name makes
+        // up its count, say) its answer stands and nothing changes. Only a
+        // statement neither reading can make sense of is refused, and it was
+        // refused before too.
+        //
+        // A fully explicit placement never gets here, and must not: that one
+        // imports today, degenerate axis and all, and validating it would take
+        // away files that work.
+        if (declared_axis.is_none() || declared_ref_dir.is_none()) && axis.normalize().is_err() {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "AXIS2_PLACEMENT_3D #{axis_ref} declares a zero-length axis \
+                     and omits an OPTIONAL attribute, leaving no frame to derive"
+                ),
+            });
+        }
+
+        let ref_dir = declared_ref_dir.unwrap_or_else(|| first_proj_axis(axis));
+        Ok((origin, axis, ref_dir))
+    }
+
+    /// Read an `AXIS2_PLACEMENT_3D` by scanning its text for `#NNN` tokens
+    /// and taking the first three in order, the way this reader did before
+    /// the attributes were read by position.
+    ///
+    /// This runs only when [`Self::axis2_placement_from_slots`] found no
+    /// usable placement, and it exists so that a statement no positional
+    /// reading can interpret still reads the way it used to. Positional
+    /// reading understands exactly the layout ISO 10303-21 prescribes; the
+    /// scan understands no layout at all, which is why it also copes with the
+    /// statements that are not written that way — a Part 21 COMPLEX instance
+    /// whose leaves this reader cannot locate, a parameter list with junk
+    /// wedged between the references, a `#NNN` token that is not a legal
+    /// reference.
+    ///
+    /// **It cannot resurrect the mis-bind this positional reading exists to
+    /// fix.** That mis-bind is `('name', #location, $, #ref_direction)`,
+    /// where a scan sees two references for three attributes and silently
+    /// binds the ref_direction as the AXIS, turning the frame 90 degrees.
+    /// For that statement [`Self::axis2_placement_from_slots`] SUCCEEDS — the
+    /// location slot holds a reference, the axis slot holds `$`, the
+    /// ref_direction slot holds a reference — so this function is never
+    /// reached. The same holds for every placement whose attributes are in
+    /// their declared slots, which is every placement a conforming writer
+    /// emits. The scan only ever sees statements no positional reading could
+    /// interpret, and for those, matching what the reader did before is the
+    /// best answer available.
+    ///
+    /// **It is therefore not a promise that every file which imported before
+    /// still imports.** There is a second family the scan used to mis-bind,
+    /// and it is out of this function's reach for the same reason: the
+    /// statement reads positionally, so the scan is never consulted. In that
+    /// family the scan's first three `#NNN` tokens were never the location,
+    /// axis and ref_direction, because something ahead of them was not a
+    /// reference at all —
+    ///
+    /// - a `#NNN` token inside the `name` STRING, which the scan cannot see
+    ///   is a string: `AXIS2_PLACEMENT_3D('Bore (#9) rev.2',#1,#6,#3)` scans
+    ///   as (#9, #1, #6);
+    /// - a Part 21 COMPLEX instance, whose leaves are written in ALPHABETICAL
+    ///   order and not declaration order, so `( AXIS2_PLACEMENT_3D(#6,#3)
+    ///   GEOMETRIC_REPRESENTATION_ITEM() PLACEMENT(#1) REPRESENTATION_ITEM('')
+    ///   )` scans as (axis, ref_direction, location).
+    ///
+    /// Both used to import with a frame assembled from the wrong entities —
+    /// a `DIRECTION` read as the location point, a `CARTESIAN_POINT` read as
+    /// the axis. Almost always that is silent: the frame is wrong, the solid
+    /// still builds. Where the attribute the file really declares is a
+    /// zero-length axis, though, the mis-bind moved that zero into a slot no
+    /// constructor checks, and the file imported; read as declared it now
+    /// reaches the same "cannot normalize zero vector" that the identical
+    /// declaration written as a plain simple instance has always produced.
+    /// Widening the fallback to cover it would mean preferring the mis-bound
+    /// frame over the declared one — see
+    /// `a_declared_zero_axis_reaches_the_refusal_the_simple_form_always_got`.
+    fn axis2_placement_by_reference_scan(
+        &self,
+        axis_ref: u64,
+        attrs: &str,
+    ) -> Result<(Point3, Vec3, Vec3), IoError> {
+        let refs = parse_refs(attrs);
+        let [origin_ref, axis_dir_ref, ref_dir_ref, ..] = refs[..] else {
             return Err(IoError::ParseError {
                 reason: format!("AXIS2_PLACEMENT_3D #{axis_ref} needs 3 sub-references"),
             });
-        }
-        let origin = self.build_cartesian_point(refs[0])?;
-        let axis = self.build_direction(refs[1])?;
-        let ref_dir = self.build_direction(refs[2])?;
+        };
+        let origin = self.build_cartesian_point(origin_ref)?;
+        let axis = self.build_direction(axis_dir_ref)?;
+        let ref_dir = self.build_direction(ref_dir_ref)?;
         Ok((origin, axis, ref_dir))
+    }
+
+    /// Read one OPTIONAL direction attribute of an `AXIS2_PLACEMENT_3D` from
+    /// its slot, unnormalized and otherwise untouched.
+    ///
+    /// `Ok(None)` means the file legally declined to state the attribute:
+    /// `$` for an omitted OPTIONAL, `*` for one a subtype redeclares as
+    /// derived. Anything else in the slot — and a parameter list too short to
+    /// hold the slot at all, which ISO 10303-21 does not permit — means the
+    /// statement is not laid out the way this reading assumes, and the `Err`
+    /// sends the whole entity to
+    /// [`Self::axis2_placement_by_reference_scan`]. Guessing a default for a
+    /// slot the file filled with something unreadable would be inventing a
+    /// frame; the scan at least reproduces what the reader used to do.
+    fn optional_placement_direction(
+        &self,
+        axis_ref: u64,
+        slots: &[AttrSlot<'_>],
+        slot: usize,
+        attribute: &str,
+    ) -> Result<Option<Vec3>, IoError> {
+        match slots.get(slot) {
+            Some(&AttrSlot::Ref(dir_ref)) => self.build_direction(dir_ref).map(Some),
+            Some(AttrSlot::Omitted | AttrSlot::Derived) => Ok(None),
+            other => Err(IoError::ParseError {
+                reason: format!(
+                    "AXIS2_PLACEMENT_3D #{axis_ref} needs a reference or `$` for its {attribute}, \
+                     got {}",
+                    describe_slot(other)
+                ),
+            }),
+        }
     }
 
     fn get_entity(&self, id: u64) -> Result<&StepEntity, IoError> {
@@ -1726,6 +2000,210 @@ impl<'a> StepBuilder<'a> {
             reason: format!("entity #{id} not found"),
         })
     }
+}
+
+// ── Placement frames ────────────────────────────────────────────────
+
+/// Tolerance for the "this direction is parallel to the axis" test that
+/// decides whether a placement can use a candidate as its x direction.
+///
+/// Applied to the length of a unit candidate after its component along the
+/// unit axis is projected out, so it bounds a sine directly: a candidate is
+/// rejected only within 1e-9 radians of the axis, where the leftover
+/// in-plane component is pure rounding noise and normalizing it would point
+/// the frame in an arbitrary direction.
+const PLACEMENT_DIR_EPS: f64 = 1e-9;
+
+/// The z direction of a placement whose OPTIONAL `axis` is omitted.
+///
+/// ISO 10303-42 leaves the derived z of an `axis2_placement_3d` (and the
+/// axis of an `axis1_placement`) at (0,0,1) when nothing is declared.
+const DEFAULT_PLACEMENT_AXIS: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+
+/// ISO 10303-42 `first_proj_axis` in the one case the reader applies it: the
+/// x direction of a placement whose OPTIONAL `ref_direction` the file
+/// omitted.
+///
+/// The standard's default candidate is (1,0,0), replaced by (0,1,0) where
+/// the axis is itself parallel to (1,0,0); the result is that candidate with
+/// its component along `axis` projected out and renormalized.
+///
+/// A ref_direction the file DECLARED never reaches here. ISO projects that
+/// one too, but the reader has always handed a declared direction to the
+/// geometry constructors verbatim, and projecting or substituting it would
+/// move the seams and axes of files that import today — or manufacture a
+/// frame where the constructor used to refuse one.
+///
+/// Deliberately not `brepkit_math::Frame3`'s `perpendicular_pair`: that
+/// returns `axis × candidate`, which is this projection turned a quarter
+/// turn about the axis. Substituting it would rotate the frame of every
+/// placement that omits its ref_direction, moving circle and ellipse phase,
+/// toroid seams and conic axes by 90 degrees.
+fn first_proj_axis(axis: Vec3) -> Vec3 {
+    /// The standard's default `ref_direction` candidate, and the substitute
+    /// it prescribes where the axis is parallel to that default.
+    const DEFAULT_CANDIDATE: Vec3 = Vec3::new(1.0, 0.0, 0.0);
+    const ALTERNATE_CANDIDATE: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+
+    project_off_axis(axis, DEFAULT_CANDIDATE)
+        .or_else(|| project_off_axis(axis, ALTERNATE_CANDIDATE))
+        // Only a zero axis reaches here; it has no plane to project into and
+        // is refused by whichever geometry consumes the placement.
+        .unwrap_or(DEFAULT_CANDIDATE)
+}
+
+/// The slot a placement's `location` occupies: normally 1, after the `name`
+/// inherited from `representation_item`.
+///
+/// `name` is a STRING attribute, so a reference in slot 0 can only mean a
+/// writer dropped the name from the parameter list altogether. Such a file
+/// is not valid Part 21, but it read correctly back when these attributes
+/// were found by scanning for references, and shifting keeps it doing so
+/// rather than quietly taking the axis as the location. Nothing well-formed
+/// reaches that branch.
+fn placement_location_slot(slots: &[AttrSlot<'_>]) -> usize {
+    usize::from(!matches!(slots.first(), Some(AttrSlot::Ref(_))))
+}
+
+/// The positional attribute slots of a placement instance, in ISO 10303-42
+/// declaration order: the inherited `name`, then `location`, then the
+/// subtype's own `axis` (and `ref_direction`).
+///
+/// A simple instance states all of them in one parameter list, so its slots
+/// are just [`split_attr_slots`] of that list.
+///
+/// A Part 21 COMPLEX instance — `#7 = ( REPRESENTATION_ITEM('')
+/// PLACEMENT(#1) AXIS2_PLACEMENT_3D(#2,#3) );` — splits them across one
+/// parenthesised leaf per supertype, and `parse_step_entities` keeps the
+/// whole multi-leaf text as `attrs` with an empty `entity_type`. Nothing in
+/// that text is positional, so the leaves are located by name and their own
+/// parameter lists concatenated: `placement` contributes the `location` and
+/// the named leaf the attributes it declares itself. Part 21 orders leaves
+/// alphabetically, which is not declaration order, so the concatenation
+/// follows the schema rather than the text.
+///
+/// Writers also emit the flattened form, `( AXIS2_PLACEMENT_3D('',#1,#2,#3)
+/// … )`, where the leaf carries every inherited attribute and there is no
+/// `placement` leaf to find; that lands on the same code path with an empty
+/// prefix. Anything else — a leaf that is not there, an unexpected split —
+/// yields slots that do not resolve, and the caller falls back to the
+/// reference scan.
+fn placement_slots<'a>(attrs: &'a str, is_complex: bool, leaf: &str) -> Vec<AttrSlot<'a>> {
+    if !is_complex {
+        return split_attr_slots(attrs);
+    }
+    let Some(own) = complex_leaf_params(attrs, leaf) else {
+        return Vec::new();
+    };
+    let mut slots = complex_leaf_params(attrs, "PLACEMENT").map_or_else(Vec::new, split_attr_slots);
+    slots.extend(split_attr_slots(own));
+    slots
+}
+
+/// The parameter list of one named leaf of a Part 21 complex instance,
+/// without its enclosing parentheses.
+///
+/// The name must match a whole identifier outside any string literal: a
+/// search for `PLACEMENT` must not find the tail of `AXIS1_PLACEMENT`, nor
+/// the middle of `AXIS2_PLACEMENT_3D`, nor anything a `name` happens to spell
+/// — `REPRESENTATION_ITEM('PLACEMENT(#99)')` names a leaf that is not there.
+/// Quoted strings inside the group are skipped too, so an apostrophe or a
+/// paren in a `name` cannot unbalance the scan.
+fn complex_leaf_params<'a>(text: &'a str, leaf: &str) -> Option<&'a str> {
+    let bytes = text.as_bytes();
+    let leaf_bytes = leaf.as_bytes();
+    let mut in_string = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if in_string {
+            // Two quotes in a row are STEP's escape for one apostrophe.
+            if bytes[i] == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        // A preceding identifier byte means this is the tail of a longer type
+        // name; a following one means it is the head of one, and is caught by
+        // requiring `(` next.
+        if !bytes[i..].starts_with(leaf_bytes) || (i > 0 && is_step_identifier_byte(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+
+        // `leaf` is ASCII, so matching it byte-wise lands on a char boundary.
+        let after = i + leaf_bytes.len();
+        if let Some(open) = text[after..]
+            .find(|c: char| !c.is_whitespace())
+            .map(|offset| after + offset)
+            && bytes[open] == b'('
+            && let Some(close) = balanced_close(text, open)
+        {
+            return Some(&text[open + 1..close]);
+        }
+        i = after;
+    }
+    None
+}
+
+/// Whether `byte` can occur inside a STEP entity type name.
+const fn is_step_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The index of the `)` closing the group that opens at `open`, or `None`
+/// when the text runs out first.
+fn balanced_close(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            // Two quotes in a row are STEP's escape for one apostrophe.
+            b'\'' if in_string => {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 1;
+                } else {
+                    in_string = false;
+                }
+            }
+            b'\'' => in_string = true,
+            b'(' if !in_string => depth += 1,
+            b')' if !in_string => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `candidate` with its component along `axis` removed and the remainder
+/// renormalized, or `None` when the two are parallel to within
+/// [`PLACEMENT_DIR_EPS`] or either is zero.
+fn project_off_axis(axis: Vec3, candidate: Vec3) -> Option<Vec3> {
+    let z = axis.normalize().ok()?;
+    let d = candidate.normalize().ok()?;
+    let projected = d - z * d.dot(z);
+    if projected.length() <= PLACEMENT_DIR_EPS {
+        return None;
+    }
+    projected.normalize().ok()
 }
 
 // ── Swept surface construction ──────────────────────────────────────
@@ -2158,6 +2636,232 @@ fn parse_refs(attrs: &str) -> Vec<u64> {
         }
     }
     refs
+}
+
+/// One top-level attribute of a STEP entity instance, classified by form.
+///
+/// ISO 10303-21 requires every attribute of an entity to be written in
+/// declaration order, with `$` standing in for an omitted OPTIONAL and `*`
+/// for a derived attribute redeclared by a subtype. Both placeholders make
+/// position and reference order diverge, which is why an attribute that
+/// matters positionally has to be read from a slot rather than from
+/// [`parse_refs`].
+#[derive(Debug, Clone, PartialEq)]
+enum AttrSlot<'a> {
+    /// An entity reference, `#NNN`.
+    Ref(u64),
+    /// An omitted OPTIONAL attribute, `$`.
+    Omitted,
+    /// A derived attribute redeclared by a subtype, `*`.
+    Derived,
+    /// A string literal, with its delimiting quotes removed and the STEP
+    /// `''` escape collapsed to one apostrophe.
+    Text(String),
+    /// A list or aggregate, verbatim including its own parentheses.
+    List(&'a str),
+    /// An enumeration or logical literal such as `.T.` or `.UNSPECIFIED.`.
+    Enum(&'a str),
+    /// Anything else — a number, a typed parameter such as
+    /// `LENGTH_MEASURE(1.E-07)`, or an empty slot.
+    Other(&'a str),
+}
+
+impl AttrSlot<'_> {
+    /// The referenced entity id, or `None` for every other form — including
+    /// `$`, which is precisely the case a reference scan loses.
+    const fn as_ref_id(&self) -> Option<u64> {
+        match *self {
+            Self::Ref(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Name this slot's form for an error message that has to say why an
+    /// attribute could not be used.
+    ///
+    /// Quoting a slot back is only useful if the quote is short. The slot is
+    /// the file's own text, and a malformed file can make one slot as long as
+    /// the file — a placement whose location slot is twenty thousand nested
+    /// parentheses used to produce a forty-kilobyte `reason` — so what is
+    /// interpolated is an excerpt, never the whole thing.
+    fn describe(&self) -> String {
+        match *self {
+            Self::Ref(id) => format!("#{id}"),
+            Self::Omitted => "an omitted `$`".to_string(),
+            Self::Derived => "a derived `*`".to_string(),
+            Self::Text(ref text) => format!("the string {}", escaped_slot_excerpt(text)),
+            Self::List(raw) | Self::Enum(raw) | Self::Other(raw) => {
+                format!("`{}`", slot_excerpt(raw))
+            }
+        }
+    }
+}
+
+/// How much of an attribute slot an error message may quote back, counted on
+/// the text AS IT APPEARS in the message.
+///
+/// Counting before escaping would not bound anything. `str`'s `Debug` renders
+/// a control character as six characters (`\u{1}`) from one byte, and an
+/// astral-plane one as nine (`\u{e0001}`) from four, so 48 bytes of the first
+/// came back as 288 and of the second as 108.
+const MAX_SLOT_EXCERPT: usize = 48;
+
+/// `text` cut to at most `max` bytes on a character boundary, and whether
+/// anything was dropped.
+fn cut_on_char_boundary(text: &str, max: usize) -> (&str, bool) {
+    if text.len() <= max {
+        return (text, false);
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
+}
+
+/// `text` cut to [`MAX_SLOT_EXCERPT`] bytes on a character boundary, with an
+/// ellipsis where it was cut.
+fn slot_excerpt(text: &str) -> String {
+    let (head, cut) = cut_on_char_boundary(text, MAX_SLOT_EXCERPT);
+    if cut {
+        format!("{head}…")
+    } else {
+        head.to_string()
+    }
+}
+
+/// `text` as `str`'s `Debug` renders it — quoted, with control, astral-plane
+/// and other non-printing characters escaped — cut to [`MAX_SLOT_EXCERPT`]
+/// bytes of that RENDERED form.
+///
+/// Cutting after escaping is what makes the bound hold. The raw text is cut
+/// first as well, so a slot the size of the file is not escaped in full only
+/// to be thrown away; escaping never shortens, so that first cut can only
+/// drop characters the second one would have dropped anyway.
+///
+/// The cut can take the closing quote with it, and can land inside an escape
+/// sequence. Both are fine: this is a fragment shown to say what was in a
+/// slot, not a value anything parses back, and the ellipsis says it is one.
+fn escaped_slot_excerpt(text: &str) -> String {
+    let (head, cut_raw) = cut_on_char_boundary(text, MAX_SLOT_EXCERPT);
+    let rendered = format!("{head:?}");
+    let (shown, cut_rendered) = cut_on_char_boundary(&rendered, MAX_SLOT_EXCERPT);
+    if cut_raw || cut_rendered {
+        format!("{shown}…")
+    } else {
+        shown.to_string()
+    }
+}
+
+/// Describe an attribute slot for an error message, covering the case where
+/// the entity is too short to have that attribute at all.
+fn describe_slot(slot: Option<&AttrSlot<'_>>) -> String {
+    slot.map_or_else(|| "nothing".to_string(), AttrSlot::describe)
+}
+
+/// Split an entity's attribute text into its top-level attribute slots.
+///
+/// Slot *n* of the result is attribute *n* of the entity, which is what
+/// [`parse_refs`] cannot give: one `$` in the middle of a list shifts every
+/// later reference one slot early, silently binding the wrong sub-entity.
+///
+/// Splitting happens only on commas at paren depth zero and outside string
+/// literals, so a name like `'Rib, (left) #2 — O''Brien'` stays a single
+/// slot and contributes no syntax; aggregates come back whole. `attrs`
+/// retains the statement's closing paren (see `parse_step_entities`), which
+/// ends the list rather than opening a slot. Whitespace and the newlines
+/// STEP writers use to wrap long statements are trimmed off each slot.
+fn split_attr_slots(attrs: &str) -> Vec<AttrSlot<'_>> {
+    let bytes = attrs.as_bytes();
+    let mut slots = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut end = bytes.len();
+    let mut in_string = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            // Two quotes in a row are STEP's escape for one literal
+            // apostrophe, not the end of the string.
+            if byte == b'\'' {
+                if bytes.get(i + 1) == Some(&b'\'') {
+                    i += 2;
+                    continue;
+                }
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'\'' => in_string = true,
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => {
+                slots.push(classify_attr_slot(&attrs[start..i]));
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let tail = &attrs[start..end];
+    // An entity with no attributes at all has no trailing slot; one that
+    // ends in a comma keeps the empty slot the comma implies.
+    if !slots.is_empty() || !tail.trim().is_empty() {
+        slots.push(classify_attr_slot(tail));
+    }
+    slots
+}
+
+/// Classify one already-split attribute slot.
+fn classify_attr_slot(raw: &str) -> AttrSlot<'_> {
+    let text = raw.trim();
+    match text.as_bytes().first() {
+        Some(b'#') => parse_ref_token(text).map_or(AttrSlot::Other(text), AttrSlot::Ref),
+        Some(b'$') if text.len() == 1 => AttrSlot::Omitted,
+        Some(b'*') if text.len() == 1 => AttrSlot::Derived,
+        Some(b'\'') => AttrSlot::Text(unescape_step_string(text)),
+        Some(b'(') => AttrSlot::List(text),
+        // A real always has a digit before its point, so a token that both
+        // opens and closes with one is an enumeration or logical.
+        Some(b'.') if text.len() >= 3 && text.ends_with('.') => AttrSlot::Enum(text),
+        _ => AttrSlot::Other(text),
+    }
+}
+
+/// Read a whole slot as an entity reference: `#` and then ASCII digits, with
+/// nothing else on either side.
+///
+/// The digit test is what makes this agree with [`parse_refs`], which walks
+/// `is_ascii_digit` from the `#` and finds no reference at all in `#+2`.
+/// `u64`'s `FromStr` does accept a leading `+`, so parsing the tail directly
+/// would resolve `#+2` to entity 2 and admit a token the reference scan has
+/// never treated as one.
+fn parse_ref_token(text: &str) -> Option<u64> {
+    let digits = text.strip_prefix('#')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Strip a STEP string literal's delimiting quotes and collapse its `''`
+/// escape to a single apostrophe.
+fn unescape_step_string(literal: &str) -> String {
+    let inner = literal
+        .strip_prefix('\'')
+        .map_or(literal, |rest| rest.strip_suffix('\'').unwrap_or(rest));
+    inner.replace("''", "'")
 }
 
 /// Extract every `PARAMETER_VALUE(x)` from an attribute string, in order.
@@ -2878,6 +3582,216 @@ mod tests {
         assert_eq!(refs, vec![1, 2, 3]);
     }
 
+    // ── Positional attribute slots ─────────────────────────────────
+
+    /// A quoted name is opaque: commas, parens, `$` and `#` inside it are
+    /// characters, not syntax, and `''` is one apostrophe.
+    #[test]
+    fn split_attr_slots_treats_string_literals_as_opaque() {
+        let slots = split_attr_slots("'Rib, (left) #7 $ 30° — O''Brien',#10,$)");
+        assert_eq!(
+            slots,
+            vec![
+                AttrSlot::Text("Rib, (left) #7 $ 30° — O'Brien".to_string()),
+                AttrSlot::Ref(10),
+                AttrSlot::Omitted,
+            ]
+        );
+    }
+
+    #[test]
+    fn split_attr_slots_keeps_nested_aggregates_whole() {
+        let slots = split_attr_slots("'',((1.,2.),(3.,4.)),(#1,#2),.T.)");
+        assert_eq!(
+            slots,
+            vec![
+                AttrSlot::Text(String::new()),
+                AttrSlot::List("((1.,2.),(3.,4.))"),
+                AttrSlot::List("(#1,#2)"),
+                AttrSlot::Enum(".T."),
+            ]
+        );
+    }
+
+    /// `$` and `*` hold their slot wherever they fall — first, middle or
+    /// last — which is the whole point of splitting rather than scanning.
+    #[test]
+    fn split_attr_slots_keeps_placeholders_in_position() {
+        assert_eq!(
+            split_attr_slots("$,#1,*)"),
+            vec![AttrSlot::Omitted, AttrSlot::Ref(1), AttrSlot::Derived]
+        );
+        assert_eq!(
+            split_attr_slots("#1,$,#2)"),
+            vec![AttrSlot::Ref(1), AttrSlot::Omitted, AttrSlot::Ref(2)]
+        );
+        assert_eq!(
+            split_attr_slots("#1,*,$)"),
+            vec![AttrSlot::Ref(1), AttrSlot::Derived, AttrSlot::Omitted]
+        );
+    }
+
+    /// `attrs` keeps the statement's closing paren, and STEP writers wrap
+    /// long statements across lines. Neither changes the slots.
+    #[test]
+    fn split_attr_slots_tolerates_wrapping_and_the_retained_paren() {
+        let expected = vec![
+            AttrSlot::Text("Circle Axis2P3D".to_string()),
+            AttrSlot::Ref(65),
+            AttrSlot::Ref(66),
+            AttrSlot::Omitted,
+        ];
+        assert_eq!(split_attr_slots("'Circle Axis2P3D',#65,#66,$)"), expected);
+        assert_eq!(split_attr_slots("'Circle Axis2P3D',#65,#66,$"), expected);
+        assert_eq!(
+            split_attr_slots("'Circle Axis2P3D',\n  #65 ,\n  #66 ,\n  $\n)"),
+            expected
+        );
+    }
+
+    #[test]
+    fn split_attr_slots_of_an_entity_without_attributes_is_empty() {
+        assert!(split_attr_slots(")").is_empty());
+        assert!(split_attr_slots("").is_empty());
+    }
+
+    /// Numbers, typed parameters and unparseable reference tokens all land
+    /// in `Other` rather than being mistaken for a reference.
+    #[test]
+    fn split_attr_slots_classifies_remaining_forms_as_other() {
+        assert_eq!(
+            split_attr_slots("1.5E+00,LENGTH_MEASURE(1.E-07),# 7)"),
+            vec![
+                AttrSlot::Other("1.5E+00"),
+                AttrSlot::Other("LENGTH_MEASURE(1.E-07)"),
+                AttrSlot::Other("# 7"),
+            ]
+        );
+    }
+
+    /// A slot is a reference only if it is `#` and ASCII digits, which is
+    /// what [`parse_refs`] accepts. `u64`'s `FromStr` also takes a leading
+    /// `+`, so parsing the tail of the token directly would resolve `#+2` to
+    /// entity 2 — a reference no other part of this reader can see.
+    #[test]
+    fn a_signed_reference_token_is_not_a_reference() {
+        assert_eq!(
+            split_attr_slots("#+2,#-2,#2,# 2,#2abc,#)"),
+            vec![
+                AttrSlot::Other("#+2"),
+                AttrSlot::Other("#-2"),
+                AttrSlot::Ref(2),
+                AttrSlot::Other("# 2"),
+                AttrSlot::Other("#2abc"),
+                AttrSlot::Other("#"),
+            ]
+        );
+        assert!(parse_refs("#+2").is_empty());
+        assert!(parse_refs("#-2").is_empty());
+    }
+
+    /// A slot quoted back in an error message is the file's own text, and a
+    /// malformed file can make one slot as long as the file.
+    #[test]
+    fn slot_excerpt_cuts_long_text_on_a_character_boundary() {
+        assert_eq!(slot_excerpt("(#2)"), "(#2)");
+
+        // 40 two-byte characters: the cut at 48 bytes falls between them.
+        let wide = "Ø".repeat(40);
+        assert_eq!(slot_excerpt(&wide), format!("{}…", "Ø".repeat(24)));
+
+        // 24 three-byte characters: the cut at 48 bytes falls inside one, and
+        // has to walk back to the boundary below it.
+        let wider = "…".repeat(24);
+        assert_eq!(slot_excerpt(&wider), format!("{}…", "…".repeat(16)));
+    }
+
+    /// A string slot is escaped before it is cut, not after.
+    ///
+    /// Escaping is where a bound on the raw excerpt stops bounding anything:
+    /// `str`'s `Debug` renders one control character as six and one tag
+    /// character as nine, so 48 raw bytes of either used to come back as 288
+    /// and 108. Cutting the rendered form is what holds the message to
+    /// [`MAX_SLOT_EXCERPT`] whatever the file puts in the slot.
+    #[test]
+    fn escaped_slot_excerpt_cuts_what_the_message_actually_shows() {
+        // Short and printable: `Debug`'s own rendering, quotes and all.
+        assert_eq!(escaped_slot_excerpt("Bore #7"), "\"Bore #7\"");
+        assert_eq!(escaped_slot_excerpt("O'Brien"), "\"O'Brien\"");
+
+        // Long and printable: the closing quote goes with the cut, and the
+        // ellipsis says so. 48 bytes of output = one quote and 47 characters.
+        assert_eq!(
+            escaped_slot_excerpt(&"A".repeat(200)),
+            format!("\"{}…", "A".repeat(47))
+        );
+
+        // Escaping expands: eight control characters already fill the budget
+        // that a hundred of them would otherwise blow past.
+        for count in [8, 100, 10_000] {
+            let escaped = escaped_slot_excerpt(&"\u{1}".repeat(count));
+            assert!(
+                escaped.len() <= MAX_SLOT_EXCERPT + "…".len(),
+                "{count} control characters rendered as {} bytes: {escaped}",
+                escaped.len()
+            );
+            assert!(escaped.starts_with("\"\\u{1}"), "{escaped}");
+        }
+
+        // An astral-plane character escapes to a longer sequence — nine
+        // characters — so the cut may land inside one rather than between two.
+        let tags = escaped_slot_excerpt(&"\u{e0001}".repeat(50));
+        assert!(
+            tags.len() <= MAX_SLOT_EXCERPT + "…".len(),
+            "{} bytes: {tags}",
+            tags.len()
+        );
+        assert!(tags.starts_with("\"\\u{e0001}"), "{tags}");
+
+        // `str`'s `Debug` escapes grapheme-extended characters wherever they
+        // sit, not just where they lead — so a run of combining marks is
+        // another expansion and not a passthrough.
+        assert_eq!(escaped_slot_excerpt("e\u{301}"), "\"e\\u{301}\"");
+        let marks = escaped_slot_excerpt(&"\u{301}".repeat(50));
+        assert!(
+            marks.len() <= MAX_SLOT_EXCERPT + "…".len(),
+            "{} bytes: {marks}",
+            marks.len()
+        );
+    }
+
+    /// A complex instance's leaves are found by whole identifier, outside
+    /// string literals — `PLACEMENT` is not the tail of `AXIS1_PLACEMENT`,
+    /// not the middle of `AXIS2_PLACEMENT_3D`, and not whatever a `name`
+    /// happens to spell.
+    #[test]
+    fn complex_leaf_params_matches_whole_identifiers_outside_strings() {
+        let text = "REPRESENTATION_ITEM('PLACEMENT(#99)') PLACEMENT(#1) \
+                    AXIS2_PLACEMENT_3D(#2,#3) )";
+        assert_eq!(complex_leaf_params(text, "PLACEMENT"), Some("#1"));
+        assert_eq!(
+            complex_leaf_params(text, "AXIS2_PLACEMENT_3D"),
+            Some("#2,#3")
+        );
+        assert_eq!(complex_leaf_params(text, "AXIS1_PLACEMENT"), None);
+
+        assert_eq!(
+            complex_leaf_params("AXIS1_PLACEMENT(#2) )", "PLACEMENT"),
+            None
+        );
+        assert_eq!(
+            complex_leaf_params("AXIS1_PLACEMENT(#2) )", "AXIS1_PLACEMENT"),
+            Some("#2")
+        );
+        // Nested groups and a name that would unbalance a naive scan.
+        assert_eq!(
+            complex_leaf_params("PLACEMENT('a) (b',(#1,(#2))) )", "PLACEMENT"),
+            Some("'a) (b',(#1,(#2))")
+        );
+        // A group the statement never closes.
+        assert_eq!(complex_leaf_params("PLACEMENT(#1", "PLACEMENT"), None);
+    }
+
     #[test]
     fn parse_floats_basic() {
         let floats = parse_floats("'', (1.5, -2.3, 0.)");
@@ -3234,6 +4148,41 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         builder.build_surface(surface_id)
     }
 
+    /// Resolve one `AXIS2_PLACEMENT_3D` through the real parse + build path,
+    /// as `(location, axis, ref_direction)`.
+    fn axis2_placement(body: &str, placement_id: u64) -> Result<(Point3, Vec3, Vec3), IoError> {
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let units = required_unit_scale(&entities)?;
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units);
+        builder.build_axis2_placement(placement_id)
+    }
+
+    /// Resolve one `AXIS1_PLACEMENT` through the real parse + build path.
+    fn axis1_placement(body: &str, placement_id: u64) -> Result<(Point3, Vec3), IoError> {
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let units = required_unit_scale(&entities)?;
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units);
+        builder.build_axis1_placement(placement_id)
+    }
+
+    /// Assert two directions agree componentwise.
+    fn assert_vec_eq(actual: Vec3, expected: Vec3, label: &str) {
+        assert!(
+            (actual.x() - expected.x()).abs() < 1e-12
+                && (actual.y() - expected.y()).abs() < 1e-12
+                && (actual.z() - expected.z()).abs() < 1e-12,
+            "{label}: expected ({}, {}, {}), got ({}, {}, {})",
+            expected.x(),
+            expected.y(),
+            expected.z(),
+            actual.x(),
+            actual.y(),
+            actual.z(),
+        );
+    }
+
     /// An OCCT-style surface + pcurve tail, referenced by the wrapper's
     /// `pcurve_or_surface` list. Entity ids 90+.
     const OCCT_PCURVE_TAIL: &str = "\
@@ -3319,6 +4268,1007 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             err.to_string().contains("missing its 3-D curve reference"),
             "unexpected error: {err}"
         );
+    }
+
+    // ── Placement optional attributes ──────────────────────────────
+    //
+    // `axis` and `ref_direction` are OPTIONAL in ISO 10303-42 and real
+    // files write `$` for them, including in a slot that a later reference
+    // follows. Reading them by reference order rather than by position
+    // rejects such a file outright when the omission is trailing, and binds
+    // the wrong direction as the axis when it is not.
+
+    /// The no-change contract: a fully explicit placement still yields the
+    /// declared location, axis and ref_direction, unnormalized.
+    #[test]
+    fn explicit_axis2_placement_is_returned_as_declared() {
+        let body = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #2 = DIRECTION('',(0.,0.,2.));\n\
+                    #3 = DIRECTION('',(0.,3.,0.));\n\
+                    #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);";
+        let (origin, axis, ref_dir) = axis2_placement(body, 4).unwrap();
+        assert_vec_eq(
+            Vec3::new(origin.x(), origin.y(), origin.z()),
+            Vec3::new(1.0, 2.0, 3.0),
+            "location",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 2.0), "axis");
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 3.0, 0.0), "ref_direction");
+    }
+
+    /// The same contract seen through a curve that actually consumes the
+    /// ref_direction.
+    #[test]
+    fn explicit_ref_direction_still_orients_a_hyperbola() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = DIRECTION('',(0.,1.,0.));\n\
+                    #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+                    #5 = HYPERBOLA('',#4,2.,1.);";
+        let curve = curve_geometry(body, 5).unwrap();
+        let EdgeCurve::Hyperbola(hyp) = curve else {
+            panic!("expected a hyperbola, got {curve:?}");
+        };
+        assert_vec_eq(hyp.u_axis(), Vec3::new(0.0, 1.0, 0.0), "real axis");
+        assert_vec_eq(hyp.normal(), Vec3::new(0.0, 0.0, 1.0), "plane normal");
+    }
+
+    /// The customer form, verbatim: an explicit axis, an omitted
+    /// ref_direction, and CATIA's name string. The reference scan saw two
+    /// ids where it demanded three and failed the whole 1.2 MB import.
+    ///
+    /// The CIRCLE call site does not consume the ref_direction — before or
+    /// after this change — so the assertion that pins the ISO frame is on
+    /// the placement itself; `Circle3D` derives its own u/v pair from the
+    /// normal.
+    #[test]
+    fn circle_with_omitted_ref_direction_imports_with_the_iso_default_frame() {
+        let body = "#65 = CARTESIAN_POINT('Circle Center',(0.,0.,5.));\n\
+                    #66 = DIRECTION('Circle Axis',(0.,0.,1.));\n\
+                    #67 = AXIS2_PLACEMENT_3D('Circle Axis2P3D',#65,#66,$);\n\
+                    #68 = CIRCLE('Circle',#67,4.);";
+        let (origin, axis, ref_dir) = axis2_placement(body, 67).unwrap();
+        assert_vec_eq(
+            Vec3::new(origin.x(), origin.y(), origin.z()),
+            Vec3::new(0.0, 0.0, 5.0),
+            "location",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "declared axis");
+        assert_vec_eq(
+            ref_dir,
+            first_proj_axis(Vec3::new(0.0, 0.0, 1.0)),
+            "derived ref_direction",
+        );
+        assert_vec_eq(ref_dir, Vec3::new(1.0, 0.0, 0.0), "derived ref_direction");
+
+        let curve = curve_geometry(body, 68).unwrap();
+        let EdgeCurve::Circle(circle) = curve else {
+            panic!("expected a circle, got {curve:?}");
+        };
+        assert!((circle.radius() - 4.0).abs() < 1e-12);
+        assert_vec_eq(circle.normal(), Vec3::new(0.0, 0.0, 1.0), "circle normal");
+    }
+
+    /// Both optionals omitted — the shortest legal placement there is.
+    #[test]
+    fn placement_with_both_optionals_omitted_defaults_to_the_world_frame() {
+        let body = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #2 = AXIS2_PLACEMENT_3D('',#1,$,$);\n\
+                    #3 = PLANE('',#2);\n\
+                    #4 = CIRCLE('',#2,2.);";
+        let (_, axis, ref_dir) = axis2_placement(body, 2).unwrap();
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "default axis");
+        assert_vec_eq(ref_dir, Vec3::new(1.0, 0.0, 0.0), "default ref_direction");
+
+        let surface = surface_geometry(body, 3).unwrap();
+        let FaceSurface::Plane { normal, d } = surface else {
+            panic!("expected a plane, got {surface:?}");
+        };
+        assert_vec_eq(normal, Vec3::new(0.0, 0.0, 1.0), "plane normal");
+        assert!((d - 3.0).abs() < 1e-12, "plane offset {d}");
+
+        let curve = curve_geometry(body, 4).unwrap();
+        let EdgeCurve::Circle(circle) = curve else {
+            panic!("expected a circle, got {curve:?}");
+        };
+        assert_vec_eq(circle.normal(), Vec3::new(0.0, 0.0, 1.0), "circle normal");
+    }
+
+    /// The location is REQUIRED; every way of not supplying one is refused
+    /// by name rather than filled in from a neighbouring slot.
+    #[test]
+    fn placement_without_a_usable_location_names_the_entity() {
+        for body in [
+            "#8 = DIRECTION('',(0.,0.,1.));\n#7 = AXIS2_PLACEMENT_3D('',$,#8,$);",
+            "#7 = AXIS2_PLACEMENT_3D('');",
+            "#7 = AXIS2_PLACEMENT_3D('',1.5,$,$);",
+        ] {
+            let err = axis2_placement(body, 7).unwrap_err();
+            let text = err.to_string();
+            assert!(
+                text.contains("AXIS2_PLACEMENT_3D #7") && text.contains("location"),
+                "unexpected error for `{body}`: {err}"
+            );
+        }
+    }
+
+    /// ISO 10303-21 writes every attribute of an entity in declaration
+    /// order, with `$` for an omitted OPTIONAL and `*` for a derived one. A
+    /// parameter list that stops short is therefore not an omission but a
+    /// truncated statement, and stays refused the way it always was; only
+    /// the placeholders get the standard's defaults.
+    #[test]
+    fn a_truncated_placement_is_refused_where_an_omitted_one_is_supplied() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                            #2 = DIRECTION('',(0.,0.,1.));\n";
+
+        for (body, attribute) in [
+            (format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1);"), "axis"),
+            (
+                format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#2);"),
+                "ref_direction",
+            ),
+            (format!("{HEAD}#7 = AXIS2_PLACEMENT_3D(#1);"), "axis"),
+            (
+                format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,1.5,#2);"),
+                "axis",
+            ),
+            (
+                format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#2,.T.);"),
+                "ref_direction",
+            ),
+        ] {
+            let err = axis2_placement(&body, 7).unwrap_err();
+            let text = err.to_string();
+            assert!(
+                text.contains("AXIS2_PLACEMENT_3D #7") && text.contains(attribute),
+                "unexpected error for `{body}`: {err}"
+            );
+        }
+
+        for body in [
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,$,$);"),
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,*,*);"),
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,$,*);"),
+        ] {
+            let (_, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "default axis");
+            assert_vec_eq(ref_dir, Vec3::new(1.0, 0.0, 0.0), "default ref_direction");
+        }
+    }
+
+    /// A `#NNN` inside the `name` string is characters, not a reference.
+    /// The reference scan could not tell the difference and bound the number
+    /// written in the name as the location, so a placement on a feature
+    /// named after a drawing callout imported at the wrong point — or, where
+    /// that id was not a `CARTESIAN_POINT`, failed the whole file.
+    #[test]
+    fn a_reference_token_inside_the_name_is_not_an_attribute() {
+        let body = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = DIRECTION('',(0.,1.,0.));\n\
+                    #9 = CARTESIAN_POINT('',(9.,9.,9.));\n\
+                    #7 = AXIS2_PLACEMENT_3D('Bore #9',#1,#2,#3);\n\
+                    #8 = AXIS1_PLACEMENT('Rev #9',#1,#3);";
+
+        let (origin, axis, ref_dir) = axis2_placement(body, 7).unwrap();
+        assert_vec_eq(
+            Vec3::new(origin.x(), origin.y(), origin.z()),
+            Vec3::new(1.0, 2.0, 3.0),
+            "location, not #9",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "axis");
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), "ref_direction");
+
+        let (location, axis) = axis1_placement(body, 8).unwrap();
+        assert_vec_eq(
+            Vec3::new(location.x(), location.y(), location.z()),
+            Vec3::new(1.0, 2.0, 3.0),
+            "axis1 location, not #9",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 1.0, 0.0), "axis1 axis");
+    }
+
+    /// `AXIS1_PLACEMENT` is deliberately laxer than `AXIS2_PLACEMENT_3D`
+    /// about a missing axis slot: a statement truncated after its location
+    /// has always imported with a z axis, so it still does, rather than being
+    /// treated as a layout the positional reading cannot use.
+    ///
+    /// The last of these does go to the reference scan — `1.5` is not a
+    /// placeholder and not a reference — and comes back with the same z axis,
+    /// because the scan finds no second reference either.
+    #[test]
+    fn a_truncated_axis1_placement_keeps_defaulting_its_axis() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n";
+
+        for body in [
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1);"),
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1,$);"),
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1,*);"),
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1,1.5);"),
+        ] {
+            let (location, axis) = axis1_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(location.x(), location.y(), location.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                "location",
+            );
+            assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "default axis");
+        }
+    }
+
+    /// A placement written without its `name` parameter is malformed Part
+    /// 21, but it used to import because references were located by scanning.
+    /// Reading by position must not turn that into a wrong location: these
+    /// are the values the reference scan produced for the same two
+    /// statements.
+    #[test]
+    fn a_placement_missing_its_name_parameter_still_reads_positionally() {
+        let body = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = DIRECTION('',(0.,1.,0.));\n\
+                    #4 = AXIS2_PLACEMENT_3D(#1,#2,#3);\n\
+                    #5 = AXIS1_PLACEMENT(#1,#3);";
+        let (origin, axis, ref_dir) = axis2_placement(body, 4).unwrap();
+        assert_vec_eq(
+            Vec3::new(origin.x(), origin.y(), origin.z()),
+            Vec3::new(1.0, 2.0, 3.0),
+            "location",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "axis");
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), "ref_direction");
+
+        let (location, axis) = axis1_placement(body, 5).unwrap();
+        assert_vec_eq(
+            Vec3::new(location.x(), location.y(), location.z()),
+            Vec3::new(1.0, 2.0, 3.0),
+            "axis1 location",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 1.0, 0.0), "axis1 axis");
+    }
+
+    /// A DECLARED ref_direction is passed on exactly as written even when it
+    /// is degenerate — zero, or parallel or antiparallel to the axis, none of
+    /// which is legal STEP.
+    ///
+    /// Substituting the derived default for one of these would change what
+    /// files that already import produce, in both directions: the torus
+    /// silently reseams a quarter turn, and the two conics stop reporting an
+    /// invalid file. The placement itself must keep returning the declared
+    /// value; each geometry consumer remains responsible for its own precise
+    /// validation error.
+    #[test]
+    fn a_declared_degenerate_ref_direction_reaches_the_geometry_unchanged() {
+        for (declared, expected) in [
+            ("(0.,0.,1.)", Vec3::new(0.0, 0.0, 1.0)),
+            ("(0.,0.,-1.)", Vec3::new(0.0, 0.0, -1.0)),
+            ("(0.,0.,0.)", Vec3::new(0.0, 0.0, 0.0)),
+        ] {
+            let body = format!(
+                "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                 #2 = DIRECTION('',(0.,0.,1.));\n\
+                 #3 = DIRECTION('',{declared});\n\
+                 #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+                 #5 = TOROIDAL_SURFACE('',#4,5.,1.);\n\
+                 #6 = HYPERBOLA('',#4,2.,1.);\n\
+                 #7 = PARABOLA('',#4,2.);"
+            );
+
+            let (_, axis, ref_dir) = axis2_placement(&body, 4).unwrap();
+            assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "axis");
+            assert_vec_eq(ref_dir, expected, "declared ref_direction");
+
+            // `ToroidalSurface` falls back to `axis × (1,0,0)` for a seam it
+            // cannot take from the ref_direction, which is a quarter turn
+            // from the (1,0,0) the derived default would have given.
+            let surface = surface_geometry(&body, 5).unwrap();
+            let FaceSurface::Torus(torus) = surface else {
+                panic!("expected a torus, got {surface:?}");
+            };
+            assert_vec_eq(torus.x_axis(), Vec3::new(0.0, 1.0, 0.0), "torus seam");
+            assert_vec_eq(torus.y_axis(), Vec3::new(-1.0, 0.0, 0.0), "torus y");
+            assert_vec_eq(torus.z_axis(), Vec3::new(0.0, 0.0, 1.0), "torus axis");
+            assert!((torus.major_radius() - 5.0).abs() < 1e-12);
+            assert!((torus.minor_radius() - 1.0).abs() < 1e-12);
+
+            // The two conics keep the hard failure: the placement spans no
+            // plane, so there is no curve to build.
+            assert_eq!(
+                curve_geometry(&body, 6).unwrap_err().to_string(),
+                "parse error: HYPERBOLA #6: cannot normalize zero vector",
+                "hyperbola on ref_direction {declared}"
+            );
+            assert_eq!(
+                curve_geometry(&body, 7).unwrap_err().to_string(),
+                "parse error: PARABOLA #7: ref_direction is parallel to the plane normal, so the parabola's plane is undefined",
+                "parabola on ref_direction {declared}"
+            );
+        }
+    }
+
+    /// Where the axis is itself parallel to (1,0,0), the standard's default
+    /// candidate is unusable and (0,1,0) takes its place.
+    #[test]
+    fn omitted_ref_direction_switches_candidate_for_an_x_axis() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(1.,0.,0.));\n\
+                    #3 = AXIS2_PLACEMENT_3D('',#1,#2,$);";
+        let (_, _, ref_dir) = axis2_placement(body, 3).unwrap();
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), "derived ref_direction");
+    }
+
+    /// `first_proj_axis` projects the standard's candidate into the plane; it
+    /// does not cross with it. `Frame3::perpendicular_pair` does the latter,
+    /// and the two answers differ by a quarter turn about the axis for every
+    /// axis there is — which would move circle phase, toroid seams and conic
+    /// axes on every placement that omits its ref_direction.
+    #[test]
+    fn first_proj_axis_projects_the_candidate_instead_of_crossing_it() {
+        assert_vec_eq(
+            first_proj_axis(Vec3::new(0.0, 0.0, 1.0)),
+            Vec3::new(1.0, 0.0, 0.0),
+            "z-up default (a cross product would answer (0,1,0))",
+        );
+
+        let axis = Vec3::new(1.0, 0.0, 1.0);
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        assert_vec_eq(
+            first_proj_axis(axis),
+            Vec3::new(half, 0.0, -half),
+            "tilted default (a cross product would answer (0,1,0))",
+        );
+    }
+
+    /// The silent-corruption case, and the reason the split exists: `$` in
+    /// the axis slot with a real reference after it. A reference scan sees
+    /// two ids and binds the ref_direction as the AXIS — a 90-degree error
+    /// that reports nothing.
+    #[test]
+    fn omitted_axis_does_not_bind_the_following_ref_direction() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('Ref Direction',(0.,1.,0.));\n\
+                    #3 = AXIS2_PLACEMENT_3D('Circle Axis2P3D',#1,$,#2);\n\
+                    #4 = HYPERBOLA('',#3,2.,1.);";
+
+        // The scan really does lose the slot: two ids for four attributes.
+        assert_eq!(
+            parse_refs("'Circle Axis2P3D',#1,$,#2)"),
+            vec![1, 2],
+            "reference order alone cannot tell the axis from the ref_direction"
+        );
+
+        let (_, axis, ref_dir) = axis2_placement(body, 3).unwrap();
+        assert_vec_eq(
+            axis,
+            Vec3::new(0.0, 0.0, 1.0),
+            "the omitted axis defaults to z, it does not take #2",
+        );
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), "declared ref_direction");
+
+        // End to end: mis-binding would put the hyperbola's plane normal
+        // along y and leave no real axis at all.
+        let curve = curve_geometry(body, 4).unwrap();
+        let EdgeCurve::Hyperbola(hyp) = curve else {
+            panic!("expected a hyperbola, got {curve:?}");
+        };
+        assert_vec_eq(hyp.normal(), Vec3::new(0.0, 0.0, 1.0), "plane normal");
+        assert_vec_eq(hyp.u_axis(), Vec3::new(0.0, 1.0, 0.0), "real axis");
+    }
+
+    /// `AXIS1_PLACEMENT`'s location is REQUIRED, so `$` there is a malformed
+    /// file — and one the reference scan happily read, by taking the AXIS as
+    /// the location. Reading by position finds no location, but refusing on
+    /// that basis would reject a file that imports today, so the scan gets
+    /// the last word and the values are the ones it has always produced:
+    /// `#1`'s components as the location, and the default z axis.
+    #[test]
+    fn axis1_placement_without_a_location_still_reads_the_way_the_scan_did() {
+        let body = "#1 = DIRECTION('',(0.,1.,0.));\n\
+                    #2 = AXIS1_PLACEMENT('',$,#1);";
+        let (location, axis) = axis1_placement(body, 2).unwrap();
+        assert_vec_eq(
+            Vec3::new(location.x(), location.y(), location.z()),
+            Vec3::new(0.0, 1.0, 0.0),
+            "location, as the reference scan reads it",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "default axis");
+    }
+
+    #[test]
+    fn axis1_placement_with_an_omitted_axis_defaults_to_z() {
+        let body = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #2 = AXIS1_PLACEMENT('',#1,$);";
+        let (location, axis) = axis1_placement(body, 2).unwrap();
+        assert_vec_eq(
+            Vec3::new(location.x(), location.y(), location.z()),
+            Vec3::new(1.0, 2.0, 3.0),
+            "location",
+        );
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), "default axis");
+    }
+
+    /// The three entities that actually consume the ref_direction get the
+    /// derived one, not an arbitrary perpendicular.
+
+    #[test]
+    fn toroidal_surface_with_omitted_ref_direction_uses_the_derived_frame() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = AXIS2_PLACEMENT_3D('Torus Axis2P3D',#1,#2,$);\n\
+                    #4 = TOROIDAL_SURFACE('',#3,5.,1.);";
+        let surface = surface_geometry(body, 4).unwrap();
+        let FaceSurface::Torus(torus) = surface else {
+            panic!("expected a torus, got {surface:?}");
+        };
+        assert_vec_eq(torus.z_axis(), Vec3::new(0.0, 0.0, 1.0), "torus axis");
+        assert_vec_eq(torus.x_axis(), Vec3::new(1.0, 0.0, 0.0), "torus seam");
+        assert!((torus.major_radius() - 5.0).abs() < 1e-12);
+        assert!((torus.minor_radius() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hyperbola_with_omitted_ref_direction_uses_the_derived_real_axis() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = AXIS2_PLACEMENT_3D('Hyperbola Axis2P3D',#1,#2,$);\n\
+                    #4 = HYPERBOLA('',#3,2.,1.);";
+        let curve = curve_geometry(body, 4).unwrap();
+        let EdgeCurve::Hyperbola(hyp) = curve else {
+            panic!("expected a hyperbola, got {curve:?}");
+        };
+        assert_vec_eq(hyp.normal(), Vec3::new(0.0, 0.0, 1.0), "plane normal");
+        assert_vec_eq(hyp.u_axis(), Vec3::new(1.0, 0.0, 0.0), "real axis");
+        assert_vec_eq(hyp.v_axis(), Vec3::new(0.0, 1.0, 0.0), "imaginary axis");
+    }
+
+    #[test]
+    fn parabola_with_omitted_ref_direction_uses_the_derived_axis() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = AXIS2_PLACEMENT_3D('Parabola Axis2P3D',#1,#2,$);\n\
+                    #4 = PARABOLA('',#3,2.);";
+        let curve = curve_geometry(body, 4).unwrap();
+        let EdgeCurve::Parabola(par) = curve else {
+            panic!("expected a parabola, got {curve:?}");
+        };
+        // The placement's ref_direction is the parabola's symmetry axis and
+        // its normal crosses to the in-plane direction.
+        assert_vec_eq(par.axis_dir(), Vec3::new(1.0, 0.0, 0.0), "symmetry axis");
+        assert_vec_eq(par.u_axis(), Vec3::new(0.0, 1.0, 0.0), "in-plane axis");
+        assert!((par.focal_length() - 2.0).abs() < 1e-12);
+    }
+
+    // ── The reference-scan fallback ────────────────────────────────
+    //
+    // Reading attributes by position understands the layout ISO 10303-21
+    // prescribes and nothing else, and files exist that are not written that
+    // way but that this reader has always imported. Every one of them is
+    // handed to the old reference scan rather than refused, and the values
+    // below are the ones that scan produced — measured, not derived.
+
+    /// Part 21 COMPLEX instances. `parse_step_entities` gives one an empty
+    /// `entity_type` and the whole multi-leaf text as `attrs`, where slot 1
+    /// is not the location and there is no fourth slot at all.
+    #[test]
+    fn a_complex_placement_instance_reads_as_it_always_did() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                            #2 = DIRECTION('',(0.,0.,1.));\n\
+                            #3 = DIRECTION('',(0.,1.,0.));\n";
+
+        for body in [
+            // Decomposed: one leaf per supertype, each carrying only the
+            // attributes it declares itself.
+            format!(
+                "{HEAD}#7 = ( REPRESENTATION_ITEM('') PLACEMENT(#1) \
+                 AXIS2_PLACEMENT_3D(#2,#3) );"
+            ),
+            // The same leaves in the alphabetical order Part 21 prescribes,
+            // which is not declaration order.
+            format!(
+                "{HEAD}#7 = ( AXIS2_PLACEMENT_3D(#2,#3) \
+                 GEOMETRIC_REPRESENTATION_ITEM() PLACEMENT(#1) \
+                 REPRESENTATION_ITEM('') );"
+            ),
+            // Flattened: one leaf carrying every inherited attribute.
+            format!("{HEAD}#7 = ( AXIS2_PLACEMENT_3D('',#1,#2,#3) REPRESENTATION_ITEM('') );"),
+            // A layout with no leaf to find, which only the scan can read.
+            format!("{HEAD}#7 = ( REPRESENTATION_ITEM('') PLACEMENT(#1) SOMETHING_ELSE(#2,#3) );"),
+            format!(
+                "{HEAD}#7 = ( representation_item('') placement(#1) axis2_placement_3d(#2,#3) );"
+            ),
+        ] {
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &body,
+            );
+            assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), &body);
+            assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), &body);
+        }
+
+        for body in [
+            format!("{HEAD}#7 = ( REPRESENTATION_ITEM('') PLACEMENT(#1) AXIS1_PLACEMENT(#3) );"),
+            format!("{HEAD}#7 = ( AXIS1_PLACEMENT('',#1,#3) REPRESENTATION_ITEM('') );"),
+        ] {
+            let (location, axis) = axis1_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(location.x(), location.y(), location.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &body,
+            );
+            assert_vec_eq(axis, Vec3::new(0.0, 1.0, 0.0), &body);
+        }
+    }
+
+    /// Locating the leaves is what lets a complex instance omit an OPTIONAL
+    /// attribute too — the scan could only ever count references.
+    #[test]
+    fn a_complex_placement_instance_honours_an_omitted_optional() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                            #3 = DIRECTION('',(0.,1.,0.));\n";
+
+        for body in [
+            format!(
+                "{HEAD}#7 = ( REPRESENTATION_ITEM('') PLACEMENT(#1) AXIS2_PLACEMENT_3D($,#3) );"
+            ),
+            format!("{HEAD}#7 = ( AXIS2_PLACEMENT_3D('',#1,$,#3) REPRESENTATION_ITEM('') );"),
+        ] {
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &body,
+            );
+            assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), &body);
+            assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), &body);
+        }
+    }
+
+    /// Junk wedged between a placement's references. None of these is legal
+    /// Part 21 and none of them has a location in slot 1, but the scan
+    /// stepped over the junk and found three references, so they import —
+    /// and go on importing to the same frame.
+    #[test]
+    fn junk_between_a_placements_references_reads_as_it_always_did() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                            #2 = DIRECTION('',(0.,0.,1.));\n\
+                            #3 = DIRECTION('',(0.,1.,0.));\n";
+
+        for body in [
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,1.5,#2,#3);"),
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#2,3.5,#3);"),
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,(#2),#3);"),
+            // A `#NNN` token the scan reads and a slot cannot.
+            format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1abc,#2,#3);"),
+        ] {
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &body,
+            );
+            assert_vec_eq(axis, Vec3::new(0.0, 0.0, 1.0), &body);
+            assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), &body);
+        }
+
+        for body in [
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1,1.5,#3);"),
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1,.T.,#3);"),
+            format!("{HEAD}#7 = AXIS1_PLACEMENT('',#1,(#3));"),
+        ] {
+            let (location, axis) = axis1_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(location.x(), location.y(), location.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &body,
+            );
+            assert_vec_eq(axis, Vec3::new(0.0, 1.0, 0.0), &body);
+        }
+    }
+
+    /// The fallback cannot undo the fix it is attached to. `('name', #loc,
+    /// $, #ref_direction)` reads positionally, so the scan is never
+    /// consulted — not even here, where a fourth reference makes up the
+    /// scan's count of three and it would have succeeded, silently, with the
+    /// ref_direction bound as the AXIS.
+    #[test]
+    fn a_placement_that_reads_positionally_never_reaches_the_scan() {
+        let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('Ref Direction',(0.,1.,0.));\n\
+                    #7 = AXIS2_PLACEMENT_3D('',#1,$,#2,#2);";
+        assert_eq!(
+            parse_refs("'',#1,$,#2,#2)"),
+            vec![1, 2, 2],
+            "the scan really would find three references here"
+        );
+
+        let (_, axis, ref_dir) = axis2_placement(body, 7).unwrap();
+        assert_vec_eq(
+            axis,
+            Vec3::new(0.0, 0.0, 1.0),
+            "the omitted axis defaults to z; the scan's answer would be (0,1,0)",
+        );
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), "declared ref_direction");
+    }
+
+    /// A malformed file must not get to choose how long the error is. The
+    /// slot is interpolated to say what was found in it, and the slot is the
+    /// file's own text: before it was excerpted, a placement whose location
+    /// was twenty thousand nested parentheses produced a forty-kilobyte
+    /// `reason` where the scan's message was a fixed 57 bytes.
+    ///
+    /// The slots below are what makes this an actual test of the bound rather
+    /// than a restatement of [`MAX_SLOT_EXCERPT`]. Printable ASCII survives
+    /// `str`'s `Debug` one byte per byte, so a bound applied to the RAW
+    /// excerpt looks like it holds — which is why a test built only from `A`s
+    /// and parentheses passed while the bound did not. A control character
+    /// renders as six characters, a combining mark as seven and a tag
+    /// character as nine, which took the same 48-byte excerpt to 288, 168 and
+    /// 108, and the message with it to 334, 262 and 202 bytes against an
+    /// asserted 200.
+    #[test]
+    fn a_pathological_slot_still_makes_a_short_error() {
+        const DEPTH: usize = 20_000;
+
+        /// The longest `reason` a placement slot can produce, derived rather
+        /// than observed:
+        ///
+        /// - 13 for the `parse error: ` [`IoError`]'s `Display` prepends;
+        /// - 73 for the longest template — the one naming ref_direction as
+        ///   the attribute that could not be used — with the id left out;
+        /// - 20 for that id, a `u64` at its widest;
+        /// - 62 for the longest description: the 11 of "the string ", a
+        ///   [`MAX_SLOT_EXCERPT`]-byte rendered excerpt, and a 3-byte
+        ///   ellipsis.
+        const MAX_ERROR: usize = 13 + 73 + 20 + 62;
+
+        let mut saw_escape = false;
+        for (what, slot) in [
+            (
+                "nested parentheses",
+                format!("{}{}", "(".repeat(DEPTH), ")".repeat(DEPTH)),
+            ),
+            ("a long name", format!("'{}'", "A".repeat(DEPTH))),
+            ("a long bare token", "B".repeat(DEPTH)),
+            // `Debug` renders each of these as `\u{1}`, six characters.
+            ("control characters", format!("'{}'", "\u{1}".repeat(DEPTH))),
+            // A tag character: `\u{e0001}`, nine characters from four bytes.
+            (
+                "astral-plane characters",
+                format!("'{}'", "\u{e0001}".repeat(DEPTH)),
+            ),
+            // `str`'s `Debug` escapes grapheme-extended characters wherever
+            // they sit, so a combining mark expands too — `\u{301}`, seven
+            // characters from two bytes — whether or not something precedes
+            // it.
+            ("combining marks", format!("'e{}'", "\u{301}".repeat(DEPTH))),
+            (
+                "a leading combining mark",
+                format!("'{}'", "\u{301}".repeat(DEPTH)),
+            ),
+        ] {
+            for (where_, body) in [
+                (
+                    "location slot",
+                    format!(
+                        "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                         #2 = DIRECTION('',(0.,0.,1.));\n\
+                         #7 = AXIS2_PLACEMENT_3D('',{slot},#1,#2);"
+                    ),
+                ),
+                (
+                    "axis slot",
+                    format!(
+                        "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                         #2 = DIRECTION('',(0.,0.,1.));\n\
+                         #7 = AXIS2_PLACEMENT_3D('',#1,{slot},#2);"
+                    ),
+                ),
+            ] {
+                let err = axis2_placement(&body, 7).unwrap_err().to_string();
+                assert!(
+                    err.len() <= MAX_ERROR,
+                    "{what} in the {where_}: error is {} bytes, over the {MAX_ERROR} bound, \
+                     from a {} byte slot: {err}",
+                    err.len(),
+                    slot.len()
+                );
+                assert!(err.contains("AXIS2_PLACEMENT_3D #7"), "{err}");
+                saw_escape |= err.contains("\\u{");
+            }
+
+            // The same bound covers AXIS1_PLACEMENT, which shares the slot
+            // descriptions and has strictly shorter templates. No `#NNN`
+            // anywhere, so the reference scan has nothing to fall back to and
+            // the positional message is the one that surfaces.
+            let body = format!("#7 = AXIS1_PLACEMENT('',{slot});");
+            let err = axis1_placement(&body, 7).unwrap_err().to_string();
+            assert!(
+                err.len() <= MAX_ERROR,
+                "{what} in AXIS1_PLACEMENT: error is {} bytes: {err}",
+                err.len()
+            );
+        }
+
+        assert!(
+            saw_escape,
+            "no case produced an escape sequence, so the bound went untested \
+             on exactly the input that used to break it"
+        );
+    }
+
+    /// `#+2` is not a reference to entity 2. `u64`'s `FromStr` accepts the
+    /// leading `+`, so reading the token's tail directly would resolve it —
+    /// but [`parse_refs`], which is how every reference in this reader is
+    /// found, walks digits from the `#` and finds none, so the placement
+    /// stays as unreadable as it has always been.
+    #[test]
+    fn a_signed_reference_in_a_slot_does_not_resolve() {
+        let body = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                    #2 = DIRECTION('',(0.,0.,1.));\n\
+                    #3 = DIRECTION('',(0.,1.,0.));\n\
+                    #7 = AXIS2_PLACEMENT_3D('',#1,#+2,#3);";
+        let err = axis2_placement(body, 7).unwrap_err().to_string();
+        assert!(err.contains("`#+2`"), "unexpected error: {err}");
+
+        let axis1 = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                     #2 = DIRECTION('',(0.,1.,0.));\n\
+                     #7 = AXIS1_PLACEMENT('',#1,#+2);";
+        let (_, axis) = axis1_placement(axis1, 7).unwrap();
+        assert_vec_eq(
+            axis,
+            Vec3::new(0.0, 0.0, 1.0),
+            "the axis defaults, exactly as it did when the scan read this",
+        );
+    }
+
+    /// A DECLARED zero-length axis is a frame with no orientation at all, and
+    /// `PLANE` and `SPHERICAL_SURFACE` do not renormalize what they are
+    /// handed, so it would put a zero normal into topology.
+    ///
+    /// It is refused only where the placement omits an OPTIONAL attribute —
+    /// the one path the reference scan cannot reach, having counted a
+    /// reference too few — and only where the scan cannot read the statement
+    /// some other way. A fully explicit placement keeps its degenerate frame,
+    /// because that one imports today.
+    #[test]
+    fn a_zero_axis_is_refused_only_where_an_optional_is_omitted() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                            #3 = DIRECTION('',(0.,1.,0.));\n\
+                            #6 = DIRECTION('',(0.,0.,0.));\n";
+        const SURFACES: &str = "#24 = PLANE('',#7);\n\
+                                #25 = SPHERICAL_SURFACE('',#7,4.);\n";
+
+        let omitted = format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#6,$);\n{SURFACES}");
+        let err = axis2_placement(&omitted, 7).unwrap_err().to_string();
+        assert!(err.contains("zero-length axis"), "unexpected error: {err}");
+        for surface_id in [24, 25] {
+            let err = surface_geometry(&omitted, surface_id)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("zero-length axis"),
+                "surface #{surface_id}: {err}"
+            );
+        }
+
+        // Fully explicit: unchanged, degenerate plane and all. This one does
+        // import today, and moving it would move real geometry.
+        let explicit = format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#6,#3);\n{SURFACES}");
+        let (_, axis, ref_dir) = axis2_placement(&explicit, 7).unwrap();
+        assert_vec_eq(axis, Vec3::new(0.0, 0.0, 0.0), "declared zero axis");
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 1.0, 0.0), "declared ref_direction");
+
+        let surface = surface_geometry(&explicit, 24).unwrap();
+        let FaceSurface::Plane { normal, d } = surface else {
+            panic!("expected a plane, got {surface:?}");
+        };
+        assert_vec_eq(normal, Vec3::new(0.0, 0.0, 0.0), "plane normal");
+        assert!(d.abs() < 1e-12, "plane offset {d}");
+        assert!(
+            surface_geometry(&explicit, 25).is_ok(),
+            "sphere still builds"
+        );
+
+        // The refusal is an `Err` from the positional reading like any other,
+        // so the scan still gets its turn. Here a `#NNN` in the name makes up
+        // its count of three and it reads the statement — the same way, and to
+        // the same frame, as it always did.
+        let scanned = format!(
+            "{HEAD}#9 = CARTESIAN_POINT('',(9.,9.,9.));\n\
+                               #7 = AXIS2_PLACEMENT_3D('Bore #9',#1,#6,$);\n{SURFACES}"
+        );
+        let (origin, axis, ref_dir) = axis2_placement(&scanned, 7).unwrap();
+        assert_vec_eq(
+            Vec3::new(origin.x(), origin.y(), origin.z()),
+            Vec3::new(9.0, 9.0, 9.0),
+            "location, as the reference scan reads it",
+        );
+        assert_vec_eq(
+            axis,
+            Vec3::new(1.0, 2.0, 3.0),
+            "#1's coordinates as the axis",
+        );
+        assert_vec_eq(ref_dir, Vec3::new(0.0, 0.0, 0.0), "#6 as the ref_direction");
+    }
+
+    /// The one class of file that imported before this change and does not
+    /// import after it, and why that is the right answer.
+    ///
+    /// The shape: the file DECLARES a zero-length axis, and it writes the
+    /// placement in one of the two forms the old reference scan could not
+    /// follow — a `#NNN` token inside the `name` string, or a Part 21 COMPLEX
+    /// instance, whose leaves Part 21 orders ALPHABETICALLY and so puts
+    /// `AXIS2_PLACEMENT_3D`'s own attributes ahead of `PLACEMENT`'s location.
+    /// The scan took the first three `#NNN` tokens it saw, which in both forms
+    /// are not the location, axis and ref_direction; the frame it assembled
+    /// came from the wrong entities, and it was non-degenerate only because
+    /// the mis-bind had moved the file's zero into a slot no constructor
+    /// checks. Read as declared, the zero is back on the axis and the surface
+    /// constructor refuses it.
+    ///
+    /// That refusal is not new. The identical declaration written as a plain
+    /// simple instance produces the same error, and always has — nothing here
+    /// changed it. What changed is that these two spellings now reach it too,
+    /// instead of quietly importing something else. So the test pins three
+    /// things at once: the frame the reader reports is the DECLARED one, the
+    /// error matches the simple form's byte for byte, and the frame the scan
+    /// would have given is a different one, spelled out as the simple
+    /// statement that names those entities in those roles — which is exactly
+    /// what widening the fallback would restore.
+    ///
+    /// Measured differentially against the pre-change reader over 64,000
+    /// randomised hostile cylinders: every Ok->Err was this class, and in
+    /// none of them did the scan's three tokens agree with the declaration.
+    #[test]
+    fn a_declared_zero_axis_reaches_the_refusal_the_simple_form_always_got() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('Location',(1.,2.,3.));\n\
+                            #2 = DIRECTION('Axis',(0.,0.,1.));\n\
+                            #3 = DIRECTION('RefDirection',(1.,0.,0.));\n\
+                            #6 = DIRECTION('Zero',(0.,0.,0.));\n\
+                            #9 = CARTESIAN_POINT('Elsewhere',(9.,9.,9.));\n";
+        // CYLINDRICAL_SURFACE normalizes its axis, where PLANE does not.
+        const SURFACE: &str = "#24 = CYLINDRICAL_SURFACE('',#7,4.);\n";
+
+        // The declaration, written the way every reading agrees on. This is
+        // the reference behaviour: it was refused before the change and is
+        // refused after it.
+        let simple = format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#6,#3);\n{SURFACE}");
+        let baseline = surface_geometry(&simple, 24).unwrap_err().to_string();
+        assert!(
+            baseline.contains("cannot normalize zero vector"),
+            "unexpected baseline error: {baseline}"
+        );
+
+        // The same declaration in the two spellings the scan mis-read, each
+        // paired with the simple statement naming the entities the scan bound
+        // — the frame that used to be imported in its place.
+        for (label, declaration, as_the_scan_bound_it) in [
+            (
+                "a `#NNN` inside the name string",
+                "#7 = AXIS2_PLACEMENT_3D('Bore (#9) rev.2',#1,#6,#3);".to_string(),
+                // scans as (#9, #1, #6)
+                (
+                    "#7 = AXIS2_PLACEMENT_3D('',#9,#1,#6);",
+                    [9.0, 9.0, 9.0],
+                    [1.0, 2.0, 3.0],
+                ),
+            ),
+            (
+                "a Part 21 complex instance",
+                "#7 = ( AXIS2_PLACEMENT_3D(#6,#3) GEOMETRIC_REPRESENTATION_ITEM() \
+                 PLACEMENT(#1) REPRESENTATION_ITEM('') );"
+                    .to_string(),
+                // scans as (#6, #3, #1)
+                (
+                    "#7 = AXIS2_PLACEMENT_3D('',#6,#3,#1);",
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ),
+            ),
+        ] {
+            let body = format!("{HEAD}{declaration}\n{SURFACE}");
+
+            // The reader reports the frame the file declares, unaltered.
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &format!("{label}: declared location"),
+            );
+            assert_vec_eq(
+                axis,
+                Vec3::new(0.0, 0.0, 0.0),
+                &format!("{label}: declared axis"),
+            );
+            assert_vec_eq(
+                ref_dir,
+                Vec3::new(1.0, 0.0, 0.0),
+                &format!("{label}: declared ref_direction"),
+            );
+
+            // And the surface refuses it with the simple form's own error.
+            let err = surface_geometry(&body, 24).unwrap_err().to_string();
+            assert_eq!(
+                err, baseline,
+                "{label}: should refuse exactly as the simple form does"
+            );
+
+            // What the scan bound instead: a different location, a different
+            // axis, and a solid that builds. Restoring this Ok is what
+            // widening the fallback would buy, and this is the price.
+            let (scan_stmt, scan_origin, scan_axis) = as_the_scan_bound_it;
+            let scanned = format!("{HEAD}{scan_stmt}\n{SURFACE}");
+            let (origin, axis, _) = axis2_placement(&scanned, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(scan_origin[0], scan_origin[1], scan_origin[2]),
+                &format!("{label}: the location the scan used to bind"),
+            );
+            assert_vec_eq(
+                axis,
+                Vec3::new(scan_axis[0], scan_axis[1], scan_axis[2]),
+                &format!("{label}: the axis the scan used to bind"),
+            );
+            assert!(
+                surface_geometry(&scanned, 24).is_ok(),
+                "{label}: the mis-bound frame is what used to import"
+            );
+        }
+    }
+
+    /// The same two spellings with a NON-zero declared axis: they imported
+    /// before and they import now, but the frame has moved — from the one the
+    /// reference scan assembled out of the wrong entities to the one the file
+    /// declares.
+    ///
+    /// This is the far larger half of the same delta, and the reason the
+    /// smaller half is worth paying: over the 60,000-cylinder differential,
+    /// files whose imported solid silently CHANGED shape outnumbered files
+    /// that stopped importing roughly seven to one.
+    #[test]
+    fn the_same_spellings_with_a_usable_axis_now_import_the_declared_frame() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('Location',(1.,2.,3.));\n\
+                            #2 = DIRECTION('Axis',(0.,0.,1.));\n\
+                            #3 = DIRECTION('RefDirection',(1.,0.,0.));\n\
+                            #9 = CARTESIAN_POINT('Elsewhere',(9.,9.,9.));\n";
+        const SURFACE: &str = "#24 = CYLINDRICAL_SURFACE('',#7,4.);\n";
+
+        for (label, declaration) in [
+            (
+                "a `#NNN` inside the name string",
+                "#7 = AXIS2_PLACEMENT_3D('Bore (#9) rev.2',#1,#2,#3);".to_string(),
+            ),
+            (
+                "a Part 21 complex instance",
+                "#7 = ( AXIS2_PLACEMENT_3D(#2,#3) GEOMETRIC_REPRESENTATION_ITEM() \
+                 PLACEMENT(#1) REPRESENTATION_ITEM('') );"
+                    .to_string(),
+            ),
+        ] {
+            let body = format!("{HEAD}{declaration}\n{SURFACE}");
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &format!("{label}: declared location"),
+            );
+            assert_vec_eq(
+                axis,
+                Vec3::new(0.0, 0.0, 1.0),
+                &format!("{label}: declared axis"),
+            );
+            assert_vec_eq(
+                ref_dir,
+                Vec3::new(1.0, 0.0, 0.0),
+                &format!("{label}: declared ref_direction"),
+            );
+            assert!(
+                surface_geometry(&body, 24).is_ok(),
+                "{label}: still imports"
+            );
+        }
     }
 
     // ── TRIMMED_CURVE ──────────────────────────────────────────────
