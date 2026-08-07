@@ -6167,10 +6167,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_error_e07dd184a6ea68d9: function(arg0, arg1) {
+        __wbg_error_b87951a6b006ac50: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_log_a27d0e78be23f4f0: function(arg0, arg1) {
+        __wbg_log_63743db7238c93da: function(arg0, arg1) {
             console.log(getStringFromWasm0(arg0, arg1));
         },
         __wbg_new_32b398fb48b6d94a: function() {
@@ -6187,7 +6187,7 @@ function __wbg_get_imports() {
         __wbg_set_8a16b38e4805b298: function(arg0, arg1, arg2) {
             arg0[arg1 >>> 0] = arg2;
         },
-        __wbg_warn_fab2c6da0dbeb591: function(arg0, arg1) {
+        __wbg_warn_86afbbe8a5f6547a: function(arg0, arg1) {
             console.warn(getStringFromWasm0(arg0, arg1));
         },
         __wbindgen_cast_0000000000000001: function(arg0) {

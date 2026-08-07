@@ -38,6 +38,6 @@
   ],
   "type": "module",
   "types": "brepkit_wasm.d.ts",
-  "version": "2.129.0",
+  "version": "3.0.0",
   "homepage": "https://github.com/esaueng/brepkit"
 }
