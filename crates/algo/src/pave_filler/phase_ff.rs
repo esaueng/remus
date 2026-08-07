@@ -1296,8 +1296,19 @@ fn restrict_curves_to_faces(
     for raw in raw_curves {
         // Lines are clipped downstream by `clip_line_to_face`; only the
         // unbounded analytic curves (ellipse/circle/marched NURBS) need the
-        // mutual-extent test here.
+        // mutual-extent test here. The one exception is a line that touches
+        // the plane face along a measure-zero contact: the clip keeps it at
+        // full length (it really does lie on both faces), and it then splits
+        // the curved partner along a contact with no area.
         if matches!(raw.curve, EdgeCurve::Line) {
+            if line_section_is_tangency_graze(&raw, &ext_a, &ext_b, tol) {
+                log::debug!(
+                    "restrict_curves_to_faces: faces {fa:?} × {fb:?} — dropping tangency-graze line section {:?}..{:?}",
+                    raw.p_start,
+                    raw.p_end
+                );
+                continue;
+            }
             out.push(raw);
             continue;
         }
@@ -1488,6 +1499,151 @@ fn restrict_curves_to_faces(
         out.push(raw);
     }
     out
+}
+
+/// Does this LINE section meet the two faces only along a measure-zero
+/// contact, leaving the curved partner's material entirely on one side?
+///
+/// A cylinder set tangent to a box's vertical CORNER edge cuts each adjoining
+/// wall plane in two lines, and the one riding that wall's rim IS the box
+/// edge. Nothing about it is a crossing — the box material beside it lies
+/// outside the cylinder, so the faces share zero area. Kept, it splits the
+/// cylinder wall into two sub-faces, the tangent line ends up shared by four
+/// faces (both walls plus both cylinder halves), the manifold gate rejects the
+/// GFA result, and the fuse mesh-falls-back to hundreds of planar facets. This
+/// is the open-curve sibling of the closed-section margin-band veto in
+/// [`restrict_curves_to_faces`].
+///
+/// TWO conditions must both hold, and each blocks a different wrong answer:
+///
+/// 1. The line RIDES the plane face's rim. A line crossing the face INTERIOR
+///    bounds a genuine overlap however thin, so it is never a graze.
+/// 2. Stepping off the line into the face's own interior finds NO material
+///    inside the curved surface, at any offset on a ladder of them.
+///
+/// Neither alone is enough. Rim-riding alone would veto a bore breaking
+/// through exactly at a wall's rim, which is a real crossing — condition (2)
+/// keeps that section. The inside-probe alone would veto a boss overhanging a
+/// wall by ~1e-7, where the lens is so thin that every probe lands within
+/// `tol.linear` of the cylinder and nothing reads as inside — condition (1)
+/// keeps that section by never letting the probe judge an interior line. The
+/// offset LADDER earns its place for the same reason: one coarse step
+/// overshoots a thin lens entirely, one fine step sits too close to the
+/// surface to resolve.
+///
+/// Gated to a plane × analytic pair. Plane × plane section lines are the
+/// coincident-edge contacts `link_existing` turns into `CommonBlock`s, and a
+/// NURBS partner has no cheap reliable inside test.
+fn line_section_is_tangency_graze(
+    raw: &RawCurve,
+    ext_a: &FaceExtent,
+    ext_b: &FaceExtent,
+    tol: Tolerance,
+) -> bool {
+    let (plane, surface) = match (ext_a, ext_b) {
+        (plane @ FaceExtent::Plane { .. }, FaceExtent::Analytic { surface, .. })
+        | (FaceExtent::Analytic { surface, .. }, plane @ FaceExtent::Plane { .. }) => {
+            (plane, surface)
+        }
+        _ => return false,
+    };
+    let FaceExtent::Plane {
+        frame, poly, holes, ..
+    } = plane
+    else {
+        return false;
+    };
+    if !surface.is_analytic() {
+        return false;
+    }
+
+    // The line in the plane's own 2D frame. `p_start`/`p_end` are the trimmed
+    // endpoints and are used directly: a section line's `t_range` is in the
+    // line's own arc-length parameterization, while `evaluate_with_endpoints`
+    // lerps a Line on a NORMALIZED t, so feeding it the range would overshoot
+    // by the line's length.
+    let (a, b) = (frame.project(raw.p_start), frame.project(raw.p_end));
+    let (dx, dy) = (b.x() - a.x(), b.y() - a.y());
+    let len = dx.hypot(dy);
+    if !len.is_finite() || len <= tol.linear {
+        return false;
+    }
+    // In-plane normal to the section line.
+    let (nx, ny) = (-dy / len, dx / len);
+
+    let in_face = |uv: brepkit_math::vec::Point2| -> bool {
+        crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
+            && !holes
+                .iter()
+                .any(|h| crate::builder::classify_2d::point_in_polygon_2d(uv, h))
+    };
+
+    let min_dim = plane.min_dimension();
+    // Probe away from the endpoints, which sit on the rim where a face corner
+    // can push a flank probe outside the polygon at every offset.
+    let fractions = [0.25_f64, 0.5, 0.75];
+
+    // PRECONDITION: the line must RIDE the plane face's rim. A section line
+    // running through the face INTERIOR bounds a genuine crossing no matter
+    // how thin the lens is — and a thin lens is precisely where the
+    // inside-probe below runs out of resolution: a boss overhanging a wall by
+    // 1e-7 puts every probe within `tol.linear` of the cylinder, so nothing
+    // reads as "inside" and the veto would drop a section that must split the
+    // boss wall. Demanding the rim first keeps that blind spot away from
+    // interior crossings entirely.
+    let rim_band = (min_dim * 1e-6).max(tol.linear * 1e3);
+    let rides_rim = fractions.iter().all(|&f| {
+        let uv = brepkit_math::vec::Point2::new(a.x() + dx * f, a.y() + dy * f);
+        let to_outer = point_to_polygon_dist(uv, poly);
+        let to_hole = holes
+            .iter()
+            .map(|h| point_to_polygon_dist(uv, h))
+            .fold(f64::INFINITY, f64::min);
+        to_outer.min(to_hole) <= rim_band
+    });
+    if !rides_rim {
+        return false;
+    }
+
+    let offsets = [1e-2, 1e-4, 1e-6].map(|f| (min_dim * f).max(tol.linear * 10.0));
+    let mut reached_face_interior = false;
+    for f in fractions {
+        let (mx, my) = (a.x() + dx * f, a.y() + dy * f);
+        for off in offsets {
+            for side in [1.0_f64, -1.0] {
+                let uv = brepkit_math::vec::Point2::new(mx + nx * off * side, my + ny * off * side);
+                if !in_face(uv) {
+                    continue;
+                }
+                reached_face_interior = true;
+                if point_is_inside_surface(surface, frame.evaluate(uv.x(), uv.y()), tol) {
+                    return false;
+                }
+            }
+        }
+    }
+    // A line whose flanks never land in the face interior at any offset (it
+    // runs outside the trimmed region, or along a sliver too thin to probe)
+    // is not something this test can judge — leave it to the downstream clip.
+    reached_face_interior
+}
+
+/// Is `p` on the material side of a closed analytic surface — inside the
+/// cylinder/cone tube, the sphere, or the torus ring — by more than tolerance?
+///
+/// Analytic normals all point outward, so the sign of the offset from the
+/// projected foot point along the normal gives the side. Face orientation is
+/// deliberately not consulted: the question is which side of the SURFACE the
+/// point is on, which is the same whether the face bounds a boss or a bore.
+fn point_is_inside_surface(surface: &FaceSurface, p: Point3, tol: Tolerance) -> bool {
+    let Some((u, v)) = surface.project_point(p) else {
+        return false;
+    };
+    let Some(foot) = surface.evaluate(u, v) else {
+        return false;
+    };
+    let signed = (p - foot).dot(surface.normal(u, v));
+    signed.is_finite() && signed < -tol.linear
 }
 
 /// Trim a plane×torus oval to its EXACT in-box arc at the box-edge∩torus

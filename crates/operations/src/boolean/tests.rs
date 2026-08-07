@@ -7542,3 +7542,135 @@ fn fuse_cylinder_tangent_to_box_wall_succeeds() {
         report.issues
     );
 }
+
+/// Fusing a cylinder tangent to a box's vertical CORNER EDGE must stay
+/// analytic. The corner case takes a different path from the face-tangency
+/// one fixed alongside it: the wall planes are not tangent to the cylinder at
+/// all, they CUT it, and one of each pair's two section lines lands exactly on
+/// the wall's rim — which is the box's corner edge. Those lines are ordinary
+/// `Line` sections, so they bypassed every graze test in
+/// `restrict_curves_to_faces` (lines are "clipped downstream") and split the
+/// cylinder wall into two sub-faces along a zero-area contact. The tangent
+/// line then came out shared by four faces (both walls plus both cylinder
+/// halves), the manifold gate rejected the GFA result, and the fuse
+/// mesh-fell-back to 65 all-planar faces with the analytic surfaces lost.
+#[test]
+fn fuse_cylinder_tangent_to_box_corner_edge_stays_analytic() {
+    use brepkit_check::classify::{ClassifyOptions, classify_point};
+    use brepkit_math::mat::Mat4;
+
+    // Box x∈[0,60], y∈[0,40], z∈[0,40]. The cylinder axis sits on the corner
+    // diagonal at distance r from the box's vertical edge at (0,0), so the
+    // wall is tangent to that EDGE and the two solids share only that line.
+    // Both z spans are covered: caps coplanar with the box's top/bottom
+    // planes, and caps clear of them (the corner contact on its own).
+    for (cz, h) in [(0.0, 40.0), (-5.0, 55.0)] {
+        let d = 8.0 / std::f64::consts::SQRT_2;
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 60.0, 40.0, 40.0).unwrap();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 8.0, h).unwrap();
+        crate::transform::transform_solid(&mut topo, cyl, &Mat4::translation(-d, -d, cz)).unwrap();
+
+        let result = boolean(&mut topo, BooleanOp::Fuse, bx, cyl)
+            .expect("corner-tangent fuse must not error");
+
+        // The census is the only reliable fallback detector: the mesh result
+        // is watertight and valid, it is just 65 planes with no cylinder.
+        let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+        assert!(
+            (7..=12).contains(&faces.len()),
+            "h={h}: expected an analytic two-body result, got {} faces",
+            faces.len()
+        );
+        let cyl_faces = faces
+            .iter()
+            .filter(|&&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .count();
+        assert_eq!(
+            cyl_faces, 1,
+            "h={h}: cylinder wall must survive analytically"
+        );
+
+        // A line contact encloses no volume, so the union is the plain sum.
+        let vol = crate::measure::solid_volume(&topo, result, 0.1).unwrap();
+        let expected = 60.0 * 40.0 * 40.0 + std::f64::consts::PI * 64.0 * h;
+        assert!(
+            (vol - expected).abs() < expected * 1e-3,
+            "h={h}: corner-tangent fuse volume {vol} differs from {expected}"
+        );
+
+        // Ray-cast ground truth. The last two probes sit in the crevice on
+        // either side of the tangent line — outside BOTH bodies, a few tenths
+        // from the contact. A tangency welded shut would read them Inside.
+        let opts = ClassifyOptions::default();
+        for (p, want) in [
+            (Point3::new(30.0, 20.0, 20.0), "Inside"),
+            (Point3::new(-d, -d, cz + h * 0.5), "Inside"),
+            (Point3::new(-30.0, -30.0, 20.0), "Outside"),
+            (Point3::new(0.3, -0.3, 20.0), "Outside"),
+            (Point3::new(-0.3, 0.3, 20.0), "Outside"),
+        ] {
+            let got = format!("{:?}", classify_point(&topo, result, p, &opts).unwrap());
+            assert_eq!(got, want, "h={h}: classify {p:?}");
+        }
+    }
+}
+
+/// Guard for the line-graze veto: a cylinder that genuinely PENETRATES a wall
+/// while one of its two section lines rides that wall's rim exactly must still
+/// merge. Here plane x=0 cuts the cylinder at y=0 — the rim of the wall, which
+/// spans y∈[0,40] — and again at y=13.86, so the wall material between them is
+/// inside the cylinder and the section bounds real shared volume.
+///
+/// This is why the veto probes for material inside the curved surface rather
+/// than measuring how close the line runs to the rim: a proximity test would
+/// veto this section and collapse a genuine overlap into a disjoint union,
+/// which the volume assertion below would catch.
+#[test]
+fn fuse_cylinder_crossing_a_wall_at_its_rim_still_merges() {
+    use brepkit_check::classify::{ClassifyOptions, classify_point};
+    use brepkit_math::mat::Mat4;
+
+    let cy = (64.0_f64 - 16.0).sqrt();
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 60.0, 40.0, 40.0).unwrap();
+    let cyl = crate::primitives::make_cylinder(&mut topo, 8.0, 40.0).unwrap();
+    crate::transform::transform_solid(&mut topo, cyl, &Mat4::translation(-4.0, cy, 0.0)).unwrap();
+
+    let result =
+        boolean(&mut topo, BooleanOp::Fuse, bx, cyl).expect("rim-crossing fuse must not error");
+
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let cyl_faces = faces
+        .iter()
+        .filter(|&&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .count();
+    assert_eq!(cyl_faces, 1, "cylinder wall must survive analytically");
+
+    // The circular segment of the cylinder poking through the wall (x>0) is
+    // shared volume and must be counted ONCE. Its cross-section is
+    // r² acos(d/r) − d √(r²−d²) with d = 4, and it spans the full height.
+    let overlap = (64.0 * (0.5_f64).acos() - 4.0 * 48.0_f64.sqrt()) * 40.0;
+    let sum = 60.0 * 40.0 * 40.0 + std::f64::consts::PI * 64.0 * 40.0;
+    let vol = crate::measure::solid_volume(&topo, result, 0.1).unwrap();
+    assert!(
+        (vol - (sum - overlap)).abs() < sum * 1e-3,
+        "rim-crossing fuse volume {vol} differs from {}",
+        sum - overlap
+    );
+    assert!(
+        vol < sum - overlap * 0.5,
+        "volume {vol} is near the plain operand sum {sum} — the rim-riding \
+         section was dropped and the overlap never merged"
+    );
+
+    let opts = ClassifyOptions::default();
+    for (p, want) in [
+        (Point3::new(30.0, 20.0, 20.0), "Inside"),
+        (Point3::new(-4.0, cy, 20.0), "Inside"),
+        (Point3::new(0.5, -0.5, 20.0), "Outside"),
+    ] {
+        let got = format!("{:?}", classify_point(&topo, result, p, &opts).unwrap());
+        assert_eq!(got, want, "classify {p:?}");
+    }
+}
