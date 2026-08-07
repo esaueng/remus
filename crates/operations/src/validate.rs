@@ -133,6 +133,95 @@ pub fn euler_characteristic(
     Ok(euler)
 }
 
+/// Decompose a solid's faces into edge-connected components.
+///
+/// Two faces belong to the same component when they share an edge. The
+/// first component contains the solid's first face; ordering beyond that is
+/// discovery order.
+fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::face::FaceId]>>(
+    faces: &[brepkit_topology::face::FaceId],
+    edge_map: &std::collections::HashMap<usize, V>,
+) -> Vec<Vec<brepkit_topology::face::FaceId>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    // face index -> neighbor face indices via shared edges
+    let mut adjacency: HashMap<usize, HashSet<usize>> = HashMap::new();
+    for adj_faces in edge_map.values() {
+        let adj_faces: &[brepkit_topology::face::FaceId] = adj_faces;
+        for a in adj_faces {
+            for b in adj_faces {
+                if a.index() != b.index() {
+                    adjacency.entry(a.index()).or_default().insert(b.index());
+                }
+            }
+        }
+    }
+
+    let by_index: HashMap<usize, brepkit_topology::face::FaceId> =
+        faces.iter().map(|f| (f.index(), *f)).collect();
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut components = Vec::new();
+    for &start in faces {
+        if !visited.insert(start.index()) {
+            continue;
+        }
+        let mut component = vec![start];
+        let mut queue = VecDeque::from([start.index()]);
+        while let Some(current) = queue.pop_front() {
+            if let Some(neighbors) = adjacency.get(&current) {
+                for &n in neighbors {
+                    if by_index.contains_key(&n) && visited.insert(n) {
+                        component.push(by_index[&n]);
+                        queue.push_back(n);
+                    }
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
+}
+
+/// Count vertices, edges, faces, and inner wire loops of one face component.
+///
+/// Entities are deduplicated by id within the component, mirroring
+/// [`explorer::solid_entity_counts`] scoped to the component's faces.
+fn component_counts(
+    topo: &Topology,
+    component: &[brepkit_topology::face::FaceId],
+) -> Result<(i64, i64, i64, i64), crate::OperationsError> {
+    use std::collections::HashSet;
+
+    let mut edge_ids: HashSet<usize> = HashSet::new();
+    let mut vertex_ids: HashSet<usize> = HashSet::new();
+    let mut inner_loops: i64 = 0;
+    for &fid in component {
+        let face = topo.face(fid)?;
+        #[allow(clippy::cast_possible_wrap)]
+        {
+            inner_loops += face.inner_wires().len() as i64;
+        }
+        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .collect();
+        for wid in wire_ids {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                edge_ids.insert(oe.edge().index());
+                vertex_ids.insert(edge.start().index());
+                vertex_ids.insert(edge.end().index());
+            }
+        }
+    }
+    #[allow(clippy::cast_possible_wrap)]
+    Ok((
+        vertex_ids.len() as i64,
+        edge_ids.len() as i64,
+        component.len() as i64,
+        inner_loops,
+    ))
+}
+
 /// Report a shell that is turned the wrong way round.
 ///
 /// A shell can be closed, 2-manifold and consistently wound and still face
@@ -224,7 +313,9 @@ fn face_all_edges_straight(
 /// 7. **Degenerate face area**: near-zero polygon area warning for planar faces
 /// 8. **Zero-length edges**: edges with coincident start/end vertices
 /// 9. **Empty wires**: wires with no edges
-/// 10. **Shell connectivity**: all faces reachable from any face
+/// 10. **Shell connectivity**: multiple edge-connected components are valid
+///     only when each is independently closed and Euler-consistent (tangent
+///     or disjoint fuse results, cavity shells)
 /// 11. **Redundant faces**: same face ID appearing twice in shell
 /// 12. **Edge vertex consistency**: edge vertices belong to the solid
 ///
@@ -276,23 +367,53 @@ pub fn validate_solid_with_options(
         }
     }
 
+    let edge_map = explorer::edge_to_face_map(topo, solid)?;
+
+    // Edge-connected face components. A fuse of solids that touch only on a
+    // measure-zero set (tangent line/point) or not at all legitimately keeps
+    // each operand as its own closed component, and a hollow solid's cavity
+    // shell is a separate component by construction — so both the Euler and
+    // connectivity checks below evaluate PER COMPONENT: the solid is valid
+    // when every component independently forms a closed Euler-consistent
+    // shell, and invalid when any component is itself defective.
+    let components = face_connectivity_components(&faces, &edge_map);
+
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     // Adjusted Euler: subtract inner loops to get the standard characteristic.
     let adjusted_euler = euler - total_inner_loops;
     let genus_times_2 = 2 - adjusted_euler;
-    if genus_times_2 < 0 || genus_times_2 % 2 != 0 {
-        issues.push(ValidationIssue {
-            severity: Severity::Error,
-            description: format!(
-                "Euler characteristic V-E+F = {euler} is invalid \
-                 (expected V-E+F = 2+L with L={total_inner_loops} inner loops, \
-                 got V={v}, E={e}, F={f})"
-            ),
-        });
+    let mut components_euler_ok = true;
+    if components.len() <= 1 {
+        if genus_times_2 < 0 || genus_times_2 % 2 != 0 {
+            components_euler_ok = false;
+            issues.push(ValidationIssue {
+                severity: Severity::Error,
+                description: format!(
+                    "Euler characteristic V-E+F = {euler} is invalid \
+                     (expected V-E+F = 2+L with L={total_inner_loops} inner loops, \
+                     got V={v}, E={e}, F={f})"
+                ),
+            });
+        }
+    } else {
+        for (ci, comp) in components.iter().enumerate() {
+            let (cv, ce, cf, cl) = component_counts(topo, comp)?;
+            let comp_euler = cv - ce + cf;
+            let comp_genus_2 = 2 - (comp_euler - cl);
+            if comp_genus_2 < 0 || comp_genus_2 % 2 != 0 {
+                components_euler_ok = false;
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    description: format!(
+                        "Euler characteristic V-E+F = {comp_euler} is invalid for shell \
+                         component {ci} (expected V-E+F = 2+L with L={cl} inner loops, \
+                         got V={cv}, E={ce}, F={cf})"
+                    ),
+                });
+            }
+        }
     }
-
-    let edge_map = explorer::edge_to_face_map(topo, solid)?;
     let mut boundary_edges = 0;
     let mut non_manifold_edges = 0;
 
@@ -495,41 +616,22 @@ pub fn validate_solid_with_options(
         }
     }
 
-    // Shell connectivity: all faces should be reachable from any face.
-    // For genus-0 solids (sphere-like), all faces must be in one connected
-    // component. Higher-genus solids (e.g. hollow revolves creating a torus)
-    // can legitimately have multiple face-connected components (inner/outer
-    // shells sharing no edges), so we skip this check for genus > 0.
-    if !faces.is_empty() && genus_times_2 == 0 {
-        let face_set: std::collections::HashSet<usize> = faces.iter().map(|f| f.index()).collect();
-        let mut visited = std::collections::HashSet::new();
-        let mut queue = std::collections::VecDeque::new();
-
-        visited.insert(faces[0].index());
-        queue.push_back(faces[0]);
-
-        while let Some(current) = queue.pop_front() {
-            for adj_faces in edge_map.values() {
-                if adj_faces.iter().any(|f| f.index() == current.index()) {
-                    for neighbor in adj_faces {
-                        if face_set.contains(&neighbor.index()) && visited.insert(neighbor.index())
-                        {
-                            queue.push_back(*neighbor);
-                        }
-                    }
-                }
-            }
-        }
-
-        let unreachable = face_set.len() - visited.len();
-        if unreachable > 0 {
-            issues.push(ValidationIssue {
-                severity: Severity::Error,
-                description: format!(
-                    "shell is disconnected: {unreachable} face(s) not reachable from first face"
-                ),
-            });
-        }
+    // Shell connectivity. Multiple edge-connected components are valid ONLY
+    // when every component independently forms a closed Euler-consistent
+    // shell (tangent/disjoint fuse keeps each operand whole; a cavity shell
+    // shares no edges with the outer shell by construction). A disconnection
+    // paired with ANY closure or per-component-Euler defect is still the
+    // classic assembly failure and is reported as before. The historical
+    // genus>0 skip is preserved via `components_euler_ok`, which per-component
+    // Euler evaluation already accepts for higher-genus components.
+    if components.len() > 1 && !(components_euler_ok && boundary_edges == 0) {
+        let unreachable = faces.len() - components.first().map_or(0, Vec::len);
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            description: format!(
+                "shell is disconnected: {unreachable} face(s) not reachable from first face"
+            ),
+        });
     }
 
     {

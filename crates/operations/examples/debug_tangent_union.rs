@@ -83,6 +83,11 @@ fn run_case(name: &str, cx: f64, cy: f64, cz: f64, r: f64, h: f64) {
                 census(&topo, result),
                 cls.join(" ")
             );
+            if let Ok(report) = brepkit_operations::validate::validate_solid(&topo, result) {
+                for issue in &report.issues {
+                    println!("    validate: [{:?}] {}", issue.severity, issue.description);
+                }
+            }
         }
         Err(e) => println!("{name}: ERR {e}"),
     }

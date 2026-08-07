@@ -7503,4 +7503,15 @@ fn fuse_cylinder_tangent_to_box_wall_succeeds() {
         let got = format!("{:?}", classify_point(&topo, result, p, &opts).unwrap());
         assert_eq!(got, want, "classify {p:?}");
     }
+
+    // Strict validation accepts the two-component result: each edge-connected
+    // component is independently closed and Euler-consistent, which is
+    // exactly what the OpenZCAD union gate (`validateSolid === 0`) requires.
+    let report = crate::validate::validate_solid(&topo, result).unwrap();
+    assert_eq!(
+        report.error_count(),
+        0,
+        "tangent fuse must pass strict validation: {:?}",
+        report.issues
+    );
 }
