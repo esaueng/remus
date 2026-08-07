@@ -56,10 +56,18 @@ fn run_case(name: &str, cx: f64, cy: f64, cz: f64, r: f64, h: f64) {
     let mat = Mat4::translation(cx, cy, cz);
     transform_solid(&mut topo, cyl, &mat).unwrap();
 
+    // Operand volumes measured by the SAME routine, so a disjoint-union
+    // result can be compared without the measure's own bias in the way.
+    let v_box = measure::solid_volume(&topo, bx, 0.1).unwrap_or(-1.0);
+    let v_cyl = measure::solid_volume(&topo, cyl, 0.1).unwrap_or(-1.0);
+
     match boolean(&mut topo, BooleanOp::Fuse, bx, cyl) {
         Ok(result) => {
             let (free, nonman) = edge_usage(&topo, result);
+            // Two deflections: a volume that does not converge under
+            // refinement is the tell for geometry that only LOOKS closed.
             let vol = measure::solid_volume(&topo, result, 0.1).unwrap_or(-1.0);
+            let vol_fine = measure::solid_volume(&topo, result, 0.005).unwrap_or(-1.0);
             // Ray-cast classification: box interior, cylinder interior, and a
             // point outside both must classify correctly after the fuse.
             use brepkit_check::classify::{ClassifyOptions, classify_point};
@@ -79,8 +87,10 @@ fn run_case(name: &str, cx: f64, cy: f64, cz: f64, r: f64, h: f64) {
                 })
                 .collect();
             println!(
-                "{name}: OK  {}  free_edges={free} nonmanifold_edges={nonman} vol={vol:.2}  {}",
+                "{name}: OK  {}  free={free} nonman={nonman} vol={vol:.2}/{vol_fine:.2} operand_sum={:.2} delta={:+.3}  {}",
                 census(&topo, result),
+                v_box + v_cyl,
+                vol - (v_box + v_cyl),
                 cls.join(" ")
             );
             if let Ok(report) = brepkit_operations::validate::validate_solid(&topo, result) {
@@ -101,6 +111,12 @@ fn main() {
 
     if std::env::var("ONLY_TALLER").is_ok() {
         run_case("tangent-taller     ", -r, 20.0, -5.0, r, 55.0);
+        return;
+    }
+
+    if std::env::var("ONLY_CORNER").is_ok() {
+        let d = r / std::f64::consts::SQRT_2;
+        run_case("corner-tangent     ", -d, -d, 0.0, r, 40.0);
         return;
     }
 
@@ -148,4 +164,25 @@ fn main() {
     run_case("corner-gap-tall    ", -g, -g, -5.0, r, 55.0);
     // 8) Halfway overlap for sanity
     run_case("overlap-half       ", 0.0, 20.0, 0.0, r, 40.0);
+    // 9) GENUINE penetration whose section line rides a wall's rim exactly:
+    //    plane x=0 cuts the cylinder at y=0 (the rim of wall x=0, which spans
+    //    y in [0,40]) and again at y=13.86. The graze veto must NOT fire here
+    //    — the wall material beside the y=0 line IS inside the cylinder, so
+    //    the section bounds a real overlap and must still split the faces.
+    //    A veto keyed on "how close to the rim" instead of "is there material
+    //    inside" would wrongly collapse this to the disjoint-union result.
+    run_case(
+        "rim-crossing       ",
+        -4.0,
+        (r * r - 16.0).sqrt(),
+        0.0,
+        r,
+        40.0,
+    );
+    // 10) Corner diagonal with a genuine OVERLAP — the counterpart to 7b's
+    //     gap. Real shared volume at the corner, so the graze veto must stay
+    //     out of it. Still mesh-falls-back today: corner-edge OVERLAP is a
+    //     separate open case from corner-edge TANGENCY.
+    let o = (r - 0.5) / std::f64::consts::SQRT_2;
+    run_case("corner-overlap-tall", -o, -o, -5.0, r, 55.0);
 }
