@@ -26,23 +26,20 @@
 //! The signature is what identifies it: a CONSTANT number of extra open edges,
 //! the same at every bore radius, because it is the SHAFT's rims that come
 //! apart and the bore never touches them. Measured through
-//! `welded_mesh_quality` at deflection 0.01, one cylindrical face's worth
-//! either way:
+//! `welded_mesh_quality` at deflection 0.01 before the hole-aware CDT, one
+//! cylindrical face's worth either way:
 //!
-//! | bore r | open edges before #64 | with #64 | with #64 + this fix |
-//! |--------|-----------------------|----------|---------------------|
-//! |   3    |         1526          |   1682   |        1526         |
-//! |   2    |          264          |    420   |         264         |
-//! |   1    |          206          |    362   |         206         |
+//! | bore r | open edges before #64 | with #64 | with the rim fix |
+//! |--------|-----------------------|----------|------------------|
+//! |   3    |         1526          |   1682   |       1526       |
+//! |   2    |          264          |    420   |        264       |
+//! |   1    |          206          |    362   |        206       |
 //!
-//! The residue in the outer columns is a DIFFERENT, pre-existing defect and is
-//! deliberately not asserted away here: a cylindrical wall carrying inner wires
-//! goes to the analytic grid, which spans the face's whole uv box and pastes
-//! over the holes (`face::cylinder_has_non_standard_boundary` documents it; the
-//! unit test `holed_cylindrical_wall_is_rendered_without_its_holes` pins it).
-//! Those open edges sit on the BORE, scale with bore radius, and are the reason
-//! `end_rim_open_edges` below counts only the two end rims rather than reading
-//! `welded_mesh_quality` whole.
+//! The dedicated cylindrical CDT now retains the shaft wall's inner wires. A
+//! separate approximation error remains on a through-bore wall whose
+//! non-standard OUTER boundary wraps the cylinder period (the ignored unit test
+//! `a_through_bore_wall_is_drawn_at_its_true_area` pins it). That residue is why
+//! `end_rim_open_edges` below still isolates the two end rims in the broad sweep.
 //!
 //! Every expectation here is a closed form: an end rim is a circle of radius R
 //! at z = 0 and z = H, it is shared by exactly two faces, and a shared rim has
@@ -348,20 +345,19 @@ fn the_body_is_the_cross_drilled_shaft_it_claims_to_be() {
          reach the snap path at all"
     );
 
-    // Whole-mesh closure is NOT asserted: the holed wall's analytic grid pastes
-    // over its own bore openings, a separate pre-existing defect. Record what
-    // that leaves so a future fix to it shows up as a change here rather than
-    // silently.
+    // The hole-aware cylindrical path must retain the bore openings and share
+    // their seam-crossing samples with the neighbouring bore walls.
     let (mesh, _) = tessellate_solid_grouped_with_tolerance(&topo, solid, 0.01, 0.35).unwrap();
     let q = welded_mesh_quality(&mesh);
     assert_eq!(
         end_rim_open_edges(&mesh, s),
         0,
-        "the end rims must be shut even while the bore is not"
+        "the shaft's end rims must be closed"
     );
     assert!(
-        q.boundary_edges > 0,
-        "the bore openings are now closed too — good, but this file's framing \
-         of the residue is stale and its header needs rewriting"
+        q.is_watertight(),
+        "the cross-drilled shaft must be watertight: boundary={} non-manifold={}",
+        q.boundary_edges,
+        q.non_manifold_edges
     );
 }
