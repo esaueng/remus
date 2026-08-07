@@ -53,6 +53,7 @@ export const brepkernel_cut: (a: number, b: number, c: number) => [number, numbe
 export const brepkernel_cutWithEvolution: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_cutWithOptions: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_defeature: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const brepkernel_deleteSolid: (a: number, b: number) => [number, number];
 export const brepkernel_deserializeSolid: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_deserializeSolids: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_detectCoincidentFaces: (a: number, b: number, c: number) => [number, number, number, number];
@@ -262,6 +263,8 @@ export const brepkernel_transformWire: (a: number, b: number, c: number, d: numb
 export const brepkernel_unifyFaces: (a: number, b: number) => [number, number, number];
 export const brepkernel_untrimFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_validateSolid: (a: number, b: number) => [number, number, number];
+export const brepkernel_validateSolidDetailed: (a: number, b: number) => [number, number, number];
+export const brepkernel_validateSolidDetailedWithOptions: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_validateSolidRelaxed: (a: number, b: number) => [number, number, number];
 export const brepkernel_validateSolidWithOptions: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_volume: (a: number, b: number, c: number) => [number, number, number];
