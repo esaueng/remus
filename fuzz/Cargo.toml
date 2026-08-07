@@ -15,6 +15,7 @@ brepkit-io = {path = "../crates/io"}
 brepkit-math = {path = "../crates/math"}
 brepkit-operations = {path = "../crates/operations"}
 brepkit-topology = {path = "../crates/topology"}
+brepkit-wasm = {path = "../crates/wasm"}
 libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 
 [[bin]]
@@ -85,4 +86,11 @@ bench = false
 doc = false
 name = "modifier_ops"
 path = "fuzz_targets/modifier_ops.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "wasm_batch"
+path = "fuzz_targets/wasm_batch.rs"
 test = false
