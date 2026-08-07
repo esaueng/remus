@@ -3929,6 +3929,33 @@ fn box_cylinder_fuse_returns_manifold_result() {
         (volume - expected).abs() < 1e-3,
         "box-cylinder fuse volume {volume} differs from {expected}"
     );
+
+    // The 3/4 of the cylinder wall that survives the union must still BE a
+    // cylinder. Volume alone cannot say so: this case reached the right
+    // ballpark for days as an all-planar mesh fallback, and a fallback whose
+    // discretization error happens to land inside 1e-3 would pass every
+    // assertion above. The surface census is what separates the analytic
+    // result from the mesh that approximates it.
+    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let cylinders = faces
+        .iter()
+        .filter(|fid| {
+            matches!(
+                topo.face(**fid).unwrap().surface(),
+                brepkit_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .count();
+    assert_eq!(
+        cylinders,
+        1,
+        "the union must keep the cylinder wall analytic, got {} faces: {:?}",
+        faces.len(),
+        faces
+            .iter()
+            .map(|fid| topo.face(*fid).unwrap().surface().type_tag())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// This intersect used to be pinned as a refusal

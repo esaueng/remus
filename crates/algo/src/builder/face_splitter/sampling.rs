@@ -63,9 +63,25 @@ pub(super) fn sample_wire_loop_uv_via_frame(
 
 /// Sample UV points along a wire loop with optional periodic unwrapping.
 ///
-/// When `u_period`/`v_period` is set, unwraps consecutive points so the
-/// UV path is continuous (no jumps of ~2pi between edges connected via
-/// periodic quantization).
+/// When `u_period`/`v_period` is set, unwraps the UV path so it is continuous
+/// (no jumps of ~2pi between edges connected via periodic quantization).
+///
+/// Unwrapping is done PER EDGE, never across the whole flattened point list.
+/// An edge's own stored span is authoritative: a boundary arc on a cylinder is
+/// a Line2D pcurve whose two endpoints already carry the true parametric
+/// delta. Re-deriving that delta by rounding `du / period` is a coin flip for a
+/// SEMICIRCLE, whose step is exactly half a period — and `f64::round` breaks
+/// the tie away from zero, so it always folds a genuine +pi to -pi (or the
+/// reverse) regardless of which way the arc actually runs. A cylinder rim built
+/// from two semicircular edges hits that tie exactly, not approximately, so no
+/// epsilon avoids it: the 3/4 band left by a quarter-overlap cut then folds
+/// onto the quarter's u-range, and its interior sample lands in the
+/// neighbouring sub-face — misclassifying the wall and dropping it from the
+/// result.
+///
+/// Between edges the step is unambiguous (consecutive edges share a vertex, so
+/// the raw delta is a whole number of periods), which is exactly where the
+/// period-copy reconciliation belongs.
 pub(super) fn sample_wire_loop_uv_periodic(
     wire: &[OrientedPCurveEdge],
     u_period: Option<f64>,
@@ -74,16 +90,17 @@ pub(super) fn sample_wire_loop_uv_periodic(
     use brepkit_math::curves2d::Curve2D;
     const CURVE_SAMPLES: usize = 8;
 
-    let mut pts = Vec::new();
+    let mut pts: Vec<Point2> = Vec::new();
     let has_period = u_period.is_some() || v_period.is_some();
     for edge in wire {
+        let mut group: Vec<Point2> = Vec::new();
         match &edge.pcurve {
             Curve2D::Line(_) => {
                 // For periodic surfaces, push both start and end to enable
                 // proper unwrapping across periodic jumps at seam vertices.
-                pts.push(edge.start_uv);
+                group.push(edge.start_uv);
                 if has_period {
-                    pts.push(edge.end_uv);
+                    group.push(edge.end_uv);
                 }
             }
             Curve2D::Nurbs(nurbs) => {
@@ -101,10 +118,10 @@ pub(super) fn sample_wire_loop_uv_periodic(
                         } else {
                             tn - (tn - t0) * frac
                         };
-                        pts.push(nurbs.evaluate(t));
+                        group.push(nurbs.evaluate(t));
                     }
                 } else {
-                    pts.push(edge.start_uv);
+                    group.push(edge.start_uv);
                 }
             }
             Curve2D::Circle(_) | Curve2D::Ellipse(_) => {
@@ -115,18 +132,45 @@ pub(super) fn sample_wire_loop_uv_periodic(
                 #[allow(clippy::cast_precision_loss)]
                 for i in 0..CURVE_SAMPLES {
                     let t = i as f64 / CURVE_SAMPLES as f64;
-                    pts.push(Point2::new(
+                    group.push(Point2::new(
                         edge.start_uv.x() + (edge.end_uv.x() - edge.start_uv.x()) * t,
                         edge.start_uv.y() + (edge.end_uv.y() - edge.start_uv.y()) * t,
                     ));
                 }
             }
         }
-    }
 
-    // Unwrap periodic UV jumps between consecutive points.
-    if pts.len() >= 2 {
-        super::super::pcurve_compute::unwrap_periodic_params_pub(&mut pts, u_period, v_period);
+        if group.is_empty() {
+            continue;
+        }
+        if !has_period {
+            pts.append(&mut group);
+            continue;
+        }
+
+        // Densely-sampled groups come from evaluating one pcurve, so successive
+        // samples are a small fraction of a period apart and rounding is
+        // unambiguous — unwrap them so a pcurve stored across the seam is made
+        // continuous. A two-point group is the edge's own stored span and is
+        // left exactly as recorded.
+        if group.len() > 2 {
+            super::super::pcurve_compute::unwrap_periodic_params_pub(
+                &mut group, u_period, v_period,
+            );
+        }
+
+        // Shift the whole group onto the period copy nearest the previous
+        // edge's end, preserving every delta inside the group.
+        if let Some(prev) = pts.last().copied() {
+            let du = u_period.map_or(0.0, |p| -p * ((group[0].x() - prev.x()) / p).round());
+            let dv = v_period.map_or(0.0, |p| -p * ((group[0].y() - prev.y()) / p).round());
+            if du != 0.0 || dv != 0.0 {
+                for g in &mut group {
+                    *g = Point2::new(g.x() + du, g.y() + dv);
+                }
+            }
+        }
+        pts.append(&mut group);
     }
 
     pts
@@ -170,4 +214,101 @@ pub(super) fn normalize_angle_in_span(angle: f64, t0: f64, span: f64) -> f64 {
         }
     }
     delta / span
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use brepkit_math::vec::{Point3, Vec2};
+    use brepkit_topology::edge::EdgeCurve;
+    use std::f64::consts::{PI, TAU};
+
+    /// A UV-space edge is all `sample_wire_loop_uv_periodic` reads; the 3D
+    /// fields only have to be present.
+    fn uv_edge(su: f64, sv: f64, eu: f64, ev: f64) -> OrientedPCurveEdge {
+        let start_uv = Point2::new(su, sv);
+        let end_uv = Point2::new(eu, ev);
+        let dir = Vec2::new(eu - su, ev - sv);
+        OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            pcurve: Curve2D::Line(
+                Line2D::new(start_uv, dir)
+                    .unwrap_or_else(|_| Line2D::new(start_uv, Vec2::new(1.0, 0.0)).unwrap()),
+            ),
+            start_uv,
+            end_uv,
+            start_3d: Point3::new(0.0, 0.0, 0.0),
+            end_3d: Point3::new(0.0, 0.0, 0.0),
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+        }
+    }
+
+    /// The 3/4 lateral band left when a box takes the first quadrant out of a
+    /// cylinder whose seam sits exactly on the cut plane. Both bounding rims
+    /// are built from two SEMICIRCLES, so two of the wire's steps are exactly
+    /// half a period — the tie that `f64::round` breaks away from zero.
+    ///
+    /// The band must come back spanning its true 3pi/2 of u. Folding either
+    /// semicircle the wrong way collapses it onto the quarter's u-range, and
+    /// the interior sample then lands in the neighbouring sub-face.
+    #[test]
+    fn a_semicircle_step_keeps_its_own_direction() {
+        let (q1, q3) = (PI / 2.0, 3.0 * PI / 2.0);
+        // Right side up; top rim right-to-left as a semicircle then a quarter;
+        // left side down; bottom rim back left-to-right, stored one period up.
+        let wire = vec![
+            uv_edge(q3, 0.0, q3, 2.0),
+            uv_edge(q3, 2.0, q1, 2.0),  // -pi, the ambiguous step
+            uv_edge(q1, 2.0, 0.0, 2.0), // -pi/2
+            uv_edge(0.0, 2.0, 0.0, 0.0),
+            uv_edge(TAU, 0.0, TAU + q1, 0.0), // +pi/2, a period copy up
+            uv_edge(TAU + q1, 0.0, TAU + q3, 0.0), // +pi, the ambiguous step
+        ];
+
+        let pts = sample_wire_loop_uv_periodic(&wire, Some(TAU), None);
+
+        let u_min = pts.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min);
+        let u_max = pts.iter().map(|p| p.x()).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (u_max - u_min - q3).abs() < 1e-9,
+            "3/4 band must span 3pi/2 of u, got {:.6} over [{u_min:.4}, {u_max:.4}]",
+            u_max - u_min
+        );
+
+        // The centroid is the interior sample the classifier consumes: it has
+        // to land in the band's own u-range, not the quarter's.
+        #[allow(clippy::cast_precision_loss)]
+        let cu = pts.iter().map(|p| p.x()).sum::<f64>() / pts.len() as f64;
+        assert!(
+            cu > u_min + 1e-9 && cu < u_max - 1e-9,
+            "interior u {cu:.6} escaped the band [{u_min:.4}, {u_max:.4}]"
+        );
+    }
+
+    /// The quarter piece has no half-period step, so per-edge unwrapping must
+    /// leave it exactly where whole-list unwrapping did.
+    #[test]
+    fn a_quarter_band_is_unchanged() {
+        let q3 = 3.0 * PI / 2.0;
+        let wire = vec![
+            uv_edge(q3, 2.0, q3, 0.0),
+            uv_edge(q3, 0.0, TAU, 0.0),
+            uv_edge(0.0, 0.0, 0.0, 2.0),
+            uv_edge(0.0, 2.0, -PI / 2.0, 2.0),
+        ];
+
+        let pts = sample_wire_loop_uv_periodic(&wire, Some(TAU), None);
+
+        let u_min = pts.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min);
+        let u_max = pts.iter().map(|p| p.x()).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (u_min - q3).abs() < 1e-9 && (u_max - TAU).abs() < 1e-9,
+            "quarter must stay on [3pi/2, 2pi], got [{u_min:.4}, {u_max:.4}]"
+        );
+    }
 }
