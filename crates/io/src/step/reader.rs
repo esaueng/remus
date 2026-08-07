@@ -1271,6 +1271,18 @@ impl<'a> StepBuilder<'a> {
                     })?;
                 Ok(EdgeCurve::Circle(circle))
             }
+            // ELLIPSE('name', #axis2_placement_3d, semi_axis_1, semi_axis_2)
+            // — ISO 10303-42. The placement's z is the plane normal and its
+            // ref_direction is the MAJOR axis, the one carrying
+            // `semi_axis_1`, so it is passed through explicitly
+            // (`new_with_ref`, not `new`): `Ellipse3D::new` re-derives an
+            // arbitrary in-plane frame from the normal alone, which for a
+            // Z-up normal lands on `(0,1,0)` and turns every such ellipse a
+            // quarter turn inside its own plane.
+            //
+            // `new_with_ref` applies ISO's `first_proj_axis` itself — it
+            // projects ref_direction off the normal before normalizing — so
+            // the raw direction is what belongs here, unprojected.
             "ELLIPSE" => {
                 let refs = parse_refs(&attrs);
                 let floats = parse_floats(&attrs);
@@ -1282,12 +1294,13 @@ impl<'a> StepBuilder<'a> {
                         reason: format!("ELLIPSE #{curve_ref} needs semi_major and semi_minor"),
                     });
                 }
-                let (center, normal, _u_axis) = self.build_axis2_placement(axis_ref)?;
-                let ellipse = brepkit_math::curves::Ellipse3D::new(
+                let (center, normal, u_axis) = self.build_axis2_placement(axis_ref)?;
+                let ellipse = brepkit_math::curves::Ellipse3D::new_with_ref(
                     center,
                     normal,
                     floats[0] * self.units.length,
                     floats[1] * self.units.length,
+                    u_axis,
                 )
                 .map_err(|e| IoError::ParseError {
                     reason: format!("ELLIPSE #{curve_ref}: {e}"),
@@ -1344,7 +1357,27 @@ impl<'a> StepBuilder<'a> {
                 let focal = floats.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("PARABOLA #{curve_ref} missing focal_dist"),
                 })? * self.units.length;
-                let (vertex, normal, axis_dir) = self.build_axis2_placement(axis_ref)?;
+                let (vertex, normal, ref_dir) = self.build_axis2_placement(axis_ref)?;
+                // ISO's `first_proj_axis(z, ref_direction)` — ref_direction
+                // with its component along the normal removed — has to be
+                // applied HERE, because `Parabola3D::with_axes` will not do
+                // it: its second argument is the symmetry axis and it
+                // orthogonalizes only the u_axis, against that axis. The
+                // sibling `Hyperbola3D::with_axes` takes the plane NORMAL in
+                // the same slot and does project, so the two calls read alike
+                // and mean different things; passing the raw direction here
+                // tilted the parabola out of the plane the file declared.
+                let normal = normal.normalize().map_err(|e| IoError::ParseError {
+                    reason: format!("PARABOLA #{curve_ref}: plane normal: {e}"),
+                })?;
+                let axis_dir = (ref_dir - normal * ref_dir.dot(normal))
+                    .normalize()
+                    .map_err(|_| IoError::ParseError {
+                        reason: format!(
+                            "PARABOLA #{curve_ref}: ref_direction is parallel to the plane \
+                             normal, so the parabola's plane is undefined"
+                        ),
+                    })?;
                 let par = brepkit_math::curves::Parabola3D::with_axes(
                     vertex,
                     axis_dir,
