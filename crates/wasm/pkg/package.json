@@ -13,8 +13,8 @@
     "brepkit_wasm.js",
     "brepkit_wasm_bg.js",
     "brepkit_wasm.d.ts",
-    "LICENSE-MIT",
     "LICENSE-APACHE",
+    "LICENSE-MIT",
     "brepkit_wasm_node.cjs"
   ],
   "keywords": [
