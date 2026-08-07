@@ -11,6 +11,7 @@ use crate::builder::plane_frame::PlaneFrame;
 use crate::ds::{GfaArena, Interference, Pave};
 use crate::error::AlgoError;
 use brepkit_math::aabb::Aabb3;
+use brepkit_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point2, Point3, Vec3};
 use brepkit_topology::Topology;
@@ -23,6 +24,11 @@ use super::helpers::{add_pave_to_edge, find_nearby_pave_vertex as find_nearby_ve
 
 /// Number of samples along each edge for sign-change detection.
 const N_SAMPLES: usize = 64;
+
+/// Newton tolerance for NURBS point inversion here, matching what
+/// [`ParametricSurface::project_point`](brepkit_math::traits::ParametricSurface::project_point)
+/// hardcodes — the call the pre-gridded path stands in for.
+const NURBS_PROJECT_TOL: f64 = 1e-7;
 
 /// Number of samples per boundary edge for face containment polygons.
 const N_BOUNDARY_SAMPLES: usize = 32;
@@ -291,6 +297,20 @@ fn check_edge_face_pairs(
         .map(|c| c.bbox.expanded(tol.linear))
         .collect();
 
+    // Inverting a point onto a NURBS surface starts with an 81-point coarse
+    // grid, and that grid depends only on the surface — yet the loop below
+    // rebuilds it for every sample of every edge against the same face. On a
+    // fused bin socket that is ~77% of the phase's time. Evaluate each face's
+    // grid once here and the whole nest reuses it; the seed it yields is the
+    // same node, so every crossing is unchanged.
+    let mut seed_grids: Vec<Option<SurfaceSeedGrid>> = Vec::with_capacity(faces.len());
+    for &fid in faces {
+        seed_grids.push(match topo.face(fid)?.surface() {
+            FaceSurface::Nurbs(nurbs) => Some(SurfaceSeedGrid::for_surface(nurbs)),
+            _ => None,
+        });
+    }
+
     for &eid in edges {
         // Snapshot edge data to avoid holding immutable borrow across add_vertex
         let (curve, start_pos, end_pos, t0, t1) = {
@@ -332,6 +352,7 @@ fn check_edge_face_pairs(
 
             let face = topo.face(fid)?;
             let surface = face.surface();
+            let grid = seed_grids[face_idx].as_ref();
 
             // An edge lying entirely ON the face's surface is a coincidence
             // handled by the FF/same-domain machinery, not a set of
@@ -341,7 +362,7 @@ fn check_edge_face_pairs(
             let edge_on_surface = (0..=n_chk).all(|i| {
                 let t = t0 + (t1 - t0) * (f64::from(i) / f64::from(n_chk));
                 let pt = curve.evaluate_with_endpoints(t, start_pos, end_pos);
-                distance_to_surface(pt, surface) < tol.linear
+                distance_to_surface(pt, surface, grid) < tol.linear
             });
             if edge_on_surface {
                 continue;
@@ -351,7 +372,9 @@ fn check_edge_face_pairs(
                 FaceSurface::Plane { normal, d } => {
                     find_edge_plane_crossings(&curve, start_pos, end_pos, t0, t1, *normal, *d, tol)
                 }
-                _ => find_edge_surface_crossings(&curve, start_pos, end_pos, t0, t1, surface, tol),
+                _ => find_edge_surface_crossings(
+                    &curve, start_pos, end_pos, t0, t1, surface, tol, grid,
+                ),
             };
 
             // Endpoint-drop windows, one per crossing and per endpoint,
@@ -372,7 +395,7 @@ fn check_edge_face_pairs(
             // crossing near (but not at) an off-surface endpoint is genuine
             // topology and must keep its pave (dropping those regressed the
             // honeycomb wall-cut raw residual).
-            let on_surface = |p: Point3| distance_to_surface(p, surface) <= tol.linear;
+            let on_surface = |p: Point3| distance_to_surface(p, surface, grid) <= tol.linear;
             let start_on_surface = on_surface(start_pos);
             let end_on_surface = on_surface(end_pos);
             let endpoint_windows: Vec<(f64, f64, f64)> = crossings
@@ -437,7 +460,7 @@ fn check_edge_face_pairs(
                         // point passed containment, but the vertex sits up to
                         // the window away from it.
                         |p| {
-                            distance_to_surface(p, surface) <= tol.linear
+                            distance_to_surface(p, surface, grid) <= tol.linear
                                 && containments[face_idx].accepts(p)
                         },
                     )
@@ -570,6 +593,7 @@ fn find_edge_plane_crossings(
 }
 
 /// Find edge-surface crossings by sampling signed distance and refining.
+#[allow(clippy::too_many_arguments)]
 fn find_edge_surface_crossings(
     curve: &EdgeCurve,
     start_pos: Point3,
@@ -578,6 +602,7 @@ fn find_edge_surface_crossings(
     t1: f64,
     surface: &FaceSurface,
     tol: Tolerance,
+    grid: Option<&SurfaceSeedGrid>,
 ) -> Vec<(f64, Point3)> {
     let n = N_SAMPLES;
     let mut crossings = Vec::new();
@@ -587,23 +612,25 @@ fn find_edge_surface_crossings(
     for i in 0..=n {
         let t = t0 + (t1 - t0) * (i as f64 / n as f64);
         let pt = curve.evaluate_with_endpoints(t, start_pos, end_pos);
-        let dist = distance_to_surface(pt, surface);
+        let dist = distance_to_surface(pt, surface, grid);
 
         if i > 0 && dist < tol.linear {
             let is_dup = crossings
                 .iter()
                 .any(|&(ct, _): &(f64, Point3)| (t - ct).abs() < (t1 - t0) / (n as f64) * 2.0);
             if !is_dup {
-                let refined = refine_crossing(curve, start_pos, end_pos, prev_t, t, surface, tol);
+                let refined =
+                    refine_crossing(curve, start_pos, end_pos, prev_t, t, surface, tol, grid);
                 crossings.push(refined);
             }
         } else if i > 0 && prev_dist > tol.linear && dist > tol.linear {
             let mid_t = f64::midpoint(prev_t, t);
             let mid_pt = curve.evaluate_with_endpoints(mid_t, start_pos, end_pos);
-            let mid_dist = distance_to_surface(mid_pt, surface);
+            let mid_dist = distance_to_surface(mid_pt, surface, grid);
             if mid_dist < prev_dist.min(dist) && mid_dist < tol.linear * 2.0 {
-                let refined = refine_crossing(curve, start_pos, end_pos, prev_t, t, surface, tol);
-                if distance_to_surface(refined.1, surface) < tol.linear {
+                let refined =
+                    refine_crossing(curve, start_pos, end_pos, prev_t, t, surface, tol, grid);
+                if distance_to_surface(refined.1, surface, grid) < tol.linear {
                     crossings.push(refined);
                 }
             }
@@ -619,10 +646,12 @@ fn find_edge_surface_crossings(
                     let d1 = distance_to_surface(
                         curve.evaluate_with_endpoints(m1, start_pos, end_pos),
                         surface,
+                        grid,
                     );
                     let d2 = distance_to_surface(
                         curve.evaluate_with_endpoints(m2, start_pos, end_pos),
                         surface,
+                        grid,
                     );
                     if d1 < d2 {
                         hi = m2;
@@ -632,13 +661,13 @@ fn find_edge_surface_crossings(
                 }
                 let t_min = f64::midpoint(lo, hi);
                 let pt_min = curve.evaluate_with_endpoints(t_min, start_pos, end_pos);
-                if distance_to_surface(pt_min, surface) < tol.linear {
+                if distance_to_surface(pt_min, surface, grid) < tol.linear {
                     let is_dup = crossings.iter().any(|&(ct, _): &(f64, Point3)| {
                         (t_min - ct).abs() < (t1 - t0) / (n as f64) * 2.0
                     });
                     if !is_dup {
                         let refined =
-                            refine_crossing(curve, start_pos, end_pos, lo, hi, surface, tol);
+                            refine_crossing(curve, start_pos, end_pos, lo, hi, surface, tol, grid);
                         crossings.push(refined);
                     }
                 }
@@ -733,9 +762,24 @@ fn find_crossings_by_sampling(
 }
 
 /// Compute distance from point to surface.
-fn distance_to_surface(pt: Point3, surface: &FaceSurface) -> f64 {
+fn distance_to_surface(pt: Point3, surface: &FaceSurface, grid: Option<&SurfaceSeedGrid>) -> f64 {
     if let FaceSurface::Plane { normal, d } = surface {
         (pt.x() * normal.x() + pt.y() * normal.y() + pt.z() * normal.z() - d).abs()
+    } else if let (FaceSurface::Nurbs(nurbs), Some(grid)) = (surface, grid) {
+        // Identical to the generic arm below, with the coarse grid handed in
+        // rather than rebuilt: same nodes, same nearest node, same Newton
+        // start. Mirrors `ParametricSurface::project_point` exactly, midpoint
+        // fallback included — this is a speed change, not a behaviour one.
+        let (u, v) = if let Ok(proj) =
+            project_point_to_surface_with_grid(nurbs, pt, NURBS_PROJECT_TOL, grid)
+        {
+            (proj.u, proj.v)
+        } else {
+            let (u0, u1) = nurbs.domain_u();
+            let (v0, v1) = nurbs.domain_v();
+            ((u0 + u1) * 0.5, (v0 + v1) * 0.5)
+        };
+        (pt - nurbs.evaluate(u, v)).length()
     } else if let Some((u, v)) = surface.project_point(pt) {
         if let Some(surf_pt) = surface.evaluate(u, v) {
             (pt - surf_pt).length()
@@ -748,6 +792,7 @@ fn distance_to_surface(pt: Point3, surface: &FaceSurface) -> f64 {
 }
 
 /// Refine a crossing between two parameter values using ternary search.
+#[allow(clippy::too_many_arguments)]
 fn refine_crossing(
     curve: &EdgeCurve,
     start_pos: Point3,
@@ -756,6 +801,7 @@ fn refine_crossing(
     t_hi: f64,
     surface: &FaceSurface,
     _tol: Tolerance,
+    grid: Option<&SurfaceSeedGrid>,
 ) -> (f64, Point3) {
     let mut lo = t_lo;
     let mut hi = t_hi;
@@ -766,10 +812,12 @@ fn refine_crossing(
         let d1 = distance_to_surface(
             curve.evaluate_with_endpoints(m1, start_pos, end_pos),
             surface,
+            grid,
         );
         let d2 = distance_to_surface(
             curve.evaluate_with_endpoints(m2, start_pos, end_pos),
             surface,
+            grid,
         );
         if d1 < d2 {
             hi = m2;

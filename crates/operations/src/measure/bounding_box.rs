@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use brepkit_math::aabb::Aabb3;
+use brepkit_math::nurbs::projection::{project_point_to_surface, project_point_to_surface_seeded};
+use brepkit_math::nurbs::surface::NurbsSurface;
 use brepkit_math::surfaces::{SphericalSurface, ToroidalSurface};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
@@ -110,7 +112,8 @@ fn aabb_include(aabb: &mut Aabb3, p: Point3) {
 ///   region, recovered from its boundary (see [`ring_patch_box`])
 /// - **Cylinder/Cone**: wire-bounded expansion (sample edge midpoints
 ///   to avoid over-expanding for partial arcs like fillets)
-/// - **NURBS**: sparse interior grid sampling
+/// - **NURBS**: sparse interior grid sampling, over the face's *trimmed*
+///   parameter box (see [`nurbs_patch_domain`])
 /// - **Plane**: no expansion needed
 #[allow(clippy::too_many_lines)]
 fn expand_aabb_for_face(
@@ -174,26 +177,32 @@ fn expand_aabb_for_face(
             expand_cone_at_vertices(topo, aabb, face_id, c);
         }
 
-        // NURBS: sample the surface at a sparse interior grid.
-        //
-        // KNOWN GAP: this grid spans the surface's whole knot domain, so a face
-        // trimmed to a corner of a larger patch still reports the rest of it —
-        // the same defect the sphere/torus arms above just lost. Closing it
-        // needs the face's parameter region, and a NURBS surface only yields
-        // that through `project_point` (a coarse grid search plus Newton,
-        // ~7.5 us a sample against the analytic surfaces' closed-form atan2),
-        // plus a periodicity guard so a closed patch whose seam bounds nothing
-        // does not collapse. Left for its own change rather than folded in
-        // here on a performance and soundness profile this one does not share.
+        // NURBS: grid-sample the surface over the region the face is trimmed
+        // to, not the whole knot domain — a face cut from the corner of a big
+        // patch must not report the rest of the patch, same as the analytic
+        // arms above.
         FaceSurface::Nurbs(nurbs) => {
-            let (u_min, u_max) = nurbs.domain_u();
-            let (v_min, v_max) = nurbs.domain_v();
+            // The surface lies inside its control points' convex hull (the
+            // weights are positive by construction), so if that hull is
+            // already inside the box, no sample of this face can move it.
+            // Skips the projection below outright — and the final box is the
+            // same either way, since `aabb` only ever grows.
+            if control_hull_within(nurbs, aabb) {
+                return;
+            }
+            let dom = nurbs_patch_domain(topo, face_id, nurbs);
+            let ((u_min, u_max), (v_min, v_max)) = (dom.u, dom.v);
+            // Sampled closed, endpoints included: the extremes of a region sit
+            // anywhere in its parameter box, commonly on an edge of it, and
+            // that box is now the face's own rather than the whole surface's.
+            // Interior-only sampling was tuned for the full domain, where the
+            // boundary edges covered the rim; on a trimmed region it misses.
             let n_samples = 4;
             #[allow(clippy::cast_precision_loss)]
-            for iu in 1..n_samples {
-                let u = u_min + (u_max - u_min) * (iu as f64) / (n_samples as f64);
-                for iv in 1..n_samples {
-                    let v = v_min + (v_max - v_min) * (iv as f64) / (n_samples as f64);
+            for iu in 0..=n_samples {
+                let u = u_min + (u_max - u_min) * (f64::from(iu) / f64::from(n_samples));
+                for iv in 0..=n_samples {
+                    let v = v_min + (v_max - v_min) * (f64::from(iv) / f64::from(n_samples));
                     aabb_include(aabb, nurbs.evaluate(u, v));
                 }
             }
@@ -207,11 +216,68 @@ fn expand_aabb_for_face(
 /// [`compute_angular_range`] reads as "the face stops here".
 const TRIM_SAMPLES_PER_EDGE: usize = 16;
 
-/// The `(u, v)` rectangle a face occupies on its analytic surface.
+/// Samples per boundary edge when recovering a NURBS face's region. Lower than
+/// [`TRIM_SAMPLES_PER_EDGE`] because a NURBS surface has no closed-form
+/// inversion: each sample costs a coarse grid search plus Newton (~4.5 us,
+/// against an `atan2` on the analytic surfaces). 8 resolves a trim curve's
+/// parameter span well inside [`NURBS_DOMAIN_PAD`].
+const NURBS_TRIM_SAMPLES_PER_EDGE: usize = 8;
+
+/// Roughly how many boundary samples one NURBS face may spend on recovery.
 ///
-/// `u.1 - u.0 == TAU` (and likewise for `v`) means "not bounded by the
-/// boundary in this direction" — the face wraps, or its boundary degenerates
-/// to a seam — so the caller must assume the full period.
+/// Per-edge sampling alone makes the cost scale with edge count, and a face
+/// carved up by neighbouring features can carry dozens of edges — the same
+/// per-edge density that costs 36 projections on a four-sided face costs 432 on
+/// a forty-eight-sided one. Spreading a budget instead keeps a face's recovery
+/// bounded, and costs such a face nothing: its own edge endpoints already
+/// resolve the boundary finely.
+const NURBS_TRIM_SAMPLE_BUDGET: usize = 64;
+
+/// Newton tolerance for inverting a boundary sample onto its NURBS surface.
+///
+/// The value [`ParametricSurface::project_point`](brepkit_math::traits::ParametricSurface::project_point)
+/// hardcodes, which is the solve this replaced.
+const NURBS_PROJECT_TOL: f64 = 1e-7;
+
+/// Floor for the residual a seeded inversion may leave, as a fraction of the
+/// surface's own size.
+///
+/// It cannot be [`NURBS_PROJECT_TOL`]: a boundary sample is a point of the
+/// *edge* curve, which lies on the face's surface only to the tolerance the
+/// edge was built or imported at, so demanding the Newton tolerance itself
+/// would reject every healthy-but-inexact edge and fall back on all of them —
+/// slower than never having seeded at all. Nor can it be an absolute slack,
+/// which would mean different things on a part drawn in metres and one drawn
+/// in millimetres.
+///
+/// This is only the floor. How far a face's edges actually sit off its surface
+/// is a property of that face, not a constant, so the real budget is learned
+/// per face — see [`SeedBudget`].
+const NURBS_SEED_FLOOR_FRAC: f64 = 1e-5;
+
+/// Margin over a face's own observed edge-to-surface gap within which a seeded
+/// inversion is still believed.
+///
+/// The failure being screened out is a seed whose basin led somewhere else on
+/// the patch, which lands a good fraction of the patch away — far outside a
+/// few times the gap the face's own edges already show.
+const NURBS_SEED_SLACK: f64 = 4.0;
+
+/// Slack added to each side of a recovered NURBS parameter span, as a fraction
+/// of that span.
+///
+/// A region bounded by a closed loop has exactly its boundary's parameter box,
+/// so the only error is that a finite set of samples can miss where the trim
+/// curve reaches furthest between them. This covers that, and the residue of
+/// Newton's distance-space convergence.
+const NURBS_DOMAIN_PAD: f64 = 0.1;
+
+/// The `(u, v)` rectangle a face occupies on its surface.
+///
+/// A span equal to the surface's full extent in that direction — a period of
+/// `TAU` on the analytic surfaces, the knot domain on a NURBS one — means "the
+/// boundary does not bound the face here": it wraps, or it degenerates to a
+/// seam. Recovery returns exactly that whenever it cannot prove otherwise.
 struct PatchDomain {
     u: (f64, f64),
     v: (f64, f64),
@@ -219,7 +285,7 @@ struct PatchDomain {
 
 /// Sample every boundary edge of a face — outer wire and inner wires — at
 /// [`TRIM_SAMPLES_PER_EDGE`] intervals, endpoints included.
-fn face_boundary_samples(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
+fn face_boundary_samples(topo: &Topology, face_id: FaceId, per_edge: usize) -> Vec<Point3> {
     let mut pts = Vec::new();
     let Ok(face) = topo.face(face_id) else {
         return pts;
@@ -237,15 +303,27 @@ fn face_boundary_samples(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
             };
             let (p_start, p_end) = (sv.point(), ev.point());
             let (t0, t1) = edge.curve().domain_with_endpoints(p_start, p_end);
-            for i in 0..=TRIM_SAMPLES_PER_EDGE {
+            for i in 0..=per_edge {
                 #[allow(clippy::cast_precision_loss)]
-                let frac = (i as f64) / (TRIM_SAMPLES_PER_EDGE as f64);
+                let frac = (i as f64) / (per_edge as f64);
                 let t = (t1 - t0).mul_add(frac, t0);
                 pts.push(edge.curve().evaluate_with_endpoints(t, p_start, p_end));
             }
         }
     }
     pts
+}
+
+/// Total edges across a face's outer and inner wires.
+fn face_boundary_edge_count(topo: &Topology, face_id: FaceId) -> usize {
+    let Ok(face) = topo.face(face_id) else {
+        return 0;
+    };
+    std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .filter_map(|wid| topo.wire(wid).ok())
+        .map(|wire| wire.edges().len())
+        .sum()
 }
 
 /// Recover the `(u, v)` rectangle a toroidal face occupies.
@@ -255,7 +333,7 @@ fn face_boundary_samples(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
 /// which is what [`compute_angular_range`] tests, returning the full period
 /// when it finds none.
 fn torus_patch_domain(topo: &Topology, face_id: FaceId, t: &ToroidalSurface) -> PatchDomain {
-    let pts = face_boundary_samples(topo, face_id);
+    let pts = face_boundary_samples(topo, face_id, TRIM_SAMPLES_PER_EDGE);
     let mut us = Vec::with_capacity(pts.len());
     let mut vs = Vec::with_capacity(pts.len());
     for p in &pts {
@@ -279,7 +357,7 @@ fn torus_patch_domain(topo: &Topology, face_id: FaceId, t: &ToroidalSurface) -> 
 /// longitude keeps the full latitude span, exactly as before this was
 /// trim-aware.
 fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -> PatchDomain {
-    let pts = face_boundary_samples(topo, face_id);
+    let pts = face_boundary_samples(topo, face_id, TRIM_SAMPLES_PER_EDGE);
     let mut us = Vec::with_capacity(pts.len());
     let mut vs = Vec::with_capacity(pts.len());
     for p in &pts {
@@ -298,6 +376,229 @@ fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -
         )
     };
     PatchDomain { u, v }
+}
+
+/// Whether every control point of `nurbs` already lies inside `aabb`.
+///
+/// A NURBS surface lies within the convex hull of its control points, and
+/// [`NurbsSurface::new`](brepkit_math::nurbs::surface::NurbsSurface::new)
+/// rejects non-positive weights, so this holds for rational surfaces too. When
+/// it is true no point of the surface — trimmed or not — can grow the box.
+fn control_hull_within(nurbs: &brepkit_math::nurbs::surface::NurbsSurface, aabb: &Aabb3) -> bool {
+    nurbs.control_points().iter().flatten().all(|p| {
+        p.x() >= aabb.min.x()
+            && p.x() <= aabb.max.x()
+            && p.y() >= aabb.min.y()
+            && p.y() <= aabb.max.y()
+            && p.z() >= aabb.min.z()
+            && p.z() <= aabb.max.z()
+    })
+}
+
+/// Recover the `(u, v)` box a NURBS face is trimmed to within its surface's
+/// knot domain.
+///
+/// A NURBS surface has no closed-form inversion, so the boundary samples are
+/// projected onto it. That is the whole cost of this function, and it buys the
+/// same guarantee the analytic surfaces get for free: a region bounded by a
+/// closed loop occupies exactly its boundary's parameter box.
+///
+/// A direction the surface closes on keeps its full domain. There the seam
+/// bounds nothing — the face may wrap straight through it, and the two sides of
+/// the domain are the same points in space, so projection cannot tell which one
+/// a boundary sample came from. Same reasoning as a whole torus's seam, and the
+/// same conservative answer.
+fn nurbs_patch_domain(
+    topo: &Topology,
+    face_id: FaceId,
+    nurbs: &brepkit_math::nurbs::surface::NurbsSurface,
+) -> PatchDomain {
+    let full_u = nurbs.domain_u();
+    let full_v = nurbs.domain_v();
+    let (closed_u, closed_v) = (nurbs.is_periodic_u(), nurbs.is_periodic_v());
+    if closed_u && closed_v {
+        return PatchDomain {
+            u: full_u,
+            v: full_v,
+        };
+    }
+
+    let per_edge = NURBS_TRIM_SAMPLE_BUDGET
+        .checked_div(face_boundary_edge_count(topo, face_id))
+        .unwrap_or(NURBS_TRIM_SAMPLES_PER_EDGE)
+        .clamp(1, NURBS_TRIM_SAMPLES_PER_EDGE);
+    let pts = face_boundary_samples(topo, face_id, per_edge);
+    if pts.is_empty() {
+        return PatchDomain {
+            u: full_u,
+            v: full_v,
+        };
+    }
+
+    // Adjacent edges meet at a shared vertex, so a closed wire hands back each
+    // of its corners twice — and at one sample per edge, which is what a
+    // many-edged face gets, that is every second projection. Inverting a point
+    // costs orders of magnitude more than comparing two, so drop the repeats.
+    let mut distinct: Vec<Point3> = Vec::with_capacity(pts.len());
+    for p in &pts {
+        if !distinct
+            .iter()
+            .any(|q: &Point3| (*q - *p).length_squared() < 1e-14)
+        {
+            distinct.push(*p);
+        }
+    }
+
+    // Walk the boundary carrying the last verified parameter forward as the
+    // next Newton seed. `distinct` preserves wire order, so consecutive
+    // entries are neighbours along the boundary and land within a step or two
+    // of one another in parameter — which is the grid search's whole job, had
+    // for free. A seed that leads elsewhere is caught and paid for below.
+    let mut budget = SeedBudget::for_surface(nurbs);
+    let mut seed: Option<(f64, f64)> = None;
+    let (mut u_lo, mut u_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v_lo, mut v_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in &distinct {
+        let Some((u, v)) = invert_boundary_sample(nurbs, *p, &mut seed, &mut budget) else {
+            // Neither the seed nor the grid search could place this sample.
+            // The recovered span would be missing a piece of the boundary, and
+            // a span that is too small is a box that is too small, so give up
+            // on trimming this face rather than report a region we cannot
+            // stand behind.
+            return PatchDomain {
+                u: full_u,
+                v: full_v,
+            };
+        };
+        u_lo = u_lo.min(u);
+        u_hi = u_hi.max(u);
+        v_lo = v_lo.min(v);
+        v_hi = v_hi.max(v);
+    }
+
+    PatchDomain {
+        u: if closed_u {
+            full_u
+        } else {
+            padded_span((u_lo, u_hi), full_u)
+        },
+        v: if closed_v {
+            full_v
+        } else {
+            padded_span((v_lo, v_hi), full_v)
+        },
+    }
+}
+
+/// Invert one boundary sample onto its NURBS surface, seeding Newton from the
+/// previous sample's parameters and carrying the answer forward.
+///
+/// The sample lies *on* the surface by construction — it is a point of the
+/// face's own boundary — so a correct inversion leaves a residual near zero,
+/// and one that does not is not this point's parameter. That is what makes a
+/// seed safe to use at all: Newton solves perpendicularity rather than
+/// minimising, so it settles wherever the seed's basin leads, and a seeded
+/// answer is only ever as good as its seed. Accepted, the result is a verified
+/// preimage; rejected, the call falls back to the grid search that ran here
+/// before, so the recovered span is never worse for having tried.
+///
+/// Only verified parameters are carried forward — seeding the next solve from
+/// an unchecked basin would let one bad inversion walk down the whole
+/// boundary.
+///
+/// Returns `None` when even the grid search cannot place the sample.
+/// [`ParametricSurface::project_point`](brepkit_math::traits::ParametricSurface::project_point)
+/// answers the domain midpoint there, which would fold a point the face may
+/// not contain into the span; the caller needs to know instead.
+fn invert_boundary_sample(
+    nurbs: &NurbsSurface,
+    p: Point3,
+    seed: &mut Option<(f64, f64)>,
+    budget: &mut SeedBudget,
+) -> Option<(f64, f64)> {
+    let seeded = seed.and_then(|s| {
+        project_point_to_surface_seeded(nurbs, p, NURBS_PROJECT_TOL, s)
+            .ok()
+            .filter(|proj| budget.accepts(proj.distance))
+    });
+    if let Some(proj) = seeded {
+        *seed = Some((proj.u, proj.v));
+        return Some((proj.u, proj.v));
+    }
+
+    let proj = project_point_to_surface(nurbs, p, NURBS_PROJECT_TOL).ok()?;
+    budget.observe(proj.distance);
+    *seed = budget.accepts(proj.distance).then_some((proj.u, proj.v));
+    Some((proj.u, proj.v))
+}
+
+/// How large a residual a seeded inversion may leave on this face and still be
+/// believed.
+///
+/// A fixed threshold cannot work. Set it at the Newton tolerance and every
+/// face whose edges sit slightly off their surface — which is most imported
+/// geometry — rejects every seed and pays for both paths, ending up slower
+/// than never seeding. Set it loose enough for those and it stops screening
+/// anything on a face whose edges are exact.
+///
+/// So it is learned. The grid search runs on the first sample of every face
+/// and on every rejection, and what it leaves is this face's own edge-to-
+/// surface gap, measured rather than assumed; the budget is a few times that,
+/// never below a floor scaled to the patch. A seed that landed in the wrong
+/// basin is a good fraction of the patch away and still fails it.
+struct SeedBudget {
+    limit: f64,
+}
+
+impl SeedBudget {
+    /// Start from the floor alone: the patch's size times
+    /// [`NURBS_SEED_FLOOR_FRAC`], before any edge has been measured.
+    fn for_surface(nurbs: &NurbsSurface) -> Self {
+        Self {
+            limit: surface_extent(nurbs) * NURBS_SEED_FLOOR_FRAC,
+        }
+    }
+
+    /// Fold in a residual left by the grid search — evidence of how far this
+    /// face's edges genuinely lie off its surface.
+    fn observe(&mut self, grid_residual: f64) {
+        if grid_residual.is_finite() {
+            self.limit = self.limit.max(grid_residual * NURBS_SEED_SLACK);
+        }
+    }
+
+    fn accepts(&self, residual: f64) -> bool {
+        residual <= self.limit
+    }
+}
+
+/// Diagonal of the surface's control-point box — a cheap stand-in for how big
+/// the patch is, and an upper bound on it, since the surface lies inside that
+/// hull.
+fn surface_extent(nurbs: &NurbsSurface) -> f64 {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in nurbs.control_points().iter().flatten() {
+        for (axis, c) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+            lo[axis] = lo[axis].min(c);
+            hi[axis] = hi[axis].max(c);
+        }
+    }
+    if lo[0] > hi[0] {
+        return 0.0;
+    }
+    (hi[0] - lo[0]).hypot(hi[1] - lo[1]).hypot(hi[2] - lo[2])
+}
+
+/// Widen a recovered parameter span by [`NURBS_DOMAIN_PAD`] on each side and
+/// clamp it to `full`. A span that came back empty or inverted falls back to
+/// the whole domain.
+fn padded_span((lo, hi): (f64, f64), full: (f64, f64)) -> (f64, f64) {
+    if !lo.is_finite() || !hi.is_finite() || hi < lo {
+        return full;
+    }
+    let pad = (hi - lo) * NURBS_DOMAIN_PAD;
+    ((lo - pad).max(full.0), (hi + pad).min(full.1))
 }
 
 /// World-space corners of the analytic patch

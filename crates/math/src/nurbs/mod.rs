@@ -33,7 +33,8 @@ pub use knot_ops::{
 };
 pub use power_basis::PowerBasis1D;
 pub use projection::{
-    CurveProjection, SurfaceProjection, project_point_to_curve, project_point_to_surface,
+    CurveProjection, SurfaceProjection, SurfaceSeedGrid, project_point_to_curve,
+    project_point_to_surface, project_point_to_surface_seeded, project_point_to_surface_with_grid,
 };
 pub use surface::NurbsSurface;
 pub use surface_fitting::interpolate_surface;
