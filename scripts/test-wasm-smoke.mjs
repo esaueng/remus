@@ -56,6 +56,34 @@ const vol = kernel.volume(boxId, DEFLECTION);
 assert.ok(Math.abs(vol - 6000) < 1e-6, `volume=${vol}, expected ~6000`);
 console.log(`ok - volume = ${vol}`);
 
+// Detailed validation must preserve every operations-layer diagnostic while
+// leaving the existing numeric validator unchanged.
+const validation = JSON.parse(kernel.validateSolidDetailed(boxId));
+assert.equal(validation.errorCount, kernel.validateSolid(boxId));
+assert.equal(
+  validation.issues.length,
+  validation.errorCount + validation.warningCount,
+  "detailed validation should return every counted issue",
+);
+for (const issue of validation.issues) {
+  assert.ok(
+    issue.severity === "error" || issue.severity === "warning",
+    `unexpected validation severity ${issue.severity}`,
+  );
+  assert.equal(typeof issue.description, "string");
+}
+const validationWithOptions = JSON.parse(
+  kernel.validateSolidDetailedWithOptions(boxId, 10),
+);
+assert.equal(
+  validationWithOptions.errorCount,
+  kernel.validateSolidWithOptions(boxId, 10),
+);
+console.log(
+  `ok - detailed validation: ${validation.errorCount} errors, ` +
+    `${validation.warningCount} warnings`,
+);
+
 // 4. Tessellation
 const mesh = kernel.tessellateSolid(boxId, DEFLECTION);
 assert.ok(mesh.positions.length > 0, 'mesh should have positions');

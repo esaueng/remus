@@ -2368,10 +2368,9 @@ fn pinched_ledge_prism_is_watertight() {
 // measurement side — neither half of that holds.
 //
 // The face carrying the holes is the shaft wall the cut KEEPS, not a discarded
-// sub-face. And it never reaches that function: its outer boundary is the
-// ordinary two rim circles and a seam, so the dispatcher sends it to the
-// analytic grid, which spans the face's whole uv box and pastes over both bore
-// rims. A cross-drilled shaft renders as an undrilled one.
+// sub-face. Its outer boundary is the ordinary two rim circles and a seam, so
+// the hole-free analytic grid used to span the whole UV box and paste over both
+// bore rims. The regression below pins the dedicated hole-aware route.
 
 /// A shaft of radius 3 and height 30 with an equal-radius bore driven clean
 /// through its side at mid-height. Equal radii keep the cut analytic: the two
@@ -2452,38 +2451,89 @@ fn a_cut_keeps_a_cylindrical_face_that_carries_holes() {
 }
 
 #[test]
-fn a_holed_cylindrical_face_does_not_take_the_boundary_tessellator() {
-    // Pins the routing, so `tessellate_analytic_with_boundary`'s "no holed face
-    // reaches here" cannot quietly become false. If this flips, that function
-    // starts receiving holes and its doc comment has to be revisited along with
-    // its body.
-    let (topo, solid) = cross_drilled_shaft();
-    let wall = holed_cylindrical_face(&topo, solid);
-    let face_data = topo.face(wall).unwrap();
-    assert!(
-        !super::face::cylinder_has_non_standard_boundary(&topo, face_data).unwrap(),
-        "a holed cylindrical wall reached the boundary tessellator, which ignores inner wires"
-    );
-}
+fn holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid() {
+    type PosKey = (i64, i64, i64);
 
-#[test]
-#[ignore = "holed cylindrical faces render with their holes filled; see this module's note"]
-fn holed_cylindrical_wall_is_rendered_without_its_holes() {
     // Closed form for the wall that is left. The full wall is 2*pi*r*h =
     // 565.486678. The bore removes, in the wall's (u, z) parameters, the region
     // |z - h/2| < r|cos u| — its area on the surface is
     // r * integral over 0..2pi of 2r|cos u| du = 4r^2 * 2 = 72 for r = 3.
     // So the drilled wall is 565.486678 - 72 = 493.486678.
     //
-    // Measured today: 565.179 at deflection 0.005, i.e. the whole undrilled
-    // wall to within its own chord error. Both rims are paved over.
     let (topo, solid) = cross_drilled_shaft();
     let wall = holed_cylindrical_face(&topo, solid);
-    let area = tessellated_area(&topo, wall, 0.005);
+    let deflection = 0.005;
+    let wall_mesh = crate::tessellate::tessellate(&topo, wall, deflection).unwrap();
+    assert!(
+        !wall_mesh.indices.is_empty(),
+        "the holed cylindrical wall must produce triangles"
+    );
+
+    let edge_key = |a: PosKey, b: PosKey| if a <= b { (a, b) } else { (b, a) };
+    let position_keys: Vec<PosKey> = wall_mesh
+        .positions
+        .iter()
+        .map(|&p| point_merge_key(p, 1e-8))
+        .collect();
+    let mut mesh_edge_counts: DetHashMap<(PosKey, PosKey), usize> = DetHashMap::default();
+    for tri in wall_mesh.indices.chunks_exact(3) {
+        for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            *mesh_edge_counts
+                .entry(edge_key(
+                    position_keys[a as usize],
+                    position_keys[b as usize],
+                ))
+                .or_default() += 1;
+        }
+    }
+    let boundary_segments: DetHashSet<(PosKey, PosKey)> = mesh_edge_counts
+        .into_iter()
+        .filter_map(|(segment, count)| (count == 1).then_some(segment))
+        .collect();
+    let boundary_vertices: DetHashSet<PosKey> = boundary_segments
+        .iter()
+        .flat_map(|&(a, b)| [a, b])
+        .collect();
+
+    let wall_face = topo.face(wall).unwrap();
+    for &wire_id in wall_face.inner_wires() {
+        let wire = topo.wire(wire_id).unwrap();
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).unwrap();
+            let mut rim = super::edge_sampling::sample_edge(
+                &topo,
+                edge,
+                deflection,
+                brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+                false,
+            )
+            .unwrap();
+            if rim.len() > 2 && (rim[0] - rim[rim.len() - 1]).length() < 1e-10 {
+                rim.pop();
+            }
+            assert!(rim.len() >= 3, "the bore rim must sample as a loop");
+            for point in rim {
+                assert!(
+                    boundary_vertices.contains(&point_merge_key(point, 1e-8)),
+                    "the holed wall mesh dropped a bore-rim boundary vertex"
+                );
+            }
+        }
+    }
+
+    let area = tessellated_area(&topo, wall, deflection);
     let expected = 2.0 * std::f64::consts::PI * 3.0 * 30.0 - 72.0;
     assert!(
         (area - expected).abs() < 0.01 * expected,
         "the rendered wall should be the drilled wall {expected:.6}, got {area:.6}"
+    );
+
+    let solid_mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+    assert!(
+        is_watertight(&solid_mesh),
+        "the cross-drilled solid must remain watertight: boundary={} non-manifold={}",
+        boundary_edge_count(&solid_mesh),
+        non_manifold_edge_count(&solid_mesh)
     );
 }
 
@@ -2690,7 +2740,7 @@ fn bore_wall_mesh(
 ///     A = integral over 0..2pi of 2 b sqrt(r^2 - b^2 sin^2 t) dt
 ///
 /// At `b = r` this is `2 r^2 * integral |cos t| dt = 8 r^2` — 72 at r = 3,
-/// which is exactly what `holed_cylindrical_wall_is_rendered_without_its_holes`
+/// which is exactly what `holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid`
 /// independently derives as the area the bore REMOVES from the shaft wall. The
 /// two closed forms agreeing at the tangent case is the check on this one.
 fn exact_bore_wall_area(bore: f64, shaft: f64) -> f64 {
@@ -2738,11 +2788,10 @@ fn a_through_bore_wall_is_drawn_at_all() {
 fn a_through_bore_wall_is_drawn_at_its_true_area() {
     // What the fix above did NOT settle, kept visible rather than asserted
     // away. Making the wall non-empty made it DRAWABLE, not correct: the
-    // boundary is now the real polyline, but the CDT still fills it in the
-    // cylinder's (u, v) parameters, and the closed bore curve wraps u by a full
-    // turn — so the tessellator pastes over part of the domain it should leave
-    // open, in the same family as
-    // `holed_cylindrical_wall_is_rendered_without_its_holes`.
+    // boundary is now the real polyline, but this face has no inner wire and
+    // the CDT still closes its period-wrapping outer curve as a planar pocket.
+    // That pastes over part of the domain it should leave open; the dedicated
+    // inner-wire path does not apply to this bore wall.
     //
     // Measured against the closed form, and NOT a constant factor, which is why
     // no single correction is applied here:

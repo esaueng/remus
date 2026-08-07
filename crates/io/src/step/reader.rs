@@ -1271,6 +1271,15 @@ impl<'a> StepBuilder<'a> {
         let end_vp = self.build_vertex_point(refs[1])?;
 
         let curve = self.build_curve_geometry(refs[2])?;
+        // EDGE_CURVE's fifth attribute, `same_sense`, is the trailing
+        // .T./.F. flag. `.F.` means the edge runs start → end AGAINST its
+        // curve's own parameterization, so the curve is canonicalized to
+        // brepkit's orientation convention here. See `canonicalize_sense`.
+        let curve = if orientation_is_reversed(&attrs) {
+            canonicalize_sense(curve)
+        } else {
+            curve
+        };
 
         let edge_id = self.topo.add_edge(Edge::new(start_vp, end_vp, curve));
 
@@ -1351,6 +1360,18 @@ impl<'a> StepBuilder<'a> {
                     })?;
                 Ok(EdgeCurve::Circle(circle))
             }
+            // ELLIPSE('name', #axis2_placement_3d, semi_axis_1, semi_axis_2)
+            // — ISO 10303-42. The placement's z is the plane normal and its
+            // ref_direction is the MAJOR axis, the one carrying
+            // `semi_axis_1`, so it is passed through explicitly
+            // (`new_with_ref`, not `new`): `Ellipse3D::new` re-derives an
+            // arbitrary in-plane frame from the normal alone, which for a
+            // Z-up normal lands on `(0,1,0)` and turns every such ellipse a
+            // quarter turn inside its own plane.
+            //
+            // `new_with_ref` applies ISO's `first_proj_axis` itself — it
+            // projects ref_direction off the normal before normalizing — so
+            // the raw direction is what belongs here, unprojected.
             "ELLIPSE" => {
                 let refs = parse_refs(&attrs);
                 let floats = parse_floats(&attrs);
@@ -1362,20 +1383,13 @@ impl<'a> StepBuilder<'a> {
                         reason: format!("ELLIPSE #{curve_ref} needs semi_major and semi_minor"),
                     });
                 }
-                // Diverges from ISO 10303-42: the placement's ref_direction
-                // is the ellipse's MAJOR axis, and it is dropped here.
-                // `Ellipse3D::new` re-derives an in-plane axis from the
-                // normal alone via `Frame3::from_normal`, which for a z-up
-                // placement answers u=(0,1,0) where the standard requires
-                // u=(1,0,0) — a quarter turn of the parameterization.
-                // Correcting it moves the geometry of every explicit ELLIPSE
-                // that imports today, so it belongs in its own change.
-                let (center, normal, _u_axis) = self.build_axis2_placement(axis_ref)?;
-                let ellipse = brepkit_math::curves::Ellipse3D::new(
+                let (center, normal, u_axis) = self.build_axis2_placement(axis_ref)?;
+                let ellipse = brepkit_math::curves::Ellipse3D::new_with_ref(
                     center,
                     normal,
                     floats[0] * self.units.length,
                     floats[1] * self.units.length,
+                    u_axis,
                 )
                 .map_err(|e| IoError::ParseError {
                     reason: format!("ELLIPSE #{curve_ref}: {e}"),
@@ -1432,15 +1446,27 @@ impl<'a> StepBuilder<'a> {
                 let focal = floats.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("PARABOLA #{curve_ref} missing focal_dist"),
                 })? * self.units.length;
-                // Diverges from ISO 10303-42: the parabola lies in the
-                // placement's xy plane, so the symmetry axis is the
-                // ref_direction PROJECTED off the placement's z. This passes
-                // it raw, so a file whose ref_direction is not already
-                // perpendicular to its axis imports with a tilted plane and
-                // a symmetry axis off the one the writer meant. Projecting
-                // it moves the geometry of such files, so it belongs in its
-                // own change.
-                let (vertex, normal, axis_dir) = self.build_axis2_placement(axis_ref)?;
+                let (vertex, normal, ref_dir) = self.build_axis2_placement(axis_ref)?;
+                // ISO's `first_proj_axis(z, ref_direction)` — ref_direction
+                // with its component along the normal removed — has to be
+                // applied HERE, because `Parabola3D::with_axes` will not do
+                // it: its second argument is the symmetry axis and it
+                // orthogonalizes only the u_axis, against that axis. The
+                // sibling `Hyperbola3D::with_axes` takes the plane NORMAL in
+                // the same slot and does project, so the two calls read alike
+                // and mean different things; passing the raw direction here
+                // tilted the parabola out of the plane the file declared.
+                let normal = normal.normalize().map_err(|e| IoError::ParseError {
+                    reason: format!("PARABOLA #{curve_ref}: plane normal: {e}"),
+                })?;
+                let axis_dir = (ref_dir - normal * ref_dir.dot(normal))
+                    .normalize()
+                    .map_err(|_| IoError::ParseError {
+                        reason: format!(
+                            "PARABOLA #{curve_ref}: ref_direction is parallel to the plane \
+                             normal, so the parabola's plane is undefined"
+                        ),
+                    })?;
                 let par = brepkit_math::curves::Parabola3D::with_axes(
                     vertex,
                     axis_dir,
@@ -2547,6 +2573,47 @@ fn orientation_is_reversed(attrs: &str) -> bool {
     tail.ends_with(".F.") || tail.ends_with(".FALSE.")
 }
 
+/// Re-express a curve read from a `same_sense = .F.` `EDGE_CURVE` in
+/// brepkit's own orientation convention.
+///
+/// ISO 10303-42 lets an `EDGE_CURVE` run *against* its curve's
+/// parameterization and records that in `same_sense`. brepkit's topology has
+/// no matching flag, and deliberately so: an [`Edge`] owns its [`EdgeCurve`]
+/// outright — nothing is shared between edges — so the orientation has
+/// exactly one place to live, and every consumer already assumes the stored
+/// parameterization runs start → end. The STEP writer depends on that same
+/// invariant, which is why it can emit a constant `.T.`. A `.F.` edge is
+/// therefore canonicalized on import by reversing the curve itself, rather
+/// than by carrying a sense bit that a hundred call sites could forget to
+/// consult.
+///
+/// Which curve types actually need reversing follows from whether the
+/// endpoints alone pin down the traversal:
+///
+/// - `Circle` and `Ellipse` are periodic, so they genuinely need it.
+///   `EdgeCurve::domain_with_endpoints` reduces the sweep with
+///   `rem_euclid(TAU)` and so always returns the counter-clockwise arc; for a
+///   `.F.` edge that is the complement of the intended one, and a short
+///   fillet arc comes back as very nearly the whole circle.
+/// - `NurbsCurve` needs it too. An open sub-span recovers its direction by
+///   projecting both endpoints, but an edge spanning the curve's full domain
+///   matches its natural ends in either orientation and takes the forward
+///   domain regardless, so a `.F.` edge would be sampled backwards.
+/// - `Line` is interpolated between the two vertices and has no stored
+///   direction of its own, so reversal is a no-op.
+/// - `Hyperbola` and `Parabola` are unbounded and never closed. Both project
+///   their endpoints through an exact closed-form inverse and return the span
+///   as-is, reversed (`t₀ > t₁`) when that is what the vertices say, so they
+///   already trace start → end.
+fn canonicalize_sense(curve: EdgeCurve) -> EdgeCurve {
+    match curve {
+        EdgeCurve::Circle(c) => EdgeCurve::Circle(c.reversed()),
+        EdgeCurve::Ellipse(e) => EdgeCurve::Ellipse(e.reversed()),
+        EdgeCurve::NurbsCurve(n) => EdgeCurve::NurbsCurve(n.reversed()),
+        other @ (EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => other,
+    }
+}
+
 /// Extract all `#NNN` references from an attribute string.
 fn parse_refs(attrs: &str) -> Vec<u64> {
     let mut refs = Vec::new();
@@ -3471,6 +3538,42 @@ mod tests {
     fn parse_refs_basic() {
         let refs = parse_refs("'', #10, #20, #30");
         assert_eq!(refs, vec![10, 20, 30]);
+    }
+
+    /// `EDGE_CURVE.same_sense` is read with the same trailing-flag helper as
+    /// `ORIENTED_EDGE.orientation`, so it has to survive the way real
+    /// exporters write the statement — compact, without spaces.
+    #[test]
+    fn edge_curve_same_sense_flag() {
+        assert!(orientation_is_reversed("'',#1,#2,#3,.F.)"));
+        assert!(orientation_is_reversed("'', #1, #2, #3, .F.)"));
+        assert!(!orientation_is_reversed("'',#1,#2,#3,.T.)"));
+        // A name that happens to end in the flag's text is not the flag.
+        assert!(!orientation_is_reversed("'arc.F.',#1,#2,#3,.T.)"));
+    }
+
+    #[test]
+    fn canonicalize_sense_reverses_only_the_orientable_curves() {
+        let circle = brepkit_math::curves::Circle3D::new(
+            brepkit_math::vec::Point3::new(0.0, 0.0, 0.0),
+            brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .expect("valid circle");
+        let EdgeCurve::Circle(reversed) = canonicalize_sense(EdgeCurve::Circle(circle.clone()))
+        else {
+            panic!("a circle should stay a circle");
+        };
+        assert!((reversed.normal() + circle.normal()).length() < 1e-12);
+        // The point set is untouched; only the direction of travel changes.
+        assert!((reversed.evaluate(0.5) - circle.evaluate(-0.5)).length() < 1e-12);
+
+        // A line is interpolated between its vertices and has no stored
+        // direction to reverse.
+        assert!(matches!(
+            canonicalize_sense(EdgeCurve::Line),
+            EdgeCurve::Line
+        ));
     }
 
     #[test]
@@ -4430,10 +4533,10 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     ///
     /// Substituting the derived default for one of these would change what
     /// files that already import produce, in both directions: the torus
-    /// silently reseams a quarter turn, and the two conics stop reporting a
-    /// file their constructors have always refused. The expected values and
-    /// messages below are what this reader produced before the OPTIONAL
-    /// slots were read positionally, measured on the same inputs.
+    /// silently reseams a quarter turn, and the two conics stop reporting an
+    /// invalid file. The placement itself must keep returning the declared
+    /// value; each geometry consumer remains responsible for its own precise
+    /// validation error.
     #[test]
     fn a_declared_degenerate_ref_direction_reaches_the_geometry_unchanged() {
         for (declared, expected) in [
@@ -4477,7 +4580,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             );
             assert_eq!(
                 curve_geometry(&body, 7).unwrap_err().to_string(),
-                "parse error: PARABOLA #7: cannot normalize zero vector",
+                "parse error: PARABOLA #7: ref_direction is parallel to the plane normal, so the parabola's plane is undefined",
                 "parabola on ref_direction {declared}"
             );
         }

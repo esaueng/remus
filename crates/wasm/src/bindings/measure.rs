@@ -10,6 +10,32 @@ use brepkit_operations::measure;
 use crate::error::validate_positive;
 use crate::kernel::BrepKernel;
 
+fn detailed_validation_result(
+    report: brepkit_operations::validate::ValidationReport,
+) -> crate::types::ValidationReportResult {
+    #[allow(clippy::cast_possible_truncation)]
+    let error_count = report.error_count() as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let warning_count = report.warning_count() as u32;
+    let issues = report
+        .issues
+        .into_iter()
+        .map(|issue| crate::types::ValidationIssueResult {
+            severity: match issue.severity {
+                brepkit_operations::validate::Severity::Error => "error".into(),
+                brepkit_operations::validate::Severity::Warning => "warning".into(),
+            },
+            description: issue.description,
+        })
+        .collect();
+
+    crate::types::ValidationReportResult {
+        error_count,
+        warning_count,
+        issues,
+    }
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Measurement ───────────────────────────────────────────────
@@ -289,6 +315,57 @@ impl BrepKernel {
         Ok(report.error_count() as u32)
     }
 
+    /// Validate a solid and return every diagnostic.
+    ///
+    /// Returns a JSON string containing
+    /// `{ errorCount, warningCount, issues: [{ severity, description }] }`
+    /// (see the `ValidationReportResult` TypeScript type). Diagnostics come
+    /// from the same operations validator used by [`validate_solid`](Self::validate_solid).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid or validation fails.
+    #[wasm_bindgen(js_name = "validateSolidDetailed")]
+    pub fn validate_solid_detailed(&self, solid: u32) -> Result<JsValue, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let report = brepkit_operations::validate::validate_solid(&self.topo, solid_id)?;
+        let result = detailed_validation_result(report);
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
+    }
+
+    /// Validate a solid with configurable tolerance scaling and return every
+    /// diagnostic.
+    ///
+    /// `tolerance_scale` has the same meaning as in
+    /// [`validate_solid_with_options`](Self::validate_solid_with_options).
+    /// Returns a JSON string containing
+    /// `{ errorCount, warningCount, issues: [{ severity, description }] }`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid or validation fails.
+    #[wasm_bindgen(js_name = "validateSolidDetailedWithOptions")]
+    pub fn validate_solid_detailed_with_options(
+        &self,
+        solid: u32,
+        tolerance_scale: f64,
+    ) -> Result<JsValue, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let options = brepkit_operations::validate::ValidationOptions {
+            tolerance_scale,
+            ..brepkit_operations::validate::ValidationOptions::default()
+        };
+        let report = brepkit_operations::validate::validate_solid_with_options(
+            &self.topo, solid_id, &options,
+        )?;
+        let result = detailed_validation_result(report);
+        Ok(serde_json::to_string(&result)
+            .map_err(|error| JsError::new(&error.to_string()))?
+            .into())
+    }
+
     // ── Distance ──────────────────────────────────────────────────
 
     /// Compute minimum distance from a point to a solid.
@@ -411,6 +488,49 @@ mod tests {
     fn batch_has_error(result: &str, idx: usize) -> bool {
         let parsed: serde_json::Value = serde_json::from_str(result).unwrap();
         parsed[idx]["error"].is_string()
+    }
+
+    #[test]
+    fn detailed_validation_serializes_counts_and_issue_prose() {
+        let report = brepkit_operations::validate::ValidationReport {
+            issues: vec![
+                brepkit_operations::validate::ValidationIssue {
+                    severity: brepkit_operations::validate::Severity::Error,
+                    description: "open shell".into(),
+                },
+                brepkit_operations::validate::ValidationIssue {
+                    severity: brepkit_operations::validate::Severity::Warning,
+                    description: "small face".into(),
+                },
+            ],
+        };
+
+        let result = super::detailed_validation_result(report);
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["errorCount"], 1);
+        assert_eq!(json["warningCount"], 1);
+        assert_eq!(json["issues"][0]["severity"], "error");
+        assert_eq!(json["issues"][0]["description"], "open shell");
+        assert_eq!(json["issues"][1]["severity"], "warning");
+        assert_eq!(json["issues"][1]["description"], "small face");
+    }
+
+    #[test]
+    fn detailed_validation_of_box_matches_numeric_validator_counts() {
+        let mut topo = brepkit_topology::topology::Topology::new();
+        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let report = brepkit_operations::validate::validate_solid(&topo, solid).unwrap();
+        let expected_errors = report.error_count();
+        let expected_warnings = report.warning_count();
+
+        let result = super::detailed_validation_result(report);
+        assert_eq!(result.error_count as usize, expected_errors);
+        assert_eq!(result.warning_count as usize, expected_warnings);
+        assert_eq!(
+            result.issues.len(),
+            expected_errors + expected_warnings,
+            "detailed validation must not drop diagnostics"
+        );
     }
 
     #[test]

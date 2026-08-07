@@ -3,7 +3,8 @@
 //! [`Topology`] is the single owner of every arena. All operations that
 //! create or query topological entities take a reference to this struct.
 
-use crate::TopologyError;
+use std::collections::HashSet;
+
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
 use crate::compound::{Compound, CompoundId};
@@ -15,6 +16,7 @@ use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
 use crate::vertex::{Vertex, VertexId};
 use crate::wire::{Wire, WireId};
+use crate::{DeleteSolidError, TopologyError};
 
 /// Central context owning all topological entity arenas.
 ///
@@ -41,6 +43,25 @@ pub struct Topology {
     compsolids: Arena<CompSolid>,
     /// `PCurves`: 2D parametric curves mapping edges to face surface parameters.
     pcurves: PCurveRegistry,
+}
+
+#[derive(Default)]
+struct SolidEntities {
+    vertices: HashSet<VertexId>,
+    edges: HashSet<EdgeId>,
+    wires: HashSet<WireId>,
+    faces: HashSet<FaceId>,
+    shells: HashSet<ShellId>,
+}
+
+impl SolidEntities {
+    fn extend(&mut self, other: Self) {
+        self.vertices.extend(other.vertices);
+        self.edges.extend(other.edges);
+        self.wires.extend(other.wires);
+        self.faces.extend(other.faces);
+        self.shells.extend(other.shells);
+    }
 }
 
 /// Generates an immutable arena accessor method on [`Topology`].
@@ -137,6 +158,18 @@ impl Topology {
         self.compsolids
             .restore_preserving_slots(&snapshot.compsolids);
         self.pcurves.clone_from(&snapshot.pcurves);
+        let retired_edges = snapshot
+            .edges
+            .iter()
+            .filter_map(|(id, _)| self.edges.get(id).is_none().then_some(id))
+            .collect();
+        let retired_faces = snapshot
+            .faces
+            .iter()
+            .filter_map(|(id, _)| self.faces.get(id).is_none().then_some(id))
+            .collect();
+        self.pcurves
+            .remove_for_retired_entities(&retired_edges, &retired_faces);
     }
 
     /// Reserves capacity for the given number of additional entities in the
@@ -285,6 +318,118 @@ impl Topology {
         Id = CompSolidId
     );
 
+    /// Retires a solid and every entity in its topology tree that no other
+    /// live solid references.
+    ///
+    /// Retirement invalidates the solid handle and unshared shell, face,
+    /// wire, edge, vertex, and pcurve handles. It does **not** compact the
+    /// arenas or reclaim their allocated memory; future entities append to
+    /// new slots so stale handles can never alias them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeleteSolidError`] if `solid` is invalid, if a live compound or
+    /// comp-solid still references it, or if any live solid contains an
+    /// invalid topology reference. No entities are retired when validation or
+    /// reference discovery fails.
+    pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
+        let mut retiring = self.collect_solid_entities(solid)?;
+        if let Some((compound_id, _)) = self
+            .compounds
+            .iter()
+            .find(|(_, compound)| compound.solids().contains(&solid))
+        {
+            return Err(DeleteSolidError::Referenced {
+                solid,
+                dependent: "compound",
+                dependent_index: compound_id.index(),
+            });
+        }
+        if let Some((compsolid_id, _)) = self
+            .compsolids
+            .iter()
+            .find(|(_, compsolid)| compsolid.solids().contains(&solid))
+        {
+            return Err(DeleteSolidError::Referenced {
+                solid,
+                dependent: "comp-solid",
+                dependent_index: compsolid_id.index(),
+            });
+        }
+
+        let mut retained = SolidEntities::default();
+        for (other_id, _) in self.solids.iter() {
+            if other_id != solid {
+                retained.extend(self.collect_solid_entities(other_id)?);
+            }
+        }
+
+        retiring
+            .vertices
+            .retain(|id| !retained.vertices.contains(id));
+        retiring.edges.retain(|id| !retained.edges.contains(id));
+        retiring.wires.retain(|id| !retained.wires.contains(id));
+        retiring.faces.retain(|id| !retained.faces.contains(id));
+        retiring.shells.retain(|id| !retained.shells.contains(id));
+
+        self.pcurves
+            .remove_for_retired_entities(&retiring.edges, &retiring.faces);
+        self.solids.retire(solid);
+        for id in retiring.shells {
+            self.shells.retire(id);
+        }
+        for id in retiring.faces {
+            self.faces.retire(id);
+        }
+        for id in retiring.wires {
+            self.wires.retire(id);
+        }
+        for id in retiring.edges {
+            self.edges.retire(id);
+        }
+        for id in retiring.vertices {
+            self.vertices.retire(id);
+        }
+
+        Ok(())
+    }
+
+    fn collect_solid_entities(&self, solid: SolidId) -> Result<SolidEntities, TopologyError> {
+        let solid_data = self.solid(solid)?;
+        let shell_ids = std::iter::once(solid_data.outer_shell())
+            .chain(solid_data.inner_shells().iter().copied())
+            .collect::<Vec<_>>();
+        let mut entities = SolidEntities::default();
+
+        for shell_id in shell_ids {
+            entities.shells.insert(shell_id);
+            let shell = self.shell(shell_id)?;
+            for &face_id in shell.faces() {
+                entities.faces.insert(face_id);
+                let face = self.face(face_id)?;
+                for wire_id in
+                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+                {
+                    entities.wires.insert(wire_id);
+                    let wire = self.wire(wire_id)?;
+                    for oriented_edge in wire.edges() {
+                        let edge_id = oriented_edge.edge();
+                        entities.edges.insert(edge_id);
+                        let edge = self.edge(edge_id)?;
+                        entities.vertices.insert(edge.start());
+                        entities.vertices.insert(edge.end());
+                    }
+                }
+            }
+        }
+
+        for &vertex_id in &entities.vertices {
+            self.vertex(vertex_id)?;
+        }
+
+        Ok(entities)
+    }
+
     /// Allocates an empty-result solid: a solid backed by a faceless
     /// [`Shell::empty`].
     ///
@@ -337,9 +482,48 @@ impl Topology {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::vec::Point3;
+    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
+
+    use crate::compound::Compound;
+    use crate::compsolid::CompSolid;
+    use crate::edge::{Edge, EdgeCurve};
+    use crate::face::{Face, FaceSurface};
+    use crate::pcurve::PCurve;
+    use crate::shell::Shell;
+    use crate::solid::Solid;
+    use crate::wire::{OrientedEdge, Wire};
 
     use super::*;
+
+    fn make_triangle_solid(topo: &mut Topology, x_offset: f64) -> (SolidId, FaceId, EdgeId) {
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(x_offset, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(x_offset + 1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(x_offset, 1.0, 0.0), 1e-7));
+        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+        let wire = Wire::new(
+            vec![
+                OrientedEdge::new(e0, true),
+                OrientedEdge::new(e1, true),
+                OrientedEdge::new(e2, true),
+            ],
+            true,
+        )
+        .unwrap();
+        let wire_id = topo.add_wire(wire);
+        let face = topo.add_face(Face::new(
+            wire_id,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        (topo.add_solid(Solid::new(shell, Vec::new())), face, e0)
+    }
 
     #[test]
     fn allocate_and_lookup_vertex() {
@@ -445,5 +629,199 @@ mod tests {
         assert_eq!(topo.num_vertices(), 2);
         let v2 = topo.vertex(vid2).unwrap();
         assert!((v2.point().x() - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn delete_solid_retires_only_its_unshared_subtree_and_pcurves() {
+        let mut topo = Topology::new();
+        let (deleted, deleted_face, deleted_edge) = make_triangle_solid(&mut topo, 0.0);
+        let (kept, kept_face, kept_edge) = make_triangle_solid(&mut topo, 10.0);
+        let line = || {
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+                0.0,
+                1.0,
+            )
+        };
+        topo.pcurves_mut().set(deleted_edge, deleted_face, line());
+        topo.pcurves_mut().set(kept_edge, kept_face, line());
+        let deleted_entities = topo.collect_solid_entities(deleted).unwrap();
+
+        topo.delete_solid(deleted).unwrap();
+
+        assert!(topo.solid(deleted).is_err());
+        assert!(topo.solid(kept).is_ok());
+        assert_eq!(topo.num_solids(), 1);
+        assert_eq!(topo.num_shells(), 1);
+        assert_eq!(topo.num_faces(), 1);
+        assert_eq!(topo.num_wires(), 1);
+        assert_eq!(topo.num_edges(), 3);
+        assert_eq!(topo.num_vertices(), 3);
+        assert_eq!(topo.pcurves().len(), 1);
+        assert!(!topo.pcurves().contains(deleted_edge, deleted_face));
+        assert!(topo.pcurves().contains(kept_edge, kept_face));
+        assert!(
+            deleted_entities
+                .shells
+                .iter()
+                .all(|&id| topo.shell(id).is_err())
+        );
+        assert!(
+            deleted_entities
+                .faces
+                .iter()
+                .all(|&id| topo.face(id).is_err())
+        );
+        assert!(
+            deleted_entities
+                .wires
+                .iter()
+                .all(|&id| topo.wire(id).is_err())
+        );
+        assert!(
+            deleted_entities
+                .edges
+                .iter()
+                .all(|&id| topo.edge(id).is_err())
+        );
+        assert!(
+            deleted_entities
+                .vertices
+                .iter()
+                .all(|&id| topo.vertex(id).is_err())
+        );
+    }
+
+    #[test]
+    fn delete_solid_preserves_entities_referenced_by_another_live_solid() {
+        let mut topo = Topology::new();
+        let (first, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let shell = topo.solid(first).unwrap().outer_shell();
+        let second = topo.add_solid(Solid::new(shell, Vec::new()));
+
+        topo.delete_solid(first).unwrap();
+
+        assert!(topo.solid(first).is_err());
+        assert!(topo.solid(second).is_ok());
+        assert!(topo.shell(shell).is_ok());
+        assert!(topo.face(face).is_ok());
+        assert!(topo.edge(edge).is_ok());
+        assert_eq!(topo.num_solids(), 1);
+        assert_eq!(topo.num_shells(), 1);
+        assert_eq!(topo.num_faces(), 1);
+        assert_eq!(topo.num_wires(), 1);
+        assert_eq!(topo.num_edges(), 3);
+        assert_eq!(topo.num_vertices(), 3);
+
+        topo.delete_solid(second).unwrap();
+        assert_eq!(topo.num_solids(), 0);
+        assert_eq!(topo.num_shells(), 0);
+        assert_eq!(topo.num_faces(), 0);
+        assert_eq!(topo.num_wires(), 0);
+        assert_eq!(topo.num_edges(), 0);
+        assert_eq!(topo.num_vertices(), 0);
+    }
+
+    #[test]
+    fn delete_solid_walks_outer_and_inner_shells() {
+        let mut topo = Topology::new();
+        let (outer_owner, _, _) = make_triangle_solid(&mut topo, 0.0);
+        let (inner_owner, _, _) = make_triangle_solid(&mut topo, 10.0);
+        let outer_shell = topo.solid(outer_owner).unwrap().outer_shell();
+        let inner_shell = topo.solid(inner_owner).unwrap().outer_shell();
+        let hollow = topo.add_solid(Solid::new(outer_shell, vec![inner_shell]));
+
+        topo.delete_solid(outer_owner).unwrap();
+        topo.delete_solid(inner_owner).unwrap();
+        assert_eq!(topo.num_solids(), 1);
+        assert_eq!(topo.num_shells(), 2);
+        assert_eq!(topo.num_faces(), 2);
+        assert_eq!(topo.num_wires(), 2);
+        assert_eq!(topo.num_edges(), 6);
+        assert_eq!(topo.num_vertices(), 6);
+
+        topo.delete_solid(hollow).unwrap();
+        assert_eq!(topo.num_solids(), 0);
+        assert_eq!(topo.num_shells(), 0);
+        assert_eq!(topo.num_faces(), 0);
+        assert_eq!(topo.num_wires(), 0);
+        assert_eq!(topo.num_edges(), 0);
+        assert_eq!(topo.num_vertices(), 0);
+    }
+
+    #[test]
+    fn delete_solid_never_reuses_retired_slots() {
+        let mut topo = Topology::new();
+        let (stale, _, _) = make_triangle_solid(&mut topo, 0.0);
+
+        topo.delete_solid(stale).unwrap();
+        let (fresh, _, _) = make_triangle_solid(&mut topo, 10.0);
+
+        assert!(fresh.index() > stale.index());
+        assert!(topo.solid(stale).is_err());
+        assert!(topo.solid(fresh).is_ok());
+    }
+
+    #[test]
+    fn delete_solid_rejects_live_compound_and_compsolid_roots() {
+        let mut compound_topo = Topology::new();
+        let (compound_solid, _, _) = make_triangle_solid(&mut compound_topo, 0.0);
+        let compound = compound_topo.add_compound(Compound::new(vec![compound_solid]));
+
+        assert!(matches!(
+            compound_topo.delete_solid(compound_solid),
+            Err(DeleteSolidError::Referenced {
+                dependent: "compound",
+                ..
+            })
+        ));
+        assert_eq!(
+            compound_topo.compound(compound).unwrap().solids(),
+            &[compound_solid]
+        );
+        assert!(compound_topo.solid(compound_solid).is_ok());
+
+        let mut compsolid_topo = Topology::new();
+        let (compsolid_solid, _, _) = make_triangle_solid(&mut compsolid_topo, 0.0);
+        let compsolid = compsolid_topo.add_compsolid(CompSolid::new(vec![compsolid_solid], vec![]));
+
+        assert!(matches!(
+            compsolid_topo.delete_solid(compsolid_solid),
+            Err(DeleteSolidError::Referenced {
+                dependent: "comp-solid",
+                ..
+            })
+        ));
+        assert_eq!(
+            compsolid_topo.compsolid(compsolid).unwrap().solids(),
+            &[compsolid_solid]
+        );
+        assert!(compsolid_topo.solid(compsolid_solid).is_ok());
+    }
+
+    #[test]
+    fn restore_preserves_deleted_solid_and_pcurve_retirement() {
+        let mut topo = Topology::new();
+        let (retired, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        topo.pcurves_mut().set(
+            edge,
+            face,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+                0.0,
+                1.0,
+            ),
+        );
+        let snapshot = topo.clone();
+
+        topo.delete_solid(retired).unwrap();
+        topo.restore_preserving_handle_slots(&snapshot);
+
+        assert!(topo.solid(retired).is_err());
+        assert!(topo.face(face).is_err());
+        assert!(topo.edge(edge).is_err());
+        assert!(!topo.pcurves().contains(edge, face));
+        let (fresh, _, _) = make_triangle_solid(&mut topo, 10.0);
+        assert!(fresh.index() > retired.index());
     }
 }

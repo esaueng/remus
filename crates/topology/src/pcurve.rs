@@ -8,7 +8,7 @@
 //! keyed by (edge, face) pairs. This avoids modifying the `OrientedEdge`
 //! struct (which is `Copy`) and follows a relational design.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use brepkit_math::curves2d::Curve2D;
 
@@ -119,6 +119,17 @@ impl PCurveRegistry {
     /// Removes the pcurve for an (edge, face) pair.
     pub fn remove(&mut self, edge: EdgeId, face: FaceId) -> Option<PCurve> {
         self.curves.remove(&PCurveKey::new(edge, face))
+    }
+
+    /// Removes pcurves whose edge or face has been retired.
+    pub(crate) fn remove_for_retired_entities(
+        &mut self,
+        retired_edges: &HashSet<EdgeId>,
+        retired_faces: &HashSet<FaceId>,
+    ) {
+        self.curves.retain(|key, _| {
+            !retired_edges.contains(&key.edge) && !retired_faces.contains(&key.face)
+        });
     }
 
     /// Returns the number of pcurves in the registry.

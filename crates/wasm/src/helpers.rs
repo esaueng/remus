@@ -534,11 +534,10 @@ pub fn create_apex_face(
     topo: &mut Topology,
     point: Point3,
     existing_profiles: &[brepkit_topology::face::FaceId],
-) -> Result<brepkit_topology::face::FaceId, JsError> {
+) -> Result<brepkit_topology::face::FaceId, WasmError> {
     // Determine target vertex count from the first profile.
     let n = if let Some(&fid) = existing_profiles.first() {
-        let verts = brepkit_operations::boolean::face_polygon(topo, fid)
-            .map_err(|e: brepkit_operations::OperationsError| JsError::new(&e.to_string()))?;
+        let verts = brepkit_operations::boolean::face_polygon(topo, fid)?;
         verts.len().max(3)
     } else {
         3
@@ -556,10 +555,8 @@ pub fn create_apex_face(
         ));
     }
 
-    let wire_id = brepkit_topology::builder::make_polygon_wire(topo, &pts, TOL)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-    let face_id = brepkit_topology::builder::make_face_from_wire(topo, wire_id)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let wire_id = brepkit_topology::builder::make_polygon_wire(topo, &pts, TOL)?;
+    let face_id = brepkit_topology::builder::make_face_from_wire(topo, wire_id)?;
     Ok(face_id)
 }
 
@@ -614,10 +611,15 @@ pub fn serialize_feature(
 ) -> serde_json::Value {
     use brepkit_operations::feature_recognition::Feature;
     match f {
-        Feature::Hole { faces, diameter } => serde_json::json!({
+        Feature::Hole {
+            faces,
+            diameter,
+            through,
+        } => serde_json::json!({
             "type": "hole",
             "faces": faces.iter().map(|f| face_id_to_u32(*f)).collect::<Vec<_>>(),
             "diameter": diameter,
+            "through": through,
         }),
         Feature::Chamfer {
             face,
@@ -651,6 +653,31 @@ pub fn serialize_feature(
             "count": count,
             "spacing": spacing,
         }),
+        _ => serde_json::json!({ "type": "unknown" }),
+    }
+}
+
+#[cfg(test)]
+mod feature_serialization_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn hole_serialization_includes_through_classification() {
+        let mut topo = brepkit_topology::Topology::new();
+        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let face = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let feature = brepkit_operations::feature_recognition::Feature::Hole {
+            faces: vec![face],
+            diameter: Some(2.0),
+            through: true,
+        };
+
+        let json = serialize_feature(&feature);
+        assert_eq!(json["type"], "hole");
+        assert_eq!(json["through"], true);
+        assert_eq!(json["diameter"], 2.0);
     }
 }
 

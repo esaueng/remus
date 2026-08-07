@@ -10,6 +10,10 @@ use super::edge_sampling::{
 use super::shorter_arc_range;
 use super::{AnalyticKind, MERGE_GRID, TriangleMesh, TriangleMeshUV, point_merge_key};
 
+type CylinderUv = (f64, f64);
+type CylinderSample = (Point3, CylinderUv);
+type CylinderLoop = (Vec<Point3>, Vec<CylinderUv>);
+
 /// Tessellate a cylindrical face using its actual boundary polygon (CDT-based).
 ///
 /// Used for faces with non-rectangular boundaries (e.g., boolean sub-faces
@@ -28,13 +32,8 @@ use super::{AnalyticKind, MERGE_GRID, TriangleMesh, TriangleMeshUV, point_merge_
 /// the face first; the single-face `tessellate` path had no cover and drew
 /// nothing at any deflection.)
 ///
-/// Only the outer wire is read. Inner wires are DROPPED — a hole on a face that
-/// arrives here renders filled. That gap is real but it is not reachable from
-/// the dispatcher today: a holed cylindrical face keeps its ordinary
-/// circle-and-seam outer boundary and goes to the analytic grid instead, which
-/// drops holes as well. `tessellate::tests::a_holed_cylindrical_face_does_not_
-/// take_the_boundary_tessellator` pins that routing, so this stays true or that
-/// test says so.
+/// Only the outer wire is read. Cylindrical faces with inner wires use the
+/// dedicated hole-aware path below.
 pub(super) fn tessellate_analytic_with_boundary(
     topo: &Topology,
     face_data: &brepkit_topology::face::Face,
@@ -178,6 +177,418 @@ pub(super) fn tessellate_analytic_with_boundary(
         mesh: TriangleMesh {
             positions,
             normals: normals_out,
+            indices,
+        },
+        uvs,
+    })
+}
+
+/// Sample one cylindrical face wire into exact 3D boundary positions and a
+/// continuous UV loop.
+fn sample_cylinder_wire(
+    topo: &Topology,
+    wire: &brepkit_topology::wire::Wire,
+    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<CylinderLoop, crate::OperationsError> {
+    let tol_dup = brepkit_math::tolerance::Tolerance::default().linear;
+    let mut positions = Vec::new();
+    let mut uvs: Vec<CylinderUv> = Vec::new();
+
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let pts = super::edge_sampling::sample_edge(topo, edge, deflection, angular_tol, false)?;
+        let ordered: Vec<Point3> = if oe.is_forward() {
+            pts
+        } else {
+            pts.into_iter().rev().collect()
+        };
+        for pos in ordered {
+            if positions
+                .last()
+                .is_some_and(|last: &Point3| (*last - pos).length() < tol_dup)
+            {
+                continue;
+            }
+            let (mut u, v) = cyl.project_point(pos);
+            if let Some(&(prev_u, _)) = uvs.last() {
+                let shifts = ((u - prev_u) / std::f64::consts::TAU + 0.5).floor();
+                u -= shifts * std::f64::consts::TAU;
+            }
+            positions.push(pos);
+            uvs.push((u, v));
+        }
+    }
+
+    if positions.len() > 2
+        && let (Some(&first), Some(&last)) = (positions.first(), positions.last())
+        && (first - last).length() < tol_dup
+    {
+        positions.pop();
+        uvs.pop();
+    }
+
+    Ok((positions, uvs))
+}
+
+/// Clip a cylindrical UV polygon to one side of a vertical chart boundary.
+/// Intersections are evaluated on the analytic surface so both periodic copies
+/// of a seam crossing retain the same exact 3D position.
+fn clip_cylinder_pocket(
+    samples: &[CylinderSample],
+    boundary_u: f64,
+    keep_greater: bool,
+    cyl: &brepkit_math::surfaces::CylindricalSurface,
+) -> Vec<CylinderSample> {
+    let Some(&last) = samples.last() else {
+        return Vec::new();
+    };
+    let mut previous = last;
+    let mut previous_inside = if keep_greater {
+        previous.1.0 >= boundary_u
+    } else {
+        previous.1.0 <= boundary_u
+    };
+    let mut clipped = Vec::new();
+
+    for &current in samples {
+        let current_inside = if keep_greater {
+            current.1.0 >= boundary_u
+        } else {
+            current.1.0 <= boundary_u
+        };
+        if current_inside != previous_inside {
+            let t = (boundary_u - previous.1.0) / (current.1.0 - previous.1.0);
+            let v = (current.1.1 - previous.1.1).mul_add(t, previous.1.1);
+            clipped.push((cyl.evaluate(boundary_u, v), (boundary_u, v)));
+        }
+        if current_inside {
+            clipped.push(current);
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+
+    let tol_dup = brepkit_math::tolerance::Tolerance::default().linear;
+    clipped.dedup_by(|a, b| (a.0 - b.0).length() < tol_dup);
+    if clipped.len() > 2
+        && let (Some(first), Some(last)) = (clipped.first(), clipped.last())
+        && (first.0 - last.0).length() < tol_dup
+    {
+        clipped.pop();
+    }
+    clipped
+}
+
+/// Copy a contractible inner loop into the outer cylinder chart. If it crosses
+/// the periodic seam, clipping two adjacent copies produces the two pocket
+/// polygons that meet at that seam instead of one polygon outside the chart.
+fn cylinder_pocket_pieces(
+    positions: &[Point3],
+    uvs: &[CylinderUv],
+    outer_u: (f64, f64),
+    cyl: &brepkit_math::surfaces::CylindricalSurface,
+) -> Vec<CylinderLoop> {
+    if uvs.len() < 3 {
+        return Vec::new();
+    }
+    let (inner_min, inner_max) = uvs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(u, _)| {
+            (lo.min(u), hi.max(u))
+        });
+    let outer_mid = 0.5 * (outer_u.0 + outer_u.1);
+    let inner_mid = 0.5 * (inner_min + inner_max);
+    let base_turn = ((outer_mid - inner_mid) / std::f64::consts::TAU).round();
+    let mut pieces = Vec::new();
+
+    for turn in [base_turn - 1.0, base_turn, base_turn + 1.0] {
+        let shift = turn * std::f64::consts::TAU;
+        if inner_max + shift < outer_u.0 || inner_min + shift > outer_u.1 {
+            continue;
+        }
+        let shifted: Vec<CylinderSample> = positions
+            .iter()
+            .copied()
+            .zip(uvs.iter().copied())
+            .map(|(position, (u, v))| (position, (u + shift, v)))
+            .collect();
+        let clipped = clip_cylinder_pocket(&shifted, outer_u.0, true, cyl);
+        let clipped = clip_cylinder_pocket(&clipped, outer_u.1, false, cyl);
+        if clipped.len() < 3 {
+            continue;
+        }
+        let signed_area = (0..clipped.len())
+            .map(|i| {
+                let a = clipped[i].1;
+                let b = clipped[(i + 1) % clipped.len()].1;
+                a.0 * b.1 - b.0 * a.1
+            })
+            .sum::<f64>();
+        if signed_area.abs() <= f64::EPSILON {
+            continue;
+        }
+        pieces.push(clipped.into_iter().unzip());
+    }
+    pieces
+}
+
+/// Signed shortest-step winding around the cylinder's periodic coordinate.
+fn cylinder_loop_winding(uvs: &[CylinderUv]) -> f64 {
+    let tau = std::f64::consts::TAU;
+    (0..uvs.len())
+        .map(|i| {
+            let delta = uvs[(i + 1) % uvs.len()].0 - uvs[i].0;
+            delta - tau * ((delta + std::f64::consts::PI) / tau).floor()
+        })
+        .sum()
+}
+
+/// Return the `v` crossings of a positive-u, period-wrapping constraint at
+/// `u`, including its periodic closing segment.
+fn cylinder_band_crossings(uvs: &[CylinderUv], range: (usize, usize), u: f64) -> Vec<f64> {
+    let points = &uvs[range.0..range.1];
+    let Some(&(u0, _)) = points.first() else {
+        return Vec::new();
+    };
+    let tau = std::f64::consts::TAU;
+    let uq = u0 + (u - u0).rem_euclid(tau);
+
+    let mut crossings = Vec::new();
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = if i + 1 < points.len() {
+            points[i + 1]
+        } else {
+            (points[0].0 + tau, points[0].1)
+        };
+        if uq < a.0 || uq >= b.0 || b.0 <= a.0 {
+            continue;
+        }
+        let t = (uq - a.0) / (b.0 - a.0);
+        crossings.push((b.1 - a.1).mul_add(t, a.1));
+    }
+    crossings
+}
+
+/// Count crossings of a period-wrapping constraint above a UV point. An odd
+/// total across all wrapping loops identifies a removed band.
+fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64, v: f64) -> usize {
+    cylinder_band_crossings(uvs, range, u)
+        .into_iter()
+        .filter(|&crossing_v| crossing_v > v)
+        .count()
+}
+
+/// Tessellate a cylindrical face with inner wires in the cylinder's developed
+/// UV plane. All wire polylines become CDT constraints; inner-loop cells are
+/// then removed before the vertices are mapped back to the analytic surface.
+pub(super) fn tessellate_cylinder_with_holes(
+    topo: &Topology,
+    face_data: &brepkit_topology::face::Face,
+    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<TriangleMeshUV, crate::OperationsError> {
+    use brepkit_math::cdt::Cdt;
+    use brepkit_math::vec::Point2;
+
+    let outer_wire = topo.wire(face_data.outer_wire())?;
+    let (mut all_positions, outer_uvs) =
+        sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol)?;
+    if outer_uvs.len() < 3 {
+        return Ok(TriangleMeshUV::default());
+    }
+
+    let outer_count = outer_uvs.len();
+    let outer_u = outer_uvs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(u, _)| {
+            (lo.min(u), hi.max(u))
+        });
+    let mut all_uvs = outer_uvs;
+    let mut pocket_ranges = Vec::new();
+    let mut band_ranges = Vec::new();
+
+    for &wire_id in face_data.inner_wires() {
+        let wire = topo.wire(wire_id)?;
+        let (mut positions, mut uvs) =
+            sample_cylinder_wire(topo, wire, cyl, deflection, angular_tol)?;
+        let winding = cylinder_loop_winding(&uvs);
+        let wraps = winding.abs() >= std::f64::consts::TAU - 1e-6;
+        if wraps {
+            if winding < 0.0 {
+                positions.reverse();
+                uvs.reverse();
+            }
+            let mut samples: Vec<CylinderSample> = positions
+                .into_iter()
+                .zip(uvs)
+                .map(|(position, (u, v))| {
+                    let u = outer_u.0 + (u - outer_u.0).rem_euclid(std::f64::consts::TAU);
+                    (position, (u, v))
+                })
+                .collect();
+            samples.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
+            (positions, uvs) = samples.into_iter().unzip();
+            if let (Some(&(first_u, first_v)), Some(&(last_u, last_v))) = (uvs.first(), uvs.last())
+            {
+                let period = std::f64::consts::TAU;
+                let gap = first_u + period - last_u;
+                if gap > 1e-12 {
+                    let t = (outer_u.1 - last_u) / gap;
+                    let seam_v = (first_v - last_v).mul_add(t, last_v);
+                    let seam_position = cyl.evaluate(outer_u.0, seam_v);
+                    positions.insert(0, seam_position);
+                    uvs.insert(0, (outer_u.0, seam_v));
+                    positions.push(seam_position);
+                    uvs.push((outer_u.1, seam_v));
+                }
+            }
+            let start = all_uvs.len();
+            all_positions.extend(positions);
+            all_uvs.extend(uvs);
+            band_ranges.push((start, all_uvs.len()));
+        } else {
+            for (positions, uvs) in cylinder_pocket_pieces(&positions, &uvs, outer_u, cyl) {
+                let start = all_uvs.len();
+                all_positions.extend(positions);
+                all_uvs.extend(uvs);
+                pocket_ranges.push((start, all_uvs.len()));
+            }
+        }
+    }
+
+    let outer_v = all_uvs[..outer_count]
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+            (lo.min(v), hi.max(v))
+        });
+    let nu = segments_for_chord_deviation_a(
+        cyl.radius(),
+        outer_u.1 - outer_u.0,
+        deflection,
+        angular_tol,
+        false,
+    );
+    for iu in 0..=nu {
+        #[allow(clippy::cast_precision_loss)]
+        let u = (outer_u.1 - outer_u.0).mul_add(iu as f64 / nu as f64, outer_u.0);
+        let mut crossings = vec![outer_v.0, outer_v.1];
+        for &range in &band_ranges {
+            crossings.extend(cylinder_band_crossings(&all_uvs, range, u));
+        }
+        crossings.sort_by(f64::total_cmp);
+        crossings.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+        for limits in crossings.windows(2) {
+            let v = f64::midpoint(limits[0], limits[1]);
+            let kept = band_ranges
+                .iter()
+                .map(|&range| cylinder_band_strands_above(&all_uvs, range, u, v))
+                .sum::<usize>()
+                .is_multiple_of(2);
+            if kept {
+                all_positions.push(cyl.evaluate(u, v));
+                all_uvs.push((u, v));
+            }
+        }
+    }
+
+    let radius = cyl.radius();
+    let pts2d: Vec<Point2> = all_uvs
+        .iter()
+        .map(|&(u, v)| Point2::new(radius * u, v))
+        .collect();
+    let mut cdt = Cdt::with_capacity(compute_cdt_bounds(&pts2d), pts2d.len());
+    let cdt_indices = cdt
+        .insert_points_hilbert(&pts2d)
+        .map_err(crate::OperationsError::Math)?;
+
+    let mut add_loop_constraints = |start: usize, end: usize| {
+        let count = end - start;
+        for i in 0..count {
+            let a = cdt_indices[start + i];
+            let b = cdt_indices[start + (i + 1) % count];
+            if a != b {
+                cdt.insert_constraint(a, b)
+                    .map_err(crate::OperationsError::Math)?;
+            }
+        }
+        Ok::<(), crate::OperationsError>(())
+    };
+    add_loop_constraints(0, outer_count)?;
+    for &(start, end) in &pocket_ranges {
+        add_loop_constraints(start, end)?;
+    }
+    for &(start, end) in &band_ranges {
+        for i in start..end.saturating_sub(1) {
+            let a = cdt_indices[i];
+            let b = cdt_indices[i + 1];
+            if a != b {
+                cdt.insert_constraint(a, b)
+                    .map_err(crate::OperationsError::Math)?;
+            }
+        }
+    }
+    let outer_constraints: Vec<(usize, usize)> = (0..outer_count)
+        .filter_map(|i| {
+            let a = cdt_indices[i];
+            let b = cdt_indices[(i + 1) % outer_count];
+            (a != b).then_some((a, b))
+        })
+        .collect();
+    cdt.remove_exterior(&outer_constraints);
+
+    // Constraint recovery can split a requested segment at existing collinear
+    // vertices (notably where a clipped pocket closes on the chart seam). Use
+    // the CDT's recovered sub-edges as flood barriers, not only the originally
+    // requested endpoint pairs.
+    let constraint_set = cdt.constraint_edges().clone();
+    for seed in hole_removal_seeds(&pts2d, &pocket_ranges) {
+        let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
+    }
+
+    let triangles: Vec<(usize, usize, usize)> = cdt
+        .triangles()
+        .into_iter()
+        .filter(|&(a, b, c)| {
+            let pa = cdt.vertices()[a];
+            let pb = cdt.vertices()[b];
+            let pc = cdt.vertices()[c];
+            let u = (pa.x() + pb.x() + pc.x()) / (3.0 * radius);
+            let v = (pa.y() + pb.y() + pc.y()) / 3.0;
+            band_ranges
+                .iter()
+                .map(|&range| cylinder_band_strands_above(&all_uvs, range, u, v))
+                .sum::<usize>()
+                .is_multiple_of(2)
+        })
+        .collect();
+    let cdt_vertices = cdt.vertices();
+    let mut positions = Vec::with_capacity(cdt_vertices.len());
+    let mut normals = Vec::with_capacity(cdt_vertices.len());
+    let mut uvs = Vec::with_capacity(cdt_vertices.len());
+    for uv in cdt_vertices {
+        let u = uv.x() / radius;
+        positions.push(cyl.evaluate(u, uv.y()));
+        normals.push(cyl.normal(u, uv.y()));
+        uvs.push([u, uv.y()]);
+    }
+    for (i, &cdt_id) in cdt_indices.iter().enumerate() {
+        positions[cdt_id] = all_positions[i];
+    }
+
+    let mut indices = Vec::with_capacity(triangles.len() * 3);
+    #[allow(clippy::cast_possible_truncation)]
+    for (a, b, c) in triangles {
+        indices.extend_from_slice(&[a as u32, b as u32, c as u32]);
+    }
+
+    Ok(TriangleMeshUV {
+        mesh: TriangleMesh {
+            positions,
+            normals,
             indices,
         },
         uvs,

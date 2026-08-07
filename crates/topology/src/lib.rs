@@ -98,3 +98,23 @@ pub enum TopologyError {
     #[error("wire is not planar")]
     NotPlanar,
 }
+
+/// Errors from retiring a solid and its unshared topology.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum DeleteSolidError {
+    /// The solid or its topology tree contains an invalid handle.
+    #[error(transparent)]
+    Topology(#[from] TopologyError),
+
+    /// A live root still references the solid.
+    #[error("solid {solid:?} is referenced by live {dependent} {dependent_index}")]
+    Referenced {
+        /// The solid that cannot be retired.
+        solid: solid::SolidId,
+        /// The kind of dependent root.
+        dependent: &'static str,
+        /// The arena index of the dependent root.
+        dependent_index: usize,
+    },
+}
