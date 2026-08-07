@@ -486,6 +486,30 @@ impl BrepKernel {
                 .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
+            "fuseWithEvolution" | "cutWithEvolution" | "intersectWithEvolution" => {
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                let bool_op = match op {
+                    "fuseWithEvolution" => BooleanOp::Fuse,
+                    "cutWithEvolution" => BooleanOp::Cut,
+                    _ => BooleanOp::Intersect,
+                };
+                let a_id = self.resolve_solid(a).map_err(|error| error.to_string())?;
+                let b_id = self.resolve_solid(b).map_err(|error| error.to_string())?;
+                let (result, evolution) = brepkit_operations::boolean::boolean_with_evolution(
+                    self.topo_mut(),
+                    bool_op,
+                    a_id,
+                    b_id,
+                )
+                .map_err(|error| error.to_string())?;
+                let evolution: serde_json::Value = serde_json::from_str(&evolution.to_json())
+                    .map_err(|error| error.to_string())?;
+                Ok(serde_json::json!({
+                    "solid": solid_id_to_u32(result),
+                    "evolution": evolution,
+                }))
+            }
             "detectCoincidentFaces" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
@@ -582,6 +606,17 @@ impl BrepKernel {
                 let v = measure::solid_volume(&self.topo, solid_id, deflection)
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(v))
+            }
+            "validateSolid" => {
+                let solid = get_u32(args, "solid")?;
+                let solid_id = self
+                    .resolve_solid(solid)
+                    .map_err(|error| error.to_string())?;
+                let report = brepkit_operations::validate::validate_solid(&self.topo, solid_id)
+                    .map_err(|error| error.to_string())?;
+                let error_count = u32::try_from(report.error_count())
+                    .map_err(|_| "validation error count exceeds u32".to_string())?;
+                Ok(serde_json::json!(error_count))
             }
             "surfaceArea" => {
                 let s = get_u32(args, "solid")?;
@@ -764,20 +799,82 @@ impl BrepKernel {
                 let f = get_u32(args, "face")?;
                 let e = get_u32(args, "pathEdge")?;
                 let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
-                let edge_id = self.resolve_edge(e).map_err(|e| e.to_string())?;
-                let edge_data = self.topo.edge(edge_id).map_err(|e| e.to_string())?;
-                let curve = match edge_data.curve() {
-                    EdgeCurve::NurbsCurve(c) => c.clone(),
-                    EdgeCurve::Line
-                    | EdgeCurve::Circle(_)
-                    | EdgeCurve::Ellipse(_)
-                    | EdgeCurve::Hyperbola(_)
-                    | EdgeCurve::Parabola(_) => {
-                        return Err("sweep path must be a NURBS edge".into());
-                    }
-                };
+                let curve = self.extract_nurbs_curve(e).map_err(|e| e.to_string())?;
                 let solid = sweep(self.topo_mut(), face_id, &curve).map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
+            }
+            "sweepWithOptions" => {
+                let profile = get_u32(args, "profile")?;
+                let path_edge = get_u32(args, "pathEdge")?;
+                let contact_mode = match args.get("contactMode") {
+                    None | Some(serde_json::Value::Null) => "rmf",
+                    Some(value) => value.as_str().ok_or("missing or invalid 'contactMode'")?,
+                };
+                let scale_values = match args.get("scaleValues") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(_) => get_f64_array(args, "scaleValues")?,
+                };
+                let segments = match args.get("segments") {
+                    None | Some(serde_json::Value::Null) => 0,
+                    Some(_) => get_u32(args, "segments")?,
+                };
+                let corner_mode = match args.get("cornerMode") {
+                    None | Some(serde_json::Value::Null) => "smooth",
+                    Some(value) => value.as_str().ok_or("missing or invalid 'cornerMode'")?,
+                };
+                let face_id = self
+                    .resolve_face(profile)
+                    .map_err(|error| error.to_string())?;
+                let path_curve = self
+                    .extract_nurbs_curve(path_edge)
+                    .map_err(|error| error.to_string())?;
+                let options = super::operations::parse_sweep_options(
+                    contact_mode,
+                    scale_values,
+                    segments,
+                    corner_mode,
+                )?;
+                let result = brepkit_operations::sweep::sweep_with_options(
+                    self.topo_mut(),
+                    face_id,
+                    &path_curve,
+                    &options,
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "helicalSweep" => {
+                let profile = get_u32(args, "profile")?;
+                let origin = Point3::new(
+                    get_f64(args, "axisOriginX")?,
+                    get_f64(args, "axisOriginY")?,
+                    get_f64(args, "axisOriginZ")?,
+                );
+                let axis_dir = Vec3::new(
+                    get_f64(args, "axisDirX")?,
+                    get_f64(args, "axisDirY")?,
+                    get_f64(args, "axisDirZ")?,
+                );
+                let radius = get_f64(args, "radius")?;
+                let pitch = get_f64(args, "pitch")?;
+                let turns = get_f64(args, "turns")?;
+                crate::error::validate_positive(radius, "radius").map_err(|e| e.to_string())?;
+                crate::error::validate_positive(pitch, "pitch").map_err(|e| e.to_string())?;
+                let face_id = self
+                    .resolve_face(profile)
+                    .map_err(|error| error.to_string())?;
+                let result = brepkit_operations::helix::helical_sweep(
+                    self.topo_mut(),
+                    face_id,
+                    origin,
+                    axis_dir,
+                    radius,
+                    pitch,
+                    turns,
+                    8,
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "multiSectionSweep" => {
                 let faces: Vec<u32> = args["faces"]
@@ -796,18 +893,9 @@ impl BrepKernel {
                     return Err("multiSectionSweep: faces and params length mismatch".into());
                 }
                 let spine_edge = get_u32(args, "spineEdge")?;
-                let edge_id = self.resolve_edge(spine_edge).map_err(|e| e.to_string())?;
-                let edge_data = self.topo.edge(edge_id).map_err(|e| e.to_string())?;
-                let spine = match edge_data.curve() {
-                    EdgeCurve::NurbsCurve(c) => c.clone(),
-                    EdgeCurve::Line
-                    | EdgeCurve::Circle(_)
-                    | EdgeCurve::Ellipse(_)
-                    | EdgeCurve::Hyperbola(_)
-                    | EdgeCurve::Parabola(_) => {
-                        return Err("multiSectionSweep spine must be a NURBS edge".into());
-                    }
-                };
+                let spine = self
+                    .extract_nurbs_curve(spine_edge)
+                    .map_err(|e| e.to_string())?;
                 let ruled = args["ruled"].as_bool().unwrap_or(true);
                 let sections: Vec<(brepkit_topology::face::FaceId, f64)> = faces
                     .iter()
@@ -831,23 +919,12 @@ impl BrepKernel {
                 let face_id = self
                     .resolve_face(get_u32(args, "face")?)
                     .map_err(|e| e.to_string())?;
-                let nurbs_of =
-                    |this: &Self, edge: u32, label: &str| -> Result<NurbsCurve, String> {
-                        let edge_id = this.resolve_edge(edge).map_err(|e| e.to_string())?;
-                        let edge_data = this.topo.edge(edge_id).map_err(|e| e.to_string())?;
-                        match edge_data.curve() {
-                            EdgeCurve::NurbsCurve(c) => Ok(c.clone()),
-                            EdgeCurve::Line
-                            | EdgeCurve::Circle(_)
-                            | EdgeCurve::Ellipse(_)
-                            | EdgeCurve::Hyperbola(_)
-                            | EdgeCurve::Parabola(_) => {
-                                Err(format!("guidedSweep {label} must be a NURBS edge"))
-                            }
-                        }
-                    };
-                let spine = nurbs_of(self, get_u32(args, "spineEdge")?, "spineEdge")?;
-                let aux = nurbs_of(self, get_u32(args, "auxEdge")?, "auxEdge")?;
+                let spine = self
+                    .extract_nurbs_curve(get_u32(args, "spineEdge")?)
+                    .map_err(|error| error.to_string())?;
+                let aux = self
+                    .extract_nurbs_curve(get_u32(args, "auxEdge")?)
+                    .map_err(|error| error.to_string())?;
                 let solid =
                     brepkit_operations::sweep::sweep_guided(self.topo_mut(), face_id, &spine, aux)
                         .map_err(|e| e.to_string())?;
@@ -1220,6 +1297,22 @@ impl BrepKernel {
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
+            "loftWithOptions" => {
+                let face_handles = get_u32_array(args, "faces")?;
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => serde_json::Value::Null,
+                    Some(value) if value.is_object() => value.clone(),
+                    Some(_) => return Err("missing or invalid 'options' object".into()),
+                };
+                let face_ids = face_handles
+                    .into_iter()
+                    .map(|handle| self.resolve_face(handle).map_err(|error| error.to_string()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result =
+                    super::operations::loft_with_options_impl(self.topo_mut(), face_ids, &options)
+                        .map_err(|error| error.to_string())?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
             "loftSmooth" => {
                 let face_handles: Vec<u32> = args["faces"]
                     .as_array()
@@ -1475,18 +1568,7 @@ impl BrepKernel {
                 let f = get_u32(args, "face")?;
                 let e = get_u32(args, "pathEdge")?;
                 let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
-                let edge_id = self.resolve_edge(e).map_err(|e| e.to_string())?;
-                let edge_data = self.topo.edge(edge_id).map_err(|e| e.to_string())?;
-                let curve = match edge_data.curve() {
-                    EdgeCurve::NurbsCurve(c) => c.clone(),
-                    EdgeCurve::Line
-                    | EdgeCurve::Circle(_)
-                    | EdgeCurve::Ellipse(_)
-                    | EdgeCurve::Hyperbola(_)
-                    | EdgeCurve::Parabola(_) => {
-                        return Err("pipe path must be a NURBS edge".into());
-                    }
-                };
+                let curve = self.extract_nurbs_curve(e).map_err(|e| e.to_string())?;
                 let solid = brepkit_operations::pipe::pipe(self.topo_mut(), face_id, &curve, None)
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
@@ -1739,6 +1821,32 @@ impl BrepKernel {
                     super::polygon2d::polygon_boolean_2d_impl(&coords_a, &coords_b, op, tolerance)
                         .map_err(|e| e.to_string())?;
                 serde_json::to_value(result).map_err(|e| e.to_string())
+            }
+            "fillet2d" => {
+                let coords = get_f64_array(args, "coords")?;
+                let radius = get_f64(args, "radius")?;
+                crate::error::validate_positive(radius, "radius").map_err(|e| e.to_string())?;
+                let polygon = crate::helpers::parse_polygon_2d_checked(&coords, "coords")
+                    .map_err(|e| e.to_string())?;
+                let result = brepkit_math::polygon2d::fillet_polygon_2d(&polygon, radius);
+                let coords: Vec<f64> = result
+                    .iter()
+                    .flat_map(|point| [point.x(), point.y()])
+                    .collect();
+                Ok(serde_json::json!(coords))
+            }
+            "chamfer2d" => {
+                let coords = get_f64_array(args, "coords")?;
+                let distance = get_f64(args, "distance")?;
+                crate::error::validate_positive(distance, "distance").map_err(|e| e.to_string())?;
+                let polygon = crate::helpers::parse_polygon_2d_checked(&coords, "coords")
+                    .map_err(|e| e.to_string())?;
+                let result = brepkit_math::polygon2d::chamfer_polygon_2d(&polygon, distance);
+                let coords: Vec<f64> = result
+                    .iter()
+                    .flat_map(|point| [point.x(), point.y()])
+                    .collect();
+                Ok(serde_json::json!(coords))
             }
             "getNurbsCurveData" => {
                 let edge = get_u32(args, "edge")?;

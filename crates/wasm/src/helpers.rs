@@ -534,11 +534,10 @@ pub fn create_apex_face(
     topo: &mut Topology,
     point: Point3,
     existing_profiles: &[brepkit_topology::face::FaceId],
-) -> Result<brepkit_topology::face::FaceId, JsError> {
+) -> Result<brepkit_topology::face::FaceId, WasmError> {
     // Determine target vertex count from the first profile.
     let n = if let Some(&fid) = existing_profiles.first() {
-        let verts = brepkit_operations::boolean::face_polygon(topo, fid)
-            .map_err(|e: brepkit_operations::OperationsError| JsError::new(&e.to_string()))?;
+        let verts = brepkit_operations::boolean::face_polygon(topo, fid)?;
         verts.len().max(3)
     } else {
         3
@@ -556,10 +555,8 @@ pub fn create_apex_face(
         ));
     }
 
-    let wire_id = brepkit_topology::builder::make_polygon_wire(topo, &pts, TOL)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-    let face_id = brepkit_topology::builder::make_face_from_wire(topo, wire_id)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let wire_id = brepkit_topology::builder::make_polygon_wire(topo, &pts, TOL)?;
+    let face_id = brepkit_topology::builder::make_face_from_wire(topo, wire_id)?;
     Ok(face_id)
 }
 

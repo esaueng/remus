@@ -60,6 +60,120 @@ pub fn parse_join_type_str(s: &str) -> Result<JoinType, WasmError> {
     }
 }
 
+/// Shared implementation for the direct and batch `loftWithOptions` entry
+/// points.
+pub(super) fn loft_with_options_impl(
+    topo: &mut brepkit_topology::Topology,
+    mut face_ids: Vec<brepkit_topology::face::FaceId>,
+    options: &serde_json::Value,
+) -> Result<brepkit_topology::solid::SolidId, WasmError> {
+    if let Some(sp) = options.get("startPoint").and_then(|value| value.as_array())
+        && sp.len() >= 3
+    {
+        let point = Point3::new(
+            sp[0].as_f64().unwrap_or(0.0),
+            sp[1].as_f64().unwrap_or(0.0),
+            sp[2].as_f64().unwrap_or(0.0),
+        );
+        let apex_face = create_apex_face(topo, point, &face_ids)?;
+        face_ids.insert(0, apex_face);
+    }
+
+    if let Some(ep) = options.get("endPoint").and_then(|value| value.as_array())
+        && ep.len() >= 3
+    {
+        let point = Point3::new(
+            ep[0].as_f64().unwrap_or(0.0),
+            ep[1].as_f64().unwrap_or(0.0),
+            ep[2].as_f64().unwrap_or(0.0),
+        );
+        let apex_face = create_apex_face(topo, point, &face_ids)?;
+        face_ids.push(apex_face);
+    }
+
+    let ruled = options
+        .get("ruled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    if ruled {
+        Ok(brepkit_operations::loft::loft(topo, &face_ids)?)
+    } else {
+        Ok(brepkit_operations::loft::loft_smooth(topo, &face_ids)?)
+    }
+}
+
+/// Parse the options shared by direct and batch `sweepWithOptions` calls.
+pub(super) fn parse_sweep_options(
+    contact_mode: &str,
+    scale_values: Vec<f64>,
+    segments: u32,
+    corner_mode: &str,
+) -> Result<brepkit_operations::sweep::SweepOptions, String> {
+    use brepkit_operations::sweep::{SweepContactMode, SweepCornerMode, SweepOptions};
+
+    let contact_mode = if contact_mode == "fixed" {
+        SweepContactMode::Fixed
+    } else if let Some(rest) = contact_mode.strip_prefix("constantNormal:") {
+        let parts: Vec<f64> = rest
+            .split(',')
+            .filter_map(|part| part.trim().parse().ok())
+            .collect();
+        if parts.len() >= 3 {
+            SweepContactMode::ConstantNormal(Vec3::new(parts[0], parts[1], parts[2]))
+        } else {
+            SweepContactMode::RotationMinimizing
+        }
+    } else {
+        SweepContactMode::RotationMinimizing
+    };
+
+    let scale_law: Option<Box<dyn Fn(f64) -> f64 + Send + Sync>> =
+        if scale_values.len() >= 4 && scale_values.len().is_multiple_of(2) {
+            let pairs: Vec<(f64, f64)> = scale_values
+                .chunks_exact(2)
+                .map(|pair| (pair[0], pair[1]))
+                .collect();
+            Some(Box::new(move |t: f64| -> f64 {
+                if t <= pairs[0].0 {
+                    return pairs[0].1;
+                }
+                if t >= pairs[pairs.len() - 1].0 {
+                    return pairs[pairs.len() - 1].1;
+                }
+                for window in pairs.windows(2) {
+                    if t >= window[0].0 && t <= window[1].0 {
+                        let fraction = (t - window[0].0) / (window[1].0 - window[0].0);
+                        return window[0].1 + fraction * (window[1].1 - window[0].1);
+                    }
+                }
+                1.0
+            }))
+        } else {
+            None
+        };
+
+    let corner_mode = if corner_mode == "miter" {
+        SweepCornerMode::Miter
+    } else if let Some(rest) = corner_mode.strip_prefix("round:") {
+        let radius = rest.trim().parse::<f64>().map_err(|_| {
+            format!("corner mode \"{corner_mode}\": expected a corner radius, as in \"round:2.5\"")
+        })?;
+        SweepCornerMode::Round { radius }
+    } else if corner_mode == "round" {
+        return Err("corner mode \"round\" needs a corner radius, as in \"round:2.5\"".into());
+    } else {
+        SweepCornerMode::Smooth
+    };
+
+    Ok(SweepOptions {
+        contact_mode,
+        corner_mode,
+        scale_law,
+        segments: segments as usize,
+        aux_spine: None,
+    })
+}
+
 #[wasm_bindgen]
 impl BrepKernel {
     // ── Section ───────────────────────────────────────────────────
@@ -157,44 +271,11 @@ impl BrepKernel {
         let opts: serde_json::Value =
             serde_json::from_str(options).unwrap_or(serde_json::Value::Null);
 
-        let mut face_ids: Vec<brepkit_topology::face::FaceId> = faces
+        let face_ids: Vec<brepkit_topology::face::FaceId> = faces
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-
-        // If startPoint is given, create a tiny degenerate triangle face at that point
-        // and prepend it to the profiles.
-        if let Some(sp) = opts.get("startPoint").and_then(|v| v.as_array())
-            && sp.len() >= 3
-        {
-            let x = sp[0].as_f64().unwrap_or(0.0);
-            let y = sp[1].as_f64().unwrap_or(0.0);
-            let z = sp[2].as_f64().unwrap_or(0.0);
-            let apex_face = create_apex_face(self.topo_mut(), Point3::new(x, y, z), &face_ids)?;
-            face_ids.insert(0, apex_face);
-        }
-
-        // If endPoint is given, create a tiny degenerate triangle face and append.
-        if let Some(ep) = opts.get("endPoint").and_then(|v| v.as_array())
-            && ep.len() >= 3
-        {
-            let x = ep[0].as_f64().unwrap_or(0.0);
-            let y = ep[1].as_f64().unwrap_or(0.0);
-            let z = ep[2].as_f64().unwrap_or(0.0);
-            let apex_face = create_apex_face(self.topo_mut(), Point3::new(x, y, z), &face_ids)?;
-            face_ids.push(apex_face);
-        }
-
-        let ruled = opts
-            .get("ruled")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
-
-        let solid_id = if ruled {
-            brepkit_operations::loft::loft(self.topo_mut(), &face_ids)?
-        } else {
-            brepkit_operations::loft::loft_smooth(self.topo_mut(), &face_ids)?
-        };
+        let solid_id = loft_with_options_impl(self.topo_mut(), face_ids, &opts)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -1239,80 +1320,10 @@ impl BrepKernel {
         segments: u32,
         corner_mode: &str,
     ) -> Result<u32, JsError> {
-        use brepkit_operations::sweep::{SweepContactMode, SweepCornerMode, SweepOptions};
-
         let face_id = self.resolve_face(profile)?;
         let path_curve = self.extract_nurbs_curve(path_edge)?;
-
-        let mode = if contact_mode == "fixed" {
-            SweepContactMode::Fixed
-        } else if let Some(rest) = contact_mode.strip_prefix("constantNormal:") {
-            let parts: Vec<f64> = rest
-                .split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect();
-            if parts.len() >= 3 {
-                SweepContactMode::ConstantNormal(Vec3::new(parts[0], parts[1], parts[2]))
-            } else {
-                SweepContactMode::RotationMinimizing
-            }
-        } else {
-            SweepContactMode::RotationMinimizing
-        };
-
-        let scale_law: Option<Box<dyn Fn(f64) -> f64 + Send + Sync>> =
-            if scale_values.len() >= 4 && scale_values.len().is_multiple_of(2) {
-                let pairs: Vec<(f64, f64)> =
-                    scale_values.chunks_exact(2).map(|c| (c[0], c[1])).collect();
-                Some(Box::new(move |t: f64| -> f64 {
-                    // Piecewise-linear interpolation
-                    if pairs.is_empty() {
-                        return 1.0;
-                    }
-                    if t <= pairs[0].0 {
-                        return pairs[0].1;
-                    }
-                    if t >= pairs[pairs.len() - 1].0 {
-                        return pairs[pairs.len() - 1].1;
-                    }
-                    for w in pairs.windows(2) {
-                        if t >= w[0].0 && t <= w[1].0 {
-                            let frac = (t - w[0].0) / (w[1].0 - w[0].0);
-                            return w[0].1 + frac * (w[1].1 - w[0].1);
-                        }
-                    }
-                    1.0
-                }))
-            } else {
-                None
-            };
-
-        let cm = if corner_mode == "miter" {
-            SweepCornerMode::Miter
-        } else if let Some(rest) = corner_mode.strip_prefix("round:") {
-            let radius = rest.trim().parse::<f64>().map_err(|_| {
-                JsError::new(&format!(
-                    "corner mode \"{corner_mode}\": expected a corner radius, as in \"round:2.5\""
-                ))
-            })?;
-            SweepCornerMode::Round { radius }
-        } else if corner_mode == "round" {
-            // Rounding needs a radius. Silently sweeping without one produced a
-            // different solid than the caller asked for, with no way to tell.
-            return Err(JsError::new(
-                "corner mode \"round\" needs a corner radius, as in \"round:2.5\"",
-            ));
-        } else {
-            SweepCornerMode::Smooth
-        };
-
-        let options = SweepOptions {
-            contact_mode: mode,
-            corner_mode: cm,
-            scale_law,
-            segments: segments as usize,
-            aux_spine: None,
-        };
+        let options = parse_sweep_options(contact_mode, scale_values, segments, corner_mode)
+            .map_err(|error| JsError::new(&error))?;
 
         let result = brepkit_operations::sweep::sweep_with_options(
             self.topo_mut(),
@@ -1890,6 +1901,34 @@ mod tests {
         parsed[0].clone()
     }
 
+    fn batch_solid_handle(result: &serde_json::Value, label: &str) -> u32 {
+        result
+            .get("ok")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("{label}: expected an ok solid handle, got {result}"))
+            as u32
+    }
+
+    fn assert_batch_solid_geometry(k: &BrepKernel, handle: u32, label: &str) {
+        let solid = k.resolve_solid(handle).unwrap();
+        let shell = k
+            .topo
+            .shell(k.topo.solid(solid).unwrap().outer_shell())
+            .unwrap();
+        brepkit_topology::validation::validate_shell_closed(shell, &k.topo)
+            .unwrap_or_else(|error| panic!("{label}: solid must be closed: {error:?}"));
+        brepkit_topology::validation::validate_shell_manifold(shell, &k.topo)
+            .unwrap_or_else(|error| panic!("{label}: solid must be manifold: {error:?}"));
+
+        let coarse = brepkit_operations::measure::solid_volume(&k.topo, solid, 0.25).unwrap();
+        let fine = brepkit_operations::measure::solid_volume(&k.topo, solid, 0.05).unwrap();
+        assert!(fine > 0.0, "{label}: volume must be positive, got {fine}");
+        assert!(
+            (coarse - fine).abs() / fine < 0.02,
+            "{label}: volume must converge under mesh refinement: coarse={coarse}, fine={fine}"
+        );
+    }
+
     fn wire_perimeter(k: &BrepKernel, wire_handle: u32) -> f64 {
         let wid = k.resolve_wire(wire_handle).unwrap();
         brepkit_operations::measure::wire_length(&k.topo, wid).unwrap()
@@ -2222,25 +2261,11 @@ mod tests {
     }
 
     #[test]
-    fn multi_section_sweep_batch_dispatch_lofts_circles() {
+    fn multi_section_sweep_batch_accepts_analytic_line_spine() {
         let mut k = BrepKernel::new();
         let big = k.make_circle_face(10.0, 24).unwrap();
         let small = k.make_circle_face(5.0, 24).unwrap();
-        // A degree-1 NURBS line spine edge (the batch op takes the spine by edge).
-        let spine = k
-            .make_nurbs_edge(
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                50.0,
-                1,
-                vec![0.0, 0.0, 1.0, 1.0],
-                vec![0.0, 0.0, 0.0, 0.0, 0.0, 50.0],
-                vec![1.0, 1.0],
-            )
-            .unwrap();
+        let spine = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 50.0).unwrap();
         let out = dispatch(
             &mut k,
             "multiSectionSweep",
@@ -2251,10 +2276,8 @@ mod tests {
                 "ruled": true,
             }),
         );
-        assert!(
-            out.get("ok").and_then(serde_json::Value::as_u64).is_some(),
-            "expected an ok solid handle, got {out}"
-        );
+        let solid = batch_solid_handle(&out, "multiSectionSweep with Line spine");
+        assert_batch_solid_geometry(&k, solid, "multiSectionSweep with Line spine");
     }
 
     #[test]
@@ -2280,24 +2303,11 @@ mod tests {
     }
 
     #[test]
-    fn guided_sweep_batch_dispatch() {
+    fn guided_sweep_batch_accepts_analytic_line_spine_and_guide() {
         let mut k = BrepKernel::new();
         let profile = k.make_circle_face(2.0, 24).unwrap();
-        let mk_line = |k: &mut BrepKernel, x: f64| {
-            k.make_nurbs_edge(
-                x,
-                0.0,
-                0.0,
-                x,
-                0.0,
-                20.0,
-                1,
-                vec![0.0, 0.0, 1.0, 1.0],
-                vec![x, 0.0, 0.0, x, 0.0, 20.0],
-                vec![1.0, 1.0],
-            )
-            .unwrap()
-        };
+        let mk_line =
+            |k: &mut BrepKernel, x: f64| k.make_line_edge(x, 0.0, 0.0, x, 0.0, 20.0).unwrap();
         let spine = mk_line(&mut k, 0.0);
         let aux = mk_line(&mut k, 10.0);
         let out = dispatch(
@@ -2305,10 +2315,171 @@ mod tests {
             "guidedSweep",
             serde_json::json!({ "face": profile, "spineEdge": spine, "auxEdge": aux }),
         );
-        assert!(
-            out.get("ok").and_then(serde_json::Value::as_u64).is_some(),
-            "expected an ok solid handle, got {out}"
+        let solid = batch_solid_handle(&out, "guidedSweep with Line rails");
+        assert_batch_solid_geometry(&k, solid, "guidedSweep with Line rails");
+    }
+
+    #[test]
+    fn sweep_batch_accepts_analytic_line_path() {
+        let mut k = BrepKernel::new();
+        let profile = k.make_rectangle(2.0, 3.0).unwrap();
+        let path = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
+        let out = dispatch(
+            &mut k,
+            "sweep",
+            serde_json::json!({"face": profile, "pathEdge": path}),
         );
+        let solid = batch_solid_handle(&out, "sweep with Line path");
+        assert_batch_solid_geometry(&k, solid, "sweep with Line path");
+    }
+
+    #[test]
+    fn pipe_batch_accepts_analytic_line_path() {
+        let mut k = BrepKernel::new();
+        let profile = k.make_rectangle(2.0, 3.0).unwrap();
+        let path = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
+        let out = dispatch(
+            &mut k,
+            "pipe",
+            serde_json::json!({"face": profile, "pathEdge": path}),
+        );
+        let solid = batch_solid_handle(&out, "pipe with Line path");
+        assert_batch_solid_geometry(&k, solid, "pipe with Line path");
+    }
+
+    #[test]
+    fn sweep_with_options_batch_dispatches_all_options() {
+        let mut k = BrepKernel::new();
+        let profile = k.make_rectangle(2.0, 3.0).unwrap();
+        let path = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
+        let out = dispatch(
+            &mut k,
+            "sweepWithOptions",
+            serde_json::json!({
+                "profile": profile,
+                "pathEdge": path,
+                "contactMode": "fixed",
+                "scaleValues": [0.0, 1.0, 1.0, 0.75],
+                "segments": 6,
+                "cornerMode": "miter",
+            }),
+        );
+        let solid = batch_solid_handle(&out, "sweepWithOptions");
+        assert_batch_solid_geometry(&k, solid, "sweepWithOptions");
+    }
+
+    #[test]
+    fn loft_with_options_batch_dispatches_options_object() {
+        let mut k = BrepKernel::new();
+        let lower = k.make_circle_face(4.0, 24).unwrap();
+        let upper = k.make_circle_face(2.0, 24).unwrap();
+        k.transform_face(
+            upper,
+            vec![
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 10.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+        )
+        .unwrap();
+        let out = dispatch(
+            &mut k,
+            "loftWithOptions",
+            serde_json::json!({
+                "faces": [lower, upper],
+                "options": {"ruled": true},
+            }),
+        );
+        let solid = batch_solid_handle(&out, "loftWithOptions");
+        assert_batch_solid_geometry(&k, solid, "loftWithOptions");
+    }
+
+    #[test]
+    fn helical_sweep_batch_dispatches_parameters() {
+        let mut k = BrepKernel::new();
+        let profile = k.make_rectangle(1.0, 1.0).unwrap();
+        let out = dispatch(
+            &mut k,
+            "helicalSweep",
+            serde_json::json!({
+                "profile": profile,
+                "axisOriginX": 0.0,
+                "axisOriginY": 0.0,
+                "axisOriginZ": 0.0,
+                "axisDirX": 0.0,
+                "axisDirY": 0.0,
+                "axisDirZ": 1.0,
+                "radius": 3.75,
+                "pitch": 12.0,
+                "turns": 0.5,
+            }),
+        );
+        let solid = batch_solid_handle(&out, "helicalSweep");
+        assert_batch_solid_geometry(&k, solid, "helicalSweep");
+    }
+
+    #[test]
+    fn validate_solid_batch_returns_error_count() {
+        let mut k = BrepKernel::new();
+        let solid = brepkit_operations::primitives::make_box(k.topo_mut(), 2.0, 3.0, 4.0).unwrap();
+        let out = dispatch(
+            &mut k,
+            "validateSolid",
+            serde_json::json!({"solid": solid_id_to_u32(solid)}),
+        );
+        assert_eq!(out["ok"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn boolean_evolution_batch_variants_marshal_solid_and_evolution() {
+        for op in [
+            "fuseWithEvolution",
+            "cutWithEvolution",
+            "intersectWithEvolution",
+        ] {
+            let mut k = BrepKernel::new();
+            let a = k.make_box_solid(4.0, 4.0, 4.0).unwrap();
+            let b = k
+                .copy_and_transform_solid(
+                    a,
+                    vec![
+                        1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                        1.0,
+                    ],
+                )
+                .unwrap();
+            let out = dispatch(&mut k, op, serde_json::json!({"solidA": a, "solidB": b}));
+            let ok = out
+                .get("ok")
+                .unwrap_or_else(|| panic!("{op}: expected ok result, got {out}"));
+            let solid = ok["solid"].as_u64().unwrap() as u32;
+            assert!(ok["evolution"].is_object(), "{op}: {out}");
+            assert_batch_solid_geometry(&k, solid, op);
+        }
+    }
+
+    #[test]
+    fn fillet_2d_batch_returns_rounded_polygon() {
+        let mut k = BrepKernel::new();
+        let coords = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
+        let out = dispatch(
+            &mut k,
+            "fillet2d",
+            serde_json::json!({"coords": coords, "radius": 1.0}),
+        );
+        let rounded = out["ok"].as_array().unwrap();
+        assert!(rounded.len() > coords.len());
+    }
+
+    #[test]
+    fn chamfer_2d_batch_returns_beveled_polygon() {
+        let mut k = BrepKernel::new();
+        let coords = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
+        let out = dispatch(
+            &mut k,
+            "chamfer2d",
+            serde_json::json!({"coords": coords, "distance": 1.0}),
+        );
+        let beveled = out["ok"].as_array().unwrap();
+        assert!(beveled.len() > coords.len());
     }
 
     #[test]
