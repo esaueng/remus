@@ -1803,17 +1803,12 @@ fn algebraic_cylinder_cylinder(
     // This ensures the two algebraic branches have distinct sample endpoints,
     // so the face splitter's wire builder doesn't face 4-way junction ambiguity.
     let n_samples = 128;
-    let mut curve_plus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
-    let mut curve_minus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
     let u_offset = TAU / (n_samples as f64 * 2.0); // half a step
 
-    // Sample n_samples DISTINCT points (no duplicate at closure).
-    // After the loop, explicitly close each curve by copying the first point.
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..n_samples {
-        let u = u_offset + TAU * i as f64 / n_samples as f64;
+    // The quadratic's coefficients at angle `u` on cylinder 1. `disc >= 0`
+    // marks the angular window where cylinder 2 actually reaches cylinder 1.
+    let quadratic_at = |u: f64| -> (f64, f64) {
         let (sin_u, cos_u) = u.sin_cos();
-
         // Radial point on c1 at angle u, height v=0:
         // q = c1.origin + r1*(cos(u)*x1 + sin(u)*y1) - c2.origin
         let qx = o1.x() + r1 * (cos_u * x1.x() + sin_u * y1.x()) - o2.x();
@@ -1826,38 +1821,48 @@ fn algebraic_cylinder_cylinder(
 
         let b_coeff = 2.0 * (q_dot_a1 - alpha * q_dot_a2);
         let c_coeff = q_sq - q_dot_a2 * q_dot_a2 - r2 * r2;
-
-        let disc = b_coeff * b_coeff - 4.0 * a_coeff * c_coeff;
+        (
+            b_coeff,
+            b_coeff.mul_add(b_coeff, -(4.0 * a_coeff * c_coeff)),
+        )
+    };
+    let roots_at = |u: f64| -> Option<(f64, f64)> {
+        let (b_coeff, disc) = quadratic_at(u);
         // Clamp tiny negative discriminant (floating-point noise near tangent
-        // crossing points where disc → 0) to avoid gaps in the sample set.
-        if disc < -Tolerance::new().linear {
-            continue;
+        // crossing points where disc → 0) rather than dropping the sample.
+        (disc >= -Tolerance::new().linear).then(|| {
+            let sqrt_disc = disc.max(0.0).sqrt();
+            (
+                (-b_coeff + sqrt_disc) / (2.0 * a_coeff),
+                (-b_coeff - sqrt_disc) / (2.0 * a_coeff),
+            )
+        })
+    };
+    // Bisect for the tangency angle where `disc` changes sign. `u_in` has real
+    // roots, `u_out` does not; the returned angle is the branch turning point,
+    // where `v_plus == v_minus == -b/2a`.
+    let tangency_u = |u_in: f64, u_out: f64| -> f64 {
+        let (mut lo, mut hi) = (u_in, u_out);
+        for _ in 0..60 {
+            let mid = f64::midpoint(lo, hi);
+            if quadratic_at(mid).1 >= 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         }
+        lo
+    };
 
-        let sqrt_disc = disc.max(0.0).sqrt();
-        let v_plus = (-b_coeff + sqrt_disc) / (2.0 * a_coeff);
-        let v_minus = (-b_coeff - sqrt_disc) / (2.0 * a_coeff);
-
-        curve_plus.push(c1.evaluate(u, v_plus));
-        curve_minus.push(c1.evaluate(u, v_minus));
-    }
-
-    // Explicitly close each curve by copying the first point (exact match
-    // avoids near-zero chord length in NURBS interpolation).
-    if !curve_plus.is_empty() {
-        curve_plus.push(curve_plus[0]);
-    }
-    if !curve_minus.is_empty() {
-        curve_minus.push(curve_minus[0]);
-    }
+    #[allow(clippy::cast_precision_loss)]
+    let u_at = |i: usize| u_offset + TAU * i as f64 / n_samples as f64;
+    let samples: Vec<Option<(f64, f64)>> = (0..n_samples).map(|i| roots_at(u_at(i))).collect();
 
     let mut curves = Vec::new();
-
-    for pts in [&curve_plus, &curve_minus] {
+    let mut push_curve = |pts: &Vec<Point3>| {
         if pts.len() < 4 {
-            continue;
+            return;
         }
-
         let ipts: Vec<IntersectionPoint> = pts
             .iter()
             .map(|&p| {
@@ -1870,7 +1875,6 @@ fn algebraic_cylinder_cylinder(
                 }
             })
             .collect();
-
         let degree = 3.min(pts.len() - 1);
         if let Ok(curve) = interpolate(pts, degree) {
             curves.push(IntersectionCurve {
@@ -1878,6 +1882,82 @@ fn algebraic_cylinder_cylinder(
                 points: ipts,
             });
         }
+    };
+
+    if samples.iter().all(Option::is_some) {
+        // Cylinder 2 reaches every angle of cylinder 1 (equal radii, or an
+        // axis separation small enough that the sweep never leaves it): the two
+        // algebraic branches are each a closed loop over the full period.
+        let mut curve_plus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
+        let mut curve_minus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
+        for (i, roots) in samples.iter().enumerate() {
+            let Some((v_plus, v_minus)) = *roots else {
+                continue;
+            };
+            curve_plus.push(c1.evaluate(u_at(i), v_plus));
+            curve_minus.push(c1.evaluate(u_at(i), v_minus));
+        }
+        // Explicitly close each curve by copying the first point (exact match
+        // avoids near-zero chord length in NURBS interpolation).
+        curve_plus.push(curve_plus[0]);
+        curve_minus.push(curve_minus[0]);
+        push_curve(&curve_plus);
+        push_curve(&curve_minus);
+        return Ok(Some(curves));
+    }
+
+    // Otherwise the roots exist only over one or more angular WINDOWS — a
+    // narrow bore breaking out of a wide shaft reaches the shaft wall near two
+    // opposed angles and nowhere else. Concatenating the surviving samples into
+    // one loop (the historical behaviour) chords straight across each gap, and
+    // the interpolated curve dives through the cylinder's interior: a 1 mm bore
+    // through a 3 mm shaft produced a breakout "circle" reaching radius 0.18.
+    // Emit one loop PER WINDOW instead. Within a window the two branches meet
+    // at the tangency angles bounding it (where `disc = 0`, so
+    // `v_plus == v_minus`), so the window's real breakout is the single closed
+    // oval: plus-branch out, minus-branch back.
+    if samples.iter().all(Option::is_none) {
+        return Ok(Some(curves));
+    }
+    // Rotate so index 0 starts a window, making each window contiguous despite
+    // the period wrap.
+    let start = (0..n_samples)
+        .find(|&i| samples[i].is_some() && samples[(i + n_samples - 1) % n_samples].is_none())
+        .unwrap_or(0);
+    let mut i = 0;
+    while i < n_samples {
+        let idx = (start + i) % n_samples;
+        if samples[idx].is_none() {
+            i += 1;
+            continue;
+        }
+        // Collect this contiguous window.
+        let mut window = Vec::new();
+        while i < n_samples {
+            let idx = (start + i) % n_samples;
+            let Some(roots) = samples[idx] else { break };
+            window.push((u_at(idx), roots));
+            i += 1;
+        }
+        let (first_u, _) = window[0];
+        let (last_u, _) = window[window.len() - 1];
+        let step = TAU / n_samples as f64;
+        let u_open = tangency_u(first_u, first_u - step);
+        let u_close = tangency_u(last_u, last_u + step);
+        // At a tangency both roots coincide at -b/2a.
+        let tangency_point = |u: f64| c1.evaluate(u, -quadratic_at(u).0 / (2.0 * a_coeff));
+
+        let mut loop_pts: Vec<Point3> = Vec::with_capacity(window.len() * 2 + 3);
+        loop_pts.push(tangency_point(u_open));
+        for &(u, (v_plus, _)) in &window {
+            loop_pts.push(c1.evaluate(u, v_plus));
+        }
+        loop_pts.push(tangency_point(u_close));
+        for &(u, (_, v_minus)) in window.iter().rev() {
+            loop_pts.push(c1.evaluate(u, v_minus));
+        }
+        loop_pts.push(loop_pts[0]);
+        push_curve(&loop_pts);
     }
 
     Ok(Some(curves))
@@ -3052,6 +3132,57 @@ mod tests {
                 matches!(c, ExactIntersectionCurve::Points(_)),
                 "hyperbola must be sampled Points, not a closed conic"
             );
+        }
+    }
+
+    /// A narrow bore breaking out of a wide shaft: the two cylinders meet only
+    /// over two opposed angular WINDOWS of the shaft, not its whole sweep.
+    ///
+    /// The sampler solves a quadratic in the shaft's axial parameter at each
+    /// angle and skips angles with no real root. Concatenating the survivors
+    /// into one loop chorded straight across the skipped gap, and the
+    /// interpolated curve dived through the shaft's interior: a r=1 bore
+    /// through a r=3 shaft produced a "breakout circle" reaching radius 0.18
+    /// where every point must sit at exactly 3. Nothing downstream could
+    /// notice until the tessellator started honouring inner wires, at which
+    /// point the drilled wall collapsed toward the axis.
+    ///
+    /// Every point of every returned curve must lie ON the shaft.
+    #[test]
+    fn narrow_bore_breakout_stays_on_the_shaft() {
+        use crate::traits::ParametricCurve;
+        for bore_r in [0.5, 1.0, 2.0, 2.9] {
+            let shaft =
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0)
+                    .unwrap();
+            let bore = CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 15.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                bore_r,
+            )
+            .unwrap();
+
+            let curves = algebraic_cylinder_cylinder(&shaft, &bore)
+                .unwrap()
+                .expect("non-parallel axes take the algebraic path");
+            assert!(
+                !curves.is_empty(),
+                "bore r={bore_r} must break out of the shaft"
+            );
+
+            for c in &curves {
+                let (t0, t1) = c.curve.domain();
+                for i in 0..=200 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = t0 + (t1 - t0) * (i as f64) / 200.0;
+                    let p = ParametricCurve::evaluate(&c.curve, t);
+                    let radius = p.x().hypot(p.y());
+                    assert!(
+                        (radius - 3.0).abs() < 1e-3,
+                        "bore r={bore_r}: breakout point at radius {radius} is off the r=3 shaft"
+                    );
+                }
+            }
         }
     }
 }
