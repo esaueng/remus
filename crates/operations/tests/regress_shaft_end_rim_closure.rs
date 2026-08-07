@@ -317,7 +317,6 @@ fn both_the_rim_polyline_and_the_wall_grid_contain_the_rim_edge_start_vertex() {
 /// cylinders share, `16 r³/3`, written out rather than compared to a second
 /// integrator.
 #[test]
-#[ignore = "current-main boolean volume baseline: expected 704.230016, got 848.040240"]
 fn the_body_is_the_cross_drilled_shaft_it_claims_to_be() {
     let s = 1.0;
     let (topo, solid) = cross_drilled_shaft(R, s);

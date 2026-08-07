@@ -210,6 +210,79 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
     levels.len() >= 3
 }
 
+/// Whether a quadric wall's outer boundary WINDS the surface's periodic angle
+/// — it marches the whole way round the lateral instead of closing within it.
+///
+/// This is what separates the two kinds of notched band, and it is the
+/// property that decides whether the per-face integrator can see the face at
+/// all. [`brepkit_check::properties::face_integrator`] trims a quadric on its
+/// projected outline only when that outline CLOSES; a boundary that winds the
+/// period has no inside to test against, so the integrator falls back to
+/// integrating the whole revolution over the boundary's `v` extent — the
+/// analytic rectangle, which is exactly the over-count that must be deferred
+/// to the structured tessellator.
+///
+/// * Winds: the rim a circle-outside cone/box fuse leaves — four corner
+///   ring-arcs alternating with four wall arches, one closed chain around the
+///   whole lateral. Deferred.
+/// * Closes: the wall of a cross-drilled bore. Its rim is one closed NURBS
+///   loop that spans part of the period and comes back, so the integrator
+///   trims on the real outline and measures the face to its own chording.
+///   Kept on the analytic path.
+///
+/// Measured on a r=3 h=30 shaft cross-drilled at r=3: the two bore walls sum
+/// to -71.961 against a closed form of -72.000.
+fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
+    let Ok(face) = topo.face(fid) else {
+        return false;
+    };
+    let (axis, origin) = match face.surface() {
+        FaceSurface::Cylinder(c) => (c.axis(), c.origin()),
+        FaceSurface::Cone(c) => (c.axis(), c.apex()),
+        _ => return false,
+    };
+    let Ok(axis) = axis.normalize() else {
+        return false;
+    };
+    // Any frame perpendicular to the axis will do: a winding is the same
+    // number in every one of them.
+    let helper = if axis.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let Ok(fx) = axis.cross(helper).normalize() else {
+        return false;
+    };
+    let fy = axis.cross(fx);
+
+    let Ok(pts) = crate::boolean::face_polygon(topo, fid) else {
+        return false;
+    };
+    if pts.len() < 3 {
+        return false;
+    }
+    let angles: Vec<f64> = pts
+        .iter()
+        .map(|p| {
+            let r = *p - origin;
+            r.dot(fy).atan2(r.dot(fx))
+        })
+        .collect();
+
+    // Sum of the SHORTEST step between consecutive samples, so the total is
+    // independent of how finely the rim was sampled. A duplicated closing
+    // point contributes zero.
+    let tau = std::f64::consts::TAU;
+    let winding: f64 = (0..angles.len())
+        .map(|i| {
+            let d = angles[(i + 1) % angles.len()] - angles[i];
+            d - tau * ((d + std::f64::consts::PI) / tau).floor()
+        })
+        .sum();
+    winding.abs() >= tau - 1e-3
+}
+
 fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     use brepkit_topology::explorer::solid_faces;
 
@@ -234,11 +307,26 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
             has_bored_quadric = true;
         }
         let face = topo.face(fid).ok()?;
-        // A notched quadric with a marched NURBS rim is the periodic wavy-band
-        // topology produced by circle-outside cone/box fuses. Its analytic
-        // bounding rectangle over-counts the removed lobes; the solid-level
-        // structured tessellator follows the actual rim, so defer to it.
+        // A notched quadric with a marched NURBS rim that WINDS the period is
+        // the wavy-band topology produced by circle-outside cone/box fuses.
+        // Its analytic bounding rectangle over-counts the removed lobes; the
+        // solid-level structured tessellator follows the actual rim, so defer
+        // to it.
+        //
+        // The winding test is what keeps this off the cross-drilled shaft. A
+        // bore wall is a quadric with no inner wires whose single closed NURBS
+        // rim visits three or more axial levels, so it is "notched" by the
+        // same level test and carries a NURBS rim by the same edge test — the
+        // two conditions the wavy band was recognised by. It differs in the
+        // only way that matters to the integrator: its rim CLOSES within the
+        // period rather than marching round it, so the outline can be trimmed
+        // on and the face measures exactly. Without the third condition every
+        // cross-drilled shaft left the analytic path and fell through to
+        // tessellation, which reads the UN-BORED stock — 848.040 against a
+        // closed form of 704.230 at bore r=3, and the same 848.040 at r=2 and
+        // r=1, three geometrically different holes.
         let has_nurbs_rim = notched_quadric
+            && quadric_wall_boundary_winds_period(topo, fid)
             && topo.wire(face.outer_wire()).ok().is_some_and(|wire| {
                 wire.edges().iter().any(|oe| {
                     topo.edge(oe.edge())
