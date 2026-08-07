@@ -1,0 +1,149 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('hand-written fixture: CONICAL_SURFACE with a non-zero base_radius'), '2;1');
+FILE_NAME('conical_surface_base_radius_frustum.step', '2026-01-01T00:00:00', ('brepkit'), ('brepkit'), 'brepkit test fixture', 'brepkit test fixture', '');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
+ENDSEC;
+DATA;
+/* A truncated cone (frustum) on the +z axis: radius 12 at z=0 growing to
+   radius 18 at z=8. Its closed forms are
+
+     volume       = pi*h/3 * (R1^2 + R1*R2 + R2^2) = pi*8/3*684 = 1824*pi
+     lateral area = pi*(R1 + R2)*slant             = pi*30*10   =  300*pi
+
+   The lateral surface is stated twice, once per half (#44 and #45), by the
+
+     CONICAL_SURFACE('Cone.?', #43, 12., 6.435011087932844E-1)
+
+   whose `semi_angle` is atan(3/4) — 3 of radius per 4 of axis — and whose
+   `base_radius` of 12 ISO 10303-42 states on the placement plane at #48,
+   z=0. The apex is therefore NOT the placement origin: it sits
+   12*cot(atan(3/4)) = 16 below it, at (0,0,-16).
+
+   A reader that takes the placement origin as the apex builds a cone that
+   is 0 wide at z=0 and 6 wide at z=8, leaving both trim circles 12 off
+   their own surface; its lateral area comes out 60*pi instead of 300*pi.
+
+   The wall is split at theta=0 and theta=pi — which is what a CAD system
+   exports anyway, its periodic surfaces cut at their seams — for a reason
+   the measurement depends on: `solid_volume`'s primitive recogniser matches
+   a shell of exactly one cone plus planar caps and reads the cap radii off
+   the trim CIRCLEs, never touching the conical surface. A one-face frustum
+   therefore measures 1824*pi whether or not the apex is right. Two cone
+   faces defer it to the paths that integrate the surface itself, so the
+   volume below is a real measurement of this cone.
+
+   The radius cannot be recovered from a round trip: brepkit's writer
+   anchors on the apex and always emits `0.0E0`, so only a hand-written
+   statement puts a non-zero `base_radius` through the reader at all. */
+#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );
+#2 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );
+#3 = ( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() );
+#4 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), #1, 'distance_accuracy_value', 'confusion accuracy');
+#5 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#4)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#1,#2,#3)) REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );
+#6 = APPLICATION_CONTEXT('configuration controlled 3D design of mechanical parts and assemblies');
+#7 = MECHANICAL_CONTEXT('', #6, 'mechanical');
+#8 = APPLICATION_PROTOCOL_DEFINITION('international standard', 'automotive_design', 1994, #6);
+#9 = PRODUCT('Frustum.1', 'Frustum.1', '', (#7));
+#10 = PRODUCT_DEFINITION_FORMATION('', '', #9);
+#11 = PRODUCT_DEFINITION_CONTEXT('part definition', #6, 'design');
+#12 = PRODUCT_DEFINITION('design', '', #10, #11);
+
+/* Vertices: the two seams meet the two trim circles at theta=0 and theta=pi. */
+#13 = CARTESIAN_POINT('Bottom theta=0', (1.200000000000000E1, 0., 0.));
+#14 = VERTEX_POINT('', #13);
+#15 = CARTESIAN_POINT('Bottom theta=pi', (-1.200000000000000E1, 0., 0.));
+#16 = VERTEX_POINT('', #15);
+#17 = CARTESIAN_POINT('Top theta=0', (1.800000000000000E1, 0., 8.000000000000000E0));
+#18 = VERTEX_POINT('', #17);
+#19 = CARTESIAN_POINT('Top theta=pi', (-1.800000000000000E1, 0., 8.000000000000000E0));
+#20 = VERTEX_POINT('', #19);
+
+/* Bottom trim circle, radius 12 at z=0, split into two half arcs. */
+#21 = CARTESIAN_POINT('Bottom Circle Center', (0., 0., 0.));
+#22 = DIRECTION('Bottom Circle Axis', (0., 0., 1.000000000000000E0));
+#23 = DIRECTION('Bottom Circle RefDir', (1.000000000000000E0, 0., 0.));
+#24 = AXIS2_PLACEMENT_3D('Bottom Circle Axis2P3D', #21, #22, #23);
+#25 = CIRCLE('Bottom Circle', #24, 1.200000000000000E1);
+#26 = EDGE_CURVE('Bottom 0..pi', #14, #16, #25, .T.);
+#27 = EDGE_CURVE('Bottom pi..2pi', #16, #14, #25, .T.);
+
+/* Top trim circle, radius 18 at z=8, split the same way. */
+#28 = CARTESIAN_POINT('Top Circle Center', (0., 0., 8.000000000000000E0));
+#29 = DIRECTION('Top Circle Axis', (0., 0., 1.000000000000000E0));
+#30 = DIRECTION('Top Circle RefDir', (1.000000000000000E0, 0., 0.));
+#31 = AXIS2_PLACEMENT_3D('Top Circle Axis2P3D', #28, #29, #30);
+#32 = CIRCLE('Top Circle', #31, 1.800000000000000E1);
+#33 = EDGE_CURVE('Top 0..pi', #18, #20, #32, .T.);
+#34 = EDGE_CURVE('Top pi..2pi', #20, #18, #32, .T.);
+
+/* The two seam generators, each 10 long: 6 out, 8 up. */
+#35 = CARTESIAN_POINT('Seam 0 Origin', (1.200000000000000E1, 0., 0.));
+#36 = DIRECTION('Seam 0 Dir', (6.000000000000000E-1, 0., 8.000000000000000E-1));
+#37 = VECTOR('Seam 0 Vec', #36, 1.000000000000000E1);
+#38 = LINE('Seam 0', #35, #37);
+#39 = EDGE_CURVE('Seam theta=0', #14, #18, #38, .T.);
+#40 = CARTESIAN_POINT('Seam pi Origin', (-1.200000000000000E1, 0., 0.));
+#41 = DIRECTION('Seam pi Dir', (-6.000000000000000E-1, 0., 8.000000000000000E-1));
+#42 = VECTOR('Seam pi Vec', #41, 1.000000000000000E1);
+#43 = LINE('Seam pi', #40, #42);
+#44 = EDGE_CURVE('Seam theta=pi', #16, #20, #43, .T.);
+
+/* The conical surface under both halves. #46 is the placement plane the
+   base_radius of 12 is stated on; the apex is 16 below it. */
+#45 = CARTESIAN_POINT('Cone Placement Origin', (0., 0., 0.));
+#46 = DIRECTION('Cone Axis', (0., 0., 1.000000000000000E0));
+#47 = DIRECTION('Cone RefDir', (1.000000000000000E0, 0., 0.));
+#48 = AXIS2_PLACEMENT_3D('Cone Axis2P3D', #45, #46, #47);
+#49 = CONICAL_SURFACE('Cone.1', #48, 1.200000000000000E1, 6.435011087932844E-1);
+#50 = CONICAL_SURFACE('Cone.2', #48, 1.200000000000000E1, 6.435011087932844E-1);
+
+/* Lateral half theta in [0, pi]. */
+#51 = ORIENTED_EDGE('', *, *, #26, .T.);
+#52 = ORIENTED_EDGE('', *, *, #44, .T.);
+#53 = ORIENTED_EDGE('', *, *, #33, .F.);
+#54 = ORIENTED_EDGE('', *, *, #39, .F.);
+#55 = EDGE_LOOP('', (#51, #52, #53, #54));
+#56 = FACE_OUTER_BOUND('', #55, .T.);
+#57 = ADVANCED_FACE('Face.1', (#56), #49, .T.);
+
+/* Lateral half theta in [pi, 2pi]. */
+#58 = ORIENTED_EDGE('', *, *, #27, .T.);
+#59 = ORIENTED_EDGE('', *, *, #39, .T.);
+#60 = ORIENTED_EDGE('', *, *, #34, .F.);
+#61 = ORIENTED_EDGE('', *, *, #44, .F.);
+#62 = EDGE_LOOP('', (#58, #59, #60, #61));
+#63 = FACE_OUTER_BOUND('', #62, .T.);
+#64 = ADVANCED_FACE('Face.2', (#63), #50, .T.);
+
+/* Bottom cap, normal -z. */
+#65 = ORIENTED_EDGE('', *, *, #27, .F.);
+#66 = ORIENTED_EDGE('', *, *, #26, .F.);
+#67 = EDGE_LOOP('', (#65, #66));
+#68 = FACE_OUTER_BOUND('', #67, .T.);
+#69 = CARTESIAN_POINT('Bottom Plane Origin', (0., 0., 0.));
+#70 = DIRECTION('Bottom Plane Axis', (0., 0., -1.000000000000000E0));
+#71 = DIRECTION('Bottom Plane RefDir', (1.000000000000000E0, 0., 0.));
+#72 = AXIS2_PLACEMENT_3D('Bottom Plane Axis2P3D', #69, #70, #71);
+#73 = PLANE('Plane.1', #72);
+#74 = ADVANCED_FACE('Face.3', (#68), #73, .T.);
+
+/* Top cap, normal +z. */
+#75 = ORIENTED_EDGE('', *, *, #33, .T.);
+#76 = ORIENTED_EDGE('', *, *, #34, .T.);
+#77 = EDGE_LOOP('', (#75, #76));
+#78 = FACE_OUTER_BOUND('', #77, .T.);
+#79 = CARTESIAN_POINT('Top Plane Origin', (0., 0., 8.000000000000000E0));
+#80 = DIRECTION('Top Plane Axis', (0., 0., 1.000000000000000E0));
+#81 = DIRECTION('Top Plane RefDir', (1.000000000000000E0, 0., 0.));
+#82 = AXIS2_PLACEMENT_3D('Top Plane Axis2P3D', #79, #80, #81);
+#83 = PLANE('Plane.2', #82);
+#84 = ADVANCED_FACE('Face.4', (#78), #83, .T.);
+
+#85 = CLOSED_SHELL('', (#57, #64, #74, #84));
+#86 = MANIFOLD_SOLID_BREP('Frustum.1', #85);
+#87 = ADVANCED_BREP_SHAPE_REPRESENTATION('Frustum.1', (#86), #5);
+#88 = PRODUCT_DEFINITION_SHAPE('', '', #12);
+#89 = SHAPE_DEFINITION_REPRESENTATION(#88, #87);
+ENDSEC;
+END-ISO-10303-21;

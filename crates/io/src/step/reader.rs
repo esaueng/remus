@@ -832,7 +832,21 @@ impl<'a> StepBuilder<'a> {
                     reason: format!("CONICAL_SURFACE #{surface_ref} missing semi_angle"),
                 })? * self.units.angle;
                 let half_angle = std::f64::consts::FRAC_PI_2 - semi_angle;
-                let (apex, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
+                // `base_radius` is a length measure, so it takes the file's
+                // length scale like every other radius here.
+                //
+                // Counted from the END, like the semi_angle above, because
+                // `parse_floats` does not skip the entity's name: it strips
+                // the quotes and parses what is inside, so a cone labelled
+                // '2' contributes a leading 2.0 that shifts every index
+                // counted from the front. A statement carrying one number
+                // states a semi_angle and no radius.
+                let base_radius = match floats.as_slice() {
+                    [.., radius, _] => radius * self.units.length,
+                    _ => 0.0,
+                };
+                let (origin, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
+                let apex = cone_apex(origin, axis, base_radius, half_angle);
                 let cone = brepkit_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
                     .map_err(|e| IoError::ParseError {
                         reason: format!("CONICAL_SURFACE #{surface_ref}: {e}"),
@@ -2000,6 +2014,58 @@ impl<'a> StepBuilder<'a> {
             reason: format!("entity #{id} not found"),
         })
     }
+}
+
+// ── Conical surfaces ────────────────────────────────────────────────
+
+/// Move a `CONICAL_SURFACE` placement origin back to the apex that
+/// [`brepkit_math::surfaces::ConicalSurface`] is anchored on.
+///
+/// ISO 10303-42 states `radius` on the placement plane, not at the apex.
+/// `semi_angle` is measured from the axis, so a point `h` along the axis from
+/// the apex carries radius `h*tan(semi_angle)`; the placement plane therefore
+/// sits `h0 = radius*cot(semi_angle) = radius*tan(half_angle)` ahead of the
+/// apex, where `half_angle` is brepkit's complement `pi/2 - semi_angle`.
+/// Reading the origin as the apex put every non-zero-radius cone `h0` too far
+/// along its own axis and gave it the wrong radius everywhere.
+///
+/// `axis` arrives exactly as the file declared it: `build_axis2_placement`
+/// returns a declared direction unnormalized, and ISO 10303-42 does not
+/// require a `DIRECTION` to be unit. It is normalized here so the shift is
+/// not scaled by whatever length the file happened to write.
+///
+/// Every case that yields no usable shift returns the origin, which is the
+/// apex this reader used before the radius was read at all. That keeps the
+/// cones most writers emit (brepkit's own among them) bit-for-bit unchanged,
+/// and it means no statement that imported before can fail here now:
+///
+/// - a `radius` of zero, the overwhelmingly common case, does no arithmetic;
+/// - a negative `radius` violates ISO 10303-42's `WHERE` rule on
+///   `conical_surface`, and shifting by it would put the apex on the far side
+///   of the placement plane, opening the cone away from the material its own
+///   trim curves bound;
+/// - an axis of zero length gives no direction to shift along, and
+///   `ConicalSurface::new` refuses that placement a moment later with the
+///   message it has always given;
+/// - an offset that overflows to infinity, reachable at absurd radii as
+///   `semi_angle` approaches zero, would otherwise put NaN into every point
+///   derived from the surface without ever announcing itself.
+///
+/// A large but finite offset is honoured: that apex is where the file puts it.
+fn cone_apex(origin: Point3, axis: Vec3, base_radius: f64, half_angle: f64) -> Point3 {
+    // NaN is named explicitly: it compares false against every bound, so a
+    // plain `<= 0.0` would let it through and put NaN in the apex.
+    if base_radius.is_nan() || base_radius <= 0.0 {
+        return origin;
+    }
+    let Ok(unit_axis) = axis.normalize() else {
+        return origin;
+    };
+    let offset = base_radius * half_angle.tan();
+    if !offset.is_finite() {
+        return origin;
+    }
+    origin - unit_axis * offset
 }
 
 // ── Placement frames ────────────────────────────────────────────────
@@ -6254,6 +6320,259 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             "degree- and radian-declared cones should be the same solid: \
              {degree_volume} vs {radian_volume}"
         );
+    }
+
+    // ── CONICAL_SURFACE base_radius ────────────────────────────────
+
+    /// `semi_angle` = atan(3/4): the surface gains 3 of radius per 4 of axis,
+    /// so a radius-12 placement plane sits 16 ahead of the apex. Written as
+    /// the f64 nearest atan(0.75), the value a CAD system emits.
+    const CONE_SEMI_ANGLE_3_4: &str = "6.435011087932844E-1";
+
+    /// The brepkit half-angle matching [`CONE_SEMI_ANGLE_3_4`], atan(4/3).
+    const CONE_HALF_ANGLE_3_4: f64 = 0.927_295_218_001_612_2;
+
+    /// A cone on the +z axis through the origin, with `radius` and
+    /// `semi_angle` written as given.
+    fn z_axis_cone(radius: &str, semi_angle: &str) -> String {
+        format!(
+            "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2 = DIRECTION('',(0.,0.,1.));\n\
+             #3 = DIRECTION('',(1.,0.,0.));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CONICAL_SURFACE('',#4,{radius},{semi_angle});"
+        )
+    }
+
+    /// Resolve a `CONICAL_SURFACE` body's surface as a cone.
+    fn cone_geometry(body: &str) -> brepkit_math::surfaces::ConicalSurface {
+        let FaceSurface::Cone(cone) = surface_geometry(body, 5).unwrap() else {
+            panic!("expected a cone");
+        };
+        cone
+    }
+
+    /// The radius the cone carries at axial distance `h` from its apex.
+    ///
+    /// `radius_at` takes a distance along the generator; `h/sin(half_angle)`
+    /// is the generator distance that reaches axial `h`.
+    fn cone_radius_at_axial(cone: &brepkit_math::surfaces::ConicalSurface, h: f64) -> f64 {
+        cone.radius_at(h / cone.half_angle().sin())
+    }
+
+    /// Assert a cone's apex is the expected point to the last bit.
+    ///
+    /// Exact is the assertion here: a radius of zero must leave the placement
+    /// origin untouched, not merely close.
+    fn assert_apex_bits(cone: &brepkit_math::surfaces::ConicalSurface, expected: [f64; 3]) {
+        let apex = cone.apex();
+        let actual = [apex.x(), apex.y(), apex.z()];
+        assert_eq!(
+            actual.map(f64::to_bits),
+            expected.map(f64::to_bits),
+            "apex: expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    /// Assert a cone's apex componentwise.
+    fn assert_apex(cone: &brepkit_math::surfaces::ConicalSurface, expected: [f64; 3], tol: f64) {
+        let apex = cone.apex();
+        assert!(
+            (apex.x() - expected[0]).abs() < tol
+                && (apex.y() - expected[1]).abs() < tol
+                && (apex.z() - expected[2]).abs() < tol,
+            "apex: expected {expected:?}, got ({}, {}, {})",
+            apex.x(),
+            apex.y(),
+            apex.z(),
+        );
+    }
+
+    /// ISO 10303-42 states `radius` on the placement plane, not at the apex.
+    /// Reading the placement origin as the apex left every non-zero-radius
+    /// cone `radius*tan(half_angle)` too far along its own axis, with the
+    /// wrong radius at every point of the surface.
+    #[test]
+    fn cone_base_radius_moves_the_apex_back_along_the_axis() {
+        let cone = cone_geometry(&z_axis_cone("12.", CONE_SEMI_ANGLE_3_4));
+
+        assert_apex(&cone, [0.0, 0.0, -16.0], 1e-12);
+        assert!(
+            (cone.half_angle() - CONE_HALF_ANGLE_3_4).abs() < 1e-15,
+            "half angle {}",
+            cone.half_angle()
+        );
+        // The whole point of the shift: the surface carries the radius the
+        // file stated at the plane the file stated it on.
+        let at_plane = cone_radius_at_axial(&cone, 16.0);
+        assert!(
+            (at_plane - 12.0).abs() < 1e-12,
+            "radius at plane {at_plane}"
+        );
+    }
+
+    /// A frustum's lateral surface, checked against the closed form its
+    /// integration fixture measures: radius 12 at z=0 growing to 18 at z=8,
+    /// volume `pi*h/3*(R1^2 + R1*R2 + R2^2)` = 1824*pi.
+    #[test]
+    fn frustum_lateral_cone_carries_both_of_its_radii() {
+        let cone = cone_geometry(&z_axis_cone("12.", CONE_SEMI_ANGLE_3_4));
+
+        assert_apex(&cone, [0.0, 0.0, -16.0], 1e-12);
+        for (z, expected) in [(0.0, 12.0), (8.0, 18.0)] {
+            let radius = cone_radius_at_axial(&cone, z + 16.0);
+            assert!(
+                (radius - expected).abs() < 1e-12,
+                "radius at z={z} should be {expected}, got {radius}"
+            );
+        }
+    }
+
+    /// A radius of zero puts the placement plane at the apex, which is what
+    /// the placement origin already is. Most writers — brepkit's own included
+    /// — emit only this form, so it must not move by so much as an ulp.
+    #[test]
+    fn cone_with_zero_radius_keeps_the_placement_origin_exactly() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(3.,-5.,7.));\n\
+             #2 = DIRECTION('',(0.,0.,1.));\n\
+             #3 = DIRECTION('',(1.,0.,0.));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CONICAL_SURFACE('',#4,0.,{CONE_SEMI_ANGLE_3_4});"
+        );
+        let cone = cone_geometry(&body);
+
+        assert_apex_bits(&cone, [3.0, -5.0, 7.0]);
+    }
+
+    /// `build_axis2_placement` returns the axis exactly as the file wrote it,
+    /// so a `DIRECTION` of length 2 would double the apex shift if it were
+    /// used unnormalized. ISO 10303-42 does not require unit directions and
+    /// every other consumer here renormalizes.
+    #[test]
+    fn cone_apex_shift_ignores_the_declared_axis_length() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2 = DIRECTION('',(0.,0.,2.));\n\
+             #3 = DIRECTION('',(1.,0.,0.));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CONICAL_SURFACE('',#4,12.,{CONE_SEMI_ANGLE_3_4});"
+        );
+        let cone = cone_geometry(&body);
+
+        assert_apex(&cone, [0.0, 0.0, -16.0], 1e-12);
+    }
+
+    /// `base_radius` is a length measure and takes the file's length scale,
+    /// like the cylinder and circle radii beside it. The placement origin is
+    /// scaled too, so both ends of the shift are in millimetres.
+    #[test]
+    fn inch_declared_cone_radius_is_scaled() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(0.,0.,1.));\n\
+             #2 = DIRECTION('',(0.,0.,1.));\n\
+             #3 = DIRECTION('',(1.,0.,0.));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CONICAL_SURFACE('',#4,2.,{CONE_SEMI_ANGLE_3_4});\n\
+             #6 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+             #7 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#6);\n\
+             #8 = ( CONVERSION_BASED_UNIT('INCH',#7) LENGTH_UNIT() NAMED_UNIT(#6) );\n\
+             #9 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#8));"
+        );
+        let cone = cone_geometry(&body);
+
+        // 2 in = 50.8 mm at the plane, so the apex sits 50.8*4/3 below the
+        // 1 in = 25.4 mm placement origin.
+        assert_apex(&cone, [0.0, 0.0, 25.4 - 50.8 * 4.0 / 3.0], 1e-9);
+        let at_plane = cone_radius_at_axial(&cone, 50.8 * 4.0 / 3.0);
+        assert!((at_plane - 50.8).abs() < 1e-9, "radius at plane {at_plane}");
+    }
+
+    /// A `semi_angle` approaching zero is a cone whose generators run all but
+    /// parallel to its axis, and its apex is genuinely far away. That is the
+    /// geometry the file describes, so it imports; what must not happen is a
+    /// panic, a non-finite apex, or a surface that has lost the radius.
+    ///
+    /// The tolerances are relative and loose because the file's own angle is
+    /// what runs out of precision: f64 spacing near pi/2 is 2.2e-16, so a
+    /// semi-angle of 1e-9 is quantized to 2.2e-7 of itself, and the apex
+    /// distance — which goes as its reciprocal — inherits exactly that.
+    #[test]
+    fn cone_with_a_vanishing_semi_angle_keeps_a_finite_apex() {
+        let cone = cone_geometry(&z_axis_cone("1.", "1.E-9"));
+
+        let apex = cone.apex();
+        assert!(apex.z().is_finite(), "apex z {}", apex.z());
+        assert!(
+            (apex.z() + 1.0e9).abs() / 1.0e9 < 1e-6,
+            "apex should sit ~1e9 below the plane, got {}",
+            apex.z()
+        );
+        let at_plane = cone_radius_at_axial(&cone, -apex.z());
+        assert!((at_plane - 1.0).abs() < 1e-6, "radius at plane {at_plane}");
+    }
+
+    /// An offset that overflows leaves the apex at the origin — the answer
+    /// this reader gave before it read the radius at all. Refusing instead
+    /// would reject a statement that imports today.
+    #[test]
+    fn cone_whose_apex_offset_overflows_keeps_the_placement_origin() {
+        // A semi_angle of 1e-9 leaves `half_angle` strictly inside the range
+        // `ConicalSurface::new` accepts, so the surface itself is fine and
+        // only the offset overflows. (At 1e-16 the angle rounds to pi/2 and
+        // the constructor refuses it, on this branch and on main alike.)
+        let cone = cone_geometry(&z_axis_cone("1.E300", "1.E-9"));
+
+        assert_apex_bits(&cone, [0.0, 0.0, 0.0]);
+    }
+
+    /// ISO 10303-42's `WHERE` rule on `conical_surface` requires a
+    /// non-negative radius. Shifting by a negative one would put the apex on
+    /// the far side of the placement plane, opening the cone away from the
+    /// material its own trim curves bound, so it is treated as no radius —
+    /// which is what this reader did before it read the attribute.
+    #[test]
+    fn cone_with_a_negative_radius_keeps_the_placement_origin() {
+        let cone = cone_geometry(&z_axis_cone("-12.", CONE_SEMI_ANGLE_3_4));
+
+        assert_apex_bits(&cone, [0.0, 0.0, 0.0]);
+    }
+
+    /// `parse_floats` does not skip the entity's name: it strips the quotes
+    /// and parses what is inside. A cone labelled '2' therefore contributes a
+    /// leading 2.0, and a radius counted from the FRONT would read the label.
+    /// The semi_angle has always been counted from the end and was immune;
+    /// the radius is read the same way for the same reason.
+    #[test]
+    fn a_numeric_cone_label_is_not_its_base_radius() {
+        let body = format!(
+            "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2 = DIRECTION('',(0.,0.,1.));\n\
+             #3 = DIRECTION('',(1.,0.,0.));\n\
+             #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+             #5 = CONICAL_SURFACE('2',#4,0.,{CONE_SEMI_ANGLE_3_4});"
+        );
+        let cone = cone_geometry(&body);
+
+        // The declared radius is 0, so the apex is the placement origin. Were
+        // the label read as the radius it would sit at z = -2*4/3.
+        assert_apex_bits(&cone, [0.0, 0.0, 0.0]);
+    }
+
+    /// A statement carrying a single number states a `semi_angle` and no
+    /// radius. Taking the first float as a radius would read that angle as a
+    /// length and shift the apex by it.
+    #[test]
+    fn cone_with_only_a_semi_angle_has_no_base_radius() {
+        let body = "\
+#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+#2 = DIRECTION('',(0.,0.,1.));\n\
+#3 = DIRECTION('',(1.,0.,0.));\n\
+#4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+#5 = CONICAL_SURFACE('',#4,7.853981633974483E-1);";
+        let cone = cone_geometry(body);
+
+        assert_apex_bits(&cone, [0.0, 0.0, 0.0]);
     }
 
     #[test]
