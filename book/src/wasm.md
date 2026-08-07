@@ -28,11 +28,16 @@ cargo build -p brepkit-wasm --target wasm32-unknown-unknown \
 ```
 
 Large sequences can use `executeBatch` to reduce JavaScript/WASM crossings.
-Checkpoints use copy-on-write topology snapshots. `serializeSolid` and
-`serializeSolids` write version 2 arena documents; the latter supports several
-solid roots with shared topology encoded once. Both are bounded debug replay
-mechanisms, not geometry-interchange contracts. Frozen version 1 input will
-remain readable by `deserializeSolid` and `deserializeSolids`; new schema
-changes use additive versioned readers. Loads always create fresh handles and
-do not restore unrelated kernel session state, retired slots, assemblies,
-sketches, or checkpoints.
+Checkpoints use copy-on-write topology snapshots. `deleteSolid(handle)` retires
+a solid and any topology entities not shared with another live solid. Retired
+handles remain permanently invalid and are never reused. Deletion does not
+compact the topology or reclaim its arena memory; create a new kernel when
+memory reclamation is required.
+
+`serializeSolid` and `serializeSolids` write version 2 arena documents; the
+latter supports several solid roots with shared topology encoded once. Both are
+bounded debug replay mechanisms, not geometry-interchange contracts. Frozen
+version 1 input will remain readable by `deserializeSolid` and
+`deserializeSolids`; new schema changes use additive versioned readers. Loads
+always create fresh handles and do not restore unrelated kernel session state,
+retired slots, assemblies, sketches, or checkpoints.
