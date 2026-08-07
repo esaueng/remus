@@ -390,7 +390,9 @@ pub fn project_point_to_surface_with_grid(
 ///
 /// Returns [`MathError::ParameterOutOfRange`] if either seed coordinate is not
 /// finite, or [`MathError::ConvergenceFailure`] if Newton has not converged
-/// within [`SEEDED_MAX_ITERATIONS`].
+/// within the seeded iteration budget — deliberately shorter than
+/// [`project_point_to_surface`]'s, so that walking away from a poor seed costs
+/// less than the grid search it was trying to skip.
 pub fn project_point_to_surface_seeded(
     surface: &NurbsSurface,
     point: Point3,
