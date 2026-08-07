@@ -5,7 +5,6 @@
 
 use std::collections::HashSet;
 
-use crate::TopologyError;
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
 use crate::compound::{Compound, CompoundId};
@@ -17,6 +16,7 @@ use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
 use crate::vertex::{Vertex, VertexId};
 use crate::wire::{Wire, WireId};
+use crate::{DeleteSolidError, TopologyError};
 
 /// Central context owning all topological entity arenas.
 ///
@@ -158,6 +158,18 @@ impl Topology {
         self.compsolids
             .restore_preserving_slots(&snapshot.compsolids);
         self.pcurves.clone_from(&snapshot.pcurves);
+        let retired_edges = snapshot
+            .edges
+            .iter()
+            .filter_map(|(id, _)| self.edges.get(id).is_none().then_some(id))
+            .collect();
+        let retired_faces = snapshot
+            .faces
+            .iter()
+            .filter_map(|(id, _)| self.faces.get(id).is_none().then_some(id))
+            .collect();
+        self.pcurves
+            .remove_for_retired_entities(&retired_edges, &retired_faces);
     }
 
     /// Reserves capacity for the given number of additional entities in the
@@ -316,11 +328,35 @@ impl Topology {
     ///
     /// # Errors
     ///
-    /// Returns [`TopologyError`] if `solid` is invalid or if any live solid
-    /// contains an invalid topology reference. No entities are retired when
+    /// Returns [`DeleteSolidError`] if `solid` is invalid, if a live compound or
+    /// comp-solid still references it, or if any live solid contains an
+    /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
-    pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), TopologyError> {
+    pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
         let mut retiring = self.collect_solid_entities(solid)?;
+        if let Some((compound_id, _)) = self
+            .compounds
+            .iter()
+            .find(|(_, compound)| compound.solids().contains(&solid))
+        {
+            return Err(DeleteSolidError::Referenced {
+                solid,
+                dependent: "compound",
+                dependent_index: compound_id.index(),
+            });
+        }
+        if let Some((compsolid_id, _)) = self
+            .compsolids
+            .iter()
+            .find(|(_, compsolid)| compsolid.solids().contains(&solid))
+        {
+            return Err(DeleteSolidError::Referenced {
+                solid,
+                dependent: "comp-solid",
+                dependent_index: compsolid_id.index(),
+            });
+        }
+
         let mut retained = SolidEntities::default();
         for (other_id, _) in self.solids.iter() {
             if other_id != solid {
@@ -449,6 +485,8 @@ mod tests {
     use brepkit_math::curves2d::{Curve2D, Line2D};
     use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
 
+    use crate::compound::Compound;
+    use crate::compsolid::CompSolid;
     use crate::edge::{Edge, EdgeCurve};
     use crate::face::{Face, FaceSurface};
     use crate::pcurve::PCurve;
@@ -722,5 +760,68 @@ mod tests {
         assert!(fresh.index() > stale.index());
         assert!(topo.solid(stale).is_err());
         assert!(topo.solid(fresh).is_ok());
+    }
+
+    #[test]
+    fn delete_solid_rejects_live_compound_and_compsolid_roots() {
+        let mut compound_topo = Topology::new();
+        let (compound_solid, _, _) = make_triangle_solid(&mut compound_topo, 0.0);
+        let compound = compound_topo.add_compound(Compound::new(vec![compound_solid]));
+
+        assert!(matches!(
+            compound_topo.delete_solid(compound_solid),
+            Err(DeleteSolidError::Referenced {
+                dependent: "compound",
+                ..
+            })
+        ));
+        assert_eq!(
+            compound_topo.compound(compound).unwrap().solids(),
+            &[compound_solid]
+        );
+        assert!(compound_topo.solid(compound_solid).is_ok());
+
+        let mut compsolid_topo = Topology::new();
+        let (compsolid_solid, _, _) = make_triangle_solid(&mut compsolid_topo, 0.0);
+        let compsolid = compsolid_topo.add_compsolid(CompSolid::new(vec![compsolid_solid], vec![]));
+
+        assert!(matches!(
+            compsolid_topo.delete_solid(compsolid_solid),
+            Err(DeleteSolidError::Referenced {
+                dependent: "comp-solid",
+                ..
+            })
+        ));
+        assert_eq!(
+            compsolid_topo.compsolid(compsolid).unwrap().solids(),
+            &[compsolid_solid]
+        );
+        assert!(compsolid_topo.solid(compsolid_solid).is_ok());
+    }
+
+    #[test]
+    fn restore_preserves_deleted_solid_and_pcurve_retirement() {
+        let mut topo = Topology::new();
+        let (retired, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        topo.pcurves_mut().set(
+            edge,
+            face,
+            PCurve::new(
+                Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+                0.0,
+                1.0,
+            ),
+        );
+        let snapshot = topo.clone();
+
+        topo.delete_solid(retired).unwrap();
+        topo.restore_preserving_handle_slots(&snapshot);
+
+        assert!(topo.solid(retired).is_err());
+        assert!(topo.face(face).is_err());
+        assert!(topo.edge(edge).is_err());
+        assert!(!topo.pcurves().contains(edge, face));
+        let (fresh, _, _) = make_triangle_solid(&mut topo, 10.0);
+        assert!(fresh.index() > retired.index());
     }
 }

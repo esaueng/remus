@@ -32,7 +32,9 @@ Checkpoints use copy-on-write topology snapshots. `deleteSolid(handle)` retires
 a solid and any topology entities not shared with another live solid. Retired
 handles remain permanently invalid and are never reused. Deletion does not
 compact the topology or reclaim its arena memory; create a new kernel when
-memory reclamation is required.
+memory reclamation is required. Deletion is rejected atomically while a live
+compound, comp-solid, or assembly references the solid, and restoring an older
+checkpoint never revives a retired handle.
 
 `serializeSolid` and `serializeSolids` write version 2 arena documents; the
 latter supports several solid roots with shared topology encoded once. Both are
