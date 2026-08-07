@@ -1871,13 +1871,14 @@ impl<'a> StepBuilder<'a> {
     /// the attributes were read by position.
     ///
     /// This runs only when [`Self::axis2_placement_from_slots`] found no
-    /// usable placement, and it exists so that reading by position cannot
-    /// take away a file that imported before. Positional reading understands
-    /// exactly the layout ISO 10303-21 prescribes; the scan understands no
-    /// layout at all, which is why it also copes with the statements that are
-    /// not written that way — a Part 21 COMPLEX instance whose leaves this
-    /// reader cannot locate, a parameter list with junk wedged between the
-    /// references, a `#NNN` token that is not a legal reference.
+    /// usable placement, and it exists so that a statement no positional
+    /// reading can interpret still reads the way it used to. Positional
+    /// reading understands exactly the layout ISO 10303-21 prescribes; the
+    /// scan understands no layout at all, which is why it also copes with the
+    /// statements that are not written that way — a Part 21 COMPLEX instance
+    /// whose leaves this reader cannot locate, a parameter list with junk
+    /// wedged between the references, a `#NNN` token that is not a legal
+    /// reference.
     ///
     /// **It cannot resurrect the mis-bind this positional reading exists to
     /// fix.** That mis-bind is `('name', #location, $, #ref_direction)`,
@@ -1891,6 +1892,34 @@ impl<'a> StepBuilder<'a> {
     /// emits. The scan only ever sees statements no positional reading could
     /// interpret, and for those, matching what the reader did before is the
     /// best answer available.
+    ///
+    /// **It is therefore not a promise that every file which imported before
+    /// still imports.** There is a second family the scan used to mis-bind,
+    /// and it is out of this function's reach for the same reason: the
+    /// statement reads positionally, so the scan is never consulted. In that
+    /// family the scan's first three `#NNN` tokens were never the location,
+    /// axis and ref_direction, because something ahead of them was not a
+    /// reference at all —
+    ///
+    /// - a `#NNN` token inside the `name` STRING, which the scan cannot see
+    ///   is a string: `AXIS2_PLACEMENT_3D('Bore (#9) rev.2',#1,#6,#3)` scans
+    ///   as (#9, #1, #6);
+    /// - a Part 21 COMPLEX instance, whose leaves are written in ALPHABETICAL
+    ///   order and not declaration order, so `( AXIS2_PLACEMENT_3D(#6,#3)
+    ///   GEOMETRIC_REPRESENTATION_ITEM() PLACEMENT(#1) REPRESENTATION_ITEM('')
+    ///   )` scans as (axis, ref_direction, location).
+    ///
+    /// Both used to import with a frame assembled from the wrong entities —
+    /// a `DIRECTION` read as the location point, a `CARTESIAN_POINT` read as
+    /// the axis. Almost always that is silent: the frame is wrong, the solid
+    /// still builds. Where the attribute the file really declares is a
+    /// zero-length axis, though, the mis-bind moved that zero into a slot no
+    /// constructor checks, and the file imported; read as declared it now
+    /// reaches the same "cannot normalize zero vector" that the identical
+    /// declaration written as a plain simple instance has always produced.
+    /// Widening the fallback to cover it would mean preferring the mis-bound
+    /// frame over the declared one — see
+    /// `a_declared_zero_axis_reaches_the_refusal_the_simple_form_always_got`.
     fn axis2_placement_by_reference_scan(
         &self,
         axis_ref: u64,
@@ -2593,9 +2622,7 @@ impl AttrSlot<'_> {
             Self::Ref(id) => format!("#{id}"),
             Self::Omitted => "an omitted `$`".to_string(),
             Self::Derived => "a derived `*`".to_string(),
-            // Escaping can lengthen the excerpt, but only by the fixed
-            // per-character worst case of `str`'s `Debug`.
-            Self::Text(ref text) => format!("the string {:?}", slot_excerpt(text)),
+            Self::Text(ref text) => format!("the string {}", escaped_slot_excerpt(text)),
             Self::List(raw) | Self::Enum(raw) | Self::Other(raw) => {
                 format!("`{}`", slot_excerpt(raw))
             }
@@ -2603,20 +2630,60 @@ impl AttrSlot<'_> {
     }
 }
 
-/// How much of an attribute slot an error message may quote back.
+/// How much of an attribute slot an error message may quote back, counted on
+/// the text AS IT APPEARS in the message.
+///
+/// Counting before escaping would not bound anything. `str`'s `Debug` renders
+/// a control character as six characters (`\u{1}`) from one byte, and an
+/// astral-plane one as nine (`\u{e0001}`) from four, so 48 bytes of the first
+/// came back as 288 and of the second as 108.
 const MAX_SLOT_EXCERPT: usize = 48;
+
+/// `text` cut to at most `max` bytes on a character boundary, and whether
+/// anything was dropped.
+fn cut_on_char_boundary(text: &str, max: usize) -> (&str, bool) {
+    if text.len() <= max {
+        return (text, false);
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
+}
 
 /// `text` cut to [`MAX_SLOT_EXCERPT`] bytes on a character boundary, with an
 /// ellipsis where it was cut.
 fn slot_excerpt(text: &str) -> String {
-    if text.len() <= MAX_SLOT_EXCERPT {
-        return text.to_string();
+    let (head, cut) = cut_on_char_boundary(text, MAX_SLOT_EXCERPT);
+    if cut {
+        format!("{head}…")
+    } else {
+        head.to_string()
     }
-    let mut end = MAX_SLOT_EXCERPT;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
+}
+
+/// `text` as `str`'s `Debug` renders it — quoted, with control, astral-plane
+/// and other non-printing characters escaped — cut to [`MAX_SLOT_EXCERPT`]
+/// bytes of that RENDERED form.
+///
+/// Cutting after escaping is what makes the bound hold. The raw text is cut
+/// first as well, so a slot the size of the file is not escaped in full only
+/// to be thrown away; escaping never shortens, so that first cut can only
+/// drop characters the second one would have dropped anyway.
+///
+/// The cut can take the closing quote with it, and can land inside an escape
+/// sequence. Both are fine: this is a fragment shown to say what was in a
+/// slot, not a value anything parses back, and the ellipsis says it is one.
+fn escaped_slot_excerpt(text: &str) -> String {
+    let (head, cut_raw) = cut_on_char_boundary(text, MAX_SLOT_EXCERPT);
+    let rendered = format!("{head:?}");
+    let (shown, cut_rendered) = cut_on_char_boundary(&rendered, MAX_SLOT_EXCERPT);
+    if cut_raw || cut_rendered {
+        format!("{shown}…")
+    } else {
+        shown.to_string()
     }
-    format!("{}…", &text[..end])
 }
 
 /// Describe an attribute slot for an error message, covering the case where
@@ -3534,6 +3601,60 @@ mod tests {
         // has to walk back to the boundary below it.
         let wider = "…".repeat(24);
         assert_eq!(slot_excerpt(&wider), format!("{}…", "…".repeat(16)));
+    }
+
+    /// A string slot is escaped before it is cut, not after.
+    ///
+    /// Escaping is where a bound on the raw excerpt stops bounding anything:
+    /// `str`'s `Debug` renders one control character as six and one tag
+    /// character as nine, so 48 raw bytes of either used to come back as 288
+    /// and 108. Cutting the rendered form is what holds the message to
+    /// [`MAX_SLOT_EXCERPT`] whatever the file puts in the slot.
+    #[test]
+    fn escaped_slot_excerpt_cuts_what_the_message_actually_shows() {
+        // Short and printable: `Debug`'s own rendering, quotes and all.
+        assert_eq!(escaped_slot_excerpt("Bore #7"), "\"Bore #7\"");
+        assert_eq!(escaped_slot_excerpt("O'Brien"), "\"O'Brien\"");
+
+        // Long and printable: the closing quote goes with the cut, and the
+        // ellipsis says so. 48 bytes of output = one quote and 47 characters.
+        assert_eq!(
+            escaped_slot_excerpt(&"A".repeat(200)),
+            format!("\"{}…", "A".repeat(47))
+        );
+
+        // Escaping expands: eight control characters already fill the budget
+        // that a hundred of them would otherwise blow past.
+        for count in [8, 100, 10_000] {
+            let escaped = escaped_slot_excerpt(&"\u{1}".repeat(count));
+            assert!(
+                escaped.len() <= MAX_SLOT_EXCERPT + "…".len(),
+                "{count} control characters rendered as {} bytes: {escaped}",
+                escaped.len()
+            );
+            assert!(escaped.starts_with("\"\\u{1}"), "{escaped}");
+        }
+
+        // An astral-plane character escapes to a longer sequence — nine
+        // characters — so the cut may land inside one rather than between two.
+        let tags = escaped_slot_excerpt(&"\u{e0001}".repeat(50));
+        assert!(
+            tags.len() <= MAX_SLOT_EXCERPT + "…".len(),
+            "{} bytes: {tags}",
+            tags.len()
+        );
+        assert!(tags.starts_with("\"\\u{e0001}"), "{tags}");
+
+        // `str`'s `Debug` escapes grapheme-extended characters wherever they
+        // sit, not just where they lead — so a run of combining marks is
+        // another expansion and not a passthrough.
+        assert_eq!(escaped_slot_excerpt("e\u{301}"), "\"e\\u{301}\"");
+        let marks = escaped_slot_excerpt(&"\u{301}".repeat(50));
+        assert!(
+            marks.len() <= MAX_SLOT_EXCERPT + "…".len(),
+            "{} bytes: {marks}",
+            marks.len()
+        );
     }
 
     /// A complex instance's leaves are found by whole identifier, outside
@@ -4673,39 +4794,105 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     /// file's own text: before it was excerpted, a placement whose location
     /// was twenty thousand nested parentheses produced a forty-kilobyte
     /// `reason` where the scan's message was a fixed 57 bytes.
+    ///
+    /// The slots below are what makes this an actual test of the bound rather
+    /// than a restatement of [`MAX_SLOT_EXCERPT`]. Printable ASCII survives
+    /// `str`'s `Debug` one byte per byte, so a bound applied to the RAW
+    /// excerpt looks like it holds — which is why a test built only from `A`s
+    /// and parentheses passed while the bound did not. A control character
+    /// renders as six characters, a combining mark as seven and a tag
+    /// character as nine, which took the same 48-byte excerpt to 288, 168 and
+    /// 108, and the message with it to 334, 262 and 202 bytes against an
+    /// asserted 200.
     #[test]
     fn a_pathological_slot_still_makes_a_short_error() {
         const DEPTH: usize = 20_000;
-        let nested = format!("{}{}", "(".repeat(DEPTH), ")".repeat(DEPTH));
 
-        for slot in [
-            nested,
-            format!("'{}'", "A".repeat(DEPTH)),
-            "B".repeat(DEPTH),
+        /// The longest `reason` a placement slot can produce, derived rather
+        /// than observed:
+        ///
+        /// - 13 for the `parse error: ` [`IoError`]'s `Display` prepends;
+        /// - 73 for the longest template — the one naming ref_direction as
+        ///   the attribute that could not be used — with the id left out;
+        /// - 20 for that id, a `u64` at its widest;
+        /// - 62 for the longest description: the 11 of "the string ", a
+        ///   [`MAX_SLOT_EXCERPT`]-byte rendered excerpt, and a 3-byte
+        ///   ellipsis.
+        const MAX_ERROR: usize = 13 + 73 + 20 + 62;
+
+        let mut saw_escape = false;
+        for (what, slot) in [
+            (
+                "nested parentheses",
+                format!("{}{}", "(".repeat(DEPTH), ")".repeat(DEPTH)),
+            ),
+            ("a long name", format!("'{}'", "A".repeat(DEPTH))),
+            ("a long bare token", "B".repeat(DEPTH)),
+            // `Debug` renders each of these as `\u{1}`, six characters.
+            ("control characters", format!("'{}'", "\u{1}".repeat(DEPTH))),
+            // A tag character: `\u{e0001}`, nine characters from four bytes.
+            (
+                "astral-plane characters",
+                format!("'{}'", "\u{e0001}".repeat(DEPTH)),
+            ),
+            // `str`'s `Debug` escapes grapheme-extended characters wherever
+            // they sit, so a combining mark expands too — `\u{301}`, seven
+            // characters from two bytes — whether or not something precedes
+            // it.
+            ("combining marks", format!("'e{}'", "\u{301}".repeat(DEPTH))),
+            (
+                "a leading combining mark",
+                format!("'{}'", "\u{301}".repeat(DEPTH)),
+            ),
         ] {
-            for body in [
-                // In the location slot, and in the axis slot.
-                format!(
-                    "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
-                     #2 = DIRECTION('',(0.,0.,1.));\n\
-                     #7 = AXIS2_PLACEMENT_3D('',{slot},#1,#2);"
+            for (where_, body) in [
+                (
+                    "location slot",
+                    format!(
+                        "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                         #2 = DIRECTION('',(0.,0.,1.));\n\
+                         #7 = AXIS2_PLACEMENT_3D('',{slot},#1,#2);"
+                    ),
                 ),
-                format!(
-                    "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
-                     #2 = DIRECTION('',(0.,0.,1.));\n\
-                     #7 = AXIS2_PLACEMENT_3D('',#1,{slot},#2);"
+                (
+                    "axis slot",
+                    format!(
+                        "#1 = CARTESIAN_POINT('',(1.,2.,3.));\n\
+                         #2 = DIRECTION('',(0.,0.,1.));\n\
+                         #7 = AXIS2_PLACEMENT_3D('',#1,{slot},#2);"
+                    ),
                 ),
             ] {
                 let err = axis2_placement(&body, 7).unwrap_err().to_string();
                 assert!(
-                    err.len() <= 200,
-                    "error is {} bytes, from a {} byte slot: {err}",
+                    err.len() <= MAX_ERROR,
+                    "{what} in the {where_}: error is {} bytes, over the {MAX_ERROR} bound, \
+                     from a {} byte slot: {err}",
                     err.len(),
                     slot.len()
                 );
                 assert!(err.contains("AXIS2_PLACEMENT_3D #7"), "{err}");
+                saw_escape |= err.contains("\\u{");
             }
+
+            // The same bound covers AXIS1_PLACEMENT, which shares the slot
+            // descriptions and has strictly shorter templates. No `#NNN`
+            // anywhere, so the reference scan has nothing to fall back to and
+            // the positional message is the one that surfaces.
+            let body = format!("#7 = AXIS1_PLACEMENT('',{slot});");
+            let err = axis1_placement(&body, 7).unwrap_err().to_string();
+            assert!(
+                err.len() <= MAX_ERROR,
+                "{what} in AXIS1_PLACEMENT: error is {} bytes: {err}",
+                err.len()
+            );
         }
+
+        assert!(
+            saw_escape,
+            "no case produced an escape sequence, so the bound went untested \
+             on exactly the input that used to break it"
+        );
     }
 
     /// `#+2` is not a reference to entity 2. `u64`'s `FromStr` accepts the
@@ -4801,6 +4988,184 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             "#1's coordinates as the axis",
         );
         assert_vec_eq(ref_dir, Vec3::new(0.0, 0.0, 0.0), "#6 as the ref_direction");
+    }
+
+    /// The one class of file that imported before this change and does not
+    /// import after it, and why that is the right answer.
+    ///
+    /// The shape: the file DECLARES a zero-length axis, and it writes the
+    /// placement in one of the two forms the old reference scan could not
+    /// follow — a `#NNN` token inside the `name` string, or a Part 21 COMPLEX
+    /// instance, whose leaves Part 21 orders ALPHABETICALLY and so puts
+    /// `AXIS2_PLACEMENT_3D`'s own attributes ahead of `PLACEMENT`'s location.
+    /// The scan took the first three `#NNN` tokens it saw, which in both forms
+    /// are not the location, axis and ref_direction; the frame it assembled
+    /// came from the wrong entities, and it was non-degenerate only because
+    /// the mis-bind had moved the file's zero into a slot no constructor
+    /// checks. Read as declared, the zero is back on the axis and the surface
+    /// constructor refuses it.
+    ///
+    /// That refusal is not new. The identical declaration written as a plain
+    /// simple instance produces the same error, and always has — nothing here
+    /// changed it. What changed is that these two spellings now reach it too,
+    /// instead of quietly importing something else. So the test pins three
+    /// things at once: the frame the reader reports is the DECLARED one, the
+    /// error matches the simple form's byte for byte, and the frame the scan
+    /// would have given is a different one, spelled out as the simple
+    /// statement that names those entities in those roles — which is exactly
+    /// what widening the fallback would restore.
+    ///
+    /// Measured differentially against the pre-change reader over 64,000
+    /// randomised hostile cylinders: every Ok->Err was this class, and in
+    /// none of them did the scan's three tokens agree with the declaration.
+    #[test]
+    fn a_declared_zero_axis_reaches_the_refusal_the_simple_form_always_got() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('Location',(1.,2.,3.));\n\
+                            #2 = DIRECTION('Axis',(0.,0.,1.));\n\
+                            #3 = DIRECTION('RefDirection',(1.,0.,0.));\n\
+                            #6 = DIRECTION('Zero',(0.,0.,0.));\n\
+                            #9 = CARTESIAN_POINT('Elsewhere',(9.,9.,9.));\n";
+        // CYLINDRICAL_SURFACE normalizes its axis, where PLANE does not.
+        const SURFACE: &str = "#24 = CYLINDRICAL_SURFACE('',#7,4.);\n";
+
+        // The declaration, written the way every reading agrees on. This is
+        // the reference behaviour: it was refused before the change and is
+        // refused after it.
+        let simple = format!("{HEAD}#7 = AXIS2_PLACEMENT_3D('',#1,#6,#3);\n{SURFACE}");
+        let baseline = surface_geometry(&simple, 24).unwrap_err().to_string();
+        assert!(
+            baseline.contains("cannot normalize zero vector"),
+            "unexpected baseline error: {baseline}"
+        );
+
+        // The same declaration in the two spellings the scan mis-read, each
+        // paired with the simple statement naming the entities the scan bound
+        // — the frame that used to be imported in its place.
+        for (label, declaration, as_the_scan_bound_it) in [
+            (
+                "a `#NNN` inside the name string",
+                "#7 = AXIS2_PLACEMENT_3D('Bore (#9) rev.2',#1,#6,#3);".to_string(),
+                // scans as (#9, #1, #6)
+                (
+                    "#7 = AXIS2_PLACEMENT_3D('',#9,#1,#6);",
+                    [9.0, 9.0, 9.0],
+                    [1.0, 2.0, 3.0],
+                ),
+            ),
+            (
+                "a Part 21 complex instance",
+                "#7 = ( AXIS2_PLACEMENT_3D(#6,#3) GEOMETRIC_REPRESENTATION_ITEM() \
+                 PLACEMENT(#1) REPRESENTATION_ITEM('') );"
+                    .to_string(),
+                // scans as (#6, #3, #1)
+                (
+                    "#7 = AXIS2_PLACEMENT_3D('',#6,#3,#1);",
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ),
+            ),
+        ] {
+            let body = format!("{HEAD}{declaration}\n{SURFACE}");
+
+            // The reader reports the frame the file declares, unaltered.
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &format!("{label}: declared location"),
+            );
+            assert_vec_eq(
+                axis,
+                Vec3::new(0.0, 0.0, 0.0),
+                &format!("{label}: declared axis"),
+            );
+            assert_vec_eq(
+                ref_dir,
+                Vec3::new(1.0, 0.0, 0.0),
+                &format!("{label}: declared ref_direction"),
+            );
+
+            // And the surface refuses it with the simple form's own error.
+            let err = surface_geometry(&body, 24).unwrap_err().to_string();
+            assert_eq!(
+                err, baseline,
+                "{label}: should refuse exactly as the simple form does"
+            );
+
+            // What the scan bound instead: a different location, a different
+            // axis, and a solid that builds. Restoring this Ok is what
+            // widening the fallback would buy, and this is the price.
+            let (scan_stmt, scan_origin, scan_axis) = as_the_scan_bound_it;
+            let scanned = format!("{HEAD}{scan_stmt}\n{SURFACE}");
+            let (origin, axis, _) = axis2_placement(&scanned, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(scan_origin[0], scan_origin[1], scan_origin[2]),
+                &format!("{label}: the location the scan used to bind"),
+            );
+            assert_vec_eq(
+                axis,
+                Vec3::new(scan_axis[0], scan_axis[1], scan_axis[2]),
+                &format!("{label}: the axis the scan used to bind"),
+            );
+            assert!(
+                surface_geometry(&scanned, 24).is_ok(),
+                "{label}: the mis-bound frame is what used to import"
+            );
+        }
+    }
+
+    /// The same two spellings with a NON-zero declared axis: they imported
+    /// before and they import now, but the frame has moved — from the one the
+    /// reference scan assembled out of the wrong entities to the one the file
+    /// declares.
+    ///
+    /// This is the far larger half of the same delta, and the reason the
+    /// smaller half is worth paying: over the 60,000-cylinder differential,
+    /// files whose imported solid silently CHANGED shape outnumbered files
+    /// that stopped importing roughly seven to one.
+    #[test]
+    fn the_same_spellings_with_a_usable_axis_now_import_the_declared_frame() {
+        const HEAD: &str = "#1 = CARTESIAN_POINT('Location',(1.,2.,3.));\n\
+                            #2 = DIRECTION('Axis',(0.,0.,1.));\n\
+                            #3 = DIRECTION('RefDirection',(1.,0.,0.));\n\
+                            #9 = CARTESIAN_POINT('Elsewhere',(9.,9.,9.));\n";
+        const SURFACE: &str = "#24 = CYLINDRICAL_SURFACE('',#7,4.);\n";
+
+        for (label, declaration) in [
+            (
+                "a `#NNN` inside the name string",
+                "#7 = AXIS2_PLACEMENT_3D('Bore (#9) rev.2',#1,#2,#3);".to_string(),
+            ),
+            (
+                "a Part 21 complex instance",
+                "#7 = ( AXIS2_PLACEMENT_3D(#2,#3) GEOMETRIC_REPRESENTATION_ITEM() \
+                 PLACEMENT(#1) REPRESENTATION_ITEM('') );"
+                    .to_string(),
+            ),
+        ] {
+            let body = format!("{HEAD}{declaration}\n{SURFACE}");
+            let (origin, axis, ref_dir) = axis2_placement(&body, 7).unwrap();
+            assert_vec_eq(
+                Vec3::new(origin.x(), origin.y(), origin.z()),
+                Vec3::new(1.0, 2.0, 3.0),
+                &format!("{label}: declared location"),
+            );
+            assert_vec_eq(
+                axis,
+                Vec3::new(0.0, 0.0, 1.0),
+                &format!("{label}: declared axis"),
+            );
+            assert_vec_eq(
+                ref_dir,
+                Vec3::new(1.0, 0.0, 0.0),
+                &format!("{label}: declared ref_direction"),
+            );
+            assert!(
+                surface_geometry(&body, 24).is_ok(),
+                "{label}: still imports"
+            );
+        }
     }
 
     // ── TRIMMED_CURVE ──────────────────────────────────────────────
