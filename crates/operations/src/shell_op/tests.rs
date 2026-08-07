@@ -984,60 +984,16 @@ fn shell_cavity_corner_is_mitered_below_the_corner_radius() {
     }
 }
 
-/// A thickness that reaches the corner radius has no exact construction here
-/// yet, and `shell` refuses rather than returning an open body.
+/// A thickness that exceeds the corner radius collapses the corner fillet to a
+/// SHARP edge: the two neighbouring offset walls must meet at their own
+/// intersection, `half - thickness`. Before the collapse was handled they each
+/// kept the original tangent extent `half - radius` and overshot past each
+/// other by `thickness - radius`, leaving a sub-tolerance chamfer that later
+/// booleans could not fuse against.
 ///
-/// The corner fillet's offset radius is zero or negative, so no inner cylinder
-/// face is emitted at all (`new_radius > tol.linear` has no `else`). The two
-/// neighbouring inner walls are then separated by a full-height gap at each
-/// corner, and those free edges chain into one loop that spans the cavity floor
-/// AND the opening plane — so no single rim face closes it.
-///
-/// This is the documented contract ("The result is closed: every edge is shared
-/// by exactly two face uses. A result that is not is refused rather than
-/// returned"), and it is stricter than upstream's, which returns the open body.
+/// From the gridfinity bin at `wallThickness` 3.8 against a 3.75 corner radius,
+/// where the overshoot was 0.05mm and broke the export.
 #[test]
-fn shell_thickness_reaching_corner_radius_is_refused() {
-    let w = 41.5_f64;
-    let r = 3.75_f64;
-
-    for thickness in [r, 3.8, 4.0] {
-        let mut topo = Topology::new();
-        let solid = rounded_rect_prism(&mut topo, w, w, 21.0, r);
-        let top = find_faces_by_normal(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
-        let err = shell(&mut topo, solid, thickness, &top)
-            .expect_err("a swallowed corner fillet has no closed construction yet");
-        assert!(
-            matches!(
-                err,
-                crate::OperationsError::Unsupported {
-                    operation: "shell",
-                    ..
-                }
-            ),
-            "thickness {thickness}: expected an Unsupported refusal, got {err}"
-        );
-    }
-}
-
-/// Ready repro for the open case above: a swallowed corner fillet should
-/// collapse to a sharp vertical EDGE at the intersection of the two offset
-/// walls, `(half - thickness, half - thickness)`, closing the corner.
-///
-/// Upstream andymai/brepkit#1243 moves the cavity vertices to within the sharp
-/// corner but does NOT close it — its own measurement records STL boundary
-/// edges falling 149 -> 23 at `wallThickness` 3.8, "a large improvement, not a
-/// closure". Feeding both extreme normals to the miter (ported in that commit,
-/// and active here) places each tangent vertex at the miter of the two walls,
-/// but the two tangent vertices are at different places, so they land at
-/// `(16.95, -13.20)` and `(13.20, -16.95)` rather than both at the corner
-/// `(16.95, -16.95)` — a diagonal cut, not a meeting.
-///
-/// Closing it needs the collapsing face's boundary vertices merged onto that
-/// single intersection point, which is new construction rather than a
-/// re-miter, so it is left as a repro rather than guessed at during a sync.
-#[test]
-#[ignore = "ready repro: a swallowed corner fillet leaves a full-height gap at each corner"]
 fn shell_thickness_past_corner_radius_gives_a_sharp_corner() {
     let w = 41.5_f64;
     let r = 3.75_f64;
@@ -1075,5 +1031,25 @@ fn shell_thickness_past_corner_radius_gives_a_sharp_corner() {
         worst <= sharp + 0.01,
         "cavity reaches {worst:.4}, past the sharp corner at {sharp:.4} \
          (the collapsed-fillet overshoot lands at {tangent:.4})"
+    );
+
+    // The collapsed corner cylinders must be REPLACED by chamfer strips, not
+    // dropped: without them the assembler can only close the cavity by
+    // threading another face's wire through it (edge-paired but degenerate,
+    // which aborts the next boolean's hole-shell grouping).
+    let mut diagonal_planes = 0;
+    for fid in brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+        let face = topo.face(fid).unwrap();
+        if let brepkit_topology::face::FaceSurface::Plane { normal, .. } = face.surface()
+            && normal.z().abs() < 0.01
+            && (normal.x().abs() - normal.y().abs()).abs() < 0.01
+            && normal.x().abs() > 0.5
+        {
+            diagonal_planes += 1;
+        }
+    }
+    assert_eq!(
+        diagonal_planes, 4,
+        "each swallowed corner cylinder must leave a 45-degree chamfer strip"
     );
 }

@@ -76,8 +76,6 @@ Two live variants, both hand-rolled with `panic_message` from `crates/wasm/src/h
 
 Choose poisoning when the op mutates `self.topo` before the panic-prone phase; choose non-poisoning when the mutation is atomic-ish or recoverable. Either way the point is the same: an uncaught panic across the FFI boundary aborts the whole wasm instance, taking every handle with it.
 
-`crates/wasm-macros/src/lib.rs` contains a complete `#[wasm_binding]` attribute macro (js_name plus a `recoverable` mode with snapshot restore) but it is unwired: `brepkit-wasm-macros` is not in `crates/wasm/Cargo.toml` and `rg -n 'wasm_binding' crates/wasm/src` finds nothing. Treat it as a possible future consolidation, not the recipe.
-
 ## 5. scripts/test-wasm-smoke.mjs
 
 Loads `crates/wasm/pkg/brepkit_wasm_node.cjs` via `createRequire` (CJS from ESM), then asserts in order:

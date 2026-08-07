@@ -1272,6 +1272,9 @@ pub fn solid_volume(
 ) -> Result<f64, crate::OperationsError> {
     // Fast path: exact analytic formula for known primitives.
     if let Some(v) = try_analytic_solid_volume(topo, solid) {
+        if std::env::var("BK_VOL_TRACE").is_ok() {
+            log::debug!("VOL_TRACE try_analytic -> {v}");
+        }
         return Ok(v);
     }
 
@@ -1282,6 +1285,9 @@ pub fn solid_volume(
     // tessellation paths below suffer on bored quadrics (e.g. a cylinder
     // drilled through a sphere).
     if let Some(v) = analytic_faces_solid_volume(topo, solid) {
+        if std::env::var("BK_VOL_TRACE").is_ok() {
+            log::debug!("VOL_TRACE analytic_faces -> {v}");
+        }
         return Ok(v);
     }
 
@@ -1292,6 +1298,9 @@ pub fn solid_volume(
     // does NOT catch boolean results that merely happen to have arc-bounded
     // planar faces (rounded-rect caps, arc-frame lips).
     if let Some(v) = analytic_revolution_solid_volume(topo, solid) {
+        if std::env::var("BK_VOL_TRACE").is_ok() {
+            log::debug!("VOL_TRACE revolution -> {v}");
+        }
         return Ok(v);
     }
 
@@ -1438,6 +1447,38 @@ pub fn solid_volume(
     volume_from_per_face_tessellation(topo, solid, deflection)
 }
 
+/// Divergence-theorem volume of a solid WITHOUT the absolute value, so the sign
+/// reports shell orientation: positive for an outward-oriented (material-inside)
+/// solid, negative for an inverted one.
+///
+/// [`solid_volume`] deliberately reports a magnitude, which makes it blind to a
+/// globally inverted shell — the defect class that drops a boolean to the mesh
+/// fallback with no volume error to show for it.
+///
+/// # Errors
+///
+/// Returns an error if the solid cannot be tessellated.
+pub fn oriented_solid_volume(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    let mesh = tessellate::tessellate_solid(topo, solid, deflection)?;
+    let idx = &mesh.indices;
+    let pos = &mesh.positions;
+    let mut total = 0.0;
+    for t in 0..idx.len() / 3 {
+        let v0 = pos[idx[t * 3] as usize];
+        let v1 = pos[idx[t * 3 + 1] as usize];
+        let v2 = pos[idx[t * 3 + 2] as usize];
+        let a = Vec3::new(v0.x(), v0.y(), v0.z());
+        let b = Vec3::new(v1.x(), v1.y(), v1.z());
+        let c = Vec3::new(v2.x(), v2.y(), v2.z());
+        total += a.dot(b.cross(c));
+    }
+    Ok(total / 6.0)
+}
+
 /// Compute signed volume from a watertight triangle mesh using
 /// the divergence theorem (signed tetrahedra method).
 fn signed_volume_from_mesh(mesh: &tessellate::TriangleMesh) -> f64 {
@@ -1481,6 +1522,9 @@ fn volume_from_per_face_tessellation(
     for fid in faces {
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
         let idx = &mesh.indices;
+        if std::env::var("BK_VOL_TRACE").is_ok() {
+            log::debug!("VOL_TRACE direct plane face {fid:?} tris={}", idx.len() / 3);
+        }
         let pos = &mesh.positions;
         let tri_count = idx.len() / 3;
 
@@ -2433,7 +2477,11 @@ pub fn volume_from_direct_face_tessellation(
         // Use exact analytical volume for analytic surface faces.
         match face.surface() {
             FaceSurface::Cylinder(_) => {
-                total += analytic_cylinder_signed_volume(topo, fid)? * 6.0;
+                let v = analytic_cylinder_signed_volume(topo, fid)? * 6.0;
+                if std::env::var("BK_VOL_TRACE").is_ok() {
+                    log::debug!("VOL_TRACE direct cyl face {:?} -> {}", fid, v / 6.0);
+                }
+                total += v;
                 continue;
             }
             FaceSurface::Cone(_) => {

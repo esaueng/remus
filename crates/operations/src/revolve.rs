@@ -760,12 +760,23 @@ fn build_analytic_revolution(
                 let outward = e_r * outm.0 + axis * outm.1;
                 let (surface, reversed) =
                     revolution_wall_surface(&pe.class, axis_origin, axis, probe, outward)?;
+                // Rim senses account for the face reversal below: a reversed
+                // face flips every edge's EFFECTIVE traversal (is_forward XOR
+                // is_reversed), so a reversed wall built with the unreversed
+                // rim senses traverses its rims in the SAME effective sense as
+                // the neighbouring caps (the washer's inner wall measured
+                // exactly this). Rim circles are closed edges (start == end),
+                // so flipping their stored sense preserves wire connectivity
+                // and the rim+seam+rim+seam pattern. The seam pair needs no
+                // flip: reversal flips both of its uses together, keeping them
+                // opposed.
+                let rim_fwd = !reversed;
                 let wall_wire = match (rim_circle[idx], rim_circle[next]) {
                     (Some(bot_e), Some(top_e)) => Wire::new(
                         vec![
-                            OrientedEdge::new(bot_e, true),
+                            OrientedEdge::new(bot_e, rim_fwd),
                             OrientedEdge::new(pe.edge, pe.forward),
-                            OrientedEdge::new(top_e, false),
+                            OrientedEdge::new(top_e, !rim_fwd),
                             OrientedEdge::new(pe.edge, !pe.forward),
                         ],
                         true,
@@ -775,7 +786,7 @@ fn build_analytic_revolution(
                     // seam⁻¹), the seam running rim → apex.
                     (Some(rim_e), None) => Wire::new(
                         vec![
-                            OrientedEdge::new(rim_e, true),
+                            OrientedEdge::new(rim_e, rim_fwd),
                             OrientedEdge::new(pe.edge, pe.forward),
                             OrientedEdge::new(pe.edge, !pe.forward),
                         ],
@@ -783,7 +794,7 @@ fn build_analytic_revolution(
                     ),
                     (None, Some(rim_e)) => Wire::new(
                         vec![
-                            OrientedEdge::new(rim_e, true),
+                            OrientedEdge::new(rim_e, rim_fwd),
                             OrientedEdge::new(pe.edge, !pe.forward),
                             OrientedEdge::new(pe.edge, pe.forward),
                         ],
@@ -1056,6 +1067,79 @@ fn try_circle_revolution_torus(
     Ok(Some(topo.add_solid(Solid::new(shell_id, vec![]))))
 }
 
+/// Traversal winding of a profile wire in the (radial, axial) chart about
+/// `axis`, or `None` when the chart polygon is degenerate.
+///
+/// The chart's radial basis is the direction of the profile's own
+/// farthest-off-axis sample, matching [`try_analytic_full_revolution`], so the
+/// shoelace sign is comparable between the two paths. Curved edges contribute
+/// interior samples in traversal order, so an arc-dominated profile (a single
+/// closed circle) does not degenerate to its vertex count.
+fn profile_chart_is_ccw(
+    topo: &Topology,
+    oriented: &[OrientedEdge],
+    axis_origin: Point3,
+    axis: Vec3,
+) -> Result<Option<bool>, crate::OperationsError> {
+    let mut pts: Vec<Point3> = Vec::with_capacity(oriented.len() * 4);
+    for oe in oriented {
+        let edge = topo.edge(oe.edge())?;
+        let ns = topo.vertex(edge.start())?.point();
+        let ne = topo.vertex(edge.end())?.point();
+        pts.push(if oe.is_forward() { ns } else { ne });
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            let curve = edge.curve();
+            let (t0, t1) = curve.domain_with_endpoints(ns, ne);
+            // Sample in the curve's NATURAL direction, then reverse to traversal
+            // order — sampling from traversal endpoints picks the CCW complement
+            // of a reversed arc.
+            let mut interior: Vec<Point3> = [0.25, 0.5, 0.75]
+                .iter()
+                .map(|f| curve.evaluate_with_endpoints((t1 - t0).mul_add(*f, t0), ns, ne))
+                .collect();
+            if !oe.is_forward() {
+                interior.reverse();
+            }
+            pts.extend(interior);
+        }
+    }
+
+    let mut e_r: Option<Vec3> = None;
+    let mut best_r = 0.0_f64;
+    for &p in &pts {
+        let v = p - axis_origin;
+        let radial = v - axis * v.dot(axis);
+        let r = radial.length();
+        if r > best_r {
+            best_r = r;
+            e_r = radial.normalize().ok();
+        }
+    }
+    let Some(e_r) = e_r else {
+        return Ok(None); // whole profile on the axis
+    };
+
+    let chart: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|p| {
+            let v = *p - axis_origin;
+            (v.dot(e_r), v.dot(axis))
+        })
+        .collect();
+    let mut area2 = 0.0_f64;
+    let mut scale = 0.0_f64;
+    for i in 0..chart.len() {
+        let (x0, y0) = chart[i];
+        let (x1, y1) = chart[(i + 1) % chart.len()];
+        area2 += x0.mul_add(y1, -(x1 * y0));
+        scale = scale.max(x0.abs()).max(y0.abs());
+    }
+    if area2.abs() <= scale * scale * 1e-9 {
+        return Ok(None);
+    }
+    Ok(Some(area2 > 0.0))
+}
+
 /// Revolve a face around an axis to produce a solid of revolution.
 ///
 /// The profile surface may be planar or curved — only its boundary is used. A
@@ -1201,48 +1285,19 @@ pub fn revolve(
         }
     };
 
-    // Sweep-orientation reference. The revolution's tangent at a profile point
-    // `p` is `axis × (p − axis_origin)`; the profile plane contains the axis, so
-    // that tangent is perpendicular to the plane — it is `±input_normal`.
-    // Sampled at the profile's farthest-off-axis point, the largest and so most
-    // numerically robust sample (and the same reference the analytic full-turn
-    // path derives its `e_r` chart from).
-    //
-    // Every face below is oriented off the swept NURBS band's
-    // `du × dv = (profile tangent) × (sweep tangent)`, and the caps off
-    // `input_normal`. For a wire wound CCW about `input_normal` those agree with
-    // the material-outward direction only when the sweep runs along
-    // `+input_normal`. When the revolution runs the other way round the axis —
-    // a right-handed sweep about `axis` and a wire winding that together give
-    // `input_normal · sweep < 0` — EVERY face, band and cap alike, comes out
-    // facing inward. The shell stays closed, consistently wound and
-    // correct-volume, so only its winding SIGN sees it; `writeAsciiStl` then
-    // exports the solid inside-out. Detect the handedness here and mirror the
-    // construction. `try_analytic_full_revolution` already derives its
-    // orientation this way — from the profile's winding in the (radial, axial)
-    // chart — which is why a full turn of a plain profile looked correct while
-    // every partial one, and every full turn that defers to this path, did not.
-    let sweep_normal = {
-        let mut best = None;
-        let mut best_r2 = 0.0_f64;
-        for &p in &wire_positions {
-            let sweep = axis.cross(p - axis_origin);
-            let r2 = sweep.length_squared();
-            if r2 > best_r2 {
-                best_r2 = r2;
-                best = sweep.normalize().ok();
-            }
-        }
-        best
+    // The sweep runs in +θ = axis × e_r, so a profile whose traversal is CCW in
+    // the (radial, axial) chart faces AGAINST it and revolves into an inward
+    // solid — consistently wound, but with every normal inverted, which every
+    // downstream orientation test then rejects (the shell classifies as a hole).
+    // `try_analytic_full_revolution` derives each face's material-outward side
+    // from this same shoelace sign; the segmented path builds faces straight
+    // from traversal order, so normalize the traversal itself instead. A
+    // degenerate chart leaves the traversal alone.
+    let flip_traversal = {
+        let oes = topo.wire(input_wire_id)?.edges().to_vec();
+        profile_chart_is_ccw(topo, &oes, axis_origin, axis)?.unwrap_or(false)
     };
-    // `true` ⇒ the sweep runs against `input_normal`, so the whole construction
-    // (band `reversed` flags, cap normals and cap wire directions) is mirrored.
-    // A profile entirely on the axis sweeps nothing and keeps the old path.
-    let sweep_opposes = sweep_normal.is_some_and(|s| input_normal.dot(s) < 0.0);
-    // The profile normal re-oriented to point along the sweep, so `-cap_normal`
-    // is the start cap's material-outward direction and `+cap_normal` (rotated)
-    // is the end cap's, for either handedness.
-    let cap_normal_ref = if sweep_opposes {
+    let input_normal = if flip_traversal {
         -input_normal
     } else {
         input_normal
@@ -1258,12 +1313,21 @@ pub fn revolve(
         let original_oriented: Vec<_> = wire.edges().to_vec();
 
         // Split closed edges (e.g. full circles) into line segments.
-        let input_oriented = crate::extrude::maybe_split_closed_wire(
+        let split_oriented = crate::extrude::maybe_split_closed_wire(
             topo,
             &original_oriented,
             tol.linear,
             crate::extrude::DEFAULT_DEFLECTION,
         )?;
+        let input_oriented: Vec<OrientedEdge> = if flip_traversal {
+            split_oriented
+                .iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect()
+        } else {
+            split_oriented
+        };
         let n = input_oriented.len();
 
         let mut input_verts: Vec<VertexId> = Vec::with_capacity(n);
@@ -1365,35 +1429,31 @@ pub fn revolve(
 
     let mut all_faces = Vec::new();
 
-    // Start cap (bottom): a copy of the input face facing AGAINST the sweep.
-    // Its outer wire must wind CCW about that outward normal: the input wire is
-    // CCW about `input_normal`, so it is reversed for the usual handedness and
-    // kept as-is when the sweep opposes `input_normal`.
+    // Start cap (bottom): reversed copy of the normalized input face.
     if !is_full {
-        let orient_cap = |oes: &[OrientedEdge]| -> Vec<OrientedEdge> {
-            if sweep_opposes {
-                oes.to_vec()
-            } else {
-                oes.iter()
-                    .rev()
-                    .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
-                    .collect()
-            }
-        };
-        let wire = Wire::new(orient_cap(&outer.input_oriented), true)
-            .map_err(crate::OperationsError::Topology)?;
+        let reversed_edges: Vec<OrientedEdge> = outer
+            .input_oriented
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+        let wire = Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?;
         let wid = topo.add_wire(wire);
 
-        // Create inner wire holes for the bottom cap. They follow the outer
-        // wire's flip, so a hole stays wound opposite its cap.
+        // Create inner wire holes for the bottom cap.
         let mut bottom_inner_wires = Vec::new();
         for iwd in &inner_data {
-            let iw = Wire::new(orient_cap(&iwd.input_oriented), true)
-                .map_err(crate::OperationsError::Topology)?;
+            let inner_reversed: Vec<OrientedEdge> = iwd
+                .input_oriented
+                .iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect();
+            let iw = Wire::new(inner_reversed, true).map_err(crate::OperationsError::Topology)?;
             bottom_inner_wires.push(topo.add_wire(iw));
         }
 
-        let bottom_normal = -cap_normal_ref;
+        let bottom_normal = -input_normal;
         let bottom_d = dot_normal_point(bottom_normal, input_positions[0]);
         let fid = topo.add_face(Face::new(
             wid,
@@ -1424,19 +1484,6 @@ pub fn revolve(
                 true
             };
 
-            let side_wire = Wire::new(
-                vec![
-                    OrientedEdge::new(outer.ring_edges[seg][i], fwd_seg),
-                    OrientedEdge::new(outer.arc_edges[seg][next_i], true),
-                    OrientedEdge::new(outer.ring_edges[next][i], !fwd_next),
-                    OrientedEdge::new(outer.arc_edges[seg][i], false),
-                ],
-                true,
-            )
-            .map_err(crate::OperationsError::Topology)?;
-
-            let side_wire_id = topo.add_wire(side_wire);
-
             let p0_start = topo.vertex(outer.ring_verts[seg][i])?.point();
             let p0_end = topo.vertex(outer.ring_verts[next][i])?.point();
             let p1_start = topo.vertex(outer.ring_verts[seg][next_i])?.point();
@@ -1454,13 +1501,39 @@ pub fn revolve(
                 seg_angle,
             )?;
 
-            // `reversed` aligns an analytic band with the NURBS band's
-            // `du × dv`; `sweep_opposes` then turns that consistent orientation
-            // outward when the sweep runs against the profile winding.
-            let fid = if reversed == sweep_opposes {
-                topo.add_face(Face::new(side_wire_id, vec![], surface))
+            // A reversed face flips every edge's effective traversal, so the
+            // wire must be built reversed too (same idiom as the inner side
+            // faces below) or the face traverses its shared edges in the same
+            // effective sense as its neighbours.
+            let side_wire = if reversed {
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(outer.arc_edges[seg][i], true),
+                        OrientedEdge::new(outer.ring_edges[next][i], fwd_next),
+                        OrientedEdge::new(outer.arc_edges[seg][next_i], false),
+                        OrientedEdge::new(outer.ring_edges[seg][i], !fwd_seg),
+                    ],
+                    true,
+                )
             } else {
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(outer.ring_edges[seg][i], fwd_seg),
+                        OrientedEdge::new(outer.arc_edges[seg][next_i], true),
+                        OrientedEdge::new(outer.ring_edges[next][i], !fwd_next),
+                        OrientedEdge::new(outer.arc_edges[seg][i], false),
+                    ],
+                    true,
+                )
+            }
+            .map_err(crate::OperationsError::Topology)?;
+
+            let side_wire_id = topo.add_wire(side_wire);
+
+            let fid = if reversed {
                 topo.add_face(Face::new_reversed(side_wire_id, vec![], surface))
+            } else {
+                topo.add_face(Face::new(side_wire_id, vec![], surface))
             };
             all_faces.push(fid);
         }
@@ -1514,53 +1587,38 @@ pub fn revolve(
                     seg_angle,
                 )?;
 
-                // The hole wire runs opposite the outer wire, so its band's
-                // `du × dv` already points into the bore (material-outward);
-                // only the sweep handedness still has to be applied.
-                let fid = if sweep_opposes {
-                    topo.add_face(Face::new_reversed(
-                        side_wire_id,
-                        vec![],
-                        FaceSurface::Nurbs(surface),
-                    ))
-                } else {
-                    topo.add_face(Face::new(side_wire_id, vec![], FaceSurface::Nurbs(surface)))
-                };
+                let fid =
+                    topo.add_face(Face::new(side_wire_id, vec![], FaceSurface::Nurbs(surface)));
                 all_faces.push(fid);
             }
         }
     }
 
-    // End cap (top): a rotated copy of the profile facing ALONG the sweep. Its
-    // ring edges follow the input wire's traversal order, so they wind CCW about
-    // the rotated `input_normal` — reversed when the sweep opposes it.
+    // End cap (top): rotated copy of the normalized profile.
     if !is_full {
         let last_ring = num_boundaries - 1;
-        let orient_cap = |eids: &[brepkit_topology::edge::EdgeId]| -> Vec<OrientedEdge> {
-            if sweep_opposes {
-                eids.iter()
-                    .rev()
-                    .map(|&eid| OrientedEdge::new(eid, false))
-                    .collect()
-            } else {
-                eids.iter()
-                    .map(|&eid| OrientedEdge::new(eid, true))
-                    .collect()
-            }
-        };
-        let top_wire = Wire::new(orient_cap(&outer.ring_edges[last_ring]), true)
-            .map_err(crate::OperationsError::Topology)?;
+        let top_wire = Wire::new(
+            outer.ring_edges[last_ring]
+                .iter()
+                .map(|&eid| OrientedEdge::new(eid, true))
+                .collect(),
+            true,
+        )
+        .map_err(crate::OperationsError::Topology)?;
         let top_wire_id = topo.add_wire(top_wire);
 
         // Create inner wire holes for the top cap.
         let mut top_inner_wires = Vec::new();
         for iwd in &inner_data {
-            let iw = Wire::new(orient_cap(&iwd.ring_edges[last_ring]), true)
-                .map_err(crate::OperationsError::Topology)?;
+            let inner_top_edges: Vec<OrientedEdge> = iwd.ring_edges[last_ring]
+                .iter()
+                .map(|&eid| OrientedEdge::new(eid, true))
+                .collect();
+            let iw = Wire::new(inner_top_edges, true).map_err(crate::OperationsError::Topology)?;
             top_inner_wires.push(topo.add_wire(iw));
         }
 
-        let rotated_normal = rotate_vec(cap_normal_ref, axis, angle);
+        let rotated_normal = rotate_vec(input_normal, axis, angle);
         let top_pos = topo.vertex(outer.ring_verts[last_ring][0])?.point();
         let top_d = dot_normal_point(rotated_normal, top_pos);
 
@@ -3043,7 +3101,12 @@ mod tests {
 
                 // Pappus: V = Δθ × centroid_radius × area.
                 let expected = angle * (0.5 * (r0 + r1)) * ((r1 - r0) * (z1 - z0));
-                let vol = crate::measure::solid_volume(&topo, solid, 0.02).unwrap();
+                let vol = crate::measure::oriented_solid_volume(&topo, solid, 0.02).unwrap();
+                assert!(
+                    vol > 0.0,
+                    "wedge (ccw={ccw} normal_y={normal_y}) must be outward-oriented, \
+                     got signed volume {vol:.3}"
+                );
                 let rel_err = (vol - expected).abs() / expected;
                 assert!(
                     rel_err < 0.05,
@@ -3099,7 +3162,12 @@ mod tests {
             );
 
             let expected = 2.0 * PI * 3.0 * 6.0;
-            let vol = crate::measure::solid_volume(&topo, solid, 0.02).unwrap();
+            let vol = crate::measure::oriented_solid_volume(&topo, solid, 0.02).unwrap();
+            assert!(
+                vol > 0.0,
+                "full segmented revolve (ccw={ccw}) must be outward-oriented, \
+                 got signed volume {vol:.3}"
+            );
             let rel_err = (vol - expected).abs() / expected;
             assert!(
                 rel_err < 0.05,

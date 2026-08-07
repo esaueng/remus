@@ -151,6 +151,15 @@ fn assert_closed(topo: &Topology, solid: SolidId) {
         .shell(topo.solid(solid).expect("solid").outer_shell())
         .expect("outer shell");
     validate_shell_closed(shell, topo).expect("result shell must be closed");
+    let orientation = brepkit_check::validate::shell::check_shell_orientation(
+        topo,
+        topo.solid(solid).expect("solid").outer_shell(),
+    )
+    .expect("check shell orientation");
+    assert!(
+        orientation.is_empty(),
+        "result shell orientation must be consistent: {orientation:?}"
+    );
 
     let mut uses: HashMap<usize, usize> = HashMap::new();
     for fid in solid_faces(topo, solid).expect("solid faces") {

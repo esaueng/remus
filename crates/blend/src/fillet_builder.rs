@@ -19,15 +19,15 @@ use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::analytic;
 use crate::blend_func::{ConstRadBlend, EvolRadBlend};
 use crate::builder_utils::{
-    FlippedNormalSurface, create_blend_face, project_onto_axis, radial_distance,
-    sample_nurbs_endpoints, surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
+    FlippedNormalSurface, project_onto_axis, radial_distance, sample_nurbs_endpoints,
+    surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
 };
 use crate::corner;
 use crate::g1_chain;
 use crate::radius_law::RadiusLaw;
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
-use crate::trimmer::{self, TrimSide};
+use crate::trimmer;
 use crate::walker::{Walker, WalkerConfig, approximate_blend_surface};
 use crate::{BlendError, BlendFaceOrigins, BlendResult};
 
@@ -304,38 +304,25 @@ impl<'a> FilletBuilder<'a> {
             corner_face_ids.push(cr.face_id);
         }
 
+        let mut stripe_contact_edges: Vec<(
+            Option<brepkit_topology::edge::EdgeId>,
+            Option<brepkit_topology::edge::EdgeId>,
+        )> = Vec::new();
         for sr in &regular_results {
             let stripe = &sr.stripe;
+            stripe_contact_edges.push((None, None));
 
             let contact1_pts = sample_nurbs_endpoints(&stripe.contact1);
             let contact2_pts = sample_nurbs_endpoints(&stripe.contact2);
 
-            // Compute which side to keep: the side AWAY from the blend ball center.
-            // Use the first section's ball center to determine direction relative
-            // to each face normal. If center is on the normal side, keep Right
-            // (away from center); otherwise keep Left.
-            let keep_side1 =
-                if let (Some(sec), Ok(face)) = (stripe.sections.first(), topo.face(stripe.face1)) {
-                    let n = face.surface().normal(0.0, 0.0);
-                    if n.dot(sec.center - sec.p1) > 0.0 {
-                        TrimSide::Right
-                    } else {
-                        TrimSide::Left
-                    }
-                } else {
-                    TrimSide::Right
-                };
-            let keep_side2 =
-                if let (Some(sec), Ok(face)) = (stripe.sections.first(), topo.face(stripe.face2)) {
-                    let n = face.surface().normal(0.0, 0.0);
-                    if n.dot(sec.center - sec.p2) > 0.0 {
-                        TrimSide::Right
-                    } else {
-                        TrimSide::Left
-                    }
-                } else {
-                    TrimSide::Right
-                };
+            // Keep the side of the contact line AWAY from the spine edge: the
+            // strip between the contact line and the old edge is what the
+            // blend face replaces. The side is resolved inside the trimmer,
+            // whose Left/Right frame follows each face's wire traversal and
+            // cannot be predicted here; a ball-centre plane-side test flips
+            // for concave edges even though the in-plane keep side does not.
+            let spine_pt = stripe.spine.evaluate(topo, 0.0)?;
+            let keep = trimmer::TrimKeep::AwayFrom(spine_pt);
 
             // Trim face 1 — use current replacement if face was already trimmed.
             let current_face1 = face_replacements
@@ -346,12 +333,15 @@ impl<'a> FilletBuilder<'a> {
                 topo,
                 current_face1,
                 &contact1_pts,
-                keep_side1,
+                keep,
                 stripe.spine.edges(),
             );
 
             let tr1 = match trim1 {
                 Ok(tr) if tr.trimmed_face != current_face1 => {
+                    if let Some(slot) = stripe_contact_edges.last_mut() {
+                        slot.0 = tr.contact_edge;
+                    }
                     face_replacements.insert(stripe.face1, tr.trimmed_face);
                     tr
                 }
@@ -368,12 +358,15 @@ impl<'a> FilletBuilder<'a> {
                 topo,
                 current_face2,
                 &contact2_pts,
-                keep_side2,
+                keep,
                 stripe.spine.edges(),
             );
 
             let tr2 = match trim2 {
                 Ok(tr) if tr.trimmed_face != current_face2 => {
+                    if let Some(slot) = stripe_contact_edges.last_mut() {
+                        slot.1 = tr.contact_edge;
+                    }
                     face_replacements.insert(stripe.face2, tr.trimmed_face);
                     tr
                 }
@@ -384,12 +377,17 @@ impl<'a> FilletBuilder<'a> {
             trim_pairs.push((tr1, tr2));
         }
 
-        for (sr, (tr1, tr2)) in regular_results.iter().zip(&trim_pairs) {
+        let mut blend_cross_edges: Vec<(
+            brepkit_topology::edge::EdgeId,
+            brepkit_topology::vertex::VertexId,
+            brepkit_topology::vertex::VertexId,
+        )> = Vec::new();
+        for (si, (sr, (tr1, tr2))) in regular_results.iter().zip(&trim_pairs).enumerate() {
             let stripe = &sr.stripe;
 
-            // Stitched path: reuse the trimmer's contact edges and close the
-            // spine ends against the cap faces, producing a watertight blend.
-            // Falls back to the legacy detached quad when not applicable.
+            // Preserve the fork's stitched planar path when it can close the
+            // spine ends directly; otherwise reuse the upstream trimmer
+            // contact edges and notch the remaining end caps below.
             match stitch_planar_blend(topo, stripe, tr1, tr2, &face_replacements) {
                 Ok(Some(mut faces)) => {
                     blend_face_origins
@@ -399,19 +397,51 @@ impl<'a> FilletBuilder<'a> {
                 }
                 Ok(None) => {}
                 Err(e) => {
-                    log::warn!("stitched blend assembly failed ({e}); using detached blend face");
+                    log::warn!(
+                        "stitched blend assembly failed ({e}); using shared-contact blend face"
+                    );
                 }
             }
-            let blend_face_id = create_blend_face(topo, stripe)?;
-            blend_face_ids.push(blend_face_id);
-            blend_face_origins.push((blend_face_id, vec![stripe.face1, stripe.face2]));
+
+            // Reuse the trimmed neighbours' contact edges so the blend flank
+            // shares one edge entity per contact instead of minting a
+            // duplicate that leaves both faces' copies use-1.
+            let (c1, c2) = stripe_contact_edges
+                .get(si)
+                .copied()
+                .unwrap_or((None, None));
+            let info = crate::builder_utils::create_blend_face_with_contacts(topo, stripe, c1, c2)?;
+            blend_face_ids.push(info.face);
+            blend_face_origins.push((info.face, vec![stripe.face1, stripe.face2]));
+            blend_cross_edges.push(info.cross_end);
+            blend_cross_edges.push(info.cross_start);
+        }
+
+        // Notch the fillet's end cross-section arcs out of the faces that
+        // still cover the scooped corner (the untouched end caps): replace
+        // each cap's two-edge corner path with the blend's own cross edge so
+        // both sides share one edge entity.
+        for arc in &blend_cross_edges {
+            let candidates: Vec<(FaceId, FaceId)> = original_faces
+                .iter()
+                .map(|&f| (f, face_replacements.get(&f).copied().unwrap_or(f)))
+                .collect();
+            for (orig, fid) in candidates {
+                if let Some(nf) = crate::builder_utils::notch_face_corner_with_arc(topo, fid, *arc)?
+                {
+                    face_replacements.insert(orig, nf);
+                    break;
+                }
+            }
         }
 
         let mut result_faces: Vec<FaceId> = Vec::new();
 
         for &fid in &original_faces {
             if !touched_faces.contains(&fid) {
-                result_faces.push(fid);
+                // An untouched face may still have been rebuilt by the
+                // end-cap notch pass.
+                result_faces.push(face_replacements.get(&fid).copied().unwrap_or(fid));
             }
         }
 
@@ -1411,6 +1441,15 @@ fn assemble_closed_rim(
     // radial) and away from the material along the axis; the torus geometric
     // normal at the mid-arc already has the correct radial sign, so we compare
     // its axial component against the material side.
+    //
+    // The band must traverse each shared contact circle in the EFFECTIVE
+    // sense (is_forward XOR is_reversed) OPPOSITE its other user: the cap
+    // holds `plate_edge` at `cap_forward` under `plane_reversed`, the wall
+    // holds `wall_edge` at `wall_forward` under `wall_reversed`. Both
+    // circles are degenerate (start == end vertex), so the chain closes
+    // for any sense choice and the two senses are picked independently. A
+    // fixed wire order cannot serve both rims of a cylinder — their caps
+    // traverse the shared circles in opposite directions.
     if band_reversed {
         band_face.set_reversed(true);
     }

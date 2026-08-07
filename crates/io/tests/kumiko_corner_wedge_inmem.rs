@@ -1,43 +1,26 @@
-//! Ready-repro: cutting a kumiko corner wedge by one strut drops to the mesh
-//! fallback, losing both cylinders — and this is the root of the whole kumiko
-//! export-integrity family.
+//! Cutting a kumiko corner wedge by one strut must stay analytic AND
+//! watertight. Both operands are small coaxial revolve wedges about the same
+//! corner axis: six faces each, two cylinders each, watertight and (since the
+//! 2026-08-04 re-capture on a post-revolve-fix kernel) outward-oriented.
 //!
-//! The tool carves each lattice band rather than fusing it: it starts from a
-//! `wedge` (a `revolve`, so it carries cylindrical corner faces) and runs
-//! `cutter = cutAll(cutter, family)` per strut family. Both operands here are
-//! small revolve wedges, COAXIAL about the same corner axis — six faces each,
-//! two cylinders each, both watertight. The cut should be an easy analytic
-//! case. It is not: the result is 60 faces, ALL PLANAR, which is the mesh
-//! fallback signature (diagnostic here precisely because the inputs really did
-//! have cylinders to lose).
+//! History in brief: the original captures were globally INVERTED wedges (the
+//! segmented-revolve winding defect, fixed in `revolve.rs` and verified in
+//! `operations/tests/regress_kumiko_corner_wedge.rs`), and the cut fell to the
+//! all-planar mesh fallback, which poisoned every kumiko corner band.
 //!
-//! Why it matters. Every corner cut in every band takes this path, so every
-//! band comes back all-planar; and by the third strut the accumulated result is
-//! also OPEN — `free=3`, then `free=2 over=1` at four and five struts. Those
-//! open bands are what reach the goma `cutAllBisect`, where four of eight
-//! arrive non-watertight (tool1 free=405 over=38, tool3 393/33, tool5 386/36,
-//! tool7 428/40) and poison the export. The flat-wall span, whose operands are
-//! all planar boxes, replays perfectly clean (F=1146, watertight), which is why
-//! the four even bands are fine.
+//! Current state on the re-captured operands: the cut runs ANALYTIC in 2 ms
+//! and keeps both cylinders — but it is WRONG twice over. Point oracles show
+//! the strut genuinely OVERLAPS the wedge (B=Inside at (3.15, 0.2, 11.75),
+//! which is inside A; the strut protrudes through the wedge's y=0 cap plane),
+//! yet the result keeps the FULL wedge volume (285.861, nothing removed) AND
+//! drops the y=0 cap, whose region is coplanar with the strut's boundary
+//! there (the cap's interior sample lies ON the strut boundary; the
+//! coincident-coplanar fast path defers straddlers and ray-cast says Inside).
+//! The ignored test below pins the watertight goal state.
 //!
-//! So the kumiko family's root is not that the mesh fallback consumes open
-//! output (it does — see `mesh_boolean_fallback`, which warns and proceeds).
-//! It is that these coaxial wedge cuts fall back AT ALL.
-//!
-//! WHY IT FALLS BACK, measured: the analytic path does not produce a wrong
-//! result, it produces no result. Raw GFA on this exact pair reports
-//! `BuilderSolid: 0 growth shells, 1 hole shells` and aborts with
-//! "no outer shell found (all shells classified as holes)" — in 0ms. One shell
-//! is built and classified INWARD, so nothing is left to be the outer shell.
-//! For `Cut(wedge, strut)` the result should be a single outward shell, so the
-//! suspect is orientation or the growth-vs-hole decision in `perform_areas`,
-//! not the face splitter. Reproduce with
-//! `CAPTURE_DIR=<call4> PREFIX=cut RAW=1 TOOL=0 SHELL_LOG=1
-//! ./target/release/examples/replay_cut_capture`.
-//!
-//! Operands captured from the live tool on a local 2.128.5 build via
-//! `kumikoCornerCutCapture.test.ts`; full six-call capture in
-//! `~/.cache/brepkit-parity-captures/2026-07-25/kumiko-corner/`.
+//! Re-capture recipe: kernel-test boolean monkey-patch on a 1x1x4 mitsukude
+//! corner-wrap generation; the wedge pair is the F=6 two-cylinder cut call
+//! (four congruent instances, one per corner).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -110,7 +93,23 @@ fn operands_are_clean_analytic_wedges() {
 }
 
 #[test]
-#[ignore = "ready-repro — coaxial wedge cut falls back to mesh, losing both cylinders"]
+fn captured_operands_are_outward_oriented() {
+    // Re-captured 2026-08-04 on a post-revolve-fix kernel: both wedges are
+    // outward-oriented now, which is what lets the cut below run analytically
+    // at all. `oriented_solid_volume` keeps the sign that `solid_volume`
+    // discards.
+    let mut topo = Topology::new();
+    for name in ["kumiko_corner_wedge.bin", "kumiko_corner_strut.bin"] {
+        let sid = load(name, &mut topo);
+        let signed = brepkit_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap();
+        assert!(
+            signed > 0.0,
+            "{name} should be outward-oriented post-re-capture, got {signed:.3}"
+        );
+    }
+}
+
+#[test]
 fn kumiko_corner_wedge_cut_stays_analytic() {
     let mut topo = Topology::new();
     let wedge = load("kumiko_corner_wedge.bin", &mut topo);
@@ -133,5 +132,20 @@ fn kumiko_corner_wedge_cut_stays_analytic() {
     assert!(
         mix.get("cylinder").copied().unwrap_or(0) > 0,
         "cut must stay analytic and keep cylindrical corner faces, got {faces} faces {mix:?}"
+    );
+
+    assert_eq!(
+        edge_uses(&topo, result),
+        (0, 0),
+        "cut result must be watertight and manifold"
+    );
+
+    // The strut genuinely overlaps the wedge (point-oracle verified), so the
+    // cut must REMOVE material. Pin the measured overlap loosely: 285.861
+    // down to 247.460 on the fixed splitter chain.
+    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
+    assert!(
+        vol > 240.0 && vol < 280.0,
+        "cut must remove the overlap: got {vol:.3} from the 285.861 wedge"
     );
 }

@@ -400,13 +400,50 @@ pub fn shell(
                 } else {
                     cyl.radius() - thickness
                 };
-                if new_radius > tol.linear
-                    && let Ok(new_cyl) = brepkit_math::surfaces::CylindricalSurface::new(
-                        cyl.origin(),
-                        cyl.axis(),
-                        new_radius,
-                    )
-                {
+                if new_radius <= tol.linear {
+                    // A swallowed convex fillet collapses to a sharp chamfer
+                    // strip joining the neighbouring offset walls. Its
+                    // vertices already carry the extreme-normal miter above.
+                    let wire = topo.wire(face.outer_wire())?;
+                    let mut strip: Vec<Point3> = Vec::new();
+                    for oe in wire.edges() {
+                        let edge = topo.edge(oe.edge())?;
+                        let vertex = topo.vertex(oe.oriented_start(edge))?.point();
+                        let point = inner_pos
+                            .get(&quantize_pt(vertex))
+                            .copied()
+                            .unwrap_or(vertex);
+                        if strip
+                            .last()
+                            .is_none_or(|previous| (*previous - point).length() > tol.linear)
+                        {
+                            strip.push(point);
+                        }
+                    }
+                    if strip.len() > 2 && (strip[0] - strip[strip.len() - 1]).length() <= tol.linear
+                    {
+                        strip.pop();
+                    }
+                    if strip.len() >= 3
+                        && let Some((normal_a, normal_b)) =
+                            extreme_face_normals(&face_surface_normals(face, outer_verts))
+                        && let Ok(outward) = (normal_a + normal_b).normalize()
+                    {
+                        strip.reverse();
+                        let inner_normal = -outward;
+                        let inner_d = dot_normal_point(inner_normal, strip[0]);
+                        result_specs.push(FaceSpec::Planar {
+                            vertices: strip,
+                            normal: inner_normal,
+                            d: inner_d,
+                            inner_wires: vec![],
+                        });
+                    }
+                } else if let Ok(new_cyl) = brepkit_math::surfaces::CylindricalSurface::new(
+                    cyl.origin(),
+                    cyl.axis(),
+                    new_radius,
+                ) {
                     // `CylindricalFace` mints Circle edges along the constant
                     // -height boundaries, so the wall's rims are the arcs the
                     // caps meeting them also trace, and both a full circle's

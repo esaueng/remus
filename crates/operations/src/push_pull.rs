@@ -302,6 +302,7 @@ fn resize_cylindrical_face_aligned(
     unify_faces(topo, result)?;
     drop_stranded_inner_wires(topo, result)?;
     ensure_closed_shell(topo, result, "cylindrical resize")?;
+    repair_resized_cylinder_rim_orientation(topo, result, base, axis, height, new_radius)?;
     ensure_volume(topo, result, expected, "cylindrical resize")?;
     ensure_resized_cylinder(topo, result, base, axis, height, old_radius, new_radius)?;
     Ok(result)
@@ -428,6 +429,141 @@ fn verify_deflection(topo: &Topology, solid: SolidId) -> f64 {
     crate::measure::solid_bounding_box(topo, solid).map_or(0.01, |bb| {
         ((bb.max - bb.min).length() * 5e-4).clamp(1e-4, 0.05)
     })
+}
+
+/// Repair a reversed closed rim on the cylinder created by a resize.
+///
+/// A closed circle has the same start and end vertex, so reversing its local
+/// wire use cannot disconnect the wire or move geometry. Keep this repair
+/// deliberately narrower than a general orientation healer: only a same-sense
+/// edge on the requested new-radius cylinder is eligible, and any other shell
+/// orientation defect still fails closed.
+fn repair_resized_cylinder_rim_orientation(
+    topo: &mut Topology,
+    solid: SolidId,
+    base: Point3,
+    axis: Vec3,
+    height: f64,
+    new_radius: f64,
+) -> Result<usize, crate::OperationsError> {
+    use std::collections::HashMap;
+
+    #[derive(Clone, Copy)]
+    struct EdgeUse {
+        face: FaceId,
+        wire: brepkit_topology::wire::WireId,
+        position: usize,
+        stored_forward: bool,
+        effective_forward: bool,
+    }
+
+    let shell_id = topo.solid(solid)?.outer_shell();
+    let face_ids = topo.shell(shell_id)?.faces().to_vec();
+    let axis = unit(axis)?;
+    let model_scale = [
+        base.x().abs(),
+        base.y().abs(),
+        base.z().abs(),
+        height.abs(),
+        new_radius.abs(),
+    ]
+    .into_iter()
+    .fold(1.0_f64, f64::max);
+    let linear_tol = Tolerance::new()
+        .linear
+        .max(model_scale * Tolerance::new().relative);
+
+    let mut resized_faces = Vec::new();
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let FaceSurface::Cylinder(candidate) = face.surface() else {
+            continue;
+        };
+        if (candidate.radius() - new_radius).abs() > linear_tol {
+            continue;
+        }
+        let candidate_axis = unit(candidate.axis())?;
+        if candidate_axis.dot(axis).abs() < 1.0 - Tolerance::new().angular {
+            continue;
+        }
+        let offset = candidate.origin() - base;
+        let perpendicular = offset - axis * offset.dot(axis);
+        if perpendicular.length() > linear_tol {
+            continue;
+        }
+        let (candidate_base, candidate_height) = axial_extent(topo, fid, candidate)?;
+        let candidate_end = candidate_base + candidate_axis * candidate_height;
+        let t0 = (candidate_base - base).dot(axis);
+        let t1 = (candidate_end - base).dot(axis);
+        let overlap_start = t0.min(t1).max(0.0);
+        let overlap_end = t0.max(t1).min(height);
+        if overlap_end - overlap_start > linear_tol {
+            resized_faces.push(fid);
+        }
+    }
+
+    let mut edge_uses: HashMap<brepkit_topology::edge::EdgeId, Vec<EdgeUse>> = HashMap::new();
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        let reversed = face.is_reversed();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for (position, oe) in topo.wire(wid)?.edges().iter().enumerate() {
+                edge_uses.entry(oe.edge()).or_default().push(EdgeUse {
+                    face: fid,
+                    wire: wid,
+                    position,
+                    stored_forward: oe.is_forward(),
+                    effective_forward: oe.is_forward() != reversed,
+                });
+            }
+        }
+    }
+
+    let mut repairs = Vec::new();
+    for (&edge_id, uses) in &edge_uses {
+        let [first, second] = uses.as_slice() else {
+            continue;
+        };
+        if first.effective_forward != second.effective_forward {
+            continue;
+        }
+        let candidates: Vec<_> = [*first, *second]
+            .into_iter()
+            .filter(|edge_use| resized_faces.contains(&edge_use.face))
+            .collect();
+        match candidates.as_slice() {
+            [candidate] if topo.edge(edge_id)?.is_closed() => repairs.push(*candidate),
+            [] => {}
+            _ => {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "cylindrical resize produced an ambiguous shell orientation defect"
+                        .into(),
+                });
+            }
+        }
+    }
+
+    for repair in &repairs {
+        let wire = topo.wire_mut(repair.wire)?;
+        let Some(oriented) = wire.edges_mut().get_mut(repair.position) else {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "cylindrical resize lost a rim during orientation repair".into(),
+            });
+        };
+        *oriented =
+            brepkit_topology::wire::OrientedEdge::new(oriented.edge(), !repair.stored_forward);
+    }
+
+    let remaining = brepkit_check::validate::shell::check_shell_orientation(topo, shell_id)?;
+    if !remaining.is_empty() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "cylindrical resize left {} shell orientation issue(s)",
+                remaining.len()
+            ),
+        });
+    }
+    Ok(repairs.len())
 }
 
 /// Reject a result whose volume is not the one the edit must produce.

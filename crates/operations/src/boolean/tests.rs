@@ -6740,6 +6740,37 @@ fn diag_cone_box_tangency_sweep() {
 /// handled; two or more split it into a CHAIN of arcs that the quadric side
 /// fails to close — open at 2 walls, over-shared at 4.
 #[test]
+fn tangent_wall_fuse_configurations_stay_analytic() {
+    // Regression pin for the tangent-section-circle family (the last
+    // primitive-boolean fallback): a box wall exactly tangent to the
+    // cylinder used to break the section circle by tangency-point count
+    // (2 tangencies gave 4 free edges, 4 gave 4 non-manifold). All counts
+    // are clean since the classifier conflict re-cast and the SD
+    // cross-shell gate; this pins every configuration of the diagnostic
+    // sweep as watertight with its exact analytic face count.
+    use brepkit_math::mat::Mat4;
+    for &(label, xlo, xhi, ylo, yhi, expect_f) in &[
+        ("4 tangent walls", -4.0, 4.0, -4.0, 4.0, 15usize),
+        ("2 tangent walls (x only)", -4.0, 4.0, -9.0, 9.0, 11),
+        ("1 tangent wall  (x=+4)", -9.0, 4.0, -9.0, 9.0, 9),
+        ("0 tangent walls", -9.0, 9.0, -9.0, 9.0, 8),
+    ] {
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, xhi - xlo, yhi - ylo, 8.0).unwrap();
+        crate::transform::transform_solid(&mut topo, b, &Mat4::translation(xlo, ylo, 6.0)).unwrap();
+        let r = brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b)
+            .unwrap_or_else(|e| panic!("{label}: fuse must not abort: {e}"));
+        let n = brepkit_topology::explorer::solid_faces(&topo, r)
+            .unwrap()
+            .len();
+        assert_eq!(n, expect_f, "{label}: analytic face count");
+        super::assembly::validate_boolean_result(&topo, r)
+            .unwrap_or_else(|e| panic!("{label}: result must validate: {e}"));
+    }
+}
+
+#[test]
 #[ignore = "diagnostic — how many tangency points break the section circle?"]
 fn diag_tangency_count() {
     use brepkit_math::mat::Mat4;
@@ -7148,4 +7179,265 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
         .collect();
     assert_eq!(radii.len(), 1, "one analytic mounting wall: {radii:?}");
     assert!((radii[0] - 3.8).abs() < 1e-8, "radii {radii:?}");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Orientation-emission campaign: the boolean assembler frontier.
+// Construction ops (extrude/revolve/sweep/loft/pipe) are strict-clean;
+// GFA boolean outputs still emit same-sense edge pairs. Probe repro:
+// the gridfinity D1 lip-ring loft cut (wasm gridfinity_tests), cloned
+// natively here. check_orientation defaults ON only when this closes.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Reversal-corrected traversal check: shared edges whose two face uses
+/// carry the SAME effective sense (`is_forward() != face.is_reversed()`).
+/// A consistent closed shell has zero.
+fn same_sense_pairs(topo: &Topology, solid: SolidId) -> Vec<(EdgeId, FaceId, FaceId)> {
+    use std::collections::HashMap;
+    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let mut uses: HashMap<EdgeId, Vec<(FaceId, bool)>> = HashMap::new();
+    for &fid in &faces {
+        let face = topo.face(fid).unwrap();
+        let rev = face.is_reversed();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                uses.entry(oe.edge())
+                    .or_default()
+                    .push((fid, oe.is_forward() != rev));
+            }
+        }
+    }
+    let mut pairs: Vec<(EdgeId, FaceId, FaceId)> = uses
+        .into_iter()
+        .filter(|(_, u)| u.len() == 2 && u[0].1 == u[1].1)
+        .map(|(eid, u)| (eid, u[0].0, u[1].0))
+        .collect();
+    pairs.sort_by_key(|(eid, _, _)| eid.index());
+    pairs
+}
+
+/// Build the gridfinity D1 lip-ring operands: outer flush frustum (2
+/// sections) and inner tapering frustum (5 sections), both lofted.
+fn make_lip_ring_operands(topo: &mut Topology) -> (SolidId, SolidId) {
+    let section = |topo: &mut Topology, z: f64, inset: f64| {
+        let half = (41.5 - 2.0 * inset) / 2.0;
+        let r = (4.0 - inset).max(0.1);
+        make_rounded_rect_arc_face(topo, half, half, r, z)
+    };
+    let outer: Vec<FaceId> = [(-1.2, 0.0), (4.4, 0.0)]
+        .iter()
+        .map(|&(z, inset)| section(topo, z, inset))
+        .collect();
+    let inner: Vec<FaceId> = [(-1.2, 5.2), (0.0, 5.2), (0.7, 4.5), (2.5, 4.5), (4.4, 2.6)]
+        .iter()
+        .map(|&(z, inset)| section(topo, z, inset))
+        .collect();
+    let outer_solid = crate::loft::loft(topo, &outer).unwrap();
+    let inner_solid = crate::loft::loft(topo, &inner).unwrap();
+    (outer_solid, inner_solid)
+}
+
+/// For a PLANAR face: signed area of each wire about the face's EFFECTIVE
+/// normal (surface normal, flipped if `is_reversed`). Convention: outer
+/// wire positive (CCW), hole wires negative (CW). Returns
+/// `(outer_area, inner_areas)` in effective terms, or None if non-planar.
+fn planar_effective_windings(topo: &Topology, fid: FaceId) -> Option<(f64, Vec<f64>)> {
+    let face = topo.face(fid).unwrap();
+    let FaceSurface::Plane { normal, .. } = *face.surface() else {
+        return None;
+    };
+    let eff_normal = if face.is_reversed() {
+        normal * -1.0
+    } else {
+        normal
+    };
+    let signed_area = |wid| {
+        let wire = topo.wire(wid).unwrap();
+        // Effective traversal of a reversed face is the wire in REVERSE
+        // ORDER with flipped senses; flipping senses alone yields the same
+        // cyclic point sequence and hence the unflipped signed area.
+        let oes: Vec<_> = if face.is_reversed() {
+            wire.edges().iter().rev().collect()
+        } else {
+            wire.edges().iter().collect()
+        };
+        let mut pts: Vec<Point3> = Vec::new();
+        for oe in oes {
+            let edge = topo.edge(oe.edge()).unwrap();
+            let a = if oe.is_forward() == face.is_reversed() {
+                edge.end()
+            } else {
+                edge.start()
+            };
+            pts.push(topo.vertex(a).unwrap().point());
+        }
+        let n = pts.len();
+        let mut acc = Vec3::new(0.0, 0.0, 0.0);
+        let origin = pts[0];
+        for i in 1..n - 1 {
+            let u = pts[i] - origin;
+            let v = pts[i + 1] - origin;
+            acc += u.cross(v);
+        }
+        0.5 * acc.dot(eff_normal)
+    };
+    let outer = signed_area(face.outer_wire());
+    let inners = face.inner_wires().iter().map(|&w| signed_area(w)).collect();
+    Some((outer, inners))
+}
+
+#[test]
+fn fillet_v2_cylinder_rim_bands_are_orientation_consistent() {
+    // Both rim-fillet torus bands must traverse the shared contact circles
+    // in the effective sense opposite their cap/wall users; a fixed band
+    // wire order cannot serve both rims of a cylinder. The volume pin
+    // guards the Line-seam band's structured two-rim meshing — the historic
+    // same-sense winding happened to skin the right region through the
+    // generic path, so orientation and mesh coverage must be pinned
+    // together.
+    let mut topo = Topology::new();
+    let cyl = crate::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+    // Select the two physical rims, not the cylinder's parameterization seam:
+    // this fork deliberately rejects partial modifier selections, so asking
+    // for the non-filletable seam together with the rims must remain an error.
+    let edges: Vec<EdgeId> = brepkit_topology::explorer::solid_edges(&topo, cyl)
+        .unwrap()
+        .into_iter()
+        .filter(|&eid| {
+            let edge = topo.edge(eid).unwrap();
+            edge.start() == edge.end()
+        })
+        .collect();
+    assert_eq!(edges.len(), 2, "cylinder should have two closed rim edges");
+    let result = crate::blend_ops::fillet_v2(&mut topo, cyl, &edges, 0.5)
+        .unwrap()
+        .solid;
+    let pairs = same_sense_pairs(&topo, result);
+    assert!(
+        pairs.is_empty(),
+        "rim-filleted cylinder must have no same-sense edge pairs, got {pairs:?}"
+    );
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - 6275.7).abs() < 2.0,
+        "rim-filleted cylinder volume should be ~6275.7 (raw 6283.2 minus two r=0.5 rounds), got {vol:.1}"
+    );
+}
+
+#[test]
+fn coplanar_flush_pocket_cut_is_orientation_consistent() {
+    // A tool flush with the base's bottom or top face leaves a cap-with-hole
+    // whose hole wire must wind effective-CW (opposing the flipped tool
+    // walls that share its edges). The internal-loops splitter emitted it
+    // effective-CCW on plane faces, so every flush socket cut carried
+    // same-sense pairs.
+    for (label, z0, z1) in [("bottom-flush", 0.0, 4.0), ("top-flush", 6.0, 10.0)] {
+        let mut topo = Topology::new();
+        let a = crate::primitives::make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+        let b = crate::primitives::make_box(&mut topo, 6.0, 6.0, z1 - z0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            b,
+            &brepkit_math::mat::Mat4::translation(7.0, 7.0, z0),
+        )
+        .unwrap();
+        let cut = boolean(&mut topo, BooleanOp::Cut, a, b).unwrap();
+        let pairs = same_sense_pairs(&topo, cut);
+        assert!(
+            pairs.is_empty(),
+            "{label} pocket cut must have no same-sense edge pairs, got {pairs:?}"
+        );
+        for fid in brepkit_topology::explorer::solid_faces(&topo, cut).unwrap() {
+            if let Some((outer, inners)) = planar_effective_windings(&topo, fid) {
+                assert!(
+                    outer > 0.0,
+                    "{label}: face#{} outer wire must wind effective-CCW, got {outer:+.1}",
+                    fid.index()
+                );
+                for (i, &a) in inners.iter().enumerate() {
+                    assert!(
+                        a < 0.0,
+                        "{label}: face#{} hole {i} must wind effective-CW, got {a:+.1}",
+                        fid.index()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn lip_ring_loft_cut_is_orientation_consistent() {
+    // The gridfinity D1 lip ring: both lofts must be strict-clean (the
+    // inner loft's ruled-NURBS taper corners historically carried 32
+    // same-sense pairs from a reversal flag without a reversed wire), and
+    // the concentric cut must add none of its own.
+    let mut topo = Topology::new();
+    let (outer_solid, inner_solid) = make_lip_ring_operands(&mut topo);
+    for (label, sid) in [("outer", outer_solid), ("inner", inner_solid)] {
+        let p = same_sense_pairs(&topo, sid);
+        assert!(
+            p.is_empty(),
+            "{label} loft operand must have no same-sense edge pairs, got {p:?}"
+        );
+    }
+    let cut = boolean(&mut topo, BooleanOp::Cut, outer_solid, inner_solid).unwrap();
+    let pairs = same_sense_pairs(&topo, cut);
+    assert!(
+        pairs.is_empty(),
+        "lip-ring cut must have no same-sense edge pairs, got {pairs:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Bench-equivalence ready-repros: found by the wasm head-to-head output
+// verification (2026-08-05). The bench harness times ops without checking
+// outputs; these pin the two rows whose results deviate from closed form.
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+#[ignore = "ready repro: intersect(corner box, center sphere) keeps the wrong sphere region — \
+            vol 1304.8 vs the exact octant 268.083, every probe point classifies Outside \
+            (including inside the true octant), and oriented volume (1148.8) disagrees with \
+            the magnitude (1304.8). Three coordinate planes through the sphere center = the \
+            chord-discretized-equator sphere-split family (roadmap TERMINAL-adjacent: the \
+            general UV-space sphere arrangement splitter is the named missing primitive)"]
+fn bench_equiv_intersect_box_corner_sphere_is_the_octant() {
+    let mut topo = Topology::new();
+    let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let s = crate::primitives::make_sphere(&mut topo, 8.0, 32).unwrap();
+    let r = boolean(&mut topo, BooleanOp::Intersect, b, s).unwrap();
+    let vol = crate::measure::solid_volume(&topo, r, 0.01).unwrap();
+    let exact = std::f64::consts::PI * 8.0_f64.powi(3) * 4.0 / 3.0 / 8.0;
+    assert!(
+        (vol - exact).abs() < 0.5,
+        "octant intersect volume should be ~{exact:.3}, got {vol:.3}"
+    );
+    let inside =
+        crate::classify::classify_point(&topo, r, Point3::new(1.0, 1.0, 1.0), 0.01, 1e-7).unwrap();
+    assert!(
+        matches!(inside, crate::classify::PointClassification::Inside),
+        "a point in the true octant must classify Inside, got {inside:?}"
+    );
+}
+
+#[test]
+fn bench_equiv_cut_box_corner_cylinder_volume_is_exact() {
+    // Closed by the reversed-traversal junction-vertex fix in the boundary
+    // samplers (tessellate_planar / sample_wire_positions): a reversed
+    // edge's [start, end) iteration excluded its traversal-start vertex,
+    // nobody else supplied that polygon corner, and the per-face CDT
+    // outline shortcut it with a chord — the volume ran through the
+    // direct-face-tessellation arm (the cut's reversed cylinder wall
+    // routes it there) and lost the corner sliver at any deflection.
+    let mut topo = Topology::new();
+    let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let c = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
+    let r = boolean(&mut topo, BooleanOp::Cut, b, c).unwrap();
+    let vol = crate::measure::solid_volume(&topo, r, 0.01).unwrap();
+    let exact = 1000.0 - std::f64::consts::PI * 9.0 * 10.0 / 4.0;
+    assert!(
+        (vol - exact).abs() < 0.05,
+        "quarter-cylinder cut volume should be ~{exact:.4}, got {vol:.4}"
+    );
 }
