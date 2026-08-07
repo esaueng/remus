@@ -47,30 +47,185 @@ pub(super) fn boundary_edges_to_pcurve(
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
 ) -> Vec<OrientedPCurveEdge> {
+    boundary_edges_to_pcurve_with_images(
+        topo,
+        wire_id,
+        surface,
+        wire_pts,
+        frame,
+        &std::collections::HashMap::new(),
+        &[],
+        false,
+    )
+}
+
+/// [`boundary_edges_to_pcurve`] with pave-split edge images applied: a wire
+/// edge the pave machinery split (an EF/EE crossing pave on the operand
+/// boundary) is expanded into its image pieces, so the face splitter sees
+/// the boundary VERTEX at each crossing and can end a partition there.
+/// Without the expansion the outer boundary keeps the unsplit original, the
+/// face cannot partition at its own exit pave, and its sub-faces mismatch
+/// the neighbouring faces' image-split edges along the whole span (the
+/// kumiko z~9.9 missing-face root). Line edges only, mirroring
+/// `rebuild_face_with_edge_images`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
+    topo: &Topology,
+    wire_id: brepkit_topology::wire::WireId,
+    surface: &FaceSurface,
+    wire_pts: &[Point3],
+    frame: Option<&PlaneFrame>,
+    edge_images: &std::collections::HashMap<
+        brepkit_topology::edge::EdgeId,
+        Vec<brepkit_topology::edge::EdgeId>,
+        S,
+    >,
+    anchors: &[Point3],
+    expand_lines: bool,
+) -> Vec<OrientedPCurveEdge> {
+    // Demand-driven: expand an edge only when one of its interior image
+    // junctions sits near a section endpoint (an exit pave a chain must
+    // anchor to). Every other face keeps its unexpanded boundary and stays
+    // byte-identical to the historical behaviour.
+    const ANCHOR_BAND: f64 = 3e-3;
+    // A junction COINCIDENT with a section endpoint (within the weld band)
+    // is already served by the calibrated boundary-splitting machinery —
+    // expanding there perturbs partitions that were correct (the
+    // divider-lip fuse de-analytics). Only a junction the sections point AT
+    // but do not REACH (the operands' own disagreement scale) demands the
+    // expansion.
+    const WELD_BAND: f64 = 1e-5;
     let wire = match topo.wire(wire_id) {
         Ok(w) => w,
         Err(_) => return Vec::new(),
     };
 
-    let mut result = Vec::new();
+    let junction_near_anchor = |imgs: &[brepkit_topology::edge::EdgeId]| -> bool {
+        for w in imgs.windows(2) {
+            let (Ok(e0), Ok(e1)) = (topo.edge(w[0]), topo.edge(w[1])) else {
+                continue;
+            };
+            for vid in [e0.start(), e0.end()] {
+                if (vid == e1.start() || vid == e1.end())
+                    && let Ok(v) = topo.vertex(vid)
+                {
+                    let p = v.point();
+                    if anchors.iter().any(|a| {
+                        let d = (*a - p).length();
+                        d <= ANCHOR_BAND && d > WELD_BAND
+                    }) && !anchors.iter().any(|a| (*a - p).length() <= WELD_BAND)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+
+    // A NURBS boundary arc does NOT split inside the planar arrangement (its
+    // arrangement representation is chord-based), so a section endpoint that
+    // COINCIDES with one of its pave junctions still cannot anchor — the
+    // opposite of the Line case, where coincident junctions are served by the
+    // calibrated boundary-splitting machinery and expansion would perturb it.
+    // Expand a NURBS edge only when a junction is weld-COINCIDENT with a
+    // section endpoint (the coaxial wedge: EF paves the arcs at the exact
+    // crossings and the clip lands the section endpoints on those same
+    // points, agreeing to ~1e-9). Marched sections whose endpoints sit in
+    // the wider anchor band but off the junction (~1e-3, the snapClip
+    // deepened-notch cut) go through their calibrated un-expanded machinery;
+    // expanding there broke that fixture's edge pairing.
+    // Circle-likeness gate: the expansion serves analytic revolve arcs
+    // serialized as NURBS. A marched free-form NURBS boundary (the snapClip
+    // deepened-notch walls) has its own calibrated machinery that expansion
+    // breaks, and it is never a circle: sample five points, fit the circle
+    // through three, and require the rest to sit on it within 1e-6.
+    let nurbs_is_circular = |eid: brepkit_topology::edge::EdgeId| -> bool {
+        let Ok(edge) = topo.edge(eid) else {
+            return false;
+        };
+        let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            return false;
+        };
+        let (sp, ep) = (sv.point(), ev.point());
+        let pts: Vec<Point3> = [0.0, 0.25, 0.5, 0.75, 1.0]
+            .iter()
+            .map(|&f| super::super::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, f))
+            .collect();
+        let (a, b, c) = (pts[0], pts[2], pts[4]);
+        let (u, v) = (b - a, c - a);
+        let w = u.cross(v);
+        let w2 = w.length_squared();
+        if w2 < 1e-18 {
+            return false;
+        }
+        let center = a
+            + (v.cross(w) * u.length_squared() + w.cross(u) * v.length_squared())
+                * (1.0 / (2.0 * w2));
+        let r = (a - center).length();
+        if r < 1e-9 {
+            return false;
+        }
+        pts.iter()
+            .all(|p| ((*p - center).length() - r).abs() <= 1e-6 * r.max(1.0))
+    };
+
+    let junction_in_band_nurbs = |imgs: &[brepkit_topology::edge::EdgeId]| -> bool {
+        for w in imgs.windows(2) {
+            let (Ok(e0), Ok(e1)) = (topo.edge(w[0]), topo.edge(w[1])) else {
+                continue;
+            };
+            for vid in [e0.start(), e0.end()] {
+                if (vid == e1.start() || vid == e1.end())
+                    && let Ok(v) = topo.vertex(vid)
+                {
+                    let p = v.point();
+                    if anchors.iter().any(|a| (*a - p).length() <= WELD_BAND) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+
+    let mut pieces: Vec<(brepkit_topology::edge::EdgeId, bool)> = Vec::new();
     for oe in wire.edges() {
-        let edge = match topo.edge(oe.edge()) {
+        let curve_kind = topo.edge(oe.edge()).map(|e| e.curve().clone()).ok();
+        let is_line = matches!(curve_kind, Some(brepkit_topology::edge::EdgeCurve::Line));
+        let is_nurbs = matches!(
+            curve_kind,
+            Some(brepkit_topology::edge::EdgeCurve::NurbsCurve(_))
+        );
+        match edge_images.get(&oe.edge()) {
+            Some(imgs)
+                if imgs.len() > 1
+                    && ((is_line && expand_lines && junction_near_anchor(imgs))
+                        || (is_nurbs
+                            && nurbs_is_circular(oe.edge())
+                            && junction_in_band_nurbs(imgs))) =>
+            {
+                if oe.is_forward() {
+                    pieces.extend(imgs.iter().map(|&i| (i, true)));
+                } else {
+                    pieces.extend(imgs.iter().rev().map(|&i| (i, false)));
+                }
+            }
+            _ => pieces.push((oe.edge(), oe.is_forward())),
+        }
+    }
+
+    let mut result = Vec::new();
+    for (eid, forward) in pieces {
+        let edge = match topo.edge(eid) {
             Ok(e) => e,
             Err(_) => continue,
         };
-        let start_v = match topo.vertex(if oe.is_forward() {
-            edge.start()
-        } else {
-            edge.end()
-        }) {
+        let start_v = match topo.vertex(if forward { edge.start() } else { edge.end() }) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let end_v = match topo.vertex(if oe.is_forward() {
-            edge.end()
-        } else {
-            edge.start()
-        }) {
+        let end_v = match topo.vertex(if forward { edge.end() } else { edge.start() }) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -109,7 +264,7 @@ pub(super) fn boundary_edges_to_pcurve(
             end_uv,
             start_3d,
             end_3d,
-            forward: oe.is_forward(),
+            forward,
             source_edge_idx: None,
             pave_block_id: None,
         });

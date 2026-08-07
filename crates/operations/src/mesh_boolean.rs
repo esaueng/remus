@@ -82,7 +82,8 @@ impl Default for MeshBooleanLimits {
 ///
 /// # Errors
 /// Returns an error if the operation cannot be completed (e.g. the
-/// intersection of disjoint meshes is empty).
+/// intersection of disjoint meshes is empty), or if the operands exceed the
+/// co-refinement budgets below.
 pub fn mesh_boolean(
     mesh_a: &TriangleMesh,
     mesh_b: &TriangleMesh,
@@ -107,6 +108,7 @@ pub fn mesh_boolean_with_limits(
 ) -> Result<MeshBooleanResult, OperationsError> {
     let triangles_a = mesh_a.indices.len() / 3;
     let triangles_b = mesh_b.indices.len() / 3;
+    log::debug!("mesh_boolean {op:?}: input triangles a={triangles_a} b={triangles_b}");
     ensure_work_limit("input triangles A", triangles_a, limits.max_input_triangles)?;
     ensure_work_limit("input triangles B", triangles_b, limits.max_input_triangles)?;
     if triangles_a == 0 || triangles_b == 0 {
@@ -119,9 +121,11 @@ pub fn mesh_boolean_with_limits(
     let bvh_a = build_triangle_bvh(mesh_a);
     let bvh_b = build_triangle_bvh(mesh_b);
     let pairs = find_intersecting_pairs(mesh_a, &bvh_b, tolerance, limits.max_candidate_pairs)?;
+    log::debug!("mesh_boolean {op:?}: {} intersecting pairs", pairs.len());
 
     // Step 2: Triangle-triangle intersection segments
     let segments = compute_all_intersections(mesh_a, mesh_b, &pairs, tolerance);
+    log::debug!("mesh_boolean {op:?}: step2 {} segments", segments.len());
 
     // Step 3: Conforming re-triangulation of both meshes
     let split_a = split_mesh_conforming(mesh_a, &segments, true, tolerance);
@@ -151,6 +155,10 @@ pub fn mesh_boolean_with_limits(
 
     // Step 5: Assemble result
     let mesh = assemble_result(&split_a, &split_b, &classify_a, &classify_b, op);
+    log::debug!(
+        "mesh_boolean {op:?}: assembled {} tris",
+        mesh.indices.len() / 3
+    );
 
     if mesh.positions.is_empty() {
         return Err(OperationsError::EmptyResult {
@@ -1687,6 +1695,34 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    /// Oversized operands must be REJECTED, not attempted.
+    ///
+    /// On wasm32 an unbounded co-refinement exhausts the 4GB linear-memory cap,
+    /// and the resulting `handle_alloc_error` → `abort()` traps the instance and
+    /// strands its borrow flag — every later call fails with "recursive use of
+    /// an object", with no panic message to explain it. An `Err` is recoverable;
+    /// that abort is not. (Built as bare index/position vectors so the test does
+    /// not allocate a real multi-million-triangle mesh.)
+    #[test]
+    fn oversized_operands_are_rejected_not_attempted() {
+        let mut huge = TriangleMesh::default();
+        huge.positions.push(Point3::new(0.0, 0.0, 0.0));
+        huge.normals.push(Vec3::new(0.0, 0.0, 1.0));
+        huge.indices = vec![0; (MeshBooleanLimits::default().max_input_triangles + 1) * 3];
+
+        let small = tetrahedron_mesh(Point3::new(0.0, 0.0, 0.0), 1.0);
+        let err = mesh_boolean(&huge, &small, BooleanOp::Cut, 1e-7)
+            .expect_err("oversized operands must be rejected");
+        assert!(
+            matches!(
+                &err,
+                OperationsError::InvalidInput { reason }
+                    if reason.contains("work limit exceeded for input triangles A")
+            ),
+            "expected a budget rejection, got: {err}"
+        );
+    }
 
     /// Create a tetrahedron mesh centered at a point.
     fn tetrahedron_mesh(center: Point3, size: f64) -> TriangleMesh {

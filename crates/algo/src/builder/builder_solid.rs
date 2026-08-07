@@ -375,6 +375,26 @@ fn perform_loops(topo: &Topology, faces: &[FaceId]) -> Result<Vec<Vec<FaceId>>, 
         shells.push(shell);
     }
 
+    if std::env::var("BK_SHELLS").is_ok() {
+        for (si, sh) in shells.iter().enumerate() {
+            for &fid in sh {
+                let Ok(f) = topo.face(fid) else { continue };
+                let p = topo.wire(f.outer_wire()).ok().and_then(|w| {
+                    let e = topo.edge(w.edges().first()?.edge()).ok()?;
+                    Some(topo.vertex(e.start()).ok()?.point())
+                });
+                if let Some(p) = p {
+                    log::debug!(
+                        "SHELLS s{si} {fid:?} {} at ({:.3},{:.3},{:.3})",
+                        f.surface().type_tag(),
+                        p.x(),
+                        p.y(),
+                        p.z()
+                    );
+                }
+            }
+        }
+    }
     log::debug!(
         "BuilderSolid: {} shells (sizes: {:?})",
         shells.len(),
@@ -520,7 +540,10 @@ fn face_normal_at(topo: &Topology, face_id: FaceId, point: Point3) -> Option<Vec
 fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> {
     let mut flux = 0.0_f64;
     let mut any = false;
+    let trace = std::env::var("BK_FLUX").is_ok();
     for &fid in faces {
+        // Only meaningful under BK_FLUX; skip the bookkeeping otherwise.
+        let flux_before = if trace { flux } else { 0.0 };
         let Ok(face) = topo.face(fid) else { continue };
         let surface = face.surface();
         if let FaceSurface::Plane { .. } = surface {
@@ -627,9 +650,23 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
                 }
             }
         }
+        if trace {
+            log::debug!(
+                "growth shell FLUX face {fid:?} {} reversed={} d={:.4}",
+                surface.type_tag(),
+                face.is_reversed(),
+                flux - flux_before
+            );
+        }
     }
     if !any || flux.abs() < 1e-9 {
         return None;
+    }
+    if trace {
+        log::debug!(
+            "growth shell FLUX total={flux:.4} -> outward={}",
+            flux > 0.0
+        );
     }
     Some(flux > 0.0)
 }
@@ -1177,6 +1214,40 @@ fn log_open_growth_shell(
             }
         }
     }
+    // Vertex centroid of the whole lump. A BBOX centre is not a usable interior
+    // sample for a non-convex shell (it can sit outside the lump entirely), and
+    // reading one as "the lump's interior" is how a classification probe
+    // silently answers about the wrong region.
+    let mut c = [0.0_f64; 3];
+    let mut nv = 0.0_f64;
+    for &fid in gs {
+        let Ok(f) = topo.face(fid) else { continue };
+        for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+            let Ok(w) = topo.wire(wid) else { continue };
+            for oe in w.edges() {
+                let Ok(e) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                for vid in [e.start(), e.end()] {
+                    if let Ok(v) = topo.vertex(vid) {
+                        let p = v.point();
+                        c[0] += p.x();
+                        c[1] += p.y();
+                        c[2] += p.z();
+                        nv += 1.0;
+                    }
+                }
+            }
+        }
+    }
+    if nv > 0.0 {
+        log::debug!(
+            "growth shell OPENSHELL centroid ({:.4},{:.4},{:.4})",
+            c[0] / nv,
+            c[1] / nv,
+            c[2] / nv
+        );
+    }
     log::debug!(
         "growth shell OPENSHELL faces={} signed_volume={:.6}",
         gs.len(),
@@ -1203,6 +1274,60 @@ fn log_open_growth_shell(
             ),
         }
     }
+    // Per-face samples offset either side of the face along its own normal.
+    // This is the ONLY kind of interior sample that means anything for a
+    // non-convex open shell (a bbox centre or vertex centroid can sit outside
+    // the lump entirely). A legitimate union boundary face has one side inside
+    // the union and the other outside; a face with BOTH sides on the same side
+    // is an internal membrane and should not be in the result.
+    if let Ok(faceopt) = std::env::var("BK_OPEN_SHELL_FACEPTS") {
+        // Offset distance is tunable because a fixed one is not safe on this
+        // geometry: too small and the sample lands ON a coincident operand
+        // surface (OnBoundary, useless), too large and it leaves the local
+        // feature entirely. Read two distances and keep only agreeing verdicts.
+        let d: f64 = faceopt.trim().parse().unwrap_or(0.02);
+        for &fid in gs.iter().take(24) {
+            let Ok(f) = topo.face(fid) else { continue };
+            // Sample the face's INTERIOR, not an edge midpoint. A point on a
+            // boundary edge is not usable: at a convex edge, offsetting
+            // perpendicular to the face exits the material on BOTH sides, which
+            // reads as "this face bounds nothing" for perfectly good faces.
+            let Some(p) = topo.wire(f.outer_wire()).ok().and_then(|w| {
+                let mut acc = [0.0_f64; 3];
+                let mut n = 0.0_f64;
+                for oe in w.edges() {
+                    let e = topo.edge(oe.edge()).ok()?;
+                    for vid in [e.start(), e.end()] {
+                        let q = topo.vertex(vid).ok()?.point();
+                        acc[0] += q.x();
+                        acc[1] += q.y();
+                        acc[2] += q.z();
+                        n += 1.0;
+                    }
+                }
+                (n > 0.0)
+                    .then(|| brepkit_math::vec::Point3::new(acc[0] / n, acc[1] / n, acc[2] / n))
+            }) else {
+                continue;
+            };
+            let (u, v) = f.surface().project_point(p).unwrap_or((0.0, 0.0));
+            let mut n = f.surface().normal(u, v);
+            if f.is_reversed() {
+                n = -n;
+            }
+            let src = face_source.get(&fid).copied().flatten();
+            log::debug!(
+                "OPENSHELL facept {fid:?} src={src:?} plus={:.4},{:.4},{:.4} minus={:.4},{:.4},{:.4}",
+                p.x() + n.x() * d,
+                p.y() + n.y() * d,
+                p.z() + n.z() * d,
+                p.x() - n.x() * d,
+                p.y() - n.y() * d,
+                p.z() - n.z() * d
+            );
+        }
+    }
+
     // What else was SELECTED near the lump? If the missing partners are base
     // faces that were never created, nothing of the base appears here; if they
     // exist but were not walked in, they show up.

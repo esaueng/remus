@@ -248,6 +248,25 @@ pub fn perform(
                 .expanded(tol.linear)
                 .intersects(bbox_b.expanded(tol.linear))
             {
+                if std::env::var("BK_RAWC").is_ok() {
+                    log::debug!(
+                        "RAWC-REJ a[{idx_a}]={} b[{idx_b}]={} A[{:.3},{:.3},{:.3}..{:.3},{:.3},{:.3}] B[{:.3},{:.3},{:.3}..{:.3},{:.3},{:.3}]",
+                        surfs_a[idx_a].type_tag(),
+                        surfs_b[idx_b].type_tag(),
+                        bbox_a.min.x(),
+                        bbox_a.min.y(),
+                        bbox_a.min.z(),
+                        bbox_a.max.x(),
+                        bbox_a.max.y(),
+                        bbox_a.max.z(),
+                        bbox_b.min.x(),
+                        bbox_b.min.y(),
+                        bbox_b.min.z(),
+                        bbox_b.max.x(),
+                        bbox_b.max.y(),
+                        bbox_b.max.z()
+                    );
+                }
                 if traced {
                     log::debug!(
                         "FF_TRACE reject-aabb a={} b={} A[{:.2},{:.2},{:.2}..{:.2},{:.2},{:.2}] B[{:.2},{:.2},{:.2}..{:.2},{:.2},{:.2}]",
@@ -276,6 +295,14 @@ pub fn perform(
             let v_range_b = v_ranges_b[idx_b];
             let raw_curves =
                 compute_raw_curves(surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b)?;
+            if std::env::var("BK_RAWC").is_ok() {
+                log::debug!(
+                    "RAWC a[{idx_a}]={} b[{idx_b}]={} n={}",
+                    surf_a.type_tag(),
+                    surf_b.type_tag(),
+                    raw_curves.len()
+                );
+            }
             // For plane-plane Line curves with all-straight-edge faces, trim
             // each curve to the mutual overlap of the two faces' clipped
             // ranges. Without this the section curve spans the union of both
@@ -538,6 +565,25 @@ pub fn perform(
                             }
                             _ => false,
                         };
+                    }
+                    if traced && std::env::var("BK_F2_TRACE").is_ok() {
+                        let dist = |bb: &Aabb3, p: Point3| -> f64 {
+                            let dx = (bb.min.x() - p.x()).max(0.0).max(p.x() - bb.max.x());
+                            let dy = (bb.min.y() - p.y()).max(0.0).max(p.y() - bb.max.y());
+                            let dz = (bb.min.z() - p.z()).max(0.0).max(p.z() - bb.max.z());
+                            dx.max(dy).max(dz)
+                        };
+                        let da: Vec<f64> = (0..=N).map(|i| dist(&bb_a, sample(i, N))).collect();
+                        let db: Vec<f64> = (0..=N).map(|i| dist(&bb_b, sample(i, N))).collect();
+                        let fmin = |v: &[f64]| v.iter().copied().fold(f64::MAX, f64::min);
+                        log::debug!(
+                            "F2_TRACE drop-candidate {} min_dist_a={:.2e} min_dist_b={:.2e} span=({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3})",
+                            raw.curve.type_tag(),
+                            fmin(&da),
+                            fmin(&db),
+                            raw.p_start.x(), raw.p_start.y(), raw.p_start.z(),
+                            raw.p_end.x(), raw.p_end.y(), raw.p_end.z()
+                        );
                     }
                     let approx_len: f64 = (0..N)
                         .map(|i| (sample(i + 1, N) - sample(i, N)).length())

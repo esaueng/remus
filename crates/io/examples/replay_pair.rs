@@ -11,6 +11,7 @@
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use brepkit_io::arena_io::deserialize_solid;
@@ -25,6 +26,7 @@ fn describe(topo: &Topology, sid: SolidId, label: &str) {
         return;
     };
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
+    let mut users: HashMap<EdgeId, Vec<brepkit_topology::face::FaceId>> = HashMap::new();
     let mut mix: HashMap<&'static str, usize> = HashMap::new();
     for &fid in &faces {
         let Ok(face) = topo.face(fid) else { continue };
@@ -33,29 +35,125 @@ fn describe(topo: &Topology, sid: SolidId, label: &str) {
             let Ok(w) = topo.wire(wid) else { continue };
             for oe in w.edges() {
                 *uses.entry(oe.edge()).or_default() += 1;
+                users.entry(oe.edge()).or_default().push(fid);
             }
         }
     }
     let free = uses.values().filter(|&&c| c == 1).count();
     let over = uses.values().filter(|&&c| c > 2).count();
+    if std::env::var("FREE_EDGES").is_ok() {
+        for (eid, n) in &uses {
+            if *n != 2
+                && let Ok(e) = topo.edge(*eid)
+                && let (Ok(a), Ok(b)) = (topo.vertex(e.start()), topo.vertex(e.end()))
+            {
+                let (a, b) = (a.point(), b.point());
+                let owners: Vec<String> = users
+                    .get(eid)
+                    .into_iter()
+                    .flatten()
+                    .map(|f| {
+                        let tag = topo
+                            .face(*f)
+                            .map(|fc| fc.surface().type_tag())
+                            .unwrap_or("?");
+                        format!("{f:?}:{tag}")
+                    })
+                    .collect();
+                println!(
+                    "  {} edge {eid:?} {} ({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3}) used_by={owners:?}",
+                    if *n == 1 { "FREE" } else { "OVER" },
+                    e.curve().type_tag(),
+                    a.x(),
+                    a.y(),
+                    a.z(),
+                    b.x(),
+                    b.y(),
+                    b.z()
+                );
+                if std::env::var("FREE_EDGES").is_ok_and(|v| v == "2") {
+                    for f in users.get(eid).into_iter().flatten() {
+                        let Ok(fc) = topo.face(*f) else { continue };
+                        let mut lo = [f64::MAX; 3];
+                        let mut hi = [f64::MIN; 3];
+                        let mut nedges = 0;
+                        for wid in
+                            std::iter::once(fc.outer_wire()).chain(fc.inner_wires().iter().copied())
+                        {
+                            let Ok(w) = topo.wire(wid) else { continue };
+                            for oe in w.edges() {
+                                nedges += 1;
+                                let Ok(e2) = topo.edge(oe.edge()) else {
+                                    continue;
+                                };
+                                for vid in [e2.start(), e2.end()] {
+                                    if let Ok(v) = topo.vertex(vid) {
+                                        let p = v.point();
+                                        for (i, c) in [p.x(), p.y(), p.z()].iter().enumerate() {
+                                            lo[i] = lo[i].min(*c);
+                                            hi[i] = hi[i].max(*c);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        println!(
+                            "      owner {f:?} {} rev={} inner={} edges={nedges} bbox=({:.3},{:.3},{:.3})..({:.3},{:.3},{:.3})",
+                            fc.surface().type_tag(),
+                            fc.is_reversed(),
+                            fc.inner_wires().len(),
+                            lo[0],
+                            lo[1],
+                            lo[2],
+                            hi[0],
+                            hi[1],
+                            hi[2]
+                        );
+                    }
+                }
+            }
+        }
+    }
     let mut mix: Vec<_> = mix.into_iter().collect();
     mix.sort_unstable();
-    // `solid_volume` is a magnitude, so an inverted body reads at its correct
-    // positive volume — report the orientation separately rather than inferring
-    // it from a sign this fork's measurement deliberately does not carry.
-    let vol = brepkit_operations::measure::solid_volume(topo, sid, 0.05).unwrap_or(f64::NAN);
-    let inverted = brepkit_operations::measure::solid_is_inverted(topo, sid).unwrap_or(false);
+    let vol =
+        brepkit_operations::measure::oriented_solid_volume(topo, sid, 0.05).unwrap_or(f64::NAN);
+    // TESS_BND=1 additionally tessellates at export tolerance (0.01 mm /
+    // 5 degrees, matching the tool's STL export) and reports mesh boundary
+    // and non-manifold edge counts — the discriminant between a B-Rep leak
+    // and a tessellation-parity leak on a clean B-Rep.
+    let tess = if std::env::var("TESS_BND").is_ok() {
+        match brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+            topo,
+            sid,
+            0.01,
+            5.0_f64.to_radians(),
+        ) {
+            Ok(mesh) => format!(
+                " tess_bnd={} tess_nm={}",
+                brepkit_operations::tessellate::boundary_edge_count(&mesh),
+                brepkit_operations::tessellate::non_manifold_edge_count(&mesh)
+            ),
+            Err(e) => format!(" tess_err={e}"),
+        }
+    } else {
+        String::new()
+    };
     println!(
-        "  {label}: F={} mix={mix:?} free={free} over={over} vol={vol:.3}{}",
-        faces.len(),
-        if inverted { " INVERTED" } else { "" }
+        "  {label}: F={} mix={mix:?} free={free} over={over} vol={vol:.3}{tess}",
+        faces.len()
     );
 }
 
 struct Tap;
 impl log::Log for Tap {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.target().starts_with("brepkit_") && m.level() <= log::Level::Debug
+        let max = if std::env::var("BK_TRACE").is_ok() {
+            log::Level::Trace
+        } else {
+            log::Level::Debug
+        };
+        m.target().starts_with("brepkit_") && m.level() <= max
     }
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
@@ -68,7 +166,11 @@ static TAP: Tap = Tap;
 
 fn main() {
     let _ = log::set_logger(&TAP);
-    log::set_max_level(log::LevelFilter::Debug);
+    log::set_max_level(if std::env::var("BK_TRACE").is_ok() {
+        log::LevelFilter::Trace
+    } else {
+        log::LevelFilter::Debug
+    });
 
     let a_path = PathBuf::from(std::env::var_os("A").expect("A=<path>"));
     let b_path = PathBuf::from(std::env::var_os("B").expect("B=<path>"));
@@ -85,6 +187,44 @@ fn main() {
         "intersect" => brepkit_algo::bop::BooleanOp::Intersect,
         _ => brepkit_algo::bop::BooleanOp::Fuse,
     };
+
+    // POINT_IN=x,y,z classifies a point against BOTH operands with the
+    // independent operations-level oracle. For a Fuse, a face is needed
+    // wherever one side of a surface is inside the union and the other is not.
+    if let Ok(spec) = std::env::var("POINT_IN") {
+        // Semicolon-separated points, so a batch is classified in one process
+        // instead of one process per point.
+        // Deflection matters: classify_point tessellates, and this lattice has
+        // 0.05mm features that a coarse deflection cannot represent, which
+        // makes the verdict itself an artifact of the setting.
+        let defl: f64 = std::env::var("POINT_DEFL")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0.01);
+        for (i, one) in spec.split(';').filter(|t| !t.trim().is_empty()).enumerate() {
+            let c: Vec<f64> = one
+                .split(',')
+                .filter_map(|t| t.trim().parse().ok())
+                .collect();
+            if c.len() != 3 {
+                continue;
+            }
+            let p = brepkit_math::vec::Point3::new(c[0], c[1], c[2]);
+            let mut row = format!("  POINT_IN[{i}] ({:.3},{:.3},{:.3})", c[0], c[1], c[2]);
+            for (label, sid) in [("A", a), ("B", b)] {
+                match brepkit_operations::classify::classify_point(&topo, sid, p, defl, 1e-7) {
+                    Ok(v) => {
+                        let _ = write!(row, "  {label}={v:?}");
+                    }
+                    Err(_) => {
+                        let _ = write!(row, "  {label}=ERR");
+                    }
+                }
+            }
+            println!("{row}");
+        }
+        return;
+    }
 
     // TOOLS=<comma-separated paths> replays a compound_cut, which is how the
     // kumiko wrap chain is actually built; a pairwise replay cannot reach it.

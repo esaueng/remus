@@ -93,6 +93,12 @@ pub struct ValidationOptions {
     /// the strict one; a caller that does not act on the report can turn it
     /// down or off.
     pub orientation: OrientationCheck,
+    /// Check shell orientation consistency: adjacent faces must traverse
+    /// each shared edge in opposite effective senses (is_forward XOR
+    /// is_reversed). Defaults to `true`: construction ops (revolve,
+    /// extrude, sweep, loft, pipe), GFA boolean outputs, and blend bands
+    /// all emit consistent shells (the orientation-emission campaign).
+    pub check_orientation: bool,
 }
 
 impl Default for ValidationOptions {
@@ -102,6 +108,7 @@ impl Default for ValidationOptions {
             orientation: OrientationCheck::Order(
                 brepkit_check::properties::PropertiesOptions::default().gauss_order,
             ),
+            check_orientation: true,
         }
     }
 }
@@ -565,6 +572,31 @@ pub fn validate_solid_with_options(
                     edge.end().index()
                 ),
             });
+        }
+    }
+
+    // Orientation consistency: adjacent faces must traverse a shared edge in
+    // opposite effective senses (is_forward XOR is_reversed). Edge-use
+    // counting alone cannot see this — the mixed-socket bin's body operand
+    // passed every count while 20 shared edges carried same-sense uses,
+    // which surfaced two subsystems later as winding-inverted mesh triangles.
+    // Delegates to the check-crate shell validator per shell.
+    if options.check_orientation {
+        let solid_data = topo.solid(solid)?;
+        let shells = std::iter::once(solid_data.outer_shell())
+            .chain(solid_data.inner_shells().iter().copied())
+            .collect::<Vec<_>>();
+        for shell_id in shells {
+            for issue in brepkit_check::validate::shell::check_shell_orientation(topo, shell_id)
+                .map_err(|e| crate::OperationsError::InvalidInput {
+                    reason: e.to_string(),
+                })?
+            {
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    description: issue.description,
+                });
+            }
         }
     }
 

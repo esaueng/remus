@@ -9,17 +9,17 @@ brepkit uses a strict layered architecture. Each layer may only depend on
 layers below it, never above or sideways.
 
 ```
-┌─────────────────────────────────────┐
-│  L4: brepkit-wasm                   │  WASM bindings (JS API)
-├─────────────────┬───────────────────┤
-│  L3: operations │  L3: io/render    │  Modeling, exchange, rendering
-├─────────────────┴───────────────────┤
-│  L2: algo/blend/check/...           │  Geometry algorithms
-├─────────────────────────────────────┤
-│  L1: topology / geometry            │  B-Rep and geometry ownership
-├─────────────────────────────────────┤
-│  L0: math                           │  Vectors, NURBS, predicates
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  L4: brepkit-wasm          brepkit-render            │  JS API / offscreen GPU
+├──────────────────────────────────────────────────────┤
+│  L3: brepkit-operations    brepkit-io                │  Modeling ops / exchange
+├──────────────────────────────────────────────────────┤
+│  L2: algo  blend  check  heal  offset  sketch        │  Engines
+├──────────────────────────────────────────────────────┤
+│  L1: brepkit-topology      brepkit-geometry          │  B-Rep structures
+├──────────────────────────────────────────────────────┤
+│  L0: brepkit-math                                    │  Vectors, NURBS, predicates
+└──────────────────────────────────────────────────────┘
 ```
 
 ## Layer Rules
@@ -27,16 +27,21 @@ layers below it, never above or sideways.
 | Crate | Layer | Allowed Dependencies |
 |-------|-------|---------------------|
 | `brepkit-math` | L0 | External crates only |
-| `brepkit-topology`, `brepkit-geometry` | L1 | `brepkit-math` |
-| `brepkit-algo`, `brepkit-blend`, `brepkit-check`, `brepkit-heal`, `brepkit-offset` | L2 | Lower layers only |
-| `brepkit-operations`, `brepkit-io`, `brepkit-render` | L3 | Lower layers only |
-| `brepkit-wasm` | L4 | All workspace crates except render |
+| `brepkit-geometry` | L1 | `brepkit-math` |
+| `brepkit-topology` | L1 | `brepkit-math` |
+| `brepkit-algo` | L2 | `math`, `topology` |
+| `brepkit-blend` | L2 | `math`, `topology` |
+| `brepkit-check` | L2 | `math`, `topology`, `geometry` |
+| `brepkit-heal` | L2 | `math`, `topology`, `geometry` |
+| `brepkit-offset` | L2 | `math`, `topology`, `geometry` |
+| `brepkit-sketch` | L2 | External crates only |
+| `brepkit-operations` | L3 | All L0 to L2 crates |
+| `brepkit-io` | L3 | `math`, `topology`, `operations` |
+| `brepkit-wasm` | L4 | All workspace crates |
+| `brepkit-render` | L4 | `math`, `topology`, `operations` |
 
-These rules are enforced by `scripts/check-boundaries.sh`.
-
-`brepkit-render` is an optional native wgpu consumer. It supports offscreen
-RGBA rendering and face-ID picking; it is not included in the browser WASM
-package.
+These rules are enforced by `scripts/check-boundaries.sh`, which runs in CI.
+`brepkit-render` is a leaf: nothing may depend on it.
 
 ## Arena-Based Topology
 
@@ -48,11 +53,23 @@ central `Arena` and referenced by typed index handles. This approach:
 - Makes ownership clear (the arena owns everything)
 - Provides O(1) entity lookup
 
-## NURBS-Native Geometry
+## Analytic Geometry, with NURBS as the General Case
 
-Geometric entities (curves, surfaces) use NURBS as the native
-representation. This means:
+Curves and surfaces are enums, not a single universal representation.
+`FaceSurface` is one of `Plane`, `Cylinder`, `Cone`, `Sphere`, `Torus`, or
+`Nurbs`; `EdgeCurve` is one of `Line`, `Circle`, `Ellipse`, or `NurbsCurve`.
 
-- Exact representation of conics (circles, ellipses) via rational NURBS
-- Uniform algorithms for evaluation, subdivision, and intersection
-- No special-casing for different curve/surface types
+Analytic types are deliberately special-cased rather than collapsed into
+NURBS:
+
+- Operations preserve them. A cylinder cut by a plane stays a `Cylinder`,
+  so face counts stay low across chained booleans instead of growing with
+  every step.
+- Intersections take exact closed-form paths where a pair allows one
+  (see `math/src/analytic_intersection.rs`), falling back to NURBS
+  marching only when no analytic solution exists.
+- STEP export writes them as native surface entities, so a round-trip is
+  lossless rather than an approximation.
+
+NURBS is the general representation that everything can convert into, and
+the one used for free-form geometry. It is the fallback, not the default.

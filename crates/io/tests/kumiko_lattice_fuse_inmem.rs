@@ -75,24 +75,20 @@ fn lattice_band_operands_are_clean_and_outward() {
         assert_eq!(over, 0, "{name}: operand must be manifold, got {over} over");
         assert!(faces > 0, "{name}: operand has no faces");
         assert!(
-            !brepkit_operations::measure::solid_is_inverted(&topo, sid).unwrap(),
+            brepkit_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap() > 0.0,
             "{name}: operand must be OUTWARD oriented"
         );
     }
 }
 
 #[test]
-#[ignore = "ready repro: GFA aborts with 'open growth shell with 67 faces' fusing two clean lattice bands"]
 fn kumiko_lattice_bands_fuse_closed() {
     let mut topo = Topology::new();
     let a = load("kumiko_lattice_band_a.bin", &mut topo);
     let b = load("kumiko_lattice_band_b.bin", &mut topo);
 
-    // Magnitude is sound as a bound here: `lattice_band_operands_are_clean_and_outward`
-    // already pins both operands as outward-oriented, and the result's own
-    // orientation is asserted below.
-    let vol_a = brepkit_operations::measure::solid_volume(&topo, a, 0.01).unwrap();
-    let vol_b = brepkit_operations::measure::solid_volume(&topo, b, 0.01).unwrap();
+    let vol_a = brepkit_operations::measure::oriented_solid_volume(&topo, a, 0.01).unwrap();
+    let vol_b = brepkit_operations::measure::oriented_solid_volume(&topo, b, 0.01).unwrap();
 
     let result = brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, a, b)
         .expect("analytic fuse should not abort");
@@ -101,13 +97,8 @@ fn kumiko_lattice_bands_fuse_closed() {
     assert_eq!(over, 0, "fuse must stay manifold, got {over} over-shared");
     assert_eq!(free, 0, "fuse must be closed, got {free} free edges");
 
-    assert!(
-        !brepkit_operations::measure::solid_is_inverted(&topo, result).unwrap(),
-        "fuse result must be OUTWARD oriented"
-    );
-
     // A union is bounded below by the larger operand and above by their sum.
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
     assert!(
         vol >= vol_a.max(vol_b) - 1.0 && vol <= vol_a + vol_b + 1.0,
         "fuse volume {vol} outside [{}, {}] for {faces} faces",

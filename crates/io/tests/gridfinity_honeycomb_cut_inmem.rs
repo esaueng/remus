@@ -226,8 +226,20 @@ fn honeycomb_cut_residual_documented() {
     // widened to the weld scale. pcut2 IMPROVED 38 -> 28; pcut1 nudged
     // 52 -> 53 (one boundary stitch previously leaned on a projected copy);
     // pcut3 (0) and every production-level test in this file held.
+    //
+    // Re-pinned with the planar outer-wire image expansion + pendant
+    // bridges (the change that closes the kumiko lattice band fuse):
+    // pcut1 raw grew 53 -> 83 and pcut2 28 -> 30 — the same
+    // noise-dependence class as pcut1's earlier re-pins (it leaned on
+    // splits the bridges now resolve differently) — while pcut3 held 0
+    // and every production-level test in this file stayed green.
+    //
+    // Re-pinned with the clean/suspicious conflict re-cast in the ray-cast
+    // classifier (the O-shape chamfer-strip fix): pcut1 IMPROVED 83 -> 50
+    // and pcut2 30 -> 28 (unanimous generic re-casts correcting grazed
+    // cardinal votes), pcut3 held 0, over-shared stayed 0 everywhere.
     let residual_free: &[(&str, usize)] = &[
-        ("a2hcomb_pcut1.bin", 53),
+        ("a2hcomb_pcut1.bin", 50),
         ("a2hcomb_pcut2.bin", 28),
         ("a2hcomb_pcut3.bin", 0),
     ];

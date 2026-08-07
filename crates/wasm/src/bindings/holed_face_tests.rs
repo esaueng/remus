@@ -363,22 +363,18 @@ const VOLUME_DEFLECTION_COARSE: f64 = 5e-4;
 const VOLUME_DEFLECTION_FINE: f64 = 1e-4;
 
 /// `validate_solid` is run too, and asserted against an explicit allow-list
-/// covering EVERY severity, not just `Error`. Extruding a holed face has
-/// always produced (a) one `ShellOrientationConsistent` error, because the
-/// cap↔hole-wall shared edges are traversed the same way by both faces, and
-/// (b) one `FaceOrientationConsistency` warning per hole-wall face, whose
-/// normal opposes its wire winding. Both are pre-existing extrude defects,
-/// reproducible with no wasm in the picture (see
-/// `extruded_annulus_shell_orientation_is_inconsistent`). `hole_walls` is
-/// how many of the warnings are expected — asserting the exact count means a
-/// regression that flips one MORE face inside out still fails the test,
-/// which an "ignore all warnings" filter would not.
+/// covering EVERY severity, not just `Error`. The shell-level orientation
+/// defect is fixed. Line-bounded annuli now report no orientation issues;
+/// ruled NURBS walls in the glyph fixture still report one
+/// `FaceOrientationConsistency` warning per hole-wall face.
+/// `expected_flipped_faces` pins that exact remaining count, so a regression
+/// that flips one more face inside out still fails the test.
 #[allow(clippy::too_many_arguments)]
 fn assert_solid(
     k: &mut BrepKernel,
     solid: u32,
     expected_faces: usize,
-    hole_walls: usize,
+    expected_flipped_faces: usize,
     expected_volume: f64,
     rel_tol: f64,
     deflection: f64,
@@ -421,17 +417,12 @@ fn assert_solid(
     let unexpected: Vec<_> = report
         .issues
         .iter()
-        .filter(|i| {
-            !matches!(
-                i.check,
-                CheckId::ShellOrientationConsistent | CheckId::FaceOrientationConsistency
-            )
-        })
+        .filter(|i| !matches!(i.check, CheckId::FaceOrientationConsistency))
         .collect();
     assert!(
         unexpected.is_empty(),
-        "validate_solid reported issues beyond the two known extrude orientation \
-         defects: {unexpected:?}"
+        "validate_solid reported issues beyond the known NURBS wall orientation \
+         warnings: {unexpected:?}"
     );
     let shell_errors = report
         .issues
@@ -439,8 +430,8 @@ fn assert_solid(
         .filter(|i| i.check == CheckId::ShellOrientationConsistent)
         .count();
     assert_eq!(
-        shell_errors, 1,
-        "expected exactly the one known shell-orientation error, got {shell_errors}: {:?}",
+        shell_errors, 0,
+        "shell orientation must validate cleanly, got {shell_errors} error(s): {:?}",
         report.issues
     );
     let flipped_faces = report
@@ -449,8 +440,8 @@ fn assert_solid(
         .filter(|i| i.check == CheckId::FaceOrientationConsistency)
         .count();
     assert_eq!(
-        flipped_faces, hole_walls,
-        "expected one FaceOrientationConsistency warning per hole wall ({hole_walls}), \
+        flipped_faces, expected_flipped_faces,
+        "expected {expected_flipped_faces} FaceOrientationConsistency warning(s), \
          got {flipped_faces} — a face outside the hole walls has been flipped: {:?}",
         report.issues
     );
@@ -561,7 +552,7 @@ fn annulus_from_wires_extrudes_to_a_watertight_tube() {
         &mut k,
         solid,
         10,
-        4,
+        0,
         expected_volume,
         1e-9,
         0.05,
@@ -584,7 +575,7 @@ fn annulus_via_add_holes_to_face_matches_make_face_from_wires() {
         &mut k,
         solid,
         10,
-        4,
+        0,
         expected_volume,
         1e-9,
         0.05,
@@ -627,7 +618,7 @@ fn annulus_with_two_disjoint_holes_extrudes_cleanly() {
         &mut k,
         solid,
         14,
-        8,
+        0,
         expected_volume,
         1e-9,
         0.05,

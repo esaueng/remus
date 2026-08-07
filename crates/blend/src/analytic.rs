@@ -351,13 +351,16 @@ fn nurbs_line(p0: Point3, p1: Point3) -> Result<NurbsCurve, BlendError> {
     Ok(curve)
 }
 
-/// Compute the dihedral half-angle between two plane normals.
-///
-/// Returns the half-angle in radians. The angle is between 0 and pi/2
-/// for convex edges and pi/2 to pi for concave edges.
+/// Half-angle of the material wedge between two planes, from their inward
+/// normals: `(pi - angle_between_normals) / 2`. The fillet centre sits at
+/// `r / sin(half)` up the bisector and the contacts at `r / tan(half)` from
+/// the edge. Halving the normal angle instead coincides with this only at a
+/// 90-degree dihedral (both give 45) and explodes near tangency: a 178.9-deg
+/// ridge has a wedge half-angle of 89.45 deg (contacts ~r*0.01 from the
+/// edge), not 0.55 deg (contacts 100*r away).
 fn dihedral_half_angle(n1: Vec3, n2: Vec3) -> f64 {
     let cos_angle = n1.dot(n2).clamp(-1.0, 1.0);
-    cos_angle.acos() / 2.0
+    (std::f64::consts::PI - cos_angle.acos()) / 2.0
 }
 
 /// Compute the section plane basis from two plane normals and spine tangent.
@@ -377,6 +380,32 @@ fn section_basis(n1: Vec3, n2: Vec3, spine_tangent: Vec3) -> (Vec3, Vec3) {
         .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
 
     (bisector, cross_dir)
+}
+
+/// The in-plane direction from the spine INTO `face`'s material: the left
+/// side of the face's own traversal of the spine edge (`effective normal x
+/// traversal tangent` under the CCW-outer-wire convention). Returns `None`
+/// when the spine's first edge is not in the face's wires.
+fn material_contact_direction(
+    topo: &Topology,
+    face: FaceId,
+    spine: &Spine,
+    normal: Vec3,
+    tangent: Vec3,
+) -> Option<Vec3> {
+    let spine_edge = *spine.edges().first()?;
+    let f = topo.face(face).ok()?;
+    let n_eff = if f.is_reversed() { -normal } else { normal };
+    for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+        let w = topo.wire(wid).ok()?;
+        for oe in w.edges() {
+            if oe.edge() == spine_edge {
+                let t = if oe.is_forward() { tangent } else { -tangent };
+                return n_eff.cross(t).normalize().ok();
+            }
+        }
+    }
+    None
 }
 
 /// Compute the direction from edge toward contact point on a plane.
@@ -410,6 +439,34 @@ fn midpoint_3d(a: Point3, b: Point3) -> Point3 {
 /// # Errors
 /// Returns `BlendError` if topology lookups or math operations fail.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+/// Signed extent of `face`'s vertices against another plane's inward normal
+/// `n_other`, measured from the spine point `p`. The extreme-magnitude vertex
+/// is the witness: positive means the face reaches into the material side of
+/// the other plane (convex edge), negative means the void side (concave).
+fn material_side_witness(
+    topo: &Topology,
+    face: FaceId,
+    n_other: Vec3,
+    p: Point3,
+) -> Result<f64, BlendError> {
+    let f = topo.face(face)?;
+    let mut wires = vec![f.outer_wire()];
+    wires.extend(f.inner_wires().iter().copied());
+    let mut extreme = 0.0_f64;
+    for wid in wires {
+        for oe in topo.wire(wid)?.edges() {
+            let e = topo.edge(oe.edge())?;
+            for vid in [e.start(), e.end()] {
+                let s = n_other.dot(topo.vertex(vid)?.point() - p);
+                if s.abs() > extreme.abs() {
+                    extreme = s;
+                }
+            }
+        }
+    }
+    Ok(extreme)
+}
+
 fn plane_plane_fillet(
     spine: &Spine,
     topo: &Topology,
@@ -434,6 +491,21 @@ fn plane_plane_fillet(
 
     let (bisector, _cross_dir) = section_basis(n1, n2, tangent);
 
+    // The inward normals alone cannot distinguish a convex edge from a
+    // concave (notch) one — both wedges share the same bounding planes.
+    // The tie-breaker is the faces' extent: a convex neighbour face lies on
+    // the material (inward) side of the other plane, a concave one on the
+    // void side. On a concave edge the fillet centre and contacts sit up the
+    // OUTWARD bisector, and the in-plane contact projections then follow the
+    // real walls instead of their extensions.
+    let w1 = material_side_witness(topo, face1, n2, p_start)?;
+    let w2 = material_side_witness(topo, face2, n1, p_start)?;
+    let bisector = if w1 < -ANALYTIC_TOL_LIN && w2 < -ANALYTIC_TOL_LIN {
+        -bisector
+    } else {
+        bisector
+    };
+
     let center_offset = radius / sin_half;
 
     let cyl_origin = p_start + bisector * center_offset;
@@ -451,7 +523,6 @@ fn plane_plane_fillet(
     let c1_end = p_end + contact_dir1 * contact_offset;
     let c2_start = p_start + contact_dir2 * contact_offset;
     let c2_end = p_end + contact_dir2 * contact_offset;
-
     let contact1 = nurbs_line(c1_start, c1_end)?;
     let contact2 = nurbs_line(c2_start, c2_end)?;
 
@@ -540,8 +611,18 @@ fn plane_plane_chamfer(
 
     let (bisector, _cross_dir) = section_basis(n1, n2, tangent);
 
-    let contact_dir1 = compute_contact_direction(n1, bisector);
-    let contact_dir2 = compute_contact_direction(n2, bisector);
+    // Material-oriented contact directions: the bisector projection points
+    // INTO each face's material only on a CONVEX edge — on a concave edge it
+    // flips onto the faces' extensions, placing the contacts on the external
+    // tangent branch (a 0.02 chamfer on a reflex notch grew the solid by
+    // 6.7%). The exact, convexity-independent direction is the wire-traversal
+    // left side (`effective_normal x traversal_tangent` for a CCW-wound
+    // face); the bisector projection remains the fallback when the spine
+    // edge is not found in a face's wires.
+    let contact_dir1 = material_contact_direction(topo, face1, spine, n1, tangent)
+        .unwrap_or_else(|| compute_contact_direction(n1, bisector));
+    let contact_dir2 = material_contact_direction(topo, face2, spine, n2, tangent)
+        .unwrap_or_else(|| compute_contact_direction(n2, bisector));
 
     let c1_start = p_start + contact_dir1 * d1;
     let c1_end = p_end + contact_dir1 * d1;

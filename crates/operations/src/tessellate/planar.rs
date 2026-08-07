@@ -725,6 +725,14 @@ pub(super) fn tessellate_planar(
         let indices: Box<dyn Iterator<Item = usize>> = if forward {
             Box::new(0..n_samples)
         } else {
+            // Reversed traversal walks t_end -> t_start; the [traversal
+            // start, traversal end) convention therefore needs indices
+            // n..=1, not (0..n).rev(): excluding t_end here dropped the
+            // junction vertex with the PREVIOUS edge (nobody else supplies
+            // it), and the CDT outline then shortcut the polygon corner
+            // with a chord whose area bite scales with the neighbour
+            // edge's length. t_start is excluded instead - the next edge
+            // supplies it, same as the forward case.
             Box::new((1..=n_samples).rev())
         };
         for i in indices {
@@ -1638,11 +1646,15 @@ pub(super) fn tessellate_planar_shared_with_holes(
 
 /// Pure CDT computation for parallel execution across faces.
 #[allow(clippy::too_many_lines)]
+/// Triangles (indices into the input points, then into the Steiner list)
+/// plus the Steiner points constraint recovery inserted.
+pub(super) type PlanarCdtOutput = (Vec<(usize, usize, usize)>, Vec<brepkit_math::vec::Point2>);
+
 pub(super) fn run_planar_cdt(
     pts2d: &[brepkit_math::vec::Point2],
     outer_count: usize,
     inner_wire_ranges: &[(usize, usize)],
-) -> Result<Vec<(usize, usize, usize)>, crate::OperationsError> {
+) -> Result<PlanarCdtOutput, crate::OperationsError> {
     use brepkit_math::cdt::Cdt;
 
     let bounds = compute_cdt_bounds(pts2d);
@@ -1707,16 +1719,27 @@ pub(super) fn run_planar_cdt(
         cdt_to_input.entry(cdt_idx).or_insert(input_idx);
     }
 
+    // Constraint recovery may have inserted Steiner points (midpoint splits
+    // of a constraint whose flip recovery stalled). Triangles touching them
+    // must NOT be dropped — that leaves a fan-shaped hole in the face — so
+    // Steiner vertices are appended after the input points and returned to
+    // the caller for 3D lifting.
+    let mut steiner: Vec<brepkit_math::vec::Point2> = Vec::new();
     let mut result = Vec::with_capacity(cdt_triangles.len());
     for &(v0, v1, v2) in &cdt_triangles {
-        if let (Some(&i0), Some(&i1), Some(&i2)) = (
-            cdt_to_input.get(&v0),
-            cdt_to_input.get(&v1),
-            cdt_to_input.get(&v2),
-        ) {
-            result.push((i0, i1, i2));
+        let mut ids = [0usize; 3];
+        for (slot, &cv) in ids.iter_mut().zip([v0, v1, v2].iter()) {
+            *slot = if let Some(&input_idx) = cdt_to_input.get(&cv) {
+                input_idx
+            } else {
+                let idx = pts2d.len() + steiner.len();
+                steiner.push(cdt.vertices()[cv]);
+                cdt_to_input.insert(cv, idx);
+                idx
+            };
         }
+        result.push((ids[0], ids[1], ids[2]));
     }
 
-    Ok(result)
+    Ok((result, steiner))
 }

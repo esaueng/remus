@@ -14,7 +14,7 @@ Solid modeling kernel for Rust and WebAssembly.
 
 </div>
 
-One exact-geometry engine, from Rust and from JavaScript. Drill a hole, measure it, export it.
+One exact-geometry engine, from Rust and from JavaScript. Cut a solid, measure it, export it.
 
 ```rust
 use brepkit_operations::primitives::{make_box, make_cylinder};
@@ -25,14 +25,15 @@ use brepkit_topology::Topology;
 
 let mut topo = Topology::new();
 
-// A block with a cylindrical hole
+// Primitives are anchored at the origin, so this cylinder rounds off the
+// block's corner. Use `transform_solid` to place it somewhere else.
 let block = make_box(&mut topo, 30.0, 20.0, 10.0)?;
-let hole = make_cylinder(&mut topo, 5.0, 15.0)?;
-let drilled = boolean(&mut topo, BooleanOp::Cut, block, hole)?;
+let cutter = make_cylinder(&mut topo, 5.0, 15.0)?;
+let notched = boolean(&mut topo, BooleanOp::Cut, block, cutter)?;
 
 // Measure and export
-let vol = solid_volume(&topo, drilled, 0.1)?;
-let step = write_step(&topo, &[drilled])?;
+let vol = solid_volume(&topo, notched, 0.1)?;
+let step = write_step(&topo, &[notched])?;
 ```
 
 ```js
@@ -40,14 +41,15 @@ import { BrepKernel } from 'brepkit-wasm';
 
 const kernel = new BrepKernel();
 
-// A block with a cylindrical hole
+// Primitives are anchored at the origin, so this cylinder rounds off the
+// block's corner. Use `transformSolid` to place it somewhere else.
 const block = kernel.makeBox(30, 20, 10);
-const hole = kernel.makeCylinder(5, 15);
-const drilled = kernel.cut(block, hole);
+const cutter = kernel.makeCylinder(5, 15);
+const notched = kernel.cut(block, cutter);
 
 // Measure and export
-const vol = kernel.volume(drilled, 0.1);
-const step = kernel.exportStep(drilled); // Uint8Array
+const vol = kernel.volume(notched, 0.1);
+const step = kernel.exportStep(notched); // Uint8Array
 ```
 
 ## Why a CAD kernel?
@@ -103,6 +105,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Beta         |
 | **Evolution**           | Face provenance through booleans                                             | Beta         |
 | **Defeaturing**         | Remove planar faces                                                          | Beta         |
+| **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`brepkit-render`)        | Experimental |
 
 ## Known Limitations
 
@@ -122,7 +125,7 @@ documented in [WASM face evolution](docs/wasm-face-evolution.md).
 
 brepkit deliberately does not:
 
-- **Render scenes or manage viewports.** It produces geometry and tessellated meshes. Camera, lighting, and shading belong to the caller (Three.js, wgpu, and the like).
+- **Bundle a viewport into the kernel.** The core emits exact geometry and tessellated meshes; camera, lighting, and shading belong to the caller (Three.js and the like). The optional `brepkit-render` crate provides offscreen wgpu rendering with a face-id buffer, for tests and headless verification, and is not required by any core operation.
 - **Plan toolpaths or slice.** Export STEP, STL, or 3MF and pass the output to a CAM tool or slicer.
 - **Model with meshes.** The kernel operates on exact B-Rep geometry. Subdivision surfaces, polygon meshes, and voxels are out of scope.
 - **Provide a GUI.** brepkit is a library. Building a UI around it, like [gridfinitylayouttool.com](https://gridfinitylayouttool.com), is the application's job.
@@ -146,25 +149,27 @@ Layered Cargo workspace. Each crate depends only on the same or lower layers, an
 | L3    | `brepkit-operations` | Booleans, fillet, chamfer, extrude, revolve, sweep, loft, shell, offset, measure, tessellation      |
 | L3    | `brepkit-io`         | Import and export: STEP, IGES, STL, 3MF, OBJ, PLY, glTF                                             |
 | L4    | `brepkit-wasm`       | JavaScript API via wasm-bindgen, with batch execution and checkpoint/restore                        |
+| L4    | `brepkit-render`     | Offscreen wgpu rendering to a color image plus a face-id buffer. Optional, nothing depends on it    |
 
 ## Performance
 
 Median times from the [brepjs benchmark suite](https://github.com/andymai/brepjs/tree/main/benchmarks) (5 iterations, Node.js, Linux x86_64). WASM is single-threaded. Native benchmarks use criterion.
 
-| Operation                    | brepkit (WASM) | OCCT (WASM) | Speedup | brepkit (native) |
-| ---------------------------- | -------------- | ----------- | ------- | ---------------- |
-| fuse(box, box) (×10)         | 0.5 ms         | 43.3 ms     | 87x     | 122 µs           |
-| cut(box, cylinder) (×10)     | 59.6 ms        | 72.0 ms     | 1.2x    | 24.1 ms          |
-| intersect(box, sphere) (×10) | 0.3 ms         | 62.6 ms     | 209x    | 104 µs           |
-| box + chamfer                | 0.1 ms         | 5.6 ms      | 56x     | 44 µs            |
-| box + fillet                 | 0.3 ms         | 6.3 ms      | 21x     | 73 µs            |
-| multi-boolean (16 holes)     | 7.0 ms         | 31.2 ms     | 4.5x    | 4.1 ms           |
-| mesh sphere (tol=0.01)       | 33.4 ms        | 49.7 ms     | 1.5x    | 1.5 ms           |
-| exportSTEP (×10)             | 1.1 ms         | 18.6 ms     | 17x     | n/a              |
+| Operation                | brepkit (WASM) | OCCT (WASM) | Speedup | brepkit (native) |
+| ------------------------ | -------------- | ----------- | ------- | ---------------- |
+| fuse(box, box) (×10)     | 0.5 ms         | 43.7 ms     | 87x     | 122 µs           |
+| cut(box, cylinder) (×10) | 28.3 ms        | 64.3 ms     | 2.3x    | 9.3 ms           |
+| box + chamfer            | 0.2 ms         | 5.4 ms      | 27x     | 46 µs            |
+| box + fillet             | 0.3 ms         | 6.2 ms      | 21x     | 127 µs           |
+| multi-boolean (16 holes) | 4.7 ms         | 30.1 ms     | 6.4x    | 2.8 ms           |
+| mesh sphere (tol=0.01)   | 7.1 ms         | 51.9 ms     | 7.3x    | 6.0 ms           |
+| exportSTEP (×10)         | 0.9 ms         | 14.3 ms     | 16x     | n/a              |
 
-Booleans preserve analytic surfaces, so face counts stay low across chained operations. A nine-step compound boolean settles at 72 faces while a mesh-based approach would reach roughly 7,000.
+Every quoted row is output-verified across both kernels before timing is compared: fuse, chamfer, and sphere volumes match exactly; cut, fillet, and multi-boolean volumes agree within 0.004%. The sphere mesh densities are comparable at equal tolerance (9,800 triangles vs 10,176). The `intersect(box, sphere)` row is excluded: brepkit currently keeps the wrong sphere region for that configuration (an open, pinned defect), so its ~200x timing would not be a like-for-like comparison.
 
-> The OCCT comparison uses [occt-wasm](https://www.npmjs.com/package/occt-wasm), an OpenCASCADE build compiled to WebAssembly. Both kernels run single-threaded in Node.js. Boolean and `exportSTEP` rows are timed as batches of ten operations. Native benchmarks: `cargo bench -p brepkit-operations --bench cad_operations`. Full benchmark source: [brepjs/benchmarks](https://github.com/andymai/brepjs/tree/main/benchmarks). Measured 2026-06-23.
+Booleans preserve analytic surfaces, so face counts stay low across chained operations. A nine-step compound boolean settles at 72 faces while a mesh-based approach would reach roughly 7,000. The same holds for blends: a straight edge filleted between two planar faces keeps an exact cylindrical wall rather than a NURBS approximation of one.
+
+> The OCCT comparison uses [occt-wasm](https://www.npmjs.com/package/occt-wasm), an OpenCASCADE build compiled to WebAssembly. Both kernels run single-threaded in Node.js. Boolean and `exportSTEP` rows are timed as batches of ten operations. WASM figures are medians of `kernel-comparison.bench.test.ts` (5 iterations) against a local `cargo xtask wasm-build` package, hash-verified at the require path. Native figures: `cargo bench -p brepkit-operations --bench cad_operations`, except the mesh-sphere row, which is measured at the same parameters as the WASM row (`tessellate_solid_with_tolerance`, deflection 0.01, angular 0.1 rad) via `crates/operations/examples/perf_probe.rs` — the criterion suite's sphere case meshes per-face and is not comparable. Full benchmark source: [brepjs/benchmarks](https://github.com/andymai/brepjs/tree/main/benchmarks). Measured 2026-08-06 on brepkit main (post-2.129.8, with the display-sphere tessellation fix).
 
 ## Data Exchange
 

@@ -55,7 +55,7 @@ family both replayed with ZERO mesh fallbacks — the roots were in tessellation
 shared-rim meshing, and face orientation. Before assuming GFA, capture the actual
 boolean traffic with the probe kernel (branch `probe/boolean-capture`, local-only:
 `telemetry` hook in `operations::boolean`, wasm `probeEnableCapture`/`probeSummary`
-bindings, replay driver `crates/io/examples/replay_captures.rs`) and replay the
+bindings, replay driver `crates/io/examples/replay_pair.rs`) and replay the
 operands natively. Also: the tool's `*.scenario.*` snapshot tests pin EXACT
 reference-kernel triangle counts — a different kernel can never match them; treat
 received-below-expected as benign density difference, received-10x-above as a defect.
@@ -520,8 +520,8 @@ Final residual (floor lens's co-endpoint rim-arc + tool-chord collapsing in
 `merge_duplicate_edges` — the merge-key UNBUILDABLE class) closed by the SANCTIONED
 splitter-side midpoint split of the minor lens arc (`try_split_disk_by_chords`; the
 existing `split_arc_edges_at_collinear_vertices` propagates the cut to the shared cylinder
-rim — no two-site coordination; NOT a merge-key change). Synthetic pocket-notch repro
-`crates/io/examples/replay_synthbox.rs` now posBad=0 on ALL cases. Distinct from the
+rim — no two-site coordination; NOT a merge-key change). The synthetic pocket-notch
+repro now has posBad=0 on ALL cases. Distinct from the
 snapClip deepened-notch pave-bypass root above.
 **SCOPE CORRECTION (2026-07-18 tool re-probe, 2.126.17 overlay):** "CLOSED" = the ENGINE
 sub-class (cylinder-pocket-notch / disc-chord), foil-safe (27/0) and NO tool regression

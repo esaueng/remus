@@ -56,6 +56,20 @@ enum FaceGeom {
         v_max: f64,
         u_gap: Option<(f64, f64)>,
     },
+    /// A toroidal face covering the full major (u) revolution: either the
+    /// whole torus (degenerate fundamental-polygon boundary — previously
+    /// dropped from parity counting entirely) or a tube-angle band bounded
+    /// by full rim circles. Crossings come from the residual-verified
+    /// ray/torus quartic in `brepkit_math`, filtered to the tube-angle band.
+    /// The flat polygon fallback mis-counts against the doubly-curved
+    /// surface (up to four real crossings per ray).
+    Torus {
+        surface: brepkit_math::surfaces::ToroidalSurface,
+        /// Tube-angle band as `(v_start, span)` with `span` in `(0, TAU)`,
+        /// membership tested periodically from `v_start`. `None` = the full
+        /// tube (whole torus).
+        v_band: Option<(f64, f64)>,
+    },
 }
 
 /// Classify a point by ray casting against the solid's faces.
@@ -221,10 +235,9 @@ fn votes_from_geoms(face_data: &[FaceGeom], point: Point3) -> Result<u8, AlgoErr
     // fires when ALL THREE cardinal rays are suspicious.
     let traced = ray_trace_target().is_some_and(|(t, r)| (point - t).length() <= r);
 
-    let vote = |dirs: &[Vec3; 3], label: &str| -> (u8, u8) {
-        let mut inside_votes = 0u8;
-        let mut suspicious_rays = 0u8;
-        for ray_dir in dirs {
+    let vote = |dirs: &[Vec3; 3], label: &str| -> [(bool, bool); 3] {
+        let mut rays = [(false, false); 3];
+        for (i, ray_dir) in dirs.iter().enumerate() {
             let mut crossings = 0i32;
             let mut suspicious = false;
             for geom in face_data {
@@ -232,12 +245,7 @@ fn votes_from_geoms(face_data: &[FaceGeom], point: Point3) -> Result<u8, AlgoErr
                 crossings += c;
                 suspicious |= s;
             }
-            if crossings % 2 != 0 {
-                inside_votes += 1;
-            }
-            if suspicious {
-                suspicious_rays += 1;
-            }
+            rays[i] = (crossings % 2 != 0, suspicious);
             if traced {
                 log::debug!(
                     "RAYTRACE {label} dir=({:.3},{:.3},{:.3}) crossings={crossings} parity={} suspicious={suspicious}",
@@ -248,19 +256,61 @@ fn votes_from_geoms(face_data: &[FaceGeom], point: Point3) -> Result<u8, AlgoErr
                 );
             }
         }
-        (inside_votes, suspicious_rays)
+        rays
     };
+    let count_inside = |rays: &[(bool, bool); 3]| rays.iter().filter(|r| r.0).count() as u8;
 
-    let (cardinal, suspicious) = vote(&cardinal_dirs, "cardinal");
+    let rays = vote(&cardinal_dirs, "cardinal");
+    let cardinal = count_inside(&rays);
+    let suspicious = rays.iter().filter(|r| r.1).count() as u8;
+    // Clean/suspicious conflict: a clean ray's parity is trustworthy while a
+    // suspicious ray's is unreliable by its own report, so a suspicious pair
+    // must not silently outvote a clean minority (the O-shape chamfer strip:
+    // an interior sample lying in an opposing rim plane sends both horizontal
+    // rays grazing that structure, each losing a crossing and voting Inside
+    // against the clean vertical ray's Outside). On that signature, re-cast
+    // with the generic directions — but adopt the re-cast ONLY when it is
+    // unanimous. In exact arithmetic every ray from one point has the same
+    // parity, so a split generic vote proves the neighborhood defeats the
+    // crossing counter (suspicion detection has false negatives: a honeycomb
+    // landscape produced three CLEAN generic rays voting 2/1) and the
+    // calibrated historic verdict stands. Mixed suspicious votes or any
+    // suspicious ray agreeing with the clean verdict keep the historic result
+    // outright.
+    let clean_verdicts: Vec<bool> = rays.iter().filter(|r| !r.1).map(|r| r.0).collect();
+    let clean_vs_suspicious_conflict = suspicious > 0
+        && !clean_verdicts.is_empty()
+        && clean_verdicts.iter().all(|&v| v == clean_verdicts[0])
+        && rays
+            .iter()
+            .filter(|r| r.1)
+            .all(|r| r.0 != clean_verdicts[0]);
     if traced {
         log::debug!(
-            "RAYTRACE point=({:.3},{:.3},{:.3}) faces={} cardinal_inside={cardinal} suspicious={suspicious} recast={}",
+            "RAYTRACE point=({:.3},{:.3},{:.3}) faces={} cardinal_inside={cardinal} suspicious={suspicious} conflict={clean_vs_suspicious_conflict}",
             point.x(),
             point.y(),
             point.z(),
             face_data.len(),
-            suspicious >= 3
         );
+    }
+    if clean_vs_suspicious_conflict {
+        let generic = vote(&generic_dirs, "generic");
+        let inside = count_inside(&generic);
+        if std::env::var("BK_CONFLICT").is_ok() {
+            log::debug!(
+                "CONFLICT pt=({:.4},{:.4},{:.4}) cardinal={cardinal} generic={inside} generic_susp={} clean_verdict={}",
+                point.x(),
+                point.y(),
+                point.z(),
+                generic.iter().filter(|r| r.1).count(),
+                clean_verdicts[0]
+            );
+        }
+        if inside == 0 || inside == 3 {
+            return Ok(inside);
+        }
+        return Ok(cardinal);
     }
     if suspicious < 3 {
         return Ok(cardinal);
@@ -269,8 +319,8 @@ fn votes_from_geoms(face_data: &[FaceGeom], point: Point3) -> Result<u8, AlgoErr
     // when both instruments graze degenerate structure there is no cleaner
     // signal left, and the generic directions are still the less-aligned,
     // better-conditioned of the two.
-    let (generic, _) = vote(&generic_dirs, "generic");
-    Ok(generic)
+    let generic = vote(&generic_dirs, "generic");
+    Ok(count_inside(&generic))
 }
 
 /// Distance from a point to the closed polyline through `verts`.
@@ -518,6 +568,82 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
             }
         }
 
+        // Toroidal faces without inner wires: the whole torus (degenerate
+        // fundamental-polygon boundary yields < 3 distinct polygon points and
+        // previously fell out of parity counting entirely) or a full-major-
+        // revolution tube band bounded by rim circles. Partial-u patches keep
+        // the polygon fallback.
+        if let brepkit_topology::face::FaceSurface::Torus(t) = face.surface()
+            && face.inner_wires().is_empty()
+        {
+            use std::f64::consts::TAU;
+            let verts = wire_polygon(topo, face.outer_wire())?;
+            if verts.len() < 3 {
+                // Degenerate boundary: the untrimmed whole torus.
+                result.push(FaceGeom::Torus {
+                    surface: t.clone(),
+                    v_band: None,
+                });
+                continue;
+            }
+            let wire = topo.wire(face.outer_wire())?;
+            let mut has_closed_circle = false;
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge())?;
+                if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Circle(_))
+                    && edge.start() == edge.end()
+                {
+                    has_closed_circle = true;
+                    break;
+                }
+            }
+            if has_closed_circle {
+                // Band gated on full u coverage: the boundary must sweep the
+                // whole major revolution, else the patch keeps the fallback.
+                let mut us: Vec<f64> = Vec::with_capacity(verts.len());
+                let mut vs: Vec<f64> = Vec::with_capacity(verts.len());
+                for p in &verts {
+                    let (u, v) = t.project_point(*p);
+                    us.push(u.rem_euclid(TAU));
+                    vs.push(v.rem_euclid(TAU));
+                }
+                // Full major revolution iff the sampled boundary leaves no
+                // large angular gap (a genuine partial patch leaves at least
+                // its own missing arc; sampled rim circles leave only the
+                // inter-sample spacing).
+                us.sort_unstable_by(f64::total_cmp);
+                let mut u_gap = -1.0_f64;
+                for i in 0..us.len() {
+                    let next = us[(i + 1) % us.len()];
+                    u_gap = u_gap.max((next - us[i]).rem_euclid(TAU));
+                }
+                if u_gap <= 1.0 {
+                    // Tube coverage from the periodic v samples. Boundary
+                    // samples fully covering the tube (a seam-only boundary)
+                    // OR collapsing to a single v (a full tube cut along one
+                    // rim circle) both mean the face spans the whole tube. A
+                    // two-rim band is SIDE-AMBIGUOUS from boundary vertices
+                    // alone (the rims bound either half), so it keeps the
+                    // polygon fallback rather than guessing.
+                    vs.sort_unstable_by(f64::total_cmp);
+                    let mut gap = -1.0_f64;
+                    for i in 0..vs.len() {
+                        let next = vs[(i + 1) % vs.len()];
+                        let d = (next - vs[i]).rem_euclid(TAU);
+                        gap = gap.max(d);
+                    }
+                    let span = TAU - gap;
+                    if gap <= 1e-3 || span <= 1e-3 {
+                        result.push(FaceGeom::Torus {
+                            surface: t.clone(),
+                            v_band: None,
+                        });
+                        continue;
+                    }
+                }
+            }
+        }
+
         let verts = wire_polygon(topo, face.outer_wire())?;
         if verts.len() < 3 {
             continue;
@@ -636,6 +762,9 @@ fn ray_geom_crossings(
             v_max,
             u_gap,
         } => ray_cone_crossings(origin, ray_dir, surface, (*v_min, *v_max), *u_gap, tol),
+        FaceGeom::Torus { surface, v_band } => {
+            ray_torus_crossings(origin, ray_dir, surface, *v_band, tol)
+        }
     }
 }
 
@@ -773,6 +902,59 @@ fn near_gap_border(u: f64, gap: (f64, f64), eps: f64) -> bool {
         }
     }
     false
+}
+
+/// Count ray crossings with a full-major-revolution toroidal face.
+///
+/// Roots come from the residual-verified ray/torus quartic in
+/// `brepkit_math`; each accepted root's tube angle must fall inside the
+/// face's periodic `v_band` (`None` accepts the whole tube). Near-tangent
+/// root pairs and hits near the band borders flag the ray as unreliable,
+/// mirroring the cylinder/cone grazing conventions.
+fn ray_torus_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    surface: &brepkit_math::surfaces::ToroidalSurface,
+    v_band: Option<(f64, f64)>,
+    tol: Tolerance,
+) -> (i32, bool) {
+    use std::f64::consts::TAU;
+    let near = 10.0 * tol.linear;
+    let Ok(dir) = ray_dir.normalize() else {
+        return (0, false);
+    };
+    let roots = brepkit_math::analytic_intersection::intersect_line_torus(surface, origin, dir);
+    let near_angle = near / surface.minor_radius().max(near);
+    let mut crossings = 0;
+    let mut suspicious = false;
+    for (i, &t) in roots.iter().enumerate() {
+        if t <= tol.linear {
+            continue;
+        }
+        // A close root pair is a graze: its two crossings cancel in parity
+        // only if BOTH land in the band, so flag the ray instead of trusting
+        // the count.
+        for &t2 in &roots[i + 1..] {
+            if (t2 - t).abs() <= near {
+                suspicious = true;
+            }
+        }
+        if let Some((v_start, span)) = v_band {
+            let hit = Point3::new(
+                origin.x() + dir.x() * t,
+                origin.y() + dir.y() * t,
+                origin.z() + dir.z() * t,
+            );
+            let (_, v) = surface.project_point(hit);
+            let vv = (v - v_start).rem_euclid(TAU);
+            suspicious |= vv <= near_angle || (span - vv).abs() <= near_angle;
+            if vv > span {
+                continue;
+            }
+        }
+        crossings += 1;
+    }
+    (crossings, suspicious)
 }
 
 /// Count ray crossings with a bounded conical face.
@@ -1081,6 +1263,41 @@ mod tests {
         ));
         let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
         topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    #[test]
+    fn whole_torus_classifies_inside_and_outside() {
+        use brepkit_math::surfaces::ToroidalSurface;
+        // Whole torus R=3 r=1 about Z at the origin: a single face with a
+        // degenerate point-seam boundary (the untrimmed fundamental polygon).
+        let mut topo = Topology::default();
+        let t = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let seam_p = t.evaluate(0.0, 0.0);
+        let v0 = topo.add_vertex(Vertex::new(seam_p, 1e-7));
+        let circle = brepkit_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+        )
+        .unwrap();
+        let e = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(t)));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+        // In the tube: on the spine circle.
+        let inside = classify_ray_cast(&topo, solid, Point3::new(3.0, 0.0, 0.0)).unwrap();
+        assert_eq!(inside, crate::builder::face_class::FaceClass::Inside);
+        // The donut hole is OUTSIDE the solid.
+        let hole = classify_ray_cast(&topo, solid, Point3::new(0.0, 0.0, 0.0)).unwrap();
+        assert_eq!(hole, crate::builder::face_class::FaceClass::Outside);
+        // Beyond the outer equator.
+        let out = classify_ray_cast(&topo, solid, Point3::new(6.0, 0.0, 0.0)).unwrap();
+        assert_eq!(out, crate::builder::face_class::FaceClass::Outside);
+        // Above the tube.
+        let above = classify_ray_cast(&topo, solid, Point3::new(3.0, 0.0, 2.0)).unwrap();
+        assert_eq!(above, crate::builder::face_class::FaceClass::Outside);
     }
 
     #[test]

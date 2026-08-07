@@ -921,7 +921,9 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
         };
     }
 
-    // Fan triangulation from vertex 0
+    // Fan triangulation from vertex 0 with signed triangle areas. For a
+    // nonconvex polygon, triangles that cross a notch must cancel instead of
+    // adding their absolute area.
     let mut area = 0.0;
     let mut vol = 0.0;
     let mut mx = 0.0;
@@ -946,7 +948,8 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
             ab.z() * ac.x() - ab.x() * ac.z(),
             ab.x() * ac.y() - ab.y() * ac.x(),
         );
-        let tri_area = cross.length() * 0.5;
+        let tri_area = cross.dot(normal) * 0.5;
+        let tri_sign = tri_area.signum();
         area += tri_area;
 
         // Volume contribution: (1/3) * centroid dot normal * area
@@ -989,33 +992,40 @@ fn integrate_planar_polygon(polygon: &[Point3], normal: Vec3) -> FaceContributio
 
         // Raw second moments and products via the divergence theorem. The
         // four-point Hammer rule used here is exact for the cubic monomials.
-        qxx += normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(3)) / 3.0;
-        qyy += normal.y() * triangle_cubic_integral(a, b, c, |p| p.y().powi(3)) / 3.0;
-        qzz += normal.z() * triangle_cubic_integral(a, b, c, |p| p.z().powi(3)) / 3.0;
-        qxy += normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(2) * p.y()) / 2.0;
-        qxz += normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(2) * p.z()) / 2.0;
-        qyz += normal.y() * triangle_cubic_integral(a, b, c, |p| p.y().powi(2) * p.z()) / 2.0;
+        qxx += tri_sign * normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(3)) / 3.0;
+        qyy += tri_sign * normal.y() * triangle_cubic_integral(a, b, c, |p| p.y().powi(3)) / 3.0;
+        qzz += tri_sign * normal.z() * triangle_cubic_integral(a, b, c, |p| p.z().powi(3)) / 3.0;
+        qxy += tri_sign * normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(2) * p.y())
+            / 2.0;
+        qxz += tri_sign * normal.x() * triangle_cubic_integral(a, b, c, |p| p.x().powi(2) * p.z())
+            / 2.0;
+        qyz += tri_sign * normal.y() * triangle_cubic_integral(a, b, c, |p| p.y().powi(2) * p.z())
+            / 2.0;
 
         cx += centroid.x() * tri_area;
         cy += centroid.y() * tri_area;
         cz += centroid.z() * tri_area;
     }
 
+    // A polygon wound clockwise about `normal` nets a negative signed area;
+    // flip every accumulated quantity so callers keep the positive-area
+    // contract while all first and second volume moments stay consistent.
+    let flip = if area < 0.0 { -1.0 } else { 1.0 };
     FaceContribution {
-        area,
-        volume: vol,
-        volume_moment_x: mx,
-        volume_moment_y: my,
-        volume_moment_z: mz,
-        volume_second_x: qxx,
-        volume_second_y: qyy,
-        volume_second_z: qzz,
-        volume_product_xy: qxy,
-        volume_product_xz: qxz,
-        volume_product_yz: qyz,
-        centroid_x: cx,
-        centroid_y: cy,
-        centroid_z: cz,
+        area: area * flip,
+        volume: vol * flip,
+        volume_moment_x: mx * flip,
+        volume_moment_y: my * flip,
+        volume_moment_z: mz * flip,
+        volume_second_x: qxx * flip,
+        volume_second_y: qyy * flip,
+        volume_second_z: qzz * flip,
+        volume_product_xy: qxy * flip,
+        volume_product_xz: qxz * flip,
+        volume_product_yz: qyz * flip,
+        centroid_x: cx * flip,
+        centroid_y: cy * flip,
+        centroid_z: cz * flip,
     }
 }
 
@@ -1769,5 +1779,34 @@ fn integrate_with_trimming<S: ParametricSurface>(
             &UvTrim::boundary_of(uv),
             scale,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::*;
+    use brepkit_math::vec::{Point3, Vec3};
+
+    #[test]
+    fn planar_fan_is_signed_on_nonconvex_polygons() {
+        let poly = [
+            Point3::new(0.0, 0.0, 2.0),
+            Point3::new(10.0, 0.0, 2.0),
+            Point3::new(10.0, 5.0, 2.0),
+            Point3::new(5.0, 5.0, 2.0),
+            Point3::new(5.0, 10.0, 2.0),
+            Point3::new(0.0, 10.0, 2.0),
+        ];
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let contribution = integrate_planar_polygon(&poly, up);
+        assert!((contribution.area - 75.0).abs() < 1e-9);
+        assert!((contribution.volume - 50.0).abs() < 1e-9);
+
+        let reversed: Vec<Point3> = poly.iter().rev().copied().collect();
+        let reversed_contribution = integrate_planar_polygon(&reversed, up);
+        assert!((reversed_contribution.area - 75.0).abs() < 1e-9);
+        assert!((reversed_contribution.volume - 50.0).abs() < 1e-9);
     }
 }

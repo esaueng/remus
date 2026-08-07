@@ -18,12 +18,12 @@ use brepkit_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic;
 use crate::builder_utils::{
-    create_blend_face, project_onto_axis, radial_distance, sample_nurbs_endpoints,
-    wire_axial_range, wire_radial_extremum,
+    project_onto_axis, radial_distance, sample_nurbs_endpoints, wire_axial_range,
+    wire_radial_extremum,
 };
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
-use crate::trimmer::{self, TrimSide};
+use crate::trimmer::{self, TrimKeep, TrimSide};
 use crate::{BlendError, BlendFaceOrigins, BlendResult};
 
 /// Internal representation of a chamfer edge set with its distance parameters.
@@ -223,6 +223,10 @@ impl<'a> ChamferBuilder<'a> {
         // else goes through the trim + blend-face path below.
         let mut rim_band_faces: Vec<FaceId> = Vec::new();
         let mut regular: Vec<&StripeResult> = Vec::new();
+        let mut stripe_contact_edges: Vec<(
+            Option<brepkit_topology::edge::EdgeId>,
+            Option<brepkit_topology::edge::EdgeId>,
+        )> = Vec::new();
         for sr in &stripe_results {
             if let Some(rim) = closed_rim_info(topo, &sr.stripe)? {
                 match assemble_closed_rim(topo, &sr.stripe, &rim, &mut face_replacements) {
@@ -244,6 +248,7 @@ impl<'a> ChamferBuilder<'a> {
 
         for sr in &regular {
             let stripe = &sr.stripe;
+            stripe_contact_edges.push((None, None));
 
             let contact1_pts = sample_nurbs_endpoints(&stripe.contact1);
             let contact2_pts = sample_nurbs_endpoints(&stripe.contact2);
@@ -280,12 +285,15 @@ impl<'a> ChamferBuilder<'a> {
                 current_face1,
                 &contact1_pts,
                 &[(0.0, 0.0), (1.0, 0.0)],
-                keep_side1,
+                TrimKeep::Side(keep_side1),
                 stripe.spine.edges(),
             );
 
             match trim1 {
                 Ok(tr) if tr.trimmed_face != current_face1 => {
+                    if let Some(slot) = stripe_contact_edges.last_mut() {
+                        slot.0 = tr.contact_edge;
+                    }
                     face_replacements.insert(stripe.face1, tr.trimmed_face);
                 }
                 Ok(_) | Err(_) => {
@@ -302,12 +310,15 @@ impl<'a> ChamferBuilder<'a> {
                 current_face2,
                 &contact2_pts,
                 &[(0.0, 0.0), (1.0, 0.0)],
-                keep_side2,
+                TrimKeep::Side(keep_side2),
                 stripe.spine.edges(),
             );
 
             match trim2 {
                 Ok(tr) if tr.trimmed_face != current_face2 => {
+                    if let Some(slot) = stripe_contact_edges.last_mut() {
+                        slot.1 = tr.contact_edge;
+                    }
                     face_replacements.insert(stripe.face2, tr.trimmed_face);
                 }
                 Ok(_) | Err(_) => {
@@ -318,8 +329,17 @@ impl<'a> ChamferBuilder<'a> {
 
         let mut blend_face_ids: Vec<FaceId> = rim_band_faces;
 
-        for sr in &regular {
-            let blend_face_id = create_blend_face(topo, &sr.stripe)?;
+        for (si, sr) in regular.iter().enumerate() {
+            // Reuse the trimmed neighbours' contact edges (mirrors the fillet
+            // builder): a freshly minted duplicate leaves both copies use-1
+            // and opens the shell along the chamfer flanks.
+            let (c1, c2) = stripe_contact_edges
+                .get(si)
+                .copied()
+                .unwrap_or((None, None));
+            let blend_face_id =
+                crate::builder_utils::create_blend_face_with_contacts(topo, &sr.stripe, c1, c2)?
+                    .face;
             blend_face_ids.push(blend_face_id);
             blend_face_origins.push((blend_face_id, vec![sr.stripe.face1, sr.stripe.face2]));
         }
@@ -354,6 +374,18 @@ impl<'a> ChamferBuilder<'a> {
         };
 
         let new_shell = Shell::new(result_faces)?;
+        // Preserve the fork's fail-closed modifier contract. Upstream's shared
+        // contact-edge path can close both chamfer flanks while still leaving
+        // a free end edge on a regular finite stripe. Never return that open
+        // shell as a successful modifier result.
+        if (brepkit_topology::validation::validate_shell_closed(&new_shell, topo).is_err()
+            || brepkit_topology::validation::validate_shell_manifold(&new_shell, topo).is_err())
+            && let Some(sr) = stripe_results.first()
+        {
+            return Err(BlendError::TrimmingFailure {
+                face: sr.stripe.face1,
+            });
+        }
         let new_shell_id = topo.add_shell(new_shell);
         let new_solid = Solid::new(new_shell_id, inner_shells);
         let new_solid_id = topo.add_solid(new_solid);
