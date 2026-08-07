@@ -7441,3 +7441,66 @@ fn bench_equiv_cut_box_corner_cylinder_volume_is_exact() {
         "quarter-cylinder cut volume should be ~{exact:.4}, got {vol:.4}"
     );
 }
+
+/// Fusing a cylinder tangent to a box wall (line contact, zero overlap
+/// volume) must not fail. The cap-plane × wall section circles graze the
+/// box's top/bottom faces at a single point but used to survive the
+/// `restrict_curves_to_faces` graze filter by riding the plane extent's
+/// 1%-of-face margin band, splitting three faces along a measure-zero
+/// contact; the resulting tangent edge was shared by 3 faces, the manifold
+/// gate rejected the GFA output, and the mesh fallback welded the same
+/// tangent line into non-manifold edges — so the whole fuse errored out
+/// (the OpenZCAD tangent-union report). With the margin-band graze veto the
+/// fuse degenerates to the disjoint-union assembly: both operands stay
+/// whole and analytic.
+#[test]
+fn fuse_cylinder_tangent_to_box_wall_succeeds() {
+    use brepkit_check::classify::{ClassifyOptions, classify_point};
+    use brepkit_math::mat::Mat4;
+
+    // Box x∈[0,60], y∈[0,40], z∈[0,40]; cylinder axis at (-8, 20), r=8 —
+    // its wall is tangent to the box's x=0 face — spanning z∈[-5,50], so
+    // the graze circles at z=0 and z=40 land mid-wall, not on a cap rim.
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 60.0, 40.0, 40.0).unwrap();
+    let cyl = crate::primitives::make_cylinder(&mut topo, 8.0, 55.0).unwrap();
+    crate::transform::transform_solid(&mut topo, cyl, &Mat4::translation(-8.0, 20.0, -5.0))
+        .unwrap();
+
+    let result = boolean(&mut topo, BooleanOp::Fuse, bx, cyl)
+        .expect("tangent-contact fuse must not reject as non-manifold");
+
+    // Analytic result, no mesh fallback: the cylinder wall survives as a
+    // cylinder face and the face count stays in single digits.
+    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    assert!(
+        (7..=12).contains(&faces.len()),
+        "expected an analytic two-body result, got {} faces",
+        faces.len()
+    );
+    let cyl_faces = faces
+        .iter()
+        .filter(|&&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .count();
+    assert_eq!(cyl_faces, 1, "cylinder wall must survive analytically");
+
+    // Volume is the plain sum (measure-zero contact adds nothing).
+    let vol = crate::measure::solid_volume(&topo, result, 0.1).unwrap();
+    let expected = 60.0 * 40.0 * 40.0 + std::f64::consts::PI * 64.0 * 55.0;
+    assert!(
+        (vol - expected).abs() < expected * 1e-3,
+        "tangent fuse volume {vol} differs from {expected}"
+    );
+
+    // Ray-cast ground truth: interiors of both operands stay Inside, a point
+    // outside both stays Outside (never trust volume alone).
+    let opts = ClassifyOptions::default();
+    for (p, want) in [
+        (Point3::new(30.0, 20.0, 20.0), "Inside"),
+        (Point3::new(-8.0, 20.0, 22.5), "Inside"),
+        (Point3::new(-30.0, -30.0, 20.0), "Outside"),
+    ] {
+        let got = format!("{:?}", classify_point(&topo, result, p, &opts).unwrap());
+        assert_eq!(got, want, "classify {p:?}");
+    }
+}

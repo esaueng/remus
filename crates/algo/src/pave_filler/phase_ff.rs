@@ -1063,6 +1063,29 @@ impl FaceExtent {
         }
     }
 
+    /// Plane extents: is `p` inside the boundary polygon, or ON a boundary
+    /// (outer or hole rim) within `band`? Unlike [`Self::contains`], NO
+    /// margin credit is given to points genuinely outside — that band is
+    /// exactly where a tangency graze rides. Analytic extents always pass
+    /// (their v-boundaries are legitimately ridden by cap-rim sections).
+    fn contains_or_on_boundary(&self, p: Point3, band: f64) -> bool {
+        match self {
+            Self::Plane {
+                frame, poly, holes, ..
+            } => {
+                let uv = frame.project(p);
+                let on_any_boundary = point_to_polygon_dist(uv, poly) <= band
+                    || holes.iter().any(|h| point_to_polygon_dist(uv, h) <= band);
+                let inside = crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
+                    && !holes
+                        .iter()
+                        .any(|h| crate::builder::classify_2d::point_in_polygon_2d(uv, h));
+                inside || on_any_boundary
+            }
+            Self::Analytic { .. } => true,
+        }
+    }
+
     fn contains(&self, p: Point3) -> bool {
         match self {
             Self::Plane {
@@ -1388,6 +1411,52 @@ fn restrict_curves_to_faces(
             }
             out.push(raw);
             continue;
+        }
+        // Margin-band graze veto: a closed section whose PARTIAL in-both run
+        // never enters the true face interior is a tangency graze riding the
+        // plane-extent margin band (a cylinder tangent to a box wall puts the
+        // cap-plane × wall circle within the 1%-of-face margin for ~10% of its
+        // circumference, defeating the run-length graze test above). Such a
+        // contact is measure-zero — splitting a face with it mints the
+        // non-manifold tangent edge that rejects the whole fuse. A
+        // full-circumference run (b1 - b0 == N, e.g. a coaxial rim-riding
+        // circle owned by the seam-adoption/CommonBlock path) is deliberately
+        // exempt.
+        if closed && b1 - b0 < N {
+            // The test applies to PLANE extents only: a genuine cap-rim
+            // section rides the partner cylinder's v-range boundary by
+            // construction (the quarter-overlapped cylinder ∪ box), and the
+            // fat margin that masks a graze is the plane polygon's
+            // 1%-of-extent band. A probed run point is fine when it is inside
+            // the polygon or ON its boundary (within a band covering float
+            // noise plus the sagitta of the 16-sample arc-edge polygon — a
+            // same-footprint stacked prism's corner arcs legitimately ride
+            // the cap outline); only a point OUTSIDE by more than the band —
+            // margin-credit territory — marks a graze.
+            let band = match &raw.curve {
+                EdgeCurve::Circle(c) => c.radius() * 2.0e-3,
+                EdgeCurve::Ellipse(e) => e.semi_major() * 2.0e-3,
+                _ => 0.0,
+            }
+            .max(tol.linear * 100.0);
+            let outside_a_plane = |p: Point3| -> bool {
+                !ext_a.contains_or_on_boundary(p, band) || !ext_b.contains_or_on_boundary(p, band)
+            };
+            // Probe the run's quarter points and midpoint; the run may wrap
+            // past N (closed-curve seam) — the curve is periodic there. The
+            // veto fires on ANY decisively-outside probe (not "no probe
+            // inside"): a graze run's own midpoint is the tangency point,
+            // which legitimately touches the boundary, while its flanks bow
+            // out into the margin band.
+            let any_probe_outside = [0.25, 0.5, 0.75].iter().any(|&q| {
+                #[allow(clippy::cast_precision_loss)]
+                let f = (((1.0 - q) * b0 as f64 + q * b1 as f64) / N as f64).rem_euclid(1.0);
+                let t = raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f;
+                outside_a_plane(raw.curve.evaluate_with_endpoints(t, raw.p_start, raw.p_end))
+            });
+            if any_probe_outside {
+                continue;
+            }
         }
         // A closed ellipse/NURBS loop whose in-both run covers the WHOLE curve
         // (`b1 - b0 == N`) is a genuinely fully-shared seam — e.g. the closed
