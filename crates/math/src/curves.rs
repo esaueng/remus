@@ -245,6 +245,26 @@ impl Circle3D {
         })
     }
 
+    /// The same circle traced the other way round: `reversed().evaluate(t)`
+    /// equals `evaluate(-t)` for every `t`.
+    ///
+    /// Negating `v_axis` — and with it the normal, since the frame stays
+    /// right-handed — flips the sweep direction while leaving `u_axis`
+    /// untouched, so the seam point `evaluate(0.0)` stays exactly where it
+    /// was. Only the direction changes, never the phase, which is what keeps
+    /// a closed edge's phase-sensitive downstream state (seam vertex, PCurve
+    /// start) stable across the reversal.
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        Self {
+            center: self.center,
+            normal: -self.normal,
+            radius: self.radius,
+            u_axis: self.u_axis,
+            v_axis: -self.v_axis,
+        }
+    }
+
     /// Intersect the circle with a 3D line segment.
     ///
     /// Returns up to 2 intersection points along with their angle parameter
@@ -651,6 +671,24 @@ impl Ellipse3D {
             u_axis,
             v_axis,
         })
+    }
+
+    /// The same ellipse traced the other way round: `reversed().evaluate(t)`
+    /// equals `evaluate(-t)` for every `t`.
+    ///
+    /// As with [`Circle3D::reversed`], only `v_axis` and the normal flip.
+    /// `u_axis` carries the `semi_major` extent, so leaving it alone keeps
+    /// both the major-axis direction and the phase of `evaluate(0.0)`.
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        Self {
+            center: self.center,
+            normal: -self.normal,
+            semi_major: self.semi_major,
+            semi_minor: self.semi_minor,
+            u_axis: self.u_axis,
+            v_axis: -self.v_axis,
+        }
     }
 }
 
