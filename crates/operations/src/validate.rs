@@ -182,6 +182,83 @@ fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::f
     components
 }
 
+/// Whether any two OUTER-shell face components materially overlap in space.
+///
+/// Each component's AABB is built from sampled face polygons (vertex
+/// positions alone under-represent curved faces, whose only stored vertices
+/// may sit on a seam). Two components "materially overlap" when their AABB
+/// intersection has real thickness in every dimension — a tangent or
+/// stacked-touching pair intersects in a zero-thickness slab and passes,
+/// while a tool fragment left floating inside the stock is contained and
+/// fails. Two exemptions mirror how legitimate containment arises:
+/// components carrying any inner-shell (cavity) face (containment is a
+/// cavity's defining property), and pairs where either component has
+/// genus above zero (a full hollow revolve stores its toroidal cavity wall
+/// as a second outer-shell component — the shape the historical
+/// higher-genus connectivity skip existed for).
+fn outer_components_materially_overlap(
+    topo: &Topology,
+    solid: SolidId,
+    components: &[Vec<brepkit_topology::face::FaceId>],
+    component_genus_2: &[i64],
+) -> Result<bool, crate::OperationsError> {
+    use std::collections::HashSet;
+
+    let solid_data = topo.solid(solid)?;
+    let outer_faces: HashSet<usize> = topo
+        .shell(solid_data.outer_shell())?
+        .faces()
+        .iter()
+        .map(|f| f.index())
+        .collect();
+
+    let mut boxes: Vec<(brepkit_math::aabb::Aabb3, i64)> = Vec::new();
+    for (ci, comp) in components.iter().enumerate() {
+        if !comp.iter().all(|f| outer_faces.contains(&f.index())) {
+            continue; // cavity component — containment is expected
+        }
+        let genus_2 = component_genus_2.get(ci).copied().unwrap_or(0);
+        let mut pts: Vec<brepkit_math::vec::Point3> = Vec::new();
+        for &fid in comp {
+            if let Ok(poly) = crate::boolean::face_polygon(topo, fid) {
+                pts.extend(poly);
+            }
+        }
+        if pts.len() < 3 {
+            // Cannot establish an extent — fail toward the historical
+            // "disconnected" report rather than blessing the unknown.
+            return Ok(true);
+        }
+        boxes.push((brepkit_math::aabb::Aabb3::from_points(pts), genus_2));
+    }
+
+    for (i, (a, ga)) in boxes.iter().enumerate() {
+        for (b, gb) in boxes.iter().skip(i + 1) {
+            if *ga > 0 || *gb > 0 {
+                continue; // higher-genus containment is a cavity wall, not debris
+            }
+            let lo_x = a.min.x().max(b.min.x());
+            let hi_x = a.max.x().min(b.max.x());
+            let lo_y = a.min.y().max(b.min.y());
+            let hi_y = a.max.y().min(b.max.y());
+            let lo_z = a.min.z().max(b.min.z());
+            let hi_z = a.max.z().min(b.max.z());
+            let min_extent = (hi_x - lo_x).min(hi_y - lo_y).min(hi_z - lo_z);
+            // Thickness threshold: scale-relative to the smaller component's
+            // diagonal, floored at the linear tolerance. A tangent pair's
+            // intersection slab is numerically zero-thick; genuine
+            // interpenetration has body-scale thickness.
+            let diag_a = (a.max - a.min).length();
+            let diag_b = (b.max - b.min).length();
+            let threshold = (diag_a.min(diag_b) * 1e-4).max(1e-7);
+            if min_extent > threshold {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Count vertices, edges, faces, and inner wire loops of one face component.
 ///
 /// Entities are deduplicated by id within the component, mirroring
@@ -384,6 +461,7 @@ pub fn validate_solid_with_options(
     let adjusted_euler = euler - total_inner_loops;
     let genus_times_2 = 2 - adjusted_euler;
     let mut components_euler_ok = true;
+    let mut component_genus_2: Vec<i64> = Vec::new();
     if components.len() <= 1 {
         if genus_times_2 < 0 || genus_times_2 % 2 != 0 {
             components_euler_ok = false;
@@ -401,6 +479,7 @@ pub fn validate_solid_with_options(
             let (cv, ce, cf, cl) = component_counts(topo, comp)?;
             let comp_euler = cv - ce + cf;
             let comp_genus_2 = 2 - (comp_euler - cl);
+            component_genus_2.push(comp_genus_2);
             if comp_genus_2 < 0 || comp_genus_2 % 2 != 0 {
                 components_euler_ok = false;
                 issues.push(ValidationIssue {
@@ -619,19 +698,32 @@ pub fn validate_solid_with_options(
     // Shell connectivity. Multiple edge-connected components are valid ONLY
     // when every component independently forms a closed Euler-consistent
     // shell (tangent/disjoint fuse keeps each operand whole; a cavity shell
-    // shares no edges with the outer shell by construction). A disconnection
+    // shares no edges with the outer shell by construction) AND no two
+    // OUTER-shell components materially overlap in space. The overlap veto is
+    // what separates a legitimate tangent/disjoint union (components touch on
+    // at most a measure-zero set, so their AABB intersection is a
+    // zero-thickness slab) from a broken boolean that left tool fragments
+    // closed but floating INSIDE the stock (the equal-radius cross-drill:
+    // bore lobes sit wholly within the shaft, and blessing them silences the
+    // downstream heal that used to repair the body). Cavity (inner-shell)
+    // components are exempt — containment is their job. A disconnection
     // paired with ANY closure or per-component-Euler defect is still the
     // classic assembly failure and is reported as before. The historical
-    // genus>0 skip is preserved via `components_euler_ok`, which per-component
-    // Euler evaluation already accepts for higher-genus components.
-    if components.len() > 1 && !(components_euler_ok && boundary_edges == 0) {
-        let unreachable = faces.len() - components.first().map_or(0, Vec::len);
-        issues.push(ValidationIssue {
-            severity: Severity::Error,
-            description: format!(
-                "shell is disconnected: {unreachable} face(s) not reachable from first face"
-            ),
-        });
+    // genus>0 skip is preserved via `components_euler_ok`, which
+    // per-component Euler evaluation already accepts for higher-genus
+    // components.
+    if components.len() > 1 {
+        let overlapping =
+            outer_components_materially_overlap(topo, solid, &components, &component_genus_2)?;
+        if !(components_euler_ok && boundary_edges == 0 && !overlapping) {
+            let unreachable = faces.len() - components.first().map_or(0, Vec::len);
+            issues.push(ValidationIssue {
+                severity: Severity::Error,
+                description: format!(
+                    "shell is disconnected: {unreachable} face(s) not reachable from first face"
+                ),
+            });
+        }
     }
 
     {
