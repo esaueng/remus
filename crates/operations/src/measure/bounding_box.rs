@@ -1,21 +1,24 @@
 //! Bounding box computation for B-rep solids.
 
 use std::collections::HashSet;
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use brepkit_math::aabb::Aabb3;
-use brepkit_math::vec::Point3;
+use brepkit_math::surfaces::{SphericalSurface, ToroidalSurface};
+use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
-use super::helpers::collect_solid_vertex_points;
+use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 
 /// Compute the axis-aligned bounding box of a solid.
 ///
 /// Uses vertex positions as the base AABB, then expands for non-planar
 /// surfaces by sampling edge midpoints on the surface. This captures
 /// curvature without over-expanding (unlike projecting the surface's
-/// full theoretical extent).
+/// full theoretical extent): every expansion is bounded by the region the
+/// face actually occupies, never the whole surface its geometry sits on.
 ///
 /// # Errors
 ///
@@ -103,7 +106,8 @@ fn aabb_include(aabb: &mut Aabb3, p: Point3) {
 /// Expand an AABB for a face, accounting for surface curvature.
 ///
 /// Uses different strategies based on surface type:
-/// - **Sphere/Torus**: analytic expansion (full surface extent)
+/// - **Sphere/Torus**: analytic expansion over the face's *trimmed* parameter
+///   region, recovered from its boundary (see [`ring_patch_box`])
 /// - **Cylinder/Cone**: wire-bounded expansion (sample edge midpoints
 ///   to avoid over-expanding for partial arcs like fillets)
 /// - **NURBS**: sparse interior grid sampling
@@ -125,31 +129,34 @@ fn expand_aabb_for_face(
     match surface {
         FaceSurface::Plane { .. } => {}
 
-        // Sphere and torus: use analytic expansion (these are typically full
-        // or near-full surfaces where the extremes can be far from vertices).
+        // Sphere and torus: analytic expansion, but only over the parameter
+        // region the face actually occupies. Sampling the whole surface is
+        // what made an imported part's box twice its true size — a 4 mm blend
+        // riding a 270 mm ring reported the entire ring (issue: imported CATIA
+        // part misframes Fit View). A face that genuinely wraps its surface
+        // still gets the full extent, because the domain recovery below falls
+        // back to the full period whenever the boundary does not bound.
         FaceSurface::Sphere(s) => {
-            let c = s.center();
-            let r = s.radius();
-            aabb_include(aabb, Point3::new(c.x() - r, c.y() - r, c.z() - r));
-            aabb_include(aabb, Point3::new(c.x() + r, c.y() + r, c.z() + r));
+            let (lo, hi) = ring_patch_box(
+                s.center(),
+                [s.x_axis(), s.y_axis(), s.z_axis()],
+                0.0,
+                s.radius(),
+                sphere_patch_domain(topo, face_id, s),
+            );
+            aabb_include(aabb, lo);
+            aabb_include(aabb, hi);
         }
         FaceSurface::Torus(t) => {
-            // Per-dim half-extent of a torus = R * sqrt(1 - axis.d²) + r.
-            // The R*sqrt(1-axis.d²) term is the major-circle's extent in
-            // world dim d (zero for the dim aligned with the torus axis);
-            // the r term is the minor radius offset, which can extend
-            // freely in any direction. Replaces the previous formula that
-            // applied (R+r) to all dimensions and over-estimated the
-            // axis-aligned dim by `R`.
-            let c = t.center();
-            let r_major = t.major_radius();
-            let r_minor = t.minor_radius();
-            let axis = t.z_axis();
-            let hx = r_major * (1.0 - axis.x() * axis.x()).max(0.0).sqrt() + r_minor;
-            let hy = r_major * (1.0 - axis.y() * axis.y()).max(0.0).sqrt() + r_minor;
-            let hz = r_major * (1.0 - axis.z() * axis.z()).max(0.0).sqrt() + r_minor;
-            aabb_include(aabb, Point3::new(c.x() - hx, c.y() - hy, c.z() - hz));
-            aabb_include(aabb, Point3::new(c.x() + hx, c.y() + hy, c.z() + hz));
+            let (lo, hi) = ring_patch_box(
+                t.center(),
+                [t.x_axis(), t.y_axis(), t.z_axis()],
+                t.major_radius(),
+                t.minor_radius(),
+                torus_patch_domain(topo, face_id, t),
+            );
+            aabb_include(aabb, lo);
+            aabb_include(aabb, hi);
         }
 
         // Cylinder: expand radially at each face vertex's axis projection.
@@ -168,6 +175,16 @@ fn expand_aabb_for_face(
         }
 
         // NURBS: sample the surface at a sparse interior grid.
+        //
+        // KNOWN GAP: this grid spans the surface's whole knot domain, so a face
+        // trimmed to a corner of a larger patch still reports the rest of it —
+        // the same defect the sphere/torus arms above just lost. Closing it
+        // needs the face's parameter region, and a NURBS surface only yields
+        // that through `project_point` (a coarse grid search plus Newton,
+        // ~7.5 us a sample against the analytic surfaces' closed-form atan2),
+        // plus a periodicity guard so a closed patch whose seam bounds nothing
+        // does not collapse. Left for its own change rather than folded in
+        // here on a performance and soundness profile this one does not share.
         FaceSurface::Nurbs(nurbs) => {
             let (u_min, u_max) = nurbs.domain_u();
             let (v_min, v_max) = nurbs.domain_v();
@@ -182,6 +199,192 @@ fn expand_aabb_for_face(
             }
         }
     }
+}
+
+/// Samples taken along each boundary edge when recovering a face's trimmed
+/// parameter region. 16 keeps consecutive parameter samples on a quarter-turn
+/// arc under 6° apart, comfortably below the gap that
+/// [`compute_angular_range`] reads as "the face stops here".
+const TRIM_SAMPLES_PER_EDGE: usize = 16;
+
+/// The `(u, v)` rectangle a face occupies on its analytic surface.
+///
+/// `u.1 - u.0 == TAU` (and likewise for `v`) means "not bounded by the
+/// boundary in this direction" — the face wraps, or its boundary degenerates
+/// to a seam — so the caller must assume the full period.
+struct PatchDomain {
+    u: (f64, f64),
+    v: (f64, f64),
+}
+
+/// Sample every boundary edge of a face — outer wire and inner wires — at
+/// [`TRIM_SAMPLES_PER_EDGE`] intervals, endpoints included.
+fn face_boundary_samples(topo: &Topology, face_id: FaceId) -> Vec<Point3> {
+    let mut pts = Vec::new();
+    let Ok(face) = topo.face(face_id) else {
+        return pts;
+    };
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let Ok(wire) = topo.wire(wid) else {
+            continue;
+        };
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                continue;
+            };
+            let (p_start, p_end) = (sv.point(), ev.point());
+            let (t0, t1) = edge.curve().domain_with_endpoints(p_start, p_end);
+            for i in 0..=TRIM_SAMPLES_PER_EDGE {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = (i as f64) / (TRIM_SAMPLES_PER_EDGE as f64);
+                let t = (t1 - t0).mul_add(frac, t0);
+                pts.push(edge.curve().evaluate_with_endpoints(t, p_start, p_end));
+            }
+        }
+    }
+    pts
+}
+
+/// Recover the `(u, v)` rectangle a toroidal face occupies.
+///
+/// Both torus directions are periodic and free of degeneracies, so a face is
+/// bounded in a direction exactly when its boundary leaves a gap there —
+/// which is what [`compute_angular_range`] tests, returning the full period
+/// when it finds none.
+fn torus_patch_domain(topo: &Topology, face_id: FaceId, t: &ToroidalSurface) -> PatchDomain {
+    let pts = face_boundary_samples(topo, face_id);
+    let mut us = Vec::with_capacity(pts.len());
+    let mut vs = Vec::with_capacity(pts.len());
+    for p in &pts {
+        let (u, v) = t.project_point(*p);
+        us.push(u);
+        vs.push(v);
+    }
+    PatchDomain {
+        u: compute_angular_range(&mut us),
+        v: compute_angular_range(&mut vs),
+    }
+}
+
+/// Recover the `(u, v)` rectangle a spherical face occupies.
+///
+/// Longitude is periodic and handled like the torus. Latitude is not: a polar
+/// cap's only boundary is one latitude circle, so its sampled latitude range
+/// collapses to that circle while the face runs on to the pole. A face bounded
+/// in longitude cannot contain a pole (every longitude meets there), so the
+/// sampled latitude range is trusted only in that case; a face that wraps
+/// longitude keeps the full latitude span, exactly as before this was
+/// trim-aware.
+fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -> PatchDomain {
+    let pts = face_boundary_samples(topo, face_id);
+    let mut us = Vec::with_capacity(pts.len());
+    let mut vs = Vec::with_capacity(pts.len());
+    for p in &pts {
+        let (u, v) = s.project_point(*p);
+        us.push(u);
+        vs.push(v);
+    }
+    let u = compute_angular_range(&mut us);
+    let wraps_longitude = u.1 - u.0 >= TAU - 1e-12;
+    let v = if wraps_longitude || vs.is_empty() {
+        (-FRAC_PI_2, FRAC_PI_2)
+    } else {
+        (
+            vs.iter().copied().fold(f64::INFINITY, f64::min),
+            vs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+    PatchDomain { u, v }
+}
+
+/// World-space corners of the analytic patch
+/// `center + (R + r·cos v)·(x̂·cos u + ŷ·sin u) + ẑ·r·sin v`
+/// over `domain`. A sphere of radius `r` is this family with `R = 0`, so both
+/// surfaces share one routine.
+fn ring_patch_box(
+    center: Point3,
+    frame: [Vec3; 3],
+    major: f64,
+    minor: f64,
+    domain: PatchDomain,
+) -> (Point3, Point3) {
+    let [xa, ya, za] = frame;
+    let axis =
+        |a: f64, b: f64, k: f64| ring_patch_axis_extent(a, b, k, major, minor, domain.u, domain.v);
+    let (x_lo, x_hi) = axis(xa.x(), ya.x(), za.x());
+    let (y_lo, y_hi) = axis(xa.y(), ya.y(), za.y());
+    let (z_lo, z_hi) = axis(xa.z(), ya.z(), za.z());
+    (
+        Point3::new(center.x() + x_lo, center.y() + y_lo, center.z() + z_lo),
+        Point3::new(center.x() + x_hi, center.y() + y_hi, center.z() + z_hi),
+    )
+}
+
+/// Exact extent of the patch along one world axis, relative to the centre.
+///
+/// `a`, `b` and `k` are that world axis expressed in the surface frame
+/// (`x̂·ê`, `ŷ·ê`, `ẑ·ê`). With `A = ‖(a, b)‖`, `φ = atan2(b, a)` and
+/// `C = cos(u − φ)`, the component along `ê` is
+/// `R·A·C + r·(A·C·cos v + k·sin v)`. For a fixed `C` the bracketed term is
+/// `m·cos(v − ψ)` with `m = ‖(A·C, k)‖`, whose extremes over the `v` interval
+/// are exact. Seen as a function of `C`, the maximum is a pointwise maximum of
+/// affine functions plus an affine term — convex — so it is attained at an end
+/// of `C`'s range; the minimum is concave for the same reason. Testing both
+/// ends of `C` is therefore exact, not a sampling approximation.
+///
+/// A face that wraps both directions reduces to `R·A + r`, the tight bound for
+/// a whole torus (and to `r` for a whole sphere).
+fn ring_patch_axis_extent(
+    a: f64,
+    b: f64,
+    k: f64,
+    major: f64,
+    minor: f64,
+    (u0, u1): (f64, f64),
+    (v0, v1): (f64, f64),
+) -> (f64, f64) {
+    let amp = a.hypot(b);
+    let phi = b.atan2(a);
+    let (c_lo, c_hi) = cos_range(u0 - phi, u1 - phi);
+
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for c in [c_lo, c_hi] {
+        let ring = amp * c;
+        let m = ring.hypot(k);
+        let psi = k.atan2(ring);
+        let (g_lo, g_hi) = cos_range(v0 - psi, v1 - psi);
+        let base = major * ring;
+        lo = lo.min(minor.mul_add(m * g_lo, base));
+        hi = hi.max(minor.mul_add(m * g_hi, base));
+    }
+    (lo, hi)
+}
+
+/// Exact `(min, max)` of `cos` over `[t0, t1]`.
+///
+/// The endpoints bound it unless the interval contains a peak (a multiple of
+/// `2π`) or a trough (`π` plus a multiple).
+fn cos_range(t0: f64, t1: f64) -> (f64, f64) {
+    if t1 - t0 >= TAU {
+        return (-1.0, 1.0);
+    }
+    let (e0, e1) = (t0.cos(), t1.cos());
+    let mut lo = e0.min(e1);
+    let mut hi = e0.max(e1);
+    // The first `target + n·2π` at or above `t0`; the interval is shorter than
+    // a period, so if that one overshoots `t1` no other lands inside either.
+    let contains = |target: f64| target + TAU * ((t0 - target) / TAU).ceil() <= t1;
+    if contains(0.0) {
+        hi = 1.0;
+    }
+    if contains(PI) {
+        lo = -1.0;
+    }
+    (lo, hi)
 }
 
 /// Sample edge midpoints along a face's outer wire to expand the AABB.
