@@ -184,18 +184,36 @@ fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::f
 
 /// Whether any two OUTER-shell face components materially overlap in space.
 ///
-/// Each component's AABB is built from sampled face polygons (vertex
-/// positions alone under-represent curved faces, whose only stored vertices
-/// may sit on a seam). Two components "materially overlap" when their AABB
-/// intersection has real thickness in every dimension — a tangent or
-/// stacked-touching pair intersects in a zero-thickness slab and passes,
-/// while a tool fragment left floating inside the stock is contained and
-/// fails. Two exemptions mirror how legitimate containment arises:
-/// components carrying any inner-shell (cavity) face (containment is a
-/// cavity's defining property), and pairs where either component has
-/// genus above zero (a full hollow revolve stores its toroidal cavity wall
-/// as a second outer-shell component — the shape the historical
-/// higher-genus connectivity skip existed for).
+/// The hazard is NESTING — a tool fragment left closed but floating inside the
+/// stock (the equal-radius cross-drill's sealed bore lobes), which must not be
+/// blessed as a disjoint union or the consuming editor's repair path stays
+/// silent. Side-by-side pieces are exactly what multi-component acceptance is
+/// for.
+///
+/// AABB *intersection* is the wrong predicate for nesting, because an AABB is
+/// only tight on axis-aligned geometry. A cylinder standing off the box's
+/// CORNER diagonal is a clear distance from it, yet the two boxes interpenetrate
+/// over the whole corner region — so an intersection-thickness test called a
+/// genuinely disjoint fuse "debris" and reported a bogus disconnected shell,
+/// dependent on where the operand sat rather than on whether it touched.
+/// Containment is tight in the direction that matters: nesting implies it, and a
+/// diagonal offset does not manufacture it.
+///
+/// So the test mirrors the boolean gate's `components_are_disjoint_pieces`: AABB
+/// containment (from sampled face polygons — vertex positions alone
+/// under-represent curved faces, whose only stored vertices may sit on a seam)
+/// is the cheap PRE-FILTER, and a suspect pair earns its verdict from a real
+/// ray-parity test against the enclosing candidate's own surface. That second
+/// stage matters because containment is necessary but not sufficient: a ring's
+/// box contains the box of a separate piece sitting in its hole.
+///
+/// Two exemptions mirror how legitimate containment arises: components carrying
+/// any inner-shell (cavity) face (containment is a cavity's defining property),
+/// and pairs where either component has genus above zero (a full hollow revolve
+/// stores its toroidal cavity wall as a second outer-shell component — the shape
+/// the historical higher-genus connectivity skip existed for). Whenever the
+/// answer cannot be established the result is `true`, failing toward the
+/// historical "disconnected" report rather than blessing the unknown.
 fn outer_components_materially_overlap(
     topo: &Topology,
     solid: SolidId,
@@ -212,7 +230,8 @@ fn outer_components_materially_overlap(
         .map(|f| f.index())
         .collect();
 
-    let mut boxes: Vec<(brepkit_math::aabb::Aabb3, i64)> = Vec::new();
+    // (index into `components`, AABB, genus*2) for each outer-shell component.
+    let mut boxes: Vec<(usize, brepkit_math::aabb::Aabb3, i64)> = Vec::new();
     for (ci, comp) in components.iter().enumerate() {
         if !comp.iter().all(|f| outer_faces.contains(&f.index())) {
             continue; // cavity component — containment is expected
@@ -229,30 +248,49 @@ fn outer_components_materially_overlap(
             // "disconnected" report rather than blessing the unknown.
             return Ok(true);
         }
-        boxes.push((brepkit_math::aabb::Aabb3::from_points(pts), genus_2));
+        boxes.push((ci, brepkit_math::aabb::Aabb3::from_points(pts), genus_2));
     }
 
-    for (i, (a, ga)) in boxes.iter().enumerate() {
-        for (b, gb) in boxes.iter().skip(i + 1) {
+    let eps = crate::boolean::COMPONENT_OVERLAP_MARGIN_MM;
+    let contains = |o: &brepkit_math::aabb::Aabb3, i: &brepkit_math::aabb::Aabb3| {
+        o.min.x() - eps <= i.min.x()
+            && o.min.y() - eps <= i.min.y()
+            && o.min.z() - eps <= i.min.z()
+            && o.max.x() + eps >= i.max.x()
+            && o.max.y() + eps >= i.max.y()
+            && o.max.z() + eps >= i.max.z()
+    };
+
+    for (i, (ci_a, a, ga)) in boxes.iter().enumerate() {
+        for (ci_b, b, gb) in boxes.iter().skip(i + 1) {
             if *ga > 0 || *gb > 0 {
                 continue; // higher-genus containment is a cavity wall, not debris
             }
-            let lo_x = a.min.x().max(b.min.x());
-            let hi_x = a.max.x().min(b.max.x());
-            let lo_y = a.min.y().max(b.min.y());
-            let hi_y = a.max.y().min(b.max.y());
-            let lo_z = a.min.z().max(b.min.z());
-            let hi_z = a.max.z().min(b.max.z());
-            let min_extent = (hi_x - lo_x).min(hi_y - lo_y).min(hi_z - lo_z);
-            // Thickness threshold: scale-relative to the smaller component's
-            // diagonal, floored at the linear tolerance. A tangent pair's
-            // intersection slab is numerically zero-thick; genuine
-            // interpenetration has body-scale thickness.
-            let diag_a = (a.max - a.min).length();
-            let diag_b = (b.max - b.min).length();
-            let threshold = (diag_a.min(diag_b) * 1e-4).max(1e-7);
-            if min_extent > threshold {
+            // Pre-filter: only a pair where one box encloses the other can be
+            // nested. A diagonal stand-off fails this and is left alone.
+            let (outer_ci, outer_box, inner_ci) = if contains(a, b) {
+                (*ci_a, a, *ci_b)
+            } else if contains(b, a) {
+                (*ci_b, b, *ci_a)
+            } else {
+                continue;
+            };
+            // Confirm with ray parity against the enclosing candidate's own
+            // surface, so a piece merely sitting in a ring's hole survives.
+            let diag = (outer_box.max - outer_box.min).length();
+            let deflection = (diag / 200.0).max(1e-4);
+            let Some(probe) = crate::boolean::any_vertex_of(topo, &components[inner_ci]) else {
                 return Ok(true);
+            };
+            match crate::boolean::component_encloses_point(
+                topo,
+                &components[outer_ci],
+                probe,
+                deflection,
+            ) {
+                Some(true) => return Ok(true),
+                Some(false) => {}
+                None => return Ok(true),
             }
         }
     }

@@ -139,6 +139,13 @@ fn main() {
     // 7) Tangent to a vertical edge of the box (axis on the corner diagonal)
     let d = r / std::f64::consts::SQRT_2;
     run_case("corner-tangent     ", -d, -d, 0.0, r, 40.0);
+    // 7a) Same corner diagonal, cylinder taller than the box.
+    run_case("corner-tangent-tall", -d, -d, -5.0, r, 55.0);
+    // 7b) Corner diagonal with a genuine 0.05 gap — the bodies do not touch at
+    // all, yet their AABBs still interpenetrate over the whole corner region.
+    // The disjoint union must validate clean.
+    let g = (r + 0.05) / std::f64::consts::SQRT_2;
+    run_case("corner-gap-tall    ", -g, -g, -5.0, r, 55.0);
     // 8) Halfway overlap for sanity
     run_case("overlap-half       ", 0.0, 20.0, 0.0, r, 40.0);
 }
