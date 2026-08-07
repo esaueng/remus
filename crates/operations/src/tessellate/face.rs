@@ -12,7 +12,10 @@ use super::nurbs::{
     compute_angular_range, compute_axial_range, compute_sphere_v_range, compute_torus_v_range,
     compute_v_param_range, sphere_analytic_kind, tessellate_nurbs,
 };
-use super::planar::{tessellate_analytic, tessellate_analytic_with_boundary, tessellate_planar};
+use super::planar::{
+    tessellate_analytic, tessellate_analytic_with_boundary, tessellate_cylinder_with_holes,
+    tessellate_planar,
+};
 
 /// Step shrink factor for spheres: both u and v are curved simultaneously, so
 /// the diagonal sag is the worst case. Tightening the per-direction step keeps
@@ -24,12 +27,6 @@ const SPHERE_DIAG: f64 = 0.7;
 ///
 /// True for a boolean sub-face bounded by intersection curves — a NURBS edge,
 /// or more than four line edges — rather than the usual circles and seams.
-///
-/// Note what this does NOT test: inner wires. A cylindrical face carrying holes
-/// keeps its circle-and-seam outer boundary, so it goes to the analytic grid,
-/// which spans the face's whole uv box and pastes over the holes. That is a
-/// live gap, pinned by `holed_cylindrical_wall_is_rendered_without_its_holes`
-/// in this module's tests.
 ///
 /// # Errors
 ///
@@ -110,7 +107,9 @@ pub fn tessellate_with_uvs_a(
         }
         FaceSurface::Nurbs(surface) => Ok(tessellate_nurbs(surface, deflection, angular_tol)),
         FaceSurface::Cylinder(cyl) => {
-            if cylinder_has_non_standard_boundary(topo, face_data)? {
+            if !face_data.inner_wires().is_empty() {
+                tessellate_cylinder_with_holes(topo, face_data, cyl, deflection, angular_tol)
+            } else if cylinder_has_non_standard_boundary(topo, face_data)? {
                 tessellate_analytic_with_boundary(topo, face_data, cyl, deflection, angular_tol)
             } else {
                 let v_range = compute_axial_range(topo, face_data, cyl.origin(), cyl.axis());

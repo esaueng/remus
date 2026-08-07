@@ -660,6 +660,31 @@ pub struct MeshQualityResult {
     pub is_watertight: bool,
 }
 
+/// One issue reported by detailed solid validation.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct ValidationIssueResult {
+    /// Issue severity: `error` or `warning`.
+    pub severity: String,
+    /// Human-readable description supplied by the operations validator.
+    pub description: String,
+}
+
+/// Typed result for `validateSolidDetailed` and
+/// `validateSolidDetailedWithOptions`.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct ValidationReportResult {
+    /// Number of error-severity issues.
+    pub error_count: u32,
+    /// Number of warning-severity issues.
+    pub warning_count: u32,
+    /// All validation issues in validator order.
+    pub issues: Vec<ValidationIssueResult>,
+}
+
 /// Typed result for `sketchSolve`.
 #[derive(serde::Serialize, Tsify)]
 #[tsify(into_wasm_abi)]

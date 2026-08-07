@@ -12,6 +12,7 @@ pub mod gcs_sketch;
 pub mod heal;
 #[cfg(feature = "io")]
 pub mod io;
+pub mod lifecycle;
 pub mod measure;
 pub mod nurbs;
 pub mod operations;

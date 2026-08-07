@@ -124,6 +124,24 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Retires an entry without reclaiming or reusing its arena slot.
+    ///
+    /// Returns `true` when `id` named a live entry and was retired. Returns
+    /// `false` for an out-of-bounds or already-retired ID. Future allocations
+    /// always append after the retired slot, so stale handles cannot alias a
+    /// new entity.
+    pub fn retire(&mut self, id: Id<T>) -> bool {
+        let Some(is_live) = self.live.get_mut(id.index) else {
+            return false;
+        };
+        if !*is_live {
+            return false;
+        }
+        *is_live = false;
+        self.live_len -= 1;
+        true
+    }
+
     /// Returns a reference to the value at `id`, or `None` if the id
     /// is out of bounds.
     #[must_use]
@@ -155,7 +173,7 @@ impl<T> Arena<T> {
     /// Returns `true` if the arena contains no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.live_len == 0
     }
 
     /// Returns an iterator over all `(Id<T>, &T)` pairs.
@@ -219,17 +237,21 @@ impl<T: Clone> Arena<T> {
     /// stale raw-index handles cannot resolve to unrelated entities.
     pub(crate) fn restore_preserving_slots(&mut self, snapshot: &Self) {
         let previous_items = std::mem::take(&mut self.items);
+        let previous_live = std::mem::take(&mut self.live);
         let previous_slots = previous_items.len();
 
         self.items.clone_from(&snapshot.items);
         self.live.clone_from(&snapshot.live);
-        self.live_len = snapshot.live_len;
+        for (restored_live, was_live) in self.live.iter_mut().zip(&previous_live) {
+            *restored_live &= *was_live;
+        }
 
         if previous_slots > self.items.len() {
             self.items
                 .extend_from_slice(&previous_items[self.items.len()..]);
             self.live.resize(previous_slots, false);
         }
+        self.live_len = self.live.iter().filter(|is_live| **is_live).count();
     }
 }
 
@@ -295,5 +317,39 @@ mod tests {
         assert!(fresh.index() > stale.index());
         assert_eq!(arena.get(fresh).map(String::as_str), Some("fresh"));
         assert_eq!(arena.len(), 2);
+    }
+
+    #[test]
+    fn restore_preserves_retirement_of_snapshot_slot() {
+        let mut arena = Arena::new();
+        let retired = arena.alloc("retired".to_owned());
+        let snapshot = arena.clone();
+
+        assert!(arena.retire(retired));
+        arena.restore_preserving_slots(&snapshot);
+
+        assert!(arena.get(retired).is_none());
+        assert!(arena.id_from_index(retired.index()).is_none());
+        let fresh = arena.alloc("fresh".to_owned());
+        assert!(fresh.index() > retired.index());
+    }
+
+    #[test]
+    fn retire_tombstones_without_reusing_slots() {
+        let mut arena = Arena::new();
+        let retired = arena.alloc("retired".to_owned());
+
+        assert!(arena.retire(retired));
+        assert!(!arena.retire(retired));
+        assert!(arena.is_empty());
+        assert_eq!(arena.len(), 0);
+        assert!(arena.get(retired).is_none());
+        assert!(arena.id_from_index(retired.index()).is_none());
+        assert_eq!(arena.iter().count(), 0);
+
+        let fresh = arena.alloc("fresh".to_owned());
+        assert!(fresh.index() > retired.index());
+        assert_eq!(arena.get(fresh).map(String::as_str), Some("fresh"));
+        assert!(!arena.is_empty());
     }
 }

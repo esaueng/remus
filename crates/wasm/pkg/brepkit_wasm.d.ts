@@ -18,6 +18,20 @@ export interface EvolutionShapeV1 {
 }
 
 /**
+ * One issue reported by detailed solid validation.
+ */
+export interface ValidationIssueResult {
+    /**
+     * Issue severity: `error` or `warning`.
+     */
+    severity: string;
+    /**
+     * Human-readable description supplied by the operations validator.
+     */
+    description: string;
+}
+
+/**
  * One source face and the final-result faces related to it.
  */
 export interface EvolutionRelationV1 {
@@ -357,6 +371,25 @@ export interface UvMeshResult {
     normals: number[];
     indices: number[];
     uvs: number[];
+}
+
+/**
+ * Typed result for `validateSolidDetailed` and
+ * `validateSolidDetailedWithOptions`.
+ */
+export interface ValidationReportResult {
+    /**
+     * Number of error-severity issues.
+     */
+    errorCount: number;
+    /**
+     * Number of warning-severity issues.
+     */
+    warningCount: number;
+    /**
+     * All validation issues in validator order.
+     */
+    issues: ValidationIssueResult[];
 }
 
 /**
@@ -760,6 +793,20 @@ export class BrepKernel {
      * Returns a new solid handle.
      */
     defeature(solid: number, face_handles: Uint32Array): number;
+    /**
+     * Retire a solid handle and its unshared topology subtree.
+     *
+     * The handle becomes permanently invalid. This does not compact the
+     * kernel or reclaim arena memory; future entities receive new handles so
+     * a stale handle can never alias a different solid.
+     *
+     * # Errors
+     *
+     * Returns an error if `solid` is not a live solid handle, if a live
+     * compound, comp-solid, or assembly still references it, or if its
+     * topology tree contains an invalid reference.
+     */
+    deleteSolid(solid: number): void;
     /**
      * Reconstruct one solid from a version 1 or single-root version 2 buffer.
      *
@@ -2888,6 +2935,33 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid.
      */
     validateSolid(solid: number): number;
+    /**
+     * Validate a solid and return every diagnostic.
+     *
+     * Returns a JSON string containing
+     * `{ errorCount, warningCount, issues: [{ severity, description }] }`
+     * (see the `ValidationReportResult` TypeScript type). Diagnostics come
+     * from the same operations validator used by [`validate_solid`](Self::validate_solid).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or validation fails.
+     */
+    validateSolidDetailed(solid: number): any;
+    /**
+     * Validate a solid with configurable tolerance scaling and return every
+     * diagnostic.
+     *
+     * `tolerance_scale` has the same meaning as in
+     * [`validate_solid_with_options`](Self::validate_solid_with_options).
+     * Returns a JSON string containing
+     * `{ errorCount, warningCount, issues: [{ severity, description }] }`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or validation fails.
+     */
+    validateSolidDetailedWithOptions(solid: number, tolerance_scale: number): any;
     /**
      * Validate a solid with relaxed checks suitable for assembled geometry.
      *

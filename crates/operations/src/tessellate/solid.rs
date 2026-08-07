@@ -916,9 +916,10 @@ pub(super) fn tessellate_face_with_shared_edges(
             // is watertight by construction. The snap path re-samples the
             // rim independently and cracks at fine deflections when its
             // segment count diverges from the pool's (the #696 class, seen
-            // on gridfinity socket cone/cylinder corner rings). Faces WITH
-            // inner wires must keep the snap path: this CDT does not
-            // constrain inner wires and would skin the holes over.
+            // on gridfinity socket cone/cylinder corner rings). Faces with
+            // inner wires keep the snap path, whose face mesh uses the
+            // dedicated hole-aware cylindrical CDT before snapping every
+            // outer and inner boundary vertex into this shared pool.
             let mut cdt_handled = false;
             if face_data.inner_wires().is_empty() {
                 let pos_save = merged.positions.len();
