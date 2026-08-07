@@ -1,7 +1,7 @@
-# E5b: Stable WASM error codes (deferred design)
+# E5b: Stable WASM error codes
 
-Status: deferred. This document defines the decisions and migration work that
-must precede implementation. It does not change the current wire format.
+Status: implemented as the additive `executeBatchV2` contract. The legacy
+`executeBatch` wire format and direct-method errors remain unchanged.
 
 ## Context
 
@@ -26,13 +26,13 @@ stable codes require a versioned, additive API rather than an in-place edit.
 This work does not redesign operation results, add localization, expose Rust
 backtraces, or promise that every internal failure has a unique code.
 
-## Proposed contract
+## Contract
 
 Add `executeBatchV2` while retaining `executeBatch` indefinitely. A v2 item is
 one of:
 
 ```json
-{"ok": 42}
+{ "ok": 42 }
 ```
 
 ```json
@@ -40,25 +40,25 @@ one of:
   "error": {
     "code": "invalid_handle",
     "message": "invalid solid handle: index 42 is out of bounds",
-    "details": {"entity": "solid", "index": 42}
+    "details": { "entity": "solid", "index": 42 }
   }
 }
 ```
 
-The initial registry should stay deliberately small:
+The initial registry stays deliberately small:
 
-| Code | Meaning | Expected details |
-|---|---|---|
-| `invalid_json` | The batch document is not valid JSON | parser location when available |
-| `batch_limit_exceeded` | An input-size or operation-count budget was exceeded | limit and actual |
-| `missing_operation` | An item has no valid `op` field | operation index |
-| `unknown_operation` | The operation name is unsupported | operation name |
-| `invalid_argument` | An argument is missing, non-finite, out of range, or the wrong type | argument name when known |
-| `invalid_handle` | A handle does not resolve to a live entity of the required kind | entity and index |
-| `topology_error` | Referenced topology is absent or inconsistent | entity context when safe |
-| `operation_failed` | A modeling algorithm refused or failed the request | operation name |
-| `resource_limit_exceeded` | A lower-layer import or model budget was exceeded | resource, limit, and actual |
-| `internal_error` | A failure cannot be safely classified | no unstable internals required |
+| Code                      | Meaning                                                             | Expected details               |
+| ------------------------- | ------------------------------------------------------------------- | ------------------------------ |
+| `invalid_json`            | The batch document is not valid JSON                                | parser location when available |
+| `batch_limit_exceeded`    | An input-size or operation-count budget was exceeded                | limit and actual               |
+| `missing_operation`       | An item has no valid `op` field                                     | operation index                |
+| `unknown_operation`       | The operation name is unsupported                                   | operation name                 |
+| `invalid_argument`        | An argument is missing, non-finite, out of range, or the wrong type | argument name when known       |
+| `invalid_handle`          | A handle does not resolve to a live entity of the required kind     | entity and index               |
+| `topology_error`          | Referenced topology is absent or inconsistent                       | entity context when safe       |
+| `operation_failed`        | A modeling algorithm refused or failed the request                  | operation name                 |
+| `resource_limit_exceeded` | A lower-layer import or model budget was exceeded                   | resource, limit, and actual    |
+| `internal_error`          | A failure cannot be safely classified                               | no unstable internals required |
 
 Codes are lowercase ASCII snake case and never contain operation-specific
 prose. New codes may be added. Existing meanings must not be broadened or
@@ -99,14 +99,18 @@ first and leave existing thrown errors untouched.
 6. Fuzz malformed batches and verify both entry points execute the same valid
    operations and never panic.
 
-## Decisions required before implementation
+## Resolved decisions
 
-- Whether v2 returns a bare array like v1 or a top-level object carrying a
-  schema version.
-- Which lower-layer conditions deserve their own stable code at launch.
-- Whether `details` is always an object or may be omitted.
-- Whether operation indices belong on every error or only batch-level errors.
-- The long-term direct-method error representation in JavaScript.
+- V2 returns the same bare array as v1. Versioning is carried by the additive
+  method name, so successful envelopes remain identical.
+- The ten codes above are the launch registry. Typed I/O resource-limit errors
+  receive `resource_limit_exceeded`; lower-layer conditions without stable
+  typed context keep a broader code.
+- `details` is always an object, including when it is empty.
+- Every per-operation error includes `operationIndex` and `operation`. Parse
+  and whole-batch limit errors include only the context meaningful to them.
+- Direct-method `JsError` representation is unchanged and remains a separate
+  compatibility decision.
 
-Until those decisions are approved, `{"error": string}` remains the public
-batch contract.
+The published consumer schema and registry are in the book's WebAssembly
+chapter.

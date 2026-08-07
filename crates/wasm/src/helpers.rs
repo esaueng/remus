@@ -13,7 +13,7 @@ use brepkit_operations::tessellate;
 use brepkit_topology::Topology;
 use wasm_bindgen::prelude::*;
 
-use crate::error::WasmError;
+use crate::error::{StructuredWasmError, WasmError};
 use crate::handles::face_id_to_u32;
 use crate::shapes::JsMesh;
 
@@ -106,10 +106,10 @@ pub fn parse_boolean_op(op: &str) -> Result<BooleanOp, JsError> {
 }
 
 /// Extract a required `f64` value from a JSON object.
-pub fn get_f64(args: &serde_json::Value, key: &str) -> Result<f64, String> {
-    args[key]
-        .as_f64()
-        .ok_or_else(|| format!("missing or invalid '{key}'"))
+pub fn get_f64(args: &serde_json::Value, key: &str) -> Result<f64, StructuredWasmError> {
+    args[key].as_f64().ok_or_else(|| {
+        StructuredWasmError::invalid_argument(format!("missing or invalid '{key}'"), Some(key))
+    })
 }
 
 /// Extract a required array of `f64` from a JSON object.
@@ -118,15 +118,25 @@ pub fn get_f64(args: &serde_json::Value, key: &str) -> Result<f64, String> {
 ///
 /// Returns a message naming `key` if it is missing or not an array, or
 /// naming the offending index if an element is not a number.
-pub fn get_f64_array(args: &serde_json::Value, key: &str) -> Result<Vec<f64>, String> {
+pub fn get_f64_array(args: &serde_json::Value, key: &str) -> Result<Vec<f64>, StructuredWasmError> {
     args[key]
         .as_array()
-        .ok_or_else(|| format!("missing or invalid '{key}' array"))?
+        .ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("missing or invalid '{key}' array"),
+                Some(key),
+            )
+        })?
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            v.as_f64()
-                .ok_or_else(|| format!("{key}[{i}] is not a number"))
+            v.as_f64().ok_or_else(|| {
+                let argument = format!("{key}[{i}]");
+                StructuredWasmError::invalid_argument(
+                    format!("{argument} is not a number"),
+                    Some(&argument),
+                )
+            })
         })
         .collect()
 }
@@ -137,27 +147,45 @@ pub fn get_f64_array(args: &serde_json::Value, key: &str) -> Result<Vec<f64>, St
 ///
 /// Returns a message naming `key` if it is missing or not an array, or
 /// naming the offending index if an element is not a `u32`.
-pub fn get_u32_array(args: &serde_json::Value, key: &str) -> Result<Vec<u32>, String> {
+pub fn get_u32_array(args: &serde_json::Value, key: &str) -> Result<Vec<u32>, StructuredWasmError> {
     args[key]
         .as_array()
-        .ok_or_else(|| format!("missing or invalid '{key}' array"))?
+        .ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("missing or invalid '{key}' array"),
+                Some(key),
+            )
+        })?
         .iter()
         .enumerate()
         .map(|(i, v)| {
             v.as_u64()
                 .and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(|| format!("{key}[{i}] is not a u32"))
+                .ok_or_else(|| {
+                    let argument = format!("{key}[{i}]");
+                    StructuredWasmError::invalid_argument(
+                        format!("{argument} is not a u32"),
+                        Some(&argument),
+                    )
+                })
         })
         .collect()
 }
 
 /// Extract a required `u32` value from a JSON object.
-pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, String> {
+pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, StructuredWasmError> {
     args[key]
         .as_u64()
-        .ok_or_else(|| format!("missing or invalid '{key}'"))
+        .ok_or_else(|| {
+            StructuredWasmError::invalid_argument(format!("missing or invalid '{key}'"), Some(key))
+        })
         .and_then(|value| {
-            u32::try_from(value).map_err(|_| format!("'{key}' exceeds the u32 range"))
+            u32::try_from(value).map_err(|_| {
+                StructuredWasmError::invalid_argument(
+                    format!("'{key}' exceeds the u32 range"),
+                    Some(key),
+                )
+            })
         })
 }
 
@@ -847,7 +875,7 @@ mod parsing_tests {
 
         assert!(matches!(
             get_u32(&args, "solid"),
-            Err(error) if error.contains("exceeds the u32 range")
+            Err(error) if error.message().contains("exceeds the u32 range")
         ));
     }
 }
