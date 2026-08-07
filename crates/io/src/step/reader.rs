@@ -1199,6 +1199,15 @@ impl<'a> StepBuilder<'a> {
         let end_vp = self.build_vertex_point(refs[1])?;
 
         let curve = self.build_curve_geometry(refs[2])?;
+        // EDGE_CURVE's fifth attribute, `same_sense`, is the trailing
+        // .T./.F. flag. `.F.` means the edge runs start → end AGAINST its
+        // curve's own parameterization, so the curve is canonicalized to
+        // brepkit's orientation convention here. See `canonicalize_sense`.
+        let curve = if orientation_is_reversed(&attrs) {
+            canonicalize_sense(curve)
+        } else {
+            curve
+        };
 
         let edge_id = self.topo.add_edge(Edge::new(start_vp, end_vp, curve));
 
@@ -2086,6 +2095,47 @@ fn orientation_is_reversed(attrs: &str) -> bool {
     tail.ends_with(".F.") || tail.ends_with(".FALSE.")
 }
 
+/// Re-express a curve read from a `same_sense = .F.` `EDGE_CURVE` in
+/// brepkit's own orientation convention.
+///
+/// ISO 10303-42 lets an `EDGE_CURVE` run *against* its curve's
+/// parameterization and records that in `same_sense`. brepkit's topology has
+/// no matching flag, and deliberately so: an [`Edge`] owns its [`EdgeCurve`]
+/// outright — nothing is shared between edges — so the orientation has
+/// exactly one place to live, and every consumer already assumes the stored
+/// parameterization runs start → end. The STEP writer depends on that same
+/// invariant, which is why it can emit a constant `.T.`. A `.F.` edge is
+/// therefore canonicalized on import by reversing the curve itself, rather
+/// than by carrying a sense bit that a hundred call sites could forget to
+/// consult.
+///
+/// Which curve types actually need reversing follows from whether the
+/// endpoints alone pin down the traversal:
+///
+/// - `Circle` and `Ellipse` are periodic, so they genuinely need it.
+///   `EdgeCurve::domain_with_endpoints` reduces the sweep with
+///   `rem_euclid(TAU)` and so always returns the counter-clockwise arc; for a
+///   `.F.` edge that is the complement of the intended one, and a short
+///   fillet arc comes back as very nearly the whole circle.
+/// - `NurbsCurve` needs it too. An open sub-span recovers its direction by
+///   projecting both endpoints, but an edge spanning the curve's full domain
+///   matches its natural ends in either orientation and takes the forward
+///   domain regardless, so a `.F.` edge would be sampled backwards.
+/// - `Line` is interpolated between the two vertices and has no stored
+///   direction of its own, so reversal is a no-op.
+/// - `Hyperbola` and `Parabola` are unbounded and never closed. Both project
+///   their endpoints through an exact closed-form inverse and return the span
+///   as-is, reversed (`t₀ > t₁`) when that is what the vertices say, so they
+///   already trace start → end.
+fn canonicalize_sense(curve: EdgeCurve) -> EdgeCurve {
+    match curve {
+        EdgeCurve::Circle(c) => EdgeCurve::Circle(c.reversed()),
+        EdgeCurve::Ellipse(e) => EdgeCurve::Ellipse(e.reversed()),
+        EdgeCurve::NurbsCurve(n) => EdgeCurve::NurbsCurve(n.reversed()),
+        other @ (EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => other,
+    }
+}
+
 /// Extract all `#NNN` references from an attribute string.
 fn parse_refs(attrs: &str) -> Vec<u64> {
     let mut refs = Vec::new();
@@ -2784,6 +2834,42 @@ mod tests {
     fn parse_refs_basic() {
         let refs = parse_refs("'', #10, #20, #30");
         assert_eq!(refs, vec![10, 20, 30]);
+    }
+
+    /// `EDGE_CURVE.same_sense` is read with the same trailing-flag helper as
+    /// `ORIENTED_EDGE.orientation`, so it has to survive the way real
+    /// exporters write the statement — compact, without spaces.
+    #[test]
+    fn edge_curve_same_sense_flag() {
+        assert!(orientation_is_reversed("'',#1,#2,#3,.F.)"));
+        assert!(orientation_is_reversed("'', #1, #2, #3, .F.)"));
+        assert!(!orientation_is_reversed("'',#1,#2,#3,.T.)"));
+        // A name that happens to end in the flag's text is not the flag.
+        assert!(!orientation_is_reversed("'arc.F.',#1,#2,#3,.T.)"));
+    }
+
+    #[test]
+    fn canonicalize_sense_reverses_only_the_orientable_curves() {
+        let circle = brepkit_math::curves::Circle3D::new(
+            brepkit_math::vec::Point3::new(0.0, 0.0, 0.0),
+            brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .expect("valid circle");
+        let EdgeCurve::Circle(reversed) = canonicalize_sense(EdgeCurve::Circle(circle.clone()))
+        else {
+            panic!("a circle should stay a circle");
+        };
+        assert!((reversed.normal() + circle.normal()).length() < 1e-12);
+        // The point set is untouched; only the direction of travel changes.
+        assert!((reversed.evaluate(0.5) - circle.evaluate(-0.5)).length() < 1e-12);
+
+        // A line is interpolated between its vertices and has no stored
+        // direction to reverse.
+        assert!(matches!(
+            canonicalize_sense(EdgeCurve::Line),
+            EdgeCurve::Line
+        ));
     }
 
     #[test]

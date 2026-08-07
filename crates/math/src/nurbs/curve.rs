@@ -156,6 +156,40 @@ impl NurbsCurve {
         &self.weights
     }
 
+    /// The same curve traced the other way round.
+    ///
+    /// Control points and weights are reversed and the knot vector is
+    /// mirrored inside its own span (`kᵢ′ = k_first + k_last − k_{m−i}`), so
+    /// the domain endpoints are unchanged and
+    /// `reversed().evaluate(u₀ + u₁ − t)` equals `evaluate(t)`. The point set,
+    /// degree, knot multiplicities and rationality all survive intact — only
+    /// the direction of travel flips.
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        // Non-empty by construction: `new` requires
+        // `knots.len() == control_points.len() + degree + 1`, and a curve with
+        // no control points cannot satisfy that for any degree.
+        let span = match (self.knots.first(), self.knots.last()) {
+            (Some(&first), Some(&last)) => first + last,
+            _ => return self.clone(),
+        };
+        let mut knots: Vec<f64> = self.knots.iter().rev().map(|&k| span - k).collect();
+        // Mirroring is exact for the ends; clamp them back so an accumulated
+        // rounding wobble cannot shrink or grow the reported domain.
+        if let (Some(first), Some(&original_first)) = (knots.first_mut(), self.knots.first()) {
+            *first = original_first;
+        }
+        if let (Some(last), Some(&original_last)) = (knots.last_mut(), self.knots.last()) {
+            *last = original_last;
+        }
+        Self {
+            degree: self.degree,
+            knots,
+            control_points: self.control_points.iter().rev().copied().collect(),
+            weights: self.weights.iter().rev().copied().collect(),
+        }
+    }
+
     /// Validate the stored rational weights.
     ///
     /// This is useful after deserialization, which reconstructs private fields
@@ -353,6 +387,50 @@ mod tests {
                 .iter()
                 .all(|v| v.x().is_finite() && v.y().is_finite() && v.z().is_finite())
         );
+    }
+
+    #[test]
+    fn reversed_traces_the_same_points_backwards() {
+        // A non-uniform, rational, multi-span curve, so the knot mirroring and
+        // the weight reversal both have to be right for this to pass.
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 2.5, 4.0, 4.0, 4.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 2.0, 0.5),
+                Point3::new(3.0, 2.0, -1.0),
+                Point3::new(4.0, 0.0, 0.25),
+                Point3::new(6.0, 1.0, 2.0),
+            ],
+            vec![1.0, 0.5, 2.0, 1.0, 3.0],
+        )
+        .expect("valid curve");
+
+        let reversed = curve.reversed();
+        let (u0, u1) = curve.domain();
+        assert!((reversed.domain().0 - u0).abs() < 1e-12);
+        assert!((reversed.domain().1 - u1).abs() < 1e-12);
+        assert_eq!(reversed.degree(), curve.degree());
+        assert!(reversed.is_rational());
+
+        for i in 0..=20 {
+            let t = u0 + (u1 - u0) * f64::from(i) / 20.0;
+            let mirrored = u0 + u1 - t;
+            assert!(
+                (reversed.evaluate(mirrored) - curve.evaluate(t)).length() < 1e-9,
+                "sample {i} diverges"
+            );
+        }
+        // Endpoints swap exactly.
+        assert!((reversed.evaluate(u0) - curve.evaluate(u1)).length() < 1e-12);
+        assert!((reversed.evaluate(u1) - curve.evaluate(u0)).length() < 1e-12);
+        // Reversing twice is the identity.
+        let round_trip = reversed.reversed();
+        for i in 0..=10 {
+            let t = u0 + (u1 - u0) * f64::from(i) / 10.0;
+            assert!((round_trip.evaluate(t) - curve.evaluate(t)).length() < 1e-12);
+        }
     }
 
     /// A cubic Bezier curve (single span): control points form a simple shape.

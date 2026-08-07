@@ -1002,3 +1002,48 @@ fn hyperbola_min_curvature_radius_matches_the_vertex_value() {
     assert!((r - want).abs() < 1e-12 * want, "{r} vs {want}");
     assert!(p.min_curvature_radius(1.0, 3.0) > want);
 }
+
+// ── Reversal ───────────────────────────────────────────────────
+
+#[test]
+fn circle_reversed_traces_the_same_points_backwards() {
+    let circle = Circle3D::new(
+        Point3::new(1.0, -2.0, 0.5),
+        Vec3::new(0.3, -0.5, 0.81),
+        4.25,
+    )
+    .unwrap();
+    let reversed = circle.reversed();
+
+    for i in 0..32 {
+        let t = PI * f64::from(i) / 8.0;
+        assert!((reversed.evaluate(t) - circle.evaluate(-t)).length() < 1e-12);
+    }
+    // The tangent flips, which is the point of the operation.
+    assert!((reversed.tangent(0.0) + circle.tangent(0.0)).length() < 1e-12);
+    // The phase does not: `u_axis` is left alone, so the seam stays put.
+    assert!((reversed.evaluate(0.0) - circle.evaluate(0.0)).length() < 1e-12);
+    assert!((reversed.normal() + circle.normal()).length() < 1e-12);
+    assert!((reversed.reversed().normal() - circle.normal()).length() < 1e-12);
+}
+
+#[test]
+fn ellipse_reversed_traces_the_same_points_backwards() {
+    let ellipse = Ellipse3D::new(
+        Point3::new(0.0, 3.0, -1.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        6.0,
+        2.5,
+    )
+    .unwrap();
+    let reversed = ellipse.reversed();
+
+    for i in 0..32 {
+        let t = PI * f64::from(i) / 8.0;
+        assert!((reversed.evaluate(t) - ellipse.evaluate(-t)).length() < 1e-12);
+    }
+    // The major axis keeps both its direction and its extent.
+    assert!((reversed.u_axis() - ellipse.u_axis()).length() < 1e-12);
+    assert!((reversed.semi_major() - ellipse.semi_major()).abs() < 1e-12);
+    assert!((reversed.evaluate(0.0) - ellipse.evaluate(0.0)).length() < 1e-12);
+}
