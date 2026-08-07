@@ -241,6 +241,20 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             .or_insert_with(|| topo.add_vertex(Vertex::new(anchor, tol.linear)));
     }
 
+    // ── Winding-loop opening pre-pass ───────────────────────────────
+    // A closed NURBS intersection loop that WINDS a periodic face's u is a
+    // band separator there, not a hole, and the band wires need a vertex on
+    // that face's seam. A NURBS cannot be re-anchored the way the circles
+    // above are, so it is opened into arcs instead. Computed once for the
+    // whole result and applied to every face, so both sides of a shared curve
+    // carry identical arcs and merge_duplicate_edges can pair their edges.
+    let winding_loop_cuts = compute_winding_loop_cuts(topo, arena);
+    for &cut in &winding_loop_cuts {
+        pb_vertex_registry
+            .entry(qpos(cut))
+            .or_insert_with(|| topo.add_vertex(Vertex::new(cut, tol.linear)));
+    }
+
     // No boundary edge cache — each face creates its own edges with its own
     // vertices. Cross-face edge sharing is handled by merge_duplicate_edges
     // in builder_solid. Sharing edges across parent faces via a position-pair
@@ -356,6 +370,38 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             presplit_sections_at_registry(&sections, &section_split_registry, tol.linear)
         } else {
             sections
+        };
+        let sections = if winding_loop_cuts.is_empty() {
+            sections
+        } else {
+            let surface = topo.face(face_id).map(|f| f.surface().clone());
+            let pts: Vec<Point3> = topo
+                .face(face_id)
+                .ok()
+                .and_then(|f| topo.wire(f.outer_wire()).ok())
+                .map(|w| {
+                    w.edges()
+                        .iter()
+                        .filter_map(|oe| {
+                            topo.edge(oe.edge())
+                                .ok()
+                                .and_then(|e| topo.vertex(e.start()).ok())
+                                .map(brepkit_topology::vertex::Vertex::point)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            match surface {
+                Ok(surface) => presplit_closed_winding_loops(
+                    &sections,
+                    &winding_loop_cuts,
+                    &surface,
+                    rank,
+                    &pts,
+                    tol.linear,
+                ),
+                Err(_) => sections,
+            }
         };
 
         if std::env::var("BK_SECS").is_ok() {
@@ -1225,6 +1271,403 @@ fn seam_anchor_on_circle(
     let on_circle = (radial.length() - circle.radius()).abs() < SEAM_ON_CIRCLE_TOL
         && radial.dot(circle.normal()).abs() < SEAM_ON_CIRCLE_TOL;
     on_circle.then_some(anchor)
+}
+
+/// How much of a turn a closed loop must cover before it counts as winding
+/// the face's period. A genuine separator covers a full turn; the slack
+/// absorbs projection noise, and nothing legitimate sits near half a turn.
+const WINDING_LOOP_MIN_TURN: f64 = 1.5 * std::f64::consts::PI;
+
+/// Points that OPEN the closed, period-winding intersection loops of a face
+/// so it can band-split on them.
+///
+/// A closed curve that winds a cylinder/cone lateral's `u` bounds no disc
+/// there — it separates the lateral into bands, and the band wires join
+/// consecutive separators with segments along the face's SEAM. So the loop
+/// needs a vertex on that seam. A closed circle gets one by re-anchoring
+/// ([`compute_seam_anchors`]); a NURBS has no equivalent, since it carries its
+/// own start parameter and `domain_with_endpoints` traces a closed edge from
+/// there whatever vertices the edge claims. So the loop is opened instead, at
+/// the seam meridian and at the antipodal one.
+///
+/// TWO cuts, not one. A single cut leaves `start == end`, which every
+/// `domain_with_endpoints` reads as "closed" and traces from the curve's own
+/// natural start again — the very thing being fixed.
+///
+/// The points are returned for the whole result rather than per face: both
+/// faces sharing an FF curve must split it at identical 3D points, or
+/// `merge_duplicate_edges` cannot pair their edges and the shell opens.
+///
+/// The decision is per FACE, and only made when that face's whole section set
+/// is closed winding NURBS loops that are STRICTLY ordered in `v` — i.e. when
+/// the band reading is the one that will actually be taken. Opening a loop is
+/// not free: it makes `sections_form_winding_chain` see the winding it was
+/// blind to, which vetoes the internal-loops path. A face whose loops merely
+/// wind, without bounding bands between them, must keep that path.
+///
+/// The equal-radius cross-drill is exactly that face. Its two rims are the
+/// quadratic's ±√ envelopes, which wind the SHAFT (each sweeps the shaft's
+/// full turn) but meet where the envelopes cross, so no band lies between
+/// them; the disc-per-loop reading is right there and measures correctly.
+/// Restricted to NURBS curves for the same reason: a closed CIRCLE on a
+/// lateral also winds `u` — that is the ordinary constant-`v` band cut — and
+/// it already has the re-anchoring path.
+fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena) -> Vec<Point3> {
+    use brepkit_math::traits::ParametricCurve;
+    use std::f64::consts::{PI, TAU};
+
+    const SAMPLES: usize = 256;
+    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+
+    let mut by_face: BTreeMap<FaceId, Vec<usize>> = BTreeMap::new();
+    for (idx, curve_ds) in arena.curves.iter().enumerate() {
+        for fid in [curve_ds.face_a, curve_ds.face_b] {
+            by_face.entry(fid).or_default().push(idx);
+        }
+    }
+
+    let mut cuts = Vec::new();
+    for (fid, curve_idxs) in by_face {
+        let Ok(face) = topo.face(fid) else { continue };
+        let surface = face.surface();
+        if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+            continue;
+        }
+        let Some(seam_u) = face_seam_u(topo, face) else {
+            continue;
+        };
+
+        // Every section on this face must be a closed winding NURBS loop:
+        // anything else and the band assembly would have sections it cannot
+        // place, so it will decline and the opening would be pure damage.
+        let mut loops: Vec<(usize, Vec<(f64, f64)>)> = Vec::new();
+        for idx in curve_idxs {
+            let Some(curve_ds) = arena.curves.get(idx) else {
+                loops.clear();
+                break;
+            };
+            let EdgeCurve::NurbsCurve(nurbs) = &curve_ds.curve else {
+                loops.clear();
+                break;
+            };
+            if equal_radius_cylinder_pair(topo, curve_ds.face_a, curve_ds.face_b) {
+                // EQUAL-radius cylinders are the degenerate case: their
+                // intersection is not a quartic space curve but a pair of
+                // PLANAR conics, and `algebraic_cylinder_cylinder` does not
+                // return those. Its +/-sqrt branches survive the whole sweep
+                // there, so what comes back is the pair's upper and lower
+                // ENVELOPES — each half of one conic joined to half of the
+                // other, with a tangent break where the branches swap.
+                //
+                // Envelopes wind, so they look like separators, but they meet
+                // at the swap points and bound no band between them. The
+                // disc-per-loop reading is the right one for that case and
+                // measures it exactly (a Steinmetz cross-drill reads 704.263
+                // against a closed form of 704.230); opening the loops would
+                // take that reading away. Nothing distinguishes the two
+                // configurations locally — at bore r=2.999 the loops sit
+                // 0.155 apart and at r=3 they sit 0.114 apart, on faces of the
+                // same scale — so the exact degeneracy is the test.
+                loops.clear();
+                break;
+            }
+            let (d0, d1) = ParametricCurve::domain(nurbs);
+            if (ParametricCurve::evaluate(nurbs, d0) - ParametricCurve::evaluate(nurbs, d1))
+                .length()
+                > SEAM_ON_CIRCLE_TOL
+            {
+                loops.clear();
+                break; // open curve: it has real endpoints already
+            }
+            // Winding, from samples ALONG the curve. Endpoint-to-endpoint is
+            // zero on any closed loop, which is why the winding of these rims
+            // went unnoticed in the first place.
+            let mut uv = Vec::with_capacity(SAMPLES + 1);
+            for k in 0..=SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let t = d0 + (d1 - d0) * (k as f64 / SAMPLES as f64);
+                let Some(p) = surface.project_point(ParametricCurve::evaluate(nurbs, t)) else {
+                    break;
+                };
+                uv.push(p);
+            }
+            if uv.len() != SAMPLES + 1 {
+                loops.clear();
+                break;
+            }
+            let winding: f64 = uv.windows(2).map(|w| wrap(w[1].0 - w[0].0)).sum();
+            if winding.abs() < WINDING_LOOP_MIN_TURN {
+                loops.clear();
+                break;
+            }
+            loops.push((idx, uv));
+        }
+        if loops.len() < 2 {
+            // A lone separator splits the lateral in two, which the chain-band
+            // path already handles from its own seam anchoring; opening is
+            // only needed to stack THREE or more bands.
+            continue;
+        }
+
+        // Strictly ordered in v at every u, or there is no band between them.
+        loops.sort_by(|a, b| {
+            mean_v(&a.1)
+                .partial_cmp(&mean_v(&b.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let gap = brepkit_math::tolerance::Tolerance::new().linear * 100.0;
+        if loops
+            .windows(2)
+            .any(|w| !loops_strictly_ordered(&w[0].1, &w[1].1, gap))
+        {
+            continue;
+        }
+
+        for (idx, _) in &loops {
+            let Some(EdgeCurve::NurbsCurve(nurbs)) = arena.curves.get(*idx).map(|c| &c.curve)
+            else {
+                continue;
+            };
+            let (d0, d1) = ParametricCurve::domain(nurbs);
+            // One crossing of each target meridian per turn. Bisect the
+            // bracketing sample interval on the signed offset from it.
+            let mut found = Vec::new();
+            for target in [seam_u, seam_u + TAU / 3.0, seam_u + 2.0 * TAU / 3.0] {
+                let f = |t: f64| -> Option<f64> {
+                    surface
+                        .project_point(ParametricCurve::evaluate(nurbs, t))
+                        .map(|(u, _)| wrap(u - target))
+                };
+                #[allow(clippy::cast_precision_loss)]
+                let at = |k: usize| d0 + (d1 - d0) * (k as f64 / SAMPLES as f64);
+                // First consecutive pair straddling the meridian. A sample
+                // landing exactly ON it leaves its neighbours sharing a sign,
+                // so the crossing is missed and the loop opens only partly —
+                // the caller requires all three cuts and leaves it closed, so
+                // that case simply keeps the pre-existing route rather than
+                // half-opening. (Widening this to a nearest-sample search does
+                // find them, but it then routes bodies the tessellator cannot
+                // yet mesh watertight; see the note on the through-bore band.)
+                let Some(k) = (0..SAMPLES).find(|&k| {
+                    let (Some(a), Some(b)) = (f(at(k)), f(at(k + 1))) else {
+                        return false;
+                    };
+                    a != 0.0 && b != 0.0 && (a > 0.0) != (b > 0.0) && (a - b).abs() < PI
+                }) else {
+                    continue;
+                };
+                let (mut lo, mut hi) = (at(k), at(k + 1));
+                let Some(f_lo) = f(lo) else { continue };
+                for _ in 0..60 {
+                    let tm = f64::midpoint(lo, hi);
+                    let Some(fm) = f(tm) else { break };
+                    if (fm > 0.0) == (f_lo > 0.0) {
+                        lo = tm;
+                    } else {
+                        hi = tm;
+                    }
+                }
+                found.push(ParametricCurve::evaluate(nurbs, f64::midpoint(lo, hi)));
+            }
+            // Both cuts or neither: one alone leaves a still-closed loop.
+            // All three or none: a partial set leaves an arc spanning half a
+            // turn or more, and every winding sum in the splitter is taken
+            // from arc endpoints, where `wrap_pi` cannot tell +pi from -pi.
+            // A single pi-wide arc folds the wrong way and cancels the rest of
+            // the loop to exactly zero.
+            if found.len() == 3 {
+                cuts.append(&mut found);
+            }
+        }
+    }
+    cuts
+}
+
+/// Whether both faces of an intersection curve are cylinders of the SAME
+/// radius — the degenerate pair whose intersection collapses to two conics.
+fn equal_radius_cylinder_pair(topo: &Topology, a: FaceId, b: FaceId) -> bool {
+    let radius = |f: FaceId| match topo.face(f).map(Face::surface) {
+        Ok(FaceSurface::Cylinder(c)) => Some(c.radius()),
+        _ => None,
+    };
+    match (radius(a), radius(b)) {
+        (Some(ra), Some(rb)) => (ra - rb).abs() <= SEAM_ON_CIRCLE_TOL * ra.abs().max(1.0),
+        _ => false,
+    }
+}
+
+/// Mean `v` of a loop's `(u, v)` samples — the ordering key for stacking
+/// separators, which is well defined because they never cross.
+fn mean_v(samples: &[(f64, f64)]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = samples.len() as f64;
+    samples.iter().map(|&(_, v)| v).sum::<f64>() / n
+}
+
+/// Whether `lo` stays below `hi` by more than `gap` at every `u` either one
+/// visits — compared against the neighbour's `v` at its nearest sampled `u`,
+/// so it holds all the way round the period and not just where they happen to
+/// share a sample.
+fn loops_strictly_ordered(lo: &[(f64, f64)], hi: &[(f64, f64)], gap: f64) -> bool {
+    use std::f64::consts::{PI, TAU};
+    let wrap = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+    let v_at = |s: &[(f64, f64)], u: f64| -> Option<f64> {
+        s.iter()
+            .min_by(|a, b| {
+                wrap(a.0 - u)
+                    .abs()
+                    .partial_cmp(&wrap(b.0 - u).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|&(_, v)| v)
+    };
+    lo.iter()
+        .all(|&(u, v)| v_at(hi, u).is_some_and(|h| h - v > gap))
+        && hi
+            .iter()
+            .all(|&(u, v)| v_at(lo, u).is_some_and(|l| v - l > gap))
+}
+
+/// The `u` of `face`'s seam meridian — the generator a periodic face was cut
+/// open along — from its first non-degenerate boundary `Line`.
+fn face_seam_u(topo: &Topology, face: &Face) -> Option<f64> {
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    for oe in wire.edges() {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            continue;
+        };
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        let sp = topo.vertex(edge.start()).ok()?.point();
+        let ep = topo.vertex(edge.end()).ok()?.point();
+        if (sp - ep).length() > SEAM_DEGENERATE_TOL {
+            return face.surface().project_point(sp).map(|(u, _)| u);
+        }
+    }
+    None
+}
+
+/// Open every closed section loop that [`compute_winding_loop_cuts`] found a
+/// cut set for, into arcs between consecutive cuts.
+///
+/// Each arc gets its OWN sub-curve, carved out with
+/// [`brepkit_math::nurbs::knot_ops::curve_split`] (exact — knot insertion, no
+/// re-fitting), rather than a start/end pair on the shared closed one. That is
+/// not tidiness: on a closed curve the seam parameter is AMBIGUOUS, since the
+/// point at `d₀` is the point at `d₁`. The arc that ends at the seam and the
+/// arc that starts there project to the same pair, so
+/// `domain_with_endpoints` cannot tell which of the two complementary arcs an
+/// edge means — it falls back to the FULL domain, and the edge silently
+/// becomes the whole loop again. Downstream that let
+/// `split_arc_edges_at_collinear_vertices` re-cut the piece at every OTHER
+/// arc's endpoints (a 4-arc hole wire came back with 12 edges and repeats,
+/// and `normalize_face_wires` dropped it).
+///
+/// Sub-curves keep the parent's parameter range, so the pieces stay ordered by
+/// parameter — which is what orders points on a closed curve at all; the chord
+/// projection [`presplit_sections_at_registry`] uses degenerates there.
+///
+/// The rank's pcurve is recomputed per piece so the 2D and 3D agree. The other
+/// rank's is left alone: each face reads only its own, and each face runs this
+/// itself.
+///
+/// Applied to EVERY face's sections, not just the periodic one that needed the
+/// cuts, so both sides of a shared curve carry the same arcs.
+fn presplit_closed_winding_loops(
+    sections: &[crate::builder::split_types::SectionEdge],
+    cuts: &[Point3],
+    surface: &FaceSurface,
+    rank: Rank,
+    wire_pts: &[Point3],
+    tol: f64,
+) -> Vec<crate::builder::split_types::SectionEdge> {
+    use brepkit_math::traits::ParametricCurve;
+
+    let weld = tol * 100.0;
+    let mut out = Vec::with_capacity(sections.len() + cuts.len());
+    for s in sections {
+        let EdgeCurve::NurbsCurve(nurbs) = &s.curve_3d else {
+            out.push(s.clone());
+            continue;
+        };
+        if (s.start - s.end).length() > weld {
+            out.push(s.clone());
+            continue;
+        }
+        let (d0, d1) = ParametricCurve::domain(nurbs);
+        let margin = (d1 - d0) * 1e-6;
+        let mut ts: Vec<f64> = cuts
+            .iter()
+            .filter_map(|p| {
+                let hit = brepkit_math::nurbs::projection::project_point_to_curve(nurbs, *p, 1e-9)
+                    .ok()?;
+                (hit.distance <= weld && hit.parameter > d0 + margin && hit.parameter < d1 - margin)
+                    .then_some(hit.parameter)
+            })
+            .collect();
+        ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        ts.dedup_by(|a, b| (*a - *b).abs() < margin);
+        if ts.len() < 2 {
+            out.push(s.clone());
+            continue;
+        }
+        let bounds: Vec<f64> = std::iter::once(d0).chain(ts).chain([d1]).collect();
+        let Some(pieces) = split_nurbs_at(nurbs, &bounds) else {
+            out.push(s.clone());
+            continue;
+        };
+        for sub in pieces {
+            let (a0, a1) = ParametricCurve::domain(&sub);
+            let (start, end) = (
+                ParametricCurve::evaluate(&sub, a0),
+                ParametricCurve::evaluate(&sub, a1),
+            );
+            let curve_3d = EdgeCurve::NurbsCurve(sub);
+            let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
+                &curve_3d, start, end, surface, wire_pts, None,
+            );
+            let mut piece = s.clone();
+            piece.curve_3d = curve_3d;
+            piece.start = start;
+            piece.end = end;
+            match rank {
+                Rank::A => piece.pcurve_a = pcurve,
+                Rank::B => piece.pcurve_b = pcurve,
+            }
+            piece.start_uv_a = None;
+            piece.end_uv_a = None;
+            piece.start_uv_b = None;
+            piece.end_uv_b = None;
+            piece.pave_block_id = None;
+            out.push(piece);
+        }
+    }
+    out
+}
+
+/// Carve `curve` into the sub-curves between consecutive `bounds` (which must
+/// start at the curve's `d₀` and end at its `d₁`). `None` if any split fails,
+/// so the caller can leave the section whole rather than lose part of it.
+fn split_nurbs_at(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    bounds: &[f64],
+) -> Option<Vec<brepkit_math::nurbs::curve::NurbsCurve>> {
+    use brepkit_math::nurbs::knot_ops::curve_split;
+
+    let mut rest = curve.clone();
+    let mut pieces = Vec::with_capacity(bounds.len() - 1);
+    // Interior bounds only: the ends already bound the first and last piece.
+    for &t in &bounds[1..bounds.len() - 1] {
+        let (left, right) = curve_split(&rest, t).ok()?;
+        pieces.push(left);
+        rest = right;
+    }
+    pieces.push(rest);
+    Some(pieces)
 }
 
 fn build_section_map(topo: &Topology, arena: &GfaArena) -> HashMap<FaceId, Vec<SectionSource>> {

@@ -1272,19 +1272,36 @@ fn split_sections_at_seam_meridian(
     out
 }
 
-/// Split a u-periodic cylinder/cone lateral into TWO bands along a
-/// seam-anchored section chain that winds the periodic direction — the chain
-/// generalization of [`split_periodic_face_into_bands`], whose separator must
-/// be a closed circle. Mirrors its structure: same boundary preconditions
-/// (two closed rim circles + seam lines), same per-band wire shape
-/// (rim, seam, separator, seam), same precomputed interior points.
+/// Split a u-periodic cylinder/cone lateral into STACKED BANDS along every
+/// section chain that winds the periodic direction — the chain generalization
+/// of [`split_periodic_face_into_bands`], whose separators must be closed
+/// circles at constant `v`. Mirrors its structure: same boundary
+/// preconditions (two closed rim circles + seam lines), same per-band wire
+/// shape (lower separator, seam up, upper separator, seam down), same
+/// precomputed interior points.
+///
+/// `N` separators give `N + 1` bands and the caller's classification keeps
+/// whichever are material. ONE separator is the circle-outside cone∪box fuse's
+/// wavy band. TWO is a lateral drilled clean THROUGH: on a cross-drilled
+/// shaft's bore tube the entry rim and the exit rim each wind the bore's
+/// period once, and the tube the drill leaves inside the shaft is the middle
+/// band. Reading those rims as contractible holes instead — what the
+/// internal-loops path does with them — builds a disc off each rim and drops
+/// the whole tube between them.
 ///
 /// Returns `None` (caller falls through) unless: the boundary is exactly two
-/// closed rims + seam edges; ALL sections belong to one winding chain; the
+/// closed rims + seam edges; EVERY section belongs to a winding chain; each
 /// chain has a vertex on the seam meridian (the seam-anchoring pre-step
-/// guarantees this for winding chains); and every chain sample stays
-/// strictly between the rims.
-#[allow(clippy::too_many_lines)]
+/// guarantees this for winding chains); every chain sample stays strictly
+/// between the rims; and the chains are strictly ordered in `v` at every `u`.
+///
+/// That last condition is what keeps the EQUAL-radius cross-drill out. There
+/// the two breakout rims meet at the saddle points, so there is no band
+/// between them — and they do not wind either (the quadratic's ±√ branches are
+/// the upper and lower envelopes, each doubling back over half the tube), so
+/// they never reach here in the first place. Both readings agree, and that
+/// case keeps the disc-per-loop treatment that measures it correctly.
+#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 fn split_periodic_face_by_winding_chain(
     surface: &FaceSurface,
     boundary_edges: &[OrientedPCurveEdge],
@@ -1301,11 +1318,9 @@ fn split_periodic_face_by_winding_chain(
     }
     let close_tol = tol * 100.0;
 
-    let (chain, _winding) = winding_section_chain(sections, surface, tol)?;
-    if chain.len() != sections.len() {
-        // Sections outside the chain would be silently dropped — defer.
-        return None;
-    }
+    // Every section must belong to a winding chain: a leftover piece would be
+    // silently dropped by the band assembly below.
+    let chains = winding_section_chains(sections, surface, tol)?;
 
     // Boundary: exactly two closed rim circles plus seam Line edges.
     let mut boundary_circles: Vec<&OrientedPCurveEdge> = Vec::new();
@@ -1340,40 +1355,9 @@ fn split_periodic_face_by_winding_chain(
         return None;
     }
 
-    // Rotate the chain to start at its seam-anchored vertex.
-    let traversal_start = |&(idx, fwd): &(usize, bool)| -> Point3 {
-        let s = &sections[idx];
-        if fwd { s.start } else { s.end }
-    };
-    let seam_pos = chain.iter().position(|entry| {
-        surface
-            .project_point(traversal_start(entry))
-            .is_some_and(|(u, _)| wrap_pi(u - seam_u).abs() < 1e-6)
-    })?;
-    let mut chain: Vec<(usize, bool)> = chain;
-    chain.rotate_left(seam_pos);
-    let (_, v_x) = surface.project_point(traversal_start(&chain[0]))?;
-
-    // Every chain sample must sit strictly between the rims, and the chain's
-    // v profile is recorded per sample for the interior-point lookup below.
-    let mut samples_uv: Vec<(f64, f64)> = Vec::new();
-    for &(idx, _) in &chain {
-        let s = &sections[idx];
-        for k in 0..=8 {
-            let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
-            let t = d0 + (d1 - d0) * (f64::from(k) / 8.0);
-            let p = s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
-            let (u, v) = surface.project_point(p)?;
-            if v < v_bot + close_tol || v > v_top - close_tol {
-                return None;
-            }
-            samples_uv.push((u, v));
-        }
-    }
-
-    // Traversal tangent of the chain at its seam start, compared with the
-    // bottom rim's traversal tangent there (the circle-band rule): the chain
-    // list as ordered plays the LOWER role when aligned, else it is flipped.
+    // Reference traversal tangent: how the bottom rim runs at the seam. A
+    // chain aligned with it plays the LOWER role as listed, else it is
+    // flipped (the circle-band rule).
     let ref_tan = {
         let EdgeCurve::Circle(c) = &bot_edge.curve_3d else {
             return None;
@@ -1381,62 +1365,161 @@ fn split_periodic_face_by_winding_chain(
         let t = c.tangent(c.project(bot_edge.start_3d));
         if bot_edge.forward { t } else { -t }
     };
-    let chain_tan = {
-        let (idx, fwd) = chain[0];
+
+    let traversal_start = |&(idx, fwd): &(usize, bool)| -> Point3 {
         let s = &sections[idx];
-        let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
-        let t_at = if fwd { d0 } else { d1 };
-        let tan = s.curve_3d.tangent_with_endpoints(t_at, s.start, s.end);
-        if fwd { tan } else { -tan }
+        if fwd { s.start } else { s.end }
     };
-    let chain_is_lower_role = chain_tan.dot(ref_tan) > 0.0;
 
-    // Materialize the chain as pcurve edges in a given traversal direction,
-    // walking UV u with nearest-copy continuity from the seam.
-    let build_chain = |as_ordered: bool| -> Option<Vec<OrientedPCurveEdge>> {
-        let entries: Vec<(usize, bool)> = if as_ordered {
-            chain.clone()
-        } else {
-            chain.iter().rev().map(|&(i, f)| (i, !f)).collect()
-        };
-        let mut out = Vec::with_capacity(entries.len());
-        let mut u_prev = seam_u;
-        for (idx, fwd) in entries {
+    // One separator per winding chain: seam-anchored, sampled, and
+    // materialized in both traversal roles.
+    struct Separator {
+        /// `v` where the separator meets the seam meridian.
+        v_seam: f64,
+        /// The separator's own 3D vertex on the seam. Re-evaluating the
+        /// surface there instead would land up to the section curve's FIT
+        /// error away, and a shallow breakout rim (a narrow cross-drill) misses
+        /// by more than the vertex quantum — the seam segment then gets its own
+        /// duplicate vertices and the band's wire does not close.
+        seam_3d: Point3,
+        /// `(u, v)` samples along the separator, for ordering and interiors.
+        samples: Vec<(f64, f64)>,
+        lower: Vec<OrientedPCurveEdge>,
+        upper: Vec<OrientedPCurveEdge>,
+    }
+    let mut separators: Vec<Separator> = Vec::with_capacity(chains.len());
+
+    for chain in chains {
+        // Rotate the chain to start at its seam-anchored vertex.
+        let seam_pos = chain.iter().position(|entry| {
+            surface
+                .project_point(traversal_start(entry))
+                .is_some_and(|(u, _)| wrap_pi(u - seam_u).abs() < 1e-6)
+        })?;
+        let mut chain: Vec<(usize, bool)> = chain;
+        chain.rotate_left(seam_pos);
+        let (_, v_seam) = surface.project_point(traversal_start(&chain[0]))?;
+
+        // Every chain sample must sit strictly between the rims, and the
+        // chain's v profile is recorded per sample for the ordering test and
+        // the interior-point lookup below.
+        let mut samples: Vec<(f64, f64)> = Vec::new();
+        for &(idx, _) in &chain {
             let s = &sections[idx];
-            let (from, to) = if fwd {
-                (s.start, s.end)
-            } else {
-                (s.end, s.start)
-            };
-            let (u_raw0, v0) = surface.project_point(from)?;
-            let (u_raw1, v1) = surface.project_point(to)?;
-            let u0 = u_prev + wrap_pi(u_raw0 - u_prev);
-            let u1 = u0 + wrap_pi(u_raw1 - u_raw0);
-            u_prev = u1;
-            let pcurve = match rank {
-                Rank::A => s.pcurve_a.clone(),
-                Rank::B => s.pcurve_b.clone(),
-            };
-            out.push(OrientedPCurveEdge {
-                curve_3d: s.curve_3d.clone(),
-                pcurve,
-                start_uv: Point2::new(u0, v0),
-                end_uv: Point2::new(u1, v1),
-                start_3d: from,
-                end_3d: to,
-                forward: fwd,
-                source_edge_idx: None,
-                pave_block_id: s.pave_block_id,
-            });
+            for k in 0..=8 {
+                let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
+                let t = d0 + (d1 - d0) * (f64::from(k) / 8.0);
+                let p = s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
+                let (u, v) = surface.project_point(p)?;
+                if v < v_bot + close_tol || v > v_top - close_tol {
+                    return None;
+                }
+                samples.push((u, v));
+            }
         }
-        Some(out)
-    };
-    let chain_lower = build_chain(chain_is_lower_role)?;
-    let chain_upper = build_chain(!chain_is_lower_role)?;
 
-    let mk_seam = |va: f64, vb: f64| -> Option<OrientedPCurveEdge> {
-        let pa = surface.evaluate(seam_u, va)?;
-        let pb = surface.evaluate(seam_u, vb)?;
+        let chain_tan = {
+            let (idx, fwd) = chain[0];
+            let s = &sections[idx];
+            let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
+            let t_at = if fwd { d0 } else { d1 };
+            let tan = s.curve_3d.tangent_with_endpoints(t_at, s.start, s.end);
+            if fwd { tan } else { -tan }
+        };
+        // Aligned with the bottom rim's traversal ⇒ the chain plays the LOWER
+        // role as listed (the circle-band rule). A REVERSED face takes the
+        // opposite winding: its normal is flipped, so a wire wound like the
+        // un-reversed face's would traverse every shared edge the same way its
+        // neighbour does instead of the opposite way, and the shell reads as
+        // inconsistently oriented. Tool faces in a Cut are exactly that — a
+        // cross-drill's bore tube is the tool's lateral, reversed to face into
+        // the void.
+        let chain_is_lower_role = (chain_tan.dot(ref_tan) > 0.0) != reversed;
+
+        // Materialize the chain as pcurve edges in a given traversal
+        // direction, walking UV u with nearest-copy continuity from the seam.
+        let build_chain = |as_ordered: bool| -> Option<Vec<OrientedPCurveEdge>> {
+            let entries: Vec<(usize, bool)> = if as_ordered {
+                chain.clone()
+            } else {
+                chain.iter().rev().map(|&(i, f)| (i, !f)).collect()
+            };
+            let mut out = Vec::with_capacity(entries.len());
+            let mut u_prev = seam_u;
+            for (idx, fwd) in entries {
+                let s = &sections[idx];
+                let (from, to) = if fwd {
+                    (s.start, s.end)
+                } else {
+                    (s.end, s.start)
+                };
+                let (u_raw0, v0) = surface.project_point(from)?;
+                let (u_raw1, v1) = surface.project_point(to)?;
+                let u0 = u_prev + wrap_pi(u_raw0 - u_prev);
+                let u1 = u0 + wrap_pi(u_raw1 - u_raw0);
+                u_prev = u1;
+                let pcurve = match rank {
+                    Rank::A => s.pcurve_a.clone(),
+                    Rank::B => s.pcurve_b.clone(),
+                };
+                out.push(OrientedPCurveEdge {
+                    curve_3d: s.curve_3d.clone(),
+                    pcurve,
+                    start_uv: Point2::new(u0, v0),
+                    end_uv: Point2::new(u1, v1),
+                    start_3d: from,
+                    end_3d: to,
+                    forward: fwd,
+                    source_edge_idx: None,
+                    pave_block_id: s.pave_block_id,
+                });
+            }
+            Some(out)
+        };
+        separators.push(Separator {
+            v_seam,
+            seam_3d: traversal_start(&chain[0]),
+            samples,
+            lower: build_chain(chain_is_lower_role)?,
+            upper: build_chain(!chain_is_lower_role)?,
+        });
+    }
+
+    separators.sort_by(|a, b| {
+        a.v_seam
+            .partial_cmp(&b.v_seam)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // The separators must be strictly ordered in v at EVERY u, not merely
+    // where they cross the seam: two that touch or cross bound no band, and
+    // stacking them anyway would emit overlapping sub-faces. Compared sample
+    // by sample against the neighbour's v at the nearest u.
+    let v_at = |sep: &Separator, u: f64| -> Option<f64> {
+        sep.samples
+            .iter()
+            .min_by(|a, b| {
+                wrap_pi(a.0 - u)
+                    .abs()
+                    .partial_cmp(&wrap_pi(b.0 - u).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|&(_, v)| v)
+    };
+    for w in separators.windows(2) {
+        for &(u, v_lo) in &w[0].samples {
+            if v_at(&w[1], u)? - v_lo < close_tol {
+                return None;
+            }
+        }
+        for &(u, v_hi) in &w[1].samples {
+            if v_hi - v_at(&w[0], u)? < close_tol {
+                return None;
+            }
+        }
+    }
+
+    let mk_seam = |va: f64, vb: f64, pa: Point3, pb: Point3| -> Option<OrientedPCurveEdge> {
         let dir = brepkit_math::vec::Vec2::new(0.0, if vb > va { 1.0 } else { -1.0 });
         let pcurve = brepkit_math::curves2d::Curve2D::Line(
             brepkit_math::curves2d::Line2D::new(Point2::new(seam_u, va), dir).ok()?,
@@ -1454,51 +1537,180 @@ fn split_periodic_face_by_winding_chain(
         })
     };
 
-    // Interior points: the chain's v at the antipodal meridian, from the
-    // sample nearest u = seam_u + π.
+    // Levels bottom-to-top: the bottom rim, each separator, the top rim. A
+    // rim plays both roles unchanged and holds one v everywhere; a separator
+    // carries its two traversals and its v at the antipodal meridian, where
+    // the band interiors are sampled.
     let u_q = (seam_u + PI).rem_euclid(TAU);
-    let v_at_q = samples_uv
-        .iter()
-        .min_by(|a, b| {
-            wrap_pi(a.0 - u_q)
-                .abs()
-                .partial_cmp(&wrap_pi(b.0 - u_q).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|&(_, v)| v)?;
-    let lower_interior = surface.evaluate(u_q, f64::midpoint(v_bot, v_at_q))?;
-    let upper_interior = surface.evaluate(u_q, f64::midpoint(v_at_q, v_top))?;
+    /// One boundary of a band: a rim or a separator, in both traversal roles.
+    struct Level {
+        /// `v` where it meets the seam meridian.
+        v_seam: f64,
+        /// `v` at the antipodal meridian, where band interiors are sampled.
+        v_antipodal: f64,
+        /// Its 3D vertex on the seam.
+        seam_3d: Point3,
+        lower: Vec<OrientedPCurveEdge>,
+        upper: Vec<OrientedPCurveEdge>,
+    }
+    let rim_level = |edge: &OrientedPCurveEdge, v: f64| Level {
+        v_seam: v,
+        v_antipodal: v,
+        seam_3d: edge.start_3d,
+        lower: vec![edge.clone()],
+        upper: vec![edge.clone()],
+    };
+    let mut levels: Vec<Level> = Vec::with_capacity(separators.len() + 2);
+    levels.push(rim_level(bot_edge, v_bot));
+    for sep in separators {
+        levels.push(Level {
+            v_seam: sep.v_seam,
+            v_antipodal: v_at(&sep, u_q)?,
+            seam_3d: sep.seam_3d,
+            lower: sep.lower,
+            upper: sep.upper,
+        });
+    }
+    levels.push(rim_level(top_edge, v_top));
 
-    // Lower band: bottom rim, seam up to the chain's seam vertex, the chain
-    // in the upper role, seam back down. Upper band symmetric.
-    let mut lower_wire = vec![bot_edge.clone(), mk_seam(v_bot, v_x)?];
-    lower_wire.extend(chain_upper);
-    lower_wire.push(mk_seam(v_x, v_bot)?);
-    let mut upper_wire = chain_lower;
-    upper_wire.push(mk_seam(v_x, v_top)?);
-    upper_wire.push(top_edge.clone());
-    upper_wire.push(mk_seam(v_top, v_x)?);
-
-    Some(vec![
-        SplitSubFace {
+    // Each band: its lower level in the lower role, seam up, its upper level
+    // in the upper role, seam back down.
+    let mut bands = Vec::with_capacity(levels.len() - 1);
+    for w in levels.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        let mut wire = a.lower.clone();
+        wire.push(mk_seam(a.v_seam, b.v_seam, a.seam_3d, b.seam_3d)?);
+        wire.extend(b.upper.iter().cloned());
+        wire.push(mk_seam(b.v_seam, a.v_seam, b.seam_3d, a.seam_3d)?);
+        bands.push(SplitSubFace {
             surface: surface.clone(),
-            outer_wire: lower_wire,
+            outer_wire: wire,
             inner_wires: Vec::new(),
             reversed,
             parent: face_id,
             rank,
-            precomputed_interior: Some(lower_interior),
-        },
-        SplitSubFace {
-            surface: surface.clone(),
-            outer_wire: upper_wire,
-            inner_wires: Vec::new(),
-            reversed,
-            parent: face_id,
-            rank,
-            precomputed_interior: Some(upper_interior),
-        },
-    ])
+            precomputed_interior: Some(
+                surface.evaluate(u_q, f64::midpoint(a.v_antipodal, b.v_antipodal))?,
+            ),
+        });
+    }
+    Some(bands)
+}
+
+/// Every disjoint section chain that closes and WINDS the surface's periodic
+/// `u`, as `(piece index, traversed start→end)` entries. Returns `None` unless
+/// EVERY section belongs to one of them — a leftover piece would be silently
+/// dropped by the band assembly that consumes this.
+///
+/// [`winding_section_chain`] stops at the first winding chain because its
+/// callers only ask whether one exists. A lateral drilled clean THROUGH
+/// carries two, and both are band separators.
+fn winding_section_chains(
+    sections: &[SectionEdge],
+    surface: &FaceSurface,
+    tol: f64,
+) -> Option<Vec<Vec<(usize, bool)>>> {
+    use std::collections::HashMap;
+    use std::f64::consts::{PI, TAU};
+
+    let (Some(_), _) = super::pcurve_compute::surface_periods(surface) else {
+        return None;
+    };
+    if sections.is_empty() {
+        return None;
+    }
+    let proj_u = |p: Point3| -> Option<f64> { surface.project_point(p).map(|(u, _)| u) };
+    let qscale = 1.0 / tol.max(1e-12);
+    let q3 = |p: Point3| -> (i64, i64, i64) {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+            (p.z() * qscale).round() as i64,
+        )
+    };
+    let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
+
+    // Endpoint-keyed adjacency: (piece index, leaves-from-start).
+    let mut adj: HashMap<(i64, i64, i64), Vec<(usize, bool)>> = HashMap::new();
+    for (i, s) in sections.iter().enumerate() {
+        adj.entry(q3(s.start)).or_default().push((i, true));
+        adj.entry(q3(s.end)).or_default().push((i, false));
+    }
+
+    let mut used = vec![false; sections.len()];
+    let mut chains = Vec::new();
+    for start in 0..sections.len() {
+        if used[start] {
+            continue;
+        }
+        let mut winding = 0.0_f64;
+        let mut cur = start;
+        let mut forward = true;
+        let origin = q3(sections[start].start);
+        let mut closed = false;
+        let mut chain: Vec<(usize, bool)> = Vec::new();
+        for _ in 0..sections.len() {
+            used[cur] = true;
+            chain.push((cur, forward));
+            let s = &sections[cur];
+            let (from, to) = if forward {
+                (s.start, s.end)
+            } else {
+                (s.end, s.start)
+            };
+            let (Some(u0), Some(u1)) = (proj_u(from), proj_u(to)) else {
+                return None;
+            };
+            winding += wrap_pi(u1 - u0);
+            let to_key = q3(to);
+            if to_key == origin {
+                closed = true;
+                break;
+            }
+            let Some(next) = adj
+                .get(&to_key)
+                .and_then(|c| c.iter().find(|(j, _)| !used[*j]))
+            else {
+                break;
+            };
+            forward = next.1;
+            cur = next.0;
+        }
+        // A chain that fails to close, or closes without winding, is not a
+        // band separator — and since it consumed sections, no partition of
+        // this face into bands exists.
+        if !closed || winding.abs() <= PI {
+            return None;
+        }
+        chains.push(chain);
+    }
+    (!chains.is_empty()).then_some(chains)
+}
+
+/// Whether every section endpoint is shared by exactly two sections — the
+/// sections form closed chains among themselves and reach nothing else.
+fn sections_form_closed_chains(sections: &[SectionEdge], tol: f64) -> bool {
+    use std::collections::HashMap;
+
+    if sections.is_empty() {
+        return false;
+    }
+    let qscale = 1.0 / tol.max(1e-12);
+    let q3 = |p: Point3| -> (i64, i64, i64) {
+        (
+            (p.x() * qscale).round() as i64,
+            (p.y() * qscale).round() as i64,
+            (p.z() * qscale).round() as i64,
+        )
+    };
+    let mut degree: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    for s in sections {
+        // A closed single-section loop meets itself at one point, which counts
+        // as both of that point's two incidences.
+        *degree.entry(q3(s.start)).or_insert(0) += 1;
+        *degree.entry(q3(s.end)).or_insert(0) += 1;
+    }
+    degree.values().all(|&d| d == 2)
 }
 
 /// Whether the sections chain into a loop that WINDS the surface's periodic
@@ -4910,13 +5122,53 @@ fn split_face_2d_impl(
     } else {
         // Non-plane faces: check if all section endpoints are off the
         // boundary in UV space.
+        //
+        // The SEAM is excluded from "the boundary" here. It is the generator a
+        // periodic surface was cut open along, not an edge of the region: the
+        // surface runs straight through it, and a closed section loop that
+        // crosses it is still a closed loop bounding a hole. Counting it made
+        // a cross-drilled shaft's wall lose this path outright — the bore's
+        // seam meridian meets the shaft's own seam wherever the two seams
+        // share a half-plane, so opening the bore rims put one opening point
+        // exactly on the wall's seam and the whole face fell to the wire
+        // builder, which wove both holes into one 26-edge wire.
         let uv_tol = 0.01; // ~0.6 deg in angular coordinates
-        let endpoints_internal = sections.iter().all(|s| {
-            let start_on_boundary =
-                is_point_on_boundary_uv(s.start, &surface, &boundary_edges, uv_tol);
-            let end_on_boundary = is_point_on_boundary_uv(s.end, &surface, &boundary_edges, uv_tol);
-            !start_on_boundary && !end_on_boundary
-        });
+        let internal_against = |boundary: &[OrientedPCurveEdge]| {
+            sections.iter().all(|s| {
+                !is_point_on_boundary_uv(s.start, &surface, boundary, uv_tol)
+                    && !is_point_on_boundary_uv(s.end, &surface, boundary, uv_tol)
+            })
+        };
+        // A section endpoint sitting on the SEAM is not a connection to the
+        // face's real boundary. The seam is the generator a periodic surface
+        // was cut open along; the surface runs straight through it, and a
+        // closed section loop that crosses it is still a closed loop bounding
+        // a hole.
+        //
+        // Only relaxed when the sections chain into CLOSED loops AMONG
+        // THEMSELVES — then nothing reaches the boundary in the graph sense
+        // and the seam crossing is incidental. Sections that genuinely end on
+        // the boundary (a wall notch's arcs landing on the rims) keep the
+        // strict test and their existing route.
+        //
+        // Without this a cross-drilled shaft's wall lost the internal-loops
+        // path outright: the bore's seam meridian meets the shaft's own seam
+        // wherever the two share a half-plane, so opening the bore rims put an
+        // opening point exactly on the wall's seam, and the whole face fell to
+        // the wire builder, which wove both holes into one 26-edge wire.
+        let endpoints_internal = internal_against(&boundary_edges)
+            || (u_periodic
+                && sections_form_closed_chains(sections, tol.linear)
+                && internal_against(
+                    &boundary_edges
+                        .iter()
+                        .filter(|e| {
+                            boundary_seam_u(std::slice::from_ref(*e), &surface, tol.linear)
+                                .is_none()
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                ));
         // Winding veto: on a u-periodic lateral, a section chain that winds
         // the full period is a band separator, not a contractible hole — an
         // annulus loop with winding number 1 bounds no disc. Treating it as

@@ -185,32 +185,33 @@ fn the_circle_outside_cone_box_fuse_is_still_declined() {
     );
 }
 
-/// The bore radii the exact integrator still does not measure correctly, with
-/// the quadrature truths written out so a fix has something to land on.
+/// Both halves of the defect, closed: the drilled shaft measures its closed
+/// form at every bore radius, not just at `bore == R`.
 ///
-/// This is NOT a tessellation problem and NOT the dispatch defect the rest of
-/// this file covers — with the analytic path restored these read 750.651763
-/// and 802.579475, and they were the same before the dispatch regression too.
-/// The cause is upstream in the B-rep: `algebraic_cylinder_cylinder`
-/// (crates/math/src/analytic_intersection.rs) samples the two cylinders'
-/// intersection at 128 angular stations, DROPS the stations where the ring
-/// misses without recording that a gap was there, then closes one NURBS
-/// through the survivors. For `bore < R` the two openings are disjoint, so the
-/// fitted curve runs from one lobe to the other through solid material — 1.25
-/// mm off a 3 mm shaft at bore r=2, 2.96 mm at r=1. No integrator can recover
-/// the right volume from a hole outlined that far from where it is. At
-/// `bore == R` no station is dropped, which is why only that radius has ever
-/// measured right.
+/// The first half was the CURVE. `algebraic_cylinder_cylinder`
+/// (crates/math/src/analytic_intersection.rs) swept cylinder 1's full 2π and
+/// concatenated every surviving sample into one loop, chording across the
+/// angular windows where the quadratic has no real root, so for `bore < R` the
+/// fitted curve ran from one lobe to the other through solid material — 2.96 mm
+/// off a 3 mm shaft at bore r=1. Fixed by emitting one loop per window (#112).
 ///
-/// Splitting the samples into contiguous windows fixes the curves (deviation
-/// falls to 1.5e-4) but leaves the two rims disjoint on the BORE cylinder,
-/// where the face splitter cannot yet pair two period-wrapping rims into one
-/// band and drops the middle of the tube. Both halves are needed.
+/// The second half was the FACE SPLITTER, not the measurement. Seen from the
+/// BORE cylinder those two rims are closed loops that WIND its `u` period once
+/// each, and a period-winding loop bounds no disc — it separates the lateral
+/// into bands, with the tube the drill leaves inside the shaft as the middle
+/// one. `split_face_2d` read them as contractible holes instead, built a disc
+/// off each rim and dropped the tube between them. The census hid it: 5 faces,
+/// a wall with 2 inner wires and 2 bore-tube faces LOOKS right. What gave it
+/// away was that the mesh carried 20 boundary edges and `classify_point` put
+/// the bore's centre INSIDE the solid — the bore was never carved, so no
+/// integrator could have recovered its volume.
+///
+/// `1e-4` relative is the residual chording of the rims' own polylines, not
+/// slack: measured 704.263359 / 777.295044 / 829.646153 against 704.230016 /
+/// 777.293907 / 829.646029.
 #[test]
-#[ignore = "B-rep defect upstream of measurement: algebraic_cylinder_cylinder \
-            splices the two disjoint bore lobes into one curve for bore < R"]
 fn a_cross_drilled_shaft_measures_its_closed_form_at_every_bore_radius() {
-    for bore in [3.0_f64, 2.0, 1.0] {
+    for bore in [3.0_f64, 2.0, 1.0, 0.5] {
         let (topo, solid) = cross_drilled_shaft(bore);
         let expected = stock() - shared_volume(R, bore);
         let v = solid_volume(&topo, solid, 0.08).unwrap();
@@ -220,5 +221,59 @@ fn a_cross_drilled_shaft_measures_its_closed_form_at_every_bore_radius() {
              ({:+.4} %)",
             (v - expected) / expected * 100.0
         );
+    }
+}
+
+/// The bore is actually CARVED — the check the volume alone cannot make.
+///
+/// A body measured as un-bored stock and a body whose bore is missing from the
+/// B-rep read the same on any integrator, and the face census reads the same
+/// too. Ray-casting at points that encode the intent separates them: the bore's
+/// axis is void, the material beside it is not.
+#[test]
+fn a_cross_drilled_shaft_has_its_bore_carved_out() {
+    use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
+
+    let opts = ClassifyOptions::default();
+    for bore in [3.0_f64, 2.0, 1.0, 0.5] {
+        let (topo, solid) = cross_drilled_shaft(bore);
+        let mut probes = vec![
+            // On the bore's axis at mid-height: removed at every radius.
+            (
+                brepkit_math::vec::Point3::new(0.0, 0.0, H / 2.0),
+                PointClassification::Outside,
+            ),
+            // Off-axis but still down the bore: removed too — this is the one
+            // that catches a tube whose MIDDLE was dropped.
+            (
+                brepkit_math::vec::Point3::new(0.9 * R, 0.0, H / 2.0),
+                PointClassification::Outside,
+            ),
+            // Well clear of the bore along the shaft: kept.
+            (
+                brepkit_math::vec::Point3::new(0.0, 0.0, H / 6.0),
+                PointClassification::Inside,
+            ),
+        ];
+        if bore < R {
+            // Beside the bore, still inside the shaft: kept. Only exists when
+            // the bore is narrower than the shaft — at equal radii the bore's
+            // section at mid-height is the shaft's whole disc.
+            probes.push((
+                brepkit_math::vec::Point3::new(0.0, f64::midpoint(bore, R), H / 2.0),
+                PointClassification::Inside,
+            ));
+        }
+        for (p, want) in probes {
+            let got = classify_point(&topo, solid, p, &opts).unwrap();
+            assert_eq!(
+                got,
+                want,
+                "bore r={bore}: ({:.3},{:.3},{:.3}) classified {got:?}, expected {want:?}",
+                p.x(),
+                p.y(),
+                p.z()
+            );
+        }
     }
 }

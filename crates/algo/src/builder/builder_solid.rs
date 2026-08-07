@@ -2061,6 +2061,45 @@ fn split_edges_at_collinear_vertices(
     let mut line_edges: Vec<(EdgeId, VertexId, VertexId, Point3, Point3)> = Vec::new();
     let mut seen_edges: HashSet<EdgeId> = HashSet::new();
 
+    // A boundary used TWICE by ONE face and by nothing else is a SEAM — the
+    // generator a periodic face was cut open along. Refining a seam buys
+    // nothing: there is no second face whose partition it has to match. And it
+    // COSTS, because the splitting vertex is already in the global vertex set,
+    // so the split adds an edge with no vertex to pay for it and the solid's
+    // Euler characteristic comes out ODD — which the acceptance gate reads as
+    // malformed and falls the whole boolean back to mesh.
+    //
+    // That bites whenever a cut's seam meridian shares a half-plane with the
+    // face's own. A shaft cross-drilled on axis is exactly that: the bore's
+    // breakout rim crosses the shaft's seam, and the rim's vertex there splits
+    // it.
+    //
+    // Keyed by POSITION pair, not edge id: a face's two traversals of its seam
+    // are still separate edge entities at this stage — they only become one in
+    // `merge_duplicate_edges` below — so an id-keyed test would never see them
+    // as a pair.
+    let mut seam_pairs: HashMap<QPosEdge, Vec<usize>> = HashMap::new();
+    for (fi, &fid) in face_ids.iter().enumerate() {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let e = topo.edge(oe.edge())?;
+                let qs = quantize_point(topo.vertex(e.start())?.point(), tol);
+                let qe = quantize_point(topo.vertex(e.end())?.point(), tol);
+                seam_pairs
+                    .entry(if qs <= qe { (qs, qe) } else { (qe, qs) })
+                    .or_default()
+                    .push(fi);
+            }
+        }
+    }
+    let is_seam = |sp: Point3, ep: Point3| -> bool {
+        let (qs, qe) = (quantize_point(sp, tol), quantize_point(ep, tol));
+        seam_pairs
+            .get(&if qs <= qe { (qs, qe) } else { (qe, qs) })
+            .is_some_and(|u| u.len() == 2 && u[0] == u[1])
+    };
+
     for &fid in face_ids.iter() {
         let face = topo.face(fid)?;
         let wids: Vec<WireId> = std::iter::once(face.outer_wire())
@@ -2076,7 +2115,7 @@ fn split_edges_at_collinear_vertices(
                 let ep = topo.vertex(ev)?.point();
                 vert_at.entry(quantize_point(sp, tol)).or_insert((sv, sp));
                 vert_at.entry(quantize_point(ep, tol)).or_insert((ev, ep));
-                if is_line && seen_edges.insert(oe.edge()) {
+                if is_line && !is_seam(sp, ep) && seen_edges.insert(oe.edge()) {
                     line_edges.push((oe.edge(), sv, ev, sp, ep));
                 }
             }
