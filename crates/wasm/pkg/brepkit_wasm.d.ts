@@ -1,5 +1,30 @@
 /* tslint:disable */
 /* eslint-disable */
+
+/** Stable error codes returned by `executeBatchV2`. */
+export type BatchErrorCodeV2 =
+| "invalid_json"
+| "batch_limit_exceeded"
+| "missing_operation"
+| "unknown_operation"
+| "invalid_argument"
+| "invalid_handle"
+| "topology_error"
+| "operation_failed"
+| "resource_limit_exceeded"
+| "internal_error";
+
+/** Machine-readable error returned by `executeBatchV2`. */
+export interface BatchErrorV2 {
+    code: BatchErrorCodeV2;
+    message: string;
+    details: Record<string, string | number | boolean | null>;
+}
+
+/** One parsed item in the JSON string returned by `executeBatchV2`. */
+export type BatchResultV2 = { ok: unknown } | { error: BatchErrorV2 };
+
+
 /**
  * A final-result face whose source could not be established.
  */
@@ -935,6 +960,16 @@ export class BrepKernel {
      * prevent execution of subsequent operations.
      */
     executeBatch(json: string): string;
+    /**
+     * Execute a batch and return stable machine-readable error codes.
+     *
+     * The returned JSON string contains the same bare result array and
+     * success envelopes as [`executeBatch`](Self::execute_batch). Error
+     * envelopes are additive structured objects with `code`, the unchanged
+     * human-readable `message`, and an always-present `details` object.
+     * Existing `executeBatch` behavior is unchanged.
+     */
+    executeBatchV2(json: string): string;
     /**
      * Export a solid to 3MF format (ZIP archive as bytes).
      *

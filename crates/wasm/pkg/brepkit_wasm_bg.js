@@ -1200,6 +1200,31 @@ export class BrepKernel {
         }
     }
     /**
+     * Execute a batch and return stable machine-readable error codes.
+     *
+     * The returned JSON string contains the same bare result array and
+     * success envelopes as [`executeBatch`](Self::execute_batch). Error
+     * envelopes are additive structured objects with `code`, the unchanged
+     * human-readable `message`, and an always-present `details` object.
+     * Existing `executeBatch` behavior is unchanged.
+     * @param {string} json
+     * @returns {string}
+     */
+    executeBatchV2(json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_executeBatchV2(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Export a solid to 3MF format (ZIP archive as bytes).
      *
      * Returns a `Uint8Array` in JavaScript containing the `.3mf` file.

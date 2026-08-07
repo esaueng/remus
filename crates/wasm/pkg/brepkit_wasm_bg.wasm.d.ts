@@ -67,6 +67,7 @@ export const brepkernel_evaluateEdgeCurveD1: (a: number, b: number, c: number) =
 export const brepkernel_evaluateSurface: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_evaluateSurfaceNormal: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_executeBatch: (a: number, b: number, c: number) => [number, number];
+export const brepkernel_executeBatchV2: (a: number, b: number, c: number) => [number, number];
 export const brepkernel_export3mf: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportGlb: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportIges: (a: number, b: number) => [number, number, number, number];

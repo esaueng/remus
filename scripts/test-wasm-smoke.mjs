@@ -46,6 +46,29 @@ const assertCompleteEvolution = (payload, label) => {
 const kernel = new BrepKernel();
 console.log('ok - BrepKernel created');
 
+// Stable batch-v2 errors are additive: successful envelopes match v1, while
+// v1 keeps its string error and v2 exposes the same text plus code/details.
+{
+  const input = JSON.stringify([
+    { op: 'makeBox', args: { width: 2, height: 3, depth: 4 } },
+    { op: 'volume', args: { solid: 0, deflection: 0.1 } },
+    { op: 'volume', args: { solid: 99, deflection: 0.1 } },
+  ]);
+  const legacy = JSON.parse(new BrepKernel().executeBatch(input));
+  const v2 = JSON.parse(new BrepKernel().executeBatchV2(input));
+  assert.deepEqual(v2.slice(0, 2), legacy.slice(0, 2));
+  assert.equal(typeof legacy[2].error, 'string');
+  assert.equal(v2[2].error.code, 'invalid_handle');
+  assert.equal(v2[2].error.message, legacy[2].error);
+  assert.deepEqual(v2[2].error.details, {
+    entity: 'solid',
+    index: 99,
+    operation: 'volume',
+    operationIndex: 2,
+  });
+  console.log('ok - executeBatchV2 stable error envelope');
+}
+
 // 2. Make a box
 const boxId = kernel.makeBox(10, 20, 30);
 assert.equal(typeof boxId, 'number', 'makeBox should return a number handle');
@@ -63,22 +86,17 @@ assert.equal(validation.errorCount, kernel.validateSolid(boxId));
 assert.equal(
   validation.issues.length,
   validation.errorCount + validation.warningCount,
-  "detailed validation should return every counted issue",
+  'detailed validation should return every counted issue',
 );
 for (const issue of validation.issues) {
   assert.ok(
-    issue.severity === "error" || issue.severity === "warning",
+    issue.severity === 'error' || issue.severity === 'warning',
     `unexpected validation severity ${issue.severity}`,
   );
-  assert.equal(typeof issue.description, "string");
+  assert.equal(typeof issue.description, 'string');
 }
-const validationWithOptions = JSON.parse(
-  kernel.validateSolidDetailedWithOptions(boxId, 10),
-);
-assert.equal(
-  validationWithOptions.errorCount,
-  kernel.validateSolidWithOptions(boxId, 10),
-);
+const validationWithOptions = JSON.parse(kernel.validateSolidDetailedWithOptions(boxId, 10));
+assert.equal(validationWithOptions.errorCount, kernel.validateSolidWithOptions(boxId, 10));
 console.log(
   `ok - detailed validation: ${validation.errorCount} errors, ` +
     `${validation.warningCount} warnings`,

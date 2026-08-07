@@ -17,7 +17,7 @@ use brepkit_operations::sweep::sweep;
 use brepkit_operations::transform::transform_solid;
 use brepkit_topology::edge::EdgeCurve;
 
-use crate::error::WasmError;
+use crate::error::{StructuredWasmError, WasmError};
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
@@ -31,6 +31,40 @@ use crate::kernel::BrepKernel;
 const MAX_BATCH_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum operations executed by one `executeBatch` call.
 const MAX_BATCH_OPERATIONS: usize = 10_000;
+
+#[wasm_bindgen(typescript_custom_section)]
+const BATCH_V2_TYPES: &str = r#"
+/** Stable error codes returned by `executeBatchV2`. */
+export type BatchErrorCodeV2 =
+  | "invalid_json"
+  | "batch_limit_exceeded"
+  | "missing_operation"
+  | "unknown_operation"
+  | "invalid_argument"
+  | "invalid_handle"
+  | "topology_error"
+  | "operation_failed"
+  | "resource_limit_exceeded"
+  | "internal_error";
+
+/** Machine-readable error returned by `executeBatchV2`. */
+export interface BatchErrorV2 {
+  code: BatchErrorCodeV2;
+  message: string;
+  details: Record<string, string | number | boolean | null>;
+}
+
+/** One parsed item in the JSON string returned by `executeBatchV2`. */
+export type BatchResultV2 = { ok: unknown } | { error: BatchErrorV2 };
+"#;
+
+#[derive(Clone, Copy)]
+enum BatchContract {
+    Legacy,
+    V2,
+}
+
+type BatchItemResult = Result<serde_json::Value, StructuredWasmError>;
 
 #[wasm_bindgen]
 impl BrepKernel {
@@ -61,47 +95,85 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "executeBatch")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn execute_batch(&mut self, json: &str) -> String {
+        self.execute_batch_contract(json, BatchContract::Legacy)
+    }
+
+    /// Execute a batch and return stable machine-readable error codes.
+    ///
+    /// The returned JSON string contains the same bare result array and
+    /// success envelopes as [`executeBatch`](Self::execute_batch). Error
+    /// envelopes are additive structured objects with `code`, the unchanged
+    /// human-readable `message`, and an always-present `details` object.
+    /// Existing `executeBatch` behavior is unchanged.
+    #[wasm_bindgen(js_name = "executeBatchV2")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn execute_batch_v2(&mut self, json: &str) -> String {
+        self.execute_batch_contract(json, BatchContract::V2)
+    }
+}
+
+impl BrepKernel {
+    fn execute_batch_contract(&mut self, json: &str, contract: BatchContract) -> String {
+        let results = self.execute_batch_results(json);
+        let serialized = results
+            .into_iter()
+            .map(|result| match (contract, result) {
+                (_, Ok(value)) => serde_json::json!({"ok": value}),
+                (BatchContract::Legacy, Err(error)) => {
+                    serde_json::json!({"error": error.message()})
+                }
+                (BatchContract::V2, Err(error)) => serde_json::json!({"error": error}),
+            })
+            .collect();
+        serde_json::Value::Array(serialized).to_string()
+    }
+
+    fn execute_batch_results(&mut self, json: &str) -> Vec<BatchItemResult> {
         if json.len() > MAX_BATCH_JSON_BYTES {
-            return serde_json::json!([{
-                "error": format!(
-                    "batch JSON exceeds {MAX_BATCH_JSON_BYTES} byte limit (got {})",
-                    json.len()
-                )
-            }])
-            .to_string();
+            let message = format!(
+                "batch JSON exceeds {MAX_BATCH_JSON_BYTES} byte limit (got {})",
+                json.len()
+            );
+            return vec![Err(StructuredWasmError::batch_limit(
+                message,
+                "json_bytes",
+                MAX_BATCH_JSON_BYTES,
+                json.len(),
+            ))];
         }
         let ops: Vec<serde_json::Value> = match serde_json::from_str(json) {
             Ok(v) => v,
             Err(e) => {
-                return serde_json::json!([{"error": format!("invalid JSON: {e}")}]).to_string();
+                return vec![Err(StructuredWasmError::invalid_json(&e))];
             }
         };
         if ops.len() > MAX_BATCH_OPERATIONS {
-            return serde_json::json!([{
-                "error": format!(
-                    "batch exceeds {MAX_BATCH_OPERATIONS} operation limit (got {})",
-                    ops.len()
-                )
-            }])
-            .to_string();
+            let message = format!(
+                "batch exceeds {MAX_BATCH_OPERATIONS} operation limit (got {})",
+                ops.len()
+            );
+            return vec![Err(StructuredWasmError::batch_limit(
+                message,
+                "operations",
+                MAX_BATCH_OPERATIONS,
+                ops.len(),
+            ))];
         }
 
-        let results: Vec<serde_json::Value> = ops
-            .iter()
-            .map(|entry| {
+        ops.iter()
+            .enumerate()
+            .map(|(operation_index, entry)| {
                 let op = match entry["op"].as_str() {
                     Some(s) => s,
-                    None => return serde_json::json!({"error": "missing or invalid 'op' field"}),
+                    None => {
+                        return Err(StructuredWasmError::missing_operation(operation_index));
+                    }
                 };
                 let args = &entry["args"];
-                match self.dispatch_op(op, args) {
-                    Ok(val) => serde_json::json!({"ok": val}),
-                    Err(msg) => serde_json::json!({"error": msg}),
-                }
+                self.dispatch_op(op, args)
+                    .map_err(|error| error.with_operation_context(operation_index, op))
             })
-            .collect();
-
-        serde_json::Value::Array(results).to_string()
+            .collect()
     }
 }
 
@@ -372,21 +444,21 @@ impl BrepKernel {
         &mut self,
         op: &str,
         args: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, StructuredWasmError> {
         match op {
             "makeBox" => {
                 let w = get_f64(args, "width")?;
                 let h = get_f64(args, "height")?;
                 let d = get_f64(args, "depth")?;
                 let solid = brepkit_operations::primitives::make_box(self.topo_mut(), w, h, d)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "makeCylinder" => {
                 let r = get_f64(args, "radius")?;
                 let h = get_f64(args, "height")?;
                 let solid = brepkit_operations::primitives::make_cylinder(self.topo_mut(), r, h)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "makeSphere" => {
@@ -397,7 +469,7 @@ impl BrepKernel {
                     r,
                     segments as usize,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "makeCone" => {
@@ -405,7 +477,7 @@ impl BrepKernel {
                 let tr = get_f64(args, "topRadius")?;
                 let h = get_f64(args, "height")?;
                 let solid = brepkit_operations::primitives::make_cone(self.topo_mut(), br, tr, h)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "makeTorus" => {
@@ -418,7 +490,7 @@ impl BrepKernel {
                     minor,
                     segments as usize,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "makeEllipsoid" => {
@@ -426,39 +498,42 @@ impl BrepKernel {
                 let ry = get_f64(args, "ry")?;
                 let rz = get_f64(args, "rz")?;
                 if rx <= 0.0 || ry <= 0.0 || rz <= 0.0 {
-                    return Err("rx, ry, rz must be positive".to_string());
+                    return Err(StructuredWasmError::invalid_argument(
+                        "rx, ry, rz must be positive",
+                        None,
+                    ));
                 }
                 let solid = brepkit_operations::primitives::make_sphere(self.topo_mut(), 1.0, 16)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let mat = brepkit_math::mat::Mat4::scale(rx, ry, rz);
-                transform_solid(self.topo_mut(), solid, &mat).map_err(|e| e.to_string())?;
+                transform_solid(self.topo_mut(), solid, &mat).map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "fuse" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let result = boolean(self.topo_mut(), BooleanOp::Fuse, a_id, b_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "cut" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let result = boolean(self.topo_mut(), BooleanOp::Cut, a_id, b_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "intersect" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let result = boolean(self.topo_mut(), BooleanOp::Intersect, a_id, b_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "fuseWithOptions" | "cutWithOptions" | "intersectWithOptions" => {
@@ -470,8 +545,8 @@ impl BrepKernel {
                     "cutWithOptions" => BooleanOp::Cut,
                     _ => BooleanOp::Intersect,
                 };
-                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let opts = brepkit_operations::boolean::BooleanOptions {
                     unify_faces: unify_faces.unwrap_or(true),
                     ..Default::default()
@@ -483,7 +558,7 @@ impl BrepKernel {
                     b_id,
                     opts,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "fuseWithEvolution" | "cutWithEvolution" | "intersectWithEvolution" => {
@@ -494,17 +569,17 @@ impl BrepKernel {
                     "cutWithEvolution" => BooleanOp::Cut,
                     _ => BooleanOp::Intersect,
                 };
-                let a_id = self.resolve_solid(a).map_err(|error| error.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|error| error.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let (result, evolution) = brepkit_operations::boolean::boolean_with_evolution(
                     self.topo_mut(),
                     bool_op,
                     a_id,
                     b_id,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 let evolution: serde_json::Value = serde_json::from_str(&evolution.to_json())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!({
                     "solid": solid_id_to_u32(result),
                     "evolution": evolution,
@@ -513,22 +588,24 @@ impl BrepKernel {
             "detectCoincidentFaces" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let pairs = brepkit_algo::diagnostic::detect_coincident_faces(
                     self.topo(),
                     a_id,
                     b_id,
                     brepkit_math::tolerance::Tolerance::default(),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(crate::bindings::booleans::coincident_face_pairs_to_json(
                     &pairs,
                 ))
             }
             "compoundCut" => {
                 let target = get_u32(args, "target")?;
-                let target_id = self.resolve_solid(target).map_err(|e| e.to_string())?;
+                let target_id = self
+                    .resolve_solid(target)
+                    .map_err(StructuredWasmError::from)?;
                 let tool_arr = args["tools"]
                     .as_array()
                     .ok_or("missing or invalid 'tools' array")?;
@@ -540,16 +617,16 @@ impl BrepKernel {
                             .as_u64()
                             .ok_or_else(|| format!("tools[{i}] is not a number"))
                             .map(|n| n as u32)?;
-                        self.resolve_solid(h).map_err(|e| e.to_string())
+                        self.resolve_solid(h).map_err(StructuredWasmError::from)
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
+                    .collect::<Result<Vec<_>, StructuredWasmError>>()?;
                 let result = boolean::compound_cut(
                     self.topo_mut(),
                     target_id,
                     &tools,
                     boolean::BooleanOptions::default(),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "fuseAll" => {
@@ -564,26 +641,26 @@ impl BrepKernel {
                             .as_u64()
                             .ok_or_else(|| format!("solids[{i}] is not a number"))
                             .map(|n| n as u32)?;
-                        self.resolve_solid(h).map_err(|e| e.to_string())
+                        self.resolve_solid(h).map_err(StructuredWasmError::from)
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
+                    .collect::<Result<Vec<_>, StructuredWasmError>>()?;
                 let compound = self
                     .topo_mut()
                     .add_compound(brepkit_topology::compound::Compound::new(solids));
                 let result = brepkit_operations::compound_ops::fuse_all(self.topo_mut(), compound)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "transform" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let matrix = args["matrix"]
                     .as_array()
                     .ok_or("missing or invalid 'matrix'")?;
                 if matrix.len() != 16 {
-                    return Err(format!(
-                        "matrix must have 16 elements, got {}",
-                        matrix.len()
+                    return Err(StructuredWasmError::invalid_argument(
+                        format!("matrix must have 16 elements, got {}", matrix.len()),
+                        Some("matrix"),
                     ));
                 }
                 let elems: Vec<f64> = matrix
@@ -596,24 +673,25 @@ impl BrepKernel {
                     .collect::<Result<_, _>>()?;
                 let rows = std::array::from_fn(|i| std::array::from_fn(|j| elems[i * 4 + j]));
                 let mat = Mat4(rows);
-                transform_solid(self.topo_mut(), solid_id, &mat).map_err(|e| e.to_string())?;
+                transform_solid(self.topo_mut(), solid_id, &mat)
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid_id)))
             }
             "volume" => {
                 let s = get_u32(args, "solid")?;
                 let deflection = get_f64(args, "deflection").unwrap_or(0.1);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let v = measure::solid_volume(&self.topo, solid_id, deflection)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(v))
             }
             "validateSolid" => {
                 let solid = get_u32(args, "solid")?;
                 let solid_id = self
                     .resolve_solid(solid)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let report = brepkit_operations::validate::validate_solid(&self.topo, solid_id)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let error_count = u32::try_from(report.error_count())
                     .map_err(|_| "validation error count exceeds u32".to_string())?;
                 Ok(serde_json::json!(error_count))
@@ -621,16 +699,16 @@ impl BrepKernel {
             "surfaceArea" => {
                 let s = get_u32(args, "solid")?;
                 let deflection = get_f64(args, "deflection").unwrap_or(0.1);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let a = measure::solid_surface_area(&self.topo, solid_id, deflection)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(a))
             }
             "boundingBox" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
-                let aabb =
-                    measure::solid_bounding_box(&self.topo, solid_id).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let aabb = measure::solid_bounding_box(&self.topo, solid_id)
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!([
                     aabb.min.x(),
                     aabb.min.y(),
@@ -643,16 +721,16 @@ impl BrepKernel {
             "centerOfMass" => {
                 let s = get_u32(args, "solid")?;
                 let deflection = get_f64(args, "deflection").unwrap_or(0.1);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let com = measure::solid_center_of_mass(&self.topo, solid_id, deflection)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!([com.x(), com.y(), com.z()]))
             }
             "massProperties" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
-                let props =
-                    measure::mass_properties(&self.topo, solid_id).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let props = measure::mass_properties(&self.topo, solid_id)
+                    .map_err(StructuredWasmError::from)?;
                 let (moments, axes) = props.principal_inertia();
                 Ok(serde_json::json!({
                     "volume": props.mass,
@@ -665,11 +743,11 @@ impl BrepKernel {
             "meshQuality" => {
                 let s = get_u32(args, "solid")?;
                 let deflection = get_f64(args, "deflection").unwrap_or(0.1);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let mesh = brepkit_operations::tessellate::tessellate_solid(
                     &self.topo, solid_id, deflection,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 let quality = brepkit_operations::tessellate::welded_mesh_quality(&mesh);
                 Ok(serde_json::json!({
                     "boundaryEdges": quality.boundary_edges,
@@ -680,20 +758,20 @@ impl BrepKernel {
             }
             "solidEdges" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let edges = brepkit_topology::explorer::solid_edges(&self.topo, solid_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let handles: Vec<u32> = edges.iter().map(|&e| edge_id_to_u32(e)).collect();
                 Ok(serde_json::json!(handles))
             }
             "solidToSolidDistance" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let a_id = self.resolve_solid(a).map_err(|e| e.to_string())?;
-                let b_id = self.resolve_solid(b).map_err(|e| e.to_string())?;
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
                 let result =
                     brepkit_operations::distance::solid_to_solid_distance(&self.topo, a_id, b_id)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!([
                     result.distance,
                     result.point_a.x(),
@@ -706,21 +784,21 @@ impl BrepKernel {
             }
             "copySolid" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let copy = brepkit_operations::copy::copy_solid(self.topo_mut(), solid_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(copy)))
             }
             "copyAndTransformSolid" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let matrix = args["matrix"]
                     .as_array()
                     .ok_or("missing or invalid 'matrix'")?;
                 if matrix.len() != 16 {
-                    return Err(format!(
-                        "matrix must have 16 elements, got {}",
-                        matrix.len()
+                    return Err(StructuredWasmError::invalid_argument(
+                        format!("matrix must have 16 elements, got {}", matrix.len()),
+                        Some("matrix"),
                     ));
                 }
                 let elems: Vec<f64> = matrix
@@ -738,7 +816,7 @@ impl BrepKernel {
                     solid_id,
                     &mat,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(copy)))
             }
             // ── Batch 8: new batch-dispatched operations ──────────────
@@ -746,20 +824,20 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let f = get_u32(args, "face")?;
                 let distance = get_f64(args, "distance")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let result = push_pull_face(self.topo_mut(), solid_id, face_id, distance)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "resizeCylindricalFace" => {
                 let s = get_u32(args, "solid")?;
                 let f = get_u32(args, "face")?;
                 let radius = get_f64(args, "radius")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let result = resize_cylindrical_face(self.topo_mut(), solid_id, face_id, radius)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "extrude" => {
@@ -768,10 +846,10 @@ impl BrepKernel {
                 let dy = get_f64(args, "dy").unwrap_or(0.0);
                 let dz = get_f64(args, "dz").unwrap_or(1.0);
                 let dist = get_f64(args, "distance").unwrap_or(1.0);
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let dir = Vec3::new(dx, dy, dz);
-                let solid =
-                    extrude(self.topo_mut(), face_id, dir, dist).map_err(|e| e.to_string())?;
+                let solid = extrude(self.topo_mut(), face_id, dir, dist)
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "revolve" => {
@@ -783,7 +861,7 @@ impl BrepKernel {
                 let ax = get_f64(args, "axisX").unwrap_or(0.0);
                 let ay = get_f64(args, "axisY").unwrap_or(0.0);
                 let az = get_f64(args, "axisZ").unwrap_or(1.0);
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 // Convert degrees to radians to match the direct WASM binding.
                 let solid = revolve(
                     self.topo_mut(),
@@ -792,15 +870,18 @@ impl BrepKernel {
                     Vec3::new(ax, ay, az),
                     angle_degrees.to_radians(),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "sweep" => {
                 let f = get_u32(args, "face")?;
                 let e = get_u32(args, "pathEdge")?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
-                let curve = self.extract_nurbs_curve(e).map_err(|e| e.to_string())?;
-                let solid = sweep(self.topo_mut(), face_id, &curve).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let curve = self
+                    .extract_nurbs_curve(e)
+                    .map_err(StructuredWasmError::from)?;
+                let solid =
+                    sweep(self.topo_mut(), face_id, &curve).map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "sweepWithOptions" => {
@@ -824,10 +905,10 @@ impl BrepKernel {
                 };
                 let face_id = self
                     .resolve_face(profile)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let path_curve = self
                     .extract_nurbs_curve(path_edge)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let options = super::operations::parse_sweep_options(
                     contact_mode,
                     scale_values,
@@ -840,7 +921,7 @@ impl BrepKernel {
                     &path_curve,
                     &options,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "helicalSweep" => {
@@ -858,11 +939,13 @@ impl BrepKernel {
                 let radius = get_f64(args, "radius")?;
                 let pitch = get_f64(args, "pitch")?;
                 let turns = get_f64(args, "turns")?;
-                crate::error::validate_positive(radius, "radius").map_err(|e| e.to_string())?;
-                crate::error::validate_positive(pitch, "pitch").map_err(|e| e.to_string())?;
+                crate::error::validate_positive(radius, "radius")
+                    .map_err(StructuredWasmError::from)?;
+                crate::error::validate_positive(pitch, "pitch")
+                    .map_err(StructuredWasmError::from)?;
                 let face_id = self
                     .resolve_face(profile)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::helix::helical_sweep(
                     self.topo_mut(),
                     face_id,
@@ -873,7 +956,7 @@ impl BrepKernel {
                     turns,
                     8,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "multiSectionSweep" => {
@@ -895,7 +978,7 @@ impl BrepKernel {
                 let spine_edge = get_u32(args, "spineEdge")?;
                 let spine = self
                     .extract_nurbs_curve(spine_edge)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let ruled = args["ruled"].as_bool().unwrap_or(true);
                 let sections: Vec<(brepkit_topology::face::FaceId, f64)> = faces
                     .iter()
@@ -903,7 +986,7 @@ impl BrepKernel {
                     .map(|(&h, &p)| {
                         self.resolve_face(h)
                             .map(|f| (f, p))
-                            .map_err(|e| e.to_string())
+                            .map_err(StructuredWasmError::from)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let solid = brepkit_operations::sweep::multi_section_sweep(
@@ -912,40 +995,40 @@ impl BrepKernel {
                     &sections,
                     ruled,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "guidedSweep" => {
                 let face_id = self
                     .resolve_face(get_u32(args, "face")?)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let spine = self
                     .extract_nurbs_curve(get_u32(args, "spineEdge")?)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let aux = self
                     .extract_nurbs_curve(get_u32(args, "auxEdge")?)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let solid =
                     brepkit_operations::sweep::sweep_guided(self.topo_mut(), face_id, &spine, aux)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "minkowskiSum" => {
                 let a = self
                     .resolve_solid(get_u32(args, "solidA")?)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let b = self
                     .resolve_solid(get_u32(args, "solidB")?)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let solid =
                     brepkit_operations::primitives::make_minkowski_sum(self.topo_mut(), a, b)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "projectEdges" => {
                 let solid = self
                     .resolve_solid(get_u32(args, "solid")?)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let origin = Point3::new(
                     get_f64(args, "originX")?,
                     get_f64(args, "originY")?,
@@ -972,7 +1055,7 @@ impl BrepKernel {
                     hidden_lines,
                     deflection,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 let flatten = |polys: &[Vec<brepkit_math::vec::Point2>]| -> Vec<Vec<f64>> {
                     polys
                         .iter()
@@ -987,7 +1070,7 @@ impl BrepKernel {
             "chamfer" => {
                 let s = get_u32(args, "solid")?;
                 let dist = get_f64(args, "distance")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let edge_handles: Vec<u32> = args["edges"]
                     .as_array()
                     .map(|arr| {
@@ -998,7 +1081,7 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
-                    .map(|&h| self.resolve_edge(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 // Same engine chain and panic guard as the `chamfer` binding,
                 // and as the sibling `fillet` arm below. Calling the v1
@@ -1009,9 +1092,12 @@ impl BrepKernel {
                     try_chamfer(self.topo_mut(), solid_id, &edge_ids, dist)
                 }));
                 let result = match chamfer_result {
-                    Ok(inner) => inner.map_err(|e| e.to_string())?,
+                    Ok(inner) => inner.map_err(StructuredWasmError::from)?,
                     Err(panic_info) => {
-                        return Err(panic_message(&panic_info, "Chamfer"));
+                        return Err(StructuredWasmError::operation_failed(panic_message(
+                            &panic_info,
+                            "Chamfer",
+                        )));
                     }
                 };
                 Ok(serde_json::json!(solid_id_to_u32(result)))
@@ -1019,7 +1105,7 @@ impl BrepKernel {
             "fillet" => {
                 let s = get_u32(args, "solid")?;
                 let radius = get_f64(args, "radius")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let edge_handles: Vec<u32> = args["edges"]
                     .as_array()
                     .map(|arr| {
@@ -1030,22 +1116,25 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
-                    .map(|&h| self.resolve_edge(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let fillet_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     try_fillet(self.topo_mut(), solid_id, &edge_ids, radius)
                 }));
                 let result = match fillet_result {
-                    Ok(inner) => inner.map_err(|e| e.to_string())?,
+                    Ok(inner) => inner.map_err(StructuredWasmError::from)?,
                     Err(panic_info) => {
-                        return Err(panic_message(&panic_info, "Fillet"));
+                        return Err(StructuredWasmError::operation_failed(panic_message(
+                            &panic_info,
+                            "Fillet",
+                        )));
                     }
                 };
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "filletVariable" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let specs = args["specs"]
                     .as_array()
                     .ok_or_else(|| "missing 'specs' array".to_string())?;
@@ -1055,7 +1144,9 @@ impl BrepKernel {
                         .as_u64()
                         .ok_or_else(|| "missing 'edge' in fillet spec".to_string())?
                         as u32;
-                    let edge_id = self.resolve_edge(edge_handle).map_err(|e| e.to_string())?;
+                    let edge_id = self
+                        .resolve_edge(edge_handle)
+                        .map_err(StructuredWasmError::from)?;
                     let start_val = spec["start"]
                         .as_f64()
                         .or_else(|| spec["startRadius"].as_f64());
@@ -1088,13 +1179,13 @@ impl BrepKernel {
                     solid_id,
                     &edge_laws,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "filletV2" => {
                 let s = get_u32(args, "solid")?;
                 let radius = get_f64(args, "radius")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let edge_handles: Vec<u32> = args["edges"]
                     .as_array()
                     .map(|arr| {
@@ -1105,7 +1196,7 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
-                    .map(|&h| self.resolve_edge(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = brepkit_operations::blend_ops::fillet_v2(
                     self.topo_mut(),
@@ -1113,14 +1204,14 @@ impl BrepKernel {
                     &edge_ids,
                     radius,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
             }
             "chamferV2" => {
                 let s = get_u32(args, "solid")?;
                 let d1 = get_f64(args, "d1")?;
                 let d2 = get_f64(args, "d2")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let edge_handles: Vec<u32> = args["edges"]
                     .as_array()
                     .map(|arr| {
@@ -1131,7 +1222,7 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
-                    .map(|&h| self.resolve_edge(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = brepkit_operations::blend_ops::chamfer_v2(
                     self.topo_mut(),
@@ -1140,7 +1231,7 @@ impl BrepKernel {
                     d1,
                     d2,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
             }
             "chamferDistanceAngle" => {
@@ -1150,7 +1241,7 @@ impl BrepKernel {
                 if angle >= std::f64::consts::FRAC_PI_2 {
                     return Err("angle must be less than π/2".into());
                 }
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let edge_handles: Vec<u32> = args["edges"]
                     .as_array()
                     .map(|arr| {
@@ -1161,7 +1252,7 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
-                    .map(|&h| self.resolve_edge(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = brepkit_operations::blend_ops::chamfer_distance_angle(
                     self.topo_mut(),
@@ -1170,13 +1261,13 @@ impl BrepKernel {
                     distance,
                     angle,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result.solid)))
             }
             "shell" => {
                 let s = get_u32(args, "solid")?;
                 let thickness = get_f64(args, "thickness")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = args["faces"]
                     .as_array()
                     .map(|arr| {
@@ -1187,7 +1278,7 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let face_ids: Vec<_> = face_handles
                     .iter()
-                    .map(|&h| self.resolve_face(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = brepkit_operations::shell_op::shell(
                     self.topo_mut(),
@@ -1195,7 +1286,7 @@ impl BrepKernel {
                     thickness,
                     &face_ids,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "mirror" => {
@@ -1206,28 +1297,28 @@ impl BrepKernel {
                 let nx = get_f64(args, "nx").unwrap_or(1.0);
                 let ny = get_f64(args, "ny").unwrap_or(0.0);
                 let nz = get_f64(args, "nz").unwrap_or(0.0);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::mirror::mirror(
                     self.topo_mut(),
                     solid_id,
                     Point3::new(px, py, pz),
                     Vec3::new(nx, ny, nz),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "unifyFaces" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 brepkit_operations::heal::unify_faces(self.topo_mut(), solid_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid_id)))
             }
             "convertToBspline" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let count = brepkit_operations::heal::convert_to_bspline(self.topo_mut(), solid_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!({
                     "solid": solid_id_to_u32(solid_id),
                     "converted": count,
@@ -1236,10 +1327,10 @@ impl BrepKernel {
             "convertToElementary" => {
                 let s = get_u32(args, "solid")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(crate::helpers::TOL);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let count =
                     brepkit_operations::heal::convert_to_elementary(self.topo_mut(), solid_id, tol)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!({
                     "solid": solid_id_to_u32(solid_id),
                     "converted": count,
@@ -1248,17 +1339,17 @@ impl BrepKernel {
             "healSolid" => {
                 let s = get_u32(args, "solid")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 brepkit_operations::heal::heal_solid(self.topo_mut(), solid_id, tol)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid_id)))
             }
             "repairSolid" => {
                 let s = get_u32(args, "solid")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let report = brepkit_operations::heal::repair_solid(self.topo_mut(), solid_id, tol)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!({
                     "solid": solid_id_to_u32(solid_id),
                     "errorsBefore": report.before.error_count(),
@@ -1272,12 +1363,12 @@ impl BrepKernel {
                 let y = get_f64(args, "y")?;
                 let z = get_f64(args, "z")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-7);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let pt = Point3::new(x, y, z);
                 let result = brepkit_operations::classify::classify_point(
                     &self.topo, solid_id, pt, 0.1, tol,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(classify_to_string(result)))
             }
             "loft" => {
@@ -1291,10 +1382,10 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let face_ids: Vec<_> = face_handles
                     .iter()
-                    .map(|&h| self.resolve_face(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = brepkit_operations::loft::loft(self.topo_mut(), &face_ids)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "loftWithOptions" => {
@@ -1306,11 +1397,11 @@ impl BrepKernel {
                 };
                 let face_ids = face_handles
                     .into_iter()
-                    .map(|handle| self.resolve_face(handle).map_err(|error| error.to_string()))
+                    .map(|handle| self.resolve_face(handle).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result =
                     super::operations::loft_with_options_impl(self.topo_mut(), face_ids, &options)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "loftSmooth" => {
@@ -1324,10 +1415,10 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let face_ids: Vec<_> = face_handles
                     .iter()
-                    .map(|&h| self.resolve_face(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = brepkit_operations::loft::loft_smooth(self.topo_mut(), &face_ids)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "circularPattern" => {
@@ -1336,7 +1427,7 @@ impl BrepKernel {
                 let ay = get_f64(args, "ay").unwrap_or(0.0);
                 let az = get_f64(args, "az").unwrap_or(1.0);
                 let count = get_u32(args, "count")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let axis = Vec3::new(ax, ay, az);
                 let compound = brepkit_operations::pattern::circular_pattern(
                     self.topo_mut(),
@@ -1344,7 +1435,7 @@ impl BrepKernel {
                     axis,
                     count as usize,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(compound)))
             }
             "gridPattern" => {
@@ -1359,7 +1450,7 @@ impl BrepKernel {
                 let sy = get_f64(args, "spacingY")?;
                 let cx = get_u32(args, "countX")?;
                 let cy = get_u32(args, "countY")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let compound = brepkit_operations::pattern::grid_pattern(
                     self.topo_mut(),
                     solid_id,
@@ -1370,12 +1461,12 @@ impl BrepKernel {
                     cx as usize,
                     cy as usize,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(compound)))
             }
             "defeature" => {
                 let s = get_u32(args, "solid")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = args["faces"]
                     .as_array()
                     .map(|arr| {
@@ -1386,37 +1477,37 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let face_ids: Vec<_> = face_handles
                     .iter()
-                    .map(|&h| self.resolve_face(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result =
                     brepkit_operations::defeature::defeature(self.topo_mut(), solid_id, &face_ids)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "copyWire" => {
                 let w = get_u32(args, "wire")?;
-                let wire_id = self.resolve_wire(w).map_err(|e| e.to_string())?;
+                let wire_id = self.resolve_wire(w).map_err(StructuredWasmError::from)?;
                 let copy = brepkit_operations::copy::copy_wire(self.topo_mut(), wire_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(wire_id_to_u32(copy)))
             }
             "copyFace" => {
                 let f = get_u32(args, "face")?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let copy = brepkit_operations::copy::copy_face(self.topo_mut(), face_id)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(face_id_to_u32(copy)))
             }
             "transformWire" => {
                 let w = get_u32(args, "wire")?;
-                let wire_id = self.resolve_wire(w).map_err(|e| e.to_string())?;
+                let wire_id = self.resolve_wire(w).map_err(StructuredWasmError::from)?;
                 let matrix = args["matrix"]
                     .as_array()
                     .ok_or("missing or invalid 'matrix'")?;
                 if matrix.len() != 16 {
-                    return Err(format!(
-                        "matrix must have 16 elements, got {}",
-                        matrix.len()
+                    return Err(StructuredWasmError::invalid_argument(
+                        format!("matrix must have 16 elements, got {}", matrix.len()),
+                        Some("matrix"),
                     ));
                 }
                 let elems: Vec<f64> = matrix
@@ -1428,24 +1519,27 @@ impl BrepKernel {
                     })
                     .collect::<Result<_, _>>()?;
                 if let Some(pos) = elems.iter().position(|v| !v.is_finite()) {
-                    return Err(format!("matrix element at index {pos} is not finite"));
+                    return Err(StructuredWasmError::invalid_argument(
+                        format!("matrix element at index {pos} is not finite"),
+                        Some("matrix"),
+                    ));
                 }
                 let rows = std::array::from_fn(|i| std::array::from_fn(|j| elems[i * 4 + j]));
                 let mat = Mat4(rows);
                 brepkit_operations::transform::transform_wire(self.topo_mut(), wire_id, &mat)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(null))
             }
             "transformFace" => {
                 let f = get_u32(args, "face")?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let matrix = args["matrix"]
                     .as_array()
                     .ok_or("missing or invalid 'matrix'")?;
                 if matrix.len() != 16 {
-                    return Err(format!(
-                        "matrix must have 16 elements, got {}",
-                        matrix.len()
+                    return Err(StructuredWasmError::invalid_argument(
+                        format!("matrix must have 16 elements, got {}", matrix.len()),
+                        Some("matrix"),
                     ));
                 }
                 let elems: Vec<f64> = matrix
@@ -1457,44 +1551,47 @@ impl BrepKernel {
                     })
                     .collect::<Result<_, _>>()?;
                 if let Some(pos) = elems.iter().position(|v| !v.is_finite()) {
-                    return Err(format!("matrix element at index {pos} is not finite"));
+                    return Err(StructuredWasmError::invalid_argument(
+                        format!("matrix element at index {pos} is not finite"),
+                        Some("matrix"),
+                    ));
                 }
                 let rows = std::array::from_fn(|i| std::array::from_fn(|j| elems[i * 4 + j]));
                 let mat = Mat4(rows);
                 brepkit_operations::transform::transform_face(self.topo_mut(), face_id, &mat)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(null))
             }
             "offsetFace" => {
                 let f = get_u32(args, "face")?;
                 let dist = get_f64(args, "distance")?;
                 let samples = get_u32(args, "samples").unwrap_or(16);
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::offset_face::offset_face(
                     self.topo_mut(),
                     face_id,
                     dist,
                     samples as usize,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(face_id_to_u32(result)))
             }
             "offsetSolid" => {
                 let s = get_u32(args, "solid")?;
                 let dist = get_f64(args, "distance")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result =
                     brepkit_operations::offset_v2::offset_solid_v2(self.topo_mut(), solid_id, dist)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "offsetSolidV2" => {
                 let s = get_u32(args, "solid")?;
                 let dist = get_f64(args, "distance")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result =
                     brepkit_operations::offset_v2::offset_solid_v2(self.topo_mut(), solid_id, dist)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "section" => {
@@ -1505,14 +1602,14 @@ impl BrepKernel {
                 let nx = get_f64(args, "nx").unwrap_or(0.0);
                 let ny = get_f64(args, "ny").unwrap_or(0.0);
                 let nz = get_f64(args, "nz").unwrap_or(1.0);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::section::section(
                     self.topo_mut(),
                     solid_id,
                     Point3::new(px, py, pz),
                     Vec3::new(nx, ny, nz),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 let face_ids: Vec<u32> = result.faces.iter().map(|&f| face_id_to_u32(f)).collect();
                 Ok(serde_json::json!(face_ids))
             }
@@ -1524,14 +1621,14 @@ impl BrepKernel {
                 let nx = get_f64(args, "nx").unwrap_or(0.0);
                 let ny = get_f64(args, "ny").unwrap_or(0.0);
                 let nz = get_f64(args, "nz").unwrap_or(1.0);
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::split::split(
                     self.topo_mut(),
                     solid_id,
                     Point3::new(px, py, pz),
                     Vec3::new(nx, ny, nz),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!({
                     "positive": solid_id_to_u32(result.positive),
                     "negative": solid_id_to_u32(result.negative),
@@ -1549,28 +1646,30 @@ impl BrepKernel {
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-6);
                 let face_ids: Vec<_> = face_handles
                     .iter()
-                    .map(|&h| self.resolve_face(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let solid = brepkit_operations::sew::sew_faces(self.topo_mut(), &face_ids, tol)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "thicken" => {
                 let f = get_u32(args, "face")?;
                 let thickness = get_f64(args, "thickness")?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let result =
                     brepkit_operations::thicken::thicken(self.topo_mut(), face_id, thickness)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "pipe" => {
                 let f = get_u32(args, "face")?;
                 let e = get_u32(args, "pathEdge")?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
-                let curve = self.extract_nurbs_curve(e).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let curve = self
+                    .extract_nurbs_curve(e)
+                    .map_err(StructuredWasmError::from)?;
                 let solid = brepkit_operations::pipe::pipe(self.topo_mut(), face_id, &curve, None)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "linearPattern" => {
@@ -1580,7 +1679,7 @@ impl BrepKernel {
                 let dz = get_f64(args, "dz").unwrap_or(0.0);
                 let spacing = get_f64(args, "spacing")?;
                 let count = get_u32(args, "count")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let compound = brepkit_operations::pattern::linear_pattern(
                     self.topo_mut(),
                     solid_id,
@@ -1588,13 +1687,13 @@ impl BrepKernel {
                     spacing,
                     count as usize,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(compound)))
             }
             "draft" => {
                 let s = get_u32(args, "solid")?;
                 let angle = get_f64(args, "angle")?;
-                let solid_id = self.resolve_solid(s).map_err(|e| e.to_string())?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let face_handles: Vec<u32> = args["faces"]
                     .as_array()
                     .map(|arr| {
@@ -1605,7 +1704,7 @@ impl BrepKernel {
                     .unwrap_or_default();
                 let face_ids: Vec<_> = face_handles
                     .iter()
-                    .map(|&h| self.resolve_face(h).map_err(|e| e.to_string()))
+                    .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
                     .collect::<Result<Vec<_>, _>>()?;
                 let dx = get_f64(args, "dirX").unwrap_or(0.0);
                 let dy = get_f64(args, "dirY").unwrap_or(0.0);
@@ -1623,7 +1722,7 @@ impl BrepKernel {
                     neutral,
                     angle,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "makeTangentArc3d" => {
@@ -1638,7 +1737,7 @@ impl BrepKernel {
                 let ez = get_f64(args, "endZ")?;
                 let eid = self
                     .make_tangent_arc_3d_impl(sx, sy, sz, tx, ty, tz, ex, ey, ez)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(eid))
             }
             "liftCurve2dToPlane" => {
@@ -1667,16 +1766,16 @@ impl BrepKernel {
                 let t1 = get_f64(args, "tEnd")?;
                 let eid = self
                     .lift_curve2d_to_plane_impl(ct, cp, ox, oy, oz, xx, xy, xz, nx, ny, nz, t0, t1)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(eid))
             }
             "offsetWire" => {
                 let f = get_u32(args, "face")?;
                 let dist = get_f64(args, "distance")?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let wire_id =
                     brepkit_operations::offset_wire::offset_wire(self.topo_mut(), face_id, dist)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(wire_id_to_u32(wire_id)))
             }
             "offsetWireWithJoinType" => {
@@ -1685,16 +1784,16 @@ impl BrepKernel {
                 let jt_str = args["joinType"]
                     .as_str()
                     .ok_or("missing or invalid 'joinType' string")?;
-                let jt =
-                    super::operations::parse_join_type_str(jt_str).map_err(|e| e.to_string())?;
-                let face_id = self.resolve_face(f).map_err(|e| e.to_string())?;
+                let jt = super::operations::parse_join_type_str(jt_str)
+                    .map_err(StructuredWasmError::from)?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let wire_id = brepkit_operations::offset_wire::offset_wire_with_join(
                     self.topo_mut(),
                     face_id,
                     dist,
                     jt,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(wire_id_to_u32(wire_id)))
             }
             "offsetWire2DWithJoin" => {
@@ -1703,19 +1802,19 @@ impl BrepKernel {
                 let jt_str = args["joinType"]
                     .as_str()
                     .ok_or("missing or invalid 'joinType' string")?;
-                let jt =
-                    super::operations::parse_join_type_str(jt_str).map_err(|e| e.to_string())?;
-                let wire_id = self.resolve_wire(w).map_err(|e| e.to_string())?;
+                let jt = super::operations::parse_join_type_str(jt_str)
+                    .map_err(StructuredWasmError::from)?;
+                let wire_id = self.resolve_wire(w).map_err(StructuredWasmError::from)?;
                 let face_id =
                     brepkit_topology::builder::make_planar_face_from_wire(self.topo_mut(), wire_id)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::offset_wire::offset_wire_with_join(
                     self.topo_mut(),
                     face_id,
                     dist,
                     jt,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(wire_id_to_u32(result)))
             }
             // ── Shape construction ──────────────────────────────
@@ -1737,7 +1836,7 @@ impl BrepKernel {
                     ),
                     TOL,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(edge_id_to_u32(eid)))
             }
             "makeNurbsEdge" => {
@@ -1754,7 +1853,7 @@ impl BrepKernel {
                         get_f64_array(args, "controlPoints")?,
                         get_f64_array(args, "weights")?,
                     )
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(eid))
             }
             "makeWire" => {
@@ -1770,15 +1869,15 @@ impl BrepKernel {
                 };
                 let wid = self
                     .make_wire_impl(&edges, closed)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(wid))
             }
             "makePlanarFaceFromWire" => {
                 let w = get_u32(args, "wire")?;
-                let wid = self.resolve_wire(w).map_err(|e| e.to_string())?;
+                let wid = self.resolve_wire(w).map_err(StructuredWasmError::from)?;
                 let fid =
                     brepkit_topology::builder::make_planar_face_from_wire(self.topo_mut(), wid)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(face_id_to_u32(fid)))
             }
             "makeFaceFromWires" => {
@@ -1789,7 +1888,7 @@ impl BrepKernel {
                 };
                 let fid = self
                     .make_face_from_wires_impl(outer, &inner)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(fid))
             }
             "addHolesToFace" => {
@@ -1797,7 +1896,7 @@ impl BrepKernel {
                 let holes = get_u32_array(args, "holeWires")?;
                 let fid = self
                     .add_holes_to_face_impl(face, &holes)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(fid))
             }
             "polygonUnion2d" | "polygonBoolean2d" => {
@@ -1809,7 +1908,8 @@ impl BrepKernel {
                     let name = args["operation"]
                         .as_str()
                         .ok_or("missing or invalid 'operation' string")?;
-                    super::polygon2d::parse_polygon_boolean_op(name).map_err(|e| e.to_string())?
+                    super::polygon2d::parse_polygon_boolean_op(name)
+                        .map_err(StructuredWasmError::from)?
                 };
                 // Absent `tolerance` means "kernel default"; a present but
                 // non-numeric one is a caller error, not a default request.
@@ -1819,15 +1919,16 @@ impl BrepKernel {
                 };
                 let result =
                     super::polygon2d::polygon_boolean_2d_impl(&coords_a, &coords_b, op, tolerance)
-                        .map_err(|e| e.to_string())?;
-                serde_json::to_value(result).map_err(|e| e.to_string())
+                        .map_err(StructuredWasmError::from)?;
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
             }
             "fillet2d" => {
                 let coords = get_f64_array(args, "coords")?;
                 let radius = get_f64(args, "radius")?;
-                crate::error::validate_positive(radius, "radius").map_err(|e| e.to_string())?;
+                crate::error::validate_positive(radius, "radius")
+                    .map_err(StructuredWasmError::from)?;
                 let polygon = crate::helpers::parse_polygon_2d_checked(&coords, "coords")
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let result = brepkit_math::polygon2d::fillet_polygon_2d(&polygon, radius);
                 let coords: Vec<f64> = result
                     .iter()
@@ -1838,9 +1939,10 @@ impl BrepKernel {
             "chamfer2d" => {
                 let coords = get_f64_array(args, "coords")?;
                 let distance = get_f64(args, "distance")?;
-                crate::error::validate_positive(distance, "distance").map_err(|e| e.to_string())?;
+                crate::error::validate_positive(distance, "distance")
+                    .map_err(StructuredWasmError::from)?;
                 let polygon = crate::helpers::parse_polygon_2d_checked(&coords, "coords")
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 let result = brepkit_math::polygon2d::chamfer_polygon_2d(&polygon, distance);
                 let coords: Vec<f64> = result
                     .iter()
@@ -1850,29 +1952,235 @@ impl BrepKernel {
             }
             "getNurbsCurveData" => {
                 let edge = get_u32(args, "edge")?;
-                let curve = self.extract_nurbs_curve(edge).map_err(|e| e.to_string())?;
+                let curve = self
+                    .extract_nurbs_curve(edge)
+                    .map_err(StructuredWasmError::from)?;
                 Ok(super::nurbs::curve_data_json(&curve))
             }
             "getNurbsSurfaceData" => {
                 let face = get_u32(args, "face")?;
                 let surface = self
                     .extract_nurbs_surface(face)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(StructuredWasmError::from)?;
                 Ok(super::nurbs::surface_data_json(&surface))
             }
             "getNurbsSurfaceDataParity" => {
                 let face = get_u32(args, "face")?;
                 self.free_form_surface_data_parity(face)
-                    .map_err(|e| e.to_string())
+                    .map_err(StructuredWasmError::from)
             }
-            _ => Err(format!("unknown operation: {op}")),
+            _ => Err(StructuredWasmError::unknown_operation(op)),
         }
     }
 }
 
 #[cfg(test)]
-mod batch_limit_tests {
+mod batch_contract_tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
+
+    fn parse(response: &str) -> serde_json::Value {
+        serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    fn v2_error(kernel: &mut BrepKernel, input: &str) -> serde_json::Value {
+        parse(&kernel.execute_batch_v2(input))[0]["error"].clone()
+    }
+
+    #[test]
+    fn legacy_errors_remain_strings_with_unchanged_messages() {
+        let cases = [
+            (r"[{}]", "missing or invalid 'op' field"),
+            (
+                r#"[{"op":"notAnOperation","args":{}}]"#,
+                "unknown operation: notAnOperation",
+            ),
+            (
+                r#"[{"op":"makeBox","args":{"height":2,"depth":3}}]"#,
+                "missing or invalid 'width'",
+            ),
+            (
+                r#"[{"op":"volume","args":{"solid":42,"deflection":0.1}}]"#,
+                "invalid solid handle: index 42 is out of bounds",
+            ),
+        ];
+
+        for (input, expected_message) in cases {
+            let mut kernel = BrepKernel::new();
+            let response = parse(&kernel.execute_batch(input));
+            assert_eq!(response[0]["error"], expected_message);
+            assert!(response[0]["error"].is_string());
+        }
+    }
+
+    #[test]
+    fn v2_public_contract_has_stable_codes_messages_and_details() {
+        let mut kernel = BrepKernel::new();
+        let invalid_json = v2_error(&mut kernel, "[");
+        assert_eq!(invalid_json["code"], "invalid_json");
+        assert_eq!(invalid_json["details"]["line"], 1);
+        assert_eq!(invalid_json["details"]["column"], 1);
+
+        let mut kernel = BrepKernel::new();
+        let missing = v2_error(&mut kernel, r"[{}]");
+        assert_eq!(missing["code"], "missing_operation");
+        assert_eq!(missing["message"], "missing or invalid 'op' field");
+        assert_eq!(missing["details"]["operationIndex"], 0);
+
+        let mut kernel = BrepKernel::new();
+        let unknown = v2_error(&mut kernel, r#"[{"op":"notAnOperation","args":{}}]"#);
+        assert_eq!(unknown["code"], "unknown_operation");
+        assert_eq!(unknown["details"]["operation"], "notAnOperation");
+        assert_eq!(unknown["details"]["operationIndex"], 0);
+
+        let mut kernel = BrepKernel::new();
+        let argument = v2_error(
+            &mut kernel,
+            r#"[{"op":"makeBox","args":{"height":2,"depth":3}}]"#,
+        );
+        assert_eq!(argument["code"], "invalid_argument");
+        assert_eq!(argument["details"]["argument"], "width");
+        assert_eq!(argument["details"]["operation"], "makeBox");
+
+        let mut kernel = BrepKernel::new();
+        let handle = v2_error(
+            &mut kernel,
+            r#"[{"op":"volume","args":{"solid":42,"deflection":0.1}}]"#,
+        );
+        assert_eq!(handle["code"], "invalid_handle");
+        assert_eq!(handle["details"]["entity"], "solid");
+        assert_eq!(handle["details"]["index"], 42);
+
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":1,"height":1,"depth":1}},
+                {"op":"cut","args":{"solidA":0,"solidB":0}}
+            ]"#,
+        ));
+        assert_eq!(response[1]["error"]["code"], "operation_failed");
+        assert_eq!(response[1]["error"]["details"]["operation"], "cut");
+    }
+
+    #[test]
+    fn every_initial_error_code_and_required_detail_shape_is_pinned() {
+        let parse_error = serde_json::from_str::<serde_json::Value>("[")
+            .expect_err("fixture must be invalid JSON");
+        let errors = [
+            StructuredWasmError::invalid_json(&parse_error),
+            StructuredWasmError::batch_limit("limit", "operations", 10, 11),
+            StructuredWasmError::missing_operation(2),
+            StructuredWasmError::unknown_operation("futureOp")
+                .with_operation_context(3, "futureOp"),
+            StructuredWasmError::invalid_argument("bad radius", Some("radius"))
+                .with_operation_context(4, "makeCylinder"),
+            StructuredWasmError::from(WasmError::InvalidHandle {
+                entity: "face",
+                index: 9,
+            })
+            .with_operation_context(5, "extrude"),
+            StructuredWasmError::from(brepkit_topology::TopologyError::WireNotClosed)
+                .with_operation_context(6, "makePlanarFaceFromWire"),
+            StructuredWasmError::operation_failed("refused").with_operation_context(7, "fillet"),
+            StructuredWasmError::resource_limit("budget", "mesh_entities", 100, 101),
+            StructuredWasmError::internal("serialization failed")
+                .with_operation_context(8, "polygonBoolean2d"),
+        ];
+        let expected_codes = [
+            "invalid_json",
+            "batch_limit_exceeded",
+            "missing_operation",
+            "unknown_operation",
+            "invalid_argument",
+            "invalid_handle",
+            "topology_error",
+            "operation_failed",
+            "resource_limit_exceeded",
+            "internal_error",
+        ];
+
+        for (error, expected_code) in errors.into_iter().zip(expected_codes) {
+            let value = serde_json::to_value(error).expect("structured error must serialize");
+            assert_eq!(value["code"], expected_code);
+            assert!(value["message"].is_string());
+            assert!(value["details"].is_object());
+        }
+
+        let resource = serde_json::to_value(StructuredWasmError::resource_limit(
+            "budget",
+            "mesh_entities",
+            100,
+            101,
+        ))
+        .expect("resource error must serialize");
+        assert_eq!(resource["details"]["resource"], "mesh_entities");
+        assert_eq!(resource["details"]["limit"], 100);
+        assert_eq!(resource["details"]["actual"], 101);
+    }
+
+    #[test]
+    fn typed_mapping_never_changes_the_existing_display_message() {
+        let errors = [
+            brepkit_operations::OperationsError::InvalidInput {
+                reason: "bad argument".to_string(),
+            },
+            brepkit_operations::OperationsError::Check(
+                brepkit_check::CheckError::ClassificationFailed("ambiguous".to_string()),
+            ),
+            brepkit_operations::OperationsError::NonManifoldResult,
+        ];
+
+        for error in errors {
+            let expected = error.to_string();
+            assert_eq!(StructuredWasmError::from(error).message(), expected);
+        }
+    }
+
+    #[test]
+    fn both_contracts_share_successes_and_error_messages() {
+        let input = r#"[
+            {"op":"makeBox","args":{"width":2,"height":3,"depth":4}},
+            {"op":"volume","args":{"solid":0,"deflection":0.1}},
+            {"op":"volume","args":{"solid":99,"deflection":0.1}},
+            {"op":"notAnOperation","args":{}}
+        ]"#;
+        let legacy = parse(&BrepKernel::new().execute_batch(input));
+        let v2 = parse(&BrepKernel::new().execute_batch_v2(input));
+
+        assert_eq!(legacy[0], v2[0]);
+        assert_eq!(legacy[1], v2[1]);
+        assert_eq!(legacy[2]["error"], v2[2]["error"]["message"]);
+        assert_eq!(legacy[3]["error"], v2[3]["error"]["message"]);
+    }
+
+    #[test]
+    fn malformed_batch_corpus_returns_json_and_never_stops_later_items() {
+        let malformed_documents = [
+            "",
+            "[",
+            "null",
+            "{}",
+            r"[1,2",
+            r#"[{"op":null}]"#,
+            r#"[{"op":false}]"#,
+            "\0",
+        ];
+        for input in malformed_documents {
+            let legacy = BrepKernel::new().execute_batch(input);
+            let v2 = BrepKernel::new().execute_batch_v2(input);
+            assert!(parse(&legacy).is_array());
+            assert!(parse(&v2).is_array());
+        }
+
+        let mut kernel = BrepKernel::new();
+        let response =
+            parse(&kernel.execute_batch_v2(
+                r#"[{}, {"op":"makeBox","args":{"width":1,"height":1,"depth":1}}]"#,
+            ));
+        assert_eq!(response[0]["error"]["code"], "missing_operation");
+        assert_eq!(response[1]["ok"], 0);
+    }
 
     #[test]
     fn rejects_too_many_operations_before_dispatch() {
@@ -1881,6 +2189,15 @@ mod batch_limit_tests {
         let json = serde_json::Value::Array(vec![operation; MAX_BATCH_OPERATIONS + 1]).to_string();
         let response = kernel.execute_batch(&json);
         assert!(response.contains("operation limit"));
+
+        let v2 = parse(&kernel.execute_batch_v2(&json));
+        assert_eq!(v2[0]["error"]["code"], "batch_limit_exceeded");
+        assert_eq!(v2[0]["error"]["details"]["resource"], "operations");
+        assert_eq!(v2[0]["error"]["details"]["limit"], MAX_BATCH_OPERATIONS);
+        assert_eq!(
+            v2[0]["error"]["details"]["actual"],
+            MAX_BATCH_OPERATIONS + 1
+        );
     }
 
     #[test]
@@ -1889,5 +2206,9 @@ mod batch_limit_tests {
         let json = " ".repeat(MAX_BATCH_JSON_BYTES + 1);
         let response = kernel.execute_batch(&json);
         assert!(response.contains("byte limit"));
+
+        let v2 = parse(&kernel.execute_batch_v2(&json));
+        assert_eq!(v2[0]["error"]["code"], "batch_limit_exceeded");
+        assert_eq!(v2[0]["error"]["details"]["resource"], "json_bytes");
     }
 }
