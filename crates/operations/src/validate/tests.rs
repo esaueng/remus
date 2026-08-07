@@ -917,3 +917,83 @@ fn fillet_box_with_options() {
         report.issues
     );
 }
+
+#[test]
+fn corner_diagonal_disjoint_fuse_is_not_reported_disconnected() {
+    // A cylinder standing off the box's CORNER diagonal with a 0.05 clearance:
+    // the bodies do not touch anywhere, but their axis-aligned boxes still
+    // interpenetrate over the whole corner region. Judging the pair by AABB
+    // intersection called this legitimate disjoint union "debris" and reported
+    // a disconnected shell — placement-dependent, not contact-dependent.
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 60.0, 40.0, 40.0).unwrap();
+    let r = 8.0;
+    let g = (r + 0.05) / std::f64::consts::SQRT_2;
+    let cyl = crate::primitives::make_cylinder(&mut topo, r, 55.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        cyl,
+        &brepkit_math::mat::Mat4::translation(-g, -g, -5.0),
+    )
+    .unwrap();
+
+    let result =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, bx, cyl).unwrap();
+
+    let report = validate_solid(&topo, result).unwrap();
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|i| i.description.contains("disconnected")),
+        "a non-touching corner-diagonal union is not debris: {:?}",
+        report.issues
+    );
+}
+
+#[test]
+fn sealed_fragment_floating_inside_the_stock_is_reported_disconnected() {
+    // The hazard the overlap veto exists for (the equal-radius cross-drill's
+    // sealed bore lobes): a closed fragment left floating INSIDE the stock,
+    // packed into the same outer shell. Both components are individually
+    // closed and Euler-consistent, so the veto is the only thing that can
+    // report it.
+    let mut topo = Topology::new();
+    let stock = crate::primitives::make_box(&mut topo, 40.0, 40.0, 40.0).unwrap();
+    let debris = crate::primitives::make_box(&mut topo, 6.0, 6.0, 6.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        debris,
+        &brepkit_math::mat::Mat4::translation(17.0, 17.0, 17.0),
+    )
+    .unwrap();
+
+    // Snapshot before allocating (the arena cannot be read and written at once).
+    let stock_shell = topo.solid(stock).unwrap().outer_shell();
+    let debris_shell = topo.solid(debris).unwrap().outer_shell();
+    let mut faces = topo.shell(stock_shell).unwrap().faces().to_vec();
+    faces.extend_from_slice(topo.shell(debris_shell).unwrap().faces());
+
+    let shell_id = topo.add_shell(brepkit_topology::shell::Shell::new(faces).unwrap());
+    let merged = topo.add_solid(brepkit_topology::solid::Solid::new(shell_id, vec![]));
+
+    let report = validate_solid(&topo, merged).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.description.contains("disconnected")),
+        "a fragment sealed inside the stock must not validate clean: {:?}",
+        report.issues
+    );
+    // Both components are closed and Euler-consistent on their own, so the
+    // overlap veto is what reported this — not a stray closure defect. Without
+    // this the test could pass for the wrong reason.
+    assert!(
+        !report.issues.iter().any(|i| {
+            i.description.contains("Euler") || i.description.contains("boundary edge")
+        }),
+        "veto must be the sole reporter here: {:?}",
+        report.issues
+    );
+}

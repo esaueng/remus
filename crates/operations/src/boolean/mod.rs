@@ -15,7 +15,7 @@ pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 const COINCIDENT_BOUNDARY_FLOOR_MM: f64 = 1e-6;
 /// Strict margin used by the disjoint-component shortcut's AABB containment
 /// pre-filter, in mm.
-const COMPONENT_OVERLAP_MARGIN_MM: f64 = 1e-7;
+pub(crate) const COMPONENT_OVERLAP_MARGIN_MM: f64 = 1e-7;
 /// Endpoint distance below which a sampled curve is treated as closed, in mm.
 const CLOSED_CURVE_ENDPOINT_TOL_MM: f64 = 1e-6;
 
@@ -2730,7 +2730,7 @@ fn component_aabb_centre(topo: &Topology, comp: &[FaceId]) -> Option<Point3> {
 /// the degeneracy that makes axis-aligned probes unreliable on the feature-plane
 /// intersections these pieces are full of. Returns `None` when the component
 /// cannot be tessellated, so callers can fall back rather than guess.
-fn component_encloses_point(
+pub(crate) fn component_encloses_point(
     topo: &Topology,
     faces: &[FaceId],
     p: Point3,
@@ -2766,7 +2766,7 @@ fn component_encloses_point(
 }
 
 /// Any vertex position on `faces`, for use as a probe point.
-fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3> {
+pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3> {
     for &fid in faces {
         let face = topo.face(fid).ok()?;
         let wire = topo.wire(face.outer_wire()).ok()?;
