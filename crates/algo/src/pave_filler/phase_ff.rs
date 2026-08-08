@@ -3480,6 +3480,29 @@ fn compute_raw_curves(
             }
         }
 
+        (FaceSurface::Cylinder(c1), FaceSurface::Cylinder(c2))
+            if c1.axis().dot(c2.axis()).abs() > 1.0 - 1e-10 =>
+        {
+            // Parallel-axis cylinders meet in 0 or 2 straight generator lines.
+            // The algebraic quadratic path bows out for parallel axes and the
+            // grid-seeded marcher fragments the straight lines into unusable
+            // partial traces, so neither wall ever splits and a whole operand
+            // wall gets classified away (the parallel-boss lens fuse). Solve
+            // the 2D circle-circle crossing in the plane perpendicular to the
+            // shared axis and emit each crossing as an exact axis-parallel
+            // Line, bbox-trimmed like `plane_cylinder_parallel_lines`.
+            cylinder_cylinder_parallel_lines(c1, c2, bbox_a, bbox_b).map_or_else(
+                || {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                },
+                Ok,
+            )
+        }
+
         (a, b) if a.as_analytic().is_some() && b.as_analytic().is_some() => {
             if let (Some(aa), Some(ab)) = (a.as_analytic(), b.as_analytic()) {
                 analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
@@ -3767,6 +3790,70 @@ fn plane_cylinder_parallel_lines(
         });
     }
     Ok(results)
+}
+
+/// Parallel-axis cylinder-cylinder intersection: 0 or 2 straight generator
+/// lines, from the 2D circle-circle crossing in the plane perpendicular to
+/// the shared axis.
+///
+/// Returns `None` for a coaxial pair (no transversal crossing exists; the
+/// caller falls through to the general analytic path, which already owns
+/// coaxial handling). Returns `Some(vec![])` when the circles miss, one
+/// contains the other, or they are tangent — a grazing contact line never
+/// splits a face (the same convention as `plane_cylinder_parallel_lines`).
+fn cylinder_cylinder_parallel_lines(
+    c1: &brepkit_math::surfaces::CylindricalSurface,
+    c2: &brepkit_math::surfaces::CylindricalSurface,
+    bbox_a: &Aabb3,
+    bbox_b: &Aabb3,
+) -> Option<Vec<RawCurve>> {
+    let axis = c1.axis();
+    let delta = c2.origin() - c1.origin();
+    let perp = delta - axis * delta.dot(axis);
+    let d = perp.length();
+    if d < 1e-8 {
+        return None; // Coaxial — the general analytic path owns this.
+    }
+    let (r1, r2) = (c1.radius(), c2.radius());
+    // Tangent bands collapse to a single grazing line that never splits a
+    // face; misses and containment have no crossing at all.
+    if d > r1 + r2 - 1e-9 || d < (r1 - r2).abs() + 1e-9 {
+        return Some(Vec::new());
+    }
+
+    let w = perp * (1.0 / d);
+    let n = axis.cross(w);
+    // Chord geometry of two crossing circles: the radical-line foot sits at
+    // `a` along the centre line, the crossings at ±h off it.
+    let a_len = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+    let h_sq = r1.mul_add(r1, -(a_len * a_len));
+    if h_sq <= 0.0 {
+        return Some(Vec::new());
+    }
+    let h = h_sq.sqrt();
+    let foot = c1.origin() + w * a_len;
+
+    let mut results = Vec::new();
+    for base in [foot + n * h, foot - n * h] {
+        let t_range = trim_t_range_to_aabb(base, axis, bbox_a, bbox_b);
+        if (t_range.1 - t_range.0).abs() < 1e-9 {
+            continue;
+        }
+        let p0 = base + axis * t_range.0;
+        let p1 = base + axis * t_range.1;
+        let bbox = Aabb3 {
+            min: Point3::new(p0.x().min(p1.x()), p0.y().min(p1.y()), p0.z().min(p1.z())),
+            max: Point3::new(p0.x().max(p1.x()), p0.y().max(p1.y()), p0.z().max(p1.z())),
+        };
+        results.push(RawCurve {
+            curve: EdgeCurve::Line,
+            bbox,
+            t_range,
+            p_start: p0,
+            p_end: p1,
+        });
+    }
+    Some(results)
 }
 
 /// Analytic-analytic surface intersection using marching.
@@ -4084,23 +4171,89 @@ fn circle_exits_plane_boundary(
             let Ok(edge) = topo.edge(oe.edge()) else {
                 continue;
             };
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                continue;
-            }
             let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
                 continue;
             };
             let (sp, ep) = (sv.point(), ev.point());
-            for (p, _) in circle.intersect_segment(sp, ep, tol.linear) {
-                let at_endpoint =
-                    (p - sp).length() < tol.linear * 10.0 || (p - ep).length() < tol.linear * 10.0;
-                if !at_endpoint {
-                    return true;
+            match edge.curve() {
+                EdgeCurve::Line => {
+                    for (p, _) in circle.intersect_segment(sp, ep, tol.linear) {
+                        let at_endpoint = (p - sp).length() < tol.linear * 10.0
+                            || (p - ep).length() < tol.linear * 10.0;
+                        if !at_endpoint {
+                            return true;
+                        }
+                    }
                 }
+                // A circular plane boundary (a cylinder cap rim): a section
+                // circle can exit straight through the arc — the Line-only
+                // scan read that as "stays inside", excluded the plane face
+                // from the crossing set, and the closed section was never
+                // split (the parallel-boss coplanar cap crescent drop).
+                EdgeCurve::Circle(bc) => {
+                    for (p, _) in circle_arc_crossings(edge, sp, ep, bc, circle, tol) {
+                        let at_endpoint = (p - sp).length() < tol.linear * 10.0
+                            || (p - ep).length() < tol.linear * 10.0;
+                        if !at_endpoint {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
     false
+}
+
+/// Crossings of a section `circle` with a boundary edge lying on circle `bc`,
+/// filtered to the edge's actual arc span (a full-circle edge accepts all
+/// crossings). Returns `(point, t-on-section-circle)` pairs.
+fn circle_arc_crossings(
+    edge: &brepkit_topology::edge::Edge,
+    sp: Point3,
+    ep: Point3,
+    bc: &brepkit_math::curves::Circle3D,
+    circle: &brepkit_math::curves::Circle3D,
+    tol: Tolerance,
+) -> Vec<(Point3, f64)> {
+    const NS: usize = 128;
+    let full = (sp - ep).length() < tol.linear;
+    let cand = circle.intersect_circle(bc, tol.linear);
+    if cand.is_empty() || full {
+        return cand;
+    }
+    // Filter to the edge's actual arc by proximity to its sampled polyline.
+    // The band covers the sampling sagitta plus the fit weld.
+    let mut samples: Vec<Point3> = Vec::new();
+    let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+    for i in 0..=NS {
+        #[allow(clippy::cast_precision_loss)]
+        let t = t0 + (t1 - t0) * (i as f64) / (NS as f64);
+        samples.push(edge.curve().evaluate_with_endpoints(t, sp, ep));
+    }
+    let band = {
+        let step = if samples.len() > 1 {
+            (samples[1] - samples[0]).length()
+        } else {
+            0.0
+        };
+        (step * step / (8.0 * bc.radius().max(tol.linear))).mul_add(2.0, tol.linear * 100.0)
+    };
+    cand.into_iter()
+        .filter(|(p, _)| {
+            samples.windows(2).any(|w| {
+                let d = w[1] - w[0];
+                let l2 = d.length_squared();
+                let f = if l2 > 1e-20 {
+                    ((*p - w[0]).dot(d) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (*p - (w[0] + d * f)).length() <= band
+            })
+        })
+        .collect()
 }
 
 fn closed_circle_boundary_crossings(
@@ -4150,52 +4303,10 @@ fn closed_circle_boundary_crossings(
                 // desynchronize `emit_split_circle_arcs`' cyclic pairing and
                 // whole in-face spans vanish (the lite magnet-pad fuse).
                 EdgeCurve::Circle(bc) => {
-                    const NS: usize = 128;
-                    let full = (sv.point() - ev.point()).length() < tol.linear;
-                    let cand = circle.intersect_circle(bc, tol.linear);
-                    if cand.is_empty() {
-                        continue;
-                    }
-                    // Filter to the edge's actual arc by proximity to its
-                    // sampled polyline (skipped for a full-circle edge). The
-                    // band covers the sampling sagitta plus the fit weld.
-                    let mut samples: Vec<Point3> = Vec::new();
-                    if !full {
-                        let (t0, t1) = edge.curve().domain_with_endpoints(sv.point(), ev.point());
-                        for i in 0..=NS {
-                            #[allow(clippy::cast_precision_loss)]
-                            let t = t0 + (t1 - t0) * (i as f64) / (NS as f64);
-                            samples.push(edge.curve().evaluate_with_endpoints(
-                                t,
-                                sv.point(),
-                                ev.point(),
-                            ));
-                        }
-                    }
-                    let band = {
-                        let step = if samples.len() > 1 {
-                            (samples[1] - samples[0]).length()
-                        } else {
-                            0.0
-                        };
-                        (step * step / (8.0 * bc.radius().max(tol.linear)))
-                            .mul_add(2.0, tol.linear * 100.0)
-                    };
-                    for (p, t) in cand {
-                        let on_arc = full
-                            || samples.windows(2).any(|w| {
-                                let d = w[1] - w[0];
-                                let l2 = d.length_squared();
-                                let f = if l2 > 1e-20 {
-                                    ((p - w[0]).dot(d) / l2).clamp(0.0, 1.0)
-                                } else {
-                                    0.0
-                                };
-                                (p - (w[0] + d * f)).length() <= band
-                            });
-                        if on_arc {
-                            edge_hits.push((t, p, Some(oe.edge())));
-                        }
+                    for (p, t) in
+                        circle_arc_crossings(edge, sv.point(), ev.point(), bc, circle, tol)
+                    {
+                        edge_hits.push((t, p, Some(oe.edge())));
                     }
                 }
                 _ => continue,
@@ -4727,19 +4838,21 @@ fn emit_split_circle_arcs(
                 continue;
             }
 
+            // Midpoints (idx None) resolve like crossings: one can land on an
+            // existing operand vertex (a rim seam) and must adopt it, not
+            // mint a position-duplicate.
             let start_vid = match idx_s {
                 Some(ci) => {
                     *crossing_vids[ci].get_or_insert_with(|| resolve_crossing(topo, arena, p_s))
                 }
-                None => topo.add_vertex(Vertex::new(p_s, tol.linear)),
+                None => resolve_crossing(topo, arena, p_s),
             };
             let end_vid = match idx_e {
                 Some(ci) => {
                     *crossing_vids[ci].get_or_insert_with(|| resolve_crossing(topo, arena, p_e))
                 }
-                None => topo.add_vertex(Vertex::new(p_e, tol.linear)),
+                None => resolve_crossing(topo, arena, p_e),
             };
-
             let edge = Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle.clone()));
             let edge_id = topo.add_edge(edge);
 
