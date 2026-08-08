@@ -235,14 +235,17 @@ pub(super) fn find_splits_on_circle(
     // angle, signed by the traversal direction, so `t` is monotone along the
     // walk (a periodic rim is traversed CW on the top cap, CCW on the bottom).
     //
-    // Scoped to cylinder/cone rims, matching the UV-span branch in
-    // `split_boundary_edges_at_3d_points` that consumes these `t` values. The
-    // same origin-vs-start mismatch is latent for a closed circle on any other
-    // surface (a bore rim on a plane), but only the periodic-rim case is
-    // exercised and verified here, so the wider change stays out of scope.
-    let closed_anchor = (matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
-        && (edge.start_3d - edge.end_3d).length() < tol)
-        .then(|| circle.project(edge.start_3d));
+    // The mismatch is a property of the CLOSED edge, not of the surface under
+    // it: a cylinder cap coplanar with a box face is a plane whose rim is a
+    // closed circle seamed away from the circle's origin, and it fails exactly
+    // the same way — the in-body wedge comes back twice (once as a piece
+    // spanning the seam, once on its own) and the protruding crescent never
+    // gets a face, leaving the fused shell open where the wall pokes out.
+    // `split_boundary_edges_at_3d_points` consumes these `t` values through
+    // its own UV-span branch for cylinder/cone rims and through the frame
+    // projection for plane faces, so both anchor consistently.
+    let closed_anchor =
+        ((edge.start_3d - edge.end_3d).length() < tol).then(|| circle.project(edge.start_3d));
     let u_span = edge.end_uv.x() - edge.start_uv.x();
     let mut splits = Vec::new();
     for &sp in split_pts_3d {
@@ -295,7 +298,73 @@ pub(super) fn find_splits_on_circle(
     }
     splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     splits.dedup_by(|a, b| (a.0 - b.0).abs() < tol);
+    // Only once the rim is actually being cut. An UNSPLIT closed rim is a full
+    // circle, which `domain_with_endpoints` recovers from the curve's own
+    // domain with no ambiguity to resolve — subdividing it would split every
+    // untouched rim in every boolean into two half-arcs.
+    if !splits.is_empty()
+        && let Some(base) = closed_anchor
+    {
+        subdivide_major_pieces(circle, base, edge.forward, &mut splits);
+    }
     splits
+}
+
+/// Add split parameters until no piece of a closed rim spans more than a half
+/// turn.
+///
+/// The plane-face arrangement subdivides an arc by its CHORD, and a chord says
+/// nothing about which side of itself the arc bulges to. Under a half turn that
+/// is recoverable — every arc convention in the codebase agrees there. A MAJOR
+/// piece breaks the tie: the same chord serves the piece and its complement, so
+/// a cap cut into an in-body wedge and a protruding crescent can come back with
+/// the wedge twice and no crescent at all, leaving the fused shell open where
+/// the wall pokes out. Halving major pieces keeps every emitted arc inside the
+/// range its chord determines.
+///
+/// The extra parameters are the geometric midpoints of the gaps, so the two
+/// faces sharing a rim (a cylinder's cap and its wall) derive the same points
+/// from the same gaps and stay split in step.
+fn subdivide_major_pieces(
+    circle: &brepkit_math::curves::Circle3D,
+    base: f64,
+    forward: bool,
+    splits: &mut Vec<(f64, Point3)>,
+) {
+    // `t` runs over the full turn, so a half turn is half the range. An
+    // EXACTLY half-turn piece is the worst case rather than the safe boundary
+    // — its chord is a diameter, so the two arcs it could denote are mirror
+    // images of equal length and nothing about the chord distinguishes them.
+    // It arises whenever the cutting plane passes through the circle's centre
+    // (a cylinder fused flush against a box face it is centred on), so split
+    // it too.
+    const MAX_PIECE: f64 = 0.5;
+    const PIECE_EPS: f64 = 1e-9;
+    let dir = if forward { 1.0 } else { -1.0 };
+    let mut bounds: Vec<f64> = Vec::with_capacity(splits.len() + 2);
+    bounds.push(0.0);
+    bounds.extend(splits.iter().map(|s| s.0));
+    bounds.push(1.0);
+    let mut added: Vec<(f64, Point3)> = Vec::new();
+    for w in bounds.windows(2) {
+        let gap = w[1] - w[0];
+        if gap <= MAX_PIECE - PIECE_EPS {
+            continue;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let pieces = ((gap / MAX_PIECE).ceil() as usize).max(2);
+        for k in 1..pieces {
+            #[allow(clippy::cast_precision_loss)]
+            let t = gap.mul_add(k as f64 / pieces as f64, w[0]);
+            let angle = std::f64::consts::TAU.mul_add(dir * t, base);
+            added.push((t, circle.evaluate(angle)));
+        }
+    }
+    if added.is_empty() {
+        return;
+    }
+    splits.extend(added);
+    splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 }
 
 /// True when a circle boundary edge is an open iso-v rim on a cylinder/cone —

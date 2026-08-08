@@ -29,6 +29,7 @@ pub mod wire_builder;
 pub use face_class::FaceClass;
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use brepkit_math::tolerance::Tolerance;
 
@@ -237,9 +238,10 @@ fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::Selec
         }
         if touches {
             log::debug!(
-                "SUBFACE {:?} {} src={:?} class={:?} rank={:?} selected={} ip={} x[{:.3},{:.3}] y[{:.3},{:.3}] z[{:.3},{:.3}]",
+                "SUBFACE {:?} {} rev={} src={:?} class={:?} rank={:?} selected={} ip={} x[{:.3},{:.3}] y[{:.3},{:.3}] z[{:.3},{:.3}]",
                 sf.face_id,
                 f.surface().type_tag(),
+                f.is_reversed(),
                 sf.source_face,
                 sf.classification,
                 sf.rank,
@@ -255,6 +257,42 @@ fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::Selec
                 flo[2],
                 fhi[2]
             );
+            if std::env::var("BK_SUBFACE_VERTS").is_ok() {
+                for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                    let Ok(w) = topo.wire(wid) else { continue };
+                    let mut s = String::new();
+                    for oe in w.edges() {
+                        let Ok(e) = topo.edge(oe.edge()) else {
+                            continue;
+                        };
+                        let (Ok(a), Ok(b)) = (topo.vertex(e.start()), topo.vertex(e.end())) else {
+                            continue;
+                        };
+                        let (p, q) = (a.point(), b.point());
+                        let (d0, d1) = e.curve().domain_with_endpoints(p, q);
+                        let span =
+                            if matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+                                format!("{:.1}deg", (d1 - d0).to_degrees())
+                            } else {
+                                String::new()
+                            };
+                        let _ = write!(
+                            s,
+                            " [{:?}{} ({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3}) {}{span}]",
+                            oe.edge(),
+                            if oe.is_forward() { "+" } else { "-" },
+                            p.x(),
+                            p.y(),
+                            p.z(),
+                            q.x(),
+                            q.y(),
+                            q.z(),
+                            e.curve().type_tag()
+                        );
+                    }
+                    log::debug!("   WIRE {wid:?}{s}");
+                }
+            }
         }
     }
 }

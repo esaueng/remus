@@ -497,6 +497,19 @@ pub fn detect_same_domain_with_shells<S: BuildHasher>(
     // shell. Without shell information (`None`, the test-only path) every
     // pair keeps the historic dedup.
     let is_residue = |i: usize, j: usize| -> bool {
+        // Two pieces of ONE source face's partition TILE that face — they are
+        // complementary regions, never copies of one another, so one is never
+        // residue for the other however the grouping reached them. The pairwise
+        // passes above already refuse to union such a pair directly, but a
+        // third face coincident with both pulls them into one group anyway: a
+        // box floor's wedge is coextensive with the cap wedge it meets AND
+        // carries the same vertex-pair edge set as the cap's crescent, which is
+        // bounded by that same chord walked the other way round the circle.
+        // Dropping the crescent as a duplicate leaves the fused shell open
+        // exactly where the cylinder wall protrudes past the box.
+        if same_source_complementary_split(sub_faces, i, j, tol) {
+            return false;
+        }
         let cross_shell = face_shells.is_some_and(|fs| {
             match (
                 fs.get(&sub_faces[i].source_face),

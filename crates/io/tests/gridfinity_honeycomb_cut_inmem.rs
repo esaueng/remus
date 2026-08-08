@@ -238,8 +238,16 @@ fn honeycomb_cut_residual_documented() {
     // classifier (the O-shape chamfer-strip fix): pcut1 IMPROVED 83 -> 50
     // and pcut2 30 -> 28 (unanimous generic re-casts correcting grazed
     // cardinal votes), pcut3 held 0, over-shared stayed 0 everywhere.
+    // Re-pinned with the cap-crescent corner fuse fix (closed-rim split
+    // parameters anchored at the rim's own seam on plane faces, and same-source
+    // complementary partition pieces no longer treated as same-domain
+    // duplicates): pcut1 nudged 50 -> 52, the same noise-dependence class as
+    // its earlier re-pins — two boundary stitches previously leaned on a wedge
+    // that the seam-anchored split now hands back as two pieces. pcut2 held 28
+    // and pcut3 held 0, over-shared stayed 0 everywhere, and every
+    // production-level test in this file stayed green.
     let residual_free: &[(&str, usize)] = &[
-        ("a2hcomb_pcut1.bin", 50),
+        ("a2hcomb_pcut1.bin", 52),
         ("a2hcomb_pcut2.bin", 28),
         ("a2hcomb_pcut3.bin", 0),
     ];
