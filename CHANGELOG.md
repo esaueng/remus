@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.0.1](https://github.com/esaueng/brepkit/compare/v3.0.0...v3.0.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **algo:** band-split a lateral drilled clean through ([#115](https://github.com/esaueng/brepkit/issues/115)) ([f44a033](https://github.com/esaueng/brepkit/commit/c7267968339cf05b9b46ce99ea8ade12a850c827))
+* **algo:** keep the protruding cap crescent when a cylinder fuses past a box corner ([#116](https://github.com/esaueng/brepkit/issues/116)) ([8caa538](https://github.com/esaueng/brepkit/commit/f1cef3a050e81191749923405ad5cddf325cc2f1))
+* **algo:** veto line sections that only graze a plane face's rim ([#113](https://github.com/esaueng/brepkit/issues/113)) ([dbb033f](https://github.com/esaueng/brepkit/commit/a1b0d6e074af1f43bcaac858a60fb892484e31cb))
+* **boolean:** parallel-cylinder sections, circular cap boundaries, and tangent-pinch fuse acceptance ([#117](https://github.com/esaueng/brepkit/issues/117)) ([1e37d75](https://github.com/esaueng/brepkit/commit/2a0a9c7337f67baa0964e21a1aaf2e130d8e5451))
+* **math:** emit one breakout loop per angular window in cylinder-cylinder ([#112](https://github.com/esaueng/brepkit/issues/112)) ([db17ef6](https://github.com/esaueng/brepkit/commit/0f4f592e1e98e02ae978401999d60706d10e0b4e))
+* **operations:** a corner-diagonal disjoint union is not debris ([#110](https://github.com/esaueng/brepkit/issues/110)) ([483883d](https://github.com/esaueng/brepkit/commit/f0c41846106eb8e91e000fe91286dfd58d048fa5))
+
 ## [3.0.0](https://github.com/esaueng/brepkit/compare/v2.129.0...v3.0.0) (2026-08-07)
 
 

@@ -13,8 +13,8 @@
     "brepkit_wasm.js",
     "brepkit_wasm_bg.js",
     "brepkit_wasm.d.ts",
-    "LICENSE-MIT",
     "LICENSE-APACHE",
+    "LICENSE-MIT",
     "brepkit_wasm_node.cjs"
   ],
   "keywords": [
@@ -38,6 +38,6 @@
   ],
   "type": "module",
   "types": "brepkit_wasm.d.ts",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "homepage": "https://github.com/esaueng/brepkit"
 }
