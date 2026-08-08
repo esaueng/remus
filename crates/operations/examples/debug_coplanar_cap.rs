@@ -10,18 +10,37 @@
 //! co-refined mesh (the OpenZCAD default layout, both primitives based at
 //! z=0 with equal height).
 //!
-//! Cap coplanarity looked like the trigger but is not: the discriminator is
-//! whether the box's corner edge falls inside the cylinder, which the `corner`
-//! and `sweep` modes demonstrate across z-layouts.
+//! Cap coplanarity alone is not the trigger; the family needs BOTH the box's
+//! corner edge inside the cylinder AND at least one cap flush with a box face.
+//! Both-flush is only one of three variants — top-flush (hanging below) and
+//! bottom-flush (sticking above) fail identically, and the reported document is
+//! top-flush. `matrix` shows the whole picture at a glance.
+//!
+//! What `matrix` still marks failing is a DIFFERENT, pre-existing defect: it
+//! also reproduces with no flush cap at all. A box side-face plane is parallel
+//! to the cylinder axis, so it meets the cylinder in two straight generators
+//! rather than an ellipse, and `exact_plane_cylinder`
+//! (`math/src/analytic_intersection.rs`) has no arm for that — it drops to a
+//! sampled point chain. Within about r/600 of the axis lying ON the plane the
+//! chain degrades and the fuse loses the protrusion outright. The acceptance
+//! gate catches every one of those (`operands_are_represented`: the result's
+//! bounding box no longer contains the cylinder's), so the output is faceted
+//! but its volume is right.
 //!
 //! Modes:
 //!   (none)  the minimal reported repro, with its face census and volume
+//!   matrix  post-gate pass/fail table over six z-layouts x the cx/cy grid
+//!   family  the three flush-cap variants, verified, plus the controls that
+//!           must stay analytic and the reported document
+//!   one     a single placement through the real operations gate, verbosely
 //!   sweep   the cx x cy grid under three z-layouts, listing every fallback
 //!   single  crossings of ONE side face only (these always worked)
 //!   corner  corner-swallowing vs not, against cap coplanarity
 //!   seam    the same solid with the cylinder rotated about its own axis
 //!   raw     below the operations gate: `gfa::boolean` output, free and
-//!           non-manifold edges, per-face area and plane
+//!           non-manifold edges, per-face area and plane, the result's bbox
+//!           and volume, and the horizontal-area balance that names a missing
+//!           cap
 //!   verify  volume vs the closed form, closed-manifold shell, and ray-cast
 //!           classification of a point in the protruding wall
 
@@ -75,7 +94,7 @@ fn run(cx: f64, cy: f64, cz: f64, h: f64, verbose: bool) -> (usize, bool) {
 /// has vertical tangents at the disc's extremes, so use many samples rather
 /// than a high-order rule.
 fn overlap_area(cx: f64, cy: f64, r: f64) -> f64 {
-    const N: usize = 4_000_000;
+    const N: usize = 200_000;
     let (x0, x1) = ((cx - r).max(0.0), (cx + r).min(30.0));
     if x1 <= x0 {
         return 0.0;
@@ -169,9 +188,142 @@ fn verify_one(cx: f64, cy: f64, cz: f64, h: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// The corrected failing family: the wall must cross the box's CORNER (two
+/// adjacent side faces), and at LEAST ONE cap must be flush with a box face.
+/// Both-flush is only one of three variants.
+fn family_sweep() {
+    let configs: [(f64, f64, &str); 3] = [
+        (0.0, 24.0, "both-flush   (cz=0  h=24)"),
+        (-6.0, 30.0, "top-flush    (cz=-6 h=30)"),
+        (0.0, 30.0, "bottom-flush (cz=0  h=30)"),
+    ];
+    let mut facet = 0;
+    let mut wrong = 0;
+    let mut total = 0;
+    for (cz, h, tag) in configs {
+        let mut bad: Vec<String> = Vec::new();
+        for cx in [-4.0, -2.0, 0.0, 2.0] {
+            for cy in [4.0, 0.0, -2.0] {
+                total += 1;
+                let (n, fb) = run(cx, cy, cz, h, false);
+                if fb {
+                    facet += 1;
+                    bad.push(format!("({cx},{cy}) FACET {n}f"));
+                } else if let Err(e) = verify_one(cx, cy, cz, h) {
+                    wrong += 1;
+                    bad.push(format!("({cx},{cy}) {e}"));
+                }
+            }
+        }
+        if bad.is_empty() {
+            eprintln!("{tag}: all 12 analytic and exact");
+        } else {
+            eprintln!("{tag}: {} bad -> {}", bad.len(), bad.join("; "));
+        }
+    }
+    eprintln!(
+        "\nfamily: {}/{total} correct ({facet} faceted, {wrong} wrong geometry)",
+        total - facet - wrong
+    );
+
+    // Controls that must STAY analytic.
+    eprintln!("\n-- controls --");
+    let (n, fb) = run(-4.0, 9.0, 0.0, 24.0, false);
+    eprintln!(
+        "centred cy=9, both caps flush, ONE side face crossed: {n} faces {}",
+        if fb { "FACET (control broken)" } else { "ok" }
+    );
+    for (cz, h) in [(-3.0, 24.0), (-3.0, 20.0)] {
+        let mut bad = Vec::new();
+        for cx in [-4.0, -2.0, 0.0, 2.0] {
+            for cy in [4.0, 0.0, -2.0] {
+                let (n, fb) = run(cx, cy, cz, h, false);
+                if fb {
+                    bad.push(format!("({cx},{cy}) {n}f"));
+                }
+            }
+        }
+        eprintln!(
+            "no flush cap (cz={cz} h={h}), corner crossed: {}",
+            if bad.is_empty() {
+                "all 12 analytic".to_string()
+            } else {
+                format!("{} FACET -> {}", bad.len(), bad.join(" "))
+            }
+        );
+    }
+
+    // The user's live case.
+    eprintln!("\n-- user's reported document --");
+    let (n, fb) = run(-4.0, 4.0, -6.0, 30.0, false);
+    eprintln!(
+        "box(30,18,24) U cyl(r6,h30)@(-4,4,-6): {n} faces {}",
+        if fb { "FACET" } else { "ok" }
+    );
+    match verify_one(-4.0, 4.0, -6.0, 30.0) {
+        Ok(()) => eprintln!("  volume, shell and ray-cast all exact"),
+        Err(e) => eprintln!("  WRONG: {e}"),
+    }
+}
+
+/// One post-gate table over every z-layout, so the flush-cap family and the
+/// no-flush controls are measured the same way. `.` analytic, `X` fallback.
+fn matrix() {
+    let configs: [(f64, f64, &str); 6] = [
+        (0.0, 24.0, "both-flush      cz= 0 h=24"),
+        (-6.0, 30.0, "top-flush       cz=-6 h=30"),
+        (0.0, 30.0, "bottom-flush    cz= 0 h=30"),
+        (-3.0, 30.0, "no-flush thru   cz=-3 h=30"),
+        (-3.0, 24.0, "no-flush inside cz=-3 h=24"),
+        (-3.0, 20.0, "no-flush inside cz=-3 h=20"),
+    ];
+    let cys = [4.0, 0.0, -2.0];
+    let cxs = [-4.0, -2.0, 0.0, 2.0];
+    let mut fb_total = 0;
+    let mut total = 0;
+    eprintln!("                              cy=4        cy=0        cy=-2");
+    eprintln!("                            {}", "cx -4-2 0 2  ".repeat(3));
+    for (cz, h, tag) in configs {
+        let mut row = String::new();
+        for cy in cys {
+            for cx in cxs {
+                let (_, fb) = run(cx, cy, cz, h, false);
+                total += 1;
+                if fb {
+                    fb_total += 1;
+                }
+                row.push(if fb { 'X' } else { '.' });
+                row.push(' ');
+            }
+            row.push_str("  ");
+        }
+        eprintln!("{tag}  {row}");
+    }
+    eprintln!("\ntotal {fb_total}/{total} fall back");
+}
+
 fn main() {
     env_logger::init();
     let mode = std::env::args().nth(1).unwrap_or_default();
+
+    if mode == "matrix" {
+        matrix();
+        return;
+    }
+
+    // One placement through the real operations gate, verbosely.
+    if mode == "one" {
+        let a =
+            |n: usize, d: f64| -> f64 { std::env::args().nth(n).map_or(d, |s| s.parse().unwrap()) };
+        let (cx, cy, cz, h) = (a(2, -4.0), a(3, 0.0), a(4, -6.0), a(5, 30.0));
+        run(cx, cy, cz, h, true);
+        return;
+    }
+
+    if mode == "family" {
+        family_sweep();
+        return;
+    }
 
     if mode == "sweep" {
         // Same cx/cy grid under three z-layouts. If coplanarity were the
@@ -320,6 +472,50 @@ fn main() {
             Ok(sol) => {
                 let solids = [sol];
                 eprintln!("RAW GFA: ok");
+                {
+                    let bb = brepkit_operations::measure::solid_bounding_box(&topo, sol).unwrap();
+                    let vol = brepkit_operations::measure::solid_volume(&topo, sol, 0.02).unwrap();
+                    let lens = overlap_area(cx, cy, 6.0);
+                    let expect = 30.0 * 18.0 * 24.0 + std::f64::consts::PI * 36.0 * h
+                        - lens * ((cz + h).min(24.0) - cz.max(0.0)).max(0.0);
+                    eprintln!(
+                        "  bbox min=({:.2},{:.2},{:.2}) max=({:.2},{:.2},{:.2})",
+                        bb.min.x(),
+                        bb.min.y(),
+                        bb.min.z(),
+                        bb.max.x(),
+                        bb.max.y(),
+                        bb.max.z()
+                    );
+                    eprintln!(
+                        "  volume={vol:.3} closed-form={expect:.3} delta={:.3}",
+                        vol - expect
+                    );
+                    // Divergence theorem in z: signed area must cancel on a
+                    // closed shell. A non-zero sum names a missing horizontal cap.
+                    let mut up = 0.0;
+                    let mut down = 0.0;
+                    for fid in solid_faces(&topo, sol).unwrap() {
+                        let f = topo.face(fid).unwrap();
+                        if let brepkit_topology::face::FaceSurface::Plane { normal, .. } =
+                            f.surface()
+                        {
+                            let nz = normal.z() * if f.is_reversed() { -1.0 } else { 1.0 };
+                            let ar =
+                                brepkit_operations::measure::face_area(&topo, fid, 0.02).unwrap();
+                            if nz > 0.5 {
+                                up += ar;
+                            } else if nz < -0.5 {
+                                down += ar;
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "  horizontal area up={up:.3} down={down:.3} imbalance={:.3} (pi*r^2={:.3})",
+                        up - down,
+                        std::f64::consts::PI * 36.0
+                    );
+                }
                 for &s in &solids {
                     let faces = solid_faces(&topo, s).unwrap();
                     eprintln!("  solid {s:?}: {} faces {}", faces.len(), census(&topo, s));

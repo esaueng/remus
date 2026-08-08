@@ -231,6 +231,60 @@ fn the_same_placements_survive_a_taller_cylinder() {
     }
 }
 
+/// Whether the cylinder axis lies on (or within a hair of) one of the box's
+/// side-face planes.
+///
+/// A plane through the axis meets the cylinder in two straight generators
+/// rather than an ellipse, and `exact_plane_cylinder` has no arm for a plane
+/// parallel to the axis — it drops to a sampled point chain
+/// (`math/src/analytic_intersection.rs`). Inside a band of roughly r/600 the
+/// sampled chain degrades and the fuse loses the whole protrusion below the
+/// box; the acceptance gate catches it every time (the result's bounding box
+/// no longer contains the cylinder's) and the mesh fallback returns the right
+/// volume, so these placements are correct but faceted. That is a separate,
+/// pre-existing defect in a different crate — it reproduces with NO coplanar
+/// cap at all — so it is excluded here rather than asserted.
+fn axis_on_a_side_plane(cx: f64, cy: f64) -> bool {
+    cx.abs() < 0.01 || cy.abs() < 0.01
+}
+
+#[test]
+fn the_reported_document_with_only_its_top_cap_flush_is_exact() {
+    // The user's actual document: the cylinder is taller than the box, its top
+    // cap flush with the box top, hanging below. Only ONE cap is coplanar —
+    // enough to trigger the defect — and this placement returned 57 all-planar
+    // faces before the fix.
+    let (cx, cy, cz, h) = (-4.0, 4.0, -6.0, 30.0);
+    let f = fuse(cx, cy, cz, h);
+    assert!(
+        f.curved_faces() >= 1,
+        "the reported document fell back to a {}-face mesh",
+        f.face_count()
+    );
+    assert_sound(cx, cy, cz, h);
+}
+
+#[test]
+fn one_flush_cap_is_enough_at_either_end() {
+    // Top-flush (hangs below) and bottom-flush (sticks above) are the two
+    // one-cap variants. Both faceted before the fix wherever the wall crossed
+    // the corner, so both are swept here.
+    for (cz, h) in [(-6.0, 30.0), (0.0, 30.0)] {
+        let mut checked = 0;
+        for cxi in -5..=5 {
+            for cy in [-2.0, 4.0] {
+                let cx = f64::from(cxi);
+                if !swallows_corner(cx, cy) || axis_on_a_side_plane(cx, cy) {
+                    continue;
+                }
+                assert_sound(cx, cy, cz, h);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 15, "the cz={cz} sweep changed shape ({checked})");
+    }
+}
+
 #[test]
 fn the_result_does_not_depend_on_where_the_cylinder_seam_falls() {
     // Rotating the cylinder about its own axis moves the seam vertex without
