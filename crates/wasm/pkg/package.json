@@ -29,7 +29,7 @@
   "name": "brepkit-wasm",
   "repository": {
     "type": "git",
-    "url": "https://github.com/esaueng/brepkit"
+    "url": "git+https://github.com/esaueng/brepkit.git"
   },
   "sideEffects": [
     "./brepkit_wasm.js",
@@ -37,5 +37,6 @@
   ],
   "type": "module",
   "types": "brepkit_wasm.d.ts",
-  "version": "2.130.0"
+  "version": "2.130.0",
+  "homepage": "https://github.com/esaueng/brepkit"
 }
