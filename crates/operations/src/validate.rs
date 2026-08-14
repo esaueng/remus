@@ -5,7 +5,9 @@
 use brepkit_math::tolerance::Tolerance;
 use brepkit_topology::Topology;
 use brepkit_topology::TopologyError;
+use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::explorer;
+use brepkit_topology::face::{Face, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
 /// A validation issue found in a solid.
@@ -419,6 +421,127 @@ fn face_all_edges_straight(
     Ok(true)
 }
 
+fn same_oriented_circle(
+    a: &brepkit_math::curves::Circle3D,
+    b: &brepkit_math::curves::Circle3D,
+    tol: Tolerance,
+) -> bool {
+    (a.center() - b.center()).length() <= tol.linear
+        && tol.approx_eq(a.radius(), b.radius())
+        && a.normal().dot(b.normal()) > 0.0
+        && (1.0 - a.normal().dot(b.normal())) <= tol.angular.max(1e-12)
+}
+
+fn ambiguous_circle_arc_warnings(
+    topo: &Topology,
+    face_id: brepkit_topology::face::FaceId,
+    wire_id: brepkit_topology::wire::WireId,
+    tol: Tolerance,
+) -> Result<Vec<ValidationIssue>, crate::OperationsError> {
+    let wire = topo.wire(wire_id)?;
+    let mut issues = Vec::new();
+    for (position, first_oe) in wire.edges().iter().enumerate() {
+        let first = topo.edge(first_oe.edge())?;
+        let EdgeCurve::Circle(first_circle) = first.curve() else {
+            continue;
+        };
+        for second_oe in wire.edges().iter().skip(position + 1) {
+            if first_oe.edge() == second_oe.edge() {
+                continue;
+            }
+            let second = topo.edge(second_oe.edge())?;
+            let EdgeCurve::Circle(second_circle) = second.curve() else {
+                continue;
+            };
+            if first.start() == second.start()
+                && first.end() == second.end()
+                && first.start() != first.end()
+                && same_oriented_circle(first_circle, second_circle, tol)
+            {
+                issues.push(ValidationIssue {
+                    severity: Severity::Warning,
+                    description: format!(
+                        "wire {} on face {} has ambiguous complementary circle arcs {} and {} \
+                         with the same stored vertex order",
+                        wire_id.index(),
+                        face_id.index(),
+                        first_oe.edge().index(),
+                        second_oe.edge().index()
+                    ),
+                });
+            }
+        }
+    }
+    Ok(issues)
+}
+
+fn periodic_outer_rims_are_full_turns(
+    topo: &Topology,
+    face: &Face,
+) -> Result<bool, crate::OperationsError> {
+    if !matches!(
+        face.surface(),
+        FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+    ) {
+        return Ok(true);
+    }
+    let wire = topo.wire(face.outer_wire())?;
+    let mut uses = std::collections::HashMap::new();
+    for oe in wire.edges() {
+        *uses.entry(oe.edge()).or_insert(0_usize) += 1;
+    }
+    let doubled: std::collections::HashSet<_> = uses
+        .iter()
+        .filter_map(|(&edge, &count)| (count == 2).then_some(edge))
+        .collect();
+    if doubled.is_empty() {
+        return Ok(true);
+    }
+    if uses.values().any(|&count| count > 2) {
+        return Ok(false);
+    }
+
+    let mut curved = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for oe in wire.edges() {
+        if doubled.contains(&oe.edge()) || !seen.insert(oe.edge()) {
+            continue;
+        }
+        let edge = topo.edge(oe.edge())?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            curved.push((oe.edge().index(), edge.start(), edge.end()));
+        }
+    }
+    if curved.is_empty() {
+        return Ok(true);
+    }
+
+    let accepts = |project: &dyn Fn(brepkit_math::vec::Point3) -> f64| {
+        for expected in 1..=curved.len() {
+            if crate::tessellate::rim_chain::collect_full_turn_rim_cycles(
+                topo, &curved, project, expected,
+            )?
+            .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok::<bool, crate::OperationsError>(false)
+    };
+    let project_u = |point| face.surface().project_point(point).map_or(0.0, |uv| uv.0);
+    if accepts(&project_u)? {
+        return Ok(true);
+    }
+    if matches!(face.surface(), FaceSurface::Torus(_)) {
+        let project_v = |point| face.surface().project_point(point).map_or(0.0, |uv| uv.1);
+        return accepts(&project_v);
+    }
+    Ok(false)
+}
+
 /// 1. **Euler-Poincaré**: V - E + F = 2(1 - g) for genus-g closed solid
 /// 2. **Manifold edges**: each edge shared by exactly 2 faces
 /// 3. **Boundary edges**: no edge shared by only 1 face (open shell)
@@ -625,6 +748,16 @@ pub fn validate_solid_with_options(
 
     for fid in &faces {
         let face = topo.face(*fid)?;
+        if !periodic_outer_rims_are_full_turns(topo, face)? {
+            issues.push(ValidationIssue {
+                severity: Severity::Warning,
+                description: format!(
+                    "periodic face {} has a doubled seam edge but its remaining curved boundary \
+                     does not form closed or full-turn rim cycles",
+                    fid.index()
+                ),
+            });
+        }
         let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
             .chain(face.inner_wires().iter().copied())
             .collect();
@@ -641,6 +774,9 @@ pub fn validate_solid_with_options(
                     ),
                 });
             }
+            issues.extend(ambiguous_circle_arc_warnings(
+                topo, *fid, wire_id, scaled_tol,
+            )?);
         }
     }
 

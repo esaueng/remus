@@ -25,6 +25,7 @@ mod mesh_ops;
 mod nonplanar;
 mod nurbs;
 mod planar;
+pub(crate) mod rim_chain;
 mod solid;
 #[cfg(test)]
 mod tests;

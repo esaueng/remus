@@ -9,6 +9,7 @@ use brepkit_topology::face::{FaceId, FaceSurface};
 use std::f64::consts::TAU;
 
 use super::edge_sampling::{sample_edge, segments_for_chord_deviation_a};
+use super::rim_chain::collect_full_turn_rim_cycles;
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
 
 /// Maps a 3D point to its `(u, v)` surface parameters.
@@ -339,74 +340,10 @@ pub(super) fn tessellate_revolution_band_shared(
             }
         }
     }
-    // Walk cycles by shared vertices (vertex→edge adjacency built once).
-    let mut by_vertex: std::collections::HashMap<brepkit_topology::vertex::VertexId, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (j, &(_, sv, ev)) in curved.iter().enumerate() {
-        by_vertex.entry(sv).or_default().push(j);
-        by_vertex.entry(ev).or_default().push(j);
-    }
-    let mut used = vec![false; curved.len()];
-    let mut cycles: Vec<Vec<usize>> = Vec::new();
-    for start in 0..curved.len() {
-        if used[start] {
-            continue;
-        }
-        let (_, origin, mut at) = curved[start];
-        used[start] = true;
-        let mut cycle = vec![start];
-        let mut closed = curved[start].1 == curved[start].2 || at == origin;
-        while !closed {
-            let Some(&next) = by_vertex
-                .get(&at)
-                .and_then(|c| c.iter().find(|&&j| !used[j]))
-            else {
-                break;
-            };
-            used[next] = true;
-            at = if curved[next].1 == at {
-                curved[next].2
-            } else {
-                curved[next].1
-            };
-            cycle.push(next);
-            closed = at == origin;
-        }
-        if !closed {
-            return Ok(false); // open curved run — not a rim structure
-        }
-        cycles.push(cycle);
-    }
-    if cycles.len() != 2 {
+    let project_u = |point| project(point).0;
+    let Some(cycles) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 2)? else {
         return Ok(false);
-    }
-    // Net winding per cycle from surface-projected endpoint deltas; a closed
-    // single edge (start == end vertex) winds a full turn by construction.
-    let wrap_pi = |d: f64| -> f64 { (d + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0 };
-    for cycle in &cycles {
-        let mut winding = 0.0_f64;
-        let mut whole_turn = false;
-        let mut at: Option<brepkit_topology::vertex::VertexId> = None;
-        for &ci in cycle {
-            let (_, sv, ev) = curved[ci];
-            if sv == ev {
-                whole_turn = true;
-                continue;
-            }
-            let (from, to) = match at {
-                None => (sv, ev),
-                Some(v) if v == sv => (sv, ev),
-                Some(_) => (ev, sv),
-            };
-            let (u0, _) = project(topo.vertex(from)?.point());
-            let (u1, _) = project(topo.vertex(to)?.point());
-            winding += wrap_pi(u1 - u0);
-            at = Some(to);
-        }
-        if !whole_turn && (winding.abs() - TAU).abs() > 1e-6 {
-            return Ok(false);
-        }
-    }
+    };
 
     // Pull each rim's shared global vertex IDs. Chained pieces share their
     // joint vertices through the pool, so id-dedup merges the chain into one
@@ -414,8 +351,8 @@ pub(super) fn tessellate_revolution_band_shared(
     let mut rims: Vec<Vec<u32>> = Vec::with_capacity(2);
     for cycle in &cycles {
         let mut ids: Vec<u32> = Vec::new();
-        for &ci in cycle {
-            let Some(edge_ids) = edge_global_indices.get(&curved[ci].0) else {
+        for &edge_index in &cycle.edge_indices {
+            let Some(edge_ids) = edge_global_indices.get(&edge_index) else {
                 return Ok(false);
             };
             ids.extend_from_slice(edge_ids);
@@ -664,8 +601,9 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     Ok(true)
 }
 
-/// Tessellate a torus band bounded by two closed rim circles and seamed by ONE
-/// doubled open arc edge, in either orientation:
+/// Tessellate a torus band bounded by two full-turn circular rims and seamed by
+/// ONE doubled open arc edge, in either orientation. Each rim may be one closed
+/// circle edge or an endpoint-connected chain of open circle arcs:
 ///   * constant-`v` rims (latitude circles wrapping the ring angle `u`) — a
 ///     full analytic revolve of a profile arc, seamed by that arc; interior
 ///     full-`u` rows are swept along the tube angle;
@@ -700,52 +638,74 @@ pub(super) fn tessellate_torus_two_rim_band(
     }
 
     let wire = topo.wire(face_data.outer_wire())?;
-    let mut rim_edge_ids: Vec<usize> = Vec::new();
-    let mut seam: Option<(brepkit_topology::edge::EdgeId, usize)> = None;
+    let mut wire_edge_counts: DetHashMap<usize, usize> = DetHashMap::default();
     for oe in wire.edges() {
-        let e = topo.edge(oe.edge())?;
-        let closed = e.start() == e.end();
-        match e.curve() {
-            EdgeCurve::Circle(_) if closed => {
-                let idx = oe.edge().index();
-                if !rim_edge_ids.contains(&idx) {
-                    rim_edge_ids.push(idx);
-                }
+        let uses = wire_edge_counts.entry(oe.edge().index()).or_default();
+        *uses += 1;
+        if *uses > 2 {
+            return Ok(false);
+        }
+    }
+
+    // The seam is the one OPEN edge used exactly twice. A NURBS seam is the
+    // analytic revolve of a recognised NURBS-circle profile arc; a line seam
+    // is the rim-fillet band's degenerate chord between its contact circles.
+    // The seam is midpoint-sampled only to select the covered arc, so its open
+    // curve type is otherwise unrestricted.
+    let mut seam_candidates = Vec::new();
+    let mut seen: DetHashSet<usize> = DetHashSet::default();
+    for oe in wire.edges() {
+        if !seen.insert(oe.edge().index()) {
+            continue;
+        }
+        let edge = topo.edge(oe.edge())?;
+        if edge.start() != edge.end() && wire_edge_counts.get(&oe.edge().index()) == Some(&2) {
+            seam_candidates.push(oe.edge());
+        }
+    }
+    let [seam_eid] = seam_candidates.as_slice() else {
+        return Ok(false);
+    };
+    let seam_eid = *seam_eid;
+
+    // Every remaining edge must be a once-used circle. Closed circles form a
+    // rim by themselves; open arcs are chained by endpoint identity below.
+    let mut curved = Vec::new();
+    seen.clear();
+    for oe in wire.edges() {
+        if !seen.insert(oe.edge().index()) || oe.edge() == seam_eid {
+            continue;
+        }
+        if wire_edge_counts.get(&oe.edge().index()) != Some(&1) {
+            return Ok(false);
+        }
+        let edge = topo.edge(oe.edge())?;
+        match edge.curve() {
+            EdgeCurve::Circle(_) => {
+                curved.push((oe.edge().index(), edge.start(), edge.end()));
             }
-            // A NURBS seam is the analytic revolve of a recognised NURBS-circle
-            // profile arc: the band reuses that original edge as its seam, and
-            // profile arc, and a LINE seam is the rim-fillet band's degenerate
-            // chord between its two contact circles: the band reuses that
-            // original edge as its seam, and the seam is only midpoint-sampled
-            // (via the EdgeCurve delegates) to pick the covered arc — the
-            // chord midpoint projects into the covered arc — so any open
-            // curve type is safe here.
-            EdgeCurve::Circle(_) | EdgeCurve::NurbsCurve(_) | EdgeCurve::Line if !closed => {
-                match &mut seam {
-                    None => seam = Some((oe.edge(), 1)),
-                    Some((eid, uses)) if *eid == oe.edge() => *uses += 1,
-                    Some(_) => return Ok(false),
-                }
-            }
-            EdgeCurve::Circle(_)
-            | EdgeCurve::NurbsCurve(_)
+            EdgeCurve::NurbsCurve(_)
             | EdgeCurve::Line
             | EdgeCurve::Ellipse(_)
             | EdgeCurve::Hyperbola(_)
             | EdgeCurve::Parabola(_) => return Ok(false),
         }
     }
-    let Some((seam_eid, 2)) = seam else {
-        return Ok(false);
-    };
-    if rim_edge_ids.len() != 2 {
-        return Ok(false);
-    }
 
     let (t1, t2, t3) = (torus.clone(), torus.clone(), torus.clone());
     let project = move |p: Point3| t1.project_point(p);
     let surf_eval = move |u: f64, v: f64| t2.evaluate(u, v);
     let surf_normal = move |u: f64, v: f64| t3.normal(u, v);
+
+    // The periodic direction depends on which kind of torus band this is.
+    // Walk the topology once for each candidate surface parameter; after the
+    // constant-level test below establishes the mode, only its matching
+    // full-turn result is accepted.
+    let cycles_u = collect_full_turn_rim_cycles(topo, &curved, &|p| project(p).0, 2)?;
+    let cycles_v = collect_full_turn_rim_cycles(topo, &curved, &|p| project(p).1, 2)?;
+    let Some(pool_cycles) = cycles_u.as_ref().or(cycles_v.as_ref()) else {
+        return Ok(false);
+    };
 
     // Circular mean and max wrapped deviation of a set of angles.
     let circ_mean_spread = |angles: &[f64]| -> (f64, f64) {
@@ -768,18 +728,20 @@ pub(super) fn tessellate_torus_two_rim_band(
     // Project each rim's shared pool vertices (wrap-safe: a rim at angle 0
     // projects samples on both sides of the period).
     let mut raw: Vec<Vec<(f64, f64, u32)>> = Vec::with_capacity(2);
-    for &re in &rim_edge_ids {
-        let Some(gids) = edge_global_indices.get(&re) else {
-            return Ok(false);
-        };
-        let mut seen: DetHashSet<u32> = DetHashSet::default();
-        let mut pts: Vec<(f64, f64, u32)> = Vec::with_capacity(gids.len());
-        for &g in gids {
-            if !seen.insert(g) {
-                continue;
+    for cycle in pool_cycles {
+        let mut seen_gids: DetHashSet<u32> = DetHashSet::default();
+        let mut pts: Vec<(f64, f64, u32)> = Vec::new();
+        for &edge_index in &cycle.edge_indices {
+            let Some(gids) = edge_global_indices.get(&edge_index) else {
+                return Ok(false);
+            };
+            for &g in gids {
+                if !seen_gids.insert(g) {
+                    continue;
+                }
+                let (u, v) = project(merged.positions[g as usize]);
+                pts.push((u, v, g));
             }
-            let (u, v) = project(merged.positions[g as usize]);
-            pts.push((u, v, g));
         }
         if pts.len() < 3 {
             return Ok(false);
@@ -806,6 +768,13 @@ pub(super) fn tessellate_torus_two_rim_band(
     } else {
         return Ok(false);
     };
+    if if lat_mode {
+        cycles_u.is_none()
+    } else {
+        cycles_v.is_none()
+    } {
+        return Ok(false);
+    }
     let (lvl0, lvl1) = if lat_mode {
         (v_stats0.0, v_stats1.0)
     } else {
@@ -1957,6 +1926,19 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
 
             for run in &seam_runs {
+                // The periodic walk may already have placed a genuine seam
+                // inside the non-seam boundary's unwrapped u interval.  Keep
+                // that valid CDT boundary instead of snapping it back to an
+                // endpoint; re-pin only the degenerate out-of-range case this
+                // fallback was introduced to repair.
+                let already_unwrapped = run.indices.iter().all(|&i| {
+                    let u = boundary_uv[i].0;
+                    u >= u_min_bnd - 1e-6 && u <= u_max_bnd + 1e-6
+                });
+                if already_unwrapped {
+                    continue;
+                }
+
                 let u_assign = if run.is_forward { u_max_bnd } else { u_min_bnd };
                 let n_pts = run.indices.len();
 

@@ -2670,6 +2670,227 @@ fn a_full_turn_analytic_range_is_anchored_on_the_rims_seam_vertex() {
     );
 }
 
+#[test]
+fn split_circle_rims_bound_the_torus_snap_range() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::surfaces::ToroidalSurface;
+    use std::f64::consts::TAU;
+
+    fn split_latitude(
+        topo: &mut Topology,
+        major: f64,
+        minor: f64,
+        v: f64,
+        parts: usize,
+    ) -> (brepkit_topology::vertex::VertexId, Vec<OrientedEdge>) {
+        let center = Point3::new(0.0, 0.0, minor * v.sin());
+        let circle =
+            Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), major + minor * v.cos()).unwrap();
+        let seam_parameter = 0.7;
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(seam_parameter), 1e-7));
+        let mut vertices = vec![seam];
+        for part in 1..parts {
+            vertices.push(topo.add_vertex(Vertex::new(
+                circle.evaluate(seam_parameter + TAU * part as f64 / parts as f64),
+                1e-7,
+            )));
+        }
+        vertices.push(seam);
+        let arcs = (0..parts)
+            .map(|part| {
+                let edge = topo.add_edge(Edge::new(
+                    vertices[part],
+                    vertices[part + 1],
+                    EdgeCurve::Circle(circle.clone()),
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        (seam, arcs)
+    }
+
+    let (major, minor, v0, v1) = (6.0_f64, 2.0_f64, 0.4_f64, 1.2_f64);
+    let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), major, minor).unwrap();
+    let mut topo = Topology::new();
+    let (lo_seam, lo_arcs) = split_latitude(&mut topo, major, minor, v0, 2);
+    let (hi_seam, hi_arcs) = split_latitude(&mut topo, major, minor, v1, 3);
+    let seam = topo.add_edge(Edge::new(lo_seam, hi_seam, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            lo_arcs
+                .into_iter()
+                .chain(std::iter::once(OrientedEdge::new(seam, true)))
+                .chain(hi_arcs)
+                .chain(std::iter::once(OrientedEdge::new(seam, false)))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(
+        wire,
+        Vec::new(),
+        FaceSurface::Torus(torus.clone()),
+    ));
+
+    let (got0, got1) = super::nurbs::compute_torus_v_range(&topo, topo.face(face).unwrap(), &torus);
+    assert!((got0 - v0).abs() < 1e-12, "lower v = {got0}");
+    assert!((got1 - v1).abs() < 1e-12, "upper v = {got1}");
+
+    let whole = crate::primitives::make_torus(&mut topo, major, minor, 32).unwrap();
+    let whole_face = brepkit_topology::explorer::solid_faces(&topo, whole).unwrap()[0];
+    assert!(matches!(
+        topo.face(whole_face).unwrap().surface(),
+        FaceSurface::Torus(_)
+    ));
+    let FaceSurface::Torus(whole_surface) = topo.face(whole_face).unwrap().surface() else {
+        return;
+    };
+    assert_eq!(
+        super::nurbs::compute_torus_v_range(&topo, topo.face(whole_face).unwrap(), whole_surface),
+        (0.0, TAU)
+    );
+}
+
+#[test]
+fn non_winding_circle_groups_do_not_bound_the_torus_snap_range() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::surfaces::ToroidalSurface;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+
+    fn non_winding_pair(
+        topo: &mut Topology,
+        major: f64,
+        minor: f64,
+        v: f64,
+    ) -> (brepkit_topology::vertex::VertexId, Vec<OrientedEdge>) {
+        let center = Point3::new(0.0, 0.0, minor * v.sin());
+        let circle =
+            Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), major + minor * v.cos()).unwrap();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(FRAC_PI_2), 1e-7));
+        let first = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle.clone())));
+        let second = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+        (
+            start,
+            vec![
+                OrientedEdge::new(first, true),
+                OrientedEdge::new(second, false),
+            ],
+        )
+    }
+
+    let (major, minor, v0, v1) = (6.0_f64, 2.0_f64, 0.4_f64, 1.2_f64);
+    let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), major, minor).unwrap();
+    let mut topo = Topology::new();
+    let (lo_anchor, lo_arcs) = non_winding_pair(&mut topo, major, minor, v0);
+    let (hi_anchor, hi_arcs) = non_winding_pair(&mut topo, major, minor, v1);
+    let seam = topo.add_edge(Edge::new(lo_anchor, hi_anchor, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            lo_arcs
+                .into_iter()
+                .chain(std::iter::once(OrientedEdge::new(seam, true)))
+                .chain(hi_arcs)
+                .chain(std::iter::once(OrientedEdge::new(seam, false)))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(
+        wire,
+        Vec::new(),
+        FaceSurface::Torus(torus.clone()),
+    ));
+
+    assert_eq!(
+        super::nurbs::compute_torus_v_range(&topo, topo.face(face).unwrap(), &torus),
+        (0.0, TAU)
+    );
+}
+
+#[test]
+fn split_rim_anchor_is_independent_of_neighbor_wire_orientation() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::surfaces::CylindricalSurface;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+
+    let origin = Point3::new(2.0, -5.0, 1.0);
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let radius = 6.0;
+    let cylinder = CylindricalSurface::new(origin, axis, radius).unwrap();
+    let circle = Circle3D::new(origin, axis, radius).unwrap();
+    let seam = cylinder.evaluate(FRAC_PI_2, 0.0);
+    let mut topo = Topology::new();
+    let first = topo.add_vertex(Vertex::new(seam, 1e-7));
+    let mut vertices = vec![first];
+    for part in 1..3 {
+        vertices.push(topo.add_vertex(Vertex::new(
+            circle.evaluate(FRAC_PI_2 + TAU * part as f64 / 3.0),
+            1e-7,
+        )));
+    }
+    vertices.push(first);
+    let arcs: Vec<_> = (0..3)
+        .map(|part| {
+            topo.add_edge(Edge::new(
+                vertices[part],
+                vertices[part + 1],
+                EdgeCurve::Circle(circle.clone()),
+            ))
+        })
+        .collect();
+    let forward = topo.add_wire(
+        Wire::new(
+            arcs.iter()
+                .map(|&edge| OrientedEdge::new(edge, true))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let reverse = topo.add_wire(
+        Wire::new(
+            arcs.iter()
+                .rev()
+                .map(|&edge| OrientedEdge::new(edge, false))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let face_a = topo.add_face(Face::new(
+        forward,
+        Vec::new(),
+        FaceSurface::Cylinder(cylinder.clone()),
+    ));
+    let face_b = topo.add_face(Face::new(
+        reverse,
+        Vec::new(),
+        FaceSurface::Cylinder(cylinder.clone()),
+    ));
+
+    let range = |face| {
+        super::nurbs::compute_angular_range(&topo, topo.face(face).unwrap(), |point| {
+            cylinder.project_point(point)
+        })
+    };
+    let (a0, a1) = range(face_a);
+    let (b0, b1) = range(face_b);
+    assert!((a1 - a0 - TAU).abs() < 1e-12);
+    assert!((b1 - b0 - TAU).abs() < 1e-12);
+    let expected = cylinder
+        .project_point(topo.vertex(first).unwrap().point())
+        .0;
+    let wrapped_distance = |angle: f64| {
+        let offset = (angle - expected).rem_euclid(TAU);
+        offset.min(TAU - offset)
+    };
+    assert!(wrapped_distance(a0) < 1e-12, "forward anchor {a0}");
+    assert!(wrapped_distance(b0) < 1e-12, "reverse anchor {b0}");
+}
+
 /// A cross-drilled shaft whose bore radius is smaller than the shaft's, so the
 /// bore leaves a wall of its own. `cross_drilled_shaft` above drills at the
 /// shaft's own radius, where the two cylinders are tangent and the bore wall is
