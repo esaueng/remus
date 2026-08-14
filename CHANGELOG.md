@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.130.0
+
+### Licensing
+
+* Establish the permanent Apache-2.0 line from the last pre-AGPL fork state.
+* Incorporate the non-conflicting fixes from upstream v2.129.15, the final
+  permissively licensed upstream release.
+* Exclude upstream v3 and later code and regenerate distributable artifacts
+  from this source lineage.
+
 ## [3.0.1](https://github.com/esaueng/brepkit/compare/v3.0.0...v3.0.1) (2026-08-08)
 
 

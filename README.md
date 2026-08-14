@@ -6,8 +6,8 @@ Solid modeling kernel for Rust and WebAssembly.
 
 [![CI](https://github.com/esaueng/brepkit/actions/workflows/ci.yml/badge.svg)](https://github.com/esaueng/brepkit/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/brepkit-wasm)](https://www.npmjs.com/package/brepkit-wasm)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/esaueng/brepkit?label=commits%2Fmonth)](https://github.com/esaueng/brepkit/commits/main)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/esaueng/brepkit?label=commits%2Fmonth)](https://github.com/esaueng/brepkit/commits/apache-main)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](#license)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/) [![unsafe denied](https://img.shields.io/badge/unsafe-denied-success.svg)](#why-a-cad-kernel)
 
 **[Architecture](#architecture)** · **[Performance](#performance)** · **[Getting Started](#getting-started)** · **[Known Limitations](#known-limitations)** · **[Contributing](./CONTRIBUTING.md)**
@@ -272,9 +272,7 @@ Broad directions, no dates.
 
 ## License
 
-Licensed under either of
+Licensed under the [Apache License, Version 2.0](./LICENSE-APACHE).
 
-- [Apache License, Version 2.0](./LICENSE-APACHE)
-- [MIT License](./LICENSE-MIT)
-
-at your option.
+This Apache line is permanently based on the last permissive upstream series.
+It does not merge code from upstream releases published under the AGPL.

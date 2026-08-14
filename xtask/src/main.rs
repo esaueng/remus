@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::WasmBuild { no_simd, skip_opt } => {
             wasm::check_tools()?;
-            wasm::build_both_targets(!no_simd)?;
+            wasm::build_both_targets(!no_simd, !skip_opt)?;
             if !skip_opt {
                 wasm::run_wasm_opt()?;
             }
@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::WasmPublish { dry_run, no_simd } => {
             wasm::check_tools()?;
-            wasm::build_both_targets(!no_simd)?;
+            wasm::build_both_targets(!no_simd, true)?;
             wasm::run_wasm_opt()?;
             wasm::merge_packages()?;
             wasm::validate_output()?;

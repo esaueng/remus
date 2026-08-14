@@ -2,7 +2,7 @@ name: Release & Publish
 
 on:
   push:
-    branches: [main]
+    branches: [apache-main]
   release:
     types: [created]
   workflow_dispatch:
@@ -11,7 +11,7 @@ on:
         description: "Manually publish this version to npm (e.g. 0.4.1). Skips release-please. Leave blank to only refresh the committed package."
         required: false
       sync_package:
-        description: "Rebuild crates/wasm/pkg and commit it to main"
+        description: "Rebuild crates/wasm/pkg and commit it to apache-main"
         type: boolean
         default: true
 
@@ -95,11 +95,11 @@ jobs:
 
   # The committed package directory is a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
-  #   "brepkit-wasm": "github:esaueng/brepkit#main&path:/crates/wasm/pkg"
-  # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on main. Nothing
+  #   "brepkit-wasm": "github:esaueng/brepkit#apache-main&path:/crates/wasm/pkg"
+  # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on apache-main. Nothing
   # rebuilt it after a merge, so that directory drifted far behind the source
   # (2.126.20 committed vs 2.128.5 in Cargo.toml) and every consumer silently
-  # ran a months-old kernel while main looked current.
+  # ran a months-old kernel while apache-main looked current.
   sync-committed-package:
     name: Refresh committed WASM package
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -189,7 +189,7 @@ jobs:
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase --autostash "$remote" "${GITHUB_REF_NAME}"
           git push "$remote" "HEAD:${GITHUB_REF_NAME}"
-          echo "::notice::Committed brepkit-wasm ${VERSION}; consumers on #main pick it up on the next install."
+          echo "::notice::Committed brepkit-wasm ${VERSION}; consumers on #apache-main pick it up on the next install."
 
   # Publish triggers on three events:
   # 1. release:created — fired when release-please creates a GitHub release

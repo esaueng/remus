@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [apache-main]
   pull_request:
 
 concurrency:
@@ -18,6 +18,15 @@ env:
 # jobs don't need dtolnay/rust-toolchain.
 
 jobs:
+  apache-lineage:
+    name: Apache Lineage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: ./scripts/check-apache-lineage.sh
+
   fmt:
     name: Format
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -32,7 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
@@ -43,7 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.62.30
         with:
           tool: nextest
@@ -79,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.62.30
         with:
           tool: cargo-llvm-cov
@@ -124,7 +133,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.62.30
         with:
           tool: wasm-pack
@@ -171,7 +180,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - name: Build WASM (PR)
         run: |
           cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release
@@ -214,7 +223,7 @@ jobs:
             echo "COMMENT_BODY<<WASM_EOF"
             echo "## WASM Binary Size"
             echo ""
-            echo "| File | main | PR | Delta |"
+            echo "| File | apache-main | PR | Delta |"
             echo "|------|------|----|-------|"
             echo "| \`brepkit_wasm.wasm\` | ${BASE_SIZE_MB} MB | ${PR_SIZE_MB} MB | ${SIGN}${DELTA_KB} KB (${SIGN}${PCT}%) |"
             echo ""
@@ -283,7 +292,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings

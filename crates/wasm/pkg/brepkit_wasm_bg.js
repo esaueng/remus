@@ -6152,10 +6152,10 @@ export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
 export function __wbg___wbindgen_throw_344f42d3211c4765(arg0, arg1) {
     throw new Error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_error_3af138b8302c8683(arg0, arg1) {
+export function __wbg_error_f9bdac4c0b4e0785(arg0, arg1) {
     console.error(getStringFromWasm0(arg0, arg1));
 }
-export function __wbg_log_06260087600e4997(arg0, arg1) {
+export function __wbg_log_ec0bb1af9c6701a8(arg0, arg1) {
     console.log(getStringFromWasm0(arg0, arg1));
 }
 export function __wbg_new_32b398fb48b6d94a() {
@@ -6172,7 +6172,7 @@ export function __wbg_set_6be42768c690e380(arg0, arg1, arg2) {
 export function __wbg_set_8a16b38e4805b298(arg0, arg1, arg2) {
     arg0[arg1 >>> 0] = arg2;
 }
-export function __wbg_warn_78cf9e8f576306bc(arg0, arg1) {
+export function __wbg_warn_f1728d2785e70aeb(arg0, arg1) {
     console.warn(getStringFromWasm0(arg0, arg1));
 }
 export function __wbindgen_cast_0000000000000001(arg0) {
