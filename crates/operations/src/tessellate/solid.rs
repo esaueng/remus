@@ -9,7 +9,9 @@ use brepkit_topology::solid::SolidId;
 
 use super::TriangleMesh;
 use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_deviation_a};
-use super::mesh_ops::{dedupe_coincident_triangles, weld_boundary_vertices};
+use super::mesh_ops::{
+    dedupe_coincident_triangles, fill_sub_deflection_triangular_gaps, weld_boundary_vertices,
+};
 use super::nonplanar::{
     tessellate_cone_apex_fan_shared, tessellate_latitude_band_shared, tessellate_nonplanar_cdt,
     tessellate_nonplanar_snap, tessellate_revolution_band_shared, tessellate_sphere_cap_shared,
@@ -801,6 +803,7 @@ fn tessellate_solid_core(
     // positions so position-coincident triangles with distinct vertex IDs
     // are still caught.
     dedupe_coincident_triangles(&mut merged, tri_faces.as_mut());
+    fill_sub_deflection_triangular_gaps(&mut merged, deflection, tri_faces.as_mut());
 
     Ok((merged, tri_faces, all_faces.len()))
 }

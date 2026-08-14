@@ -2784,38 +2784,45 @@ fn a_through_bore_wall_is_drawn_at_all() {
 }
 
 #[test]
-#[ignore = "a through bore's wall is drawn too large; see this test's note"]
 fn a_through_bore_wall_is_drawn_at_its_true_area() {
-    // What the fix above did NOT settle, kept visible rather than asserted
-    // away. Making the wall non-empty made it DRAWABLE, not correct: the
-    // boundary is now the real polyline, but this face has no inner wire and
-    // the CDT still closes its period-wrapping outer curve as a planar pocket.
-    // That pastes over part of the domain it should leave open; the dedicated
-    // inner-wire path does not apply to this bore wall.
-    //
-    // Measured against the closed form, and NOT a constant factor, which is why
-    // no single correction is applied here:
-    //
-    //   bore r | drawn  | exact  | error
-    //   -------|--------|--------|-------
-    //      1   | 63.526 | 36.629 | +73.4%
-    //      2   | 69.021 | 66.149 |  +4.3%
-    //
-    // The error grows as the bore narrows — the narrower the bore, the larger
-    // the share of its wall that is paste. Both figures at deflection 0.05 and
-    // stable to 0.01; at 0.002 they move by under 0.6%, so this is a modelling
-    // error and not a tessellation-density one.
-    for (bore, drawn) in [(1.0, 63.526), (2.0, 69.021)] {
+    // This used to be an ignored defect pin: r=1 drew 63.526 mm² against an
+    // exact 36.629 (+73.4%), and r=2 drew 69.021 against 66.149 (+4.3%).
+    // Keep only the geometric contract now that the periodic-boundary path
+    // clips the wall correctly.
+    for bore in [1.0, 2.0] {
         let (topo, solid) = shaft_drilled_with(bore);
-        let (_, area) = bore_wall_mesh(&topo, solid, bore, 0.05);
-        assert!(
-            (area - drawn).abs() / drawn < 1e-3,
-            "bore {bore} drew {area}, pinned at {drawn}"
-        );
+        let (_, area) = bore_wall_mesh(&topo, solid, bore, 0.01);
         let exact = exact_bore_wall_area(bore, 3.0);
         assert!(
-            (area - exact).abs() / exact < 0.01,
+            (area - exact).abs() / exact < 0.02,
             "bore {bore} drew {area} against an exact {exact}"
+        );
+    }
+}
+
+#[test]
+fn cross_drilled_display_mesh_is_closed_and_matches_brep_volume() {
+    for bore in [3.0, 2.0, 1.0] {
+        let (topo, solid) = shaft_drilled_with(bore);
+        let brep_volume = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+        // Match OpenZCAD's display settings for this 30-unit-tall body:
+        // 0.02% of the largest extent and a 0.06-radian angular limit.
+        let (mesh, _) = tessellate_solid_grouped_with_tolerance(&topo, solid, 0.006, 0.06).unwrap();
+        assert_eq!(
+            (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh)),
+            (0, 0),
+            "bore r={bore}: display mesh indices must describe a closed manifold"
+        );
+        let quality = welded_mesh_quality(&mesh);
+        assert_eq!(
+            (quality.boundary_edges, quality.non_manifold_edges),
+            (0, 0),
+            "bore r={bore}: display mesh must be closed and manifold"
+        );
+        let mesh_volume = signed_volume_raw(&mesh).abs();
+        assert!(
+            (mesh_volume - brep_volume).abs() / brep_volume < 0.02,
+            "bore r={bore}: mesh volume {mesh_volume:.6} vs B-rep {brep_volume:.6}"
         );
     }
 }

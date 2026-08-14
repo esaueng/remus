@@ -2705,11 +2705,37 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
             let dup_edge = topo.edge(dup)?;
             let dup_qs = quantize_point(topo.vertex(dup_edge.start())?.point(), tol);
             let dup_qe = quantize_point(topo.vertex(dup_edge.end())?.point(), tol);
-            // Detect reversed vertex order. For closed edges (start == end),
-            // qs == qe for both canonical and duplicate, so the flip condition
-            // would be trivially true. Never flip closed edges.
+            // Detect reversed traversal. For open edges the vertex order tells;
+            // for closed edges (start == end) both quantized endpoints
+            // coincide, so endpoint order says nothing — but the two curves
+            // can still be parameterized in opposite directions (two operands'
+            // coincident rim circles wound about opposite normals). Compare
+            // curve tangents at the shared seam vertex instead: coincident
+            // closed curves in one group share their seam position, so
+            // opposite tangents there mean opposite traversal.
             let is_closed = canon_qs == canon_qe;
-            let needs_flip = !is_closed && dup_qs == canon_qe && dup_qe == canon_qs;
+            let needs_flip = if is_closed {
+                use brepkit_topology::edge::EdgeCurve;
+                // A closed curve's traversal direction is its plane normal
+                // (CCW-about-normal); tangent evaluation is unusable here
+                // because `domain_with_endpoints` anchors a closed curve to
+                // the CURVE's own start parameter, not the seam vertex.
+                let canon_edge = topo.edge(canonical)?;
+                match (canon_edge.curve(), dup_edge.curve()) {
+                    (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
+                        a.normal().dot(b.normal()) < 0.0
+                    }
+                    (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
+                        a.normal().dot(b.normal()) < 0.0
+                    }
+                    // Mixed or free-form closed pairs: no reliable direction
+                    // probe without a seam-anchored parameterization; keep
+                    // the pre-existing no-flip behavior.
+                    _ => false,
+                }
+            } else {
+                dup_qs == canon_qe && dup_qe == canon_qs
+            };
             replacements.insert(dup, (canonical, needs_flip));
         }
     }

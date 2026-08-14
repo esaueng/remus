@@ -471,11 +471,33 @@ fn a_corner_on_a_curved_face_is_refused() {
         })
         .expect("the notched top face still has a straight run along y = 0");
 
-    expect_refusal(
-        chamfer(&mut topo, body, &[target], 1.0),
-        "curved",
-        "chamfering an edge whose corner sits on the notch",
-    );
+    // The material claim is "refused, not approximated". Which typed refusal
+    // fires depends on how the notch cut resolved: with an exact
+    // plane-parallel-to-axis intersection the notch stays a cylinder face and
+    // the corner-on-curved-face check refuses with `Unsupported`; while that
+    // exact arm is missing, the cut facets the notch into short line chords
+    // and the setback range check refuses first with `InvalidInput` (the
+    // 1.0 setback cannot fit the adjacent ~0.13 chord). Accept either — both
+    // keep the shell closed; approximating or succeeding silently would not.
+    match chamfer(&mut topo, body, &[target], 1.0) {
+        Err(OperationsError::Unsupported { operation, reason }) => {
+            assert_eq!(operation, "chamfer", "wrong operation name");
+            assert!(
+                reason.contains("curved"),
+                "refusal should mention \"curved\", got: {reason}"
+            );
+        }
+        Err(OperationsError::InvalidInput { reason }) => {
+            assert!(
+                reason.contains("does not fit"),
+                "refusal should be the setback range check, got: {reason}"
+            );
+        }
+        Err(other) => {
+            panic!("chamfering into the notch: expected a typed refusal, got {other:?}")
+        }
+        Ok(_) => panic!("chamfering into the notch must be refused, not approximated"),
+    }
 }
 
 /// Whatever the configuration, an accepted chamfer comes back valid, closed,

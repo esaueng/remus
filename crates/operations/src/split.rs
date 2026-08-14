@@ -119,11 +119,17 @@ enum EdgeCut {
 #[derive(Clone, Copy)]
 struct Connector {
     edge: EdgeId,
-    /// Whether the trimmed *face* traverses `edge` forwards. The cap traverses
-    /// it the other way round, which is what pairs them across it.
+    /// The STORED wire sense the trimmed face uses for `edge`. The cap must
+    /// traverse the edge opposite to the trimmed face's EFFECTIVE sense
+    /// (stored XOR `face_reversed`), which is what pairs them across it.
     forward: bool,
     /// A closed rim (a bore's cross-section) rather than a straight chord.
     ring: bool,
+    /// Whether the trimmed face is stored reversed. A reversed face (a bore
+    /// wall) flips every stored sense's effective direction, so the cap's
+    /// opposing sense must fold this in — negating `forward` alone pairs
+    /// correctly only against non-reversed faces.
+    face_reversed: bool,
 }
 
 /// One half under construction: the faces it takes whole or trimmed, and the
@@ -763,6 +769,7 @@ fn close_gap(
                 fid.index()
             )));
         };
+        let face_reversed = topo.face(fid)?.is_reversed();
         let edge = section_ring(topo, fid, surface, ring, gap.from, normal, d, eps)?;
         // The section stands in for the rim in place, so the wire traverses it
         // exactly as it traversed the rim.
@@ -770,6 +777,7 @@ fn close_gap(
             edge,
             forward,
             ring: true,
+            face_reversed,
         });
     }
 
@@ -787,10 +795,12 @@ fn close_gap(
             fid.index()
         )));
     }
+    let face_reversed = topo.face(fid)?.is_reversed();
     Ok(Connector {
         edge: topo.add_edge(Edge::new(gap.from, gap.to, EdgeCurve::Line)),
         forward: true,
         ring: false,
+        face_reversed,
     })
 }
 
@@ -875,9 +885,10 @@ fn build_cap(
     let mut loops: Vec<Vec<OrientedEdge>> = Vec::new();
     let mut chords: Vec<OrientedEdge> = Vec::new();
     for c in connectors {
-        // Opposite to the face's traversal: that is what makes cap and wall
-        // the two manifold partners along this edge.
-        let oe = OrientedEdge::new(c.edge, !c.forward);
+        // Opposite to the face's EFFECTIVE traversal (stored sense XOR its
+        // reversal flag): that is what makes cap and wall the two manifold
+        // partners along this edge.
+        let oe = OrientedEdge::new(c.edge, c.forward == c.face_reversed);
         if c.ring {
             loops.push(vec![oe]);
         } else {

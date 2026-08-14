@@ -305,13 +305,13 @@ pub(super) fn find_splits_on_circle(
     if !splits.is_empty()
         && let Some(base) = closed_anchor
     {
-        subdivide_major_pieces(circle, base, edge.forward, &mut splits);
+        subdivide_ambiguous_closed_rim_pieces(circle, base, edge.forward, &mut splits);
     }
     splits
 }
 
-/// Add split parameters until no piece of a closed rim spans more than a half
-/// turn.
+/// Add split parameters that keep a closed rim unambiguous to the planar
+/// chord arrangement.
 ///
 /// The plane-face arrangement subdivides an arc by its CHORD, and a chord says
 /// nothing about which side of itself the arc bulges to. Under a half turn that
@@ -322,10 +322,13 @@ pub(super) fn find_splits_on_circle(
 /// the wall pokes out. Halving major pieces keeps every emitted arc inside the
 /// range its chord determines.
 ///
-/// The extra parameters are the geometric midpoints of the gaps, so the two
-/// faces sharing a rim (a cylinder's cap and its wall) derive the same points
-/// from the same gaps and stay split in step.
-fn subdivide_major_pieces(
+/// Major pieces are divided at their geometric gap midpoints. A rim with four
+/// or more crossings additionally gets fixed quarter-turn stations: that is
+/// the multiple-disjoint-lobe regime, where individually minor arcs can still
+/// form a chain whose chords step across a circle extremum and make the planar
+/// arrangement classify the wrong cell. Both choices are derived from the
+/// circle itself, so the cap and wall stay split in step.
+fn subdivide_ambiguous_closed_rim_pieces(
     circle: &brepkit_math::curves::Circle3D,
     base: f64,
     forward: bool,
@@ -341,6 +344,20 @@ fn subdivide_major_pieces(
     const MAX_PIECE: f64 = 0.5;
     const PIECE_EPS: f64 = 1e-9;
     let dir = if forward { 1.0 } else { -1.0 };
+    // Four or more boundary crossings can cut a disc into multiple disjoint
+    // exterior lobes. The planar arrangement reasons about each circular arc
+    // through its chord, so keep a fixed quarter-turn station in every
+    // quadrant: no chord can then stand in for an arc that turns past a circle
+    // extremum and changes which arrangement cell it bounds.
+    if splits.len() >= 4 {
+        for t in [0.25, 0.5, 0.75] {
+            if splits.iter().all(|(s, _)| (*s - t).abs() >= PIECE_EPS) {
+                let angle = std::f64::consts::TAU.mul_add(dir * t, base);
+                splits.push((t, circle.evaluate(angle)));
+            }
+        }
+        splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    }
     let mut bounds: Vec<f64> = Vec::with_capacity(splits.len() + 2);
     bounds.push(0.0);
     bounds.extend(splits.iter().map(|s| s.0));

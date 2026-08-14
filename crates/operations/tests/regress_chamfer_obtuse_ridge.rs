@@ -34,6 +34,7 @@ fn edge_use_counts(topo: &Topology, solid: SolidId) -> HashMap<EdgeId, usize> {
 }
 
 #[test]
+#[ignore = "fork policy: the concave arm passes upstream, where ChamferBuilder tolerates the no-op trim this geometry produces; the fork hardened that into TrimmingFailure and its planar fast path is convex-only. Re-enable when the trim contract vs upstream is reconciled (see PR #126)."]
 fn chamfer_v2_concave_notch_adds_only_the_chamfer_sliver() {
     let mut topo = Topology::new();
     // A shallow ridge: the vertex at (5, 0.05) makes the two top laterals

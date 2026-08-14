@@ -770,7 +770,16 @@ fn build_analytic_revolution(
                 // and the rim+seam+rim+seam pattern. The seam pair needs no
                 // flip: reversal flips both of its uses together, keeping them
                 // opposed.
-                let rim_fwd = !reversed;
+                //
+                // The start rim's effective sense must equal the chart winding:
+                // rims are CCW about `axis`, and a wall bounded CCW-as-seen-
+                // from-outside runs its start rim in +θ exactly when the
+                // profile traversal is chart-CCW. The caps already adapt to the
+                // winding through `out2`/`cap_normal`; a chart-CW profile
+                // (e.g. a world-CCW profile revolved about the negated axis)
+                // needs every wall rim flipped to stay opposed to its
+                // neighbours.
+                let rim_fwd = if ccw { !reversed } else { reversed };
                 let wall_wire = match (rim_circle[idx], rim_circle[next]) {
                     (Some(bot_e), Some(top_e)) => Wire::new(
                         vec![

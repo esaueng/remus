@@ -561,3 +561,98 @@ pub(super) fn weld_boundary_vertices(
         }
     }
 }
+
+/// Close a three-edge tessellation gap that is smaller than the requested
+/// display resolution.
+///
+/// Tangential analytic intersections can leave three independently sampled
+/// face triangles around a narrow cusp. When the whole gap is bounded to a
+/// few deflection lengths and its shortest altitude is sub-deflection, adding
+/// the missing oppositely oriented triangle restores the closed projection
+/// without changing the exact B-rep.
+pub(super) fn fill_sub_deflection_triangular_gaps(
+    mesh: &mut TriangleMesh,
+    deflection: f64,
+    mut tri_faces: Option<&mut Vec<u32>>,
+) {
+    if !deflection.is_finite() || deflection <= 0.0 || mesh.indices.len() < 9 {
+        return;
+    }
+
+    let mut directed = DetHashMap::<(u32, u32), usize>::default();
+    for (triangle, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        for edge in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+            directed.entry(edge).or_insert(triangle);
+        }
+    }
+    let mut boundary: Vec<_> = directed
+        .iter()
+        .filter_map(|(&(a, b), &triangle)| {
+            (!directed.contains_key(&(b, a))).then_some((a, b, triangle))
+        })
+        .collect();
+    boundary.sort_unstable();
+    let boundary_map: DetHashMap<(u32, u32), usize> = boundary
+        .iter()
+        .map(|&(a, b, triangle)| ((a, b), triangle))
+        .collect();
+
+    let face_by_triangle = tri_faces.as_deref();
+    let mut fillers = Vec::<([u32; 3], u32)>::new();
+    let mut seen = DetHashSet::<[u32; 3]>::default();
+    for &(a, b, ab_triangle) in &boundary {
+        for (&(from, c), &bc_triangle) in &boundary_map {
+            if from != b || c == a {
+                continue;
+            }
+            let Some(&ca_triangle) = boundary_map.get(&(c, a)) else {
+                continue;
+            };
+            let mut key = [a, b, c];
+            key.sort_unstable();
+            if !seen.insert(key) {
+                continue;
+            }
+            let mut sources = [ab_triangle, bc_triangle, ca_triangle];
+            sources.sort_unstable();
+            if sources[0] == sources[2] {
+                continue;
+            }
+            let (pa, pb, pc) = (
+                mesh.positions[a as usize],
+                mesh.positions[b as usize],
+                mesh.positions[c as usize],
+            );
+            let edge_lengths = [(pb - pa).length(), (pc - pb).length(), (pa - pc).length()];
+            let longest = edge_lengths.into_iter().fold(0.0_f64, f64::max);
+            if longest > 8.0 * deflection || longest <= f64::EPSILON {
+                continue;
+            }
+            let twice_area = (pb - pa).cross(pc - pa).length();
+            let shortest_altitude = edge_lengths
+                .into_iter()
+                .filter(|&length| length > f64::EPSILON)
+                .map(|length| twice_area / length)
+                .fold(f64::INFINITY, f64::min);
+            if shortest_altitude > deflection {
+                continue;
+            }
+
+            let face = face_by_triangle.map_or(0, |faces| {
+                [ab_triangle, bc_triangle, ca_triangle]
+                    .into_iter()
+                    .filter_map(|triangle| faces.get(triangle).copied())
+                    .min()
+                    .unwrap_or(0)
+            });
+            fillers.push(([b, a, c], face));
+        }
+    }
+
+    for (triangle, face) in fillers {
+        mesh.indices.extend_from_slice(&triangle);
+        if let Some(faces) = tri_faces.as_deref_mut() {
+            faces.push(face);
+        }
+    }
+}

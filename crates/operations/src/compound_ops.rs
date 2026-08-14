@@ -60,8 +60,10 @@ pub fn fuse_all(
     let margin = brepkit_math::tolerance::Tolerance::new().linear;
     let poly_bounds: Vec<Option<PolyhedralBounds>> =
         solids.iter().map(|&s| polyhedral_bounds(topo, s)).collect();
+    let cylinder_bounds: Vec<Option<SimpleCylinder>> =
+        solids.iter().map(|&s| simple_cylinder(topo, s)).collect();
 
-    let groups = partition_touching(&bboxes, &poly_bounds, margin);
+    let groups = partition_touching(&bboxes, &poly_bounds, &cylinder_bounds, margin);
 
     let mut group_results: Vec<SolidId> = Vec::new();
     for group in &groups {
@@ -70,7 +72,12 @@ pub fn fuse_all(
             group_results.push(group_solids[0]);
             continue;
         }
-        // Each group is a connected cluster of interpenetrating/touching solids
+        if let Some(fused) = fuse_parallel_cylinder_cluster(topo, &group_solids)? {
+            group_results.push(fused);
+            continue;
+        }
+        // Each group is a connected cluster of interpenetrating solids, or of
+        // solids whose precise relation is unavailable to the partitioner
         // — fuse it in ONE GFA arrangement (via `fuse_cluster`, N-way with a
         // sequential fallback) instead of a pairwise reduction that re-processes
         // a growing accumulator O(n²).
@@ -82,6 +89,367 @@ pub fn fuse_all(
     }
 
     merge_disjoint_solids(topo, &group_results)
+}
+
+#[derive(Clone)]
+struct SimpleCylinder {
+    center: brepkit_math::vec::Point3,
+    axis: brepkit_math::vec::Vec3,
+    radius: f64,
+    axial_min: f64,
+    axial_max: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CylinderRelation {
+    Separated,
+    Touching,
+    PositiveOverlap,
+}
+
+/// Classify two simple cylinders by actual solid overlap, rather than center
+/// distance alone. `None` means their axes are not parallel enough for this
+/// exact classifier and the caller must use its conservative fallback.
+fn cylinder_relation(
+    a: &SimpleCylinder,
+    b: &SimpleCylinder,
+    margin: f64,
+) -> Option<CylinderRelation> {
+    if a.axis.dot(b.axis) < 1.0 - 1e-10 {
+        return None;
+    }
+    let delta = b.center - a.center;
+    let radial = (delta - a.axis * delta.dot(a.axis)).length();
+    let radial_overlap = a.radius + b.radius - radial;
+    let axial_overlap = a.axial_max.min(b.axial_max) - a.axial_min.max(b.axial_min);
+    if radial_overlap < -margin || axial_overlap < -margin {
+        Some(CylinderRelation::Separated)
+    } else if radial_overlap <= margin || axial_overlap <= margin {
+        Some(CylinderRelation::Touching)
+    } else {
+        Some(CylinderRelation::PositiveOverlap)
+    }
+}
+
+fn point_axis_coordinate(point: brepkit_math::vec::Point3, axis: brepkit_math::vec::Vec3) -> f64 {
+    point.x() * axis.x() + point.y() * axis.y() + point.z() * axis.z()
+}
+
+/// Recognize an untrimmed cylindrical prism (two planar caps and one analytic
+/// cylindrical wall). This intentionally declines bores, partial cylinders,
+/// and already-booleaned solids.
+fn simple_cylinder(topo: &Topology, solid: SolidId) -> Option<SimpleCylinder> {
+    use brepkit_topology::face::FaceSurface;
+
+    let solid_data = topo.solid(solid).ok()?;
+    if !solid_data.inner_shells().is_empty() {
+        return None;
+    }
+    let faces = topo.shell(solid_data.outer_shell()).ok()?.faces();
+    if faces.len() != 3 {
+        return None;
+    }
+    let mut cylinder = None;
+    let mut plane_count = 0;
+    for &face_id in faces {
+        let face = topo.face(face_id).ok()?;
+        if !face.inner_wires().is_empty() {
+            return None;
+        }
+        match face.surface() {
+            FaceSurface::Cylinder(value) if cylinder.is_none() => cylinder = Some(value),
+            FaceSurface::Plane { .. } => plane_count += 1,
+            _ => return None,
+        }
+    }
+    if plane_count != 2 {
+        return None;
+    }
+    let cylinder = cylinder?;
+    let axis = cylinder.axis().normalize().ok()?;
+    let mut axial_min = f64::INFINITY;
+    let mut axial_max = f64::NEG_INFINITY;
+    for vertex_id in brepkit_topology::explorer::solid_vertices(topo, solid).ok()? {
+        let value = point_axis_coordinate(topo.vertex(vertex_id).ok()?.point(), axis);
+        axial_min = axial_min.min(value);
+        axial_max = axial_max.max(value);
+    }
+    (axial_min.is_finite() && axial_max > axial_min).then(|| SimpleCylinder {
+        center: cylinder.origin(),
+        axis,
+        radius: cylinder.radius(),
+        axial_min,
+        axial_max,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct VisibleArc {
+    center: (f64, f64),
+    radius: f64,
+    start: f64,
+    end: f64,
+}
+
+/// Exact union for a connected cluster of equal-radius, co-oriented cylinders
+/// with the same axial extent. Their 3D union is the extrusion of a 2D circle
+/// union, whose boundary consists only of exact circular arcs.
+fn fuse_parallel_cylinder_cluster(
+    topo: &mut Topology,
+    solids: &[SolidId],
+) -> Result<Option<SolidId>, crate::OperationsError> {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::vec::Vec3;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::vertex::{Vertex, VertexId};
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    if solids.len() < 2 {
+        return Ok(None);
+    }
+    let Some(first) = simple_cylinder(topo, solids[0]) else {
+        return Ok(None);
+    };
+    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+    let mut cylinders = Vec::with_capacity(solids.len());
+    cylinders.push(first.clone());
+    for &solid in &solids[1..] {
+        let Some(cylinder) = simple_cylinder(topo, solid) else {
+            return Ok(None);
+        };
+        if cylinder.axis.dot(first.axis) < 1.0 - 1e-10
+            || (cylinder.radius - first.radius).abs() > tol
+            || (cylinder.axial_min - first.axial_min).abs() > tol
+            || (cylinder.axial_max - first.axial_max).abs() > tol
+        {
+            return Ok(None);
+        }
+        cylinders.push(cylinder);
+    }
+
+    let u_axis = {
+        let center_vector = Vec3::new(first.center.x(), first.center.y(), first.center.z());
+        let radial = center_vector - first.axis * point_axis_coordinate(first.center, first.axis);
+        radial.normalize().unwrap_or_else(|_| {
+            first
+                .axis
+                .cross(Vec3::new(1.0, 0.0, 0.0))
+                .normalize()
+                .unwrap_or(Vec3::new(0.0, 1.0, 0.0))
+        })
+    };
+    let v_axis = first.axis.cross(u_axis).normalize()?;
+    let centers: Vec<(f64, f64)> = cylinders
+        .iter()
+        .map(|cylinder| {
+            let delta = cylinder.center - first.center;
+            (delta.dot(u_axis), delta.dot(v_axis))
+        })
+        .collect();
+    let radius = first.radius;
+
+    // Coincident pattern instances add no boundary. Keep one representative.
+    let mut unique_centers = Vec::<(f64, f64)>::new();
+    for center in centers {
+        if unique_centers
+            .iter()
+            .all(|&(x, y)| (center.0 - x).hypot(center.1 - y) > tol)
+        {
+            unique_centers.push(center);
+        }
+    }
+    if unique_centers.len() == 1 {
+        return Ok(Some(solids[0]));
+    }
+
+    // This constructor is only for a positive-overlap connected component.
+    // Tangent or separated cylinders remain distinct solids and are handled by
+    // the caller's disjoint-shell path.
+    let mut connected = vec![false; unique_centers.len()];
+    connected[0] = true;
+    loop {
+        let mut changed = false;
+        for i in 0..unique_centers.len() {
+            if !connected[i] {
+                continue;
+            }
+            for j in 0..unique_centers.len() {
+                let distance = (unique_centers[i].0 - unique_centers[j].0)
+                    .hypot(unique_centers[i].1 - unique_centers[j].1);
+                if !connected[j] && distance < 2.0 * radius - tol {
+                    connected[j] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if connected.iter().any(|&value| !value) {
+        return Ok(None);
+    }
+
+    let mut arcs = Vec::<VisibleArc>::new();
+    for (i, &(cx, cy)) in unique_centers.iter().enumerate() {
+        let mut angles = vec![0.0, std::f64::consts::TAU];
+        for (j, &(ox, oy)) in unique_centers.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let dx = ox - cx;
+            let dy = oy - cy;
+            let distance = dx.hypot(dy);
+            if distance <= tol || distance >= 2.0 * radius - tol {
+                continue;
+            }
+            let center_angle = dy.atan2(dx);
+            let half = (distance / (2.0 * radius)).clamp(-1.0, 1.0).acos();
+            angles.push((center_angle - half).rem_euclid(std::f64::consts::TAU));
+            angles.push((center_angle + half).rem_euclid(std::f64::consts::TAU));
+        }
+        angles.sort_by(f64::total_cmp);
+        angles.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
+        for pair in angles.windows(2) {
+            let start = pair[0];
+            let end = pair[1];
+            if end - start <= 1e-12 {
+                continue;
+            }
+            let mid = f64::midpoint(start, end);
+            let sample = (cx + radius * mid.cos(), cy + radius * mid.sin());
+            let visible = unique_centers.iter().enumerate().all(|(j, &(ox, oy))| {
+                i == j || (sample.0 - ox).hypot(sample.1 - oy) >= radius - tol
+            });
+            if !visible {
+                continue;
+            }
+            let pieces = ((end - start) / std::f64::consts::FRAC_PI_2)
+                .ceil()
+                .max(1.0) as usize;
+            for piece in 0..pieces {
+                let a = (end - start).mul_add(piece as f64 / pieces as f64, start);
+                let b = (end - start).mul_add((piece + 1) as f64 / pieces as f64, start);
+                arcs.push(VisibleArc {
+                    center: (cx, cy),
+                    radius,
+                    start: a,
+                    end: b,
+                });
+            }
+        }
+    }
+    if arcs.is_empty() {
+        return Ok(None);
+    }
+
+    let axial_origin = first.center
+        + first.axis * (first.axial_min - point_axis_coordinate(first.center, first.axis));
+    let point3 = |x: f64, y: f64| axial_origin + u_axis * x + v_axis * y;
+    let key = |x: f64, y: f64| {
+        #[allow(clippy::cast_possible_truncation)]
+        ((x / tol).round() as i64, (y / tol).round() as i64)
+    };
+    let mut vertices = std::collections::HashMap::<(i64, i64), VertexId>::new();
+    let mut arc_edges = Vec::with_capacity(arcs.len());
+    for arc in &arcs {
+        let start_xy = (
+            arc.center.0 + arc.radius * arc.start.cos(),
+            arc.center.1 + arc.radius * arc.start.sin(),
+        );
+        let end_xy = (
+            arc.center.0 + arc.radius * arc.end.cos(),
+            arc.center.1 + arc.radius * arc.end.sin(),
+        );
+        let start_vertex = *vertices
+            .entry(key(start_xy.0, start_xy.1))
+            .or_insert_with(|| topo.add_vertex(Vertex::new(point3(start_xy.0, start_xy.1), tol)));
+        let end_vertex = *vertices
+            .entry(key(end_xy.0, end_xy.1))
+            .or_insert_with(|| topo.add_vertex(Vertex::new(point3(end_xy.0, end_xy.1), tol)));
+        let circle = Circle3D::with_axes(
+            point3(arc.center.0, arc.center.1),
+            first.axis,
+            arc.radius,
+            u_axis,
+            v_axis,
+        )?;
+        let edge = topo.add_edge(Edge::new(
+            start_vertex,
+            end_vertex,
+            EdgeCurve::Circle(circle),
+        ));
+        arc_edges.push((start_vertex, end_vertex, edge, *arc));
+    }
+
+    let mut by_start = std::collections::HashMap::<usize, Vec<usize>>::new();
+    for (index, (start, _, _, _)) in arc_edges.iter().enumerate() {
+        by_start.entry(start.index()).or_default().push(index);
+    }
+    let mut unused = vec![true; arc_edges.len()];
+    let mut loops = Vec::<(brepkit_topology::wire::WireId, f64)>::new();
+    while let Some(first_index) = unused.iter().position(|&value| value) {
+        let loop_start = arc_edges[first_index].0;
+        let mut current = first_index;
+        let mut oriented = Vec::new();
+        let mut signed_area = 0.0;
+        loop {
+            if !unused[current] {
+                return Ok(None);
+            }
+            unused[current] = false;
+            let (_start, end, edge, arc) = arc_edges[current];
+            oriented.push(OrientedEdge::new(edge, true));
+            signed_area += 0.5
+                * (arc.radius * arc.center.0 * (arc.end.sin() - arc.start.sin())
+                    + arc.radius * arc.center.1 * (arc.start.cos() - arc.end.cos())
+                    + arc.radius * arc.radius * (arc.end - arc.start));
+            if end == loop_start {
+                break;
+            }
+            let Some(candidates) = by_start.get(&end.index()) else {
+                return Ok(None);
+            };
+            let Some(next) = candidates.iter().copied().find(|&index| unused[index]) else {
+                return Ok(None);
+            };
+            current = next;
+        }
+        let wire = Wire::new(oriented, true)?;
+        loops.push((topo.add_wire(wire), signed_area));
+    }
+
+    let Some((outer_index, _)) = loops
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, area))| *area > tol * tol)
+        .max_by(|(_, (_, a)), (_, (_, b))| a.total_cmp(b))
+    else {
+        return Ok(None);
+    };
+    let outer_wire = loops[outer_index].0;
+    let inner_wires: Vec<_> = loops
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &(wire, area))| {
+            (index != outer_index && area < -tol * tol).then_some(wire)
+        })
+        .collect();
+    if inner_wires.len() + 1 != loops.len() {
+        return Ok(None);
+    }
+    let d = point_axis_coordinate(axial_origin, first.axis);
+    let face = topo.add_face(Face::new(
+        outer_wire,
+        inner_wires,
+        FaceSurface::Plane {
+            normal: first.axis,
+            d,
+        },
+    ));
+    let fused = crate::extrude::extrude(topo, face, first.axis, first.axial_max - first.axial_min)?;
+    Ok(Some(fused))
 }
 
 /// Count the total number of solids in a compound.
@@ -218,6 +586,7 @@ fn polyhedral_separated(a: &PolyhedralBounds, b: &PolyhedralBounds, margin: f64)
 fn partition_touching(
     bboxes: &[Aabb3],
     poly_bounds: &[Option<PolyhedralBounds>],
+    cylinder_bounds: &[Option<SimpleCylinder>],
     margin: f64,
 ) -> Vec<Vec<usize>> {
     let n = bboxes.len();
@@ -226,6 +595,11 @@ fn partition_touching(
     for i in 0..n {
         for j in (i + 1)..n {
             if !bboxes[i].intersects(bboxes[j]) {
+                continue;
+            }
+            if let (Some(a), Some(b)) = (&cylinder_bounds[i], &cylinder_bounds[j])
+                && cylinder_relation(a, b, margin) != Some(CylinderRelation::PositiveOverlap)
+            {
                 continue;
             }
             // AABBs overlap. Only keep them apart if we can *prove* a gap.
@@ -470,7 +844,9 @@ mod tests {
             .iter()
             .map(|&s| polyhedral_bounds(&topo, s))
             .collect();
-        let groups = partition_touching(&bboxes, &pb, margin);
+        let cylinders: Vec<Option<SimpleCylinder>> =
+            solids.iter().map(|&s| simple_cylinder(&topo, s)).collect();
+        let groups = partition_touching(&bboxes, &pb, &cylinders, margin);
         assert_eq!(
             groups.len(),
             n,
@@ -488,5 +864,186 @@ mod tests {
             (vol - expected).abs() < expected * 0.02,
             "fused volume {vol:.2} should match {expected:.2} (n disjoint prisms)"
         );
+    }
+
+    fn assert_cylinder_union_health(topo: &Topology, solid: SolidId) {
+        use brepkit_topology::face::FaceSurface;
+
+        let validation = crate::validate::validate_solid(topo, solid).unwrap();
+        assert!(
+            validation.is_valid(),
+            "overlapping cylinder union must be a valid solid: {:?}",
+            validation.issues
+        );
+        let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+        assert!(
+            faces.iter().all(|&face_id| matches!(
+                topo.face(face_id).unwrap().surface(),
+                FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+            )),
+            "exact cylinder union must retain analytic planes and cylinders"
+        );
+        let mesh = crate::tessellate::tessellate_solid(topo, solid, 0.05).unwrap();
+        let quality = crate::tessellate::welded_mesh_quality(&mesh);
+        assert_eq!(
+            (quality.boundary_edges, quality.non_manifold_edges),
+            (0, 0),
+            "overlapping cylinder union mesh must be closed and manifold"
+        );
+    }
+
+    fn circle_lens_area(radius: f64, distance: f64) -> f64 {
+        if distance >= 2.0 * radius {
+            return 0.0;
+        }
+        2.0 * radius * radius * (distance / (2.0 * radius)).acos()
+            - 0.5 * distance * (4.0 * radius * radius - distance * distance).sqrt()
+    }
+
+    fn numeric_circle_union_area(centers: &[(f64, f64)], radius: f64) -> f64 {
+        let x_min = centers
+            .iter()
+            .map(|&(x, _)| x - radius)
+            .fold(f64::INFINITY, f64::min);
+        let x_max = centers
+            .iter()
+            .map(|&(x, _)| x + radius)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let slices = 100_000_usize;
+        let dx = (x_max - x_min) / slices as f64;
+        let union_height = |x: f64| {
+            let mut intervals: Vec<(f64, f64)> = centers
+                .iter()
+                .filter_map(|&(cx, cy)| {
+                    let square = radius * radius - (x - cx) * (x - cx);
+                    (square > 0.0).then(|| {
+                        let half = square.sqrt();
+                        (cy - half, cy + half)
+                    })
+                })
+                .collect();
+            intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let Some(&(start, end)) = intervals.first() else {
+                return 0.0;
+            };
+            let mut total = 0.0;
+            let (mut lo, mut hi) = (start, end);
+            for &(next_lo, next_hi) in &intervals[1..] {
+                if next_lo > hi {
+                    total += hi - lo;
+                    (lo, hi) = (next_lo, next_hi);
+                } else {
+                    hi = hi.max(next_hi);
+                }
+            }
+            total + hi - lo
+        };
+        let mut weighted = union_height(x_min) + union_height(x_max);
+        for i in 1..slices {
+            let weight = if i.is_multiple_of(2) { 2.0 } else { 4.0 };
+            weighted += weight * union_height((i as f64).mul_add(dx, x_min));
+        }
+        weighted * dx / 3.0
+    }
+
+    #[test]
+    fn simple_cylinders_classify_separated_touching_and_overlap() {
+        use brepkit_math::mat::Mat4;
+
+        let mut topo = Topology::new();
+        let make_at = |topo: &mut Topology, x: f64| {
+            let solid = crate::primitives::make_cylinder(topo, 5.0, 10.0).unwrap();
+            crate::transform::transform_solid(topo, solid, &Mat4::translation(x, 0.0, 0.0))
+                .unwrap();
+            simple_cylinder(topo, solid).unwrap()
+        };
+        let origin = make_at(&mut topo, 0.0);
+        let separated = make_at(&mut topo, 10.1);
+        let touching = make_at(&mut topo, 10.0);
+        let overlapping = make_at(&mut topo, 9.9);
+        let margin = brepkit_math::tolerance::Tolerance::new().linear;
+        assert_eq!(
+            cylinder_relation(&origin, &separated, margin),
+            Some(CylinderRelation::Separated)
+        );
+        assert_eq!(
+            cylinder_relation(&origin, &touching, margin),
+            Some(CylinderRelation::Touching)
+        );
+        assert_eq!(
+            cylinder_relation(&origin, &overlapping, margin),
+            Some(CylinderRelation::PositiveOverlap)
+        );
+    }
+
+    #[test]
+    fn fuse_all_overlapping_linear_cylinder_patterns_are_exact() {
+        use brepkit_math::mat::Mat4;
+
+        for spacing in [3.0, 0.5] {
+            let mut topo = Topology::new();
+            let solids: Vec<_> = (0..3)
+                .map(|i| {
+                    let solid = crate::primitives::make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+                    crate::transform::transform_solid(
+                        &mut topo,
+                        solid,
+                        &Mat4::translation(i as f64 * spacing, 0.0, 0.0),
+                    )
+                    .unwrap();
+                    solid
+                })
+                .collect();
+            let cid = topo.add_compound(Compound::new(solids));
+            let fused = fuse_all(&mut topo, cid).unwrap();
+            let volume = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
+            // Inclusion-exclusion: the first/third lens is also the triple
+            // overlap and cancels. Subtracting it again is a tempting but
+            // incorrect reference formula for this three-disc row.
+            let one = std::f64::consts::PI * 25.0 * 10.0;
+            let expected = 3.0 * one - 2.0 * circle_lens_area(5.0, spacing) * 10.0;
+            assert!(
+                (volume - expected).abs() / expected < 2e-4,
+                "spacing {spacing}: exact union volume {volume} vs {expected}"
+            );
+            assert_cylinder_union_health(&topo, fused);
+        }
+    }
+
+    #[test]
+    fn fuse_all_overlapping_circular_cylinder_patterns_are_exact() {
+        use brepkit_math::mat::Mat4;
+
+        for count in [6, 12] {
+            let mut topo = Topology::new();
+            let centers: Vec<_> = (0..count)
+                .map(|i| {
+                    let angle = std::f64::consts::TAU * i as f64 / count as f64;
+                    (6.0 * angle.cos(), 6.0 * angle.sin())
+                })
+                .collect();
+            let solids: Vec<_> = centers
+                .iter()
+                .map(|&(x, y)| {
+                    let solid = crate::primitives::make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+                    crate::transform::transform_solid(
+                        &mut topo,
+                        solid,
+                        &Mat4::translation(x, y, 0.0),
+                    )
+                    .unwrap();
+                    solid
+                })
+                .collect();
+            let cid = topo.add_compound(Compound::new(solids));
+            let fused = fuse_all(&mut topo, cid).unwrap();
+            let volume = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
+            let expected = numeric_circle_union_area(&centers, 5.0) * 10.0;
+            assert!(
+                (volume - expected).abs() / expected < 1e-6,
+                "ring count {count}: exact union volume {volume} vs numerical reference {expected}"
+            );
+            assert_cylinder_union_health(&topo, fused);
+        }
     }
 }

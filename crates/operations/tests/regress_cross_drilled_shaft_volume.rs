@@ -37,11 +37,17 @@ use brepkit_operations::measure::solid_volume;
 use brepkit_operations::primitives::make_cylinder;
 use brepkit_operations::transform::transform_solid;
 use brepkit_topology::Topology;
+use brepkit_topology::face::FaceSurface;
 use brepkit_topology::solid::SolidId;
 
 /// Shaft radius and height.
 const R: f64 = 3.0;
 const H: f64 = 30.0;
+
+/// Bore radii whose breakout rims put a 256-step winding sample exactly on a
+/// cylinder meridian. These must take the same exact band-split route as the
+/// neighbouring unequal-radius bores, not the faceted boolean fallback.
+const MERIDIAN_SAMPLE_RADII: [f64; 2] = [2.5, 2.95];
 
 /// Volume of the shaft before it is drilled.
 fn stock() -> f64 {
@@ -211,7 +217,7 @@ fn the_circle_outside_cone_box_fuse_is_still_declined() {
 /// 777.293907 / 829.646029.
 #[test]
 fn a_cross_drilled_shaft_measures_its_closed_form_at_every_bore_radius() {
-    for bore in [3.0_f64, 2.0, 1.0, 0.5] {
+    for bore in [3.0_f64, 2.95, 2.5, 2.0, 1.0, 0.5] {
         let (topo, solid) = cross_drilled_shaft(bore);
         let expected = stock() - shared_volume(R, bore);
         let v = solid_volume(&topo, solid, 0.08).unwrap();
@@ -220,6 +226,60 @@ fn a_cross_drilled_shaft_measures_its_closed_form_at_every_bore_radius() {
             "bore r={bore}: expected {expected:.6}, got {v:.6} \
              ({:+.4} %)",
             (v - expected) / expected * 100.0
+        );
+    }
+}
+
+/// A meridian-coincident sample must not erase the winding separator. The
+/// exact result has the shaft wall, the unified bore wall, and two planar
+/// caps; the mesh fallback replaces them with dozens of planar facets.
+#[test]
+fn meridian_sample_breakouts_preserve_the_exact_brep() {
+    for bore in MERIDIAN_SAMPLE_RADII {
+        let (topo, solid) = cross_drilled_shaft(bore);
+        let mut planes = 0;
+        let mut cylinders = 0;
+        let mut other = 0;
+        for fid in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            match topo.face(fid).unwrap().surface() {
+                FaceSurface::Plane { .. } => planes += 1,
+                FaceSurface::Cylinder(_) => cylinders += 1,
+                _ => other += 1,
+            }
+        }
+        assert!(
+            planes == 2 && cylinders >= 2 && other == 0 && planes + cylinders <= 5,
+            "bore r={bore}: expected the compact exact two-cap/cylindrical B-rep, \
+             got planes={planes} cylinders={cylinders} other={other}; a planar census \
+             signals the mesh fallback"
+        );
+    }
+}
+
+/// The exact split must remain a closed, 2-manifold B-rep: every topological
+/// edge has exactly two face uses, with no free or over-shared edge.
+#[test]
+fn meridian_sample_breakouts_are_closed_and_manifold() {
+    for bore in MERIDIAN_SAMPLE_RADII {
+        let (topo, solid) = cross_drilled_shaft(bore);
+        let mut edge_uses = std::collections::BTreeMap::new();
+        for fid in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    *edge_uses.entry(oe.edge().index()).or_insert(0_usize) += 1;
+                }
+            }
+        }
+        let irregular: Vec<_> = edge_uses
+            .into_iter()
+            .filter(|(_, uses)| *uses != 2)
+            .collect();
+        assert!(
+            irregular.is_empty(),
+            "bore r={bore}: exact B-rep is not a closed 2-manifold; \
+             irregular edge uses={irregular:?}"
         );
     }
 }
@@ -235,7 +295,7 @@ fn a_cross_drilled_shaft_has_its_bore_carved_out() {
     use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
 
     let opts = ClassifyOptions::default();
-    for bore in [3.0_f64, 2.0, 1.0, 0.5] {
+    for bore in [3.0_f64, 2.95, 2.5, 2.0, 1.0, 0.5] {
         let (topo, solid) = cross_drilled_shaft(bore);
         let mut probes = vec![
             // On the bore's axis at mid-height: removed at every radius.

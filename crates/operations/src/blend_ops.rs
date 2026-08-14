@@ -45,7 +45,12 @@ fn transactional<T>(
 ///
 /// Returns `None` when the edge's neighbourhood cannot be classified
 /// (non-manifold edge, degenerate normals, on-boundary sample).
-fn edge_is_convex(topo: &Topology, solid: SolidId, edge: EdgeId, probe: f64) -> Option<bool> {
+pub(crate) fn edge_is_convex(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    probe: f64,
+) -> Option<bool> {
     let adjacency = topo.build_adjacency(solid).ok()?;
     let faces = adjacency.faces_for_edge(edge);
     if faces.len() != 2 {
@@ -54,6 +59,48 @@ fn edge_is_convex(topo: &Topology, solid: SolidId, edge: EdgeId, probe: f64) -> 
     let e = topo.edge(edge).ok()?;
     let start = topo.vertex(e.start()).ok()?.point();
     let end = topo.vertex(e.end()).ok()?.point();
+
+    // Plane normals and an inside-bisector probe cannot by themselves
+    // distinguish a convex wedge from a concave notch: both share the same
+    // two infinite planes. Match the analytic blend engine's missing bit and
+    // inspect how each bounded face extends against the other plane. Two
+    // negative witnesses are the concave branch; every non-degenerate planar
+    // alternative is the convex branch used by the analytic construction.
+    let face1_data = topo.face(faces[0]).ok()?;
+    let face2_data = topo.face(faces[1]).ok()?;
+    if let (FaceSurface::Plane { normal: n1, .. }, FaceSurface::Plane { normal: n2, .. }) =
+        (face1_data.surface(), face2_data.surface())
+    {
+        // The analytic fillet receives inward-oriented plane normals.
+        let inward1 = if face1_data.is_reversed() { *n1 } else { -*n1 };
+        let inward2 = if face2_data.is_reversed() { *n2 } else { -*n2 };
+        let witness = |face_id: brepkit_topology::face::FaceId,
+                       other_normal: brepkit_math::vec::Vec3|
+         -> Option<f64> {
+            let face = topo.face(face_id).ok()?;
+            let mut extreme = 0.0_f64;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in topo.wire(wire_id).ok()?.edges() {
+                    let edge_data = topo.edge(oriented.edge()).ok()?;
+                    for vertex in [edge_data.start(), edge_data.end()] {
+                        let signed = other_normal.dot(topo.vertex(vertex).ok()?.point() - start);
+                        if signed.abs() > extreme.abs() {
+                            extreme = signed;
+                        }
+                    }
+                }
+            }
+            Some(extreme)
+        };
+        let w1 = witness(faces[0], inward2)?;
+        let w2 = witness(faces[1], inward1)?;
+        if w1.abs() > 1e-9 && w2.abs() > 1e-9 {
+            return Some(!(w1 < -1e-9 && w2 < -1e-9));
+        }
+    }
+
     let mid = e.curve().evaluate_with_endpoints(
         match e.curve() {
             EdgeCurve::Line => 0.5,
@@ -611,12 +658,44 @@ fn fillet_group(
             }
         }
     }
-    let mut builder = FilletBuilder::new(topo, solid);
-    builder.add_edges(edges, radius);
-    let result = builder.build()?;
-    validate_complete_blend(topo, "fillet", solid, &result)?;
-    validate_blend_volume(topo, "fillet", solid, result.solid, edges, radius)?;
-    Ok(result)
+    // Preserve the fork's constant-radius compatibility route as the next
+    // choice. Run it transactionally as well so a failed legacy attempt can
+    // never contaminate the repaired concave fallback below.
+    let legacy_refusal = match transactional(topo, |t| {
+        let mut builder = FilletBuilder::new(t, solid);
+        builder.add_edges(edges, radius);
+        let result = builder.build()?;
+        validate_complete_blend(t, "fillet", solid, &result)?;
+        validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
+        Ok(result)
+    }) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+
+    // The radius-law builder contains the upstream concave-side and
+    // orientation repairs, but selecting it for every constant-radius call
+    // would lift the fork's compatibility pin. Retry only when every requested
+    // edge is positively classified as concave and the legacy route above has
+    // already failed closed.
+    let all_concave = edges
+        .iter()
+        .all(|&edge| edge_is_convex(topo, solid, edge, radius * 0.25) == Some(false));
+    if !all_concave {
+        return Err(legacy_refusal);
+    }
+
+    transactional(topo, |t| {
+        let mut builder = FilletBuilder::new(t, solid);
+        builder.add_edges_with_law(
+            edges,
+            brepkit_blend::radius_law::RadiusLaw::Constant(radius),
+        );
+        let result = builder.build()?;
+        validate_complete_blend(t, "fillet", solid, &result)?;
+        validate_blend_volume(t, "fillet", solid, result.solid, edges, radius)?;
+        Ok(result)
+    })
 }
 
 /// Which of `edges` no longer name a manifold edge of `solid`.

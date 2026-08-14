@@ -23,6 +23,12 @@
 //!    already existed for cylinder and cone rims and was scoped away from
 //!    planes; a cap coplanar with a box face is exactly the plane case.
 //!
+//! 3. The remaining `cx=5, cy=4` placement crosses both side planes without
+//!    swallowing the corner. Four rim crossings form two disjoint protruding
+//!    segments. Although each split arc is minor, their chords can step across
+//!    a circle extremum before the next station; the planar arrangement then
+//!    classifies the wrong cap cell and its triangulation loses one segment.
+//!
 //! A closed manifold shell is NOT enough to pass here: a wrongly-traced arc
 //! leaves the topology intact and the volume wrong, so every case is pinned
 //! against the closed-form union volume as well.
@@ -30,7 +36,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use brepkit_math::mat::Mat4;
+use brepkit_math::vec::Point3;
 use brepkit_operations::boolean::{BooleanOp, boolean};
+use brepkit_operations::classify::{PointClassification, classify_point_robust};
+use brepkit_operations::measure::mass_properties;
 use brepkit_operations::primitives::{make_box, make_cylinder};
 use brepkit_operations::transform::transform_solid;
 use brepkit_topology::Topology;
@@ -126,6 +135,13 @@ fn expected_volume(cx: f64, cy: f64, cz: f64, h: f64) -> f64 {
     (BOX.0 * BOX.1).mul_add(BOX.2, std::f64::consts::PI * RADIUS * RADIUS * h - shared)
 }
 
+/// Area of the minor circular segment beyond a chord whose perpendicular
+/// distance from the circle centre is `distance`.
+fn circular_segment_area(distance: f64) -> f64 {
+    RADIUS * RADIUS * (distance / RADIUS).acos()
+        - distance * RADIUS.mul_add(RADIUS, -(distance * distance)).sqrt()
+}
+
 fn assert_sound(cx: f64, cy: f64, cz: f64, h: f64) {
     let f = fuse(cx, cy, cz, h);
     let at = format!("cx={cx} cy={cy} cz={cz} h={h}");
@@ -190,12 +206,61 @@ fn the_protruding_cap_crescent_is_present_at_both_ends() {
 /// This is the discriminator for the whole reported family: a cylinder that
 /// crosses only ONE side face was always fine, and every failing placement
 /// swallowed the corner. Placements that cross two side faces WITHOUT
-/// swallowing the corner (`cx=5, cy=4` here) protrude as two disjoint lobes
-/// and are a separate, still-open defect — the bottom cap loses one lobe and
-/// the volume reads ~0.5% low, identically before and after this fix — so they
-/// are not asserted here.
+/// swallowing the corner (`cx=5, cy=4` here) protrude as two disjoint lobes,
+/// so they do not belong to this corner-swallowing sweep. Their separate
+/// regression below checks both lobes directly.
 fn swallows_corner(cx: f64, cy: f64) -> bool {
     cx.hypot(cy) < RADIUS
+}
+
+#[test]
+fn two_side_lobes_without_the_corner_are_both_present() {
+    // The circle crosses x=0 and y=0 but does not contain their corner. Its
+    // two exterior circular segments are therefore disjoint, giving a closed
+    // form for the union without numerical overlap integration.
+    let f = fuse(5.0, 4.0, 0.0, BOX.2);
+    assert!(
+        f.curved_faces() >= 1,
+        "two-lobe placement fell back to a {}-face mesh",
+        f.face_count()
+    );
+    let (free, nonmanifold) = f.open_edges();
+    assert_eq!(
+        (free, nonmanifold),
+        (0, 0),
+        "two-lobe result is not a closed manifold ({free} free, {nonmanifold} non-manifold edges)"
+    );
+
+    for (label, probe) in [
+        ("x-side lobe", Point3::new(-0.5, 4.0, BOX.2 / 2.0)),
+        ("y-side lobe", Point3::new(5.0, -0.5, BOX.2 / 2.0)),
+    ] {
+        assert_eq!(
+            classify_point_robust(&f.topo, f.solid, probe, 0.02, 1e-7).unwrap(),
+            PointClassification::Inside,
+            "{label} probe {probe:?} must remain inside the fused solid"
+        );
+    }
+
+    let expected =
+        BOX.0 * BOX.1 * BOX.2 + BOX.2 * (circular_segment_area(5.0) + circular_segment_area(4.0));
+    let exact = mass_properties(&f.topo, f.solid).unwrap().mass;
+    let exact_relative = (exact - expected).abs() / expected;
+    assert!(
+        exact_relative < 1e-8,
+        "two-lobe exact volume {exact:.10} against closed form {expected:.10} ({exact_relative:.3e} relative)"
+    );
+
+    // `solid_volume` takes the result through its bounded tessellation path.
+    // Before the fix that triangulation swallowed the y-side circular segment
+    // and read 0.475% low even though the exact integral and both interior
+    // probes above proved that the analytic B-rep still contained the lobe.
+    let measured = f.volume();
+    let measured_relative = (measured - expected).abs() / expected;
+    assert!(
+        measured_relative < 1e-5,
+        "two-lobe measured volume {measured:.10} against closed form {expected:.10} ({measured_relative:.3e} relative)"
+    );
 }
 
 #[test]
