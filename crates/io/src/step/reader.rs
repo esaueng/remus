@@ -30,14 +30,19 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::{Point3, Vec3};
+use brepkit_math::aabb::Aabb2;
+use brepkit_math::frame::Frame3;
+use brepkit_math::predicates::point_in_polygon;
+use brepkit_math::tolerance::Tolerance;
+use brepkit_math::vec::{Point2, Point3, Vec3};
+use brepkit_operations::heal::merge_split_rim_arcs;
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeCurve};
 use brepkit_topology::face::{Face, FaceSurface};
 use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
 use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
@@ -76,8 +81,14 @@ pub fn read_step_with_limits(
     let Some(units) = resolve_unit_scale(&entities, has_solids)? else {
         return Ok(Vec::new());
     };
-    let mut builder = StepBuilder::new(topo, &entities, units);
-    builder.build_all_solids()
+    let solids = {
+        let mut builder = StepBuilder::new(topo, &entities, units);
+        builder.build_all_solids()?
+    };
+    for &solid_id in &solids {
+        merge_split_rim_arcs(topo, solid_id, Tolerance::new())?;
+    }
+    Ok(solids)
 }
 
 // ── Parsing ─────────────────────────────────────────────────────────
@@ -586,6 +597,67 @@ const MAX_CURVE_INDIRECTION: u32 = 32;
 /// tell apart anyway.
 const POLYLINE_WELD_EPS: f64 = 1e-9;
 
+/// Chordal tolerance used only to classify planar trim-loop containment.
+///
+/// This is BrepKit's documented loose linear tolerance (0.1 micrometre),
+/// not a replacement for exact edge geometry.  The sampled polygons decide
+/// which exact [`Wire`] is the perimeter; they never replace the wire or alter
+/// its orientation.
+const FACE_BOUND_CLASSIFICATION_DEFLECTION: f64 = Tolerance::loose().linear;
+
+/// Maximum surface residual accepted while projecting an already-approximated
+/// STEP trim curve into UV.  The curve and the adaptive classifier can each
+/// contribute at most one classification deflection; exceeding their sum is
+/// rejected rather than silently snapping the topology onto the surface.
+const FACE_BOUND_SURFACE_RESIDUAL: f64 = 2.0 * FACE_BOUND_CLASSIFICATION_DEFLECTION;
+
+/// Maximum adaptive subdivisions per seeded curve interval.  Every curved
+/// edge starts with eight intervals, so periodic curves cannot hide a whole
+/// revolution behind coincident endpoints or a zero midpoint deviation.
+const FACE_BOUND_SAMPLE_DEPTH: u32 = 16;
+
+#[derive(Debug, Clone, Copy)]
+struct FaceBoundCandidate {
+    bound_ref: u64,
+    wire: WireId,
+    explicit_outer: bool,
+    /// Kept for diagnostics only.  STEP bound-list order has no semantics.
+    source_position: usize,
+}
+
+#[derive(Debug)]
+struct FaceBoundLoop {
+    candidate_index: usize,
+    polygon: Vec<Point2>,
+    bounds: Aabb2,
+    signed_area: f64,
+    perimeter: f64,
+    probe: Point2,
+    seam_flexible_u: bool,
+    seam_flexible_v: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PeriodicUvDomain {
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+    u_scale: f64,
+    v_scale: f64,
+}
+
+impl PeriodicUvDomain {
+    fn scale(self, point: Point2) -> Point2 {
+        Point2::new(point.x() * self.u_scale, point.y() * self.v_scale)
+    }
+
+    fn scaled_periods(self) -> (Option<f64>, Option<f64>) {
+        (
+            self.u_period.map(|period| period * self.u_scale),
+            self.v_period.map(|period| period * self.v_scale),
+        )
+    }
+}
+
 /// Reconstructs topology from parsed STEP entities.
 struct StepBuilder<'a> {
     topo: &'a mut Topology,
@@ -739,54 +811,47 @@ impl<'a> StepBuilder<'a> {
 
         let surface = self.build_surface(surface_ref)?;
 
-        let mut outer_wire = None;
-        let mut inner_wires = Vec::new();
+        let mut candidates = Vec::with_capacity(list_refs.len());
 
-        for &bound_ref in &list_refs {
+        for (source_position, &bound_ref) in list_refs.iter().enumerate() {
             let bound_entity = self.get_entity(bound_ref)?;
             let is_outer = bound_entity.entity_type == "FACE_OUTER_BOUND";
             let bound_attrs = bound_entity.attrs.clone();
             let bound_refs = parse_refs(&bound_attrs);
+            let loop_ref = bound_refs
+                .first()
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!("face bound #{bound_ref} has no loop reference"),
+                })?;
 
-            if let Some(&loop_ref) = bound_refs.first() {
-                // STEP stores an EDGE_LOOP in the face's topological sense,
-                // while brepkit stores wire directions relative to the
-                // underlying surface and composes them with Face::reversed.
-                // Normalize FACE_BOUND.orientation at the import boundary so
-                // valid STEP shells keep opposing effective edge uses
-                // internally. Analytic surfaces also need their STEP surface
-                // sense composed into the loop direction. The NURBS importer
-                // already preserves the control net's parametric sense, so
-                // composing same_sense there would double-reverse the loop.
-                //
-                // `flip` belongs to an enclosing ORIENTED_CLOSED_SHELL and
-                // must not participate here: that wrapper reverses the whole
-                // face after its own bounds have been interpreted.
-                let bound_reversed = orientation_is_reversed(&bound_attrs);
-                let analytic_surface_reversed =
-                    surface_reversed && !matches!(&surface, FaceSurface::Nurbs(_));
-                let wire_id =
-                    self.build_edge_loop(loop_ref, analytic_surface_reversed != bound_reversed)?;
-                if is_outer && outer_wire.is_none() {
-                    outer_wire = Some(wire_id);
-                } else {
-                    inner_wires.push(wire_id);
-                }
-            }
+            // STEP stores an EDGE_LOOP in the face's topological sense,
+            // while brepkit stores wire directions relative to the
+            // underlying surface and composes them with Face::reversed.
+            // Normalize FACE_BOUND.orientation at the import boundary so
+            // valid STEP shells keep opposing effective edge uses
+            // internally. Analytic surfaces also need their STEP surface
+            // sense composed into the loop direction. The NURBS importer
+            // already preserves the control net's parametric sense, so
+            // composing same_sense there would double-reverse the loop.
+            //
+            // `flip` belongs to an enclosing ORIENTED_CLOSED_SHELL and
+            // must not participate here: that wrapper reverses the whole
+            // face after its own bounds have been interpreted.
+            let bound_reversed = orientation_is_reversed(&bound_attrs);
+            let analytic_surface_reversed =
+                surface_reversed && !matches!(&surface, FaceSurface::Nurbs(_));
+            let wire =
+                self.build_edge_loop(loop_ref, analytic_surface_reversed != bound_reversed)?;
+            candidates.push(FaceBoundCandidate {
+                bound_ref,
+                wire,
+                explicit_outer: is_outer,
+                source_position,
+            });
         }
 
-        // If no FACE_OUTER_BOUND, use the first bound as outer.
-        let outer = outer_wire.or_else(|| {
-            if inner_wires.is_empty() {
-                None
-            } else {
-                Some(inner_wires.remove(0))
-            }
-        });
-
-        let outer = outer.ok_or_else(|| IoError::ParseError {
-            reason: format!("ADVANCED_FACE #{face_ref} has no bounds"),
-        })?;
+        let (outer, inner_wires) = self.resolve_face_bounds(face_ref, &surface, &candidates)?;
 
         let face_id = if face_reversed {
             self.topo
@@ -795,6 +860,664 @@ impl<'a> StepBuilder<'a> {
             self.topo.add_face(Face::new(outer, inner_wires, surface))
         };
         Ok(face_id)
+    }
+
+    /// Resolve the semantic perimeter independently of STEP aggregate order.
+    ///
+    /// Explicit `FACE_OUTER_BOUND` remains authoritative on every surface.
+    /// Generic multi-bound faces are classified in either a stable plane frame
+    /// or a seam-aware periodic UV domain.  Non-periodic parametric surfaces
+    /// still fail closed rather than falling back to aggregate order.
+    fn resolve_face_bounds(
+        &self,
+        face_ref: u64,
+        surface: &FaceSurface,
+        candidates: &[FaceBoundCandidate],
+    ) -> Result<(WireId, Vec<WireId>), IoError> {
+        if candidates.is_empty() {
+            return Err(IoError::ParseError {
+                reason: format!("ADVANCED_FACE #{face_ref} has no bounds"),
+            });
+        }
+
+        let explicit: Vec<usize> = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| candidate.explicit_outer.then_some(index))
+            .collect();
+        if explicit.len() > 1 {
+            let refs = explicit
+                .iter()
+                .map(|&index| format!("#{}", candidates[index].bound_ref))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} has multiple FACE_OUTER_BOUND entities: {refs}"
+                ),
+            });
+        }
+        if let Some(&outer_index) = explicit.first() {
+            let outer = candidates[outer_index].wire;
+            let inner = candidates
+                .iter()
+                .enumerate()
+                .filter_map(|(index, candidate)| (index != outer_index).then_some(candidate.wire))
+                .collect();
+            return Ok((outer, inner));
+        }
+
+        if candidates.len() == 1 {
+            return Ok((candidates[0].wire, Vec::new()));
+        }
+
+        match surface {
+            FaceSurface::Plane { normal, d } => {
+                self.resolve_generic_planar_bounds(face_ref, candidates, *normal, *d)
+            }
+            _ if periodic_uv_domain(surface).is_some() => {
+                self.resolve_generic_periodic_bounds(face_ref, candidates, surface)
+            }
+            _ => Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} has multiple generic FACE_BOUND entities on an \
+                     unsupported {} surface; outer-loop classification requires an unambiguous \
+                     surface domain",
+                    surface.type_tag()
+                ),
+            }),
+        }
+    }
+
+    fn resolve_generic_planar_bounds(
+        &self,
+        face_ref: u64,
+        candidates: &[FaceBoundCandidate],
+        normal: Vec3,
+        d: f64,
+    ) -> Result<(WireId, Vec<WireId>), IoError> {
+        let normal_sq = normal.dot(normal);
+        let tol = Tolerance::new();
+        if normal_sq <= tol.linear_sq() {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} cannot classify generic FACE_BOUND loops on a \
+                     degenerate plane"
+                ),
+            });
+        }
+        let origin_vector = normal * (d / normal_sq);
+        let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
+        let frame = Frame3::from_normal(origin, normal).map_err(|error| IoError::ParseError {
+            reason: format!(
+                "ADVANCED_FACE #{face_ref} cannot build a plane frame for generic FACE_BOUND \
+                 classification: {error}"
+            ),
+        })?;
+
+        let mut loops = Vec::with_capacity(candidates.len());
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            let polygon = self.sample_planar_bound(face_ref, *candidate, &frame)?;
+            let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
+                IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} at position {} has no sampled points",
+                        candidate.bound_ref, candidate.source_position
+                    ),
+                }
+            })?;
+            let signed_area = polygon_signed_area(&polygon);
+            let perimeter = polygon_perimeter(&polygon);
+            if polygon.len() < 3
+                || !signed_area.is_finite()
+                || !perimeter.is_finite()
+                || perimeter <= tol.linear
+                || signed_area.abs() <= perimeter * tol.linear
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} at position {} is degenerate for \
+                         planar outer-loop classification",
+                        candidate.bound_ref, candidate.source_position
+                    ),
+                });
+            }
+            let probe =
+                polygon_interior_probe(&polygon, bounds).ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} at position {} has no reliable \
+                         planar interior probe",
+                        candidate.bound_ref, candidate.source_position
+                    ),
+                })?;
+            loops.push(FaceBoundLoop {
+                candidate_index,
+                polygon,
+                bounds,
+                signed_area,
+                perimeter,
+                probe,
+                seam_flexible_u: false,
+                seam_flexible_v: false,
+            });
+        }
+
+        let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + tol.linear;
+        let mut parents = vec![None; loops.len()];
+        for child_index in 0..loops.len() {
+            let child = &loops[child_index];
+            let mut possible = Vec::new();
+            for (parent_index, parent) in loops.iter().enumerate() {
+                if parent_index == child_index {
+                    continue;
+                }
+                let area_gap = parent.signed_area.abs() - child.signed_area.abs();
+                if area_gap <= child.perimeter * tol.linear {
+                    continue;
+                }
+                if planar_loop_contains(parent, child, margin) {
+                    possible.push(parent_index);
+                }
+            }
+            possible.sort_by(|&left, &right| {
+                loops[left]
+                    .signed_area
+                    .abs()
+                    .total_cmp(&loops[right].signed_area.abs())
+                    .then_with(|| face_bound_loop_geometry_cmp(&loops[left], &loops[right]))
+            });
+            parents[child_index] = possible.first().copied();
+        }
+
+        let roots: Vec<usize> = parents
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parent)| parent.is_none().then_some(index))
+            .collect();
+        if roots.len() != 1 {
+            let refs = roots
+                .iter()
+                .map(|&index| format!("#{}", candidates[loops[index].candidate_index].bound_ref))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} generic FACE_BOUND loops do not have one \
+                     enclosing outer boundary (top-level bounds: {refs})"
+                ),
+            });
+        }
+
+        let outer_loop = roots[0];
+        let outer_candidate = loops[outer_loop].candidate_index;
+        let mut inner_loops: Vec<usize> = (0..loops.len())
+            .filter(|&index| index != outer_loop)
+            .collect();
+        inner_loops
+            .sort_by(|&left, &right| face_bound_loop_geometry_cmp(&loops[left], &loops[right]));
+        Ok((
+            candidates[outer_candidate].wire,
+            inner_loops
+                .into_iter()
+                .map(|index| candidates[loops[index].candidate_index].wire)
+                .collect(),
+        ))
+    }
+
+    fn resolve_generic_periodic_bounds(
+        &self,
+        face_ref: u64,
+        candidates: &[FaceBoundCandidate],
+        surface: &FaceSurface,
+    ) -> Result<(WireId, Vec<WireId>), IoError> {
+        let domain = periodic_uv_domain(surface).ok_or_else(|| IoError::ParseError {
+            reason: format!(
+                "ADVANCED_FACE #{face_ref} has no supported periodic UV domain for its {} surface",
+                surface.type_tag()
+            ),
+        })?;
+        let tol = Tolerance::new();
+        let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + tol.linear;
+        let (u_period, v_period) = domain.scaled_periods();
+        let mut loops = Vec::with_capacity(candidates.len());
+
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            let (polygon, seam_flexible_u, seam_flexible_v) =
+                self.sample_periodic_bound(face_ref, *candidate, surface, domain)?;
+            let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
+                IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} at position {} has no sampled UV points",
+                        candidate.bound_ref, candidate.source_position
+                    ),
+                }
+            })?;
+            let signed_area = polygon_signed_area(&polygon);
+            let perimeter = polygon_perimeter(&polygon);
+            if polygon.len() < 3
+                || !signed_area.is_finite()
+                || !perimeter.is_finite()
+                || perimeter <= tol.linear
+                || signed_area.abs() <= perimeter * tol.linear
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} at position {} is degenerate in the \
+                         unwrapped {} UV domain",
+                        candidate.bound_ref,
+                        candidate.source_position,
+                        surface.type_tag()
+                    ),
+                });
+            }
+
+            for (axis, period, span) in [
+                ("u", u_period, bounds.max.x() - bounds.min.x()),
+                ("v", v_period, bounds.max.y() - bounds.min.y()),
+            ] {
+                if let Some(period) = period
+                    && span > period + 4.0 * margin
+                {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "ADVANCED_FACE #{face_ref} bound #{} spans more than one {axis} \
+                             period in the unwrapped {} UV domain",
+                            candidate.bound_ref,
+                            surface.type_tag()
+                        ),
+                    });
+                }
+            }
+
+            let probe =
+                polygon_interior_probe(&polygon, bounds).ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} at position {} has no reliable \
+                         interior probe in the unwrapped {} UV domain",
+                        candidate.bound_ref,
+                        candidate.source_position,
+                        surface.type_tag()
+                    ),
+                })?;
+            loops.push(FaceBoundLoop {
+                candidate_index,
+                polygon,
+                bounds,
+                signed_area,
+                perimeter,
+                probe,
+                seam_flexible_u,
+                seam_flexible_v,
+            });
+        }
+
+        let mut parents = vec![None; loops.len()];
+        for child_index in 0..loops.len() {
+            let child = &loops[child_index];
+            let mut possible = Vec::new();
+            for (parent_index, parent) in loops.iter().enumerate() {
+                if parent_index == child_index {
+                    continue;
+                }
+                let area_gap = parent.signed_area.abs() - child.signed_area.abs();
+                if area_gap <= child.perimeter * tol.linear {
+                    continue;
+                }
+                if periodic_loop_contains(parent, child, margin, u_period, v_period) {
+                    possible.push(parent_index);
+                }
+            }
+            possible.sort_by(|&left, &right| {
+                loops[left]
+                    .signed_area
+                    .abs()
+                    .total_cmp(&loops[right].signed_area.abs())
+                    .then_with(|| face_bound_loop_geometry_cmp(&loops[left], &loops[right]))
+            });
+            parents[child_index] = possible.first().copied();
+        }
+
+        let roots: Vec<usize> = parents
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parent)| parent.is_none().then_some(index))
+            .collect();
+        if roots.len() != 1 {
+            let refs = roots
+                .iter()
+                .map(|&index| format!("#{}", candidates[loops[index].candidate_index].bound_ref))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} generic FACE_BOUND loops do not have one enclosing \
+                     outer boundary in the unwrapped {} UV domain (top-level bounds: {refs})",
+                    surface.type_tag()
+                ),
+            });
+        }
+
+        let outer_loop = roots[0];
+        let outer_candidate = loops[outer_loop].candidate_index;
+        let mut inner_loops: Vec<usize> = (0..loops.len())
+            .filter(|&index| index != outer_loop)
+            .collect();
+        inner_loops
+            .sort_by(|&left, &right| face_bound_loop_geometry_cmp(&loops[left], &loops[right]));
+        Ok((
+            candidates[outer_candidate].wire,
+            inner_loops
+                .into_iter()
+                .map(|index| candidates[loops[index].candidate_index].wire)
+                .collect(),
+        ))
+    }
+
+    fn sample_periodic_bound(
+        &self,
+        face_ref: u64,
+        candidate: FaceBoundCandidate,
+        surface: &FaceSurface,
+        domain: PeriodicUvDomain,
+    ) -> Result<(Vec<Point2>, bool, bool), IoError> {
+        let wire = self
+            .topo
+            .wire(candidate.wire)
+            .map_err(|error| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} could not read bound #{} wire: {error}",
+                    candidate.bound_ref
+                ),
+            })?;
+        let (u_period, v_period) = domain.scaled_periods();
+        let margin = FACE_BOUND_CLASSIFICATION_DEFLECTION + Tolerance::new().linear;
+        let mut points = Vec::new();
+        let mut seam_flexible_u = false;
+        let mut seam_flexible_v = false;
+
+        for oriented in wire.edges() {
+            let edge = self
+                .topo
+                .edge(oriented.edge())
+                .map_err(|error| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} could not read bound #{} edge: {error}",
+                        candidate.bound_ref
+                    ),
+                })?;
+            let mut edge_points = self.sample_bound_edge(edge)?;
+            if !oriented.is_forward() {
+                edge_points.reverse();
+            }
+            let mut group = edge_points
+                .into_iter()
+                .map(|point| {
+                    Self::project_periodic_bound_point(
+                        face_ref,
+                        candidate.bound_ref,
+                        surface,
+                        domain,
+                        point,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            unwrap_periodic_uv_path(&mut group, u_period, v_period).map_err(|axis| {
+                IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} has an ambiguous half-period {axis} \
+                         step in its {} UV projection",
+                        candidate.bound_ref,
+                        surface.type_tag()
+                    ),
+                }
+            })?;
+
+            let repeated_opposite = wire.edges().iter().any(|other| {
+                other.edge() == oriented.edge() && other.is_forward() != oriented.is_forward()
+            });
+            if repeated_opposite && group.len() >= 2 {
+                let group_bounds = Aabb2::try_from_points(group.iter().copied());
+                if let Some(group_bounds) = group_bounds {
+                    let u_span = group_bounds.max.x() - group_bounds.min.x();
+                    let v_span = group_bounds.max.y() - group_bounds.min.y();
+                    seam_flexible_u |= u_period.is_some() && u_span <= margin && v_span > margin;
+                    seam_flexible_v |= v_period.is_some() && v_span <= margin && u_span > margin;
+                }
+            }
+
+            if let Some(previous) = points.last().copied() {
+                shift_periodic_uv_group(&mut group, previous, u_period, v_period);
+                let Some(first) = group.first().copied() else {
+                    continue;
+                };
+                if (first - previous).length() > margin {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "ADVANCED_FACE #{face_ref} bound #{} is discontinuous in the \
+                             unwrapped {} UV domain",
+                            candidate.bound_ref,
+                            surface.type_tag()
+                        ),
+                    });
+                }
+                group.remove(0);
+            }
+            points.extend(group);
+        }
+
+        let (Some(first), Some(last)) = (points.first().copied(), points.last().copied()) else {
+            return Ok((points, seam_flexible_u, seam_flexible_v));
+        };
+        if (last - first).length() > margin {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} bound #{} does not close in the unwrapped {} UV \
+                     domain; period-winding bounds cannot be assigned an outer role safely",
+                    candidate.bound_ref,
+                    surface.type_tag()
+                ),
+            });
+        }
+        points.pop();
+        points.dedup_by(|left, right| (*left - *right).length() <= margin);
+        Ok((points, seam_flexible_u, seam_flexible_v))
+    }
+
+    fn project_periodic_bound_point(
+        face_ref: u64,
+        bound_ref: u64,
+        surface: &FaceSurface,
+        domain: PeriodicUvDomain,
+        point: Point3,
+    ) -> Result<Point2, IoError> {
+        let (u, v) = surface
+            .project_point(point)
+            .filter(|(u, v)| u.is_finite() && v.is_finite())
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} bound #{bound_ref} cannot be projected into its {} \
+                     UV domain",
+                    surface.type_tag()
+                ),
+            })?;
+        let reconstructed = surface.evaluate(u, v).ok_or_else(|| IoError::ParseError {
+            reason: format!(
+                "ADVANCED_FACE #{face_ref} bound #{bound_ref} cannot be evaluated in its {} UV \
+                 domain",
+                surface.type_tag()
+            ),
+        })?;
+        let residual = (reconstructed - point).length();
+        let margin = FACE_BOUND_SURFACE_RESIDUAL + Tolerance::new().linear;
+        if !residual.is_finite() || residual > margin {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} bound #{bound_ref} leaves its {} surface by \
+                     {residual:.6e} mm during UV classification",
+                    surface.type_tag()
+                ),
+            });
+        }
+
+        for (axis, period, derivative) in [
+            ("u", domain.u_period, surface.partial_u(u, v)),
+            ("v", domain.v_period, surface.partial_v(u, v)),
+        ] {
+            if period.is_some()
+                && derivative.is_none_or(|vector| {
+                    let length = vector.length();
+                    !length.is_finite() || length <= Tolerance::new().linear
+                })
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{bound_ref} reaches a singular periodic \
+                         {axis} coordinate on its {} surface",
+                        surface.type_tag()
+                    ),
+                });
+            }
+        }
+
+        Ok(domain.scale(Point2::new(u, v)))
+    }
+
+    fn sample_planar_bound(
+        &self,
+        face_ref: u64,
+        candidate: FaceBoundCandidate,
+        frame: &Frame3,
+    ) -> Result<Vec<Point2>, IoError> {
+        let wire = self
+            .topo
+            .wire(candidate.wire)
+            .map_err(|error| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} could not read bound #{} wire: {error}",
+                    candidate.bound_ref
+                ),
+            })?;
+        let mut points = Vec::new();
+        for oriented in wire.edges() {
+            let edge = self
+                .topo
+                .edge(oriented.edge())
+                .map_err(|error| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} could not read bound #{} edge: {error}",
+                        candidate.bound_ref
+                    ),
+                })?;
+            let mut edge_points = self.sample_bound_edge(edge)?;
+            if !oriented.is_forward() {
+                edge_points.reverse();
+            }
+            if !points.is_empty() {
+                edge_points.remove(0);
+            }
+            points.extend(edge_points);
+        }
+
+        let tol = Tolerance::new().linear;
+        if points.len() > 1 && (points[0] - *points.last().unwrap_or(&points[0])).length() <= tol {
+            points.pop();
+        }
+        let mut projected = Vec::with_capacity(points.len());
+        for point in points {
+            let offset = point - frame.origin;
+            let planar_distance = offset.dot(frame.z).abs();
+            if planar_distance > FACE_BOUND_CLASSIFICATION_DEFLECTION + tol {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} bound #{} leaves its plane by \
+                         {planar_distance:.6e} mm",
+                        candidate.bound_ref
+                    ),
+                });
+            }
+            let projected_point = Point2::new(offset.dot(frame.x), offset.dot(frame.y));
+            if projected
+                .last()
+                .is_none_or(|previous: &Point2| (*previous - projected_point).length() > tol)
+            {
+                projected.push(projected_point);
+            }
+        }
+        if projected.len() > 1
+            && (projected[0] - *projected.last().unwrap_or(&projected[0])).length() <= tol
+        {
+            projected.pop();
+        }
+        Ok(projected)
+    }
+
+    fn sample_bound_edge(&self, edge: &Edge) -> Result<Vec<Point3>, IoError> {
+        let start = self.topo.vertex(edge.start())?.point();
+        let end = self.topo.vertex(edge.end())?.point();
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(vec![start, end]);
+        }
+
+        let (t_start, t_end) = match edge.curve() {
+            EdgeCurve::Circle(circle) if edge.is_closed() => {
+                let start_parameter = circle.project(start);
+                (start_parameter, start_parameter + std::f64::consts::TAU)
+            }
+            EdgeCurve::Ellipse(ellipse) if edge.is_closed() => {
+                let start_parameter = ellipse.project(start);
+                (start_parameter, start_parameter + std::f64::consts::TAU)
+            }
+            curve => curve.domain_with_endpoints(start, end),
+        };
+        let parameter_scale = t_start.abs().max(t_end.abs()).max(1.0);
+        if !(t_start.is_finite() && t_end.is_finite())
+            || (t_end - t_start).abs() <= 16.0 * f64::EPSILON * parameter_scale
+        {
+            return Err(IoError::ParseError {
+                reason: "FACE_BOUND edge has a degenerate curve parameter range".to_string(),
+            });
+        }
+
+        let evaluate = |parameter| edge.curve().evaluate_with_endpoints(parameter, start, end);
+        let seed_intervals = 8usize;
+        let mut points = Vec::new();
+        let first = evaluate(t_start);
+        points.push(first);
+        for seed in 0..seed_intervals {
+            #[allow(clippy::cast_precision_loss)]
+            let a_fraction = seed as f64 / seed_intervals as f64;
+            #[allow(clippy::cast_precision_loss)]
+            let b_fraction = (seed + 1) as f64 / seed_intervals as f64;
+            let a_parameter = (t_end - t_start).mul_add(a_fraction, t_start);
+            let b_parameter = (t_end - t_start).mul_add(b_fraction, t_start);
+            let a_point = *points.last().unwrap_or(&first);
+            let b_point = evaluate(b_parameter);
+            let sampled_to_tolerance = sample_bound_curve_interval(
+                &evaluate,
+                a_parameter,
+                a_point,
+                b_parameter,
+                b_point,
+                0,
+                &mut points,
+            );
+            if !sampled_to_tolerance {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "FACE_BOUND curve exceeds the adaptive planar-classification sampling \
+                         limit at {FACE_BOUND_CLASSIFICATION_DEFLECTION:.6e} mm deflection"
+                    ),
+                });
+            }
+            points.push(b_point);
+        }
+        if let Some(first_point) = points.first_mut() {
+            *first_point = start;
+        }
+        if let Some(last_point) = points.last_mut() {
+            *last_point = end;
+        }
+        Ok(points)
     }
 
     fn build_surface(&self, surface_ref: u64) -> Result<FaceSurface, IoError> {
@@ -2038,6 +2761,407 @@ impl<'a> StepBuilder<'a> {
             reason: format!("entity #{id} not found"),
         })
     }
+}
+
+fn sample_bound_curve_interval<F>(
+    evaluate: &F,
+    parameter_a: f64,
+    point_a: Point3,
+    parameter_b: f64,
+    point_b: Point3,
+    depth: u32,
+    out: &mut Vec<Point3>,
+) -> bool
+where
+    F: Fn(f64) -> Point3,
+{
+    let span = parameter_b - parameter_a;
+    let parameter_q1 = span.mul_add(0.25, parameter_a);
+    let parameter_mid = span.mul_add(0.5, parameter_a);
+    let parameter_q3 = span.mul_add(0.75, parameter_a);
+    let point_q1 = evaluate(parameter_q1);
+    let point_mid = evaluate(parameter_mid);
+    let point_q3 = evaluate(parameter_q3);
+    let deviation = point_segment_distance_3d(point_q1, point_a, point_b)
+        .max(point_segment_distance_3d(point_mid, point_a, point_b))
+        .max(point_segment_distance_3d(point_q3, point_a, point_b));
+    if deviation <= FACE_BOUND_CLASSIFICATION_DEFLECTION {
+        return true;
+    }
+    if depth >= FACE_BOUND_SAMPLE_DEPTH {
+        return false;
+    }
+
+    let left_sampled = sample_bound_curve_interval(
+        evaluate,
+        parameter_a,
+        point_a,
+        parameter_mid,
+        point_mid,
+        depth + 1,
+        out,
+    );
+    out.push(point_mid);
+    let right_sampled = sample_bound_curve_interval(
+        evaluate,
+        parameter_mid,
+        point_mid,
+        parameter_b,
+        point_b,
+        depth + 1,
+        out,
+    );
+    left_sampled && right_sampled
+}
+
+fn point_segment_distance_3d(point: Point3, start: Point3, end: Point3) -> f64 {
+    let segment = end - start;
+    let length_sq = segment.dot(segment);
+    let tol = Tolerance::new();
+    if length_sq <= tol.linear_sq() {
+        return (point - start).length();
+    }
+    let parameter = ((point - start).dot(segment) / length_sq).clamp(0.0, 1.0);
+    (point - (start + segment * parameter)).length()
+}
+
+/// Return a periodic parameter domain together with stable coordinate scales.
+///
+/// Scaling turns a cylinder's angular coordinate into developed arc length and
+/// keeps the containment tolerance in millimetres.  For the other analytic
+/// surfaces the scale is a characteristic metric only; positive independent
+/// scaling of u and v does not change loop containment.  Periodic NURBS retain
+/// their native knot-domain coordinates and are accepted only when projection
+/// can be verified against the surface point below.
+fn periodic_uv_domain(surface: &FaceSurface) -> Option<PeriodicUvDomain> {
+    use std::f64::consts::TAU;
+
+    let tol = Tolerance::new().linear;
+    match surface {
+        FaceSurface::Plane { .. } => None,
+        FaceSurface::Cylinder(cylinder) => Some(PeriodicUvDomain {
+            u_period: Some(TAU),
+            v_period: None,
+            u_scale: cylinder.radius().abs().max(tol),
+            v_scale: 1.0,
+        }),
+        FaceSurface::Cone(cone) => Some(PeriodicUvDomain {
+            u_period: Some(TAU),
+            v_period: None,
+            u_scale: cone.radius_at(1.0).abs().max(tol),
+            v_scale: 1.0,
+        }),
+        FaceSurface::Sphere(sphere) => Some(PeriodicUvDomain {
+            u_period: Some(TAU),
+            v_period: None,
+            u_scale: sphere.radius().abs().max(tol),
+            v_scale: sphere.radius().abs().max(tol),
+        }),
+        FaceSurface::Torus(torus) => Some(PeriodicUvDomain {
+            u_period: Some(TAU),
+            v_period: Some(TAU),
+            u_scale: (torus.major_radius() + torus.minor_radius()).abs().max(tol),
+            v_scale: torus.minor_radius().abs().max(tol),
+        }),
+        FaceSurface::Nurbs(surface) => {
+            let u_period = surface.is_periodic_u().then(|| {
+                let (start, end) = surface.domain_u();
+                end - start
+            });
+            let v_period = surface.is_periodic_v().then(|| {
+                let (start, end) = surface.domain_v();
+                end - start
+            });
+            let valid_period = |period: Option<f64>| {
+                period.is_none_or(|value| value.is_finite() && value > 64.0 * f64::EPSILON)
+            };
+            ((u_period.is_some() || v_period.is_some())
+                && valid_period(u_period)
+                && valid_period(v_period))
+            .then_some(PeriodicUvDomain {
+                u_period,
+                v_period,
+                u_scale: 1.0,
+                v_scale: 1.0,
+            })
+        }
+    }
+}
+
+/// Lift a densely sampled UV path to the period copy nearest its predecessor.
+/// Exact half-period steps have two equally near lifts and are rejected rather
+/// than allowing traversal order or `round` tie-breaking to assign topology.
+fn unwrap_periodic_uv_path(
+    points: &mut [Point2],
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> Result<(), &'static str> {
+    for index in 1..points.len() {
+        let mut point = points[index];
+        for (axis, period, previous, current) in [
+            ("u", u_period, points[index - 1].x(), point.x()),
+            ("v", v_period, points[index - 1].y(), point.y()),
+        ] {
+            let Some(period) = period else {
+                continue;
+            };
+            let delta = current - previous;
+            let turns = (delta / period).round();
+            let lifted = period.mul_add(-turns, current);
+            let reduced = lifted - previous;
+            let tie_margin = 64.0 * f64::EPSILON * period.abs().max(1.0);
+            if (reduced.abs() - 0.5 * period).abs() <= tie_margin {
+                return Err(axis);
+            }
+            if axis == "u" {
+                point = Point2::new(lifted, point.y());
+            } else {
+                point = Point2::new(point.x(), lifted);
+            }
+        }
+        points[index] = point;
+    }
+    Ok(())
+}
+
+/// Shift a whole already-unwrapped edge group onto the period copy whose first
+/// point meets the preceding edge.  Internal edge deltas remain authoritative.
+fn shift_periodic_uv_group(
+    group: &mut [Point2],
+    previous: Point2,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) {
+    let Some(first) = group.first().copied() else {
+        return;
+    };
+    let u_shift = u_period.map_or(0.0, |period| {
+        -period * ((first.x() - previous.x()) / period).round()
+    });
+    let v_shift = v_period.map_or(0.0, |period| {
+        -period * ((first.y() - previous.y()) / period).round()
+    });
+    for point in group {
+        *point = Point2::new(point.x() + u_shift, point.y() + v_shift);
+    }
+}
+
+fn polygon_signed_area(polygon: &[Point2]) -> f64 {
+    if polygon.len() < 3 {
+        return 0.0;
+    }
+    let twice_area: f64 = polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .take(polygon.len())
+        .map(|(a, b)| a.x().mul_add(b.y(), -(b.x() * a.y())))
+        .sum();
+    0.5 * twice_area
+}
+
+fn polygon_perimeter(polygon: &[Point2]) -> f64 {
+    polygon
+        .iter()
+        .zip(polygon.iter().cycle().skip(1))
+        .take(polygon.len())
+        .map(|(a, b)| (*b - *a).length())
+        .sum()
+}
+
+/// Find a point strictly inside a simple polygon by intersecting a horizontal
+/// scan line.  Unlike a vertex average, this remains inside concave loops.
+fn polygon_interior_probe(polygon: &[Point2], bounds: Aabb2) -> Option<Point2> {
+    let height = bounds.max.y() - bounds.min.y();
+    if !(height.is_finite() && height > Tolerance::new().linear) {
+        return None;
+    }
+    let center_y = 0.5 * (bounds.min.y() + bounds.max.y());
+    let offset = (height * 1e-7).max(Tolerance::new().linear * 2.0);
+    for y in [center_y + offset, center_y - offset, center_y] {
+        let mut intersections = Vec::new();
+        for (a, b) in polygon
+            .iter()
+            .zip(polygon.iter().cycle().skip(1))
+            .take(polygon.len())
+        {
+            let crosses = (a.y() <= y && b.y() > y) || (b.y() <= y && a.y() > y);
+            if crosses {
+                let fraction = (y - a.y()) / (b.y() - a.y());
+                intersections.push((b.x() - a.x()).mul_add(fraction, a.x()));
+            }
+        }
+        intersections.sort_by(f64::total_cmp);
+        let mut intervals: Vec<(f64, Point2)> = intersections
+            .chunks_exact(2)
+            .filter_map(|pair| {
+                let width = pair[1] - pair[0];
+                let probe = Point2::new(0.5 * (pair[0] + pair[1]), y);
+                (width > Tolerance::new().linear && point_in_polygon(probe, polygon))
+                    .then_some((width, probe))
+            })
+            .collect();
+        intervals.sort_by(|left, right| right.0.total_cmp(&left.0));
+        if let Some((_, probe)) = intervals.first() {
+            return Some(*probe);
+        }
+    }
+    None
+}
+
+fn point_segment_distance_2d(point: Point2, start: Point2, end: Point2) -> f64 {
+    let segment = end - start;
+    let length_sq = segment.dot(segment);
+    let tol = Tolerance::new();
+    if length_sq <= tol.linear_sq() {
+        return (point - start).length();
+    }
+    let parameter = ((point - start).dot(segment) / length_sq).clamp(0.0, 1.0);
+    (point - (start + segment * parameter)).length()
+}
+
+fn point_in_or_on_polygon(point: Point2, polygon: &[Point2], margin: f64) -> bool {
+    point_in_polygon(point, polygon)
+        || polygon
+            .iter()
+            .zip(polygon.iter().cycle().skip(1))
+            .take(polygon.len())
+            .any(|(&start, &end)| point_segment_distance_2d(point, start, end) <= margin)
+}
+
+fn bounds_contain(outer: Aabb2, inner: Aabb2, margin: f64) -> bool {
+    outer.min.x() - margin <= inner.min.x()
+        && outer.min.y() - margin <= inner.min.y()
+        && outer.max.x() + margin >= inner.max.x()
+        && outer.max.y() + margin >= inner.max.y()
+}
+
+fn planar_loop_contains(parent: &FaceBoundLoop, child: &FaceBoundLoop, margin: f64) -> bool {
+    bounds_contain(parent.bounds, child.bounds, margin)
+        && point_in_or_on_polygon(child.probe, &parent.polygon, margin)
+        && child
+            .polygon
+            .iter()
+            .all(|&point| point_in_or_on_polygon(point, &parent.polygon, margin))
+}
+
+fn translated_point(point: Point2, dx: f64, dy: f64) -> Point2 {
+    Point2::new(point.x() + dx, point.y() + dy)
+}
+
+fn periodic_axis_alignment(
+    parent_min: f64,
+    parent_max: f64,
+    parent_seam_flexible: bool,
+    child_min: f64,
+    child_max: f64,
+    period: Option<f64>,
+    margin: f64,
+) -> (f64, Vec<f64>) {
+    let Some(period) = period else {
+        return (0.0, vec![0.0]);
+    };
+    let parent_span = parent_max - parent_min;
+    let parent_center = 0.5 * (parent_min + parent_max);
+    let child_center = 0.5 * (child_min + child_max);
+    if parent_seam_flexible
+        && parent_span >= period - 4.0 * margin
+        && parent_span <= period + 4.0 * margin
+    {
+        // A developed full-period band repeats one generator edge in opposite
+        // directions.  Its seam is a coordinate cut, not a material boundary,
+        // so recenter that cut around the prospective child.
+        return (child_center - parent_center, vec![0.0]);
+    }
+
+    let nearest = ((parent_center - child_center) / period).round();
+    (
+        0.0,
+        [-1.0, 0.0, 1.0]
+            .into_iter()
+            .map(|offset| (nearest + offset) * period)
+            .collect(),
+    )
+}
+
+/// Containment on a periodic quotient.  Local loops are tested on the three
+/// nearest copies of each periodic axis.  A full developed band may move its
+/// repeated seam generator continuously; every other loop is limited to whole
+/// period translations.  More than one successful lift is ambiguous and fails
+/// closed.
+fn periodic_loop_contains(
+    parent: &FaceBoundLoop,
+    child: &FaceBoundLoop,
+    margin: f64,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> bool {
+    let (parent_u_shift, child_u_shifts) = periodic_axis_alignment(
+        parent.bounds.min.x(),
+        parent.bounds.max.x(),
+        parent.seam_flexible_u,
+        child.bounds.min.x(),
+        child.bounds.max.x(),
+        u_period,
+        margin,
+    );
+    let (parent_v_shift, child_v_shifts) = periodic_axis_alignment(
+        parent.bounds.min.y(),
+        parent.bounds.max.y(),
+        parent.seam_flexible_v,
+        child.bounds.min.y(),
+        child.bounds.max.y(),
+        v_period,
+        margin,
+    );
+    let parent_polygon: Vec<Point2> = parent
+        .polygon
+        .iter()
+        .map(|&point| translated_point(point, parent_u_shift, parent_v_shift))
+        .collect();
+    let parent_bounds = Aabb2 {
+        min: translated_point(parent.bounds.min, parent_u_shift, parent_v_shift),
+        max: translated_point(parent.bounds.max, parent_u_shift, parent_v_shift),
+    };
+    let mut successful_lifts = 0usize;
+
+    for &child_u_shift in &child_u_shifts {
+        for &child_v_shift in &child_v_shifts {
+            let child_bounds = Aabb2 {
+                min: translated_point(child.bounds.min, child_u_shift, child_v_shift),
+                max: translated_point(child.bounds.max, child_u_shift, child_v_shift),
+            };
+            if !bounds_contain(parent_bounds, child_bounds, margin) {
+                continue;
+            }
+            let probe = translated_point(child.probe, child_u_shift, child_v_shift);
+            if !point_in_or_on_polygon(probe, &parent_polygon, margin) {
+                continue;
+            }
+            let all_inside = child.polygon.iter().all(|&point| {
+                point_in_or_on_polygon(
+                    translated_point(point, child_u_shift, child_v_shift),
+                    &parent_polygon,
+                    margin,
+                )
+            });
+            if all_inside {
+                successful_lifts += 1;
+            }
+        }
+    }
+    successful_lifts == 1
+}
+
+fn face_bound_loop_geometry_cmp(left: &FaceBoundLoop, right: &FaceBoundLoop) -> std::cmp::Ordering {
+    left.bounds
+        .min
+        .x()
+        .total_cmp(&right.bounds.min.x())
+        .then_with(|| left.bounds.min.y().total_cmp(&right.bounds.min.y()))
+        .then_with(|| left.bounds.max.x().total_cmp(&right.bounds.max.x()))
+        .then_with(|| left.bounds.max.y().total_cmp(&right.bounds.max.y()))
+        .then_with(|| left.signed_area.abs().total_cmp(&right.signed_area.abs()))
+        .then_with(|| left.perimeter.total_cmp(&right.perimeter))
 }
 
 // ── Conical surfaces ────────────────────────────────────────────────

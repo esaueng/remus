@@ -5,6 +5,7 @@
 
 pub mod collapse_collinear_vertices;
 pub mod convert_to_bezier;
+pub mod merge_split_rim_arcs;
 pub mod remove_internal_wires;
 pub mod shell_sewing;
 pub mod split_curve;

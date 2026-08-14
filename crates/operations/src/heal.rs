@@ -70,6 +70,22 @@ pub fn repair_solid(
     })
 }
 
+/// Merge unambiguous full-turn cycles of open circular arcs into closed edges.
+///
+/// This is the operations-layer entry point for conservative import cleanup.
+/// Ambiguous or cross-anchored cycles are left unchanged.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup or wire replacement fails.
+pub fn merge_split_rim_arcs(
+    topo: &mut Topology,
+    solid: SolidId,
+    tolerance: Tolerance,
+) -> Result<usize, crate::OperationsError> {
+    Ok(brepkit_heal::upgrade::merge_split_rim_arcs::merge_split_rim_arcs(topo, solid, tolerance)?)
+}
+
 /// Summary of repairs performed by [`heal_solid`].
 #[derive(Debug, Default, Clone)]
 pub struct HealingReport {

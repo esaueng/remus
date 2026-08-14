@@ -997,3 +997,103 @@ fn sealed_fragment_floating_inside_the_stock_is_reported_disconnected() {
         report.issues
     );
 }
+
+#[test]
+fn ambiguous_same_order_circle_arcs_are_reported_as_a_warning() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::shell::Shell;
+    use brepkit_topology::solid::Solid;
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(std::f64::consts::PI), 1e-7));
+    let first = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+    let second = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle)));
+    let wire0 = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(first, true),
+                OrientedEdge::new(second, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let wire1 = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(first, false),
+                OrientedEdge::new(second, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let surface = FaceSurface::Plane {
+        normal: Vec3::new(0.0, 0.0, 1.0),
+        d: 0.0,
+    };
+    let face0 = topo.add_face(Face::new(wire0, Vec::new(), surface.clone()));
+    let face1 = topo.add_face(Face::new(wire1, Vec::new(), surface));
+    let shell = topo.add_shell(Shell::new(vec![face0, face1]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+    let report = validate_solid(&topo, solid).unwrap();
+    assert!(report.issues.iter().any(|issue| {
+        issue.severity == Severity::Warning
+            && issue
+                .description
+                .contains("ambiguous complementary circle arcs")
+    }));
+}
+
+#[test]
+fn incomplete_periodic_rim_chain_is_reported_as_a_warning() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::surfaces::CylindricalSurface;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::shell::Shell;
+    use brepkit_topology::solid::Solid;
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let mut topo = Topology::new();
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let cylinder = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), axis, 2.0).unwrap();
+    let rim = Circle3D::new(Point3::new(0.0, 0.0, 1.0), axis, 2.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(rim.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(rim.evaluate(std::f64::consts::FRAC_PI_2), 1e-7));
+    let lower = topo.add_vertex(Vertex::new(cylinder.evaluate(0.0, 0.0), 1e-7));
+    let seam = topo.add_edge(Edge::new(lower, a, EdgeCurve::Line));
+    let partial = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(rim)));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(partial, true),
+                OrientedEdge::new(seam, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(wire, Vec::new(), FaceSurface::Cylinder(cylinder)));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+    let report = validate_solid(&topo, solid).unwrap();
+    assert!(report.issues.iter().any(|issue| {
+        issue.severity == Severity::Warning
+            && issue
+                .description
+                .contains("does not form closed or full-turn rim cycles")
+    }));
+}
