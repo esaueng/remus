@@ -39,7 +39,7 @@ cargo xtask wasm-build --skip-opt
 - [ ] Every command exits zero and its duration/result is attached to the
   release record.
 - [ ] The generated tarball contains browser JS, Node CJS, TypeScript types,
-  WASM, `LICENSE-MIT`, and `LICENSE-APACHE`, and no temporary inputs.
+  WASM, `LICENSE-APACHE`, and no temporary inputs.
 - [ ] The Node smoke test constructs a kernel, creates and measures a box,
   tessellates it, and exports STL.
 - [ ] Representative size and deterministic complexity results are compared

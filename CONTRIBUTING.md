@@ -1,10 +1,11 @@
 # Contributing to brepkit
 
-## Contributor License Agreement
+## License of contributions
 
-All contributors must sign our [CLA](.github/CLA.md) before their first PR
-can be merged. When you open a PR, a bot will prompt you to sign by posting
-a comment. This is a one-time requirement.
+All contributions are submitted under the Apache License, Version 2.0, the
+same license used by the project. Commits must include a Developer Certificate
+of Origin sign-off (`Signed-off-by`) confirming that the contributor has the
+right to submit the work under those terms.
 
 ## Getting Started
 
@@ -16,7 +17,7 @@ a comment. This is a one-time requirement.
 
 ## Development Workflow
 
-1. Create a branch from `main`
+1. Create a branch from `apache-main`
 2. Make your changes
 3. Run `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings`
 4. Run `cargo test --workspace`

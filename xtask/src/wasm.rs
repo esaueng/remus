@@ -108,7 +108,7 @@ pub fn check_tools() -> Result<()> {
 }
 
 /// Build WASM for both bundler and nodejs targets.
-pub fn build_both_targets(simd: bool) -> Result<()> {
+pub fn build_both_targets(simd: bool, optimize: bool) -> Result<()> {
     let wasm_crate = project_root()?.join("crates/wasm");
 
     let mut rustflags = String::from("-Dwarnings");
@@ -117,22 +117,27 @@ pub fn build_both_targets(simd: bool) -> Result<()> {
     }
 
     println!("\nBuilding WASM (bundler target)...");
-    run_cmd(
-        Command::new("wasm-pack")
-            .args(["build", "--target", "bundler", "--release", "--out-dir", "pkg"])
-            .current_dir(&wasm_crate)
-            .env("RUSTFLAGS", &rustflags),
-    )
-    .context("wasm-pack build (bundler) failed")?;
+    let mut bundler = Command::new("wasm-pack");
+    bundler.args(["build", "--target", "bundler", "--release"]);
+    if !optimize {
+        bundler.arg("--no-opt");
+    }
+    bundler
+        .args(["--out-dir", "pkg"])
+        .current_dir(&wasm_crate)
+        .env("RUSTFLAGS", &rustflags);
+    run_cmd(&mut bundler).context("wasm-pack build (bundler) failed")?;
 
     println!("\nBuilding WASM (nodejs target)...");
-    run_cmd(
-        Command::new("wasm-pack")
-            .args(["build", "--target", "nodejs", "--release", "--out-dir", "pkg-node"])
-            .current_dir(&wasm_crate)
-            .env("RUSTFLAGS", &rustflags),
-    )
-    .context("wasm-pack build (nodejs) failed")?;
+    let mut node = Command::new("wasm-pack");
+    node.args(["build", "--target", "nodejs", "--release"]);
+    if !optimize {
+        node.arg("--no-opt");
+    }
+    node.args(["--out-dir", "pkg-node"])
+        .current_dir(&wasm_crate)
+        .env("RUSTFLAGS", &rustflags);
+    run_cmd(&mut node).context("wasm-pack build (nodejs) failed")?;
 
     Ok(())
 }
@@ -186,10 +191,13 @@ pub fn merge_packages() -> Result<()> {
 }
 
 fn copy_package_metadata(root: &Path, pkg: &Path) -> Result<()> {
-    for name in ["LICENSE-MIT", "LICENSE-APACHE"] {
-        fs::copy(root.join(name), pkg.join(name))
-            .with_context(|| format!("copying {name} into npm package"))?;
+    let stale_mit_license = pkg.join("LICENSE-MIT");
+    if stale_mit_license.exists() {
+        fs::remove_file(&stale_mit_license).context("removing stale MIT package license")?;
     }
+    let name = "LICENSE-APACHE";
+    fs::copy(root.join(name), pkg.join(name))
+        .with_context(|| format!("copying {name} into npm package"))?;
     Ok(())
 }
 
@@ -266,8 +274,9 @@ fn patch_package_json(pkg_json: &mut serde_json::Value) -> Result<()> {
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut()
         .context("package.json files is not an array")?;
+    files.retain(|entry| entry.as_str() != Some("LICENSE-MIT"));
 
-    for entry in ["brepkit_wasm_node.cjs", "LICENSE-MIT", "LICENSE-APACHE"] {
+    for entry in ["brepkit_wasm_node.cjs", "LICENSE-APACHE"] {
         let entry = serde_json::json!(entry);
         if !files.contains(&entry) {
             files.push(entry);
@@ -295,7 +304,6 @@ fn validate_at(pkg: &Path) -> Result<()> {
         "brepkit_wasm_node.cjs",
         "brepkit_wasm.d.ts",
         "package.json",
-        "LICENSE-MIT",
         "LICENSE-APACHE",
     ];
     for file in &required_files {
@@ -305,6 +313,9 @@ fn validate_at(pkg: &Path) -> Result<()> {
         } else {
             errors.push(format!("missing required file: {file}"));
         }
+    }
+    if pkg.join("LICENSE-MIT").exists() {
+        errors.push("stale LICENSE-MIT present in Apache-only package".into());
     }
 
     // 2. WASM binary size
@@ -421,7 +432,7 @@ fn validate_package_json(pkg_json: &serde_json::Value, errors: &mut Vec<String>)
     }
 
     if let Some(files) = pkg_json.get("files").and_then(|v| v.as_array()) {
-        for required in ["brepkit_wasm_node.cjs", "LICENSE-MIT", "LICENSE-APACHE"] {
+        for required in ["brepkit_wasm_node.cjs", "LICENSE-APACHE"] {
             if !files.iter().any(|v| v.as_str() == Some(required)) {
                 errors.push(format!("files array missing '{required}'"));
             } else {
@@ -518,7 +529,7 @@ mod tests {
         let mut pkg = json!({
             "name": "wasm-pack-default",
             "version": "0.5.3",
-            "files": ["brepkit_wasm_bg.wasm", "brepkit_wasm.js", "brepkit_wasm.d.ts"],
+            "files": ["brepkit_wasm_bg.wasm", "brepkit_wasm.js", "brepkit_wasm.d.ts", "LICENSE-MIT"],
             "module": "brepkit_wasm.js",
             "types": "brepkit_wasm.d.ts",
             "sideEffects": ["./snippets/*"]
@@ -535,8 +546,8 @@ mod tests {
 
         let files = pkg["files"].as_array().unwrap();
         assert!(files.contains(&json!("brepkit_wasm_node.cjs")));
-        assert!(files.contains(&json!("LICENSE-MIT")));
         assert!(files.contains(&json!("LICENSE-APACHE")));
+        assert!(!files.contains(&json!("LICENSE-MIT")));
         // Original files preserved
         assert!(files.contains(&json!("brepkit_wasm_bg.wasm")));
     }
@@ -549,7 +560,7 @@ mod tests {
 
         patch_package_json(&mut pkg).unwrap();
 
-        assert_eq!(pkg["files"].as_array().unwrap().len(), 4);
+        assert_eq!(pkg["files"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -559,7 +570,7 @@ mod tests {
         patch_package_json(&mut pkg).unwrap();
 
         let files = pkg["files"].as_array().unwrap();
-        assert_eq!(files.len(), 3);
+        assert_eq!(files.len(), 2);
         assert_eq!(files[0], "brepkit_wasm_node.cjs");
     }
 
