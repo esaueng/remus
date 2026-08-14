@@ -1,17 +1,12 @@
-name: Release & Publish
+name: Refresh Apache Staging Package
 
 on:
   push:
     branches: [apache-main]
-  release:
-    types: [created]
   workflow_dispatch:
     inputs:
-      publish_version:
-        description: "Manually publish this version to npm (e.g. 0.4.1). Skips release-please. Leave blank to only refresh the committed package."
-        required: false
       sync_package:
-        description: "Rebuild crates/wasm/pkg and commit it to apache-main"
+        description: "Rebuild crates/wasm/pkg on the Apache staging branch"
         type: boolean
         default: true
 
@@ -19,80 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  release-please:
-    name: Release Please
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    if: ${{ github.event_name == 'push' }}
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-    # `secrets` is not a valid context in a step-level `if`, so surface the
-    # app credentials as env vars and branch on those instead.
-    env:
-      APP_ID: ${{ secrets.BREPKIT_BOT_APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.BREPKIT_BOT_PRIVATE_KEY }}
-    outputs:
-      release_created: ${{ steps.release.outputs['release_created'] }}
-      tag_name: ${{ steps.release.outputs['tag_name'] }}
-      prs_created: ${{ steps.release.outputs['prs_created'] }}
-      pr: ${{ steps.release.outputs['pr'] }}
-    steps:
-      # Forks of this repo do not carry the bot app's credentials. Minting the
-      # token unconditionally made the whole job fail before release-please
-      # ever ran ("'client-id' ... must be set to a non-empty string"), so no
-      # release PR, tag, or GitHub release was ever produced there. Mint it
-      # only when the secrets exist and fall back to GITHUB_TOKEN.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        if: ${{ env.APP_ID != '' && env.APP_PRIVATE_KEY != '' }}
-        with:
-          app-id: ${{ env.APP_ID }}
-          private-key: ${{ env.APP_PRIVATE_KEY }}
-
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        id: release
-        # release-please can fail with "duplicate tag" (release already exists)
-        # or "issue is locked" (can't comment on auto-merged PR). Both are
-        # non-fatal — the release was created successfully. Publishing happens
-        # independently via the release:created event trigger.
-        continue-on-error: true
-        with:
-          token: ${{ steps.app-token.outputs.token || github.token }}
-          manifest-file: .release-please-manifest.json
-          config-file: release-please-config.json
-
-  auto-merge:
-    name: Auto-merge Release PR
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    needs: [release-please]
-    if: ${{ needs.release-please.outputs.prs_created == 'true' }}
-    permissions:
-      contents: write
-      pull-requests: write
-    env:
-      APP_ID: ${{ secrets.BREPKIT_BOT_APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.BREPKIT_BOT_PRIVATE_KEY }}
-    steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        if: ${{ env.APP_ID != '' && env.APP_PRIVATE_KEY != '' }}
-        with:
-          app-id: ${{ env.APP_ID }}
-          private-key: ${{ env.APP_PRIVATE_KEY }}
-      - name: Enable auto-merge
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          PR_NUMBER: ${{ fromJSON(needs.release-please.outputs.pr).number }}
-        run: |
-          echo "Enabling auto-merge for PR #$PR_NUMBER"
-          # `--auto` needs the repo to allow auto-merge, which in turn needs a
-          # protected branch with required checks. Where that is not set up
-          # (forks), fall back to merging outright: a release PR only ever
-          # carries release-please's own version bump and changelog.
-          gh pr merge "$PR_NUMBER" --auto --squash --repo "$GITHUB_REPOSITORY" \
-            || gh pr merge "$PR_NUMBER" --squash --repo "$GITHUB_REPOSITORY"
-
   # The committed package directory is a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
   #   "brepkit-wasm": "github:esaueng/brepkit#apache-main&path:/crates/wasm/pkg"
@@ -149,8 +70,8 @@ jobs:
         with:
           tool: wasm-pack
 
-      # Same command the npm publish job runs, so the committed package and a
-      # published one are built identically.
+      # Keep the staging package on the same reproducible build path that the
+      # standalone project will use after it adopts its final package name.
       - name: Build, merge, validate, and smoke-test WASM package
         run: cargo xtask wasm-build --skip-opt
 
@@ -190,86 +111,3 @@ jobs:
           git pull --rebase --autostash "$remote" "${GITHUB_REF_NAME}"
           git push "$remote" "HEAD:${GITHUB_REF_NAME}"
           echo "::notice::Committed brepkit-wasm ${VERSION}; consumers on #apache-main pick it up on the next install."
-
-  # Publish triggers on three events:
-  # 1. release:created — fired when release-please creates a GitHub release
-  #    (works even if release-please crashes afterward trying to comment on
-  #    the locked/merged PR, which was preventing release_created from being set)
-  # 2. release_created output — belt-and-suspenders if release-please succeeds fully
-  # 3. workflow_dispatch — manual publish for a specific version
-  publish:
-    name: Build WASM & Publish
-    needs: [release-please]
-    # A manual run only publishes when it was given a version; a bare dispatch
-    # is the "just refresh the committed package" path.
-    if: >-
-      always() && (
-        github.event_name == 'release' ||
-        (github.event_name == 'workflow_dispatch' && inputs.publish_version != '') ||
-        needs.release-please.outputs.release_created == 'true'
-      )
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          registry-url: 'https://registry.npmjs.org'
-
-      # rust-toolchain.toml provides the pinned Rust version + wasm32 target
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-
-      - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.62.30
-        with:
-          tool: wasm-pack
-
-      - name: Build, merge, validate, and smoke-test WASM package
-        run: cargo xtask wasm-build --skip-opt
-
-      - name: Validate npm package contents
-        working-directory: crates/wasm/pkg
-        run: npm pack --dry-run
-
-      - name: Verify version
-        working-directory: crates/wasm/pkg
-        run: |
-          PKG_VERSION=$(jq -r .version package.json)
-          TAG_VERSION="${TAG_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Version mismatch: package.json=$PKG_VERSION tag=$TAG_VERSION"
-            exit 1
-          fi
-          echo "Publishing brepkit-wasm@$PKG_VERSION"
-        env:
-          TAG_NAME: ${{ github.event.release.tag_name || needs.release-please.outputs.tag_name || format('v{0}', github.event.inputs.publish_version) }}
-
-      - name: Publish to npm (skip if already published)
-        working-directory: crates/wasm/pkg
-        run: |
-          # Only the upstream repo holds the npm credentials for this package
-          # name. Forks reach their consumers through the committed
-          # `crates/wasm/pkg` directory instead, so a missing token is an
-          # expected configuration, not a failure.
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::notice::NPM_TOKEN is not configured — skipping npm publish."
-            exit 0
-          fi
-          PKG_VERSION=$(jq -r .version package.json)
-          if npm view "brepkit-wasm@$PKG_VERSION" version 2>/dev/null; then
-            echo "brepkit-wasm@$PKG_VERSION already published — skipping"
-            exit 0
-          fi
-          npm publish --provenance --access public 2>&1 || {
-            # Handle race condition: concurrent run published between our check and publish
-            if npm view "brepkit-wasm@$PKG_VERSION" version 2>/dev/null; then
-              echo "brepkit-wasm@$PKG_VERSION published by concurrent run — skipping"
-              exit 0
-            fi
-            exit 1
-          }
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
