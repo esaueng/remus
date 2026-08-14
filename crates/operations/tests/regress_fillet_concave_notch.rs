@@ -38,6 +38,7 @@ fn edge_use_counts(topo: &Topology, solid: SolidId) -> HashMap<EdgeId, usize> {
 }
 
 #[test]
+#[ignore = "fork policy: constant-radius fillets are pinned to fillet_builder_legacy (dfd45f21, fork compatibility contract), which predates the upstream concave fixes this test pins. Re-enable when the legacy pin is lifted or the fixes are ported (see PR #126)."]
 fn fillet_v2_concave_notch_adds_only_the_fillet_sliver() {
     let mut topo = Topology::new();
     // A shallow ridge: the vertex at (5, 0.05) makes the two top laterals

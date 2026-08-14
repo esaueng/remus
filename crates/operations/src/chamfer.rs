@@ -64,6 +64,19 @@ fn unsupported(reason: impl Into<String>) -> OperationsError {
     }
 }
 
+/// Whether `from -> to` occurs as one boundary segment in a positional face
+/// specification. The mixed assembler shares edges by position, so orienting
+/// a new bevel against this traversal is stronger than inferring its winding
+/// from a near-cancelling pair of face normals at an obtuse edge.
+fn has_directed_segment(spec: &FaceSpec, from: Point3, to: Point3, eps: f64) -> bool {
+    let vertices = spec.vertices();
+    !vertices.is_empty()
+        && vertices.iter().enumerate().any(|(i, &start)| {
+            let end = vertices[(i + 1) % vertices.len()];
+            (start - from).length() <= eps && (end - to).length() <= eps
+        })
+}
+
 /// Chamfer one or more edges of a solid.
 ///
 /// Each target edge is replaced by a flat bevel face. The `distance`
@@ -326,6 +339,22 @@ fn chamfer_core(
             reason: "no manifold edges to chamfer (all edges are boundary or missing)".into(),
         });
     }
+
+    // Record convexity while the input topology is untouched. The exact
+    // planar construction supports both material-removing convex bevels and
+    // material-filling concave notch bevels; its closing sign gate must not
+    // misclassify the latter as a folded result.
+    let convexity_by_edge: HashMap<usize, bool> = filtered_edges
+        .iter()
+        .filter_map(|&edge| {
+            crate::blend_ops::edge_is_convex(topo, solid, edge, distances.max_distance() * 0.25)
+                .map(|convex| (edge.index(), convex))
+        })
+        .collect();
+    let all_convex = convexity_by_edge.len() == filtered_edges.len()
+        && convexity_by_edge.values().all(|&convex| convex);
+    let all_concave = convexity_by_edge.len() == filtered_edges.len()
+        && convexity_by_edge.values().all(|&convex| !convex);
 
     let target_set: HashSet<usize> = filtered_edges.iter().map(|e| e.index()).collect();
 
@@ -733,10 +762,11 @@ fn chamfer_core(
         let c2_start = data.get_point(f2, v_start)?;
         let c2_end = data.get_point(f2, v_end)?;
 
-        // Build the chamfer quad. Check orientation against the average of the
-        // two adjacent faces' OUTWARD normals to ensure outward winding: a
-        // reversed face stores the normal pointing into the material, and
-        // averaging those would face the bevel the wrong way.
+        // Build the chamfer quad. Prefer the structural answer: the bevel must
+        // traverse its shared contact edge opposite to the rebuilt adjacent
+        // face. This stays well-conditioned on a near-flat concave ridge where
+        // the two outward normals nearly cancel. Fall back to the normal test
+        // only if the positional spec no longer exposes that contact segment.
         let n1 = face_polygons[&f1.index()].outward;
         let n2 = face_polygons[&f2.index()].outward;
         let avg_normal = n1 + n2;
@@ -745,17 +775,43 @@ fn chamfer_core(
         let edge_b = c1_end - c1_start;
         let raw_normal = edge_a.cross(edge_b);
 
-        let (quad, normal) = if raw_normal.dot(avg_normal) >= 0.0 {
-            (
-                vec![c1_start, c2_start, c2_end, c1_end],
-                raw_normal.normalize()?,
-            )
+        let f1_spec = result_spec_origins
+            .iter()
+            .zip(&result_specs)
+            .find_map(|(origin, spec)| {
+                matches!(origin, FaceSpecOrigin::Modified(source) if *source == f1).then_some(spec)
+            });
+        let f1_runs_start_to_end =
+            f1_spec.is_some_and(|spec| has_directed_segment(spec, c1_start, c1_end, eps));
+        let f1_runs_end_to_start =
+            f1_spec.is_some_and(|spec| has_directed_segment(spec, c1_end, c1_start, eps));
+        // Preserve the fork's fail-closed convex modifier contract. The
+        // structural repair is specific to concave notches; convex and
+        // unclassified edges keep the established normal-based winding and
+        // its existing validation refusal where that construction is unsound.
+        let edge_is_concave = convexity_by_edge.get(&edge_id.index()) == Some(&false);
+        let use_raw_winding = if edge_is_concave && f1_runs_start_to_end {
+            true
+        } else if edge_is_concave && f1_runs_end_to_start {
+            false
         } else {
-            let flipped = edge_b.cross(edge_a);
-            (
-                vec![c1_start, c1_end, c2_end, c2_start],
-                flipped.normalize()?,
-            )
+            raw_normal.dot(avg_normal) >= 0.0
+        };
+
+        let quad = if use_raw_winding {
+            vec![c1_start, c2_start, c2_end, c1_end]
+        } else {
+            vec![c1_start, c1_end, c2_end, c2_start]
+        };
+        // The boundary order above is constrained by shared-edge traversal,
+        // while the plane normal is constrained by which side is outside the
+        // solid. Those are independent on a concave edge: forcing the surface
+        // normal to follow the structurally correct wire points it into the
+        // material and corrupts signed volume by the whole bevel-face prism.
+        let normal = if raw_normal.dot(avg_normal) >= 0.0 {
+            raw_normal.normalize()?
+        } else {
+            (-raw_normal).normalize()?
         };
 
         let d = dot_normal_point(normal, quad[0]);
@@ -894,10 +950,16 @@ fn chamfer_core(
              inside out"
         )));
     }
-    if after >= before {
+    if all_convex && after >= before {
         return Err(unsupported(format!(
             "a chamfer removes material, but the result encloses {after} against the \
              input's {before}"
+        )));
+    }
+    if all_concave && after <= before {
+        return Err(unsupported(format!(
+            "a chamfer on concave edges adds material, but the result encloses {after} \
+             against the input's {before}"
         )));
     }
 

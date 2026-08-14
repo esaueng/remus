@@ -7,13 +7,13 @@
 //!
 //! Modelled after industry-standard B-Rep reshape utilities.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeId};
 use brepkit_topology::face::FaceId;
 use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::SolidId;
+use brepkit_topology::solid::{Solid, SolidId};
 use brepkit_topology::vertex::VertexId;
 use brepkit_topology::wire::{OrientedEdge, WireId};
 
@@ -177,6 +177,19 @@ impl ReShape {
         self.wires.insert(id, WireAction::Remove);
     }
 
+    /// Resolve a wire through the replacement chain.
+    fn resolve_wire(&self, mut id: WireId) -> Option<WireId> {
+        let mut seen = HashSet::new();
+        while seen.insert(id) {
+            match self.wires.get(&id) {
+                Some(WireAction::Replace(target)) => id = *target,
+                Some(WireAction::Remove) => return None,
+                None => return Some(id),
+            }
+        }
+        Some(id)
+    }
+
     // ── Face operations ─────────────────────────────────────────────
 
     /// Record that `from` should be replaced by `to`.
@@ -200,6 +213,19 @@ impl ReShape {
         matches!(self.faces.get(&id), Some(FaceAction::Remove))
     }
 
+    /// Resolve a face through a chain of single-face replacements.
+    fn resolve_face(&self, mut id: FaceId) -> Option<FaceId> {
+        let mut seen = HashSet::new();
+        while seen.insert(id) {
+            match self.faces.get(&id) {
+                Some(FaceAction::Replace(target)) => id = *target,
+                Some(FaceAction::Remove) => return None,
+                Some(FaceAction::Split(_)) | None => return Some(id),
+            }
+        }
+        Some(id)
+    }
+
     // ── Shell operations ────────────────────────────────────────────
 
     /// Record that `from` should be replaced by `to`.
@@ -210,6 +236,102 @@ impl ReShape {
     /// Record that a shell should be removed.
     pub fn remove_shell(&mut self, id: ShellId) {
         self.shells.insert(id, ShellAction::Remove);
+    }
+
+    /// Resolve a shell through the replacement chain.
+    fn resolve_shell(&self, mut id: ShellId) -> Option<ShellId> {
+        let mut seen = HashSet::new();
+        while seen.insert(id) {
+            match self.shells.get(&id) {
+                Some(ShellAction::Replace(target)) => id = *target,
+                Some(ShellAction::Remove) => return None,
+                None => return Some(id),
+            }
+        }
+        Some(id)
+    }
+
+    /// Final shells referenced by the solid after shell substitutions.
+    fn final_shell_ids(
+        &self,
+        topo: &Topology,
+        solid_id: SolidId,
+    ) -> Result<Vec<ShellId>, HealError> {
+        let solid = topo.solid(solid_id)?;
+        let mut shells = Vec::new();
+        if let Some(outer) = self.resolve_shell(solid.outer_shell()) {
+            shells.push(outer);
+        }
+        for &inner in solid.inner_shells() {
+            if let Some(inner) = self.resolve_shell(inner)
+                && !shells.contains(&inner)
+            {
+                shells.push(inner);
+            }
+        }
+        Ok(shells)
+    }
+
+    /// Expand a face action to the final face IDs, including split targets.
+    fn resolved_faces(&self, id: FaceId) -> Vec<FaceId> {
+        let mut pending = vec![id];
+        let mut resolved = Vec::new();
+        let mut seen = HashSet::new();
+        while let Some(id) = pending.pop() {
+            let Some(id) = self.resolve_face(id) else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            match self.faces.get(&id) {
+                Some(FaceAction::Split(targets)) => {
+                    pending.extend(targets.iter().rev().copied());
+                }
+                Some(FaceAction::Remove) => {}
+                Some(FaceAction::Replace(_)) | None => resolved.push(id),
+            }
+        }
+        resolved
+    }
+
+    /// Final faces after shell and face substitutions.
+    fn final_face_ids(&self, topo: &Topology, solid_id: SolidId) -> Result<Vec<FaceId>, HealError> {
+        let mut faces = Vec::new();
+        let mut seen = HashSet::new();
+        for shell_id in self.final_shell_ids(topo, solid_id)? {
+            for &face_id in topo.shell(shell_id)?.faces() {
+                for resolved in self.resolved_faces(face_id) {
+                    if seen.insert(resolved) {
+                        faces.push(resolved);
+                    }
+                }
+            }
+        }
+        Ok(faces)
+    }
+
+    /// Expand an edge action to the final edge IDs, including split targets.
+    fn resolved_edges(&self, id: EdgeId) -> Vec<EdgeId> {
+        let mut pending = vec![id];
+        let mut resolved = Vec::new();
+        let mut seen = HashSet::new();
+        while let Some(id) = pending.pop() {
+            let Some(id) = self.resolve_edge(id) else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            match self.edges.get(&id) {
+                Some(EdgeAction::Split(targets)) => {
+                    pending.extend(targets.iter().rev().copied());
+                }
+                Some(EdgeAction::Remove) => {}
+                Some(EdgeAction::Replace(_)) | None => resolved.push(id),
+            }
+        }
+        resolved
     }
 
     // ── Apply ───────────────────────────────────────────────────────
@@ -236,22 +358,27 @@ impl ReShape {
             return Ok(solid_id);
         }
 
-        // 1. Apply vertex replacements to all edges.
+        // 1. Apply vertex replacements to all final edges.
         if !self.vertices.is_empty() {
             self.apply_vertex_replacements(topo, solid_id)?;
         }
 
-        // 2. Rebuild wires (remove/split edges, rebuild edge lists).
+        // 2. Substitute wires before rebuilding their edge lists.
+        if !self.wires.is_empty() {
+            self.apply_wire_replacements(topo, solid_id)?;
+        }
+
+        // 3. Rebuild wires (remove/split edges, rebuild edge lists).
         if !self.edges.is_empty() {
             self.apply_edge_replacements(topo, solid_id)?;
         }
 
-        // 3. Rebuild faces (remove/replace wires, remove/replace faces).
-        if !self.faces.is_empty() || !self.wires.is_empty() {
+        // 4. Rebuild each shell's face list.
+        if !self.faces.is_empty() {
             self.apply_face_replacements(topo, solid_id)?;
         }
 
-        // 4. Rebuild shell (remove/replace faces).
+        // 5. Rebuild the solid's outer and inner shell references.
         self.apply_shell_replacements(topo, solid_id)?;
 
         Ok(solid_id)
@@ -263,40 +390,33 @@ impl ReShape {
         topo: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(), HealError> {
-        let solid_data = topo.solid(solid_id)?;
-        let shell = topo.shell(solid_data.outer_shell())?;
-        let face_ids: Vec<_> = shell.faces().to_vec();
-
+        let face_ids = self.final_face_ids(topo, solid_id)?;
         let mut edge_ids = Vec::new();
-        for &fid in &face_ids {
+        for fid in face_ids {
             let face = topo.face(fid)?;
-            let wire = topo.wire(face.outer_wire())?;
-            for oe in wire.edges() {
-                edge_ids.push(oe.edge());
-            }
-            for &iw_id in face.inner_wires() {
-                let iw = topo.wire(iw_id)?;
-                for oe in iw.edges() {
-                    edge_ids.push(oe.edge());
+            let wire_ids =
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied());
+            for wire_id in wire_ids {
+                let Some(wire_id) = self.resolve_wire(wire_id) else {
+                    continue;
+                };
+                for oe in topo.wire(wire_id)?.edges() {
+                    edge_ids.extend(self.resolved_edges(oe.edge()));
                 }
             }
         }
         edge_ids.sort_by_key(|e| e.index());
         edge_ids.dedup_by_key(|e| e.index());
 
-        let updates: Vec<_> = edge_ids
-            .iter()
-            .filter_map(|&eid| {
-                let edge = topo.edge(eid).ok()?;
-                let new_start = self.resolve_vertex(edge.start());
-                let new_end = self.resolve_vertex(edge.end());
-                if new_start != edge.start() || new_end != edge.end() {
-                    Some((eid, new_start, new_end, edge.curve().clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut updates = Vec::new();
+        for eid in edge_ids {
+            let edge = topo.edge(eid)?;
+            let new_start = self.resolve_vertex(edge.start());
+            let new_end = self.resolve_vertex(edge.end());
+            if new_start != edge.start() || new_end != edge.end() {
+                updates.push((eid, new_start, new_end, edge.curve().clone()));
+            }
+        }
 
         for (eid, new_start, new_end, curve) in updates {
             let edge = topo.edge_mut(eid)?;
@@ -306,17 +426,43 @@ impl ReShape {
         Ok(())
     }
 
+    /// Apply wire replacements to every final face on every shell.
+    fn apply_wire_replacements(
+        &self,
+        topo: &mut Topology,
+        solid_id: SolidId,
+    ) -> Result<(), HealError> {
+        for face_id in self.final_face_ids(topo, solid_id)? {
+            let face = topo.face(face_id)?;
+            let old_outer = face.outer_wire();
+            let old_inner = face.inner_wires().to_vec();
+            let new_outer = self.resolve_wire(old_outer).ok_or_else(|| {
+                HealError::FixFailed(format!(
+                    "cannot remove outer wire {old_outer:?} from retained face {face_id:?}"
+                ))
+            })?;
+            let new_inner: Vec<_> = old_inner
+                .iter()
+                .filter_map(|&wire| self.resolve_wire(wire))
+                .collect();
+
+            if new_outer != old_outer || new_inner != old_inner {
+                let face = topo.face_mut(face_id)?;
+                face.set_outer_wire(new_outer);
+                *face.inner_wires_mut() = new_inner;
+            }
+        }
+        Ok(())
+    }
+
     /// Apply edge replacements: rebuild wires with new edge lists.
     fn apply_edge_replacements(
         &self,
         topo: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(), HealError> {
-        let solid_data = topo.solid(solid_id)?;
-        let shell = topo.shell(solid_data.outer_shell())?;
-        let face_ids: Vec<_> = shell.faces().to_vec();
-
-        for &fid in &face_ids {
+        let face_ids = self.final_face_ids(topo, solid_id)?;
+        for fid in face_ids {
             let face = topo.face(fid)?;
             let all_wires: Vec<_> = std::iter::once(face.outer_wire())
                 .chain(face.inner_wires().iter().copied())
@@ -330,27 +476,24 @@ impl ReShape {
                 let mut any_changed = false;
 
                 for oe in &old_edges {
-                    match self.edges.get(&oe.edge()) {
-                        Some(EdgeAction::Remove) => {
-                            any_changed = true;
-                        }
-                        Some(EdgeAction::Replace(new_eid)) => {
-                            new_edges.push(OrientedEdge::new(*new_eid, oe.is_forward()));
-                            any_changed = true;
-                        }
-                        Some(EdgeAction::Split(new_eids)) => {
-                            for &ne in new_eids {
-                                new_edges.push(OrientedEdge::new(ne, oe.is_forward()));
-                            }
-                            any_changed = true;
-                        }
-                        None => {
-                            new_edges.push(*oe);
-                        }
+                    let mut replacements = self.resolved_edges(oe.edge());
+                    if replacements.len() != 1 || replacements[0] != oe.edge() {
+                        any_changed = true;
+                    }
+                    if !oe.is_forward() {
+                        replacements.reverse();
+                    }
+                    for replacement in replacements {
+                        new_edges.push(OrientedEdge::new(replacement, oe.is_forward()));
                     }
                 }
 
-                if any_changed && !new_edges.is_empty() {
+                if any_changed {
+                    if new_edges.is_empty() {
+                        return Err(HealError::FixFailed(format!(
+                            "edge replacements would empty wire {wire_id:?} on retained face {fid:?}"
+                        )));
+                    }
                     let new_wire = brepkit_topology::wire::Wire::new(new_edges, is_closed)?;
                     let new_wire_id = topo.add_wire(new_wire);
 
@@ -378,39 +521,22 @@ impl ReShape {
         topo: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(), HealError> {
-        let solid_data = topo.solid(solid_id)?;
-        let shell_id = solid_data.outer_shell();
-        let shell = topo.shell(shell_id)?;
-        let old_faces: Vec<_> = shell.faces().to_vec();
+        for shell_id in self.final_shell_ids(topo, solid_id)? {
+            let old_faces = topo.shell(shell_id)?.faces().to_vec();
+            let mut new_faces = Vec::new();
+            for &face_id in &old_faces {
+                new_faces.extend(self.resolved_faces(face_id));
+            }
 
-        let mut new_faces = Vec::new();
-        let mut any_changed = false;
-
-        for &fid in &old_faces {
-            match self.faces.get(&fid) {
-                Some(FaceAction::Remove) => {
-                    any_changed = true;
+            if new_faces != old_faces {
+                if new_faces.is_empty() {
+                    return Err(HealError::FixFailed(format!(
+                        "face replacements would empty retained shell {shell_id:?}"
+                    )));
                 }
-                Some(FaceAction::Replace(new_fid)) => {
-                    new_faces.push(*new_fid);
-                    any_changed = true;
-                }
-                Some(FaceAction::Split(new_fids)) => {
-                    new_faces.extend(new_fids);
-                    any_changed = true;
-                }
-                None => {
-                    new_faces.push(fid);
-                }
+                *topo.shell_mut(shell_id)? = brepkit_topology::shell::Shell::new(new_faces)?;
             }
         }
-
-        if any_changed && !new_faces.is_empty() {
-            let new_shell = brepkit_topology::shell::Shell::new(new_faces)?;
-            let shell_mut = topo.shell_mut(shell_id)?;
-            *shell_mut = new_shell;
-        }
-
         Ok(())
     }
 
@@ -424,14 +550,190 @@ impl ReShape {
             return Ok(());
         }
 
-        let solid_data = topo.solid(solid_id)?;
-        let shell_id = solid_data.outer_shell();
+        let solid = topo.solid(solid_id)?;
+        let old_outer = solid.outer_shell();
+        let old_inner = solid.inner_shells().to_vec();
+        let new_outer = self.resolve_shell(old_outer).ok_or_else(|| {
+            HealError::FixFailed(format!(
+                "cannot remove outer shell {old_outer:?} from solid {solid_id:?}"
+            ))
+        })?;
+        let new_inner: Vec<_> = old_inner
+            .iter()
+            .filter_map(|&shell| self.resolve_shell(shell))
+            .collect();
 
-        if let Some(ShellAction::Replace(new_shell)) = self.shells.get(&shell_id) {
-            let solid_mut = topo.solid_mut(solid_id)?;
-            solid_mut.set_outer_shell(*new_shell);
+        if new_outer != old_outer || new_inner != old_inner {
+            *topo.solid_mut(solid_id)? = Solid::new(new_outer, new_inner);
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::Topology;
+    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use brepkit_topology::face::{Face, FaceId, FaceSurface};
+    use brepkit_topology::shell::{Shell, ShellId};
+    use brepkit_topology::solid::{Solid, SolidId};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+
+    use super::ReShape;
+
+    fn add_edge(topo: &mut Topology, start: Point3, end: Point3) -> EdgeId {
+        let start = topo.add_vertex(Vertex::new(start, 1e-7));
+        let end = topo.add_vertex(Vertex::new(end, 1e-7));
+        topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
+    }
+
+    fn add_wire(topo: &mut Topology, edge: EdgeId) -> WireId {
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap())
+    }
+
+    fn add_face(topo: &mut Topology, wire: WireId) -> FaceId {
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    fn add_shell(topo: &mut Topology, faces: Vec<FaceId>) -> ShellId {
+        topo.add_shell(Shell::new(faces).unwrap())
+    }
+
+    fn add_solid(topo: &mut Topology, outer: ShellId, inner: Vec<ShellId>) -> SolidId {
+        topo.add_solid(Solid::new(outer, inner))
+    }
+
+    #[test]
+    fn apply_resolves_edge_wire_and_face_replacement_chains() {
+        let mut topo = Topology::new();
+        let edge_a = add_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let edge_b = add_edge(
+            &mut topo,
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+        );
+        let edge_c = add_edge(
+            &mut topo,
+            Point3::new(0.0, 2.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+        );
+        let wire_a = add_wire(&mut topo, edge_a);
+        let wire_b = add_wire(&mut topo, edge_a);
+        let wire_c = add_wire(&mut topo, edge_a);
+        let face_a = add_face(&mut topo, wire_a);
+        let face_b = add_face(&mut topo, wire_a);
+        let face_c = add_face(&mut topo, wire_a);
+        let shell = add_shell(&mut topo, vec![face_a]);
+        let solid = add_solid(&mut topo, shell, vec![]);
+
+        let mut reshape = ReShape::new();
+        reshape.replace_edge(edge_a, edge_b);
+        reshape.replace_edge(edge_b, edge_c);
+        reshape.replace_wire(wire_a, wire_b);
+        reshape.replace_wire(wire_b, wire_c);
+        reshape.replace_face(face_a, face_b);
+        reshape.replace_face(face_b, face_c);
+
+        reshape.apply(&mut topo, solid).unwrap();
+
+        let final_face = topo.shell(shell).unwrap().faces()[0];
+        assert_eq!(final_face, face_c, "face replacement chain stopped early");
+        let final_wire = topo.face(final_face).unwrap().outer_wire();
+        let final_edges = topo.wire(final_wire).unwrap().edges();
+        assert_eq!(final_edges.len(), 1);
+        assert_eq!(
+            final_edges[0].edge(),
+            edge_c,
+            "edge replacement chain stopped early"
+        );
+        assert_ne!(final_wire, wire_a, "wire replacement was not applied");
+    }
+
+    #[test]
+    fn apply_updates_vertices_edges_wires_faces_and_shells_on_inner_shells() {
+        let mut topo = Topology::new();
+        let outer_edge = add_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let outer_wire = add_wire(&mut topo, outer_edge);
+        let outer_face = add_face(&mut topo, outer_wire);
+        let outer_shell = add_shell(&mut topo, vec![outer_face]);
+
+        let old_start = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 1.0, 0.0), 1e-7));
+        let new_start = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 1.0), 1e-7));
+        let inner_edge = topo.add_edge(Edge::new(old_start, end, EdgeCurve::Line));
+        let replacement_edge = topo.add_edge(Edge::new(old_start, end, EdgeCurve::Line));
+        let inner_wire = add_wire(&mut topo, inner_edge);
+        let replacement_wire = add_wire(&mut topo, inner_edge);
+        let kept_face = add_face(&mut topo, inner_wire);
+        let removed_face = add_face(&mut topo, inner_wire);
+        let old_inner_shell = add_shell(&mut topo, vec![kept_face, removed_face]);
+        let new_inner_shell = add_shell(&mut topo, vec![kept_face, removed_face]);
+        let solid = add_solid(&mut topo, outer_shell, vec![old_inner_shell]);
+
+        let mut reshape = ReShape::new();
+        reshape.replace_vertex(old_start, new_start);
+        reshape.replace_edge(inner_edge, replacement_edge);
+        reshape.replace_wire(inner_wire, replacement_wire);
+        reshape.remove_face(removed_face);
+        reshape.replace_shell(old_inner_shell, new_inner_shell);
+
+        reshape.apply(&mut topo, solid).unwrap();
+
+        let solid_data = topo.solid(solid).unwrap();
+        assert_eq!(solid_data.outer_shell(), outer_shell);
+        assert_eq!(solid_data.inner_shells(), &[new_inner_shell]);
+        assert_eq!(topo.shell(new_inner_shell).unwrap().faces(), &[kept_face]);
+
+        let final_wire = topo.face(kept_face).unwrap().outer_wire();
+        let final_edge = topo.wire(final_wire).unwrap().edges()[0].edge();
+        assert_eq!(final_edge, replacement_edge);
+        assert_eq!(topo.edge(final_edge).unwrap().start(), new_start);
+    }
+
+    #[test]
+    fn apply_reverses_split_edge_order_for_reversed_wire_use() {
+        let mut topo = Topology::new();
+        let start = Point3::new(0.0, 0.0, 0.0);
+        let middle = Point3::new(1.0, 0.0, 0.0);
+        let end = Point3::new(2.0, 0.0, 0.0);
+        let original = add_edge(&mut topo, start, end);
+        let first = add_edge(&mut topo, start, middle);
+        let second = add_edge(&mut topo, middle, end);
+        let wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(original, false)], false).unwrap());
+        let face = add_face(&mut topo, wire);
+        let shell = add_shell(&mut topo, vec![face]);
+        let solid = add_solid(&mut topo, shell, vec![]);
+
+        let mut reshape = ReShape::new();
+        reshape.split_edge(original, vec![first, second]);
+        reshape.apply(&mut topo, solid).unwrap();
+
+        let final_wire = topo.face(face).unwrap().outer_wire();
+        let final_edges = topo.wire(final_wire).unwrap().edges();
+        assert_eq!(final_edges.len(), 2);
+        assert_eq!(final_edges[0].edge(), second);
+        assert!(!final_edges[0].is_forward());
+        assert_eq!(final_edges[1].edge(), first);
+        assert!(!final_edges[1].is_forward());
     }
 }

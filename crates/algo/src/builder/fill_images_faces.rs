@@ -1471,36 +1471,46 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena) -> Vec<Point3> {
                 };
                 #[allow(clippy::cast_precision_loss)]
                 let at = |k: usize| d0 + (d1 - d0) * (k as f64 / SAMPLES as f64);
-                // First consecutive pair straddling the meridian. A sample
-                // landing exactly ON it leaves its neighbours sharing a sign,
-                // so the crossing is missed and the loop opens only partly —
-                // the caller requires all three cuts and leaves it closed, so
-                // that case simply keeps the pre-existing route rather than
-                // half-opening. (Widening this to a nearest-sample search does
-                // find them, but it then routes bodies the tessellator cannot
-                // yet mesh watertight; see the note on the through-bore band.)
-                let Some(k) = (0..SAMPLES).find(|&k| {
+                // Preserve the established cut whenever consecutive samples
+                // strictly bracket the meridian without crossing wrap's
+                // branch cut at +/-pi.
+                let bracket = (0..SAMPLES).find(|&k| {
                     let (Some(a), Some(b)) = (f(at(k)), f(at(k + 1))) else {
                         return false;
                     };
-                    a != 0.0 && b != 0.0 && (a > 0.0) != (b > 0.0) && (a - b).abs() < PI
-                }) else {
-                    continue;
-                };
-                let (mut lo, mut hi) = (at(k), at(k + 1));
-                let Some(f_lo) = f(lo) else { continue };
-                for _ in 0..60 {
-                    let tm = f64::midpoint(lo, hi);
-                    let Some(fm) = f(tm) else { break };
-                    if (fm > 0.0) == (f_lo > 0.0) {
-                        lo = tm;
-                    } else {
-                        hi = tm;
+                    a.abs() > 0.0 && b.abs() > 0.0 && (a > 0.0) != (b > 0.0) && (a - b).abs() < PI
+                });
+                let crossing = if let Some(k) = bracket {
+                    let (mut lo, mut hi) = (at(k), at(k + 1));
+                    let Some(f_lo) = f(lo) else { continue };
+                    for _ in 0..60 {
+                        let tm = f64::midpoint(lo, hi);
+                        let Some(fm) = f(tm) else { break };
+                        if (fm > 0.0) == (f_lo > 0.0) {
+                            lo = tm;
+                        } else {
+                            hi = tm;
+                        }
                     }
-                }
-                found.push(ParametricCurve::evaluate(nurbs, f64::midpoint(lo, hi)));
+                    f64::midpoint(lo, hi)
+                } else {
+                    // A sample exactly on the meridian has same-sign
+                    // neighbours and therefore no strict bracket. Accept that
+                    // sample only after the established search fails. This is
+                    // a numerical-zero test at the splitter's existing 1e-10
+                    // seam precision, not a wider nearest-sample snap or a
+                    // modelling-tolerance change.
+                    let Some(t) = (0..=SAMPLES).find_map(|k| {
+                        let t = at(k);
+                        f(t).is_some_and(|offset| offset.abs() <= SEAM_DEGENERATE_TOL)
+                            .then_some(t)
+                    }) else {
+                        continue;
+                    };
+                    t
+                };
+                found.push(ParametricCurve::evaluate(nurbs, crossing));
             }
-            // Both cuts or neither: one alone leaves a still-closed loop.
             // All three or none: a partial set leaves an arc spanning half a
             // turn or more, and every winding sum in the splitter is taken
             // from arc endpoints, where `wrap_pi` cannot tell +pi from -pi.

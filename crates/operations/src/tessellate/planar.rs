@@ -471,7 +471,12 @@ pub(super) fn tessellate_cylinder_with_holes(
         deflection,
         angular_tol,
         false,
-    );
+    )
+    // A drilled wall mixes positive shaft faces with subtractive bore faces.
+    // One extra angular column keeps the aggregate signed-volume error below
+    // the error of the limiting inscribed polygon without changing the caller's
+    // deflection or angular tolerance.
+    .saturating_add(1);
     for iu in 0..=nu {
         #[allow(clippy::cast_precision_loss)]
         let u = (outer_u.1 - outer_u.0).mul_add(iu as f64 / nu as f64, outer_u.0);
@@ -492,6 +497,31 @@ pub(super) fn tessellate_cylinder_with_holes(
                 all_positions.push(cyl.evaluate(u, v));
                 all_uvs.push((u, v));
             }
+        }
+    }
+
+    // The crossing midpoints above guarantee that every retained vertical
+    // strip has a CDT seed, but they do not control triangle width in `u`.
+    // On a tall drilled cylinder, Delaunay can otherwise connect a hole rim to
+    // a midpoint several angular columns away. Those long chords still form a
+    // closed, consistently oriented shell, but flatten the analytic wall far
+    // beyond the requested deflection and materially understate mesh/STL
+    // volume. Add a regular developed-surface grid whose cells are roughly
+    // square in physical units (`radius * du` by `dv`). Points inside removed
+    // pockets or bands are harmless: the pocket-parity and band predicates
+    // below remove their triangles.
+    let physical_u_step = cyl.radius() * (outer_u.1 - outer_u.0) / nu as f64;
+    let nv = ((outer_v.1 - outer_v.0) / physical_u_step.max(f64::EPSILON))
+        .ceil()
+        .max(2.0) as usize;
+    for iu in 1..nu {
+        #[allow(clippy::cast_precision_loss)]
+        let u = (outer_u.1 - outer_u.0).mul_add(iu as f64 / nu as f64, outer_u.0);
+        for iv in 1..nv {
+            #[allow(clippy::cast_precision_loss)]
+            let v = (outer_v.1 - outer_v.0).mul_add(iv as f64 / nv as f64, outer_v.0);
+            all_positions.push(cyl.evaluate(u, v));
+            all_uvs.push((u, v));
         }
     }
 
@@ -540,15 +570,6 @@ pub(super) fn tessellate_cylinder_with_holes(
         .collect();
     cdt.remove_exterior(&outer_constraints);
 
-    // Constraint recovery can split a requested segment at existing collinear
-    // vertices (notably where a clipped pocket closes on the chart seam). Use
-    // the CDT's recovered sub-edges as flood barriers, not only the originally
-    // requested endpoint pairs.
-    let constraint_set = cdt.constraint_edges().clone();
-    for seed in hole_removal_seeds(&pts2d, &pocket_ranges) {
-        let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
-    }
-
     let triangles: Vec<(usize, usize, usize)> = cdt
         .triangles()
         .into_iter()
@@ -558,11 +579,19 @@ pub(super) fn tessellate_cylinder_with_holes(
             let pc = cdt.vertices()[c];
             let u = (pa.x() + pb.x() + pc.x()) / (3.0 * radius);
             let v = (pa.y() + pb.y() + pc.y()) / 3.0;
-            band_ranges
+            let centroid = Point2::new(radius * u, v);
+            let pocket_depth = pocket_ranges
                 .iter()
-                .map(|&range| cylinder_band_strands_above(&all_uvs, range, u, v))
-                .sum::<usize>()
-                .is_multiple_of(2)
+                .filter(|&&(start, end)| {
+                    brepkit_math::predicates::point_in_polygon(centroid, &pts2d[start..end])
+                })
+                .count();
+            pocket_depth.is_multiple_of(2)
+                && band_ranges
+                    .iter()
+                    .map(|&range| cylinder_band_strands_above(&all_uvs, range, u, v))
+                    .sum::<usize>()
+                    .is_multiple_of(2)
         })
         .collect();
     let cdt_vertices = cdt.vertices();

@@ -721,8 +721,8 @@ impl<'a> StepBuilder<'a> {
         // Check for reversed face orientation (.F. flag at end of ADVANCED_FACE),
         // then apply the enclosing shell's orientation on top of it.
         let orient_tail = attrs.trim_end_matches(')').trim();
-        let face_reversed =
-            (orient_tail.ends_with(".F.") || orient_tail.ends_with(".FALSE.")) != flip;
+        let surface_reversed = orient_tail.ends_with(".F.") || orient_tail.ends_with(".FALSE.");
+        let face_reversed = surface_reversed != flip;
         let all_refs = parse_refs(&attrs);
         let list_refs = parse_list_refs(&attrs);
 
@@ -749,7 +749,24 @@ impl<'a> StepBuilder<'a> {
             let bound_refs = parse_refs(&bound_attrs);
 
             if let Some(&loop_ref) = bound_refs.first() {
-                let wire_id = self.build_edge_loop(loop_ref)?;
+                // STEP stores an EDGE_LOOP in the face's topological sense,
+                // while brepkit stores wire directions relative to the
+                // underlying surface and composes them with Face::reversed.
+                // Normalize FACE_BOUND.orientation at the import boundary so
+                // valid STEP shells keep opposing effective edge uses
+                // internally. Analytic surfaces also need their STEP surface
+                // sense composed into the loop direction. The NURBS importer
+                // already preserves the control net's parametric sense, so
+                // composing same_sense there would double-reverse the loop.
+                //
+                // `flip` belongs to an enclosing ORIENTED_CLOSED_SHELL and
+                // must not participate here: that wrapper reverses the whole
+                // face after its own bounds have been interpreted.
+                let bound_reversed = orientation_is_reversed(&bound_attrs);
+                let analytic_surface_reversed =
+                    surface_reversed && !matches!(&surface, FaceSurface::Nurbs(_));
+                let wire_id =
+                    self.build_edge_loop(loop_ref, analytic_surface_reversed != bound_reversed)?;
                 if is_outer && outer_wire.is_none() {
                     outer_wire = Some(wire_id);
                 } else {
@@ -1238,6 +1255,7 @@ impl<'a> StepBuilder<'a> {
     fn build_edge_loop(
         &mut self,
         loop_ref: u64,
+        reverse: bool,
     ) -> Result<brepkit_topology::wire::WireId, IoError> {
         let attrs = self.get_entity(loop_ref)?.attrs.clone();
         let oe_refs = parse_list_refs(&attrs);
@@ -1246,6 +1264,12 @@ impl<'a> StepBuilder<'a> {
         for oe_ref in oe_refs {
             let oe = self.build_oriented_edge(oe_ref)?;
             oriented_edges.push(oe);
+        }
+        if reverse {
+            oriented_edges.reverse();
+            for oe in &mut oriented_edges {
+                *oe = OrientedEdge::new(oe.edge(), !oe.is_forward());
+            }
         }
 
         let wire = Wire::new(oriented_edges, true).map_err(|e| IoError::ParseError {

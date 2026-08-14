@@ -467,14 +467,25 @@ impl StepWriteContext {
         id
     }
 
-    fn write_edge_loop(&mut self, topo: &Topology, wire_id: WireId) -> Result<u64, IoError> {
+    fn write_edge_loop(
+        &mut self,
+        topo: &Topology,
+        wire_id: WireId,
+        reverse: bool,
+    ) -> Result<u64, IoError> {
         let wire = topo.wire(wire_id).map_err(topo_err)?;
         let mut oriented_edge_ids = Vec::new();
 
-        for oriented in wire.edges() {
+        let oriented_edges: Box<dyn Iterator<Item = _>> = if reverse {
+            Box::new(wire.edges().iter().rev())
+        } else {
+            Box::new(wire.edges().iter())
+        };
+        for oriented in oriented_edges {
             let edge_curve = self.write_edge_curve(topo, oriented.edge())?;
             let oriented_edge = self.next_id();
-            let orient = if oriented.is_forward() { ".T." } else { ".F." };
+            let forward = oriented.is_forward() != reverse;
+            let orient = if forward { ".T." } else { ".F." };
             self.write_entity(
                 oriented_edge,
                 "ORIENTED_EDGE",
@@ -498,8 +509,17 @@ impl StepWriteContext {
         let face = topo.face(face_id).map_err(topo_err)?;
 
         let mut bound_ids = Vec::new();
+        // Analytic STEP surfaces compose ADVANCED_FACE.same_sense into their
+        // loop direction. NURBS control nets already carry their parametric
+        // sense, matching the reader's representation.
+        let step_face_reversed = face.is_reversed() != flip;
+        let reverse_bounds = step_face_reversed
+            && !matches!(
+                face.surface(),
+                brepkit_topology::face::FaceSurface::Nurbs(_)
+            );
 
-        let outer_loop = self.write_edge_loop(topo, face.outer_wire())?;
+        let outer_loop = self.write_edge_loop(topo, face.outer_wire(), reverse_bounds)?;
         let outer_bound = self.next_id();
         self.write_entity(
             outer_bound,
@@ -509,7 +529,7 @@ impl StepWriteContext {
         bound_ids.push(outer_bound);
 
         for &inner_wire in face.inner_wires() {
-            let inner_loop = self.write_edge_loop(topo, inner_wire)?;
+            let inner_loop = self.write_edge_loop(topo, inner_wire, reverse_bounds)?;
             let inner_bound = self.next_id();
             self.write_entity(
                 inner_bound,
@@ -586,11 +606,7 @@ impl StepWriteContext {
         };
 
         let bound_refs: Vec<String> = bound_ids.iter().map(|id| format!("#{id}")).collect();
-        let face_orient = if face.is_reversed() == flip {
-            ".T."
-        } else {
-            ".F."
-        };
+        let face_orient = if step_face_reversed { ".F." } else { ".T." };
         let advanced_face = self.next_id();
         self.write_entity(
             advanced_face,
