@@ -42,6 +42,7 @@ type BatchResultV2 =
   | {
       error: {
         code: BatchErrorCodeV2;
+        category: BatchFailureCategoryV2;
         message: string;
         details: Record<string, string | number | boolean | null>;
       };
@@ -52,6 +53,7 @@ type BatchResultV2 =
 {
   "error": {
     "code": "invalid_handle",
+    "category": "invalid_input",
     "message": "invalid solid handle: index 42 is out of bounds",
     "details": {
       "entity": "solid",
@@ -80,6 +82,21 @@ operation was dispatched.
 | `operation_failed`        | A modeling algorithm refused or failed the request                  | `operation`, `operationIndex`                                         |
 | `resource_limit_exceeded` | A typed lower-layer import or model budget was exceeded             | `resource`, `limit`, `actual`; operation context when dispatched      |
 | `internal_error`          | A failure cannot be safely classified                               | operation context when dispatched; no unstable internals are promised |
+
+Each error also carries `category`, the kernel-wide coarse classification
+from the failure taxonomy (`invalid_input`, `invalid_topology`,
+`unsupported`, `nonconvergence`, `resource_limit`, `tolerance_violation`,
+`quality_refused`, `cancelled`, `internal`). Today's ten codes project onto
+`invalid_input`, `invalid_topology`, `resource_limit`, and `internal`; the
+remaining categories are reserved for codes that arrive with the operation
+contract. Branch on `category` for coarse handling and on `code` for
+specific cases.
+
+When the failure originated in a typed native error with a kernel registry
+entry, `details.kernelCode` carries that fine-grained stable code (e.g.
+`wire_not_closed`, `newton_nonconvergence`, `unsupported_edge_curve`) from
+the native registry in `brepkit_math::diagnostic`. It is additive and
+per-code optional: consumers must not require it.
 
 Codes are lowercase ASCII snake case. New codes may be added, but an existing
 code's meaning will not be broadened or reassigned. The `message` remains for
