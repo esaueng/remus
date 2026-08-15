@@ -1988,6 +1988,7 @@ fn weld_coincident_vertices(topo: &mut Topology, face_ids: &mut [FaceId]) -> Res
                 }
                 let edge = topo.edge(eid)?;
                 let curve = edge.curve().clone();
+                let trim = edge.trim();
                 let (ov0, ov1) = (edge.start(), edge.end());
                 let nv0 = resolve(ov0);
                 let nv1 = resolve(ov1);
@@ -2003,7 +2004,12 @@ fn weld_coincident_vertices(topo: &mut Topology, face_ids: &mut [FaceId]) -> Res
                 } else if nv0 == ov0 && nv1 == ov1 {
                     Some(eid)
                 } else {
-                    Some(topo.add_edge(Edge::new(nv0, nv1, curve)))
+                    // Welding only substitutes coincident vertices; the curve
+                    // and its parameterization are unchanged, so the trim
+                    // stays valid on the rebuilt edge.
+                    let mut welded = Edge::new(nv0, nv1, curve);
+                    welded.set_trim(trim);
+                    Some(topo.add_edge(welded))
                 };
                 edge_remap.insert(eid, result);
                 Ok(result)
@@ -2487,13 +2493,18 @@ fn split_arc_edges_at_collinear_vertices(
                     .then_with(|| a.1.index().cmp(&b.1.index()))
             });
             cuts.dedup_by_key(|(_, vid)| *vid);
-            let mut chain: Vec<VertexId> = Vec::with_capacity(cuts.len() + 2);
-            chain.push(sv);
-            chain.extend(cuts.iter().map(|&(_, vid)| vid));
-            chain.push(ev);
+            let mut chain: Vec<(f64, VertexId)> = Vec::with_capacity(cuts.len() + 2);
+            chain.push((t0, sv));
+            chain.extend(cuts.iter().copied());
+            chain.push((t1, ev));
             let mut subs = Vec::with_capacity(chain.len() - 1);
             for w in chain.windows(2) {
-                let sub_eid = topo.add_edge(Edge::new(w[0], w[1], curve.clone()));
+                let mut sub = Edge::new(w[0].1, w[1].1, curve.clone());
+                // The split parameters are exact by construction; store the
+                // sub-span so the domain never depends on re-projecting the
+                // cut vertices back onto the shared curve (RFC 0002 St. 3).
+                sub.set_trim(Some((w[0].0, w[1].0)));
+                let sub_eid = topo.add_edge(sub);
                 subs.push(OrientedEdge::new(sub_eid, true));
             }
             replacements.insert(eid, subs);
@@ -2616,15 +2627,18 @@ fn split_arc_edges_at_collinear_vertices(
         });
         cuts.dedup_by_key(|(_, vid)| *vid);
 
-        let mut chain: Vec<VertexId> = Vec::with_capacity(cuts.len() + 2);
-        chain.push(sv);
-        chain.extend(cuts.iter().map(|&(_, vid)| vid));
-        chain.push(ev);
+        let mut chain: Vec<(f64, VertexId)> = Vec::with_capacity(cuts.len() + 2);
+        chain.push((a0, sv));
+        chain.extend(cuts.iter().map(|&(f, vid)| (a0 + f * span, vid)));
+        chain.push((a1, ev));
         let mut subs = Vec::with_capacity(chain.len() - 1);
         for w in chain.windows(2) {
-            // Children share the parent arc's geometry; their endpoints define
-            // the sub-arc span.
-            let sub_eid = topo.add_edge(Edge::new(w[0], w[1], curve.clone()));
+            // Children share the parent arc's geometry, and each records its
+            // exact angular sub-span so the domain never depends on
+            // re-projecting the cut vertices (RFC 0002, Stage 3).
+            let mut sub = Edge::new(w[0].1, w[1].1, curve.clone());
+            sub.set_trim(Some((w[0].0, w[1].0)));
+            let sub_eid = topo.add_edge(sub);
             subs.push(OrientedEdge::new(sub_eid, true));
         }
         replacements.insert(eid, subs);

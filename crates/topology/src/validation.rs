@@ -287,6 +287,172 @@ pub fn validate_loop_connected(
     Ok(())
 }
 
+/// Result of a `SameParameter` deviation scan.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SameParameterReport {
+    /// Largest sampled deviation between the 3D curve and the pcurve's
+    /// surface image, in model units.
+    pub max_deviation: f64,
+    /// The pcurve parameter at which it occurred.
+    pub at_parameter: f64,
+    /// Number of samples taken.
+    pub samples: usize,
+}
+
+/// Measures how far a pcurve's surface image deviates from its 3D edge
+/// under the shared normalized parameterization (`SameParameter`).
+///
+/// Samples `samples + 1` points. The 3D edge parameter comes from the
+/// edge's stored trim when present ([`crate::edge::Edge::trim`]), otherwise
+/// from endpoint-projection reconstruction. Returns `Ok(None)` when the
+/// check does not apply: no pcurve stored for that use, or a surface with
+/// no UV evaluation (planes).
+///
+/// # Errors
+///
+/// Returns a not-found error when the edge, face, or a bounding vertex is
+/// stale.
+pub fn check_same_parameter(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+    samples: usize,
+) -> Result<Option<SameParameterReport>, TopologyError> {
+    let Some(pcurve) = topo.pcurve_oriented(edge_id, face_id, forward) else {
+        return Ok(None);
+    };
+    let surface = topo.face(face_id)?.surface().clone();
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let (t0, t1) = edge.domain_with_endpoints(start, end);
+    let (p0, p1) = (pcurve.t_start(), pcurve.t_end());
+
+    let samples = samples.max(1);
+    let mut max_deviation = 0.0_f64;
+    let mut at_parameter = p0;
+    for k in 0..=samples {
+        #[allow(clippy::cast_precision_loss)]
+        let f = k as f64 / samples as f64;
+        let tp = p0 + f * (p1 - p0);
+        let uv = pcurve.evaluate(tp);
+        let Some(on_surface) = surface.evaluate(uv.x(), uv.y()) else {
+            return Ok(None);
+        };
+        // The pcurve traces the USE: its start maps to the oriented start,
+        // which is the edge's end for a reversed use.
+        let g = if forward {
+            t0 + f * (t1 - t0)
+        } else {
+            t1 - f * (t1 - t0)
+        };
+        let on_curve = edge.curve().evaluate_with_endpoints(g, start, end);
+        let deviation = (on_surface - on_curve).length();
+        if deviation > max_deviation {
+            max_deviation = deviation;
+            at_parameter = tp;
+        }
+    }
+    Ok(Some(SameParameterReport {
+        max_deviation,
+        at_parameter,
+        samples: samples + 1,
+    }))
+}
+
+/// Enforces `SameParameter` within `tolerance`.
+///
+/// Not-applicable configurations (no pcurve, planar face) pass vacuously.
+///
+/// # Errors
+///
+/// Returns [`TopologyError::SameParameterExceeded`] when the sampled
+/// deviation exceeds `tolerance`, or a not-found error for stale entities.
+pub fn validate_same_parameter(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+    tolerance: f64,
+    samples: usize,
+) -> Result<(), TopologyError> {
+    if let Some(report) = check_same_parameter(topo, edge_id, face_id, forward, samples)?
+        && report.max_deviation > tolerance
+    {
+        return Err(TopologyError::SameParameterExceeded {
+            edge: edge_id,
+            face: face_id,
+            max_deviation: report.max_deviation,
+            at_parameter: report.at_parameter,
+            tolerance,
+        });
+    }
+    Ok(())
+}
+
+/// Measures how far a pcurve's endpoints miss the edge's bounding vertices
+/// on the surface (`SameRange`). Returns the larger of the two endpoint
+/// deviations, or `Ok(None)` when the check does not apply.
+///
+/// # Errors
+///
+/// Returns a not-found error when the edge, face, or a bounding vertex is
+/// stale.
+pub fn check_same_range(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+) -> Result<Option<f64>, TopologyError> {
+    let Some(pcurve) = topo.pcurve_oriented(edge_id, face_id, forward) else {
+        return Ok(None);
+    };
+    let surface = topo.face(face_id)?.surface().clone();
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let (oriented_start, oriented_end) = if forward { (start, end) } else { (end, start) };
+
+    let uv0 = pcurve.evaluate(pcurve.t_start());
+    let uv1 = pcurve.evaluate(pcurve.t_end());
+    let (Some(s0), Some(s1)) = (
+        surface.evaluate(uv0.x(), uv0.y()),
+        surface.evaluate(uv1.x(), uv1.y()),
+    ) else {
+        return Ok(None);
+    };
+    let d0 = (s0 - oriented_start).length();
+    let d1 = (s1 - oriented_end).length();
+    Ok(Some(d0.max(d1)))
+}
+
+/// Enforces `SameRange` within `tolerance`.
+///
+/// # Errors
+///
+/// Returns [`TopologyError::SameRangeExceeded`] when either endpoint
+/// deviation exceeds `tolerance`, or a not-found error for stale entities.
+pub fn validate_same_range(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+    tolerance: f64,
+) -> Result<(), TopologyError> {
+    if let Some(max_deviation) = check_same_range(topo, edge_id, face_id, forward)?
+        && max_deviation > tolerance
+    {
+        return Err(TopologyError::SameRangeExceeded {
+            edge: edge_id,
+            face: face_id,
+            max_deviation,
+            tolerance,
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -504,5 +670,130 @@ mod tests {
             matches!(err, TopologyError::NonManifold { .. }),
             "expected NonManifold, got {err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod same_parameter_tests {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use brepkit_math::surfaces::CylindricalSurface;
+    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
+
+    use crate::TopologyError;
+    use crate::edge::{Edge, EdgeCurve, EdgeId};
+    use crate::face::{Face, FaceId, FaceSurface};
+    use crate::pcurve::PCurve;
+    use crate::topology::Topology;
+    use crate::vertex::Vertex;
+    use crate::wire::{OrientedEdge, Wire};
+
+    use super::{check_same_parameter, validate_same_parameter, validate_same_range};
+
+    const TAU: f64 = std::f64::consts::TAU;
+
+    /// Cylinder side face bounded by its bottom rim circle (full circle,
+    /// closed wire). The rim's exact pcurve is the line v = 0, u = t.
+    fn cylinder_with_rim() -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        // Anchor the seam vertex to the curve's own zero-angle point so the
+        // fixture does not assume how the reference frame is derived.
+        let p0 = brepkit_math::traits::ParametricCurve::evaluate(&circle, 0.0);
+        let v = topo.add_vertex(Vertex::new(p0, 1e-7));
+        let rim = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
+        (topo, rim, face)
+    }
+
+    fn rim_pcurve(v_offset: f64) -> PCurve {
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(0.0, v_offset), Vec2::new(1.0, 0.0)).unwrap()),
+            0.0,
+            TAU,
+        )
+    }
+
+    #[test]
+    fn exact_pcurve_passes_same_parameter_and_range() {
+        let (mut topo, rim, face) = cylinder_with_rim();
+        topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.0));
+
+        let report = check_same_parameter(&topo, rim, face, true, 32)
+            .unwrap()
+            .unwrap();
+        assert!(
+            report.max_deviation < 1e-9,
+            "exact rim pcurve must have ~zero deviation, got {}",
+            report.max_deviation
+        );
+        validate_same_parameter(&topo, rim, face, true, 1e-7, 32).unwrap();
+        validate_same_range(&topo, rim, face, true, 1e-7).unwrap();
+    }
+
+    #[test]
+    fn offset_pcurve_fails_with_typed_tolerance_violation() {
+        let (mut topo, rim, face) = cylinder_with_rim();
+        // v = 0.3: the surface image floats 0.3 above the rim everywhere.
+        topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.3));
+
+        let err = validate_same_parameter(&topo, rim, face, true, 1e-7, 32).unwrap_err();
+        let TopologyError::SameParameterExceeded { max_deviation, .. } = err else {
+            unreachable!("expected SameParameterExceeded, got {err:?}")
+        };
+        assert!((max_deviation - 0.3).abs() < 1e-9);
+
+        assert!(matches!(
+            validate_same_range(&topo, rim, face, true, 1e-7),
+            Err(TopologyError::SameRangeExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn missing_pcurve_and_planar_faces_pass_vacuously() {
+        let (topo, rim, face) = cylinder_with_rim();
+        assert!(
+            check_same_parameter(&topo, rim, face, true, 8)
+                .unwrap()
+                .is_none()
+        );
+        validate_same_parameter(&topo, rim, face, true, 1e-7, 8).unwrap();
+    }
+
+    #[test]
+    fn tolerance_violation_diagnostics_are_pinned() {
+        use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+        let (topo, rim, face) = cylinder_with_rim();
+        drop(topo);
+        let d = TopologyError::SameParameterExceeded {
+            edge: rim,
+            face,
+            max_deviation: 0.3,
+            at_parameter: 1.0,
+            tolerance: 1e-7,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::ToleranceViolation);
+        assert_eq!(d.code(), "same_parameter_exceeded");
+
+        let d = TopologyError::SameRangeExceeded {
+            edge: rim,
+            face,
+            max_deviation: 0.3,
+            tolerance: 1e-7,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::ToleranceViolation);
+        assert_eq!(d.code(), "same_range_exceeded");
     }
 }
