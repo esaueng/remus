@@ -1,0 +1,239 @@
+# Capability matrix
+
+This document defines the qualification structure for every public modeling
+operation: the axes a family is classified across, the vocabulary for what a
+cell may claim, and the current mapped state of each operation family. It is
+the promotion authority for feature labels.
+
+## Promotion authority
+
+`docs/production-readiness/stability-matrix.md` is the ledger of the *current*
+audited label dispositions. This matrix defines the *evidence* a label change
+requires. The rule:
+
+1. A README feature label changes only when the operation family's declared
+   capability cells are all Qualified, Partial-with-declared-bounds, or
+   Unsupported-typed (no Unqualified and no Unsupported-untyped cells remain).
+2. The stability-matrix row is updated in the same change as the label.
+3. This audit-stage document changes no README label itself.
+
+## Cell states
+
+Every cell of every family matrix carries exactly one state:
+
+| State | Meaning |
+| --- | --- |
+| **Qualified** | Active tests cover the cell; postconditions of the [operation contract](operation-contract.md) hold; behavior is deterministic native and WASM. |
+| **Partial** | The cell works on a declared sub-domain with a documented, typed refusal outside it. The boundary itself is tested from both sides. |
+| **Unqualified** | The code path exists but the cell has no qualifying evidence. It may work; nothing proves it. Default state for all cells until mapped. |
+| **Unsupported-typed** | The kernel refuses the cell with a stable typed error ([failure-taxonomy.md](failure-taxonomy.md)) and a test pins the refusal. |
+| **Unsupported-untyped** | The kernel fails the cell in an undeclared way (wrong result, generic error, silent fallback). These are defects of contract, tracked as gaps. |
+
+A cell may additionally be annotated **Approximate** when success is delivered
+under an explicit approximation policy rather than exactly
+(see the fallback policy in [operation-contract.md](operation-contract.md)).
+
+## Classification axes
+
+### Geometric families (booleans, intersections, blends, offsets, sweeps, sectioning)
+
+These families are classified across the full grid:
+
+- **Geometry type** — plane, cylinder, cone, sphere, torus, NURBS, and mixed
+  pairs. Curve-level cells additionally include line, circle, ellipse,
+  hyperbola, parabola, and NURBS curves (the full `EdgeCurve` set — conics are
+  in scope, not just circle/ellipse).
+- **Topological relationship** — disjoint, crossing, nested, tangent,
+  coincident, near-coincident, seam-crossing, singular (pole/apex), sliver,
+  degenerate.
+- **Body type** — solid, sheet, wire, compound, cavity-bearing solid, and
+  later general body.
+- **Scale** — at least three model scales relative to the configured
+  tolerance (e.g. 1e-3, 1, 1e3 in the kernel's millimetre convention), with
+  the tolerance scaled correspondingly.
+- **Expected result** — exact success, approximate success, explicit
+  unsupported error, invalid-input error, resource-limit error, or
+  nonconvergence error.
+
+### Non-geometric families
+
+The full grid does not fit every public operation. These families use
+family-specific axes, declared here so "covers every public operation" is
+achievable rather than aspirational:
+
+- **Measurement / classification / distance** — geometry type × body type
+  (including cavity-bearing) × scale; expected result is a value with error
+  bound, not topology.
+- **Tessellation** — surface type × deflection regime × body type; expected
+  result is a watertight mesh within deflection, or typed failure.
+- **I/O formats** — entity coverage × malformed-input class × resource-limit
+  class × round-trip fidelity.
+- **Validation / healing** — defect class × severity × repair policy;
+  expected result is a report or an explicit, fully-disclosed repair.
+- **Sketch (GCS)** — constraint type × system state (well-, over-,
+  under-constrained, redundant, inconsistent) × scale.
+- **Evolution / naming** — operation family × event type (preserved,
+  modified, generated, split, merged, deleted, unresolved).
+- **Assemblies, feature recognition, defeaturing, projection** —
+  family-specific axes to be declared when each family is first worked on;
+  until then every cell is Unqualified.
+
+## Operation family inventory and current mapped state
+
+Every public operation belongs to exactly one family below. "Ledger row"
+references `docs/production-readiness/stability-matrix.md`. The current-state
+column is a summary of that ledger plus the known code-level limitations; it
+does not itself promote or demote anything.
+
+### Booleans (union, cut, intersect, batch fuse-all)
+
+- Ledger rows: "Plane/cylinder/cone/sphere/NURBS union, cut, intersect"
+  (Guarded), "Batch fuse-all" (Blocked), "Torus booleans" (Beta).
+- Implementation note: the kernel has **three** boolean paths — the GFA
+  pave/block pipeline in `crates/algo` (authoritative), the older path in
+  `crates/operations/src/boolean/`, and the bounded mesh fallback in
+  `crates/operations/src/mesh_boolean.rs`. Qualification targets the GFA
+  pipeline; the others are measured against it and either proven equivalent
+  (as fast paths under the contract) or retired.
+- Known qualified evidence: cavity semantics regressions, fail-closed bounded
+  mesh fallback, 64-cut determinism gate, analytic cylinder-crossing-plane
+  overlap sweep with operand-loss acceptance gate.
+- Known Unsupported-untyped / Partial cells: exact tangency (falls over to the
+  approximate path; pinch vertex not built), sliver crossings (~1e-5 to
+  0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
+  seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
+  Unqualified.
+
+### Intersections (curve-curve, curve-surface, surface-surface)
+
+- Ledger rows: "Analytic intersections", "Surface-surface intersection",
+  "Curve-curve intersection" (all Stable, evidence pending).
+- Known gaps: no common qualified result model distinguishing crossing /
+  tangency / overlap / coincidence / unresolved; hard iteration budgets
+  incomplete; conic curve cells (hyperbola, parabola) Unqualified; periodic
+  seam and pole cells Unqualified.
+
+### Blends (fillet, chamfer, blend resize/removal)
+
+- Ledger rows: "Fillet, chamfer" (Stable/Experimental, guarded), "Resize/
+  remove analytic blend band" (Experimental, guarded).
+- Known Qualified/Partial evidence: planar line-edge manifold builders;
+  exact toroidal cylinder-cap rim assembler across `0 < f < r_c` with
+  closed-form volume/area verification; typed `RadiusTooLarge` refusals;
+  blind-hole floor rim deliberately capped at `r_c/2`.
+- Known gaps: closed-rim chamfers and curved assembly experimental and
+  fail-closed; variable radius, setbacks, multi-edge corners, G2 profiles,
+  overflow handling Unqualified or absent.
+
+### Offset, shell, thicken
+
+- Ledger rows: "Shell" (guarded), "Offset, thicken, mirror, pattern"
+  (guarded).
+- Known Qualified/Partial evidence: closed-topology + L3 validation on shell;
+  cavity-preserving offsets with shell-separation precondition; rolling-ball
+  arc joints on convex polyhedra verified against the Minkowski/Steiner
+  closed form across 1e3–1e-3 scale; typed refusals for each unsupported arc
+  configuration.
+- Known Unsupported-typed cells (kept typed, target of future work): global
+  self-intersection removal; NURBS-NURBS 3D intersection in the offset path;
+  excluded faces on cavity solids.
+
+### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
+
+- Ledger rows: "Extrude", "Revolve, sweep, loft, pipe", "Helical sweep"
+  (Stable, blocked), "Non-planar profiles" (Beta).
+- Known gaps: degenerate/cavity matrices, topology and nonconvergence
+  budgets, termination/performance evidence incomplete; guide rails, laws,
+  periodic lofts, continuity options largely absent.
+
+### Sectioning and splitting
+
+- Ledger row: "Cross-section, split by plane" (Stable, blocked). Cavity and
+  degeneracy matrices incomplete.
+
+### Construction (fill, sew, untrim), primitives, transforms, patterns
+
+- Ledger rows: "Coons fill, sew, untrim" (blocked); "Primitives" (blocked);
+  mirror/pattern under the offset row (guarded).
+- Known gaps: native/WASM invalid-input, scale, and postcondition matrices
+  incomplete; convex hull / Minkowski degenerate coverage incomplete.
+
+### Measurement, classification, distance
+
+- Ledger rows: "Bounding box, area, center of mass", "Distance and
+  classification" (evidence pending). Inner-shell regressions pass;
+  curved-cavity and scale matrices incomplete.
+
+### Tessellation
+
+- Ledger row: "Adaptive/CDT/analytic optimization". Face-failure abort is
+  qualified; broader scale/performance cells Unqualified.
+
+### Validation and healing
+
+- Ledger row: "Healing, sewing, validation" (blocked: permissive healing can
+  mask invalid result semantics — the family's central Unsupported-untyped
+  cell, addressed by the healing-disclosure rules in
+  [operation-contract.md](operation-contract.md)).
+
+### I/O (STEP, IGES, mesh formats)
+
+- Ledger rows: "STEP" (guarded), "STL, 3MF, OBJ, PLY, glTF" (guarded),
+  "IGES" (Experimental).
+- Qualified evidence: shared byte/entity import limits with regressions;
+  malformed-input panics fixed (see `docs/production-readiness/audit.md`).
+- Known gaps: inner-shell export, attribute round trips
+  (`docs/design/deferred-e3b-step-names-and-colors.md`), periodic seam and
+  p-curve round trips, deterministic entity ordering.
+
+### Sketch (GCS)
+
+- Ledger row: "DogLeg solver" (evidence pending): nonconvergence budget and
+  degeneracy matrix incomplete.
+
+### Evolution and naming
+
+- Ledger row: "Face provenance" (Beta). Construction-derived face provenance
+  covers booleans, walking/planar blend builders, and patterns; offset,
+  shell, draft, split, defeature, and direct edits produce none; **no edge or
+  vertex provenance exists**. Persistent naming does not exist; arena indices
+  are the only handles (and are explicitly not persistent names).
+
+### Feature recognition, defeaturing, assemblies, projection, drafting
+
+- Ledger rows: all Beta or evidence-pending. Axes to be declared when first
+  worked on; all cells Unqualified.
+
+## Known representation-level limitations (cross-family)
+
+These are not cells of any one family; they bound what many families can
+claim, and they are the first implementation targets of the program:
+
+1. **No coedge/edge-use entity.** Face boundaries are ordered oriented-edge
+   lists (`crates/topology/src/wire.rs`); p-curves are keyed by
+   `(EdgeId, FaceId)` (`crates/topology/src/pcurve.rs`), so a seam edge used
+   twice on one periodic face cannot carry two p-curves — the registry's
+   second `set` silently overwrites the first. Every seam-crossing cell is at
+   best Partial until this lands.
+2. **No stored trim domains.** Edge domains are reconstructed from endpoint
+   projections at evaluation time (`crates/topology/src/edge.rs`,
+   `domain_with_endpoints`) with module-local match bands. SameParameter /
+   SameRange validation cannot be stated, let alone enforced.
+3. **Face-only, one-level evolution.** No vertex/edge events, no lineage
+   graph, no persistent references.
+4. **No operation context.** Tolerance, budget, fallback, cancellation, and
+   determinism options are not carried explicitly; high-risk paths use local
+   constants.
+
+## Maintenance rules
+
+- New public operations must add their family (or extend an existing one)
+  in the same PR, with all cells initially Unqualified or Unsupported-typed.
+- Moving a cell to Qualified requires the evidence classes in
+  [testing-strategy.md](testing-strategy.md).
+- Discovering an Unsupported-untyped cell requires filing it here (or in the
+  family's detailed matrix once split out) with a reproduction, in the same
+  change that discovers it.
+- When a family's matrix outgrows this file it moves to
+  `docs/kernel-maturity/matrix/<family>.md`; this file keeps the inventory
+  row and a link.
