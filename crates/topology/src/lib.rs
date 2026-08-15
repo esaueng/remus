@@ -118,3 +118,81 @@ pub enum DeleteSolidError {
         dependent_index: usize,
     },
 }
+
+impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
+    fn diagnostic(&self) -> brepkit_math::diagnostic::Diagnostic {
+        use brepkit_math::diagnostic::{Diagnostic, FailureCategory};
+        let message = self.to_string();
+        let entity_not_found = |entity: &'static str, index: usize| {
+            Diagnostic::new(FailureCategory::InvalidInput, "entity_not_found", &message)
+                .with_detail("entity", entity)
+                .with_detail("index", index)
+        };
+        match self {
+            Self::VertexNotFound(id) => entity_not_found("vertex", id.index()),
+            Self::EdgeNotFound(id) => entity_not_found("edge", id.index()),
+            Self::WireNotFound(id) => entity_not_found("wire", id.index()),
+            Self::FaceNotFound(id) => entity_not_found("face", id.index()),
+            Self::ShellNotFound(id) => entity_not_found("shell", id.index()),
+            Self::SolidNotFound(id) => entity_not_found("solid", id.index()),
+            Self::CompoundNotFound(id) => entity_not_found("compound", id.index()),
+            Self::CompSolidNotFound(id) => entity_not_found("compsolid", id.index()),
+            Self::WireNotClosed => {
+                Diagnostic::new(FailureCategory::InvalidTopology, "wire_not_closed", message)
+            }
+            Self::NonManifold { .. } => {
+                Diagnostic::new(FailureCategory::InvalidTopology, "non_manifold", message)
+            }
+            Self::Empty { entity } => {
+                Diagnostic::new(FailureCategory::InvalidInput, "empty_collection", message)
+                    .with_detail("entity", *entity)
+            }
+            Self::NotPlanar => {
+                Diagnostic::new(FailureCategory::InvalidTopology, "wire_not_planar", message)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_registry_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use brepkit_math::diagnostic::{DetailValue, FailureCategory, ToDiagnostic};
+
+    use super::*;
+
+    #[test]
+    fn topology_error_registry_is_pinned() {
+        // Stable-code pins: changing any string is a public contract change.
+        let mut arena: Arena<vertex::Vertex> = Arena::new();
+        let vid = arena.alloc(vertex::Vertex::new(
+            brepkit_math::vec::Point3::new(0.0, 0.0, 0.0),
+            1e-7,
+        ));
+
+        let d = TopologyError::VertexNotFound(vid).diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "entity_not_found");
+        assert_eq!(
+            d.details()[0],
+            ("entity", DetailValue::Text("vertex".into()))
+        );
+
+        let d = TopologyError::WireNotClosed.diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidTopology);
+        assert_eq!(d.code(), "wire_not_closed");
+
+        let d = TopologyError::NonManifold {
+            reason: "shared edge used three times".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.code(), "non_manifold");
+
+        let d = TopologyError::Empty { entity: "wire" }.diagnostic();
+        assert_eq!(d.code(), "empty_collection");
+
+        let d = TopologyError::NotPlanar.diagnostic();
+        assert_eq!(d.code(), "wire_not_planar");
+    }
+}

@@ -20,6 +20,13 @@ one:
 - Direct (non-batch) WASM methods gain structured errors only through
   additive detailed APIs, per the resolved decisions in E5b.
 
+Implementation: the categories and the native code registry live in
+`brepkit_math::diagnostic` (`FailureCategory`, `Diagnostic`, `ToDiagnostic`),
+currently implemented for `MathError`, `TopologyError`, and `AlgoError` with
+pinned registry tests. `executeBatchV2` errors carry `category` and, when the
+failure originated in a typed native error, `details.kernelCode` — see the
+book's WebAssembly chapter for the wire contract.
+
 ## Categories
 
 Every kernel failure belongs to exactly one category. Categories are the

@@ -64,9 +64,22 @@ export type BatchErrorCodeV2 =
   | "resource_limit_exceeded"
   | "internal_error";
 
+/** Kernel-wide failure categories carried by `executeBatchV2` errors. */
+export type BatchFailureCategoryV2 =
+  | "invalid_input"
+  | "invalid_topology"
+  | "unsupported"
+  | "nonconvergence"
+  | "resource_limit"
+  | "tolerance_violation"
+  | "quality_refused"
+  | "cancelled"
+  | "internal";
+
 /** Machine-readable error returned by `executeBatchV2`. */
 export interface BatchErrorV2 {
   code: BatchErrorCodeV2;
+  category: BatchFailureCategoryV2;
   message: string;
   details: Record<string, string | number | boolean | null>;
 }
@@ -2179,6 +2192,67 @@ mod batch_contract_tests {
 
     fn v2_error(kernel: &mut BrepKernel, input: &str) -> serde_json::Value {
         parse(&kernel.execute_batch_v2(input))[0]["error"].clone()
+    }
+
+    #[test]
+    fn v2_errors_carry_the_failure_category() {
+        // Category is part of the public v2 contract: pinned per code.
+        let mut kernel = BrepKernel::new();
+        let cases = [
+            (r"not json", "invalid_json", "invalid_input"),
+            (r"[{}]", "missing_operation", "invalid_input"),
+            (
+                r#"[{"op":"notAnOperation","args":{}}]"#,
+                "unknown_operation",
+                "invalid_input",
+            ),
+            (
+                r#"[{"op":"makeBox","args":{"height":2,"depth":3}}]"#,
+                "invalid_argument",
+                "invalid_input",
+            ),
+            (
+                r#"[{"op":"volume","args":{"solid":42,"deflection":0.1}}]"#,
+                "invalid_handle",
+                "invalid_input",
+            ),
+        ];
+        for (input, code, category) in cases {
+            let error = v2_error(&mut kernel, input);
+            assert_eq!(error["code"], code, "{input}");
+            assert_eq!(error["category"], category, "{input}");
+        }
+    }
+
+    #[test]
+    fn v2_math_failures_surface_the_kernel_registry_code() {
+        // A typed MathError carries its fine-grained native registry code in
+        // details.kernelCode, additively to the coarse wire code.
+        let mut kernel = BrepKernel::new();
+        let error = v2_error(
+            &mut kernel,
+            r#"[{"op":"makeNurbsEdge","args":{
+                "startX":0,"startY":0,"startZ":0,
+                "endX":1,"endY":0,"endZ":0,
+                "degree":0,
+                "knots":[0,1],
+                "controlPoints":[0,0,0, 1,0,0],
+                "weights":[1,1]
+            }}]"#,
+        );
+        assert_eq!(error["code"], "invalid_argument");
+        assert_eq!(error["category"], "invalid_input");
+        assert_eq!(error["details"]["kernelCode"], "invalid_nurbs_degree");
+    }
+
+    #[test]
+    fn legacy_batch_contract_is_unchanged_by_categories() {
+        // v1 must stay a bare string error with no structured fields.
+        let mut kernel = BrepKernel::new();
+        let response = parse(
+            &kernel.execute_batch(r#"[{"op":"volume","args":{"solid":42,"deflection":0.1}}]"#),
+        );
+        assert!(response[0]["error"].is_string());
     }
 
     #[test]
