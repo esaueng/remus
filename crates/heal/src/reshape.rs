@@ -259,12 +259,15 @@ impl ReShape {
     ) -> Result<Vec<ShellId>, HealError> {
         let solid = topo.solid(solid_id)?;
         let mut shells = Vec::new();
-        if let Some(outer) = self.resolve_shell(solid.outer_shell()) {
+        let mut seen = HashSet::new();
+        if let Some(outer) = self.resolve_shell(solid.outer_shell())
+            && seen.insert(outer)
+        {
             shells.push(outer);
         }
         for &inner in solid.inner_shells() {
             if let Some(inner) = self.resolve_shell(inner)
-                && !shells.contains(&inner)
+                && seen.insert(inner)
             {
                 shells.push(inner);
             }
@@ -707,6 +710,34 @@ mod tests {
         let final_edge = topo.wire(final_wire).unwrap().edges()[0].edge();
         assert_eq!(final_edge, replacement_edge);
         assert_eq!(topo.edge(final_edge).unwrap().start(), new_start);
+    }
+
+    #[test]
+    fn final_shell_ids_deduplicates_resolved_shells_in_reference_order() {
+        let mut topo = Topology::new();
+        let edge = add_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let wire = add_wire(&mut topo, edge);
+        let face = add_face(&mut topo, wire);
+        let outer = add_shell(&mut topo, vec![face]);
+        let old_inner = add_shell(&mut topo, vec![face]);
+        let new_inner = add_shell(&mut topo, vec![face]);
+        let solid = add_solid(
+            &mut topo,
+            outer,
+            vec![old_inner, new_inner, old_inner, outer],
+        );
+
+        let mut reshape = ReShape::new();
+        reshape.replace_shell(old_inner, new_inner);
+
+        assert_eq!(
+            reshape.final_shell_ids(&topo, solid).unwrap(),
+            vec![outer, new_inner]
+        );
     }
 
     #[test]

@@ -3168,7 +3168,10 @@ fn cap_partial_overlap_free_loops(
         }
     }
 
-    let mut new_faces: Vec<Face> = Vec::new();
+    // Delay face creation until all cycles have been collected.  Several
+    // cycles on one plane may be nested; in that case the inner cycles are
+    // holes of the surrounding cap, not independent caps.
+    let mut cap_loops: Vec<(usize, Vec<OrientedEdge>, Vec<Point3>)> = Vec::new();
 
     for start in 0..free_edges.len() {
         if used_edge[start] {
@@ -3217,7 +3220,7 @@ fn cap_partial_overlap_free_loops(
             continue;
         }
         let origin = Point3::new(0.0, 0.0, 0.0);
-        let Some(cap) = cap_planes.iter().copied().find(|cp| {
+        let Some((cap_index, cap)) = cap_planes.iter().copied().enumerate().find(|(_, cp)| {
             verts3d
                 .iter()
                 .all(|p| (cp.normal.dot(*p - origin) - cp.d).abs() <= MERGE_TOL * 10.0)
@@ -3270,18 +3273,81 @@ fn cap_partial_overlap_free_loops(
                 .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
                 .collect();
         }
-        let Ok(wire) = Wire::new(oriented, true) else {
-            continue;
-        };
-        let wid = topo.add_wire(wire);
-        new_faces.push(Face::new(
-            wid,
-            Vec::new(),
-            FaceSurface::Plane {
-                normal: cap.out_normal,
-                d: cap.out_normal.dot(verts3d[0] - origin),
-            },
-        ));
+        cap_loops.push((cap_index, oriented, verts3d));
+    }
+
+    let mut new_faces = Vec::new();
+    for cap_index in 0..cap_planes.len() {
+        let indices: Vec<usize> = cap_loops
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (ci, _, _))| (*ci == cap_index).then_some(i))
+            .collect();
+        let mut parents: HashMap<usize, usize> = HashMap::new();
+        for &child in &indices {
+            let child_point = cap_loops[child].2[0];
+            let parent = indices
+                .iter()
+                .copied()
+                .filter(|&candidate| {
+                    candidate != child
+                        && planar_loop_contains(
+                            &cap_loops[candidate].2,
+                            child_point,
+                            cap_planes[cap_index].normal,
+                        )
+                })
+                .min_by(|&a, &b| {
+                    planar_loop_area(&cap_loops[a].2, cap_planes[cap_index].normal).total_cmp(
+                        &planar_loop_area(&cap_loops[b].2, cap_planes[cap_index].normal),
+                    )
+                });
+            if let Some(parent) = parent {
+                parents.insert(child, parent);
+            }
+        }
+
+        for &outer in &indices {
+            let mut depth = 0;
+            let mut ancestor = outer;
+            while let Some(&parent) = parents.get(&ancestor) {
+                depth += 1;
+                ancestor = parent;
+            }
+            if depth % 2 != 0 {
+                continue;
+            }
+            let Ok(outer_wire) = Wire::new(cap_loops[outer].1.clone(), true) else {
+                continue;
+            };
+            let outer_wid = topo.add_wire(outer_wire);
+            let mut inner_wids = Vec::new();
+            for (&inner, &parent) in &parents {
+                if parent != outer {
+                    continue;
+                }
+                let reversed = cap_loops[inner]
+                    .1
+                    .iter()
+                    .rev()
+                    .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                    .collect();
+                if let Ok(wire) = Wire::new(reversed, true) {
+                    inner_wids.push(topo.add_wire(wire));
+                }
+            }
+            let cap = cap_planes[cap_index];
+            new_faces.push(Face::new(
+                outer_wid,
+                inner_wids,
+                FaceSurface::Plane {
+                    normal: cap.out_normal,
+                    d: cap
+                        .out_normal
+                        .dot(cap_loops[outer].2[0] - Point3::new(0.0, 0.0, 0.0)),
+                },
+            ));
+        }
     }
 
     for f in new_faces {
@@ -3293,11 +3359,70 @@ fn cap_partial_overlap_free_loops(
     Ok(())
 }
 
+fn planar_loop_area(points: &[Point3], normal: Vec3) -> f64 {
+    let sum = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .fold(Vec3::new(0.0, 0.0, 0.0), |acc, (a, b)| {
+            acc + Vec3::new(a.x(), a.y(), a.z()).cross(Vec3::new(b.x(), b.y(), b.z()))
+        });
+    sum.dot(normal).abs() * 0.5
+}
+
+fn planar_loop_contains(points: &[Point3], point: Point3, normal: Vec3) -> bool {
+    let axis = if normal.x().abs() >= normal.y().abs() && normal.x().abs() >= normal.z().abs() {
+        0
+    } else if normal.y().abs() >= normal.z().abs() {
+        1
+    } else {
+        2
+    };
+    let project = |p: Point3| match axis {
+        0 => (p.y(), p.z()),
+        1 => (p.x(), p.z()),
+        _ => (p.x(), p.y()),
+    };
+    let (px, py) = project(point);
+    let mut inside = false;
+    for (a, b) in points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+    {
+        let ((ax, ay), (bx, by)) = (project(*a), project(*b));
+        if (ay > py) != (by > py) && px < (bx - ax) * (py - ay) / (by - ay) + ax {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn planar_cap_loop_nesting_distinguishes_holes_and_disjoint_caps() {
+        let square = |min: f64, max: f64| {
+            vec![
+                Point3::new(min, min, 0.0),
+                Point3::new(max, min, 0.0),
+                Point3::new(max, max, 0.0),
+                Point3::new(min, max, 0.0),
+            ]
+        };
+        let outer = square(-2.0, 2.0);
+        let hole = square(-1.0, 1.0);
+        let disjoint = square(3.0, 4.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+
+        assert!(planar_loop_contains(&outer, hole[0], normal));
+        assert!(!planar_loop_contains(&outer, disjoint[0], normal));
+        assert!(planar_loop_area(&outer, normal) > planar_loop_area(&hole, normal));
+    }
 
     #[test]
     fn shell_outward_orientation_outward_cube_is_growth() {

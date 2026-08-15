@@ -104,13 +104,15 @@ fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
 }
 
 /// True when a torus face wire's vertices span the full tube angle `v` (a
-/// `v`-wrapping seam loop), as opposed to a constant-`v` latitude circle. Sampled
-/// from the wire's edge endpoints projected to the torus `v` parameter.
+/// `v`-wrapping seam loop), as opposed to a constant-`v` latitude circle. The
+/// ordered edge samples must accumulate exactly one full `v` period.
 fn torus_wire_wraps_tube(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
     torus: &brepkit_math::surfaces::ToroidalSurface,
 ) -> bool {
+    use std::f64::consts::{PI, TAU};
+
     let Ok(wire) = topo.wire(wire_id) else {
         return false;
     };
@@ -128,24 +130,23 @@ fn torus_wire_wraps_tube(
         // wrap and misclassify a notch band as a constant-v circle.
         for k in 0..=8 {
             let f = f64::from(k) / 8.0;
-            let p = e.curve().evaluate_with_endpoints(f, sp, ep);
+            let t = if oe.is_forward() { f } else { 1.0 - f };
+            let p = e.curve().evaluate_with_endpoints(t, sp, ep);
             vs.push(torus.project_point(p).1);
         }
     }
     if vs.len() < 3 {
         return false;
     }
-    vs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    // Largest v-gap (incl. wrap); a wrapping loop's gap is well under a full turn,
-    // a constant-v circle collapses to ~one v value (gap ≈ 2π).
-    let max_gap = vs
+    let unwrap_delta = |from: f64, to: f64| {
+        let delta = to - from;
+        delta - TAU * ((delta + PI) / TAU).floor()
+    };
+    let winding = vs
         .windows(2)
-        .map(|w| w[1] - w[0])
-        .chain(std::iter::once(
-            vs[0] + std::f64::consts::TAU - vs[vs.len() - 1],
-        ))
-        .fold(0.0_f64, f64::max);
-    max_gap < std::f64::consts::PI
+        .fold(0.0, |acc, pair| acc + unwrap_delta(pair[0], pair[1]))
+        + unwrap_delta(vs[vs.len() - 1], vs[0]);
+    (winding.abs() - TAU).abs() <= 1.0e-6
 }
 
 /// Count mesh edges incident to a number of triangles other than 2 (boundary or
@@ -1227,30 +1228,28 @@ fn find_cap_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, f64)> {
 ///
 /// A coarse preview deflection inscribes too few facets in a curved face and
 /// under-counts its volume; volume is a precise query, so cap the deflection at
-/// a small fraction of the solid's extent, estimated as the diagonal of the
-/// **vertex** bounding box. (Curvature can bulge slightly beyond the vertices,
-/// so this under-estimates the true AABB — but only by making the cap
-/// conservatively finer, which is safe.) Never coarsens a finer request, and
-/// falls back to `requested` if the extent cannot be determined.
+/// a small fraction of the solid's curvature-aware bounding-box diagonal.
+/// Using only topology vertices is not sufficient: a closed circular edge can
+/// have one coincident start/end vertex even when its radius is enormous. Such
+/// an under-estimate would force an unnecessarily tiny deflection and allow a
+/// compact model to exhaust resources during tessellation. Never coarsens a
+/// finer request, and falls back to `requested` if the extent cannot be
+/// determined.
 ///
 /// A solid-extent scale (rather than per-curved-face curvature radius) is used
 /// deliberately: it keeps the deflection consistent between a sub-solid and a
 /// boolean result containing it, preserving the `volume(A ∪ B) == volume(A) +
 /// volume(B)` invariant for coincident-contact fuses. A curvature-radius cap
 /// would tessellate a shared face differently in each context and break it.
-fn volume_tessellation_deflection(topo: &Topology, solid: SolidId, requested: f64) -> f64 {
-    let Ok(pts) = collect_solid_vertex_points(topo, solid) else {
+pub(super) fn volume_tessellation_deflection(
+    topo: &Topology,
+    solid: SolidId,
+    requested: f64,
+) -> f64 {
+    let Ok(aabb) = super::solid_bounding_box(topo, solid) else {
         return requested;
     };
-    let Some((&first, rest)) = pts.split_first() else {
-        return requested;
-    };
-    let (mut lo, mut hi) = (first, first);
-    for p in rest {
-        lo = Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z()));
-        hi = Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z()));
-    }
-    let diag = (hi - lo).length();
+    let diag = (aabb.max - aabb.min).length();
     if !diag.is_finite() || diag <= 0.0 {
         return requested;
     }

@@ -382,12 +382,14 @@ fn build_inner_cap_wires(
 /// high-curvature corners — chord-length parameterization does not prevent this
 /// when one span is orders of magnitude longer than its neighbours. Bounding
 /// the max gap keeps the fit well-conditioned. The threshold is derived from
-/// the median gap, so it is scale-invariant; interior insertion per segment is
-/// capped to avoid blow-up on pathological inputs.
+/// the median gap, so it is scale-invariant. Both per-segment insertion and
+/// total output are capped to keep the subsequent global interpolation
+/// bounded on pathological inputs.
 #[must_use]
 pub fn densify_path_points(points: &[Point3]) -> Vec<Point3> {
     const GAP_RATIO: f64 = 4.0;
     const MAX_INSERT_PER_SEGMENT: usize = 256;
+    const MAX_DENSIFIED_POINTS: usize = 256;
 
     if points.len() < 3 {
         return points.to_vec();
@@ -408,7 +410,9 @@ pub fn densify_path_points(points: &[Point3]) -> Vec<Point3> {
         return points.to_vec();
     }
 
-    let mut out: Vec<Point3> = Vec::with_capacity(points.len());
+    let insertion_budget = MAX_DENSIFIED_POINTS.saturating_sub(points.len());
+    let mut inserted = 0;
+    let mut out: Vec<Point3> = Vec::with_capacity(points.len() + insertion_budget);
     for w in points.windows(2) {
         let (a, b) = (w[0], w[1]);
         out.push(a);
@@ -416,11 +420,13 @@ pub fn densify_path_points(points: &[Point3]) -> Vec<Point3> {
         if seg > max_gap {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let steps = ((seg / max_gap).ceil() as usize).min(MAX_INSERT_PER_SEGMENT);
-            for s in 1..steps {
+            let insertions = (steps - 1).min(insertion_budget - inserted);
+            for s in 1..=insertions {
                 #[allow(clippy::cast_precision_loss)]
                 let f = (s as f64) / (steps as f64);
                 out.push(a + (b - a) * f);
             }
+            inserted += insertions;
         }
     }
     if let Some(&last) = points.last() {

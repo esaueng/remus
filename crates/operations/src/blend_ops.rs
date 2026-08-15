@@ -60,42 +60,49 @@ pub(crate) fn edge_is_convex(
     let start = topo.vertex(e.start()).ok()?.point();
     let end = topo.vertex(e.end()).ok()?.point();
 
-    // Plane normals and an inside-bisector probe cannot by themselves
-    // distinguish a convex wedge from a concave notch: both share the same
-    // two infinite planes. Match the analytic blend engine's missing bit and
-    // inspect how each bounded face extends against the other plane. Two
-    // negative witnesses are the concave branch; every non-degenerate planar
-    // alternative is the convex branch used by the analytic construction.
+    // For planar faces, use only the two boundary edges incident to the
+    // target edge.  Looking at the complete face boundary makes this local
+    // property depend on unrelated holes or distant concave portions.
     let face1_data = topo.face(faces[0]).ok()?;
     let face2_data = topo.face(faces[1]).ok()?;
     if let (FaceSurface::Plane { normal: n1, .. }, FaceSurface::Plane { normal: n2, .. }) =
         (face1_data.surface(), face2_data.surface())
     {
-        // The analytic fillet receives inward-oriented plane normals.
         let inward1 = if face1_data.is_reversed() { *n1 } else { -*n1 };
         let inward2 = if face2_data.is_reversed() { *n2 } else { -*n2 };
-        let witness = |face_id: brepkit_topology::face::FaceId,
-                       other_normal: brepkit_math::vec::Vec3|
+        let local_witness = |face: &brepkit_topology::face::Face,
+                             other_normal: brepkit_math::vec::Vec3|
          -> Option<f64> {
-            let face = topo.face(face_id).ok()?;
-            let mut extreme = 0.0_f64;
             for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
-                for oriented in topo.wire(wire_id).ok()?.edges() {
-                    let edge_data = topo.edge(oriented.edge()).ok()?;
-                    for vertex in [edge_data.start(), edge_data.end()] {
-                        let signed = other_normal.dot(topo.vertex(vertex).ok()?.point() - start);
-                        if signed.abs() > extreme.abs() {
-                            extreme = signed;
+                let wire = topo.wire(wire_id).ok()?;
+                let edges = wire.edges();
+                let Some(index) = edges.iter().position(|oriented| oriented.edge() == edge) else {
+                    continue;
+                };
+                let mut extreme = 0.0_f64;
+                for neighbor in [
+                    edges[(index + edges.len() - 1) % edges.len()].edge(),
+                    edges[(index + 1) % edges.len()].edge(),
+                ] {
+                    let neighbor = topo.edge(neighbor).ok()?;
+                    for vertex in [neighbor.start(), neighbor.end()] {
+                        if vertex != e.start() && vertex != e.end() {
+                            let signed =
+                                other_normal.dot(topo.vertex(vertex).ok()?.point() - start);
+                            if signed.abs() > extreme.abs() {
+                                extreme = signed;
+                            }
                         }
                     }
                 }
+                return Some(extreme);
             }
-            Some(extreme)
+            None
         };
-        let w1 = witness(faces[0], inward2)?;
-        let w2 = witness(faces[1], inward1)?;
+        let w1 = local_witness(face1_data, inward2)?;
+        let w2 = local_witness(face2_data, inward1)?;
         if w1.abs() > 1e-9 && w2.abs() > 1e-9 {
             return Some(!(w1 < -1e-9 && w2 < -1e-9));
         }

@@ -85,6 +85,34 @@ fn refs_in_rhs(line: &str) -> Vec<u64> {
         .map_or_else(Vec::new, |(_, body)| refs_in(body))
 }
 
+fn repeat_first_face_bound(step: &str, count: usize) -> String {
+    let mut replaced = false;
+    step.lines()
+        .map(|source_line| {
+            if replaced || !source_line.contains("= ADVANCED_FACE(") {
+                return source_line.to_string();
+            }
+            let list_start = source_line.find("(#").expect("ADVANCED_FACE bound list");
+            let list_end = source_line[list_start..]
+                .find(')')
+                .map(|offset| list_start + offset)
+                .expect("ADVANCED_FACE bound-list end");
+            let bound = refs_in(&source_line[list_start..list_end])[0];
+            let repeated = std::iter::repeat_n(format!("#{bound}"), count)
+                .collect::<Vec<_>>()
+                .join(",");
+            replaced = true;
+            format!(
+                "{}({}){}",
+                &source_line[..list_start],
+                repeated,
+                &source_line[list_end + 1..]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Reorder every multi-bound face using the writer's explicit outer subtype
 /// as the ground truth.  Optionally erase that subtype after reordering.
 fn reorder_face_bounds(step: &str, outer_position: OuterPosition, make_generic: bool) -> String {
@@ -825,6 +853,22 @@ fn duplicate_generic_periodic_bounds_fail_closed() {
         error.to_string().contains(
             "do not have one enclosing outer boundary in the unwrapped cylinder UV domain"
         ),
+        "unexpected diagnostic: {error}"
+    );
+}
+
+#[test]
+fn excessive_face_bound_references_are_rejected_before_classification() {
+    let (source_topo, source_solid) = two_bore_plate();
+    let canonical_step = write_step(&source_topo, &[source_solid]).expect("write fixture");
+    let hostile = repeat_first_face_bound(&canonical_step, 129);
+
+    let error = read_step(&hostile, &mut Topology::new())
+        .expect_err("attacker-controlled face-bound lists must be capped");
+    assert!(
+        error
+            .to_string()
+            .contains("import limit exceeded for STEP bounds per ADVANCED_FACE"),
         "unexpected diagnostic: {error}"
     );
 }

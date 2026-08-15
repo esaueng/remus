@@ -1162,10 +1162,26 @@ pub fn boolean_with_evolution(
             let healed_ok = crate::heal::remove_degenerate_edges(topo, result, tol.linear).is_ok()
                 && crate::heal::remove_wire_spurs(topo, result).is_ok();
 
+            // Apply the same semantic safety checks as the standard GFA path.
+            // Structural validation alone cannot detect a closed Cut result
+            // that incorrectly retains the tool interior.
+            let components = crate::boolean::assembly::face_components(topo, result);
+            let cut_safe = op != BooleanOp::Cut
+                || brepkit_algo::classifier::try_build_analytic_classifier(topo, b)
+                    .as_ref()
+                    .is_none_or(|cls_b| {
+                        all_component_centers_outside(topo, &components, cls_b, tol)
+                    });
+            let semantic_ok = is_closed_manifold(topo, result).is_ok_and(|closed| closed)
+                && (op != BooleanOp::Intersect
+                    || has_free_edges(topo, result).is_ok_and(|free| !free))
+                && cut_safe
+                && operands_are_represented(topo, op, result, a, b, tol);
+
             // Trust the faithful path only if its result is valid; otherwise
             // fall through to boolean()'s full pipeline (fast paths + mesh
             // fallback + validation), matching boolean()'s contract.
-            if healed_ok && validate_boolean_result(topo, result).is_ok() {
+            if healed_ok && semantic_ok && validate_boolean_result(topo, result).is_ok() {
                 let mut evo = crate::evolution::EvolutionMap::exact();
                 let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {

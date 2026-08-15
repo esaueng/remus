@@ -1413,6 +1413,89 @@ fn extrude_spline_encoded_profile_recovers_analytic_walls() {
 }
 
 #[test]
+fn extrude_does_not_flatten_spline_between_recognizer_samples() {
+    use brepkit_math::nurbs::curve::NurbsCurve;
+    use brepkit_topology::edge::Edge;
+    use brepkit_topology::face::Face;
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::Wire;
+
+    let mut topo = Topology::new();
+    let tol = Tolerance::new().linear;
+
+    // Fifteen joined quadratic Bezier spans. Their endpoints coincide with
+    // recognize_curve's sixteen fixed samples, but every span rises 0.45 mm
+    // between those samples. Sparse recognition alone classifies this as a
+    // line even though flattening it materially changes the profile.
+    let mut control_points = Vec::with_capacity(31);
+    for span in 0..15 {
+        #[allow(clippy::cast_precision_loss)]
+        let x0 = span as f64 / 15.0;
+        #[allow(clippy::cast_precision_loss)]
+        let x1 = (span + 1) as f64 / 15.0;
+        if span == 0 {
+            control_points.push(Point3::new(x0, 0.0, 0.0));
+        }
+        control_points.push(Point3::new(f64::midpoint(x0, x1), 0.9, 0.0));
+        control_points.push(Point3::new(x1, 0.0, 0.0));
+    }
+    let mut knots = vec![0.0; 3];
+    for i in 1..15 {
+        #[allow(clippy::cast_precision_loss)]
+        let knot = i as f64 / 15.0;
+        knots.extend([knot, knot]);
+    }
+    knots.extend([1.0; 3]);
+    let curve = NurbsCurve::new(2, knots, control_points, vec![1.0; 31]).unwrap();
+
+    let points = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let vertices: Vec<_> = points
+        .iter()
+        .map(|&point| topo.add_vertex(Vertex::new(point, tol)))
+        .collect();
+    let adversarial_edge = topo.add_edge(Edge::new(
+        vertices[0],
+        vertices[1],
+        EdgeCurve::NurbsCurve(curve),
+    ));
+    let edges = [
+        adversarial_edge,
+        topo.add_edge(Edge::new(vertices[1], vertices[2], EdgeCurve::Line)),
+        topo.add_edge(Edge::new(vertices[2], vertices[3], EdgeCurve::Line)),
+        topo.add_edge(Edge::new(vertices[3], vertices[0], EdgeCurve::Line)),
+    ];
+    let wire = topo.add_wire(
+        Wire::new(
+            edges
+                .into_iter()
+                .map(|edge| OrientedEdge::new(edge, true))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+
+    extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    assert!(matches!(
+        topo.edge(adversarial_edge).unwrap().curve(),
+        EdgeCurve::NurbsCurve(_)
+    ));
+}
+
+#[test]
 fn extrude_reversed_spline_arc_profile_recovers_analytic_walls() {
     // Same chamfered/filleted profile, but the fillet spline is STORED
     // end-to-start relative to the edge vertices (the `rev` branch of the

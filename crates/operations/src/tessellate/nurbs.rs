@@ -4,7 +4,7 @@ use brepkit_math::det_hash::DetHashMap;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 
-use super::rim_chain::collect_full_turn_rim_cycles;
+use super::rim_chain::{collect_full_turn_rim_cycles, collect_full_turn_rim_cycles_any};
 use super::{TriangleMesh, TriangleMeshUV};
 
 /// A cell in the adaptive quadtree for NURBS tessellation.
@@ -266,11 +266,9 @@ where
         }
     }
     let project_u = |point| project(point).0;
-    let cycles = (1..=curved.len()).find_map(|expected_cycles| {
-        collect_full_turn_rim_cycles(topo, &curved, &project_u, expected_cycles)
-            .ok()
-            .flatten()
-    })?;
+    let cycles = collect_full_turn_rim_cycles_any(topo, &curved, &project_u)
+        .ok()
+        .flatten()?;
     let anchor_edge_index = cycles
         .iter()
         .filter(|cycle| !cycle.has_closed_edge)

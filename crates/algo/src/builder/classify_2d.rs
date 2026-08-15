@@ -38,11 +38,11 @@ pub fn sample_interior_point(loop_pts: &[Point2]) -> Point2 {
         return centroid;
     }
 
-    // Edge-midpoint fallback for non-convex loops. For every boundary edge,
-    // cast a ray inward from its midpoint and take the midpoint of the resulting
-    // interior chord (the segment from the edge to the first opposite boundary
-    // crossing). Keep the candidate with the LONGEST such chord — the deepest,
-    // most robustly-interior point.
+    // Edge-midpoint fallback for non-convex loops. For a bounded set of the
+    // longest boundary edges, cast a ray inward from its midpoint and take the
+    // midpoint of the resulting interior chord (the segment from the edge to
+    // the first opposite boundary crossing). Keep the candidate with the
+    // LONGEST such chord — the deepest, most robustly-interior point.
     //
     // Returning the *deepest* candidate rather than the *first* valid one is
     // what makes this rotation-invariant: the wire builder emits each loop with
@@ -57,7 +57,7 @@ pub fn sample_interior_point(loop_pts: &[Point2]) -> Point2 {
     let n = loop_pts.len();
     let eps = boundary_eps(loop_pts);
     let mut best: Option<(Point2, f64)> = None;
-    for i in 0..n {
+    for i in candidate_edge_indices(loop_pts) {
         let j = (i + 1) % n;
         let a = loop_pts[i];
         let b = loop_pts[j];
@@ -124,6 +124,40 @@ pub fn sample_interior_point(loop_pts: &[Point2]) -> Point2 {
     }
     // All edge midpoints failed -- return centroid as last resort.
     centroid
+}
+
+/// Select a bounded, geometry-ordered set of edges for chord sampling.
+///
+/// Each sampled chord requires a scan of the complete boundary. Bounding the
+/// number of chords keeps that fallback linear after the `O(n log n)` edge
+/// ordering, while ordering by geometry preserves the loop-rotation invariance
+/// required by callers whose wire start edge is nondeterministic.
+fn candidate_edge_indices(loop_pts: &[Point2]) -> Vec<usize> {
+    const MAX_CHORD_CANDIDATES: usize = 64;
+
+    let mut indices: Vec<usize> = (0..loop_pts.len()).collect();
+    indices.sort_unstable_by(|&lhs, &rhs| {
+        let edge_key = |i: usize| {
+            let a = loop_pts[i];
+            let b = loop_pts[(i + 1) % loop_pts.len()];
+            let dx = b.x() - a.x();
+            let dy = b.y() - a.y();
+            (
+                dx * dx + dy * dy,
+                (a.x() + b.x()) * 0.5,
+                (a.y() + b.y()) * 0.5,
+            )
+        };
+        let left = edge_key(lhs);
+        let right = edge_key(rhs);
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.total_cmp(&right.1))
+            .then_with(|| left.2.total_cmp(&right.2))
+    });
+    indices.truncate(MAX_CHORD_CANDIDATES);
+    indices
 }
 
 /// Parameter `t >= 0` at which the ray `origin + t*dir` first crosses segment
@@ -340,6 +374,35 @@ mod tests {
             "interior ({}, {}) sits on the boundary (clearance {clearance:e})",
             interior.x(),
             interior.y()
+        );
+    }
+
+    #[test]
+    fn chord_candidates_are_bounded_and_rotation_invariant() {
+        let polygon: Vec<_> = (0..1_000)
+            .map(|i| Point2::new(i as f64, (i % 7) as f64))
+            .collect();
+        let candidates = candidate_edge_indices(&polygon);
+        assert_eq!(candidates.len(), 64);
+
+        let mut rotated = polygon[317..].to_vec();
+        rotated.extend_from_slice(&polygon[..317]);
+        let candidate_midpoints = |points: &[Point2], indices: Vec<usize>| {
+            let mut midpoints: Vec<_> = indices
+                .into_iter()
+                .map(|i| {
+                    let a = points[i];
+                    let b = points[(i + 1) % points.len()];
+                    ((a.x() + b.x()) * 0.5, (a.y() + b.y()) * 0.5)
+                })
+                .collect();
+            midpoints
+                .sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+            midpoints
+        };
+        assert_eq!(
+            candidate_midpoints(&polygon, candidates),
+            candidate_midpoints(&rotated, candidate_edge_indices(&rotated))
         );
     }
 }

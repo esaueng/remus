@@ -664,14 +664,16 @@ fn normalize_profile_wire_curves(
             continue;
         }
         let new_curve = match brepkit_geometry::convert::recognize_curve(nc, tol * 100.0) {
-            brepkit_geometry::convert::RecognizedCurve::Line { .. } if (s3 - e3).length() > tol => {
+            brepkit_geometry::convert::RecognizedCurve::Line { .. }
+                if (s3 - e3).length() > tol && nurbs_control_polygon_is_linear(nc, a3, b3, tol) =>
+            {
                 Some(EdgeCurve::Line)
             }
             brepkit_geometry::convert::RecognizedCurve::Circle {
                 center,
                 normal,
                 radius,
-            } => {
+            } if nurbs_is_quadratic_circle(nc, center, normal, radius, tol) => {
                 // Edges store arcs in the CCW convention: the span from the
                 // START vertex to the END vertex runs counter-clockwise about
                 // the curve normal. Pick the normal sign that puts the spline's
@@ -713,6 +715,59 @@ fn normalize_profile_wire_curves(
         }
     }
     Ok(())
+}
+
+/// Prove that the whole rational spline is confined to the candidate line.
+///
+/// NURBS weights are positive, so the curve lies in the convex hull of its
+/// control points. Checking the control polygon therefore covers every
+/// parameter value, unlike point sampling.
+fn nurbs_control_polygon_is_linear(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    start: Point3,
+    end: Point3,
+    tol: f64,
+) -> bool {
+    let Ok(direction) = (end - start).normalize() else {
+        return false;
+    };
+    curve.control_points().iter().all(|&point| {
+        let offset = point - start;
+        (offset - direction * direction.dot(offset)).length() <= tol
+    })
+}
+
+/// Conservatively verify the exact rational-quadratic form used for circles.
+///
+/// Circle NURBS are piecewise quadratic. On each knot span their squared
+/// circle residual has degree at most four after clearing the positive
+/// rational denominator. Nine checks per span overdetermine that polynomial
+/// and, importantly, prevent a high-degree or heavily-knotted curve from
+/// hiding excursions between the recognizer's sixteen global samples.
+fn nurbs_is_quadratic_circle(
+    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    center: Point3,
+    normal: Vec3,
+    radius: f64,
+    tol: f64,
+) -> bool {
+    if curve.degree() != 2 || !radius.is_finite() || radius <= tol {
+        return false;
+    }
+    let knots = curve.knots();
+    let verification_tol = tol * 10.0;
+    knots
+        .windows(2)
+        .filter(|span| span[1] > span[0])
+        .all(|span| {
+            (0..=8).all(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let parameter = span[0] + (span[1] - span[0]) * (i as f64 / 8.0);
+                let offset = curve.evaluate(parameter) - center;
+                normal.dot(offset).abs() <= verification_tol
+                    && (offset.length() - radius).abs() <= verification_tol
+            })
+        })
 }
 
 /// Extrude a planar face along a direction to produce a solid.

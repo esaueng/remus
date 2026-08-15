@@ -843,6 +843,33 @@ fn fuse_evolution_is_faithful() {
 }
 
 #[test]
+fn cut_evolution_rejects_untouched_gfa_blank() {
+    use brepkit_math::mat::Mat4;
+
+    // The cylinder crosses the plate's x=0 wall by 0.5 mm. GFA can lose the
+    // tool in this configuration and return the original six-face plate: a
+    // structurally valid solid, but not the requested difference.
+    let mut topo = Topology::new();
+    let plate = crate::primitives::make_box(&mut topo, 60.0, 40.0, 8.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 10.0, 16.0).unwrap();
+    crate::transform::transform_solid(&mut topo, tool, &Mat4::translation(-9.5, 20.0, -4.0))
+        .unwrap();
+
+    let (result, evolution) =
+        boolean_with_evolution(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    let volume = crate::measure::solid_volume(&topo, result, 0.1).unwrap();
+
+    assert!(
+        volume < 60.0 * 40.0 * 8.0,
+        "evolution cut returned the untouched plate ({volume})"
+    );
+    assert!(
+        !evolution.modified.is_empty(),
+        "accepted result must retain evolution data"
+    );
+}
+
+#[test]
 fn intersect_overlapping_3d() {
     let mut topo = Topology::new();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
