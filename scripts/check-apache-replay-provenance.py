@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = ROOT / "docs/production-readiness/apache-replay-provenance.json"
 EXPECTED_LEDGER_SHA256 = (
-    "bac76ecc274b8a9cff9d14a58e91a86760765598789a52688bfba6925b16557b"
+    "f86883ce42761232016a4b49ff41d56e55ae28ab76a186db095b550fca4e43de"
 )
 EXPECTED_ALL_PRS = set(range(127, 231)) | set(range(233, 248))
 EXPECTED_PRIOR_PRS = {
