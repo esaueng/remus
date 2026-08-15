@@ -484,14 +484,13 @@ fn propagate_split(
     // The sub-edges deliberately get none: downstream consumers regenerate
     // lazily (boolean assembly) or fall back to direct surface projection
     // (tessellation), matching every other edge the blend engine creates.
-    let stale_faces: Vec<FaceId> = topo
-        .pcurves()
+    let stale_uses: Vec<(FaceId, bool)> = topo
         .pcurves_for_edge(old_edge)
         .into_iter()
-        .map(|(fid, _)| fid)
+        .map(|(fid, forward, _)| (fid, forward))
         .collect();
-    for fid in stale_faces {
-        topo.pcurves_mut().remove(old_edge, fid);
+    for (fid, forward) in stale_uses {
+        topo.remove_pcurve_oriented(old_edge, fid, forward);
     }
     Ok(())
 }
@@ -1171,11 +1170,12 @@ mod tests {
         let neighbor = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
 
         let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
-        topo.pcurves_mut().set(
+        topo.set_pcurve(
             edges[0],
             neighbor,
             PCurve::new(Curve2D::Line(line), 0.0, 1.0),
-        );
+        )
+        .unwrap();
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
@@ -1190,7 +1190,7 @@ mod tests {
         .expect("trim should succeed");
 
         assert!(
-            !topo.pcurves().contains(edges[0], neighbor),
+            !topo.has_pcurve(edges[0], neighbor).unwrap(),
             "stale pcurve entry for the replaced edge must be removed"
         );
     }

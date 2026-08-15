@@ -144,7 +144,7 @@ pub fn untrim_topology_face(
         }
     };
 
-    let pcurve_entries = topo.pcurves().pcurves_for_face(face);
+    let pcurve_entries = topo.pcurves_for_face(face);
     if pcurve_entries.is_empty() {
         return Err(OperationsError::InvalidInput {
             reason: "face has no PCurves; cannot determine trim boundary".into(),
@@ -154,7 +154,7 @@ pub fn untrim_topology_face(
     let n_samples = samples_per_curve.max(2);
     let trim_curves: Vec<TrimCurve> = pcurve_entries
         .iter()
-        .map(|(_, pc)| {
+        .map(|(_, _, pc)| {
             let t0 = pc.t_start();
             let t1 = pc.t_end();
             #[allow(clippy::cast_precision_loss)]

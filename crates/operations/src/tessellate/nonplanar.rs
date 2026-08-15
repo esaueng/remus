@@ -1838,7 +1838,9 @@ pub(super) fn tessellate_nonplanar_cdt(
     let mut boundary_uv: Vec<(f64, f64)> = boundary_3d
         .iter()
         .map(|(pt, _, edge_id_local, _)| {
-            if let Some(pcurve) = topo.pcurves().get(*edge_id_local, face_id) {
+            // Seam edges (two uses) fall back to direct surface
+            // projection until tessellation is branch-aware.
+            if let Ok(Some(pcurve)) = topo.pcurve(*edge_id_local, face_id) {
                 let uv = project_via_pcurve(pcurve, *pt, face_data.surface());
                 if let Some(uv) = uv {
                     return Ok(uv);
