@@ -4,6 +4,7 @@
 //! `wasm-bindgen` provides a blanket `impl<E: Error> From<E> for JsError`,
 //! any `WasmError` can be converted to `JsError` automatically via `?`.
 
+use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
 use serde_json::{Map, Value};
 
 /// Errors that can occur in WASM-exposed operations.
@@ -62,11 +63,32 @@ pub(crate) enum WasmErrorCode {
     InternalError,
 }
 
+impl WasmErrorCode {
+    /// The kernel-wide failure category this wire code projects
+    /// (`brepkit_math::diagnostic::FailureCategory`). Explicit per code:
+    /// never derived from names.
+    pub(crate) const fn category(self) -> FailureCategory {
+        match self {
+            Self::InvalidJson
+            | Self::MissingOperation
+            | Self::UnknownOperation
+            | Self::InvalidArgument
+            | Self::InvalidHandle => FailureCategory::InvalidInput,
+            Self::BatchLimitExceeded | Self::ResourceLimitExceeded => {
+                FailureCategory::ResourceLimit
+            }
+            Self::TopologyError => FailureCategory::InvalidTopology,
+            Self::OperationFailed | Self::InternalError => FailureCategory::Internal,
+        }
+    }
+}
+
 /// Structured error carried internally until the selected WASM contract is
 /// serialized.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct StructuredWasmError {
     code: WasmErrorCode,
+    category: &'static str,
     message: String,
     details: Map<String, Value>,
 }
@@ -75,9 +97,21 @@ impl StructuredWasmError {
     pub(crate) fn new(code: WasmErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
+            category: code.category().as_str(),
             message: message.into(),
             details: Map::new(),
         }
+    }
+
+    /// Attach the native kernel registry entry (`kernelCode`) from a typed
+    /// error's diagnostic, giving v2 consumers the fine-grained code
+    /// alongside the coarse wire code.
+    fn with_kernel_diagnostic(mut self, source: &impl ToDiagnostic) -> Self {
+        self.details.insert(
+            "kernelCode".to_string(),
+            Value::from(source.diagnostic().code()),
+        );
+        self
     }
 
     pub(crate) fn invalid_argument(message: impl Into<String>, argument: Option<&str>) -> Self {
@@ -232,6 +266,7 @@ impl From<WasmError> for StructuredWasmError {
 impl From<brepkit_topology::TopologyError> for StructuredWasmError {
     fn from(error: brepkit_topology::TopologyError) -> Self {
         let message = error.to_string();
+        let kernel = &error;
         let (entity, index) = match &error {
             brepkit_topology::TopologyError::VertexNotFound(id) => ("vertex", Some(id.index())),
             brepkit_topology::TopologyError::EdgeNotFound(id) => ("edge", Some(id.index())),
@@ -257,7 +292,7 @@ impl From<brepkit_topology::TopologyError> for StructuredWasmError {
                 .details
                 .insert("index".to_string(), Value::from(index));
         }
-        structured
+        structured.with_kernel_diagnostic(kernel)
     }
 }
 
@@ -267,7 +302,7 @@ impl From<brepkit_math::MathError> for StructuredWasmError {
             brepkit_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
             _ => WasmErrorCode::InvalidArgument,
         };
-        Self::new(code, error.to_string())
+        Self::new(code, error.to_string()).with_kernel_diagnostic(&error)
     }
 }
 
@@ -315,7 +350,7 @@ impl From<brepkit_heal::HealError> for StructuredWasmError {
 
 impl From<brepkit_algo::error::AlgoError> for StructuredWasmError {
     fn from(error: brepkit_algo::error::AlgoError) -> Self {
-        Self::operation_failed(error.to_string())
+        Self::operation_failed(error.to_string()).with_kernel_diagnostic(&error)
     }
 }
 
