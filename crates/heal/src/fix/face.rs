@@ -308,7 +308,7 @@ mod tests {
         };
         for &eid in &edges_before {
             assert!(
-                !topo.pcurves().contains(eid, face_id),
+                !topo.has_pcurve(eid, face_id).unwrap(),
                 "edge {eid:?} should not have a PCurve before fix_face"
             );
         }
@@ -320,7 +320,7 @@ mod tests {
         // Post-condition: every edge has a PCurve.
         for &eid in &edges_before {
             assert!(
-                topo.pcurves().contains(eid, face_id),
+                topo.has_pcurve(eid, face_id).unwrap(),
                 "edge {eid:?} should have a PCurve after fix_face"
             );
         }
@@ -351,7 +351,7 @@ mod tests {
 
         for &eid in &edges {
             assert!(
-                !topo.pcurves().contains(eid, face_id),
+                !topo.has_pcurve(eid, face_id).unwrap(),
                 "edge {eid:?} should still have no PCurve when fix_same_parameter=Off"
             );
         }

@@ -174,6 +174,11 @@ struct SerPCurve {
     curve: Curve2D,
     t_start: f64,
     t_end: f64,
+    /// Traversal orientation of this use (per-use pcurves, RFC 0002).
+    /// Absent in documents written before orientation was recorded; the
+    /// reader then resolves the use from the face's wires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forward: Option<bool>,
 }
 
 /// Frozen version 1 single-solid schema, retained for read compatibility.
@@ -399,7 +404,7 @@ impl<'a> Builder<'a> {
             let Some(fid) = self.topo.face_id_from_index(global_face) else {
                 continue;
             };
-            for (eid, pc) in self.topo.pcurves().pcurves_for_face(fid) {
+            for (eid, forward, pc) in self.topo.pcurves_for_face(fid) {
                 if let Some(&local_edge) = self.edge_map.get(&eid.index()) {
                     out.push(SerPCurve {
                         edge: local_edge,
@@ -407,6 +412,7 @@ impl<'a> Builder<'a> {
                         curve: pc.curve().clone(),
                         t_start: pc.t_start(),
                         t_end: pc.t_end(),
+                        forward: Some(forward),
                     });
                 }
             }
@@ -861,8 +867,19 @@ fn replay_document_into(
         let face = *face_ids
             .get(pc.face)
             .ok_or_else(|| index_err("face", pc.face))?;
-        topo.pcurves_mut()
-            .set(edge, face, PCurve::new(pc.curve, pc.t_start, pc.t_end));
+        let pcurve = PCurve::new(pc.curve, pc.t_start, pc.t_end);
+        match pc.forward {
+            Some(forward) => topo.set_pcurve_oriented(edge, face, forward, pcurve),
+            // Pre-orientation document: resolve the use from the wires.
+            // Such files cannot hold two branches for one (edge, face), so
+            // the resolved set cannot be ambiguous unless the file also has
+            // a seam wire; attach to the forward branch in that case.
+            None => {
+                if topo.set_pcurve(edge, face, pcurve.clone()).is_err() {
+                    topo.set_pcurve_oriented(edge, face, true, pcurve);
+                }
+            }
+        }
     }
 
     let mut solid_ids = Vec::with_capacity(solids.len());

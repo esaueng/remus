@@ -85,7 +85,7 @@ pub fn fix_same_parameter_on_face(
     ctx: &mut HealContext,
     config: &FixConfig,
 ) -> Result<FixResult, HealError> {
-    let has_pcurve = topo.pcurves().contains(edge_id, face_id);
+    let has_pcurve = topo.has_pcurve(edge_id, face_id)?;
 
     if has_pcurve {
         let max_dev = compute_pcurve_deviation(topo, edge_id, face_id)?;
@@ -142,7 +142,7 @@ pub fn fix_same_parameter_on_face(
     let t_end = knots[knots.len() - degree - 1];
 
     let pcurve = PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end);
-    topo.pcurves_mut().set(edge_id, face_id, pcurve);
+    topo.set_pcurve(edge_id, face_id, pcurve)?;
 
     Ok(FixResult {
         status: Status::DONE3,
@@ -240,7 +240,7 @@ fn compute_pcurve_deviation(
     edge_id: EdgeId,
     face_id: FaceId,
 ) -> Result<f64, HealError> {
-    let pcurve = topo.pcurves().get(edge_id, face_id).ok_or_else(|| {
+    let pcurve = topo.pcurve(edge_id, face_id)?.ok_or_else(|| {
         HealError::FixFailed(format!(
             "no PCurve found for edge {edge_id:?} on face {face_id:?}"
         ))

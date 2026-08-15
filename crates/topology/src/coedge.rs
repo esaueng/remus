@@ -13,7 +13,6 @@
 use crate::arena;
 use crate::edge::EdgeId;
 use crate::face_loop::LoopId;
-use crate::pcurve::PCurve;
 
 /// Typed handle for a [`Coedge`] stored in an [`Arena`](crate::Arena).
 pub type CoedgeId = arena::Id<Coedge>;
@@ -27,12 +26,6 @@ pub struct Coedge {
     forward: bool,
     /// The loop this use belongs to.
     parent_loop: LoopId,
-    /// This use's 2D curve in the owning face's parameter space.
-    ///
-    /// `None` until p-curve authority moves onto coedges at Stage 2; the
-    /// `(edge, face)` registry remains the p-curve source of record in
-    /// Stage 1.
-    pcurve: Option<PCurve>,
 }
 
 impl Coedge {
@@ -43,7 +36,6 @@ impl Coedge {
             edge,
             forward,
             parent_loop,
-            pcurve: None,
         }
     }
 
@@ -63,16 +55,5 @@ impl Coedge {
     #[must_use]
     pub const fn parent_loop(&self) -> LoopId {
         self.parent_loop
-    }
-
-    /// This use's p-curve, when one has been attached.
-    #[must_use]
-    pub const fn pcurve(&self) -> Option<&PCurve> {
-        self.pcurve.as_ref()
-    }
-
-    /// Attaches or replaces this use's p-curve.
-    pub fn set_pcurve(&mut self, pcurve: Option<PCurve>) {
-        self.pcurve = pcurve;
     }
 }
