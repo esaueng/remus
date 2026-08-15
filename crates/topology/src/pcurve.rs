@@ -282,3 +282,138 @@ mod tests {
         assert!((p.y() - 0.5).abs() < 1e-10);
     }
 }
+
+/// Characterization of the periodic-seam representation gap (RFC 0002).
+///
+/// A periodic face's seam uses one 3D edge twice — once per parameter-space
+/// branch (u = 0 and u = 2π on a cylinder). These tests pin what the current
+/// `(EdgeId, FaceId)`-keyed registry actually does with that configuration.
+/// They are **characterization, not endorsement**: the asserted behavior is
+/// the defect the coedge architecture exists to fix, and each test states
+/// how it must flip when p-curves become per-use.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod seam_characterization {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use brepkit_math::surfaces::CylindricalSurface;
+    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
+
+    use crate::edge::{Edge, EdgeCurve, EdgeId};
+    use crate::face::{Face, FaceSurface};
+    use crate::pcurve::PCurve;
+    use crate::topology::Topology;
+    use crate::vertex::Vertex;
+    use crate::wire::{OrientedEdge, Wire};
+
+    /// A unit cylinder's side face: bottom/top rim circles plus one vertical
+    /// seam edge that the boundary wire traverses twice (forward on one
+    /// periodic branch, reversed on the other).
+    fn make_cylinder_side_face_with_seam() -> (Topology, EdgeId, crate::face::FaceId) {
+        let mut topo = Topology::new();
+
+        let v_bottom = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v_top = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+
+        let seam = topo.add_edge(Edge::new(v_bottom, v_top, EdgeCurve::Line));
+        let bottom_circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let top_circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let bottom = topo.add_edge(Edge::new(
+            v_bottom,
+            v_bottom,
+            EdgeCurve::Circle(bottom_circle),
+        ));
+        let top = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+
+        // Boundary traversal: up the seam, around the top, back down the
+        // SAME seam edge, around the bottom. The seam edge appears twice.
+        let wire = Wire::new(
+            vec![
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(top, true),
+                OrientedEdge::new(seam, false),
+                OrientedEdge::new(bottom, false),
+            ],
+            true,
+        )
+        .unwrap();
+        let wire_id = topo.add_wire(wire);
+
+        let surface = FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap(),
+        );
+        let face_id = topo.add_face(Face::new(wire_id, vec![], surface));
+
+        (topo, seam, face_id)
+    }
+
+    #[test]
+    fn a_wire_can_use_the_same_edge_twice() {
+        // The seam configuration is constructible today: nothing rejects a
+        // wire that traverses one edge in both directions. The gap is not
+        // construction — it is that the two uses cannot carry independent
+        // per-use data.
+        let (topo, seam, face_id) = make_cylinder_side_face_with_seam();
+        let face = topo.face(face_id).unwrap();
+        let wire = topo.wire(face.outer_wire()).unwrap();
+        let seam_uses = wire.edges().iter().filter(|oe| oe.edge() == seam).count();
+        assert_eq!(seam_uses, 2, "the seam edge must appear twice in the wire");
+    }
+
+    #[test]
+    fn second_seam_pcurve_silently_replaces_the_first() {
+        // CHARACTERIZATION OF A DEFECT: the registry key is (edge, face), so
+        // the second periodic branch's p-curve silently overwrites the
+        // first. No error, no second entry — the u = 0 branch is gone.
+        //
+        // When RFC 0002 lands (p-curves keyed per coedge), this test must
+        // FLIP: both branches retained, and the (edge, face) accessor must
+        // fail closed on the ambiguity instead of answering arbitrarily.
+        const TAU: f64 = std::f64::consts::TAU;
+        let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
+
+        // Branch 1: the seam at u = 0, v traversed 0 → 1.
+        let branch_at_0 = PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+            0.0,
+            1.0,
+        );
+        // Branch 2: the same 3D edge at u = 2π, v traversed 1 → 0.
+        let branch_at_tau = PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(TAU, 1.0), Vec2::new(0.0, -1.0)).unwrap()),
+            0.0,
+            1.0,
+        );
+
+        topo.pcurves_mut().set(seam, face_id, branch_at_0);
+        topo.pcurves_mut().set(seam, face_id, branch_at_tau);
+
+        // One entry survives — and it is the second branch. The first
+        // write is silently lost.
+        assert_eq!(topo.pcurves().len(), 1);
+        let survivor = topo.pcurves().get(seam, face_id).unwrap();
+        assert!(
+            (survivor.evaluate(0.0).x() - TAU).abs() < 1e-12,
+            "the surviving p-curve is the second write; the u = 0 branch is gone"
+        );
+    }
+
+    #[test]
+    fn pcurves_for_edge_reports_one_use_for_a_seam_edge() {
+        // CHARACTERIZATION OF A DEFECT: the seam edge has two uses on this
+        // face, but the registry can only report one (FaceId is the whole
+        // key). Consumers walking "all p-curves of this edge" see half the
+        // seam. Must FLIP to two per-use entries under RFC 0002.
+        let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
+        let pc = PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+            0.0,
+            1.0,
+        );
+        topo.pcurves_mut().set(seam, face_id, pc);
+        assert_eq!(topo.pcurves().pcurves_for_edge(seam).len(), 1);
+    }
+}
