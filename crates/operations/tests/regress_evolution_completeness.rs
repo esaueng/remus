@@ -36,13 +36,13 @@
 
 use std::collections::HashSet;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::evolution::EvolutionMap;
-use brepkit_operations::{blend_ops, boolean, primitives, transform};
-use brepkit_topology::Topology;
-use brepkit_topology::arena::Id;
-use brepkit_topology::explorer::{solid_edges, solid_faces};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::evolution::EvolutionMap;
+use remus_operations::{blend_ops, boolean, primitives, transform};
+use remus_topology::Topology;
+use remus_topology::arena::Id;
+use remus_topology::explorer::{solid_edges, solid_faces};
+use remus_topology::solid::SolidId;
 
 /// The modelling units the same body is built in. 1000x and 0.001x are the axis
 /// the centroid budget was made dimensionless for; a rule that reads a face's
@@ -445,7 +445,7 @@ fn boolean_lineage_is_complete_at_every_modelling_unit() {
 /// and this pins the two together on the exact reproduction the defect was
 /// reported against — a 10-cube with one edge rounded at radius 1.
 ///
-/// [`blend_ops::evolution_from_blend_origins`]: brepkit_operations::blend_ops::evolution_from_blend_origins
+/// [`blend_ops::evolution_from_blend_origins`]: remus_operations::blend_ops::evolution_from_blend_origins
 #[test]
 fn the_binding_route_reports_the_same_map_as_the_in_process_api() {
     // The binding's sequence: snapshot the input faces BEFORE the blend (a
@@ -514,10 +514,10 @@ fn pattern_lineage_accounts_for_every_instance_face() {
         let src = primitives::make_box(&mut topo, 10.0, 4.0, 4.0).unwrap();
         let before = faces_of(&topo, src);
 
-        let (compound, evo) = brepkit_operations::pattern::linear_pattern_with_evolution(
+        let (compound, evo) = remus_operations::pattern::linear_pattern_with_evolution(
             &mut topo,
             src,
-            brepkit_math::vec::Vec3::new(1.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(1.0, 0.0, 0.0),
             25.0,
             count,
         )
@@ -586,7 +586,7 @@ fn filleted_cube_volume_matches_the_hand_derived_closed_form() {
     // The band is tessellated, and a chordal approximation of a convex arc
     // under-fills it, so the tolerance is the tessellation's error budget and
     // not a fudge factor: it is one-sided and shrinks with the deflection.
-    let actual = brepkit_operations::measure::solid_volume(&topo, result.solid, 1e-5).unwrap();
+    let actual = remus_operations::measure::solid_volume(&topo, result.solid, 1e-5).unwrap();
     assert!(
         (actual - expected).abs() < 1e-3,
         "filleted cube volume {actual} != closed form {expected}"
@@ -600,7 +600,7 @@ fn failed_blend_evolution_calls_leave_source_topology_unchanged() {
         let cube = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edge = solid_edges(&topo, cube).unwrap()[0];
         let before_faces = faces_of(&topo, cube);
-        let before_volume = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+        let before_volume = remus_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
 
         let failed = match operation {
             "fillet" => {
@@ -617,13 +617,13 @@ fn failed_blend_evolution_calls_leave_source_topology_unchanged() {
             before_faces,
             "failed {operation} changed the source face set"
         );
-        let after_volume = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+        let after_volume = remus_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
         assert!(
             (after_volume - before_volume).abs() < 1e-9,
             "failed {operation} changed source volume: {before_volume} -> {after_volume}"
         );
         let shell = topo.solid(cube).unwrap().outer_shell();
-        brepkit_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+        remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
             .unwrap();
     }
 }

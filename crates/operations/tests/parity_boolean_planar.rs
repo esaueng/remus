@@ -90,7 +90,7 @@ fn planar_boolean_corpus() {
         // ── Family G: curved calibration probe ──────────────────────────
         // Unit sphere (centered) fused with a unit cube at the +octant.
         // Reference whole-boundary area ≈ 14.6394. Tagged Gap so it never
-        // fails CI; the scoreboard reports whether brepkit matches it and
+        // fails CI; the scoreboard reports whether remus matches it and
         // at what tolerance — used to set the curved-family default.
         Case { name: "sphere_unit_box_fuse_area", a: (Prim::Sphere(1.0), NONE), b: (CUBE, NONE), op: Op::Fuse, oracle: Oracle::Area(14.6394), tol: 2e-2, expect: Expect::Gap("curved calibration probe") },
     ];

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use brepkit_topology::vertex::VertexId;
+use remus_topology::vertex::VertexId;
 
 use super::pave::PaveBlockId;
 

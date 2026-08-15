@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeId};
-use brepkit_topology::face::{Face, FaceId};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::face::{Face, FaceId};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::error::AlgoError;
 
@@ -179,14 +179,14 @@ fn deep_copy_solid(
 
     struct VertexSnap {
         old_index: usize,
-        point: brepkit_math::vec::Point3,
+        point: remus_math::vec::Point3,
         tol: f64,
     }
     struct EdgeSnap {
         old_index: usize,
         start_index: usize,
         end_index: usize,
-        curve: brepkit_topology::edge::EdgeCurve,
+        curve: remus_topology::edge::EdgeCurve,
         tolerance: Option<f64>,
     }
     struct WireSnap {
@@ -198,7 +198,7 @@ fn deep_copy_solid(
         old_index: usize,
         outer_wire_index: usize,
         inner_wire_indices: Vec<usize>,
-        surface: brepkit_topology::face::FaceSurface,
+        surface: remus_topology::face::FaceSurface,
         reversed: bool,
     }
     struct ShellSnap {
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_box() {
-        use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+        use remus_topology::test_utils::make_unit_cube_manifold_at;
 
         let mut source = Topology::default();
         let solid = make_unit_cube_manifold_at(&mut source, 0.0, 0.0, 0.0);
@@ -373,24 +373,23 @@ mod tests {
         let sh2 = target.shell(s2.outer_shell()).unwrap();
         assert_eq!(sh2.faces().len(), 6, "exported box should have 6 faces");
 
-        let source_faces = brepkit_topology::explorer::solid_faces(&source, solid).unwrap();
-        let target_faces = brepkit_topology::explorer::solid_faces(&target, exported).unwrap();
+        let source_faces = remus_topology::explorer::solid_faces(&source, solid).unwrap();
+        let target_faces = remus_topology::explorer::solid_faces(&target, exported).unwrap();
         assert_eq!(source_faces.len(), target_faces.len());
 
         // Verify isolation: the store has TWO copies of the box (A and B
         // both point to the same source solid). The store topology should
         // have more entities than the source (2× vertices, edges, etc.).
-        let store_vertex_count =
-            brepkit_topology::explorer::solid_faces(&store.topo, store.solid_a)
-                .unwrap()
-                .len();
+        let store_vertex_count = remus_topology::explorer::solid_faces(&store.topo, store.solid_a)
+            .unwrap()
+            .len();
         assert_eq!(store_vertex_count, 6, "store solid_a should have 6 faces");
     }
 
     #[test]
     fn nway_store_copies_all_sources_and_tags_faces() {
-        use brepkit_topology::explorer::solid_faces;
-        use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+        use remus_topology::explorer::solid_faces;
+        use remus_topology::test_utils::make_unit_cube_manifold_at;
 
         let mut source = Topology::default();
         let boxes = [

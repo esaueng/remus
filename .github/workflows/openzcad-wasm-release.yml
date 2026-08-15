@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   package:
-    name: Build fork package
+    name: Build Remus package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -26,14 +26,14 @@ jobs:
       - name: Build and validate WASM package
         run: cargo xtask wasm-build --skip-opt
 
-      - name: Stamp fork provenance
+      - name: Stamp Remus provenance
         working-directory: crates/wasm/pkg
         run: |
           npm pkg set \
             repository.type=git \
-            repository.url=git+https://github.com/esaueng/brepkit.git \
-            homepage=https://github.com/esaueng/brepkit \
-            brepkitSourceCommit="$GITHUB_SHA"
+            repository.url=git+https://github.com/esaueng/remus.git \
+            homepage=https://github.com/esaueng/remus \
+            remusSourceCommit="$GITHUB_SHA"
 
       - name: Pack npm-compatible artifact
         id: pack

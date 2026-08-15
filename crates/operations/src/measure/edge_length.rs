@@ -1,7 +1,7 @@
 //! Edge and wire length computation.
 
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
 
 /// Compute the length of a single edge.
 ///
@@ -13,17 +13,17 @@ use brepkit_topology::face::FaceId;
 /// Returns an error if the edge lookup fails.
 pub fn edge_length(
     topo: &Topology,
-    edge_id: brepkit_topology::edge::EdgeId,
+    edge_id: remus_topology::edge::EdgeId,
 ) -> Result<f64, crate::OperationsError> {
     let edge = topo.edge(edge_id)?;
     match edge.curve() {
-        brepkit_topology::edge::EdgeCurve::Line => {
+        remus_topology::edge::EdgeCurve::Line => {
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             Ok((end - start).length())
         }
-        brepkit_topology::edge::EdgeCurve::NurbsCurve(curve) => Ok(curve.arc_length(50)),
-        brepkit_topology::edge::EdgeCurve::Circle(circle) => {
+        remus_topology::edge::EdgeCurve::NurbsCurve(curve) => Ok(curve.arc_length(50)),
+        remus_topology::edge::EdgeCurve::Circle(circle) => {
             if edge.is_closed() {
                 Ok(circle.circumference())
             } else {
@@ -38,7 +38,7 @@ pub fn edge_length(
                 Ok(angle * circle.radius())
             }
         }
-        brepkit_topology::edge::EdgeCurve::Ellipse(ellipse) => {
+        remus_topology::edge::EdgeCurve::Ellipse(ellipse) => {
             if edge.is_closed() {
                 Ok(ellipse.approximate_circumference())
             } else {
@@ -71,12 +71,12 @@ pub fn edge_length(
         // (documented as such on `Hyperbola3D::arc_length`). Neither is a
         // chord sum, so neither under-reports the way the ellipse arm above
         // does.
-        brepkit_topology::edge::EdgeCurve::Hyperbola(h) => {
+        remus_topology::edge::EdgeCurve::Hyperbola(h) => {
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             Ok(h.arc_length(h.project(start), h.project(end)))
         }
-        brepkit_topology::edge::EdgeCurve::Parabola(p) => {
+        remus_topology::edge::EdgeCurve::Parabola(p) => {
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             Ok(p.arc_length(p.project(start), p.project(end)))
@@ -93,7 +93,7 @@ pub fn edge_length(
 /// Returns an error if any edge lookup fails.
 pub fn wire_length(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
 ) -> Result<f64, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut total = 0.0;

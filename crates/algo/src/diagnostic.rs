@@ -6,11 +6,11 @@
 //! gaps. The diagnostic does NOT run the full GFA pipeline — it only
 //! compares the underlying face surfaces and AABBs.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::builder::same_domain::surfaces_same_domain;
 
@@ -58,7 +58,7 @@ pub fn detect_coincident_faces(
     solid_b: SolidId,
     tol: Tolerance,
 ) -> Result<Vec<CoincidentFacePair>, crate::error::AlgoError> {
-    use brepkit_topology::explorer;
+    use remus_topology::explorer;
 
     let faces_a = explorer::solid_faces(topo, solid_a)?;
     let faces_b = explorer::solid_faces(topo, solid_b)?;
@@ -112,7 +112,7 @@ const EDGE_INTERIOR_SAMPLES: usize = 11;
 /// to a single point), causing `aabb_overlap` to silently miss real
 /// overlaps for curved coincident faces.
 fn face_aabb(topo: &Topology, fid: FaceId) -> Result<Aabb3, crate::error::AlgoError> {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
     let face = topo.face(fid)?;
     let outer = topo.wire(face.outer_wire())?;
 
@@ -165,14 +165,14 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use brepkit_math::vec::Point3;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Point3;
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     fn make_box(topo: &mut Topology, min: [f64; 3], max: [f64; 3]) -> SolidId {
         let [x0, y0, z0] = min;
@@ -299,7 +299,7 @@ mod tests {
         // single full-circle edge has start == end, so a vertex-only
         // AABB collapses to a point. The curve-aware AABB must instead
         // span the circle's diameter in x and y.
-        use brepkit_math::curves::Circle3D;
+        use remus_math::curves::Circle3D;
         let mut topo = Topology::default();
         // Single vertex serving as start/end of the full-circle edge.
         let v0 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));

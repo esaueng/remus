@@ -2,13 +2,13 @@
 description = "Geometry algorithms: sampling, extrema, conversion"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-geometry"
+name = "remus-geometry"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-math.workspace = true
+remus-math.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -1,8 +1,8 @@
 //! Coordinate/type conversions between 3D, UV, and topology types.
 
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
 
 use super::super::pcurve_compute::{
     compute_pcurve_on_surface, project_point_on_surface, sample_edge_to_uv,
@@ -27,10 +27,7 @@ pub(super) fn reconciliation_band(points: &[Point3], minimum: f64) -> f64 {
 }
 
 /// Collect 3D vertex positions from a wire's edges.
-pub fn collect_wire_points(
-    topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
-) -> Vec<Point3> {
+pub fn collect_wire_points(topo: &Topology, wire_id: remus_topology::wire::WireId) -> Vec<Point3> {
     let wire = match topo.wire(wire_id) {
         Ok(w) => w,
         Err(_) => return Vec::new(),
@@ -58,7 +55,7 @@ pub(super) fn extract_plane_normal(surface: &FaceSurface) -> Vec3 {
 /// Convert a wire's edges to `OrientedPCurveEdge`s on a surface.
 pub(super) fn boundary_edges_to_pcurve(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
@@ -87,13 +84,13 @@ pub(super) fn boundary_edges_to_pcurve(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     surface: &FaceSurface,
     wire_pts: &[Point3],
     frame: Option<&PlaneFrame>,
     edge_images: &std::collections::HashMap<
-        brepkit_topology::edge::EdgeId,
-        Vec<brepkit_topology::edge::EdgeId>,
+        remus_topology::edge::EdgeId,
+        Vec<remus_topology::edge::EdgeId>,
         S,
     >,
     anchors: &[Point3],
@@ -110,7 +107,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
         Err(_) => return Vec::new(),
     };
 
-    let junction_near_anchor = |imgs: &[brepkit_topology::edge::EdgeId]| -> bool {
+    let junction_near_anchor = |imgs: &[remus_topology::edge::EdgeId]| -> bool {
         for pair in imgs.windows(2) {
             let (Ok(e0), Ok(e1)) = (topo.edge(pair[0]), topo.edge(pair[1])) else {
                 continue;
@@ -149,7 +146,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
     // deepened-notch walls) has its own calibrated machinery that expansion
     // breaks, and it is never a circle: sample five points, fit the circle
     // through three, and require the rest to sit on it within 1e-6.
-    let nurbs_is_circular = |eid: brepkit_topology::edge::EdgeId| -> bool {
+    let nurbs_is_circular = |eid: remus_topology::edge::EdgeId| -> bool {
         let Ok(edge) = topo.edge(eid) else {
             return false;
         };
@@ -179,7 +176,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
             .all(|p| ((*p - center).length() - r).abs() <= 1e-6 * r.max(1.0))
     };
 
-    let junction_in_band_nurbs = |imgs: &[brepkit_topology::edge::EdgeId]| -> bool {
+    let junction_in_band_nurbs = |imgs: &[remus_topology::edge::EdgeId]| -> bool {
         for w in imgs.windows(2) {
             let (Ok(e0), Ok(e1)) = (topo.edge(w[0]), topo.edge(w[1])) else {
                 continue;
@@ -198,13 +195,13 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
         false
     };
 
-    let mut pieces: Vec<(brepkit_topology::edge::EdgeId, bool)> = Vec::new();
+    let mut pieces: Vec<(remus_topology::edge::EdgeId, bool)> = Vec::new();
     for oe in wire.edges() {
         let curve_kind = topo.edge(oe.edge()).map(|e| e.curve().clone()).ok();
-        let is_line = matches!(curve_kind, Some(brepkit_topology::edge::EdgeCurve::Line));
+        let is_line = matches!(curve_kind, Some(remus_topology::edge::EdgeCurve::Line));
         let is_nurbs = matches!(
             curve_kind,
-            Some(brepkit_topology::edge::EdgeCurve::NurbsCurve(_))
+            Some(remus_topology::edge::EdgeCurve::NurbsCurve(_))
         );
         match edge_images.get(&oe.edge()) {
             Some(imgs)
@@ -380,7 +377,7 @@ pub(super) fn is_point_on_boundary_uv(
     // arc — a point on the wrapped span misses the chord by up to the whole
     // period and the ±TAU candidates cannot recover it. 3D is unambiguous.
     for edge in boundary {
-        let brepkit_topology::edge::EdgeCurve::Circle(c) = &edge.curve_3d else {
+        let remus_topology::edge::EdgeCurve::Circle(c) = &edge.curve_3d else {
             continue;
         };
         let foot_t = c.project(point);
@@ -471,7 +468,7 @@ pub(super) fn is_point_on_boundary_uv(
 fn lift_projection_into_period(
     projected: Point2,
     origin: Point2,
-    direction: brepkit_math::vec::Vec2,
+    direction: remus_math::vec::Vec2,
     surface: &FaceSurface,
 ) -> Point2 {
     let (u_period, v_period) = super::super::pcurve_compute::surface_periods(surface);
@@ -501,13 +498,13 @@ fn lift_projection_into_period(
 /// from (pi, v) to (2pi, v) won't have its end snapped to (0, v) by the
 /// surface's `project_point` which normalizes u into `[0, 2pi)`.
 pub(super) fn uv_endpoints_from_pcurve(
-    pcurve: &brepkit_math::curves2d::Curve2D,
+    pcurve: &remus_math::curves2d::Curve2D,
     start_3d: Point3,
     end_3d: Point3,
     surface: &FaceSurface,
     wire_pts: &[Point3],
 ) -> (Point2, Point2) {
-    use brepkit_math::curves2d::Curve2D;
+    use remus_math::curves2d::Curve2D;
 
     match pcurve {
         Curve2D::Line(line) => {

@@ -27,19 +27,19 @@ pub enum WasmError {
 
     /// An error from a modeling operation.
     #[error(transparent)]
-    Operations(#[from] brepkit_operations::OperationsError),
+    Operations(#[from] remus_operations::OperationsError),
 
     /// An error from topology lookup.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math error (e.g. singular matrix).
     #[error(transparent)]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// An error from a geometric check (outlining, containment, distance).
     #[error(transparent)]
-    Check(#[from] brepkit_check::CheckError),
+    Check(#[from] remus_check::CheckError),
 }
 
 /// Stable machine-readable error codes used by structured WASM contracts.
@@ -229,24 +229,22 @@ impl From<WasmError> for StructuredWasmError {
     }
 }
 
-impl From<brepkit_topology::TopologyError> for StructuredWasmError {
-    fn from(error: brepkit_topology::TopologyError) -> Self {
+impl From<remus_topology::TopologyError> for StructuredWasmError {
+    fn from(error: remus_topology::TopologyError) -> Self {
         let message = error.to_string();
         let (entity, index) = match &error {
-            brepkit_topology::TopologyError::VertexNotFound(id) => ("vertex", Some(id.index())),
-            brepkit_topology::TopologyError::EdgeNotFound(id) => ("edge", Some(id.index())),
-            brepkit_topology::TopologyError::WireNotFound(id) => ("wire", Some(id.index())),
-            brepkit_topology::TopologyError::FaceNotFound(id) => ("face", Some(id.index())),
-            brepkit_topology::TopologyError::ShellNotFound(id) => ("shell", Some(id.index())),
-            brepkit_topology::TopologyError::SolidNotFound(id) => ("solid", Some(id.index())),
-            brepkit_topology::TopologyError::CompoundNotFound(id) => ("compound", Some(id.index())),
-            brepkit_topology::TopologyError::CompSolidNotFound(id) => {
-                ("compsolid", Some(id.index()))
-            }
-            brepkit_topology::TopologyError::WireNotClosed
-            | brepkit_topology::TopologyError::NotPlanar => ("wire", None),
-            brepkit_topology::TopologyError::Empty { entity } => (*entity, None),
-            brepkit_topology::TopologyError::NonManifold { .. } => ("topology", None),
+            remus_topology::TopologyError::VertexNotFound(id) => ("vertex", Some(id.index())),
+            remus_topology::TopologyError::EdgeNotFound(id) => ("edge", Some(id.index())),
+            remus_topology::TopologyError::WireNotFound(id) => ("wire", Some(id.index())),
+            remus_topology::TopologyError::FaceNotFound(id) => ("face", Some(id.index())),
+            remus_topology::TopologyError::ShellNotFound(id) => ("shell", Some(id.index())),
+            remus_topology::TopologyError::SolidNotFound(id) => ("solid", Some(id.index())),
+            remus_topology::TopologyError::CompoundNotFound(id) => ("compound", Some(id.index())),
+            remus_topology::TopologyError::CompSolidNotFound(id) => ("compsolid", Some(id.index())),
+            remus_topology::TopologyError::WireNotClosed
+            | remus_topology::TopologyError::NotPlanar => ("wire", None),
+            remus_topology::TopologyError::Empty { entity } => (*entity, None),
+            remus_topology::TopologyError::NonManifold { .. } => ("topology", None),
         };
         let mut structured = Self::new(WasmErrorCode::TopologyError, message);
         structured
@@ -261,37 +259,37 @@ impl From<brepkit_topology::TopologyError> for StructuredWasmError {
     }
 }
 
-impl From<brepkit_math::MathError> for StructuredWasmError {
-    fn from(error: brepkit_math::MathError) -> Self {
+impl From<remus_math::MathError> for StructuredWasmError {
+    fn from(error: remus_math::MathError) -> Self {
         let code = match &error {
-            brepkit_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
+            remus_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
             _ => WasmErrorCode::InvalidArgument,
         };
         Self::new(code, error.to_string())
     }
 }
 
-impl From<brepkit_check::CheckError> for StructuredWasmError {
-    fn from(error: brepkit_check::CheckError) -> Self {
+impl From<remus_check::CheckError> for StructuredWasmError {
+    fn from(error: remus_check::CheckError) -> Self {
         let message = error.to_string();
         match error {
-            brepkit_check::CheckError::Topology(error) => Self::from(error),
-            brepkit_check::CheckError::Math(error) => Self::from(error),
+            remus_check::CheckError::Topology(error) => Self::from(error),
+            remus_check::CheckError::Math(error) => Self::from(error),
             _ => Self::operation_failed(message),
         }
     }
 }
 
-impl From<brepkit_operations::OperationsError> for StructuredWasmError {
-    fn from(error: brepkit_operations::OperationsError) -> Self {
+impl From<remus_operations::OperationsError> for StructuredWasmError {
+    fn from(error: remus_operations::OperationsError) -> Self {
         let message = error.to_string();
         match error {
-            brepkit_operations::OperationsError::InvalidInput { .. } => {
+            remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }
-            brepkit_operations::OperationsError::Topology(error) => Self::from(error),
-            brepkit_operations::OperationsError::Math(error) => Self::from(error),
-            brepkit_operations::OperationsError::Check(error) => {
+            remus_operations::OperationsError::Topology(error) => Self::from(error),
+            remus_operations::OperationsError::Math(error) => Self::from(error),
+            remus_operations::OperationsError::Check(error) => {
                 let mut structured = Self::from(error);
                 structured.message = message;
                 structured
@@ -301,40 +299,40 @@ impl From<brepkit_operations::OperationsError> for StructuredWasmError {
     }
 }
 
-impl From<brepkit_geometry::error::GeomError> for StructuredWasmError {
-    fn from(error: brepkit_geometry::error::GeomError) -> Self {
+impl From<remus_geometry::error::GeomError> for StructuredWasmError {
+    fn from(error: remus_geometry::error::GeomError) -> Self {
         Self::operation_failed(error.to_string())
     }
 }
 
-impl From<brepkit_heal::HealError> for StructuredWasmError {
-    fn from(error: brepkit_heal::HealError) -> Self {
+impl From<remus_heal::HealError> for StructuredWasmError {
+    fn from(error: remus_heal::HealError) -> Self {
         Self::operation_failed(error.to_string())
     }
 }
 
-impl From<brepkit_algo::error::AlgoError> for StructuredWasmError {
-    fn from(error: brepkit_algo::error::AlgoError) -> Self {
+impl From<remus_algo::error::AlgoError> for StructuredWasmError {
+    fn from(error: remus_algo::error::AlgoError) -> Self {
         Self::operation_failed(error.to_string())
     }
 }
 
 #[cfg(feature = "io")]
-impl From<brepkit_io::IoError> for StructuredWasmError {
-    fn from(error: brepkit_io::IoError) -> Self {
+impl From<remus_io::IoError> for StructuredWasmError {
+    fn from(error: remus_io::IoError) -> Self {
         let message = error.to_string();
         match error {
-            brepkit_io::IoError::LimitExceeded {
+            remus_io::IoError::LimitExceeded {
                 resource,
                 limit,
                 actual,
             } => Self::resource_limit(message, resource, limit, actual),
-            brepkit_io::IoError::ParseError { .. } => Self::invalid_argument(message, None),
-            brepkit_io::IoError::InvalidTopology { .. } => {
+            remus_io::IoError::ParseError { .. } => Self::invalid_argument(message, None),
+            remus_io::IoError::InvalidTopology { .. } => {
                 Self::new(WasmErrorCode::TopologyError, message)
             }
-            brepkit_io::IoError::Topology(error) => Self::from(error),
-            brepkit_io::IoError::Operations(error) => Self::from(error),
+            remus_io::IoError::Topology(error) => Self::from(error),
+            remus_io::IoError::Operations(error) => Self::from(error),
             _ => Self::internal(message),
         }
     }

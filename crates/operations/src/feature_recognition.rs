@@ -31,13 +31,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 pub use crate::query::EdgeConcavity;
@@ -943,8 +943,8 @@ mod tests {
     use crate::boolean::{BooleanOp, boolean};
     use crate::primitives::{make_box, make_cylinder, make_sphere};
     use crate::transform::transform_solid;
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::validation::{validate_shell_closed, validate_shell_manifold};
+    use remus_math::mat::Mat4;
+    use remus_topology::validation::{validate_shell_closed, validate_shell_manifold};
 
     fn translated_cylinder(
         topo: &mut Topology,

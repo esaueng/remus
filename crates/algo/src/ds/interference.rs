@@ -1,8 +1,8 @@
 //! Interference records from PaveFiller phases.
 
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::vertex::VertexId;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::vertex::VertexId;
 
 use super::pave::PaveBlockId;
 

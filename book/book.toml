@@ -1,13 +1,13 @@
 [book]
-authors = ["brepkit contributors"]
+authors = ["remus contributors"]
 description = "A modern, pure-Rust B-Rep CAD kernel"
 language = "en"
 src = "src"
-title = "brepkit"
+title = "remus"
 
 [build]
 build-dir = "book"
 
 [output.html]
-edit-url-template = "https://github.com/esaueng/brepkit/edit/main/book/{path}"
-git-repository-url = "https://github.com/esaueng/brepkit"
+edit-url-template = "https://github.com/esaueng/remus/edit/main/book/{path}"
+git-repository-url = "https://github.com/esaueng/remus"

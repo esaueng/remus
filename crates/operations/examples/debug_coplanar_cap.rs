@@ -44,17 +44,14 @@
 //!   verify  volume vs the closed form, closed-manifold shell, and ray-cast
 //!           classification of a point in the protruding wall
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 
-fn census(
-    topo: &Topology,
-    sid: brepkit_topology::arena::Id<brepkit_topology::solid::Solid>,
-) -> String {
+fn census(topo: &Topology, sid: remus_topology::arena::Id<remus_topology::solid::Solid>) -> String {
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for fid in solid_faces(topo, sid).unwrap() {
         *counts
@@ -83,7 +80,7 @@ fn run(cx: f64, cy: f64, cz: f64, h: f64, verbose: bool) -> (usize, bool) {
             faces.len(),
             census(&topo, result)
         );
-        let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
+        let vol = remus_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
         eprintln!("  volume = {vol:.4}");
     }
     (faces.len(), fallback)
@@ -129,7 +126,7 @@ fn verify_one(cx: f64, cy: f64, cz: f64, h: f64) -> Result<(), String> {
     }
 
     // Closed manifold: every edge used exactly twice.
-    let mut usage: std::collections::HashMap<brepkit_topology::edge::EdgeId, usize> =
+    let mut usage: std::collections::HashMap<remus_topology::edge::EdgeId, usize> =
         std::collections::HashMap::new();
     for &fid in &faces {
         let f = topo.face(fid).unwrap();
@@ -152,7 +149,7 @@ fn verify_one(cx: f64, cy: f64, cz: f64, h: f64) -> Result<(), String> {
     let z_hi = (cz + h).min(24.0);
     let overlap = overlap_area(cx, cy, r) * (z_hi - z_lo).max(0.0);
     let expect = 30.0 * 18.0 * 24.0 + std::f64::consts::PI * r * r * h - overlap;
-    let got = brepkit_operations::measure::solid_volume(&topo, result, 0.02).unwrap();
+    let got = remus_operations::measure::solid_volume(&topo, result, 0.02).unwrap();
     let rel = (got - expect).abs() / expect;
     if rel > 1e-3 {
         return Err(format!(
@@ -163,7 +160,7 @@ fn verify_one(cx: f64, cy: f64, cz: f64, h: f64) -> Result<(), String> {
     // Ray-cast classify a point inside the protruding wall band: just inside
     // the cylinder wall, outside the box in x or y, at mid-height of the
     // overlap. Only meaningful where the cylinder actually protrudes.
-    let opts = brepkit_check::classify::ClassifyOptions::default();
+    let opts = remus_check::classify::ClassifyOptions::default();
     let zm = 0.5 * (z_lo + z_hi);
     for (px, py) in [
         (cx - 0.5 * r, cy),
@@ -176,10 +173,10 @@ fn verify_one(cx: f64, cy: f64, cz: f64, h: f64) -> Result<(), String> {
         if px >= 0.0 && py >= 0.0 && px <= 30.0 && py <= 18.0 {
             continue;
         }
-        let p = brepkit_math::vec::Point3::new(px, py, zm);
-        let c = brepkit_check::classify::classify_point(&topo, result, p, &opts)
+        let p = remus_math::vec::Point3::new(px, py, zm);
+        let c = remus_check::classify::classify_point(&topo, result, p, &opts)
             .map_err(|e| format!("classify failed: {e}"))?;
-        if c != brepkit_check::classify::PointClassification::Inside {
+        if c != remus_check::classify::PointClassification::Inside {
             return Err(format!(
                 "point ({px:.2},{py:.2},{zm:.2}) in the protruding wall classified {c:?}"
             ));
@@ -465,16 +462,15 @@ fn main() {
         let cyl = primitives::make_cylinder(&mut topo, 6.0, h).unwrap();
         transform_solid(&mut topo, cyl, &Mat4::translation(cx, cy, cz)).unwrap();
 
-        let res =
-            brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, bx, cyl);
+        let res = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, bx, cyl);
         match res {
             Err(e) => eprintln!("RAW GFA ERROR: {e:?}"),
             Ok(sol) => {
                 let solids = [sol];
                 eprintln!("RAW GFA: ok");
                 {
-                    let bb = brepkit_operations::measure::solid_bounding_box(&topo, sol).unwrap();
-                    let vol = brepkit_operations::measure::solid_volume(&topo, sol, 0.02).unwrap();
+                    let bb = remus_operations::measure::solid_bounding_box(&topo, sol).unwrap();
+                    let vol = remus_operations::measure::solid_volume(&topo, sol, 0.02).unwrap();
                     let lens = overlap_area(cx, cy, 6.0);
                     let expect = 30.0 * 18.0 * 24.0 + std::f64::consts::PI * 36.0 * h
                         - lens * ((cz + h).min(24.0) - cz.max(0.0)).max(0.0);
@@ -497,12 +493,11 @@ fn main() {
                     let mut down = 0.0;
                     for fid in solid_faces(&topo, sol).unwrap() {
                         let f = topo.face(fid).unwrap();
-                        if let brepkit_topology::face::FaceSurface::Plane { normal, .. } =
-                            f.surface()
+                        if let remus_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
                         {
                             let nz = normal.z() * if f.is_reversed() { -1.0 } else { 1.0 };
                             let ar =
-                                brepkit_operations::measure::face_area(&topo, fid, 0.02).unwrap();
+                                remus_operations::measure::face_area(&topo, fid, 0.02).unwrap();
                             if nz > 0.5 {
                                 up += ar;
                             } else if nz < -0.5 {
@@ -520,10 +515,8 @@ fn main() {
                     let faces = solid_faces(&topo, s).unwrap();
                     eprintln!("  solid {s:?}: {} faces {}", faces.len(), census(&topo, s));
                     // edge usage counts across the solid
-                    let mut usage: std::collections::HashMap<
-                        brepkit_topology::edge::EdgeId,
-                        usize,
-                    > = std::collections::HashMap::new();
+                    let mut usage: std::collections::HashMap<remus_topology::edge::EdgeId, usize> =
+                        std::collections::HashMap::new();
                     for &fid in &faces {
                         let f = topo.face(fid).unwrap();
                         let mut wires = vec![f.outer_wire()];
@@ -578,7 +571,7 @@ fn main() {
                     for &fid in &faces {
                         let f = topo.face(fid).unwrap();
                         let plane = match f.surface() {
-                            brepkit_topology::face::FaceSurface::Plane { normal, d } => format!(
+                            remus_topology::face::FaceSurface::Plane { normal, d } => format!(
                                 " n=({:.2},{:.2},{:.2}) d={:.3}",
                                 normal.x(),
                                 normal.y(),
@@ -592,8 +585,7 @@ fn main() {
                             f.surface().type_tag(),
                             f.is_reversed(),
                             f.inner_wires().len(),
-                            brepkit_operations::measure::face_area(&topo, fid, 0.05)
-                                .unwrap_or(-1.0)
+                            remus_operations::measure::face_area(&topo, fid, 0.05).unwrap_or(-1.0)
                         );
                     }
                 }

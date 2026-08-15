@@ -92,10 +92,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -103,11 +103,11 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
-fn brep_health(topo: &Topology, sid: brepkit_topology::solid::SolidId) -> (usize, usize) {
+fn brep_health(topo: &Topology, sid: remus_topology::solid::SolidId) -> (usize, usize) {
     let faces = solid_faces(topo, sid).unwrap();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     for &fid in &faces {
@@ -133,13 +133,13 @@ fn mixed_socket_body_operand_orientation_defect_is_pinned() {
     // orientation campaign closes. An upstream fix that changes these
     // numbers must update this pin.
     let mut topo = Topology::new();
-    let opts = brepkit_operations::validate::ValidationOptions {
+    let opts = remus_operations::validate::ValidationOptions {
         check_orientation: true,
         ..Default::default()
     };
     let body = load("mixed_socket_body.bin", &mut topo);
     let report =
-        brepkit_operations::validate::validate_solid_with_options(&topo, body, &opts).unwrap();
+        remus_operations::validate::validate_solid_with_options(&topo, body, &opts).unwrap();
     assert!(
         report.issues.iter().any(|i| i
             .description
@@ -149,7 +149,7 @@ fn mixed_socket_body_operand_orientation_defect_is_pinned() {
     );
     let assembly = load("mixed_socket_assembly.bin", &mut topo);
     let report =
-        brepkit_operations::validate::validate_solid_with_options(&topo, assembly, &opts).unwrap();
+        remus_operations::validate::validate_solid_with_options(&topo, assembly, &opts).unwrap();
     assert!(
         !report
             .issues
@@ -167,13 +167,9 @@ fn mixed_socket_fuse_is_brep_watertight() {
     let mut topo = Topology::new();
     let body = load("mixed_socket_body.bin", &mut topo);
     let assembly = load("mixed_socket_assembly.bin", &mut topo);
-    let result = brepkit_algo::gfa::boolean(
-        &mut topo,
-        brepkit_algo::bop::BooleanOp::Fuse,
-        body,
-        assembly,
-    )
-    .expect("analytic fuse must succeed");
+    let result =
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, body, assembly)
+            .expect("analytic fuse must succeed");
     assert_eq!(
         brep_health(&topo, result),
         (0, 0),
@@ -190,14 +186,10 @@ fn mixed_socket_tessellation_covers_every_face() {
     let mut topo = Topology::new();
     let body = load("mixed_socket_body.bin", &mut topo);
     let assembly = load("mixed_socket_assembly.bin", &mut topo);
-    let result = brepkit_algo::gfa::boolean(
-        &mut topo,
-        brepkit_algo::bop::BooleanOp::Fuse,
-        body,
-        assembly,
-    )
-    .expect("analytic fuse must succeed");
-    let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+    let result =
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, body, assembly)
+            .expect("analytic fuse must succeed");
+    let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
         &topo,
         result,
         0.01,
@@ -226,13 +218,13 @@ fn mixed_socket_fresh_operands_are_orientation_clean() {
     // to the old capture). Guards the construction-op orientation campaign
     // at this chain's altitude.
     let mut topo = Topology::new();
-    let opts = brepkit_operations::validate::ValidationOptions {
+    let opts = remus_operations::validate::ValidationOptions {
         check_orientation: true,
         ..Default::default()
     };
     let body = load("mixed_socket_body_fresh.bin", &mut topo);
     let report =
-        brepkit_operations::validate::validate_solid_with_options(&topo, body, &opts).unwrap();
+        remus_operations::validate::validate_solid_with_options(&topo, body, &opts).unwrap();
     assert!(
         !report
             .issues
@@ -243,7 +235,7 @@ fn mixed_socket_fresh_operands_are_orientation_clean() {
     );
     let assembly = load("mixed_socket_assembly.bin", &mut topo);
     let report =
-        brepkit_operations::validate::validate_solid_with_options(&topo, assembly, &opts).unwrap();
+        remus_operations::validate::validate_solid_with_options(&topo, assembly, &opts).unwrap();
     assert!(
         !report
             .issues
@@ -264,19 +256,15 @@ fn mixed_socket_fresh_fuse_is_orientation_clean() {
     let mut topo = Topology::new();
     let body = load("mixed_socket_body_fresh.bin", &mut topo);
     let assembly = load("mixed_socket_assembly.bin", &mut topo);
-    let result = brepkit_algo::gfa::boolean(
-        &mut topo,
-        brepkit_algo::bop::BooleanOp::Fuse,
-        body,
-        assembly,
-    )
-    .expect("analytic fuse must succeed");
-    let opts = brepkit_operations::validate::ValidationOptions {
+    let result =
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, body, assembly)
+            .expect("analytic fuse must succeed");
+    let opts = remus_operations::validate::ValidationOptions {
         check_orientation: true,
         ..Default::default()
     };
     let report =
-        brepkit_operations::validate::validate_solid_with_options(&topo, result, &opts).unwrap();
+        remus_operations::validate::validate_solid_with_options(&topo, result, &opts).unwrap();
     assert!(
         !report
             .issues
@@ -297,22 +285,18 @@ fn mixed_socket_tessellation_is_watertight() {
     let mut topo = Topology::new();
     let body = load("mixed_socket_body_fresh.bin", &mut topo);
     let assembly = load("mixed_socket_assembly.bin", &mut topo);
-    let result = brepkit_algo::gfa::boolean(
-        &mut topo,
-        brepkit_algo::bop::BooleanOp::Fuse,
-        body,
-        assembly,
-    )
-    .expect("analytic fuse must succeed");
+    let result =
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, body, assembly)
+            .expect("analytic fuse must succeed");
 
-    let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+    let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
         &topo,
         result,
         0.01,
         5.0_f64.to_radians(),
     )
     .unwrap();
-    let bnd = brepkit_operations::tessellate::boundary_edge_count(&mesh);
+    let bnd = remus_operations::tessellate::boundary_edge_count(&mesh);
     assert_eq!(
         bnd, 0,
         "export-tolerance mesh must be watertight, got {bnd}"

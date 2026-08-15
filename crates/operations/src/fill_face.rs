@@ -3,13 +3,13 @@
 //! Fills an N-sided boundary with a surface patch. For 4-sided boundaries,
 //! uses Coons patch interpolation.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::OperationsError;
 
@@ -27,7 +27,7 @@ use crate::OperationsError;
 pub fn fill_coons_patch(
     topo: &mut Topology,
     curves: &[Vec<Point3>],
-) -> Result<brepkit_topology::face::FaceId, OperationsError> {
+) -> Result<remus_topology::face::FaceId, OperationsError> {
     if curves.len() < 4 {
         return Err(OperationsError::InvalidInput {
             reason: format!(

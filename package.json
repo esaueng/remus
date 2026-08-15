@@ -1,7 +1,7 @@
 {
   "private": true,
-  "name": "brepkit-workspace",
-  "description": "Development tooling for brepkit monorepo",
+  "name": "remus-workspace",
+  "description": "Development tooling for remus monorepo",
   "scripts": {
     "prepare": "husky"
   },

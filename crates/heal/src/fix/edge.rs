@@ -1,11 +1,11 @@
 //! Edge fixing — vertex-curve alignment, degenerate removal, same-parameter.
 
-use brepkit_math::curves2d::{Curve2D, NurbsCurve2D};
-use brepkit_math::vec::Point2;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::pcurve::PCurve;
+use remus_math::curves2d::{Curve2D, NurbsCurve2D};
+use remus_math::vec::Point2;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::pcurve::PCurve;
 
 use super::FixResult;
 use super::config::{FixConfig, FixMode};

@@ -37,6 +37,6 @@ exists in this library workspace, so those review phases are not applicable.
 | Boundary script | Passed locally and in fork CI. Cargo-deny, RustSec, and OSV also passed on the final PR head. |
 | Machete and Taplo | Passed in fork CI through the unused-dependencies and TOML-format jobs. |
 | MSRV 1.88 | Passed locally. |
-| WASM package build, Node smoke, npm dry-run | Passed with Rust 1.96.0, wasm-pack 0.15.0, and Node 22.22.2. The tarball includes both license texts. |
+| WASM package build, Node smoke, npm dry-run | Passed with Rust 1.96.0, wasm-pack 0.15.0, and Node 22.22.2. The Remus tarball contains seven files, includes `LICENSE-APACHE`, and is 2.6 MB compressed / 8.0 MB unpacked. |
 | Coverage, benchmark, fuzz/corpus replay | Deterministic complexity, 64-cut release guards, benchmark, and the 60% llvm-cov gate passed. No fuzz/corpus claim is made. |
 | Fork-hosted CI evidence | Passed in run `29672853018`: aggregate CI, tests, coverage, MSRV, WASM builds, docs, boundaries, dependency policy, RustSec, OSV, formatting, unused dependencies, and benchmarks were green. No release or repository setting was changed. |

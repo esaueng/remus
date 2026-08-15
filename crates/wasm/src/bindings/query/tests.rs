@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 use crate::handles::face_id_to_u32;
 use crate::kernel::test_fixtures::{kernel_with_box, kernel_with_cylinder};
@@ -113,13 +113,13 @@ fn face_normal_error_on_non_planar_face() {
     let (k, solid) = kernel_with_cylinder();
     // The cylindrical lateral face is not planar — verify via topology.
     let solid_id = k.resolve_solid(solid).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
     // At least one face must be non-planar (Cylinder surface).
     let has_non_planar = faces.iter().any(|&fid| {
         let face = k.topo.face(fid).unwrap();
         !matches!(
             face.surface(),
-            brepkit_topology::face::FaceSurface::Plane { .. }
+            remus_topology::face::FaceSurface::Plane { .. }
         )
     });
     assert!(
@@ -206,17 +206,17 @@ fn invalid_solid_handle_returns_error_for_entity_counts() {
 // replicate the JSON serialization logic in a helper and verify the
 // same field structure that `to_brep` emits.
 
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::FaceSurface;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceSurface;
 
 /// Build the toBREP JSON for a solid using the same logic as
 /// `to_brep`, but returning `serde_json::Value` directly so the
 /// test can run on non-wasm targets.
 fn build_brep_json(k: &crate::kernel::BrepKernel, solid: u32) -> serde_json::Value {
     let solid_id = k.resolve_solid(solid).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
-    let edges = brepkit_topology::explorer::solid_edges(&k.topo, solid_id).unwrap();
-    let verts = brepkit_topology::explorer::solid_vertices(&k.topo, solid_id).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&k.topo, solid_id).unwrap();
+    let verts = remus_topology::explorer::solid_vertices(&k.topo, solid_id).unwrap();
 
     let edge_json: Vec<serde_json::Value> = edges
         .iter()
@@ -437,7 +437,7 @@ fn to_brep_cylinder_surface_params() {
 #[test]
 fn to_brep_sphere_surface_params() {
     let mut k = crate::kernel::BrepKernel::new();
-    let id = brepkit_operations::primitives::make_sphere(k.topo_mut(), 3.0, 16).unwrap();
+    let id = remus_operations::primitives::make_sphere(k.topo_mut(), 3.0, 16).unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let solid = id.index() as u32;
     let brep = build_brep_json(&k, solid);
@@ -462,7 +462,7 @@ fn to_brep_sphere_surface_params() {
 #[test]
 fn to_brep_cone_surface_params() {
     let mut k = crate::kernel::BrepKernel::new();
-    let id = brepkit_operations::primitives::make_cone(k.topo_mut(), 2.0, 0.5, 4.0).unwrap();
+    let id = remus_operations::primitives::make_cone(k.topo_mut(), 2.0, 0.5, 4.0).unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let solid = id.index() as u32;
     let brep = build_brep_json(&k, solid);
@@ -513,7 +513,7 @@ fn nurbs_quarter_circle_arc_reports_circle_type() {
 #[test]
 fn to_brep_torus_surface_params() {
     let mut k = crate::kernel::BrepKernel::new();
-    let id = brepkit_operations::primitives::make_torus(k.topo_mut(), 5.0, 1.0, 16).unwrap();
+    let id = remus_operations::primitives::make_torus(k.topo_mut(), 5.0, 1.0, 16).unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let solid = id.index() as u32;
     let brep = build_brep_json(&k, solid);
@@ -543,8 +543,8 @@ fn to_brep_torus_surface_params() {
 fn closed_polygon_wire(
     k: &mut crate::kernel::BrepKernel,
     pts: &[Point3],
-) -> brepkit_topology::wire::WireId {
-    brepkit_topology::builder::make_polygon_wire(k.topo_mut(), pts, 1e-7).unwrap()
+) -> remus_topology::wire::WireId {
+    remus_topology::builder::make_polygon_wire(k.topo_mut(), pts, 1e-7).unwrap()
 }
 
 #[test]
@@ -559,7 +559,7 @@ fn surface_type_noncoplanar_wire_is_not_plane() {
             Point3::new(5.0, 5.0, 5.0),
         ],
     );
-    let fid = brepkit_topology::builder::make_face_from_wire(k.topo_mut(), wid).unwrap();
+    let fid = remus_topology::builder::make_face_from_wire(k.topo_mut(), wid).unwrap();
     let stype = k.get_surface_type(face_id_to_u32(fid)).unwrap();
     assert_ne!(stype, "plane", "non-coplanar wire must not report a plane");
 }
@@ -576,7 +576,7 @@ fn surface_type_planar_square_wire_is_plane() {
             Point3::new(0.0, 10.0, 0.0),
         ],
     );
-    let fid = brepkit_topology::builder::make_face_from_wire(k.topo_mut(), wid).unwrap();
+    let fid = remus_topology::builder::make_face_from_wire(k.topo_mut(), wid).unwrap();
     let stype = k.get_surface_type(face_id_to_u32(fid)).unwrap();
     assert_eq!(stype, "plane");
 }
@@ -593,7 +593,7 @@ fn make_planar_face_from_wire_rejects_noncoplanar() {
             Point3::new(5.0, 5.0, 5.0),
         ],
     );
-    let res = brepkit_topology::builder::make_planar_face_from_wire(k.topo_mut(), wid);
+    let res = remus_topology::builder::make_planar_face_from_wire(k.topo_mut(), wid);
     assert!(
         res.is_err(),
         "planar-only build must reject non-coplanar wire"

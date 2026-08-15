@@ -1,12 +1,12 @@
 # Release checklist
 
-This checklist is a release gate, not authorization to publish. The production
-fork must not publish until the ownership requirements in
+This checklist is a release gate, not authorization to publish. Remus must not
+publish until the ownership requirements in
 `fork-maintenance.md` are satisfied and every P0/P1 audit row is closed.
 
 ## Source and version
 
-- [ ] Record the exact commit, upstream base, fork-only diff, and clean status.
+- [ ] Record the exact commit, Apache source base, Remus-only diff, and clean status.
 - [ ] Confirm the tag, `crates/wasm/Cargo.toml`, generated `package.json`,
   changelog, and release notes use the same version.
 - [ ] Confirm root and xtask lockfiles are committed and unchanged by builds.
@@ -24,11 +24,11 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo test -p brepkit-operations --features perf-counters scaling_ -- --nocapture
-cargo test --release -p brepkit-operations --test perf_64cut_determinism -- --nocapture
+cargo test -p remus-operations --features perf-counters scaling_ -- --nocapture
+cargo test --release -p remus-operations --test perf_64cut_determinism -- --nocapture
 cargo +1.88.0 check --workspace --all-features
-cargo check -p brepkit-wasm --target wasm32-unknown-unknown
-cargo check -p brepkit-wasm --target wasm32-unknown-unknown --no-default-features
+cargo check -p remus-wasm --target wasm32-unknown-unknown
+cargo check -p remus-wasm --target wasm32-unknown-unknown --no-default-features
 cargo test --manifest-path xtask/Cargo.toml
 RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features
 ./scripts/check-boundaries.sh
@@ -51,7 +51,7 @@ cargo xtask wasm-build --skip-opt
 
 ## CI and artifact gate
 
-- [ ] All required fork CI jobs pass on the release commit, including coverage,
+- [ ] All required repository CI jobs pass on the release commit, including coverage,
   MSRV, WASM/no-I/O, deny, RustSec, docs, boundaries, machete, and Taplo.
 - [ ] The coverage job remains at or above its configured 60% line threshold.
 - [ ] The CI and publish workflows produce the same package through

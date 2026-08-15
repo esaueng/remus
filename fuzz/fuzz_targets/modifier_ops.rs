@@ -19,12 +19,12 @@ mod invariants;
 mod shapegen;
 
 use arbitrary::Arbitrary;
-use brepkit_operations::blend_ops::{chamfer_v2, fillet_v2};
-use brepkit_operations::draft::draft;
-use brepkit_operations::shell_op::shell;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
-use brepkit_topology::solid::SolidId;
+use remus_operations::blend_ops::{chamfer_v2, fillet_v2};
+use remus_operations::draft::draft;
+use remus_operations::shell_op::shell;
+use remus_topology::Topology;
+use remus_topology::explorer;
+use remus_topology::solid::SolidId;
 use invariants as inv;
 use shapegen::{BaseBody, Refusal};
 
@@ -270,7 +270,7 @@ fn finish(
         return;
     }
 
-    if let Ok(aabb) = brepkit_operations::measure::solid_bounding_box(topo, result) {
+    if let Ok(aabb) = remus_operations::measure::solid_bounding_box(topo, result) {
         let diag = (aabb.max - aabb.min).length();
         inv::assert_watertight_mesh(what, topo, result, inv::volume_deflection(diag) * 4.0);
     }

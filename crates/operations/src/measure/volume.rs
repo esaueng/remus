@@ -1,10 +1,10 @@
 //! Volume, center of mass, and related computations for B-rep solids.
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::tessellate;
 
@@ -31,7 +31,7 @@ use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 fn sphere_outer_wire_constant_v(
     topo: &Topology,
     face_id: FaceId,
-    sphere: &brepkit_math::surfaces::SphericalSurface,
+    sphere: &remus_math::surfaces::SphericalSurface,
 ) -> bool {
     let Ok(face) = topo.face(face_id) else {
         return false;
@@ -70,7 +70,7 @@ fn sphere_outer_wire_constant_v(
 /// Whether the solid has at least one sphere face that is a scalloped collar
 /// (a bored quadric whose outer wire varies in `v`, e.g. a box ∩ sphere patch).
 fn solid_has_scalloped_sphere_collar(topo: &Topology, solid: SolidId) -> bool {
-    let Ok(faces) = brepkit_topology::explorer::solid_faces(topo, solid) else {
+    let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
         return false;
     };
     faces.iter().any(|&fid| {
@@ -90,7 +90,7 @@ fn solid_has_scalloped_sphere_collar(topo: &Topology, solid: SolidId) -> bool {
 /// notch walls), and there is no closed-form volume — so the volume is taken off
 /// the (watertight) whole-solid mesh instead, like the box ∩ sphere collar.
 fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
-    let Ok(faces) = brepkit_topology::explorer::solid_faces(topo, solid) else {
+    let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
         return false;
     };
     faces.iter().any(|&fid| {
@@ -108,8 +108,8 @@ fn solid_has_torus_notch_band(topo: &Topology, solid: SolidId) -> bool {
 /// ordered edge samples must accumulate exactly one full `v` period.
 fn torus_wire_wraps_tube(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
-    torus: &brepkit_math::surfaces::ToroidalSurface,
+    wire_id: remus_topology::wire::WireId,
+    torus: &remus_math::surfaces::ToroidalSurface,
 ) -> bool {
     use std::f64::consts::{PI, TAU};
 
@@ -152,7 +152,7 @@ fn torus_wire_wraps_tube(
 /// Count mesh edges incident to a number of triangles other than 2 (boundary or
 /// non-manifold edges). Zero means a closed 2-manifold.
 fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
-    use brepkit_math::det_hash::DetHashMap;
+    use remus_math::det_hash::DetHashMap;
     let mut counts: DetHashMap<(u32, u32), usize> = DetHashMap::default();
     for tri in mesh.indices.chunks_exact(3) {
         for &(i, j) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
@@ -179,7 +179,7 @@ fn mesh_boundary_edge_count(mesh: &tessellate::TriangleMesh) -> usize {
 /// Signature: the outline visits three or more distinct axial levels. Two is
 /// all a rectangle's corners can occupy, so a third is proof the rectangle
 /// over-credits, and it is also what puts
-/// [`brepkit_check::properties::face_integrator`] on its boundary-trimmed
+/// [`remus_check::properties::face_integrator`] on its boundary-trimmed
 /// branch, which integrates the real outline. Holed walls are routed by their
 /// own trigger; NURBS never reaches here.
 fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
@@ -216,7 +216,7 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
 ///
 /// This is what separates the two kinds of notched band, and it is the
 /// property that decides whether the per-face integrator can see the face at
-/// all. [`brepkit_check::properties::face_integrator`] trims a quadric on its
+/// all. [`remus_check::properties::face_integrator`] trims a quadric on its
 /// projected outline only when that outline CLOSES; a boundary that winds the
 /// period has no inside to test against, so the integrator falls back to
 /// integrating the whole revolution over the boundary's `v` extent — the
@@ -285,7 +285,7 @@ fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
 }
 
 fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     let faces = solid_faces(topo, solid).ok()?;
     if faces.is_empty() {
@@ -374,10 +374,10 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
         return None;
     }
 
-    let gauss_order = brepkit_check::properties::PropertiesOptions::default().gauss_order;
+    let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let mut total = 0.0;
     for &fid in &faces {
-        total += brepkit_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
+        total += remus_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
             .ok()?
             .volume;
     }
@@ -400,7 +400,7 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
 ///   * every planar face is a circular disc/annulus/sector whose bounding
 ///     arc(s) are centred ON that shared axis.
 fn analytic_revolution_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     let faces = solid_faces(topo, solid).ok()?;
     if faces.is_empty() {
@@ -576,11 +576,11 @@ fn planar_face_arcs_centered_on_axis(
                 return false;
             };
             let center = match edge.curve() {
-                brepkit_topology::edge::EdgeCurve::Circle(c) => Some(c.center()),
-                brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
-                    let rtol = brepkit_math::tolerance::Tolerance::default().linear * 100.0;
-                    match brepkit_geometry::convert::recognize_curve(nc, rtol) {
-                        brepkit_geometry::convert::RecognizedCurve::Circle { center, .. } => {
+                remus_topology::edge::EdgeCurve::Circle(c) => Some(c.center()),
+                remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
+                    let rtol = remus_math::tolerance::Tolerance::default().linear * 100.0;
+                    match remus_geometry::convert::recognize_curve(nc, rtol) {
+                        remus_geometry::convert::RecognizedCurve::Circle { center, .. } => {
                             Some(center)
                         }
                         _ => None,
@@ -777,7 +777,7 @@ fn solid_is_steinmetz_lens_fuse(topo: &Topology, faces: &[FaceId]) -> bool {
 fn wall_extends_past(
     topo: &Topology,
     wall: FaceId,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    cyl: &remus_math::surfaces::CylindricalSurface,
     axis_isect: Point3,
     r: f64,
 ) -> bool {
@@ -814,8 +814,8 @@ fn wall_extends_past(
 /// the geometric precondition for the right-angle Steinmetz closed form —
 /// returns their axis-intersection point; otherwise `None`.
 fn cylinders_perpendicular_and_intersecting(
-    c0: &brepkit_math::surfaces::CylindricalSurface,
-    c1: &brepkit_math::surfaces::CylindricalSurface,
+    c0: &remus_math::surfaces::CylindricalSurface,
+    c1: &remus_math::surfaces::CylindricalSurface,
 ) -> Option<Point3> {
     let r0 = c0.radius();
     if (r0 - c1.radius()).abs() > 1e-6 * r0.max(1.0) {
@@ -1123,7 +1123,7 @@ fn partial_torus_sector_volume(
         if edge.start() != edge.end() {
             return None;
         }
-        let brepkit_topology::edge::EdgeCurve::Circle(c) = edge.curve() else {
+        let remus_topology::edge::EdgeCurve::Circle(c) = edge.curve() else {
             return None;
         };
         if (c.radius() - r_minor).abs() > tol {
@@ -1145,7 +1145,7 @@ fn partial_torus_sector_volume(
         if edge.start() == edge.end() {
             continue;
         }
-        let brepkit_topology::edge::EdgeCurve::Circle(c) = edge.curve() else {
+        let remus_topology::edge::EdgeCurve::Circle(c) = edge.curve() else {
             continue;
         };
         let off = c.center() - center;
@@ -1216,7 +1216,7 @@ fn find_cap_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, f64)> {
         let Ok(edge) = topo.edge(oe.edge()) else {
             continue;
         };
-        if let brepkit_topology::edge::EdgeCurve::Circle(c) = edge.curve() {
+        if let remus_topology::edge::EdgeCurve::Circle(c) = edge.curve() {
             return Some((c.center(), c.radius()));
         }
     }
@@ -1268,12 +1268,12 @@ pub(super) fn volume_tessellation_deflection(
 /// rather than a verdict: callers must not read that as "correctly wound".
 pub fn shell_signed_volume(
     topo: &Topology,
-    shell: brepkit_topology::shell::ShellId,
+    shell: remus_topology::shell::ShellId,
     gauss_order: usize,
 ) -> Option<f64> {
     let mut total = 0.0;
     for &fid in topo.shell(shell).ok()?.faces() {
-        total += brepkit_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
+        total += remus_check::properties::face_integrator::integrate_face(topo, fid, gauss_order)
             .ok()?
             .volume;
     }
@@ -1305,7 +1305,7 @@ pub fn negligible_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
 /// Whether the solid's outer shell is turned inside out.
 ///
 /// A shell can be closed, 2-manifold and consistently wound and still face
-/// inward — brepkit#59's segmented revolve built exactly that, and nothing in
+/// inward — remus#59's segmented revolve built exactly that, and nothing in
 /// the measurement layer could see it, because [`solid_volume`] reports the
 /// magnitude of its integral and so reads an inverted body at its correct
 /// positive volume. The sign is what an STL facet normal is derived from, so
@@ -1320,7 +1320,7 @@ pub fn negligible_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
 /// Returns an error if topology lookups fail.
 pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate::OperationsError> {
     let outer = topo.solid(solid)?.outer_shell();
-    let order = brepkit_check::properties::PropertiesOptions::default().gauss_order;
+    let order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let (Some(signed), Some(floor)) = (
         shell_signed_volume(topo, outer, order),
         negligible_volume(topo, solid),
@@ -1603,7 +1603,7 @@ fn volume_from_per_face_tessellation(
     // Outer shell plus every cavity shell. `tessellate()` applies the face's
     // stored reversal to the winding, so a cavity face's signed tetrahedra
     // subtract the void without any extra sign handling here.
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total: f64 = 0.0;
     for fid in faces {
@@ -1678,7 +1678,7 @@ fn analytic_cylinder_signed_volume(
             }
             // Sample circle-edge midpoints for angular coverage.
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
                 && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
             {
                 let ts = circle.project(sv.point());
@@ -1699,7 +1699,7 @@ fn analytic_cylinder_signed_volume(
             // (sub-2π) band has only its two endpoint angles, `compute_angular_range`
             // falls back to the full 2π, and the band over-counts (gh #968).
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::NurbsCurve(nc) = edge.curve()
             {
                 let (t0, t1) = nc.domain();
                 let (u, _) = cyl.project_point(nc.evaluate(f64::midpoint(t0, t1)));
@@ -1798,7 +1798,7 @@ fn planar_face_signed_volume(
 
     // Right-handed in-plane frame: ex × ey = normal, so a boundary wound CCW as
     // seen from +normal yields a positive signed area.
-    let frame = match brepkit_math::frame::Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), normal) {
+    let frame = match remus_math::frame::Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), normal) {
         Ok(f) => f,
         Err(_) => return Ok(None),
     };
@@ -1858,7 +1858,7 @@ struct PlanarWireArea {
 /// falls back to tessellation.
 fn planar_wire_signed_area2(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     ex: Vec3,
     ey: Vec3,
 ) -> Result<Option<PlanarWireArea>, crate::OperationsError> {
@@ -1866,7 +1866,7 @@ fn planar_wire_signed_area2(
         let v = Vec3::new(p.x(), p.y(), p.z());
         (v.dot(ex), v.dot(ey))
     };
-    let tol_lin = brepkit_math::tolerance::Tolerance::default().linear;
+    let tol_lin = remus_math::tolerance::Tolerance::default().linear;
     let mut area2: f64 = 0.0; // accumulates 2·A (Green's ∮(x dy − y dx))
     let mut arc_edges = 0_usize;
     let mut arc_length = 0.0_f64;
@@ -1893,7 +1893,7 @@ fn planar_wire_signed_area2(
             // cap). A CLOSED `Circle` rim also has coincident endpoints but bounds
             // a full disc, so it falls through to the arc handler below.
             let is_closed_circle =
-                matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Circle(_))
+                matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_))
                     && edge.start() == edge.end();
             if (pa - pb).length() < tol_lin && !is_closed_circle {
                 continue;
@@ -1903,23 +1903,21 @@ fn planar_wire_signed_area2(
             // chord). A `Line` has no bulge. A `Circle`/arc-`NurbsCurve` adds
             // sign·ρ²·(|α| − sin|α|), α the signed sweep about the arc centre.
             let arc = match edge.curve() {
-                brepkit_topology::edge::EdgeCurve::Line => None,
+                remus_topology::edge::EdgeCurve::Line => None,
                 // The exact bulge correction below is circular-arc only.
                 // These types have no circular bulge, so the whole exact path
                 // declines rather than applying a wrong correction.
-                brepkit_topology::edge::EdgeCurve::Ellipse(_)
-                | brepkit_topology::edge::EdgeCurve::Hyperbola(_)
-                | brepkit_topology::edge::EdgeCurve::Parabola(_) => return Ok(None),
-                brepkit_topology::edge::EdgeCurve::Circle(c) => Some((c.center(), c.radius())),
-                brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
-                    let tol = brepkit_math::tolerance::Tolerance::default().linear * 100.0;
-                    match brepkit_geometry::convert::recognize_curve(nc, tol) {
-                        brepkit_geometry::convert::RecognizedCurve::Circle {
-                            center,
-                            radius,
-                            ..
+                remus_topology::edge::EdgeCurve::Ellipse(_)
+                | remus_topology::edge::EdgeCurve::Hyperbola(_)
+                | remus_topology::edge::EdgeCurve::Parabola(_) => return Ok(None),
+                remus_topology::edge::EdgeCurve::Circle(c) => Some((c.center(), c.radius())),
+                remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
+                    let tol = remus_math::tolerance::Tolerance::default().linear * 100.0;
+                    match remus_geometry::convert::recognize_curve(nc, tol) {
+                        remus_geometry::convert::RecognizedCurve::Circle {
+                            center, radius, ..
                         } => Some((center, radius)),
-                        brepkit_geometry::convert::RecognizedCurve::Line { .. } => None,
+                        remus_geometry::convert::RecognizedCurve::Line { .. } => None,
                         _ => return Ok(None),
                     }
                 }
@@ -2023,7 +2021,7 @@ fn analytic_cone_signed_volume(
                 }
             }
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
                 && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
             {
                 let ts = circle.project(sv.point());
@@ -2042,7 +2040,7 @@ fn analytic_cone_signed_volume(
             // Skip an arc that degenerates to the apex (v ≈ 0), where u is
             // undefined.
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::NurbsCurve(nc) = edge.curve()
             {
                 let (t0, t1) = nc.domain();
                 let (u, v) = cone.project_point(nc.evaluate(f64::midpoint(t0, t1)));
@@ -2138,7 +2136,7 @@ fn analytic_sphere_signed_volume(
                 }
             }
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
                 && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
             {
                 let ts = circle.project(sv.point());
@@ -2276,7 +2274,7 @@ fn analytic_torus_signed_volume(
                 && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
             {
                 let mid = match edge.curve() {
-                    brepkit_topology::edge::EdgeCurve::Circle(circle) => {
+                    remus_topology::edge::EdgeCurve::Circle(circle) => {
                         let ts = circle.project(sv.point());
                         let te = circle.project(ev.point());
                         let fwd = (te - ts).rem_euclid(std::f64::consts::TAU);
@@ -2287,7 +2285,7 @@ fn analytic_torus_signed_volume(
                         };
                         Some(circle.evaluate(mid_t))
                     }
-                    brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
+                    remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
                         let (t0, t1) = nc.domain();
                         Some(nc.evaluate(f64::midpoint(t0, t1)))
                     }
@@ -2441,7 +2439,7 @@ fn exact_analytic_face_volume(topo: &Topology, solid: SolidId, deflection: f64) 
     // Cavity faces are boundary too, and their stored reversal makes each one's
     // signed contribution subtract. Enumerating only the outer shell would
     // integrate the un-hollowed body.
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).ok()?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid).ok()?;
     if faces.is_empty() {
         return None;
     }
@@ -2555,7 +2553,7 @@ pub fn volume_from_direct_face_tessellation(
 
     // Outer shell plus every cavity shell: a reversed cavity face's signed
     // contribution subtracts the void.
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total: f64 = 0.0;
     for fid in faces {
@@ -2626,11 +2624,11 @@ pub fn solid_volume_from_faces(
     solid: SolidId,
     _deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
 
     // Outer shell plus every cavity shell.
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total = 0.0;
     let mut all_planar_triangles = true;
@@ -2704,15 +2702,15 @@ pub fn solid_volume_from_faces(
 pub fn mass_properties(
     topo: &Topology,
     solid: SolidId,
-) -> Result<brepkit_check::properties::GProps, crate::OperationsError> {
+) -> Result<remus_check::properties::GProps, crate::OperationsError> {
     // The cubic second-moment integrands carry one polynomial degree more
     // than the volume/CoM terms; order 8 keeps curved-surface inertia at
     // ~1e-9 relative where the default order 5 leaves ~3e-8.
-    let options = brepkit_check::properties::PropertiesOptions {
+    let options = remus_check::properties::PropertiesOptions {
         gauss_order: 8,
         ..Default::default()
     };
-    Ok(brepkit_check::properties::solid_properties(
+    Ok(remus_check::properties::solid_properties(
         topo, solid, &options,
     )?)
 }
@@ -2747,7 +2745,7 @@ pub fn solid_center_of_mass(
     // tessellate() already handles face reversal (flips winding),
     // so signed tetrahedra sum is correct without winding heuristics.
     // Outer shell plus every cavity shell.
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_vol: f64 = 0.0;
     let mut cx = 0.0;
@@ -2804,10 +2802,10 @@ fn center_of_mass_from_faces(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<Point3, crate::OperationsError> {
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
 
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_vol = 0.0;
     let mut cx = 0.0;
@@ -2875,8 +2873,8 @@ mod regression_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_topology::builder::{make_face_from_wire, make_polygon_wire};
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
+    use remus_topology::face::FaceSurface;
 
     fn unit_square_extrude_volume() -> (f64, bool) {
         let mut topo = Topology::new();
@@ -2930,7 +2928,7 @@ mod regression_tests {
     /// Build the census Steinmetz fuse: two equal r=3, h=20 cylinders with
     /// perpendicular intersecting axes (one along z, one along x), fused.
     fn steinmetz_fuse_census() -> (Topology, SolidId) {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
         let mut topo = Topology::new();
         let c1 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
         crate::transform::transform_solid(&mut topo, c1, &Mat4::translation(0.0, 0.0, -10.0))
@@ -2954,7 +2952,7 @@ mod regression_tests {
         let (topo, res) = steinmetz_fuse_census();
         // The gate fires, and the closed form gives the EXACT volume:
         // V = π·9·(20+20) − (16/3)·27 = 1130.97 − 144 = 986.97.
-        let faces = brepkit_topology::explorer::solid_faces(&topo, res).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, res).unwrap();
         assert!(
             solid_is_steinmetz_lens_fuse(&topo, &faces),
             "the perpendicular cyl∪cyl fuse must be detected as the lens fuse"
@@ -2975,11 +2973,11 @@ mod regression_tests {
 
     #[test]
     fn steinmetz_gate_does_not_fire_on_plain_or_coaxial_cylinders() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
         // A plain cylinder (one wall, no holes) is NOT the lens fuse.
         let mut topo = Topology::new();
         let cyl = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&topo, cyl).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, cyl).unwrap();
         assert!(
             !solid_is_steinmetz_lens_fuse(&topo, &faces),
             "a plain cylinder is not the lens fuse"
@@ -2994,7 +2992,7 @@ mod regression_tests {
             .unwrap();
         let inter = crate::boolean::boolean(&mut topo2, crate::boolean::BooleanOp::Intersect, a, b)
             .unwrap();
-        let f2 = brepkit_topology::explorer::solid_faces(&topo2, inter).unwrap();
+        let f2 = remus_topology::explorer::solid_faces(&topo2, inter).unwrap();
         assert!(
             !solid_is_steinmetz_lens_fuse(&topo2, &f2),
             "coaxial cyl∩cyl is not the lens fuse"
@@ -3003,7 +3001,7 @@ mod regression_tests {
 
     #[test]
     fn cyl_perp_intersecting_predicate() {
-        use brepkit_math::surfaces::CylindricalSurface;
+        use remus_math::surfaces::CylindricalSurface;
         let cyl = |o: Point3, a: Vec3, r: f64| CylindricalSurface::new(o, a, r).unwrap();
         let z = cyl(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0);
 
@@ -3111,7 +3109,7 @@ mod regression_tests {
         // h=2 (< r=3 past the axis intersection on each side), so the lens is
         // truncated and the infinite-cylinder term −16r³/3 would be wrong. The
         // gate must DECLINE so tessellation computes the true (truncated) volume.
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
         let mut topo = Topology::new();
         let c1 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
         crate::transform::transform_solid(&mut topo, c1, &Mat4::translation(0.0, 0.0, -10.0))
@@ -3129,7 +3127,7 @@ mod regression_tests {
             .unwrap();
         let res =
             crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, c1, c2).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&topo, res).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, res).unwrap();
         assert!(
             !solid_is_steinmetz_lens_fuse(&topo, &faces),
             "a truncated (short) perpendicular fuse must not use the infinite-cylinder closed form"
@@ -3144,14 +3142,14 @@ mod regression_tests {
         // cylinder's volume would be dropped — so the gate must account for
         // every face and reject any foreign one.
         let (mut topo, res) = steinmetz_fuse_census();
-        let census_faces = brepkit_topology::explorer::solid_faces(&topo, res).unwrap();
+        let census_faces = remus_topology::explorer::solid_faces(&topo, res).unwrap();
         // Sanity: the clean census (2 holed walls + 4 caps) passes.
         assert!(solid_is_steinmetz_lens_fuse(&topo, &census_faces));
 
         // Build a separate plain cylinder in the SAME arena and grab its
         // (UNHOLED) cylindrical wall face + one of its caps.
         let extra = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
-        let extra_faces = brepkit_topology::explorer::solid_faces(&topo, extra).unwrap();
+        let extra_faces = remus_topology::explorer::solid_faces(&topo, extra).unwrap();
         let extra_cyl = extra_faces
             .iter()
             .copied()
@@ -3184,10 +3182,10 @@ mod regression_tests {
         crate::transform::transform_solid(
             &mut topo,
             tilted,
-            &brepkit_math::mat::Mat4::rotation_x(0.7),
+            &remus_math::mat::Mat4::rotation_x(0.7),
         )
         .unwrap();
-        let tilted_cap = brepkit_topology::explorer::solid_faces(&topo, tilted)
+        let tilted_cap = remus_topology::explorer::solid_faces(&topo, tilted)
             .unwrap()
             .into_iter()
             .find(|&f| {
@@ -3222,7 +3220,7 @@ mod regression_tests {
     /// exact AND deflection-independent (analytic, not the inscribed mesh).
     #[test]
     fn closed_circle_disc_cap_volume_is_exact() {
-        use brepkit_topology::explorer::solid_faces;
+        use remus_topology::explorer::solid_faces;
         use std::f64::consts::{PI, TAU};
         let mut topo = Topology::new();
         // (6,0)→(4,6) cone, (4,6)→(2,12) cone, (2,12)→(0,12) top disc cap,
@@ -3239,7 +3237,7 @@ mod regression_tests {
             1e-7,
         )
         .unwrap();
-        let face = topo.add_face(brepkit_topology::face::Face::new(
+        let face = topo.add_face(remus_topology::face::Face::new(
             wire,
             vec![],
             FaceSurface::Plane {
@@ -3302,11 +3300,11 @@ mod regression_tests {
     /// segment is added (inflated area `π(R²+r²)`).
     #[test]
     fn annular_cap_volume_is_exact() {
-        use brepkit_math::curves::Circle3D;
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::Face;
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
         use std::f64::consts::PI;
 
         let (r_out, r_in, h) = (7.0_f64, 5.0_f64, 4.0_f64);

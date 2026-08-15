@@ -8,13 +8,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_io::step::reader::read_step;
-use brepkit_io::step::write_step;
-use brepkit_math::mat::Mat4;
-use brepkit_operations::copy::copy_and_transform_solid;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_box;
-use brepkit_topology::Topology;
+use remus_io::step::reader::read_step;
+use remus_io::step::write_step;
+use remus_math::mat::Mat4;
+use remus_operations::copy::copy_and_transform_solid;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_box;
+use remus_topology::Topology;
 
 #[test]
 fn two_solids_survive_a_step_round_trip_as_two_solids() {

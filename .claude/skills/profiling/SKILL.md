@@ -1,21 +1,21 @@
 ---
 name: profiling
-description: Use when investigating or fixing performance in brepkit: a benchmark got slower, an operation (boolean, fuse, tessellation) is unexpectedly slow or hangs, a criterion bench times out or shows wild variance, or a PR needs before/after perf numbers. Covers flamegraphs, the criterion bench suite, cross-kernel comparison, and the perf bug classes this codebase has actually had.
+description: Use when investigating or fixing performance in remus: a benchmark got slower, an operation (boolean, fuse, tessellation) is unexpectedly slow or hangs, a criterion bench times out or shows wild variance, or a PR needs before/after perf numbers. Covers flamegraphs, the criterion bench suite, cross-kernel comparison, and the perf bug classes this codebase has actually had.
 ---
 
 # Profiling and Performance Debugging
 
 ## The bar
 
-brepkit must beat the reference kernel on performance, not merely pass tests. Perf regressions are release blockers. CI runs `boolean_tracking` on a shared runner and only comments on regressions over 200% (`.github/workflows/benchmark.yml`, `fail-on-alert: false`), so the automated gate is looser than the real bar. You are the gate: any PR touching a hot path pastes before/after criterion numbers in its body. Cross-kernel claims require `./scripts/bench-compare.sh ~/Git/brepjs` output, not native-only numbers (see the parity-benchmarking skill).
+remus must beat the reference kernel on performance, not merely pass tests. Perf regressions are release blockers. CI runs `boolean_tracking` on a shared runner and only comments on regressions over 200% (`.github/workflows/benchmark.yml`, `fail-on-alert: false`), so the automated gate is looser than the real bar. You are the gate: any PR touching a hot path pastes before/after criterion numbers in its body. Cross-kernel claims require `./scripts/bench-compare.sh ~/Git/brepjs` output, not native-only numbers (see the parity-benchmarking skill).
 
 ## Quick reference
 
 ```bash
 cargo bench-fast                                          # kernel-comparison suite (cad_operations, ~2 min)
 cargo bench-full                                          # all 5 bench files
-cargo bench -p brepkit-operations --bench boolean_perf -- "N=64"   # isolate one bench by substring
-cargo flamegraph --profile profiling --bench cad_operations -p brepkit-operations \
+cargo bench -p remus-operations --bench boolean_perf -- "N=64"   # isolate one bench by substring
+cargo flamegraph --profile profiling --bench cad_operations -p remus-operations \
   -o /tmp/flamegraph.svg -- --bench "<filter>"            # flamegraph a specific criterion bench
 cargo run --profile profiling --example profile_boolean -- honeycomb   # per-phase boolean timing
 cargo run --profile profiling --example tess_profile      # tessellation drill-down (64-hole plate)
@@ -36,7 +36,7 @@ Bench files (`crates/operations/benches/`), one line each:
 
 ## Method: the perf loop
 
-1. **Baseline.** `cargo bench -p brepkit-operations --bench <file> -- "<filter>"`. Expect a line like `sequential_cylinder_cuts/N=64  time: [x.xx s x.xx s x.xx s]`. Save it verbatim. Criterion stores history in `target/criterion/`, so later runs print change-% automatically.
+1. **Baseline.** `cargo bench -p remus-operations --bench <file> -- "<filter>"`. Expect a line like `sequential_cylinder_cuts/N=64  time: [x.xx s x.xx s x.xx s]`. Save it verbatim. Criterion stores history in `target/criterion/`, so later runs print change-% automatically.
 2. **Isolate.** Narrow the filter to one benchmark ID. If the bench seems to hang or shows wild run-to-run variance, do not fight criterion: write a plain timed loop that runs the op N times on fresh `Topology` instances and prints per-iteration wall clock. Huge iteration spread is itself the diagnosis (see bug class B).
 3. **Flamegraph that exact workload.** Use the quick-reference command with the same filter, or for boolean work use `--example profile_boolean -- <scenario>` (scenarios: `honeycomb`, `cylinders`, `fuse`, `large-honeycomb`, `scale`, `xl`, `tess`; the example header documents them). Open the SVG in a browser and look for wide frames. Checkpoint: if the widest frames are in `mesh_boolean` on analytic inputs, stop, that is the bug (class D).
 4. **Fix.** Vary one variable at a time. Match the symptom to a known class first (table below) before inventing a new theory.
@@ -65,4 +65,4 @@ Bench files (`crates/operations/benches/`), one line each:
 ## Deep detail
 
 - [reference.md](reference.md): full command catalog, bug classes A-D with verified symbols and rg patterns, `bench-compare.sh` pipeline, profiling-example internals, glossary.
-- Sibling skills: parity-benchmarking (cross-kernel harness), tessellation (deflection semantics), boolean-debugging (when the slow path is also wrong), debugging-doctrine (bisection discipline), pr-workflow (getting the numbers merged).
+- Sibling skills: parity-benchmarking (cross-kernel harness), tessellation (deflection semantics), boolean-debugging (when the slow path is also wrong), and debugging-doctrine (bisection discipline).

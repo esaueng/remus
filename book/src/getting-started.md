@@ -10,8 +10,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/esaueng/brepkit.git
-cd brepkit
+git clone https://github.com/esaueng/remus.git
+cd remus
 
 # Build all Rust crates
 cargo build --workspace
@@ -20,27 +20,28 @@ cargo build --workspace
 cargo test --workspace
 
 # Build WASM target
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown
+cargo build -p remus-wasm --target wasm32-unknown-unknown
 ```
 
 ## Using from JavaScript and TypeScript
 
-The maintained JS surface is the `brepkit-wasm` package, built from
-`crates/wasm`. It ships its own TypeScript declarations.
+The maintained JS surface is the `remus-wasm` package, built from
+`crates/wasm`. It ships its own TypeScript declarations. It is not yet on npm;
+pin a reviewed repository commit and install the committed package directory:
 
 ```bash
-npm install brepkit-wasm
+pnpm add 'remus-wasm@github:esaueng/remus#<commit>&path:/crates/wasm/pkg'
 ```
 
 ```typescript
-import init, { BrepKernel } from 'brepkit-wasm';
+import init, { BrepKernel } from 'remus-wasm';
 
 await init();
 const kernel = new BrepKernel();
 const solid = kernel.makeBox(10, 20, 30);
 ```
 
-To build it from a checkout instead of installing the release:
+To build it from a checkout instead:
 
 ```bash
 cargo xtask wasm-build

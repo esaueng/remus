@@ -9,7 +9,7 @@
 //! These `.bin` fixtures are the tool's EXACT in-memory operands for the groove
 //! `Cut` (the 2×2 A1-canonical doubled-dovetail config), captured via the
 //! `serializeSolid` wasm binding (byte-exact f64) and replayed through
-//! `brepkit_io::arena_io::deserialize_solid`. The `_x` / `_y` pair are the two
+//! `remus_io::arena_io::deserialize_solid`. The `_x` / `_y` pair are the two
 //! join edges (right + back) of the corner tile.
 //!
 //! The bug: the groove trapezoid pokes through the slab's SLANTED outer wall.
@@ -34,14 +34,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_algo::gfa;
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_algo::bop::BooleanOp;
+use remus_algo::gfa;
+use remus_io::arena_io::deserialize_solid;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

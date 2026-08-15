@@ -5,10 +5,10 @@
 //! uint16 (5123) and uint32 (5125) index component types.
 
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::tessellate::TriangleMesh;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::tessellate::TriangleMesh;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Read a GLB (glTF binary) file and return a triangle mesh.
 ///
@@ -479,8 +479,8 @@ mod tests {
 
     #[test]
     fn roundtrip_glb() {
-        let mut topo = brepkit_topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let mut topo = remus_topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let glb = crate::gltf::write_glb(&topo, &[solid], 0.1).unwrap();
         let mesh = read_glb(&glb).unwrap();
@@ -736,9 +736,9 @@ mod tests {
 
     #[test]
     fn roundtrip_multi_solid_glb() {
-        let mut topo = brepkit_topology::Topology::new();
-        let box1 = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let box2 = brepkit_operations::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let mut topo = remus_topology::Topology::new();
+        let box1 = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let box2 = remus_operations::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
 
         let glb = crate::gltf::write_glb(&topo, &[box1, box2], 0.1).unwrap();
         let mesh = read_glb(&glb).unwrap();
@@ -750,12 +750,12 @@ mod tests {
 
     #[test]
     fn read_glb_solid_returns_solid_id() {
-        let mut topo = brepkit_topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let mut topo = remus_topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let glb = crate::gltf::write_glb(&topo, &[solid], 0.1).unwrap();
 
-        let mut import_topo = brepkit_topology::Topology::new();
+        let mut import_topo = remus_topology::Topology::new();
         let result = read_glb_solid(&mut import_topo, &glb, 1e-6);
         assert!(
             result.is_ok(),

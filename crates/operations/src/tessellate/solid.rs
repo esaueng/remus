@@ -1,11 +1,11 @@
 //! Solid-level tessellation orchestration.
 
-use brepkit_math::det_hash::{DetHashMap, DetHashSet};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use super::TriangleMesh;
 use super::edge_sampling::{circle_param_range, sample_edge, segments_for_chord_deviation_a};
@@ -41,7 +41,7 @@ where
         return Ok(false);
     }
 
-    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+    let tol = remus_math::tolerance::Tolerance::new().linear;
     let wire = topo.wire(face.outer_wire())?;
     for oriented_edge in wire.edges() {
         let Some(neighbors) = edge_face_map.get(&oriented_edge.edge().index()) else {
@@ -97,7 +97,7 @@ pub fn tessellate_solid(
         topo,
         solid,
         deflection,
-        brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
     )
 }
 
@@ -216,7 +216,7 @@ fn tessellate_solid_core(
     track_faces: bool,
     circle_floor: bool,
 ) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
-    use brepkit_topology::explorer;
+    use remus_topology::explorer;
 
     let all_faces = explorer::solid_faces(topo, solid)?;
     let edge_face_map = explorer::edge_to_face_map(topo, solid)?;
@@ -328,7 +328,7 @@ fn tessellate_solid_core(
                         && pts.len() < expected_count
                     {
                         let (t_start, t_end) = circle_param_range(topo, edge_data, circle)?;
-                        let new_pts = brepkit_geometry::sampling::sample_uniform(
+                        let new_pts = remus_geometry::sampling::sample_uniform(
                             circle,
                             t_start,
                             t_end,
@@ -362,7 +362,7 @@ fn tessellate_solid_core(
     }
 
     {
-        let tol_linear = brepkit_math::tolerance::Tolerance::new().linear;
+        let tol_linear = remus_math::tolerance::Tolerance::new().linear;
         let refine_tol = tol_linear * 10.0;
 
         for &edge_idx in &edge_indices {
@@ -456,7 +456,7 @@ fn tessellate_solid_core(
     #[allow(clippy::items_after_statements)]
     struct CdtJob {
         face_index: u32,
-        pts2d: Vec<brepkit_math::vec::Point2>,
+        pts2d: Vec<remus_math::vec::Point2>,
         outer_count: usize,
         inner_wire_ranges: Vec<(usize, usize)>,
         all_global_ids: Vec<Option<u32>>,
@@ -520,7 +520,7 @@ fn tessellate_solid_core(
                 inner_wire_ranges.push((start, end));
             }
 
-            let pts2d: Vec<brepkit_math::vec::Point2> = all_positions
+            let pts2d: Vec<remus_math::vec::Point2> = all_positions
                 .iter()
                 .map(|&p| project_by_normal(p, normal))
                 .collect();

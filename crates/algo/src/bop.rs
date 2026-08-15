@@ -244,11 +244,11 @@ fn apply_sd_selection(
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedFace {
     /// The topology face to include.
-    pub face_id: brepkit_topology::face::FaceId,
+    pub face_id: remus_topology::face::FaceId,
     /// The original input face this selection derives from (shape-evolution
     /// provenance). For a same-domain pair it is the kept representative's
     /// source.
-    pub source_face: brepkit_topology::face::FaceId,
+    pub source_face: remus_topology::face::FaceId,
     /// Whether to reverse this face's orientation in the result.
     pub reversed: bool,
 }
@@ -259,15 +259,15 @@ mod tests {
 
     use super::*;
     use crate::builder::same_domain::SameDomainPair;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Point3;
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     /// Create a dummy face in the topology to get a valid FaceId.
-    fn dummy_face_id(topo: &mut Topology) -> brepkit_topology::face::FaceId {
+    fn dummy_face_id(topo: &mut Topology) -> remus_topology::face::FaceId {
         let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
         let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
         let eid = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
@@ -276,7 +276,7 @@ mod tests {
             wire_id,
             vec![],
             FaceSurface::Plane {
-                normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             },
         ))

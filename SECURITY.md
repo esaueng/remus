@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-To report a security vulnerability, use [GitHub Security Advisories](https://github.com/andymai/brepkit/security/advisories/new) for private disclosure.
+To report a security vulnerability, use [GitHub Security Advisories](https://github.com/esaueng/remus/security/advisories/new) for private disclosure.
 
 Include:
 
@@ -11,7 +11,8 @@ Include:
 - Potential impact
 - Suggested fix (if any)
 
-Expect an initial response within 48 hours.
+Maintainers will acknowledge reports as capacity permits. The project does not
+currently promise a fixed disclosure or response SLA.
 
 ## Supply Chain
 

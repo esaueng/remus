@@ -13,15 +13,15 @@
 
 use std::collections::HashSet;
 
-use brepkit_math::vec::Vec3;
-use brepkit_operations::blend_ops;
-use brepkit_operations::evolution::{EvolutionMap, EvolutionOrigin};
-use brepkit_operations::pattern;
-use brepkit_operations::primitives;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Vec3;
+use remus_operations::blend_ops;
+use remus_operations::evolution::{EvolutionMap, EvolutionOrigin};
+use remus_operations::pattern;
+use remus_operations::primitives;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const R: f64 = 45.0;
 const H: f64 = 10.0;
@@ -46,7 +46,7 @@ fn face_indices(topo: &Topology, s: SolidId) -> HashSet<usize> {
     solid_faces(topo, s)
         .unwrap()
         .into_iter()
-        .map(brepkit_topology::arena::Id::index)
+        .map(remus_topology::arena::Id::index)
         .collect()
 }
 
@@ -160,7 +160,7 @@ fn cylinder_rim_chamfer_reports_construction_derived_provenance() {
 fn pattern_instance_faces_descend_from_the_source_face_they_copy() {
     let mut topo = Topology::new();
     let src = primitives::make_box(&mut topo, 10.0, 4.0, 4.0).unwrap();
-    let source_faces: Vec<brepkit_topology::face::FaceId> = solid_faces(&topo, src).unwrap();
+    let source_faces: Vec<remus_topology::face::FaceId> = solid_faces(&topo, src).unwrap();
 
     let spacing = 25.0;
     let dir = Vec3::new(1.0, 0.0, 0.0);
@@ -173,7 +173,7 @@ fn pattern_instance_faces_descend_from_the_source_face_they_copy() {
 
     // Index -> FaceId for every face in the pattern, so the recorded indices
     // can be resolved back to real geometry.
-    let mut by_index: std::collections::HashMap<usize, brepkit_topology::face::FaceId> =
+    let mut by_index: std::collections::HashMap<usize, remus_topology::face::FaceId> =
         std::collections::HashMap::new();
     for &inst in topo.compound(compound).unwrap().solids() {
         for fid in solid_faces(&topo, inst).unwrap() {
@@ -238,9 +238,9 @@ fn pattern_instance_faces_descend_from_the_source_face_they_copy() {
 }
 
 /// A planar face's plane as `(normal, signed distance from the origin)`.
-fn plane_of(topo: &Topology, face: brepkit_topology::face::FaceId) -> (Vec3, f64) {
+fn plane_of(topo: &Topology, face: remus_topology::face::FaceId) -> (Vec3, f64) {
     match topo.face(face).unwrap().surface() {
-        brepkit_topology::face::FaceSurface::Plane { normal, d } => (*normal, *d),
+        remus_topology::face::FaceSurface::Plane { normal, d } => (*normal, *d),
         other => panic!("expected a planar box face, got {}", other.type_tag()),
     }
 }
@@ -273,7 +273,7 @@ fn plane_of(topo: &Topology, face: brepkit_topology::face::FaceId) -> (Vec3, f64
 fn a_rebuilt_fillet_attributes_its_blend_face_to_both_base_faces() {
     let mut topo = Topology::new();
     let cube = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let edges = brepkit_topology::explorer::solid_edges(&topo, cube).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&topo, cube).unwrap();
 
     let before = face_indices(&topo, cube);
     let (result, evo) = blend_ops::fillet_with_evolution(&mut topo, cube, &[edges[0]], 1.0)

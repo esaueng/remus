@@ -275,7 +275,7 @@ editability):
    Store `normal_angle = atan2(|n1×n2|, n1·n2)` in `[0,π]`, not a fictitious
    0..2π dihedral. Nodes retain full `FaceSurface` parameters.
 3. **Group exact co-surface patches first.** Union connected faces when
-   `brepkit_heal::analysis::surface::surfaces_equivalent` holds. One logical
+   `remus_heal::analysis::surface::surfaces_equivalent` holds. One logical
    band/support may span several STEP faces or seam patches (`wallcut`,
    `lipfuse`). Keep member FaceIds and aggregate boundary edge runs.
 4. **Candidate bands.** `Torus` (minor = r); `Cylinder` with two tangent
@@ -298,7 +298,7 @@ editability):
    → `NotAnalytic`. **Fail-closed core: editability requires the band to be
    the provable blend of its supports, not to resemble one.**
 6. **Spline-band curvature test.** New `principal_curvatures` helper in
-   `brepkit-math` built on `NurbsSurface::derivatives(u,v,2)` (first/second
+   `remus-math` built on `NurbsSurface::derivatives(u,v,2)` (first/second
    fundamental forms → shape operator eigenvalues). One principal curvature
    constant 1/r over a ≥5×5 sample AND both boundary edges tangent →
    spline band, `Constant` or `Variable { r_min, r_max }`, verdict always
@@ -466,7 +466,7 @@ FD chapters 29/30/40 (Wayback mirror). Citations in §8.
   overlap with neighboring edges and locally corrected; global-intrusion
   test refuses suppression when extension would penetrate non-local faces;
   failure at any stage → undo, model untouched. Their pipeline maps cleanly
-  onto BrepKit: Euler-operator collapse = our wire surgery; geometry
+  onto Remus: Euler-operator collapse = our wire surgery; geometry
   attachment = our `exact_plane_analytic` + friends; undo = `transactional`.
 
 ### 4.2 The exact boundary (unchanged in substance, now evidence-backed)
@@ -937,7 +937,7 @@ published network algorithms (refs 2, 11, 15) against the exactness contract.
 The refusal boundary is the deliverable: every tier is defined by what it
 can prove. Production kernels draw the same line with more provenance and
 fewer scruples — Parasolid leans on recorded blend history, OCCT extends
-NURBS approximately; BrepKit's contribution is making the line exact, typed,
+NURBS approximately; Remus's contribution is making the line exact, typed,
 and — per §2 — tested.
 
 ## Appendix: research infrastructure in the repo
@@ -948,5 +948,5 @@ and — per §2 — tested.
   `regress_hole_rim_blend.rs`.
 - `crates/blend/src/query.rs` — narrow public carrier-surface query used by
   E5; private `analytic`, `spine`, and `stripe` types remain hidden.
-- `crates/operations/Cargo.toml` — `brepkit-io` dev-dependency for the E4
+- `crates/operations/Cargo.toml` — `remus-io` dev-dependency for the E4
   STEP round-trip probe.

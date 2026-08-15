@@ -7,17 +7,17 @@
 //! Each raw curve also gets a pave block spanning its full parameter
 //! range, with topology vertices and an edge created at the endpoints.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::analytic_intersection;
-use brepkit_math::nurbs::intersection as nurbs_isect;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
+use remus_math::aabb::Aabb3;
+use remus_math::analytic_intersection;
+use remus_math::nurbs::intersection as nurbs_isect;
+use remus_math::tolerance::Tolerance;
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
 
 use crate::ds::{GfaArena, Interference, IntersectionCurveDS, Pave, PaveBlock};
 use crate::error::AlgoError;
@@ -69,7 +69,7 @@ struct JunctionRegistry {
 struct JunctionEntry {
     point: Point3,
     faces: Option<(FaceId, FaceId)>,
-    source_edge: Option<brepkit_topology::edge::EdgeId>,
+    source_edge: Option<remus_topology::edge::EdgeId>,
 }
 
 impl JunctionRegistry {
@@ -140,7 +140,7 @@ impl JunctionRegistry {
                             std::iter::once(face.outer_wire())
                                 .chain(face.inner_wires().iter().copied())
                                 .filter_map(|wire_id| topo.wire(wire_id).ok())
-                                .flat_map(brepkit_topology::wire::Wire::edges)
+                                .flat_map(remus_topology::wire::Wire::edges)
                                 .any(|edge| edge.edge() == source)
                         })
                     })
@@ -190,7 +190,7 @@ impl JunctionRegistry {
         boundary_junction
     }
 
-    fn seed(&mut self, p: Point3, source_edge: brepkit_topology::edge::EdgeId) {
+    fn seed(&mut self, p: Point3, source_edge: remus_topology::edge::EdgeId) {
         if self.lookup(p, 1e-4).is_none() {
             self.cells.insert(
                 Self::key(p),
@@ -211,8 +211,8 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
-    let faces_a = brepkit_topology::explorer::solid_faces(topo, solid_a)?;
-    let faces_b = brepkit_topology::explorer::solid_faces(topo, solid_b)?;
+    let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
+    let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
     let mut junction_registry = JunctionRegistry::default();
     // Seed prior pave endpoints so a boundary junction computed here can
@@ -273,7 +273,7 @@ pub fn perform(
     // genuinely-coincident crossings (well under the linear tolerance) merge.
     let mut exact_arc_vertices: std::collections::HashMap<
         (i64, i64, i64),
-        brepkit_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
     > = std::collections::HashMap::new();
 
     let ff_trace = ff_trace_x();
@@ -865,16 +865,16 @@ fn emit_exact_arc(
     fb: FaceId,
     raw: &RawCurve,
     tol: Tolerance,
-    registry: &mut std::collections::HashMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
+    registry: &mut std::collections::HashMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
 ) {
     let resolve = |topo: &mut Topology,
                    arena: &GfaArena,
                    registry: &mut std::collections::HashMap<
         (i64, i64, i64),
-        brepkit_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
     >,
                    p: Point3|
-     -> brepkit_topology::vertex::VertexId {
+     -> remus_topology::vertex::VertexId {
         let key = exact_arc_key(p);
         if let Some(&vid) = registry.get(&key) {
             return vid;
@@ -923,8 +923,8 @@ enum FaceExtent {
     /// sampled), plus any inner-wire (hole) polygons subtracted from it.
     Plane {
         frame: crate::builder::plane_frame::PlaneFrame,
-        poly: Vec<brepkit_math::vec::Point2>,
-        holes: Vec<Vec<brepkit_math::vec::Point2>>,
+        poly: Vec<remus_math::vec::Point2>,
+        holes: Vec<Vec<remus_math::vec::Point2>>,
         margin: f64,
     },
     /// Analytic lateral face (cylinder/cone/sphere/torus): bound by the
@@ -961,7 +961,7 @@ impl FaceExtent {
                 crate::builder::plane_frame::PlaneFrame::from_normal_and_point(*normal, origin);
             // Project a wire's boundary into the plane frame, sampling each arc
             // edge (endpoints included) so curved corners aren't chord-cut.
-            let wire_poly = |wid| -> Option<Vec<brepkit_math::vec::Point2>> {
+            let wire_poly = |wid| -> Option<Vec<remus_math::vec::Point2>> {
                 let wire = topo.wire(wid).ok()?;
                 let mut poly = Vec::new();
                 for oe in wire.edges() {
@@ -1005,9 +1005,9 @@ impl FaceExtent {
             // margin instead of one scaled to the wide diagonal — a diagonal
             // margin lets a section overshoot the thin band onto the cylinder
             // seam, so the per-tread arcs never stop at the tread boundary.
-            let bb = brepkit_math::aabb::Aabb3::from_points(
+            let bb = remus_math::aabb::Aabb3::from_points(
                 poly.iter()
-                    .map(|p| brepkit_math::vec::Point3::new(p.x(), p.y(), 0.0)),
+                    .map(|p| remus_math::vec::Point3::new(p.x(), p.y(), 0.0)),
             );
             let extent = bb.max - bb.min;
             let smaller = extent.x().abs().min(extent.y().abs());
@@ -1215,7 +1215,7 @@ fn face_circumferential_u_gap(
 }
 
 /// Minimum distance from a 2D point to a closed polygon's edges.
-fn point_to_polygon_dist(p: brepkit_math::vec::Point2, poly: &[brepkit_math::vec::Point2]) -> f64 {
+fn point_to_polygon_dist(p: remus_math::vec::Point2, poly: &[remus_math::vec::Point2]) -> f64 {
     let n = poly.len();
     let mut best = f64::MAX;
     for i in 0..n {
@@ -1620,7 +1620,7 @@ fn line_section_is_tangency_graze(
     // In-plane normal to the section line.
     let (nx, ny) = (-dy / len, dx / len);
 
-    let in_face = |uv: brepkit_math::vec::Point2| -> bool {
+    let in_face = |uv: remus_math::vec::Point2| -> bool {
         crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
             && !holes
                 .iter()
@@ -1642,7 +1642,7 @@ fn line_section_is_tangency_graze(
     // interior crossings entirely.
     let rim_band = (min_dim * 1e-6).max(tol.linear * 1e3);
     let rides_rim = fractions.iter().all(|&f| {
-        let uv = brepkit_math::vec::Point2::new(a.x() + dx * f, a.y() + dy * f);
+        let uv = remus_math::vec::Point2::new(a.x() + dx * f, a.y() + dy * f);
         let to_outer = point_to_polygon_dist(uv, poly);
         let to_hole = holes
             .iter()
@@ -1660,7 +1660,7 @@ fn line_section_is_tangency_graze(
         let (mx, my) = (a.x() + dx * f, a.y() + dy * f);
         for off in offsets {
             for side in [1.0_f64, -1.0] {
-                let uv = brepkit_math::vec::Point2::new(mx + nx * off * side, my + ny * off * side);
+                let uv = remus_math::vec::Point2::new(mx + nx * off * side, my + ny * off * side);
                 if !in_face(uv) {
                     continue;
                 }
@@ -1894,7 +1894,7 @@ fn trim_torus_oval_to_box_face(
     // toroidal band and the box-wall sub-face — see the same midpoint vertex and
     // stay watertight. Geometry is unchanged (the two halves retrace the arc).
     let fit = |seg: &[Point3]| -> Option<RawCurve> {
-        let curve = brepkit_math::nurbs::fitting::interpolate(seg, 3.min(seg.len() - 1)).ok()?;
+        let curve = remus_math::nurbs::fitting::interpolate(seg, 3.min(seg.len() - 1)).ok()?;
         let dom = curve.domain();
         let bbox = Aabb3::try_from_points(seg.iter().copied())?;
         Some(RawCurve {
@@ -2166,7 +2166,7 @@ fn snap_to_boundary_junction_band(
     const NS: usize = 64;
     let surf_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
     // (distance, foot, foot's curve param, owning face, edge)
-    let mut best: Option<(f64, Point3, f64, FaceId, brepkit_topology::edge::EdgeId)> = None;
+    let mut best: Option<(f64, Point3, f64, FaceId, remus_topology::edge::EdgeId)> = None;
     for fid in [fa, fb] {
         let Ok(face) = topo.face(fid) else { continue };
         // Inner (hole) wires are legitimate exit boundaries too: a corner
@@ -2361,7 +2361,7 @@ fn trim_ellipse_to_boundary_crossings(
     ext_a: &FaceExtent,
     ext_b: &FaceExtent,
 ) -> Option<Vec<RawCurve>> {
-    use brepkit_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::curves::{Circle3D, Ellipse3D};
 
     // The raw plane×analytic section: a tilted plane yields an Ellipse, a
     // plane perpendicular to the axis yields an exact Circle. Both share the
@@ -2591,7 +2591,7 @@ fn line_segment_surface_crossings(sp: Point3, ep: Point3, surface: &FaceSurface)
 fn line_segment_cylinder_crossings(
     sp: Point3,
     ep: Point3,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    cyl: &remus_math::surfaces::CylindricalSurface,
 ) -> Vec<Point3> {
     let axis = cyl.axis();
     let o = cyl.origin();
@@ -2616,7 +2616,7 @@ fn line_segment_cylinder_crossings(
 fn line_segment_cone_crossings(
     sp: Point3,
     ep: Point3,
-    cone: &brepkit_math::surfaces::ConicalSurface,
+    cone: &remus_math::surfaces::ConicalSurface,
 ) -> Vec<Point3> {
     let apex = cone.apex();
     let axis = cone.axis();
@@ -2695,7 +2695,7 @@ fn trim_open_curve_to_plane_face_lines(
     tol: Tolerance,
 ) -> Option<Vec<RawCurve>> {
     use crate::builder::classify_2d::point_in_polygon_2d;
-    use brepkit_math::vec::Point2;
+    use remus_math::vec::Point2;
 
     // Gated to CONE partners: the plane x cone conic (the `Points`-fit
     // hyperbola/parabola) is the configuration whose whole-curve sections
@@ -3020,12 +3020,12 @@ fn trim_open_curve_to_plane_face_lines(
 /// Extract the `[t0, t1]` sub-curve of a NURBS curve, preserving the original
 /// parameterization (the result's knot domain is exactly `[t0, t1]`).
 fn trim_nurbs_to_span(
-    n: &brepkit_math::nurbs::curve::NurbsCurve,
+    n: &remus_math::nurbs::curve::NurbsCurve,
     t0: f64,
     t1: f64,
-) -> Option<brepkit_math::nurbs::curve::NurbsCurve> {
-    use brepkit_math::nurbs::knot_ops::curve_split;
-    use brepkit_math::traits::ParametricCurve;
+) -> Option<remus_math::nurbs::curve::NurbsCurve> {
+    use remus_math::nurbs::knot_ops::curve_split;
+    use remus_math::traits::ParametricCurve;
     let (d0, d1) = ParametricCurve::domain(n);
     let eps = (d1 - d0).abs() * 1e-9;
     let mut cur = n.clone();
@@ -3141,7 +3141,7 @@ fn longest_inboth_run(inb: &[bool], closed: bool) -> (usize, usize) {
 
 /// Compute AABB for a face by sampling its boundary edges.
 fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result<Aabb3, AlgoError> {
-    let edges = brepkit_topology::explorer::face_edges(topo, face_id)?;
+    let edges = remus_topology::explorer::face_edges(topo, face_id)?;
     let mut points = Vec::new();
 
     for eid in edges {
@@ -3281,7 +3281,7 @@ fn face_boundary_all_degenerate(
     face_id: FaceId,
     tol: Tolerance,
 ) -> Result<bool, AlgoError> {
-    let edges = brepkit_topology::explorer::face_edges(topo, face_id)?;
+    let edges = remus_topology::explorer::face_edges(topo, face_id)?;
     if edges.is_empty() {
         return Ok(false);
     }
@@ -3755,7 +3755,7 @@ fn plane_analytic_intersection(
                 let mut pts_dedup: Vec<Point3> = Vec::with_capacity(pts.len());
                 for &p in &pts {
                     if pts_dedup.last().is_none_or(|&q| {
-                        (p - q).length() > brepkit_math::tolerance::Tolerance::new().linear
+                        (p - q).length() > remus_math::tolerance::Tolerance::new().linear
                     }) {
                         pts_dedup.push(p);
                     }
@@ -3768,10 +3768,8 @@ fn plane_analytic_intersection(
                 }
                 let pts = pts_dedup;
                 // Fit a degree-3 NURBS curve through the sampled points
-                let nurbs = brepkit_math::nurbs::fitting::interpolate(&pts, 3.min(pts.len() - 1))
-                    .map_err(|e| {
-                    AlgoError::IntersectionFailed(format!("NURBS fit failed: {e}"))
-                })?;
+                let nurbs = remus_math::nurbs::fitting::interpolate(&pts, 3.min(pts.len() - 1))
+                    .map_err(|e| AlgoError::IntersectionFailed(format!("NURBS fit failed: {e}")))?;
                 let t_range = nurbs.domain();
                 let bbox = Aabb3::try_from_points(pts.iter().copied()).ok_or_else(|| {
                     AlgoError::IntersectionFailed("empty points for NURBS fit".into())
@@ -3805,7 +3803,7 @@ fn plane_analytic_intersection(
 fn plane_cylinder_parallel_lines(
     normal: Vec3,
     d: f64,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    cyl: &remus_math::surfaces::CylindricalSurface,
     bbox_a: &Aabb3,
     bbox_b: &Aabb3,
 ) -> Result<Vec<RawCurve>, AlgoError> {
@@ -3876,8 +3874,8 @@ fn plane_cylinder_parallel_lines(
 /// contains the other, or they are tangent — a grazing contact line never
 /// splits a face (the same convention as `plane_cylinder_parallel_lines`).
 fn cylinder_cylinder_parallel_lines(
-    c1: &brepkit_math::surfaces::CylindricalSurface,
-    c2: &brepkit_math::surfaces::CylindricalSurface,
+    c1: &remus_math::surfaces::CylindricalSurface,
+    c2: &remus_math::surfaces::CylindricalSurface,
     bbox_a: &Aabb3,
     bbox_b: &Aabb3,
 ) -> Option<Vec<RawCurve>> {
@@ -3963,7 +3961,7 @@ fn analytic_analytic_intersection(
 fn plane_nurbs_intersection(
     normal: Vec3,
     d: f64,
-    nurbs: &brepkit_math::nurbs::surface::NurbsSurface,
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     let isect_curves = nurbs_isect::intersect_plane_nurbs(nurbs, normal, d, NURBS_SAMPLES)?;
 
@@ -3987,8 +3985,8 @@ fn plane_nurbs_intersection(
 
 /// NURBS-NURBS intersection.
 fn nurbs_nurbs_intersection(
-    na: &brepkit_math::nurbs::surface::NurbsSurface,
-    nb: &brepkit_math::nurbs::surface::NurbsSurface,
+    na: &remus_math::nurbs::surface::NurbsSurface,
+    nb: &remus_math::nurbs::surface::NurbsSurface,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     let isect_curves = nurbs_isect::intersect_nurbs_nurbs(na, nb, NURBS_SAMPLES, NURBS_MARCH_STEP)?;
 
@@ -4011,7 +4009,7 @@ fn nurbs_nurbs_intersection(
 }
 
 /// Compute AABB for a circle.
-fn circle_bbox(circle: &brepkit_math::curves::Circle3D) -> Aabb3 {
+fn circle_bbox(circle: &remus_math::curves::Circle3D) -> Aabb3 {
     let n = 16;
     let points: Vec<Point3> = (0..=n)
         .map(|i| {
@@ -4023,7 +4021,7 @@ fn circle_bbox(circle: &brepkit_math::curves::Circle3D) -> Aabb3 {
 }
 
 /// Compute AABB for an ellipse.
-fn ellipse_bbox(ellipse: &brepkit_math::curves::Ellipse3D) -> Aabb3 {
+fn ellipse_bbox(ellipse: &remus_math::curves::Ellipse3D) -> Aabb3 {
     let n = 16;
     let points: Vec<Point3> = (0..=n)
         .map(|i| {
@@ -4045,7 +4043,7 @@ fn find_nearby_face_vertex(
     face_id: FaceId,
     point: Point3,
     tol: Tolerance,
-) -> Option<brepkit_topology::vertex::VertexId> {
+) -> Option<remus_topology::vertex::VertexId> {
     let face = topo.face(face_id).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
     for oe in wire.edges() {
@@ -4073,7 +4071,7 @@ fn find_boundary_vertex_on_curve(
     face_b: FaceId,
     curve: &EdgeCurve,
     tol: Tolerance,
-) -> Option<(brepkit_topology::vertex::VertexId, f64, Point3)> {
+) -> Option<(remus_topology::vertex::VertexId, f64, Point3)> {
     let project_eval = |p: Point3| -> Option<(f64, Point3)> {
         match curve {
             EdgeCurve::Circle(c) => {
@@ -4097,7 +4095,7 @@ fn find_boundary_vertex_on_curve(
         let Ok(face) = topo.face(fid) else {
             continue;
         };
-        let wires: Vec<brepkit_topology::wire::WireId> = std::iter::once(face.outer_wire())
+        let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
             .chain(face.inner_wires().iter().copied())
             .collect();
         for wid in wires {
@@ -4137,14 +4135,14 @@ fn closed_circle_crosses_face_boundaries(
     topo: &Topology,
     face_a: FaceId,
     face_b: FaceId,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> bool {
     for fid in [face_a, face_b] {
         let Ok(face) = topo.face(fid) else {
             continue;
         };
-        let wires: Vec<brepkit_topology::wire::WireId> = std::iter::once(face.outer_wire())
+        let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
             .chain(face.inner_wires().iter().copied())
             .collect();
         for wid in wires {
@@ -4228,13 +4226,13 @@ fn closed_circle_crosses_face_boundaries(
 fn circle_exits_plane_boundary(
     topo: &Topology,
     plane_face: FaceId,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> bool {
     let Ok(face) = topo.face(plane_face) else {
         return false;
     };
-    let wires: Vec<brepkit_topology::wire::WireId> = std::iter::once(face.outer_wire())
+    let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
         .chain(face.inner_wires().iter().copied())
         .collect();
     for wid in wires {
@@ -4284,11 +4282,11 @@ fn circle_exits_plane_boundary(
 /// filtered to the edge's actual arc span (a full-circle edge accepts all
 /// crossings). Returns `(point, t-on-section-circle)` pairs.
 fn circle_arc_crossings(
-    edge: &brepkit_topology::edge::Edge,
+    edge: &remus_topology::edge::Edge,
     sp: Point3,
     ep: Point3,
-    bc: &brepkit_math::curves::Circle3D,
-    circle: &brepkit_math::curves::Circle3D,
+    bc: &remus_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> Vec<(Point3, f64)> {
     const NS: usize = 128;
@@ -4334,7 +4332,7 @@ fn closed_circle_boundary_crossings(
     topo: &Topology,
     face_a: FaceId,
     face_b: FaceId,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> Vec<(f64, Point3)> {
     // Hits carry the boundary edge they came from when that edge is an ARC
@@ -4345,8 +4343,8 @@ fn closed_circle_boundary_crossings(
     // the lens region to a zero-area slit. The midpoint split is the
     // sanctioned splitter-side resolution (never make the shared merge
     // smarter).
-    let face_hits = |fid: FaceId| -> Vec<(f64, Point3, Option<brepkit_topology::edge::EdgeId>)> {
-        let mut hits: Vec<(f64, Point3, Option<brepkit_topology::edge::EdgeId>)> = Vec::new();
+    let face_hits = |fid: FaceId| -> Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> {
+        let mut hits: Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> = Vec::new();
         let Ok(face) = topo.face(fid) else {
             return hits;
         };
@@ -4363,7 +4361,7 @@ fn closed_circle_boundary_crossings(
             let Ok(ev) = topo.vertex(edge.end()) else {
                 continue;
             };
-            let mut edge_hits: Vec<(f64, Point3, Option<brepkit_topology::edge::EdgeId>)> =
+            let mut edge_hits: Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> =
                 Vec::new();
             match edge.curve() {
                 EdgeCurve::Line => {
@@ -4439,7 +4437,7 @@ fn closed_circle_boundary_crossings(
         }
     };
 
-    let mut hits: Vec<(f64, Point3, Option<brepkit_topology::edge::EdgeId>)> = Vec::new();
+    let mut hits: Vec<(f64, Point3, Option<remus_topology::edge::EdgeId>)> = Vec::new();
     for &fid in &faces_to_check {
         // A sphere hemisphere's boundary is a polygon inscribed in the seam
         // (equator) circle. A section circle that genuinely crosses the seam
@@ -4546,7 +4544,7 @@ fn closed_circle_boundary_crossings(
 fn sphere_seam_plane_crossings(
     topo: &Topology,
     fid: FaceId,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> Vec<(f64, Point3)> {
     let Ok(face) = topo.face(fid) else {
@@ -4573,7 +4571,7 @@ fn sphere_seam_plane_crossings(
             };
             topo.vertex(start)
                 .ok()
-                .map(brepkit_topology::vertex::Vertex::point)
+                .map(remus_topology::vertex::Vertex::point)
         })
         .collect();
     if verts.len() < 3 {
@@ -4698,7 +4696,7 @@ fn emit_split_circle_arcs(
     face_a: FaceId,
     face_b: FaceId,
     raw: &RawCurve,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     crossings: &[(f64, Point3)],
     tol: Tolerance,
 ) {
@@ -4855,9 +4853,9 @@ fn emit_split_circle_arcs(
 
     // Pass 2: allocate vertices only for crossings/midpoints used by
     // surviving arcs, then materialise edges + pave blocks.
-    let mut crossing_vids: Vec<Option<brepkit_topology::vertex::VertexId>> = vec![None; n];
+    let mut crossing_vids: Vec<Option<remus_topology::vertex::VertexId>> = vec![None; n];
     let resolve_crossing =
-        |topo: &mut Topology, arena: &GfaArena, p: Point3| -> brepkit_topology::vertex::VertexId {
+        |topo: &mut Topology, arena: &GfaArena, p: Point3| -> remus_topology::vertex::VertexId {
             super::helpers::find_nearby_pave_vertex(topo, arena, p, tol)
                 .or_else(|| find_nearby_face_vertex(topo, face_a, p, tol))
                 .or_else(|| find_nearby_face_vertex(topo, face_b, p, tol))
@@ -4965,7 +4963,7 @@ fn emit_split_circle_arcs(
 }
 
 /// Compute AABB for a NURBS curve.
-fn nurbs_curve_bbox(curve: &brepkit_math::nurbs::curve::NurbsCurve) -> Aabb3 {
+fn nurbs_curve_bbox(curve: &remus_math::nurbs::curve::NurbsCurve) -> Aabb3 {
     let (t0, t1) = curve.domain();
     let n: usize = 32;
     let points: Vec<Point3> = (0..=n)
@@ -5070,8 +5068,8 @@ fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve) -> FaceCl
     // inconsistent `is_forward` flags, and a mis-ordered polygon makes
     // the clip silently truncate the range.
     let mut remaining: Vec<(
-        brepkit_topology::vertex::VertexId,
-        brepkit_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
     )> = Vec::new();
     for oe in wire.edges() {
         let Ok(edge) = topo.edge(oe.edge()) else {
@@ -5272,8 +5270,8 @@ fn clip_line_to_polygon_general(
     end: (f64, f64),
     polygon: &[(f64, f64)],
 ) -> Option<(f64, f64)> {
-    use brepkit_math::predicates::point_in_polygon;
-    use brepkit_math::vec::Point2;
+    use remus_math::predicates::point_in_polygon;
+    use remus_math::vec::Point2;
 
     let n = polygon.len();
     if n < 3 {
@@ -5336,9 +5334,9 @@ mod tests {
     fn boxes(
         a: ([f64; 3], [f64; 3]),
         b: ([f64; 3], [f64; 3]),
-    ) -> (brepkit_math::aabb::Aabb3, brepkit_math::aabb::Aabb3) {
+    ) -> (remus_math::aabb::Aabb3, remus_math::aabb::Aabb3) {
         let mk = |(lo, hi): ([f64; 3], [f64; 3])| {
-            brepkit_math::aabb::Aabb3::from_points([
+            remus_math::aabb::Aabb3::from_points([
                 Point3::new(lo[0], lo[1], lo[2]),
                 Point3::new(hi[0], hi[1], hi[2]),
             ])
@@ -5444,7 +5442,7 @@ mod tests {
         // A closed Ellipse whose in-both run is a genuine NON-wrapping partial
         // (b0..b1 strictly inside [0, N]) trims to ONE open arc with those exact
         // parameters — NOT kept whole. Domain [0, 2π], N=24, run = samples 6..18.
-        use brepkit_math::curves::Ellipse3D;
+        use remus_math::curves::Ellipse3D;
         let e = Ellipse3D::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
@@ -5479,7 +5477,7 @@ mod tests {
         // NOT a clamp-dropped single arc, since a clamped NURBS can't evaluate
         // past its domain. Run = samples 22..28 (i.e. 22,23,0,1,2,3,4 wrapping),
         // N=24, domain [0, 1].
-        use brepkit_math::nurbs::fitting::interpolate;
+        use remus_math::nurbs::fitting::interpolate;
         // A closed NURBS through 8 points around a circle (start == end).
         let mut pts: Vec<Point3> = (0..8)
             .map(|k| {
@@ -5519,10 +5517,10 @@ mod tests {
         // end, so endpoint-only winding gives a zero chord and no axis. Sampling
         // along the edge must recover the circle's plane normal as the pole axis
         // (otherwise the broad-phase falls back to the loose full-sphere box).
-        use brepkit_math::curves::Circle3D;
-        use brepkit_math::surfaces::SphericalSurface;
-        use brepkit_topology::face::Face;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
         let mut topo = Topology::default();
         let v0 = topo.add_vertex(Vertex::new(Point3::new(6.0, 0.0, 0.0), 1e-7));
         let circle =
@@ -5548,10 +5546,10 @@ mod tests {
         // A torus patch bounded by a closed `Circle` edge has coincident
         // endpoints but real spatial extent — it must NOT be treated as a full
         // (untrimmed) torus, which would over-widen its AABB to the whole torus.
-        use brepkit_math::curves::Circle3D;
-        use brepkit_math::surfaces::ToroidalSurface;
-        use brepkit_topology::face::Face;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::ToroidalSurface;
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
         let mut topo = Topology::default();
         let v0 = topo.add_vertex(Vertex::new(Point3::new(13.0, 0.0, 0.0), 1e-7));
         // A tube cross-section circle at u=0: centered on the tube center
@@ -5569,9 +5567,9 @@ mod tests {
     fn point_seam_boundary_is_full_torus() {
         // Degenerate `Line(v0, v0)` seam edges (zero extent) are the full-torus
         // signature and must return true.
-        use brepkit_math::surfaces::ToroidalSurface;
-        use brepkit_topology::face::Face;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::surfaces::ToroidalSurface;
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
         let mut topo = Topology::default();
         let v0 = topo.add_vertex(Vertex::new(Point3::new(13.0, 0.0, 0.0), 1e-7));
         let e0 = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Line));
@@ -5785,10 +5783,10 @@ mod tests {
         // The window's transitions must bisect to the TRUE boundary, not the
         // margin-inflated one (adjacent coplanar faces' copies of a shared
         // section must chain at the boundary, not overlap by the margin).
-        use brepkit_topology::edge::{Edge, EdgeCurve as EC};
-        use brepkit_topology::face::{Face, FaceSurface as FS};
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_topology::edge::{Edge, EdgeCurve as EC};
+        use remus_topology::face::{Face, FaceSurface as FS};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         const N: usize = 24;
         let mut topo = Topology::new();
@@ -5822,7 +5820,7 @@ mod tests {
         // (a raw Circle3D picks its own reference axis, and closed Circles
         // route through seam adoption in production, not this path): inside
         // the square for y in [0, 2], one non-wrapping window.
-        let c = brepkit_math::curves::Ellipse3D::new_with_ref(
+        let c = remus_math::curves::Ellipse3D::new_with_ref(
             Point3::new(5.0, -1.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             3.0,
@@ -5833,7 +5831,7 @@ mod tests {
         let p0 = c.evaluate(0.0);
         let raw = RawCurve {
             curve: EdgeCurve::Ellipse(c.clone()),
-            bbox: brepkit_math::aabb::Aabb3 {
+            bbox: remus_math::aabb::Aabb3 {
                 min: Point3::new(2.0, -4.0, 0.0),
                 max: Point3::new(8.0, 2.0, 0.0),
             },

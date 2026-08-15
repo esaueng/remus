@@ -1,11 +1,11 @@
 ---
 name: layer-boundaries
-description: Use when adding a workspace dependency between brepkit crates, deciding which crate new code belongs in, adding a variant to EdgeCurve or FaceSurface (or a new analytic surface type), fixing a CI "boundaries" job failure or a VIOLATION from scripts/check-boundaries.sh, or hitting "two different versions of crate brepkit-topology" errors.
+description: Use when adding a workspace dependency between remus crates, deciding which crate new code belongs in, adding a variant to EdgeCurve or FaceSurface (or a new analytic surface type), fixing a CI "boundaries" job failure or a VIOLATION from scripts/check-boundaries.sh, or hitting "two different versions of crate remus-topology" errors.
 ---
 
 # Layer Boundaries
 
-brepkit is a strict layered DAG (L0 math up to L4 wasm/render). This skill covers: keeping the DAG intact, the safe procedure for adding `EdgeCurve`/`FaceSurface` variants, and where new code goes. The dependency table itself lives in CLAUDE.md, "Layer dependency rules". Do not restate it; check against it.
+remus is a strict layered DAG (L0 math up to L4 wasm/render). This skill covers: keeping the DAG intact, the safe procedure for adding `EdgeCurve`/`FaceSurface` variants, and where new code goes. The dependency table itself lives in CLAUDE.md, "Layer dependency rules". Do not restate it; check against it.
 
 ## Quick reference
 
@@ -18,15 +18,15 @@ rg -n '_ =>' crates/io/src/step/writer.rs crates/io/src/iges/writer.rs crates/op
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| CI `boundaries` job fails / `VIOLATION: crates/X depends on brepkit-Y` | Cargo dep added against the layer table | Remove the dep; move the code to a layer where the dep is legal, or invert the dependency |
-| `use brepkit_x::...` fails to resolve in crate Y | Y's layer may not depend on x | Same as above; do NOT add the dep to "make it compile" |
-| "two different versions of crate `brepkit-topology`" type errors | A higher-layer crate was added as a dev-dep of topology | Revert; use topology's `test-utils` feature instead (see below) |
+| CI `boundaries` job fails / `VIOLATION: crates/X depends on remus-Y` | Cargo dep added against the layer table | Remove the dep; move the code to a layer where the dep is legal, or invert the dependency |
+| `use remus_x::...` fails to resolve in crate Y | Y's layer may not depend on x | Same as above; do NOT add the dep to "make it compile" |
+| "two different versions of crate `remus-topology`" type errors | A higher-layer crate was added as a dev-dep of topology | Revert; use topology's `test-utils` feature instead (see below) |
 | Hundreds of `non-exhaustive patterns` errors after adding an enum variant | Expected; matches are exhaustive by design | Work through them; this IS the checklist (see procedure below) |
 | New analytic surface pair silently returns "no intersection" | `_ => Ok(None)` fallback in `try_algebraic_intersection` | Add the pair arm deliberately; the compiler will not flag this one (see reference.md, AnalyticSurface) |
 
 ## The boundary check
 
-`scripts/check-boundaries.sh` reads only the `[dependencies]` section of each `crates/*/Cargo.toml` and compares against a per-crate allowlist. Dev-dependencies are deliberately exempt. It does not inspect `use` paths; those are enforced transitively because a `use brepkit_x::` without the Cargo dep will not compile.
+`scripts/check-boundaries.sh` reads only the `[dependencies]` section of each `crates/*/Cargo.toml` and compares against a per-crate allowlist. Dev-dependencies are deliberately exempt. It does not inspect `use` paths; those are enforced transitively because a `use remus_x::` without the Cargo dep will not compile.
 
 When it runs: CI only, as the `boundaries` job gated into `ci-pass` (`.github/workflows/ci.yml`). The pre-push hook delegates all validation to CI, so run the script manually before pushing:
 
@@ -37,8 +37,8 @@ When it runs: CI only, as the `boundaries` job gated into `ci-pass` (`.github/wo
 Expect `✅ All crate boundaries valid.` and exit 0. On failure it prints one `VIOLATION:` line per bad dep and exits 1.
 
 Nuances:
-- The script's allowlist is slightly looser than the CLAUDE.md table: it permits `brepkit-geometry` for `algo`/`blend`, and a direct `brepkit-blend` dep for `wasm` (the table allows blend only transitively, via operations). None of these are used today. Treat the CLAUDE.md table as intent, the script as the floor. Passing the script but violating the table still gets flagged in review.
-- No crate may depend on `brepkit-render`. It is an L4 leaf.
+- The script's allowlist is slightly looser than the CLAUDE.md table: it permits `remus-geometry` for `algo`/`blend`, and a direct `remus-blend` dep for `wasm` (the table allows blend only transitively, via operations). None of these are used today. Treat the CLAUDE.md table as intent, the script as the floor. Passing the script but violating the table still gets flagged in review.
+- No crate may depend on `remus-render`. It is an L4 leaf.
 
 ## Adding an EdgeCurve or FaceSurface variant
 
@@ -52,13 +52,13 @@ Full procedure with checkpoints: see [reference.md](reference.md), "Variant-add 
 
 ## The dev-dependency cycle trap
 
-Never add `brepkit-operations` (or any crate above topology) to `[dev-dependencies]` of `brepkit-topology`. Cargo then builds two feature-resolved versions of topology and every `Id<T>` and `Topology` value becomes a "two different versions of crate" type mismatch. The boundary script will NOT catch this: it ignores dev-deps on purpose.
+Never add `remus-operations` (or any crate above topology) to `[dev-dependencies]` of `remus-topology`. Cargo then builds two feature-resolved versions of topology and every `Id<T>` and `Topology` value becomes a "two different versions of crate" type mismatch. The boundary script will NOT catch this: it ignores dev-deps on purpose.
 
 The sanctioned pattern: shape-building test helpers go in `topology/src/test_utils.rs` behind the `test-utils` feature (`#[cfg(feature = "test-utils")]` in `topology/src/lib.rs`). Higher crates enable it in their dev-deps:
 
 ```toml
 [dev-dependencies]
-brepkit-topology = { workspace = true, features = ["test-utils"] }
+remus-topology = { workspace = true, features = ["test-utils"] }
 ```
 
 algo, blend, heal, check, offset, operations, and io all already do this. Copy that line, do not invent a new mechanism.

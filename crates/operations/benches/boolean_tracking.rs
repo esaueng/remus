@@ -8,7 +8,7 @@
 //! deterministic complexity guard (`boolean::tests::scaling_*`); this catches
 //! broad slowdowns the work-counters can't see.
 //!
-//! Run locally: `cargo bench -p brepkit-operations --bench boolean_tracking`
+//! Run locally: `cargo bench -p remus-operations --bench boolean_tracking`
 
 #![allow(
     clippy::unwrap_used,
@@ -21,13 +21,13 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
 
 /// Merge disjoint solids into one multi-region tool (the lowering of a compound
 /// cutter). Inlined here because `compound_ops::merge_disjoint_solids` is

@@ -1,13 +1,13 @@
-# brepkit
+# remus
 
 The B-Rep modeling engine behind [brepjs](https://github.com/andymai/brepjs),
 written in Rust and compiled to WebAssembly.
 
-brepkit is the computational backend that powers brepjs. It handles NURBS
+remus is the computational backend that powers brepjs. It handles NURBS
 geometry, boolean operations, filleting, tessellation, and data exchange — in
 memory-safe Rust with first-class WASM support.
 
-## Why brepkit?
+## Why remus?
 
 - **Pure Rust** — no C/C++ dependencies, no complex build systems
 - **WASM-first** — designed for browser and Node.js environments

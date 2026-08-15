@@ -1,7 +1,7 @@
 ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION(('hand-written fixture: CONICAL_SURFACE with a non-zero base_radius'), '2;1');
-FILE_NAME('conical_surface_base_radius_frustum.step', '2026-01-01T00:00:00', ('brepkit'), ('brepkit'), 'brepkit test fixture', 'brepkit test fixture', '');
+FILE_NAME('conical_surface_base_radius_frustum.step', '2026-01-01T00:00:00', ('remus'), ('remus'), 'remus test fixture', 'remus test fixture', '');
 FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
 ENDSEC;
 DATA;
@@ -33,7 +33,7 @@ DATA;
    faces defer it to the paths that integrate the surface itself, so the
    volume below is a real measurement of this cone.
 
-   The radius cannot be recovered from a round trip: brepkit's writer
+   The radius cannot be recovered from a round trip: remus's writer
    anchors on the apex and always emits `0.0E0`, so only a hand-written
    statement puts a non-zero `base_radius` through the reader at all. */
 #1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );

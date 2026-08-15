@@ -22,13 +22,13 @@ type CbEdgeKey = ((i64, i64, i64), (i64, i64, i64));
 /// remain separate.
 const VERTEX_DEDUP_SCALE: f64 = 1e10;
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::ds::{GfaArena, PaveBlockId, Rank};
 
@@ -55,16 +55,16 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     // Shared edge cache: (face_id, source_edge_idx) → EdgeId. Ensures section
     // edges (which appear in both forward and reverse in adjacent loops from
     // the SAME face's split) reference the SAME topology edge entity.
-    let mut shared_edge_cache: HashMap<(usize, usize), brepkit_topology::edge::EdgeId> =
+    let mut shared_edge_cache: HashMap<(usize, usize), remus_topology::edge::EdgeId> =
         HashMap::new();
 
     // CommonBlock position-pair → shared EdgeId. When building sub-face edges,
     // if the edge endpoints match a CB's split_edge endpoints (by quantized
     // position), reuse the CB's edge entity. This ensures faces from different
     // input solids share the same EdgeId at their common boundaries.
-    let cb_qpair_edges: HashMap<CbEdgeKey, brepkit_topology::edge::EdgeId> = {
+    let cb_qpair_edges: HashMap<CbEdgeKey, remus_topology::edge::EdgeId> = {
         let scale = VERTEX_DEDUP_SCALE;
-        let qpt = |p: brepkit_math::vec::Point3| -> (i64, i64, i64) {
+        let qpt = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
             (
                 (p.x() * scale).round() as i64,
                 (p.y() * scale).round() as i64,
@@ -104,10 +104,10 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     // were inserted), but that order wasn't load-bearing here, and an
     // explicit "lowest id wins" policy is easier to reason about than
     // "whatever the BTreeMap's value iteration happened to be."
-    let vv_vertex_seed: BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId> = {
+    let vv_vertex_seed: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> = {
         let scale = VERTEX_DEDUP_SCALE;
         let mut seed = BTreeMap::new();
-        let mut canonical_vids: Vec<brepkit_topology::vertex::VertexId> =
+        let mut canonical_vids: Vec<remus_topology::vertex::VertexId> =
             arena.same_domain_vertices.values().copied().collect();
         canonical_vids.sort();
         canonical_vids.dedup();
@@ -135,7 +135,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     };
 
     // PB vertex registry: cross-face pool of FRESH vertices at CB positions.
-    let mut pb_vertex_registry: BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId> =
+    let mut pb_vertex_registry: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> =
         BTreeMap::new();
 
     // ── CommonBlock vertex pre-pass ─────────────────────────────────
@@ -173,7 +173,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     // position get the SAME fresh VertexId, eliminating the Euler
     // vertex excess from per-rank duplication. Fresh vertices don't
     // connect to input solid topology (no contamination).
-    let shared_vertex_pool: BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId> = {
+    let shared_vertex_pool: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> = {
         // Count UNIQUE faces per resolved vertex position (any rank).
         let mut vid_faces: HashMap<usize, (Point3, std::collections::HashSet<usize>)> =
             HashMap::new();
@@ -275,19 +275,12 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     sorted_faces.sort_by_key(|(fid, _)| {
         let curved = topo
             .face(*fid)
-            .map(|f| {
-                !matches!(
-                    f.surface(),
-                    brepkit_topology::face::FaceSurface::Plane { .. }
-                )
-            })
+            .map(|f| !matches!(f.surface(), remus_topology::face::FaceSurface::Plane { .. }))
             .unwrap_or(true);
         (curved, fid.index())
     });
-    let mut section_split_registry: std::collections::HashMap<
-        usize,
-        Vec<brepkit_math::vec::Point3>,
-    > = std::collections::HashMap::new();
+    let mut section_split_registry: std::collections::HashMap<usize, Vec<remus_math::vec::Point3>> =
+        std::collections::HashMap::new();
 
     for (face_id, rank) in sorted_faces {
         let fi = arena.face_info(face_id);
@@ -359,12 +352,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         // there; the endpoint-T machinery cascades the knock-on splits).
         let is_plane_face = topo
             .face(face_id)
-            .map(|f| {
-                matches!(
-                    f.surface(),
-                    brepkit_topology::face::FaceSurface::Plane { .. }
-                )
-            })
+            .map(|f| matches!(f.surface(), remus_topology::face::FaceSurface::Plane { .. }))
             .unwrap_or(false);
         let sections = if !is_plane_face && !section_split_registry.is_empty() {
             presplit_sections_at_registry(&sections, &section_split_registry, tol.linear)
@@ -386,7 +374,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                             topo.edge(oe.edge())
                                 .ok()
                                 .and_then(|e| topo.vertex(e.start()).ok())
-                                .map(brepkit_topology::vertex::Vertex::point)
+                                .map(remus_topology::vertex::Vertex::point)
                         })
                         .collect()
                 })
@@ -407,7 +395,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         if std::env::var("BK_SECS").is_ok() {
             for (si, sec) in sections.iter().enumerate() {
                 let (a, b) = (sec.start, sec.end);
-                let touches = |q: brepkit_math::vec::Point3| {
+                let touches = |q: remus_math::vec::Point3| {
                     (37.9..38.11).contains(&q.x())
                         && (-41.8..-40.0).contains(&q.y())
                         && (31.4..34.9).contains(&q.z())
@@ -439,13 +427,13 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
 
         if std::env::var("BK_SPLITW").is_ok_and(|v| v == format!("{}", face_id.index())) {
             if let Ok(face) = topo.face(face_id)
-                && let brepkit_topology::face::FaceSurface::Plane { normal, .. } = face.surface()
+                && let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface()
             {
                 for (ri, r) in split_results.iter().enumerate() {
                     if r.outer_wire.len() < 3 {
                         continue;
                     }
-                    let uvs: Vec<brepkit_math::vec::Point2> =
+                    let uvs: Vec<remus_math::vec::Point2> =
                         r.outer_wire.iter().map(|e| e.start_uv).collect();
                     let mut uv_area = 0.0;
                     for k in 0..uvs.len() {
@@ -453,9 +441,9 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                         let b = uvs[(k + 1) % uvs.len()];
                         uv_area += a.x() * b.y() - b.x() * a.y();
                     }
-                    let pts: Vec<brepkit_math::vec::Point3> =
+                    let pts: Vec<remus_math::vec::Point3> =
                         r.outer_wire.iter().map(|e| e.start_3d).collect();
-                    let mut acc = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+                    let mut acc = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
                     for k in 1..pts.len().saturating_sub(1) {
                         let u = pts[k] - pts[0];
                         let v = pts[k + 1] - pts[0];
@@ -545,7 +533,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                         FaceSurface::Plane { normal, .. } => Some(*normal),
                         _ => None,
                     })
-                    .unwrap_or(brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0));
+                    .unwrap_or(remus_math::vec::Vec3::new(0.0, 0.0, 1.0));
                 let wire_pts: Vec<_> = face
                     .as_ref()
                     .and_then(|f| topo.wire(f.outer_wire()).ok())
@@ -556,7 +544,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                                 topo.edge(oe.edge())
                                     .ok()
                                     .and_then(|e| topo.vertex(e.start()).ok())
-                                    .map(brepkit_topology::vertex::Vertex::point)
+                                    .map(remus_topology::vertex::Vertex::point)
                             })
                             .collect()
                     })
@@ -649,7 +637,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         };
 
         // Build per-rank merge maps.
-        let mut rank_merge_maps: HashMap<Rank, HashMap<usize, brepkit_topology::vertex::VertexId>> =
+        let mut rank_merge_maps: HashMap<Rank, HashMap<usize, remus_topology::vertex::VertexId>> =
             HashMap::new();
         {
             let mut rank_edges: HashMap<Rank, Vec<EdgeId>> = HashMap::new();
@@ -667,9 +655,9 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                 }
             }
             for (&rank, edges) in &rank_edges {
-                let mut canonical: BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId> =
+                let mut canonical: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> =
                     BTreeMap::new();
-                let mut merge_map: HashMap<usize, brepkit_topology::vertex::VertexId> =
+                let mut merge_map: HashMap<usize, remus_topology::vertex::VertexId> =
                     HashMap::new();
                 for &eid in edges {
                     if let Ok(edge) = topo.edge(eid) {
@@ -768,8 +756,8 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
 fn rebuild_face_with_fresh_vertices(
     topo: &mut Topology,
     face_id: FaceId,
-    rank_pool: Option<&BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>>,
-    pb_registry: &mut BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
+    rank_pool: Option<&BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>>,
+    pb_registry: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     qpos: &dyn Fn(Point3) -> (i64, i64, i64),
     tol: Tolerance,
 ) -> Option<FaceId> {
@@ -796,7 +784,7 @@ fn rebuild_face_with_fresh_vertices(
         })
         .collect::<Option<Vec<_>>>()?;
 
-    let mut new_edges: Vec<(bool, brepkit_topology::edge::EdgeId)> = Vec::new();
+    let mut new_edges: Vec<(bool, remus_topology::edge::EdgeId)> = Vec::new();
     for (is_fwd, curve, sp, ep) in &orig_edges {
         let start_vid = {
             let key = qpos(*sp);
@@ -881,7 +869,7 @@ fn rebuild_face_with_edge_images<S: BuildHasher>(
             non_degenerate_image_count(topo, *eid, edge_images) > 1
                 && topo
                     .edge(*eid)
-                    .is_ok_and(|e| matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line))
+                    .is_ok_and(|e| matches!(e.curve(), remus_topology::edge::EdgeCurve::Line))
         });
 
     if !has_multi_split {
@@ -959,7 +947,7 @@ fn expand_edge<S: BuildHasher>(
     // Only expand Line edges
     if !topo
         .edge(eid)
-        .is_ok_and(|e| matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line))
+        .is_ok_and(|e| matches!(e.curve(), remus_topology::edge::EdgeCurve::Line))
     {
         return vec![OrientedEdge::new(eid, fwd)];
     }
@@ -1001,11 +989,8 @@ fn expand_edge<S: BuildHasher>(
 fn rebuild_face_with_cb_edges(
     topo: &mut Topology,
     face_id: FaceId,
-    cb_qpair_edges: &HashMap<CbEdgeKey, brepkit_topology::edge::EdgeId>,
-    vv_vertex_seed: &std::collections::BTreeMap<
-        (i64, i64, i64),
-        brepkit_topology::vertex::VertexId,
-    >,
+    cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
+    vv_vertex_seed: &std::collections::BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     _tol: Tolerance,
 ) -> Option<FaceId> {
     if cb_qpair_edges.is_empty() && vv_vertex_seed.is_empty() {
@@ -1021,7 +1006,7 @@ fn rebuild_face_with_cb_edges(
     // Use VERTEX_DEDUP_SCALE consistently for all position lookups —
     // both VV vertex seed and CB edge matching.
     let scale = VERTEX_DEDUP_SCALE;
-    let qpt = |p: brepkit_math::vec::Point3| -> (i64, i64, i64) {
+    let qpt = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,
@@ -1033,7 +1018,7 @@ fn rebuild_face_with_cb_edges(
     // Uses a block scope so the immutable borrow of `topo` is released before
     // the mutable `remap_wire` closure below.
     let any_replaced = {
-        let check_wire = |wid: brepkit_topology::wire::WireId| -> bool {
+        let check_wire = |wid: remus_topology::wire::WireId| -> bool {
             let Ok(wire) = topo.wire(wid) else {
                 return false;
             };
@@ -1093,8 +1078,8 @@ fn rebuild_face_with_cb_edges(
     // This ensures ALL boundary edges share canonical vertices, not just
     // CB-matched edges.
     let remap_wire = |topo: &mut Topology,
-                      wid: brepkit_topology::wire::WireId|
-     -> Option<brepkit_topology::wire::WireId> {
+                      wid: remus_topology::wire::WireId|
+     -> Option<remus_topology::wire::WireId> {
         // Snapshot wire data (snapshot-then-allocate pattern)
         let wire = topo.wire(wid).ok()?;
         let snap: Vec<_> = wire
@@ -1106,11 +1091,11 @@ fn rebuild_face_with_cb_edges(
                     let sv = topo
                         .vertex(e.start())
                         .ok()
-                        .map(brepkit_topology::vertex::Vertex::point);
+                        .map(remus_topology::vertex::Vertex::point);
                     let ev = topo
                         .vertex(e.end())
                         .ok()
-                        .map(brepkit_topology::vertex::Vertex::point);
+                        .map(remus_topology::vertex::Vertex::point);
                     let qs = sv.map(&qpt);
                     let qe = ev.map(&qpt);
                     (
@@ -1136,7 +1121,7 @@ fn rebuild_face_with_cb_edges(
             .collect();
 
         // Pre-lookup CB edge start positions (needed for orientation)
-        let cb_start_qs: HashMap<brepkit_topology::edge::EdgeId, (i64, i64, i64)> = {
+        let cb_start_qs: HashMap<remus_topology::edge::EdgeId, (i64, i64, i64)> = {
             let mut m = HashMap::new();
             for &eid in cb_qpair_edges.values() {
                 if let Ok(e) = topo.edge(eid)
@@ -1277,7 +1262,7 @@ fn compute_seam_anchors(topo: &Topology, arena: &GfaArena) -> BTreeMap<usize, Po
 fn seam_anchor_on_circle(
     topo: &Topology,
     face: &Face,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
 ) -> Option<Point3> {
     let surface = face.surface();
     let wire = topo.wire(face.outer_wire()).ok()?;
@@ -1344,7 +1329,7 @@ const WINDING_LOOP_MIN_TURN: f64 = 1.5 * std::f64::consts::PI;
 /// lateral also winds `u` — that is the ordinary constant-`v` band cut — and
 /// it already has the re-anchoring path.
 fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena) -> Vec<Point3> {
-    use brepkit_math::traits::ParametricCurve;
+    use remus_math::traits::ParametricCurve;
     use std::f64::consts::{PI, TAU};
 
     const SAMPLES: usize = 256;
@@ -1446,7 +1431,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena) -> Vec<Point3> {
                 .partial_cmp(&mean_v(&b.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let gap = brepkit_math::tolerance::Tolerance::new().linear * 100.0;
+        let gap = remus_math::tolerance::Tolerance::new().linear * 100.0;
         if loops
             .windows(2)
             .any(|w| !loops_strictly_ordered(&w[0].1, &w[1].1, gap))
@@ -1596,7 +1581,7 @@ fn face_seam_u(topo: &Topology, face: &Face) -> Option<f64> {
 /// cut set for, into arcs between consecutive cuts.
 ///
 /// Each arc gets its OWN sub-curve, carved out with
-/// [`brepkit_math::nurbs::knot_ops::curve_split`] (exact — knot insertion, no
+/// [`remus_math::nurbs::knot_ops::curve_split`] (exact — knot insertion, no
 /// re-fitting), rather than a start/end pair on the shared closed one. That is
 /// not tidiness: on a closed curve the seam parameter is AMBIGUOUS, since the
 /// point at `d₀` is the point at `d₁`. The arc that ends at the seam and the
@@ -1626,7 +1611,7 @@ fn presplit_closed_winding_loops(
     wire_pts: &[Point3],
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
-    use brepkit_math::traits::ParametricCurve;
+    use remus_math::traits::ParametricCurve;
 
     let weld = tol * 100.0;
     let mut out = Vec::with_capacity(sections.len() + cuts.len());
@@ -1644,8 +1629,8 @@ fn presplit_closed_winding_loops(
         let mut ts: Vec<f64> = cuts
             .iter()
             .filter_map(|p| {
-                let hit = brepkit_math::nurbs::projection::project_point_to_curve(nurbs, *p, 1e-9)
-                    .ok()?;
+                let hit =
+                    remus_math::nurbs::projection::project_point_to_curve(nurbs, *p, 1e-9).ok()?;
                 (hit.distance <= weld && hit.parameter > d0 + margin && hit.parameter < d1 - margin)
                     .then_some(hit.parameter)
             })
@@ -1694,10 +1679,10 @@ fn presplit_closed_winding_loops(
 /// start at the curve's `d₀` and end at its `d₁`). `None` if any split fails,
 /// so the caller can leave the section whole rather than lose part of it.
 fn split_nurbs_at(
-    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    curve: &remus_math::nurbs::curve::NurbsCurve,
     bounds: &[f64],
-) -> Option<Vec<brepkit_math::nurbs::curve::NurbsCurve>> {
-    use brepkit_math::nurbs::knot_ops::curve_split;
+) -> Option<Vec<remus_math::nurbs::curve::NurbsCurve>> {
+    use remus_math::nurbs::knot_ops::curve_split;
 
     let mut rest = curve.clone();
     let mut pieces = Vec::with_capacity(bounds.len() - 1);
@@ -1747,7 +1732,7 @@ fn build_section_map(topo: &Topology, arena: &GfaArena) -> HashMap<FaceId, Vec<S
         if curve.pave_blocks.is_empty() {
             continue;
         }
-        let is_line = matches!(&curve.curve, brepkit_topology::edge::EdgeCurve::Line);
+        let is_line = matches!(&curve.curve, remus_topology::edge::EdgeCurve::Line);
         if is_line {
             // Feed individual PaveBlocks — works correctly for Lines.
             for &pb_id in &curve.pave_blocks {
@@ -1811,7 +1796,7 @@ fn build_section_map(topo: &Topology, arena: &GfaArena) -> HashMap<FaceId, Vec<S
 
 /// If `face_id` is a plane whose outer wire is a single closed circular edge
 /// (a cap disc), return that circle; otherwise `None`.
-fn cap_disc_circle(topo: &Topology, face_id: FaceId) -> Option<brepkit_math::curves::Circle3D> {
+fn cap_disc_circle(topo: &Topology, face_id: FaceId) -> Option<remus_math::curves::Circle3D> {
     let face = topo.face(face_id).ok()?;
     if !matches!(face.surface(), FaceSurface::Plane { .. }) {
         return None;
@@ -1834,7 +1819,7 @@ fn pb_strictly_inside_circle(
     topo: &Topology,
     arena: &GfaArena,
     pb_id: crate::ds::PaveBlockId,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
 ) -> bool {
     let Some(pb) = arena.pave_blocks.get(pb_id) else {
         return false;
@@ -1874,7 +1859,7 @@ fn build_section_edges(
     seam_anchors: &BTreeMap<usize, Point3>,
     tol: f64,
 ) -> Vec<SectionEdge> {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     let sources = match section_map.get(&face_id) {
         Some(s) => s,
@@ -1897,7 +1882,7 @@ fn build_section_edges(
                     topo.edge(oe.edge())
                         .ok()
                         .and_then(|e| topo.vertex(e.start()).ok())
-                        .map(brepkit_topology::vertex::Vertex::point)
+                        .map(remus_topology::vertex::Vertex::point)
                 })
                 .collect()
         })
@@ -1908,7 +1893,7 @@ fn build_section_edges(
     for source in sources {
         match source {
             SectionSource::Curve(curve_idx) => {
-                use brepkit_math::vec::Point2;
+                use remus_math::vec::Point2;
                 // Use the COMPLETE intersection curve, not individual PBs.
                 // The face splitter needs whole curves to form proper loops.
                 let curve_ds = match arena.curves.get(*curve_idx) {
@@ -2017,7 +2002,7 @@ fn build_section_edges(
                 let (curve_3d, start, end) = match seam_anchors.get(curve_idx) {
                     Some(&anchor) => {
                         let reanchored = if let EdgeCurve::Circle(c) = &curve_ds.curve {
-                            brepkit_math::curves::Circle3D::new_with_ref(
+                            remus_math::curves::Circle3D::new_with_ref(
                                 c.center(),
                                 c.normal(),
                                 c.radius(),
@@ -2081,7 +2066,7 @@ fn build_section_edges(
                         // Plane surface — project via pcurve.
                         (Some(pcurve.evaluate(0.0)), Some(pcurve.evaluate(1.0)))
                     }
-                } else if matches!(pcurve, brepkit_math::curves2d::Curve2D::Line(_)) {
+                } else if matches!(pcurve, remus_math::curves2d::Curve2D::Line(_)) {
                     // Line2D pcurves use arc-length parameterization, so
                     // `evaluate(1.0)` is one UV unit along the line, not the
                     // endpoint (e.g. a horizontal circle on a cylinder maps
@@ -2112,8 +2097,8 @@ fn build_section_edges(
                 // Individual PaveBlock edge — use the old Line2D pcurve approach.
                 // This preserves the existing behavior for Line section edges
                 // that the face splitter already handles correctly.
-                use brepkit_math::curves2d::{Curve2D, Line2D};
-                use brepkit_math::vec::{Point2, Vec2};
+                use remus_math::curves2d::{Curve2D, Line2D};
+                use remus_math::vec::{Point2, Vec2};
 
                 let pb = match arena.pave_blocks.get(*pb_id) {
                     Some(pb) => pb,
@@ -2137,7 +2122,7 @@ fn build_section_edges(
                 };
 
                 let intervals: Vec<(Point3, Point3)> =
-                    if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                         let Some(clipped_list) =
                             clip_line_to_face_boundary(topo, face_id, raw_start, raw_end, tol)
                         else {
@@ -2202,7 +2187,7 @@ fn build_section_edges(
                     // endpoints but a ~2π span); the chord test uses the
                     // weld-scale band (100·tol) because the remnant's endpoints are
                     // the same near-coincident vertices the assembler later welds.
-                    if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line)
+                    if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
                         && (end - start).length() < tol * 100.0
                     {
                         let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
@@ -2251,7 +2236,7 @@ fn build_section_edges(
                         // the uncovered extensions — they carry the genuine
                         // interior split. Exact interval math, not sampling: the
                         // extension fraction can be arbitrarily small.
-                        if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                        if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                             for ext in
                                 line_section_boundary_extensions(topo, face_id, start, end, tol)
                             {
@@ -2320,7 +2305,7 @@ fn build_section_edges(
 fn circle_inside_face(
     topo: &Topology,
     face_id: FaceId,
-    curve: &brepkit_topology::edge::EdgeCurve,
+    curve: &remus_topology::edge::EdgeCurve,
     tol: f64,
 ) -> bool {
     let Ok(face) = topo.face(face_id) else {
@@ -2382,18 +2367,17 @@ fn circle_inside_face(
 fn closed_curve_coincides_with_boundary(
     topo: &Topology,
     face_id: FaceId,
-    curve: &brepkit_topology::edge::EdgeCurve,
+    curve: &remus_topology::edge::EdgeCurve,
     tol: f64,
 ) -> bool {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
-    let circles_match = |a: &brepkit_math::curves::Circle3D, b: &brepkit_math::curves::Circle3D| {
+    let circles_match = |a: &remus_math::curves::Circle3D, b: &remus_math::curves::Circle3D| {
         (a.center() - b.center()).length() < tol
             && (a.radius() - b.radius()).abs() < tol
             && a.normal().dot(b.normal()).abs() > 1.0 - 1e-9
     };
-    let ellipses_match = |a: &brepkit_math::curves::Ellipse3D,
-                          b: &brepkit_math::curves::Ellipse3D| {
+    let ellipses_match = |a: &remus_math::curves::Ellipse3D, b: &remus_math::curves::Ellipse3D| {
         let geometry_matches = (a.center() - b.center()).length() < tol
             && (a.semi_major() - b.semi_major()).abs() < tol
             && (a.semi_minor() - b.semi_minor()).abs() < tol
@@ -2557,13 +2541,13 @@ fn section_on_existing_boundary(
 /// distance for a Line; in-plane + radial distance with an arc-span containment
 /// test for a Circle/Ellipse). NURBS edges are not boundary candidates here.
 pub(super) fn point_on_edge(
-    curve: &brepkit_topology::edge::EdgeCurve,
+    curve: &remus_topology::edge::EdgeCurve,
     start: Point3,
     end: Point3,
     p: Point3,
     tol: f64,
 ) -> bool {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
     match curve {
         EdgeCurve::Line => point_to_segment_dist_3d(p, start, end) < tol,
         EdgeCurve::Circle(c) => {
@@ -2629,7 +2613,7 @@ fn arc_param_contains(a: f64, a0: f64, a1: f64, start: Point3, end: Point3) -> b
 /// interior reveals whether the section enters the face material or rides a
 /// boundary edge. Used by [`section_on_existing_boundary`].
 fn sample_curve_interior(curve_ds: &crate::ds::IntersectionCurveDS) -> Vec<Point3> {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
     const SAMPLES: usize = 9;
     let (t0, t1) = curve_ds.t_range;
     let dummy = Point3::new(0.0, 0.0, 0.0);
@@ -2657,7 +2641,7 @@ fn curve_endpoints(
     arena: &GfaArena,
     curve_ds: &crate::ds::IntersectionCurveDS,
 ) -> (Option<Point3>, Option<Point3>) {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     let (t0, t1) = curve_ds.t_range;
     // Non-Line curves evaluate directly at their parametric endpoints.
@@ -2671,7 +2655,7 @@ fn curve_endpoints(
     // positions when they are the same endpoints (within the weld band) —
     // never a repositioning, only the exact-snap variant of the same point.
     if curve_ds.pave_blocks.len() == 1
-        && !matches!(curve_ds.curve, brepkit_topology::edge::EdgeCurve::Line)
+        && !matches!(curve_ds.curve, remus_topology::edge::EdgeCurve::Line)
         && let Some(pb) = arena.pave_blocks.get(curve_ds.pave_blocks[0])
         && let (Ok(sv), Ok(ev)) = (topo.vertex(pb.start.vertex), topo.vertex(pb.end.vertex))
     {
@@ -2717,7 +2701,7 @@ fn line_section_boundary_extensions(
             let Ok(edge) = topo.edge(oe.edge()) else {
                 continue;
             };
-            if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                 continue;
             }
             let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
@@ -2761,12 +2745,12 @@ fn line_section_boundary_extensions(
 /// construction) — used for salvaged boundary-extension segments.
 fn push_plain_line_section(
     sections: &mut Vec<SectionEdge>,
-    face: &brepkit_topology::face::Face,
+    face: &remus_topology::face::Face,
     start: Point3,
     end: Point3,
 ) {
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::{Point2, Vec2};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
 
     let start_uv = face.surface().project_point(start);
     let end_uv = face.surface().project_point(end);
@@ -2785,7 +2769,7 @@ fn push_plain_line_section(
     };
     let pcurve = Curve2D::Line(line);
     sections.push(SectionEdge {
-        curve_3d: brepkit_topology::edge::EdgeCurve::Line,
+        curve_3d: remus_topology::edge::EdgeCurve::Line,
         pcurve_a: pcurve.clone(),
         pcurve_b: pcurve,
         start,
@@ -2914,7 +2898,7 @@ fn arc_segment_crossings(
     line_start: Point3,
     line_end: Point3,
     tol: f64,
-    plane_normal: Option<brepkit_math::vec::Vec3>,
+    plane_normal: Option<remus_math::vec::Vec3>,
 ) -> Vec<(Point3, f64)> {
     let circle = match curve {
         EdgeCurve::Circle(c) => c,
@@ -3258,7 +3242,7 @@ fn clip_line_to_face_boundary(
         }
         _ => None,
     };
-    let poly: Option<Vec<brepkit_math::vec::Point2>> = plane_frame.as_ref().map(|frame| {
+    let poly: Option<Vec<remus_math::vec::Point2>> = plane_frame.as_ref().map(|frame| {
         let mut poly = Vec::new();
         for (seg_idx, (sp, ep)) in boundary_segments.iter().enumerate() {
             poly.push(frame.project(*sp));
@@ -3383,7 +3367,7 @@ fn point_to_segment_dist_3d(pt: Point3, a: Point3, b: Point3) -> f64 {
 /// Angular u-extent of a face's outer wire on a u-periodic surface,
 /// measured as the period minus the largest angular gap between boundary
 /// samples (robust against the 2pi wrap).
-fn face_u_span(topo: &Topology, face: &brepkit_topology::face::Face) -> Option<f64> {
+fn face_u_span(topo: &Topology, face: &remus_topology::face::Face) -> Option<f64> {
     const TAU: f64 = std::f64::consts::TAU;
     let surface = face.surface();
     let wire = topo.wire(face.outer_wire()).ok()?;
@@ -3518,12 +3502,12 @@ fn cb_quantize_pair(
 /// `seed` and copying `pool` into a fresh map for every sub-face was O(pool)
 /// per call — quadratic on faces that end up with many inner wires (holes).
 fn layered_vertex(
-    local: &mut BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
-    seed: &BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
-    pool: Option<&BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>>,
+    local: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    seed: &BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    pool: Option<&BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>>,
     key: (i64, i64, i64),
-    fallback: impl FnOnce() -> brepkit_topology::vertex::VertexId,
-) -> brepkit_topology::vertex::VertexId {
+    fallback: impl FnOnce() -> remus_topology::vertex::VertexId,
+) -> remus_topology::vertex::VertexId {
     if let Some(&v) = local.get(&key) {
         return v;
     }
@@ -3542,17 +3526,17 @@ fn layered_vertex(
 #[allow(clippy::too_many_arguments)]
 fn resolve_edge_vertices(
     topo: &mut Topology,
-    local: &mut BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
-    seed: &BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
-    pool: Option<&BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>>,
-    pb_registry: &mut BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
+    local: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    seed: &BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    pool: Option<&BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>>,
+    pb_registry: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     edge: &super::split_types::OrientedPCurveEdge,
     arena: &crate::ds::GfaArena,
     quantize: &dyn Fn(Point3) -> (i64, i64, i64),
     tol: Tolerance,
 ) -> (
-    brepkit_topology::vertex::VertexId,
-    brepkit_topology::vertex::VertexId,
+    remus_topology::vertex::VertexId,
+    remus_topology::vertex::VertexId,
 ) {
     // Try PaveBlock-based vertex lookup for SHARED section edges only.
     // Only use split-edge vertices when the PB belongs to a CommonBlock
@@ -3575,11 +3559,11 @@ fn resolve_edge_vertices(
                 let start_pos = topo
                     .vertex(se_start)
                     .ok()
-                    .map(brepkit_topology::vertex::Vertex::point);
+                    .map(remus_topology::vertex::Vertex::point);
                 let end_pos = topo
                     .vertex(se_end)
                     .ok()
-                    .map(brepkit_topology::vertex::Vertex::point);
+                    .map(remus_topology::vertex::Vertex::point);
 
                 if let (Some(sp), Some(ep)) = (start_pos, end_pos) {
                     let fwd_match = (sp - edge.start_3d).length() < tol.linear
@@ -3655,11 +3639,11 @@ fn build_topology_face(
     split: &super::split_types::SplitSubFace,
     tol: Tolerance,
     _parent_face_id: FaceId,
-    _shared_edge_cache: &mut HashMap<(usize, usize), brepkit_topology::edge::EdgeId>,
-    _cb_qpair_edges: &HashMap<CbEdgeKey, brepkit_topology::edge::EdgeId>,
-    vv_vertex_seed: &BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
-    rank_pool: Option<&BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>>,
-    pb_vertex_registry: &mut BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId>,
+    _shared_edge_cache: &mut HashMap<(usize, usize), remus_topology::edge::EdgeId>,
+    _cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
+    vv_vertex_seed: &BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
+    rank_pool: Option<&BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>>,
+    pb_vertex_registry: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     arena: &crate::ds::GfaArena,
 ) -> Option<FaceId> {
     if split.outer_wire.is_empty() {
@@ -3672,7 +3656,7 @@ fn build_topology_face(
     // created during THIS sub-face land in `local_vertices`. Seeding a fresh
     // per-sub-face map from those shared pools was O(pool) × O(sub-faces) —
     // quadratic on a face that ends up with many inner wires (holes).
-    let mut local_vertices: BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId> =
+    let mut local_vertices: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> =
         BTreeMap::new();
 
     let quantize = |p: Point3| -> (i64, i64, i64) {
@@ -3781,10 +3765,10 @@ fn build_topology_face(
 /// direction via vertices and keep the pcurve flag for winding.
 fn instantiate_wire_edge(
     topo: &mut Topology,
-    start_vid: brepkit_topology::vertex::VertexId,
-    end_vid: brepkit_topology::vertex::VertexId,
+    start_vid: remus_topology::vertex::VertexId,
+    end_vid: remus_topology::vertex::VertexId,
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
-) -> (brepkit_topology::edge::EdgeId, bool) {
+) -> (remus_topology::edge::EdgeId, bool) {
     let is_arc = matches!(
         pcurve_edge.curve_3d,
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
@@ -3811,7 +3795,7 @@ fn instantiate_wire_edge(
 /// hints so consumers re-derive them.
 fn presplit_sections_at_registry(
     sections: &[crate::builder::split_types::SectionEdge],
-    registry: &std::collections::HashMap<usize, Vec<brepkit_math::vec::Point3>>,
+    registry: &std::collections::HashMap<usize, Vec<remus_math::vec::Point3>>,
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
     // Match only points registered for the same pave block. A point splits a
@@ -3822,10 +3806,10 @@ fn presplit_sections_at_registry(
     // Sections on curved faces arrive WITHOUT pave-block ids; those keep the
     // historical geometric matching against every registered point — scoping
     // them away drops real splits and un-pairs the emitted edges.
-    let all_points: Vec<brepkit_math::vec::Point3> = registry.values().flatten().copied().collect();
+    let all_points: Vec<remus_math::vec::Point3> = registry.values().flatten().copied().collect();
     let weld = tol * 100.0;
     let on_curve =
-        |s: &crate::builder::split_types::SectionEdge, p: brepkit_math::vec::Point3| -> bool {
+        |s: &crate::builder::split_types::SectionEdge, p: remus_math::vec::Point3| -> bool {
             const N: usize = 64;
             let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
             let mut best_k = 0;
@@ -3862,7 +3846,7 @@ fn presplit_sections_at_registry(
         };
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
-        let points: &[brepkit_math::vec::Point3] = match s.pave_block_id {
+        let points: &[remus_math::vec::Point3] = match s.pave_block_id {
             Some(pb_id) => registry.get(&pb_id).map_or(&[], Vec::as_slice),
             None => &all_points,
         };
@@ -3873,7 +3857,7 @@ fn presplit_sections_at_registry(
             continue;
         }
         let guard = tol * 10.0;
-        let mut cuts: Vec<(f64, brepkit_math::vec::Point3)> = points
+        let mut cuts: Vec<(f64, remus_math::vec::Point3)> = points
             .iter()
             .filter(|p| ((**p) - s.start).length() > guard && ((**p) - s.end).length() > guard)
             .filter(|p| on_curve(s, **p))
@@ -3915,13 +3899,13 @@ fn presplit_sections_at_registry(
 mod clip_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::clip_line_to_face_boundary;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceId, FaceSurface};
-    use brepkit_topology::topology::Topology;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::topology::Topology;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     fn disc_face(topo: &mut Topology, r: f64) -> FaceId {
         let circle =
@@ -4016,11 +4000,11 @@ mod clip_tests {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::nurbs::fitting::interpolate;
-    use brepkit_math::traits::ParametricCurve;
-    use brepkit_math::vec::{Point2, Vec2, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::nurbs::fitting::interpolate;
+    use remus_math::traits::ParametricCurve;
+    use remus_math::vec::{Point2, Vec2, Vec3};
 
     #[test]
     fn registry_presplit_ignores_other_pave_blocks() {
@@ -4058,7 +4042,7 @@ mod tests {
         // the seam-angle hit, costing the cap its half-disc split).
         let circle =
             Circle3D::new(Point3::new(10.0, 10.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0).unwrap();
-        let seam = brepkit_math::traits::ParametricCurve::evaluate(&circle, 0.0);
+        let seam = remus_math::traits::ParametricCurve::evaluate(&circle, 0.0);
         let hits = arc_segment_crossings(
             &EdgeCurve::Circle(circle),
             seam,

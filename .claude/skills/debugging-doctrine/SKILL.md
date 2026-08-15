@@ -1,6 +1,6 @@
 ---
 name: debugging-doctrine
-description: The meta-method for debugging hard geometry bugs in brepkit, used when a boolean, fillet, offset, or tessellation produces wrong volume, wrong face count, open or non-manifold shells, mesh fallback, misclassified points, or any failure where the first diagnosis did not immediately hold. Also applies before starting any multi-pass investigation, when a repro behaves differently from the real case, or when successive root-cause theories keep overturning each other.
+description: The meta-method for debugging hard geometry bugs in remus, used when a boolean, fillet, offset, or tessellation produces wrong volume, wrong face count, open or non-manifold shells, mesh fallback, misclassified points, or any failure where the first diagnosis did not immediately hold. Also applies before starting any multi-pass investigation, when a repro behaves differently from the real case, or when successive root-cause theories keep overturning each other.
 ---
 
 # Debugging Doctrine
@@ -12,9 +12,9 @@ For concrete GFA phase-by-phase instrumentation recipes, see the **boolean-debug
 ## Quick reference
 
 ```bash
-cargo run --release --example debug_boolean -p brepkit-operations   # canonical dump harness, edit in place
-cargo run --release --example approx_census -p brepkit-operations   # which ops fall back to mesh/NURBS
-cargo test -p brepkit-io --test lipfuse_fixture                     # fixture-replay template
+cargo run --release --example debug_boolean -p remus-operations   # canonical dump harness, edit in place
+cargo run --release --example approx_census -p remus-operations   # which ops fall back to mesh/NURBS
+cargo test -p remus-io --test lipfuse_fixture                     # fixture-replay template
 ```
 
 | Symptom | First suspect | Not this |
@@ -33,7 +33,7 @@ cargo test -p brepkit-io --test lipfuse_fixture                     # fixture-re
 
 A repro that does not reproduce the real case is worse than none: it manufactures red herrings. A proxy with corner radius 5 once straddled a wall the real radius 1.485 never touches; ten passes of findings applied only to geometry the real case never produces.
 
-- Capture the ACTUAL failing operands. STEP path: export from the tool (`k.exportSTEP` in a brepjs vitest), replay via `brepkit_io::step::reader::read_step`. Template: `crates/io/tests/lipfuse_fixture.rs`.
+- Capture the ACTUAL failing operands. STEP path: export from the tool (`k.exportSTEP` in a brepjs vitest), replay via `remus_io::step::reader::read_step`. Template: `crates/io/tests/lipfuse_fixture.rs`.
 - If STEP renumbers away the failure (in-memory id-layout bugs) use the lossless arena snapshot: `serialize_solid` / `deserialize_solid` in `crates/io/src/arena_io.rs` (JS: `serializeSolid` / `deserializeSolid`). The `*_inmem.rs` tests in `crates/io/tests/` are the pattern.
 - Checkpoint: repro must match the real case on operand surface types (analytic, not NURBS-reconstructed), face counts, and the exact failure signature. If any differ, fix the repro first. See [reference.md, Faithful fixtures](reference.md#faithful-fixtures).
 
@@ -51,7 +51,7 @@ Before trusting a diagnosis, gate the candidate code behind a temporary flag or 
 
 ### 5. Trace below the gate
 
-`operations::boolean::boolean` runs GFA, then an acceptance gate (`euler_ok && open_shell_ok && validate_boolean_result`), and on failure substitutes a mesh fallback (a warning is logged, but callers see Ok). An operations-level result can look plausible while the real GFA output was rejected. Verify at BOTH levels: `brepkit_algo::gfa::boolean` directly (below the gate) and through the full pipeline. Trust no "this one fix closes it" prediction, including from a subagent, until a direct raw-engine trace on the real operands confirms it; one such trace turned a single predicted fix into five.
+`operations::boolean::boolean` runs GFA, then an acceptance gate (`euler_ok && open_shell_ok && validate_boolean_result`), and on failure substitutes a mesh fallback (a warning is logged, but callers see Ok). An operations-level result can look plausible while the real GFA output was rejected. Verify at BOTH levels: `remus_algo::gfa::boolean` directly (below the gate) and through the full pipeline. Trust no "this one fix closes it" prediction, including from a subagent, until a direct raw-engine trace on the real operands confirms it; one such trace turned a single predicted fix into five.
 
 ### 6. Expect layers; peel and re-instrument
 
@@ -65,7 +65,7 @@ If several rigorous passes each overturn the previous root cause, you are in a m
 
 - "Volume matches, so the boolean is correct." Volume is tessellation-based (`measure/volume.rs`, deflection clamped to bbox_diag * 5e-5) and has masked a fully un-carved slot. Face count per surface type is the reliable tell.
 - "Triangle count and validity look fine, so no fallback." Both mask mesh fallback. Only face count exposes it.
-- "The winding classifier says OUT, so the point is outside." Wrong on faceted, stepped, and NURBS-heavy solids. Ground truth is `brepkit_check::classify::classify_point`.
+- "The winding classifier says OUT, so the point is outside." Wrong on faceted, stepped, and NURBS-heavy solids. Ground truth is `remus_check::classify::classify_point`.
 - "Same-domain detection must have missed the overlap." Check the classifier first; SD was innocent both times it was blamed.
 - "The fix compiles and the theory is coherent, so ship it." Verify the path fires (step 4) and the case closes on the real fixture, or revert. Unshippable partial progress goes to a branch, never to main.
 - "Generalize while we are here." Solve the narrow problem. A general merge-key primitive was provably impossible where a per-case splitter-side midpoint split worked; two callers needed opposite behavior from the same key.

@@ -1,12 +1,10 @@
-/* @ts-self-types="./brepkit_wasm.d.ts" */
-
 /**
  * The B-Rep modeling kernel.
  *
  * Owns all topological state. JavaScript holds this reference and
  * invokes methods to create, transform, and query geometry.
  */
-class BrepKernel {
+export class BrepKernel {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -2408,7 +2406,7 @@ class BrepKernel {
     /**
      * Get the orientation of a shape.
      *
-     * Returns `"forward"` for all faces (brepkit faces don't have an
+     * Returns `"forward"` for all faces (remus faces don't have an
      * independent orientation flag; the normal direction is canonical).
      * @param {number} _id
      * @returns {string}
@@ -4216,7 +4214,7 @@ class BrepKernel {
     /**
      * Offset all faces of a solid outward or inward (V2 pipeline).
      *
-     * Uses the new `brepkit-offset` engine with intersection-based joints.
+     * Uses the new `remus-offset` engine with intersection-based joints.
      *
      * # Errors
      *
@@ -4856,7 +4854,7 @@ class BrepKernel {
      *
      * This writer emits a single-root version 2 document. Returns a
      * `Uint8Array` consumable by
-     * `brepkit_io::arena_io::deserialize_solid`.
+     * `remus_io::arena_io::deserialize_solid`.
      *
      * # Errors
      *
@@ -5458,7 +5456,7 @@ class BrepKernel {
      * Export a solid as a JSON-encoded BREP representation.
      *
      * Returns a JSON string with vertices, edges (with curve parameters),
-     * and faces (with surface parameters). This is a brepkit-specific format
+     * and faces (with surface parameters). This is a remus-specific format
      * that preserves all analytic geometry types.
      * @param {number} solid
      * @returns {any}
@@ -5721,7 +5719,6 @@ class BrepKernel {
     }
 }
 if (Symbol.dispose) BrepKernel.prototype[Symbol.dispose] = BrepKernel.prototype.free;
-exports.BrepKernel = BrepKernel;
 
 /**
  * Edge polylines for wireframe rendering, exposed to JavaScript.
@@ -5729,7 +5726,7 @@ exports.BrepKernel = BrepKernel;
  * Positions are flattened to `[x, y, z, x, y, z, ...]` format.
  * Offsets are float-array indices into `positions` (already multiplied by 3).
  */
-class JsEdgeLines {
+export class JsEdgeLines {
     static __wrap(ptr) {
         const obj = Object.create(JsEdgeLines.prototype);
         obj.__wbg_ptr = ptr;
@@ -5793,7 +5790,6 @@ class JsEdgeLines {
     }
 }
 if (Symbol.dispose) JsEdgeLines.prototype[Symbol.dispose] = JsEdgeLines.prototype.free;
-exports.JsEdgeLines = JsEdgeLines;
 
 /**
  * A triangle mesh with per-face triangle grouping, exposed to JavaScript.
@@ -5804,7 +5800,7 @@ exports.JsEdgeLines = JsEdgeLines;
  * copies instead of a JSON string round-trip. `f32` matches what mesh
  * consumers (GPU vertex buffers) use, halving the transfer versus `f64`.
  */
-class JsGroupedMesh {
+export class JsGroupedMesh {
     static __wrap(ptr) {
         const obj = Object.create(JsGroupedMesh.prototype);
         obj.__wbg_ptr = ptr;
@@ -5864,7 +5860,6 @@ class JsGroupedMesh {
     }
 }
 if (Symbol.dispose) JsGroupedMesh.prototype[Symbol.dispose] = JsGroupedMesh.prototype.free;
-exports.JsGroupedMesh = JsGroupedMesh;
 
 /**
  * A triangle mesh exposed to JavaScript.
@@ -5872,7 +5867,7 @@ exports.JsGroupedMesh = JsGroupedMesh;
  * Positions and normals are flattened to `[x, y, z, x, y, z, ...]` format
  * for efficient WASM transfer and direct use as GPU vertex buffers.
  */
-class JsMesh {
+export class JsMesh {
     static __wrap(ptr) {
         const obj = Object.create(JsMesh.prototype);
         obj.__wbg_ptr = ptr;
@@ -5953,12 +5948,11 @@ class JsMesh {
     }
 }
 if (Symbol.dispose) JsMesh.prototype[Symbol.dispose] = JsMesh.prototype.free;
-exports.JsMesh = JsMesh;
 
 /**
  * A 3D point exposed to JavaScript.
  */
-class JsPoint3 {
+export class JsPoint3 {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -6028,12 +6022,11 @@ class JsPoint3 {
     }
 }
 if (Symbol.dispose) JsPoint3.prototype[Symbol.dispose] = JsPoint3.prototype.free;
-exports.JsPoint3 = JsPoint3;
 
 /**
  * A 3D vector exposed to JavaScript.
  */
-class JsVec3 {
+export class JsVec3 {
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -6111,15 +6104,13 @@ class JsVec3 {
     }
 }
 if (Symbol.dispose) JsVec3.prototype[Symbol.dispose] = JsVec3.prototype.free;
-exports.JsVec3 = JsVec3;
 
 /**
  * Clears the stored panic message so later reads reflect only new panics.
  */
-function clearLastPanicMessage() {
+export function clearLastPanicMessage() {
     wasm.clearLastPanicMessage();
 }
-exports.clearLastPanicMessage = clearLastPanicMessage;
 
 /**
  * Decode and validate a serialized version-1 face-evolution payload.
@@ -6134,7 +6125,7 @@ exports.clearLastPanicMessage = clearLastPanicMessage;
  * @param {string} json
  * @returns {FaceEvolutionPayloadV1}
  */
-function decodeEvolutionPayload(json) {
+export function decodeEvolutionPayload(json) {
     const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.decodeEvolutionPayload(ptr0, len0);
@@ -6143,7 +6134,6 @@ function decodeEvolutionPayload(json) {
     }
     return takeFromExternrefTable0(ret[0]);
 }
-exports.decodeEvolutionPayload = decodeEvolutionPayload;
 
 /**
  * Returns a non-sensitive marker when any kernel in this module panicked, or
@@ -6154,7 +6144,7 @@ exports.decodeEvolutionPayload = decodeEvolutionPayload;
  * avoids exposing one kernel's diagnostics to another kernel instance.
  * @returns {string | undefined}
  */
-function lastPanicMessage() {
+export function lastPanicMessage() {
     const ret = wasm.lastPanicMessage();
     let v1;
     if (ret[0] !== 0) {
@@ -6163,10 +6153,9 @@ function lastPanicMessage() {
     }
     return v1;
 }
-exports.lastPanicMessage = lastPanicMessage;
 
 /**
- * Route brepkit's Rust `log::*` calls to JavaScript `console.{log, warn,
+ * Route remus's Rust `log::*` calls to JavaScript `console.{log, warn,
  * error}`. Without this every `log::warn!` in the engine is silently
  * dropped under wasm-pack.
  *
@@ -6183,7 +6172,7 @@ exports.lastPanicMessage = lastPanicMessage;
  * validation diagnostics without flooding the console.
  * @param {string} level
  */
-function setLogLevel(level) {
+export function setLogLevel(level) {
     const ptr0 = passStringToWasm0(level, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.setLogLevel(ptr0, len0);
@@ -6191,88 +6180,77 @@ function setLogLevel(level) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
-exports.setLogLevel = setLogLevel;
-function __wbg_get_imports() {
-    const import0 = {
-        __proto__: null,
-        __wbg_Error_92b29b0548f8b746: function(arg0, arg1) {
-            const ret = Error(getStringFromWasm0(arg0, arg1));
-            return ret;
-        },
-        __wbg_String_8564e559799eccda: function(arg0, arg1) {
-            const ret = String(arg1);
-            const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len1 = WASM_VECTOR_LEN;
-            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
-            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
-        },
-        __wbg___wbindgen_debug_string_c25d447a39f5578f: function(arg0, arg1) {
-            const ret = debugString(arg1);
-            const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len1 = WASM_VECTOR_LEN;
-            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
-            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
-        },
-        __wbg___wbindgen_string_get_b0ca35b86a603356: function(arg0, arg1) {
-            const obj = arg1;
-            const ret = typeof(obj) === 'string' ? obj : undefined;
-            var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            var len1 = WASM_VECTOR_LEN;
-            getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
-            getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
-        },
-        __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
-            throw new Error(getStringFromWasm0(arg0, arg1));
-        },
-        __wbg_error_f9bdac4c0b4e0785: function(arg0, arg1) {
-            console.error(getStringFromWasm0(arg0, arg1));
-        },
-        __wbg_log_ec0bb1af9c6701a8: function(arg0, arg1) {
-            console.log(getStringFromWasm0(arg0, arg1));
-        },
-        __wbg_new_32b398fb48b6d94a: function() {
-            const ret = new Array();
-            return ret;
-        },
-        __wbg_new_da52cf8fe3429cb2: function() {
-            const ret = new Object();
-            return ret;
-        },
-        __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
-            arg0[arg1] = arg2;
-        },
-        __wbg_set_8a16b38e4805b298: function(arg0, arg1, arg2) {
-            arg0[arg1 >>> 0] = arg2;
-        },
-        __wbg_warn_f1728d2785e70aeb: function(arg0, arg1) {
-            console.warn(getStringFromWasm0(arg0, arg1));
-        },
-        __wbindgen_cast_0000000000000001: function(arg0) {
-            // Cast intrinsic for `F64 -> Externref`.
-            const ret = arg0;
-            return ret;
-        },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Ref(String) -> Externref`.
-            const ret = getStringFromWasm0(arg0, arg1);
-            return ret;
-        },
-        __wbindgen_init_externref_table: function() {
-            const table = wasm.__wbindgen_externrefs;
-            const offset = table.grow(4);
-            table.set(0, undefined);
-            table.set(offset + 0, undefined);
-            table.set(offset + 1, null);
-            table.set(offset + 2, true);
-            table.set(offset + 3, false);
-        },
-    };
-    return {
-        __proto__: null,
-        "./brepkit_wasm_bg.js": import0,
-    };
+export function __wbg_Error_92b29b0548f8b746(arg0, arg1) {
+    const ret = Error(getStringFromWasm0(arg0, arg1));
+    return ret;
 }
-
+export function __wbg_String_8564e559799eccda(arg0, arg1) {
+    const ret = String(arg1);
+    const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+    getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+}
+export function __wbg___wbindgen_debug_string_c25d447a39f5578f(arg0, arg1) {
+    const ret = debugString(arg1);
+    const ptr1 = passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+    getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+}
+export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
+    const obj = arg1;
+    const ret = typeof(obj) === 'string' ? obj : undefined;
+    var ptr1 = isLikeNone(ret) ? 0 : passStringToWasm0(ret, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    var len1 = WASM_VECTOR_LEN;
+    getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
+    getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+}
+export function __wbg___wbindgen_throw_344f42d3211c4765(arg0, arg1) {
+    throw new Error(getStringFromWasm0(arg0, arg1));
+}
+export function __wbg_error_61fca04f5dbaae04(arg0, arg1) {
+    console.error(getStringFromWasm0(arg0, arg1));
+}
+export function __wbg_log_226a8494a0c3dd9f(arg0, arg1) {
+    console.log(getStringFromWasm0(arg0, arg1));
+}
+export function __wbg_new_32b398fb48b6d94a() {
+    const ret = new Array();
+    return ret;
+}
+export function __wbg_new_da52cf8fe3429cb2() {
+    const ret = new Object();
+    return ret;
+}
+export function __wbg_set_6be42768c690e380(arg0, arg1, arg2) {
+    arg0[arg1] = arg2;
+}
+export function __wbg_set_8a16b38e4805b298(arg0, arg1, arg2) {
+    arg0[arg1 >>> 0] = arg2;
+}
+export function __wbg_warn_6ee658867244298c(arg0, arg1) {
+    console.warn(getStringFromWasm0(arg0, arg1));
+}
+export function __wbindgen_cast_0000000000000001(arg0) {
+    // Cast intrinsic for `F64 -> Externref`.
+    const ret = arg0;
+    return ret;
+}
+export function __wbindgen_cast_0000000000000002(arg0, arg1) {
+    // Cast intrinsic for `Ref(String) -> Externref`.
+    const ret = getStringFromWasm0(arg0, arg1);
+    return ret;
+}
+export function __wbindgen_init_externref_table() {
+    const table = wasm.__wbindgen_externrefs;
+    const offset = table.grow(4);
+    table.set(0, undefined);
+    table.set(offset + 0, undefined);
+    table.set(offset + 1, null);
+    table.set(offset + 2, true);
+    table.set(offset + 3, false);
+}
 const BrepKernelFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_brepkernel_free(ptr, 1));
@@ -6518,7 +6496,15 @@ function takeFromExternrefTable0(idx) {
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
 cachedTextDecoder.decode();
+const MAX_SAFARI_DECODE_BYTES = 2146435072;
+let numBytesDecoded = 0;
 function decodeText(ptr, len) {
+    numBytesDecoded += len;
+    if (numBytesDecoded >= MAX_SAFARI_DECODE_BYTES) {
+        cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
+        cachedTextDecoder.decode();
+        numBytesDecoded = len;
+    }
     return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
 }
 
@@ -6537,9 +6523,8 @@ if (!('encodeInto' in cachedTextEncoder)) {
 
 let WASM_VECTOR_LEN = 0;
 
-const wasmPath = `${__dirname}/brepkit_wasm_bg.wasm`;
-const wasmBytes = require('fs').readFileSync(wasmPath);
-const wasmModule = new WebAssembly.Module(wasmBytes);
-let wasmInstance = new WebAssembly.Instance(wasmModule, __wbg_get_imports());
-let wasm = wasmInstance.exports;
-wasm.__wbindgen_start();
+
+let wasm;
+export function __wbg_set_wasm(val) {
+    wasm = val;
+}

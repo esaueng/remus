@@ -71,10 +71,12 @@ credited implementations. PR #154's delta was already present in the final
 permissive upstream. PRs #206 and #207 target a post-license blend architecture
 that does not exist on the Apache line. PR #219 is release-only metadata.
 
-Repository-specific documentation from PRs #135, #137, #217, and #246 must be
-regenerated after the standalone successor exists; transplanting their
-BrepKit-specific settings would make the new repository inaccurate. PR #136 is
-the closed review branch superseded by #135 and #137. The installed-package
+Repository-specific documentation from PRs #135, #137, #217, and #246 was
+deliberately deferred until the standalone successor existed; transplanting
+their BrepKit-specific settings would have made the new repository inaccurate.
+Remus now carries regenerated agent guidance, installation documentation, and
+PR workflow instructions based on its own names and verified settings. PR #136
+is the closed review branch superseded by #135 and #137. The installed-package
 test from #217 is superseded by the stronger tarball consumer replayed from
 #221.
 

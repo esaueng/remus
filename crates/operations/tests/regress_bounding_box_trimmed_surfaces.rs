@@ -25,20 +25,20 @@
 
 use std::f64::consts::TAU;
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{CylindricalSurface, ToroidalSurface};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::measure;
-use brepkit_operations::primitives;
-use brepkit_operations::revolve::revolve;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::{make_circle_edge, make_face_from_wire};
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{CylindricalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::measure;
+use remus_operations::primitives;
+use remus_operations::revolve::revolve;
+use remus_topology::Topology;
+use remus_topology::builder::{make_circle_edge, make_face_from_wire};
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 const TOL: f64 = 1e-7;
 /// The box is analytically exact for these shapes; this only absorbs the

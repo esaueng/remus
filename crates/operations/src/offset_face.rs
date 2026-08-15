@@ -5,11 +5,11 @@
 //! For NURBS faces, the offset is approximated by sampling the surface
 //! normal field and refitting via surface interpolation.
 
-use brepkit_math::nurbs::surface_fitting::interpolate_surface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::nurbs::surface_fitting::interpolate_surface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::OperationsError;
 
@@ -68,8 +68,8 @@ pub fn offset_face(
 /// Offset a planar face: shift plane along its normal.
 fn offset_planar_face(
     topo: &mut Topology,
-    outer_wire: brepkit_topology::wire::WireId,
-    inner_wires: &[brepkit_topology::wire::WireId],
+    outer_wire: remus_topology::wire::WireId,
+    inner_wires: &[remus_topology::wire::WireId],
     normal: Vec3,
     d: f64,
     distance: f64,
@@ -91,7 +91,7 @@ fn offset_planar_face(
     }
 
     let new_surface = FaceSurface::Plane { normal, d: new_d };
-    let face_id = topo.add_face(brepkit_topology::face::Face::new(
+    let face_id = topo.add_face(remus_topology::face::Face::new(
         new_outer,
         new_inner,
         new_surface,
@@ -112,7 +112,7 @@ fn offset_planar_face(
 fn offset_nurbs_face(
     topo: &mut Topology,
     face_id: FaceId,
-    nurbs: &brepkit_math::nurbs::NurbsSurface,
+    nurbs: &remus_math::nurbs::NurbsSurface,
     distance: f64,
     samples: usize,
 ) -> Result<FaceId, OperationsError> {
@@ -257,7 +257,7 @@ fn offset_nurbs_face(
         Ok(trimmed) => trimmed,
         Err(e) => {
             log::debug!(
-                target: "brepkit_approx",
+                target: "remus_approx",
                 "offset_face: raw-offset-surface fallback (SSI trim failed: {e})"
             );
             log::warn!(
@@ -281,7 +281,7 @@ fn offset_nurbs_face(
     }
 
     let new_surface = FaceSurface::Nurbs(offset_surface);
-    let face_id = topo.add_face(brepkit_topology::face::Face::new(
+    let face_id = topo.add_face(remus_topology::face::Face::new(
         new_outer,
         new_inner,
         new_surface,
@@ -294,9 +294,9 @@ fn offset_nurbs_face(
 /// Cylinder offset: radius R → R + distance. The surface type is preserved.
 fn offset_cylinder_face(
     topo: &mut Topology,
-    outer_wire: brepkit_topology::wire::WireId,
-    inner_wires: &[brepkit_topology::wire::WireId],
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    outer_wire: remus_topology::wire::WireId,
+    inner_wires: &[remus_topology::wire::WireId],
+    cyl: &remus_math::surfaces::CylindricalSurface,
     distance: f64,
 ) -> Result<FaceId, OperationsError> {
     let new_radius = cyl.radius() + distance;
@@ -311,7 +311,7 @@ fn offset_cylinder_face(
     }
 
     let new_cyl =
-        brepkit_math::surfaces::CylindricalSurface::new(cyl.origin(), cyl.axis(), new_radius)
+        remus_math::surfaces::CylindricalSurface::new(cyl.origin(), cyl.axis(), new_radius)
             .map_err(OperationsError::Math)?;
 
     let radial_offset = |pt: Point3| -> Point3 {
@@ -336,7 +336,7 @@ fn offset_cylinder_face(
         new_inner.push(offset_wire_by_fn(topo, iw, &radial_offset)?);
     }
 
-    let face_id = topo.add_face(brepkit_topology::face::Face::new(
+    let face_id = topo.add_face(remus_topology::face::Face::new(
         new_outer,
         new_inner,
         FaceSurface::Cylinder(new_cyl),
@@ -349,9 +349,9 @@ fn offset_cylinder_face(
 /// Sphere offset: radius R → R + distance. The surface type is preserved.
 fn offset_sphere_face(
     topo: &mut Topology,
-    outer_wire: brepkit_topology::wire::WireId,
-    inner_wires: &[brepkit_topology::wire::WireId],
-    sphere: &brepkit_math::surfaces::SphericalSurface,
+    outer_wire: remus_topology::wire::WireId,
+    inner_wires: &[remus_topology::wire::WireId],
+    sphere: &remus_math::surfaces::SphericalSurface,
     distance: f64,
 ) -> Result<FaceId, OperationsError> {
     let new_radius = sphere.radius() + distance;
@@ -365,7 +365,7 @@ fn offset_sphere_face(
         });
     }
 
-    let new_sphere = brepkit_math::surfaces::SphericalSurface::new(sphere.center(), new_radius)
+    let new_sphere = remus_math::surfaces::SphericalSurface::new(sphere.center(), new_radius)
         .map_err(OperationsError::Math)?;
 
     let radial_offset = |pt: Point3| -> Point3 {
@@ -383,7 +383,7 @@ fn offset_sphere_face(
         new_inner.push(offset_wire_by_fn(topo, iw, &radial_offset)?);
     }
 
-    let face_id = topo.add_face(brepkit_topology::face::Face::new(
+    let face_id = topo.add_face(remus_topology::face::Face::new(
         new_outer,
         new_inner,
         FaceSurface::Sphere(new_sphere),
@@ -398,9 +398,9 @@ fn offset_sphere_face(
 /// (positive offset) or smaller (negative offset).
 fn offset_cone_face(
     topo: &mut Topology,
-    outer_wire: brepkit_topology::wire::WireId,
-    inner_wires: &[brepkit_topology::wire::WireId],
-    cone: &brepkit_math::surfaces::ConicalSurface,
+    outer_wire: remus_topology::wire::WireId,
+    inner_wires: &[remus_topology::wire::WireId],
+    cone: &remus_math::surfaces::ConicalSurface,
     distance: f64,
 ) -> Result<FaceId, OperationsError> {
     // The offset of a cone is another cone with the same half-angle.
@@ -417,7 +417,7 @@ fn offset_cone_face(
     let new_apex = cone.apex() + cone.axis() * apex_shift;
 
     let new_cone =
-        brepkit_math::surfaces::ConicalSurface::new(new_apex, cone.axis(), cone.half_angle())
+        remus_math::surfaces::ConicalSurface::new(new_apex, cone.axis(), cone.half_angle())
             .map_err(OperationsError::Math)?;
 
     let radial_offset = |pt: Point3| -> Point3 {
@@ -441,7 +441,7 @@ fn offset_cone_face(
         new_inner.push(offset_wire_by_fn(topo, iw, &radial_offset)?);
     }
 
-    let face_id = topo.add_face(brepkit_topology::face::Face::new(
+    let face_id = topo.add_face(remus_topology::face::Face::new(
         new_outer,
         new_inner,
         FaceSurface::Cone(new_cone),
@@ -454,9 +454,9 @@ fn offset_cone_face(
 /// Torus offset: minor radius r → r + distance. Major radius unchanged.
 fn offset_torus_face(
     topo: &mut Topology,
-    outer_wire: brepkit_topology::wire::WireId,
-    inner_wires: &[brepkit_topology::wire::WireId],
-    torus: &brepkit_math::surfaces::ToroidalSurface,
+    outer_wire: remus_topology::wire::WireId,
+    inner_wires: &[remus_topology::wire::WireId],
+    torus: &remus_math::surfaces::ToroidalSurface,
     distance: f64,
 ) -> Result<FaceId, OperationsError> {
     let new_minor = torus.minor_radius() + distance;
@@ -470,12 +470,9 @@ fn offset_torus_face(
         });
     }
 
-    let new_torus = brepkit_math::surfaces::ToroidalSurface::new(
-        torus.center(),
-        torus.major_radius(),
-        new_minor,
-    )
-    .map_err(OperationsError::Math)?;
+    let new_torus =
+        remus_math::surfaces::ToroidalSurface::new(torus.center(), torus.major_radius(), new_minor)
+            .map_err(OperationsError::Math)?;
 
     let z_axis = torus.z_axis();
     let center = torus.center();
@@ -511,7 +508,7 @@ fn offset_torus_face(
         new_inner.push(offset_wire_by_fn(topo, iw, &radial_offset)?);
     }
 
-    let face_id = topo.add_face(brepkit_topology::face::Face::new(
+    let face_id = topo.add_face(remus_topology::face::Face::new(
         new_outer,
         new_inner,
         FaceSurface::Torus(new_torus),
@@ -525,7 +522,7 @@ fn offset_torus_face(
 /// fundamental form eigenvalues: `κ = (L·N - M²) / (E·G - F²)` for
 /// Gaussian curvature, and `(E·N - 2·F·M + G·L) / (2·(E·G - F²))` for
 /// mean curvature. The max principal curvature is `|H| + sqrt(H² - K)`.
-fn estimate_curvature(nurbs: &brepkit_math::nurbs::NurbsSurface, u: f64, v: f64) -> f64 {
+fn estimate_curvature(nurbs: &remus_math::nurbs::NurbsSurface, u: f64, v: f64) -> f64 {
     let d = nurbs.derivatives(u, v, 2);
     if d.len() < 3 || d[0].len() < 3 {
         return 0.0;
@@ -571,12 +568,12 @@ fn estimate_curvature(nurbs: &brepkit_math::nurbs::NurbsSurface, u: f64, v: f64)
 /// Offset all vertices in a wire using a position-dependent function.
 fn offset_wire_by_fn(
     topo: &mut Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     offset_fn: &dyn Fn(Point3) -> Point3,
-) -> Result<brepkit_topology::wire::WireId, OperationsError> {
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+) -> Result<remus_topology::wire::WireId, OperationsError> {
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges().to_vec();
@@ -616,7 +613,7 @@ fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, OperationsE
         new_inner.push(copy_wire(topo, iw)?);
     }
 
-    let new_face = topo.add_face(brepkit_topology::face::Face::new(
+    let new_face = topo.add_face(remus_topology::face::Face::new(
         new_outer, new_inner, surface,
     ));
     Ok(new_face)
@@ -625,12 +622,12 @@ fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, OperationsE
 /// Copy a wire with new vertex and edge IDs.
 fn copy_wire(
     topo: &mut Topology,
-    wire_id: brepkit_topology::wire::WireId,
-) -> Result<brepkit_topology::wire::WireId, OperationsError> {
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    wire_id: remus_topology::wire::WireId,
+) -> Result<remus_topology::wire::WireId, OperationsError> {
+    use remus_topology::edge::Edge;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges().to_vec();
@@ -666,12 +663,12 @@ fn copy_wire(
 /// Offset all vertices in a wire by a constant vector.
 fn offset_wire_vertices(
     topo: &mut Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     offset: Vec3,
-) -> Result<brepkit_topology::wire::WireId, OperationsError> {
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+) -> Result<remus_topology::wire::WireId, OperationsError> {
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges().to_vec();
@@ -702,13 +699,13 @@ fn offset_wire_vertices(
 /// parametric position.
 fn offset_wire_along_nurbs(
     topo: &mut Topology,
-    wire_id: brepkit_topology::wire::WireId,
-    nurbs: &brepkit_math::nurbs::NurbsSurface,
+    wire_id: remus_topology::wire::WireId,
+    nurbs: &remus_math::nurbs::NurbsSurface,
     distance: f64,
-) -> Result<brepkit_topology::wire::WireId, OperationsError> {
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+) -> Result<remus_topology::wire::WireId, OperationsError> {
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges().to_vec();
@@ -741,11 +738,11 @@ fn offset_wire_along_nurbs(
 /// Offset a single point along the surface normal at its closest parametric
 /// position on the NURBS surface.
 fn offset_point_on_surface(
-    nurbs: &brepkit_math::nurbs::NurbsSurface,
+    nurbs: &remus_math::nurbs::NurbsSurface,
     point: Point3,
     distance: f64,
 ) -> Result<Point3, OperationsError> {
-    use brepkit_math::nurbs::projection::project_point_to_surface;
+    use remus_math::nurbs::projection::project_point_to_surface;
 
     let tol = Tolerance::new();
     let proj = project_point_to_surface(nurbs, point, tol.linear).map_err(|e| {
@@ -772,8 +769,8 @@ fn offset_point_on_surface(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_square_face;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_square_face;
 
     use super::*;
 
@@ -885,12 +882,12 @@ mod tests {
     /// Degree-1 in both u and v, 2×2 control points, clamped knot vectors.
     /// The wire has 4 line-edges forming a unit square at `z_height`.
     fn make_flat_nurbs_face(topo: &mut Topology, z_height: f64) -> FaceId {
-        use brepkit_math::nurbs::NurbsSurface;
-        use brepkit_math::vec::Point3 as P;
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::Face;
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::nurbs::NurbsSurface;
+        use remus_math::vec::Point3 as P;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         // 2×2 control-point grid spanning [0,1]×[0,1] at given z.
         let ctrl = vec![
@@ -1015,12 +1012,12 @@ mod tests {
 
     #[test]
     fn offset_cylinder_face_preserves_type() {
-        use brepkit_math::surfaces::CylindricalSurface;
-        use brepkit_math::vec::{Point3 as P, Vec3};
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::Face;
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::{Point3 as P, Vec3};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let mut topo = Topology::new();
 
@@ -1065,12 +1062,12 @@ mod tests {
 
     #[test]
     fn offset_cylinder_negative_radius_error() {
-        use brepkit_math::surfaces::CylindricalSurface;
-        use brepkit_math::vec::{Point3 as P, Vec3};
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::Face;
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::{Point3 as P, Vec3};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let mut topo = Topology::new();
 

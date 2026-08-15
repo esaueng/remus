@@ -1,7 +1,7 @@
 //! A cross-drilled shaft must measure the material that is left.
 //!
 //! `solid_volume` and `mass_properties` both reach
-//! `brepkit_check::properties::face_integrator::integrate_face` for an
+//! `remus_check::properties::face_integrator::integrate_face` for an
 //! all-analytic body. On the quadric path that integrator had two defects, and
 //! a bore drilled through the side of a shaft meets both at once:
 //!
@@ -32,14 +32,14 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{mass_properties, solid_volume};
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{mass_properties, solid_volume};
+use remus_operations::primitives::make_cylinder;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 const R: f64 = 3.0;
 const H: f64 = 30.0;
@@ -111,7 +111,7 @@ fn cross_drilled_shaft_measures_its_closed_form() {
 #[test]
 fn the_shaft_really_has_a_holed_wall_and_closed_edge_bore_lobes() {
     let (topo, solid) = cross_drilled_shaft();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
     let mut holed_walls = 0;
     let mut closed_edge_lobes = 0;
@@ -158,11 +158,11 @@ fn cross_drilled_shaft_measurement_is_not_a_setting() {
     let invariance = 1e-6;
 
     for order in [4_usize, 5, 6, 8, 10, 12, 16] {
-        let options = brepkit_check::properties::PropertiesOptions {
+        let options = remus_check::properties::PropertiesOptions {
             gauss_order: order,
             ..Default::default()
         };
-        let v = brepkit_check::properties::solid_volume(&topo, solid, &options).unwrap();
+        let v = remus_check::properties::solid_volume(&topo, solid, &options).unwrap();
         assert!(
             (v - reference).abs() <= invariance * reference,
             "the shaft's volume depends on Gauss order — {reference} vs {v} at \

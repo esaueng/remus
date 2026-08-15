@@ -5,12 +5,12 @@
 //! (cylinder, cone, sphere, torus, NURBS) use tensor-product Gauss-Legendre
 //! quadrature over the UV domain.
 
-use brepkit_math::quadrature::gauss_legendre_points;
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::quadrature::gauss_legendre_points;
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
 
@@ -368,7 +368,7 @@ impl UvLoop {
 
     /// Whether `(u, v)` lies inside the patch this loop encloses.
     fn encloses(&self, u: f64, v: f64, u_periodic: bool) -> bool {
-        use brepkit_math::predicates::point_in_polygon;
+        use remus_math::predicates::point_in_polygon;
         point_in_polygon(Point2::new(self.wrap_u(u, u_periodic), v), &self.points)
     }
 
@@ -1116,14 +1116,14 @@ fn poly2_integrate(p: &Poly2, moments: &[f64; 10]) -> f64 {
 /// area moment `M₀₀` is positive.
 fn planar_wire_monomial_moments(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     origin: Point3,
     e1: Vec3,
     e2: Vec3,
 ) -> Result<Option<[f64; 10]>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let mut moments = [0.0; 10];
-    let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
+    let mut prev_end: Option<remus_topology::vertex::VertexId> = None;
 
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
@@ -1288,7 +1288,7 @@ fn accumulate_green_segment<F>(
 /// rejects the exact path for the WHOLE face, holes included.
 fn wire_newell_normal(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
 ) -> Result<Option<Vec3>, CheckError> {
     /// Samples emitted per arc, enough that a wire of one closed circle
     /// (a single vertex) still spans its plane.
@@ -1296,7 +1296,7 @@ fn wire_newell_normal(
 
     let wire = topo.wire(wire_id)?;
     let mut pts: Vec<Point3> = Vec::new();
-    let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
+    let mut prev_end: Option<remus_topology::vertex::VertexId> = None;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
         let start_vid = edge.start();
@@ -1384,7 +1384,7 @@ fn integrate_planar_face_exact(
     let Some(boundary_normal) = wire_newell_normal(topo, outer_wire)? else {
         return Ok(None);
     };
-    let Ok(frame) = brepkit_math::frame::Frame3::from_normal(origin, boundary_normal) else {
+    let Ok(frame) = remus_math::frame::Frame3::from_normal(origin, boundary_normal) else {
         return Ok(None);
     };
     let (e1, e2) = (frame.x, frame.y);
@@ -1817,7 +1817,7 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use super::*;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     #[test]
     fn planar_fan_is_signed_on_nonconvex_polygons() {

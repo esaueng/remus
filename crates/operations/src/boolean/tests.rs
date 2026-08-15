@@ -7,15 +7,15 @@
     clippy::cast_possible_wrap
 )]
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-use brepkit_topology::validation::validate_shell_manifold;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::test_utils::make_unit_cube_manifold_at;
+use remus_topology::validation::validate_shell_manifold;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::test_helpers::assert_volume_near;
 
@@ -54,7 +54,7 @@ fn intersect_multi_piece_operand_keeps_disjoint_chunks() {
     // of planes, so only the curved-wall census discriminates the paths.
     use crate::measure::solid_volume;
     use crate::transform::transform_solid;
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let cyl_a = crate::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
@@ -68,7 +68,7 @@ fn intersect_multi_piece_operand_keeps_disjoint_chunks() {
     let n_faces = check_result(&topo, result);
     // The curved walls are the fallback tell: a mesh fallback re-emits the
     // chunks as all-plane facets, the analytic path keeps the cylinders.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let cylinders = faces
         .iter()
         .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
@@ -98,7 +98,7 @@ fn compound_cut_disjoint_drills_matches_sequential() {
     // volume as the sequential loop and keep the drilled walls analytic.
     use crate::measure::solid_volume;
     use crate::transform::transform_solid;
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let make = |topo: &mut Topology| -> (SolidId, Vec<SolidId>) {
         let base = crate::primitives::make_box(topo, 20.0, 20.0, 5.0).unwrap();
@@ -134,7 +134,7 @@ fn compound_cut_disjoint_drills_matches_sequential() {
         (vol - vol_seq).abs() < 0.05,
         "batched volume {vol} must match sequential {vol_seq}"
     );
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let cylinders = faces
         .iter()
         .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
@@ -173,7 +173,7 @@ fn compound_cut_overlapping_tools_match_union_cut_volume() {
     // way: the result equals the volume of cutting their union.
     use crate::measure::solid_volume;
     use crate::transform::transform_solid;
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let base = crate::primitives::make_box(&mut topo, 10.0, 10.0, 4.0).unwrap();
@@ -203,11 +203,11 @@ fn fuse_six_disjoint_boxes_2x3_grid() {
     use crate::measure::solid_volume;
 
     fn pairwise(
-        topo: &mut brepkit_topology::Topology,
-        ids: &[brepkit_topology::solid::SolidId],
+        topo: &mut remus_topology::Topology,
+        ids: &[remus_topology::solid::SolidId],
         start: usize,
         end: usize,
-    ) -> brepkit_topology::solid::SolidId {
+    ) -> remus_topology::solid::SolidId {
         let n = end - start;
         if n == 1 {
             return ids[start];
@@ -233,7 +233,7 @@ fn fuse_six_disjoint_boxes_2x3_grid() {
             crate::transform::transform_solid(
                 &mut topo,
                 b,
-                &brepkit_math::mat::Mat4::translation(x, y, 0.0),
+                &remus_math::mat::Mat4::translation(x, y, 0.0),
             )
             .unwrap();
             boxes.push(b);
@@ -256,14 +256,14 @@ fn fuse_disjoint_cubes_volume_chained() {
     crate::transform::transform_solid(
         &mut topo,
         b,
-        &brepkit_math::mat::Mat4::translation(10.0, 0.0, 0.0),
+        &remus_math::mat::Mat4::translation(10.0, 0.0, 0.0),
     )
     .unwrap();
     let c = crate::primitives::make_box(&mut topo, 5.0, 5.0, 5.0).unwrap();
     crate::transform::transform_solid(
         &mut topo,
         c,
-        &brepkit_math::mat::Mat4::translation(0.0, 10.0, 0.0),
+        &remus_math::mat::Mat4::translation(0.0, 10.0, 0.0),
     )
     .unwrap();
     let ab = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
@@ -311,7 +311,7 @@ fn fuse_disjoint_tapered_feet_grid_keeps_all_pieces() {
             crate::transform::transform_solid(
                 &mut topo,
                 foot,
-                &brepkit_math::mat::Mat4::translation(x, y, 0.0),
+                &remus_math::mat::Mat4::translation(x, y, 0.0),
             )
             .unwrap();
             feet.push(foot);
@@ -326,7 +326,7 @@ fn fuse_disjoint_tapered_feet_grid_keeps_all_pieces() {
     let v_one = PI * h / 3.0 * r_top.mul_add(r_top, r_bot.mul_add(r_bot, r_bot * r_top));
     let count = feet.len();
 
-    // Pairwise accumulate (the brepkit-kernel adapter's loop).
+    // Pairwise accumulate (the remus-kernel adapter's loop).
     let mut acc = feet[0];
     for &foot in &feet[1..] {
         acc = boolean(&mut topo, BooleanOp::Fuse, acc, foot).unwrap();
@@ -378,7 +378,7 @@ fn fuse_overlapping_tapered_feet_welds_via_gfa() {
     crate::transform::transform_solid(
         &mut topo,
         b,
-        &brepkit_math::mat::Mat4::translation(4.0, 0.0, 0.0),
+        &remus_math::mat::Mat4::translation(4.0, 0.0, 0.0),
     )
     .unwrap();
 
@@ -414,11 +414,11 @@ fn cut_disjoint_returns_a() {
 
 #[test]
 fn nurbs_component_is_not_provably_disjoint_from_sampled_box() {
-    use brepkit_math::nurbs::surface::NurbsSurface;
+    use remus_math::nurbs::surface::NurbsSurface;
 
     let mut topo = Topology::new();
     let blank = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
-    let face_id = brepkit_topology::explorer::solid_faces(&topo, blank).unwrap()[0];
+    let face_id = remus_topology::explorer::solid_faces(&topo, blank).unwrap()[0];
     let nurbs = NurbsSurface::new(
         1,
         1,
@@ -489,7 +489,7 @@ fn cut_overlapping_tool_removes_material_via_gfa() {
 
 #[test]
 fn intersect_disjoint_returns_empty() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     let mut topo = Topology::new();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
@@ -510,7 +510,7 @@ fn intersect_disjoint_returns_empty() {
 
 #[test]
 fn intersect_far_apart_boxes_returns_empty() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     // Mirrors the cross-kernel geometry: 10×10×10 boxes 100 apart.
     let mut topo = Topology::new();
@@ -519,7 +519,7 @@ fn intersect_far_apart_boxes_returns_empty() {
     crate::transform::transform_solid(
         &mut topo,
         b,
-        &brepkit_math::mat::Mat4::translation(100.0, 0.0, 0.0),
+        &remus_math::mat::Mat4::translation(100.0, 0.0, 0.0),
     )
     .unwrap();
 
@@ -534,7 +534,7 @@ fn intersect_far_apart_boxes_returns_empty() {
 
 #[test]
 fn intersect_touching_boxes_returns_empty() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     // Two unit cubes sharing only the x=1 plane — interiors do not overlap.
     let mut topo = Topology::new();
@@ -581,7 +581,7 @@ fn fuse_cluster_empty_errors_not_panics() {
 
 #[test]
 fn intersect_overlapping_boxes_is_nonempty() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     // Positive control: two unit cubes offset by 0.5 in x overlap in a
     // 0.5×1×1 = 0.5 volume — the disjoint detection must not over-fire.
@@ -650,8 +650,8 @@ fn gfa_direct_fuse_overlapping_manifold() {
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
 
-    let algo_op = brepkit_algo::bop::BooleanOp::Fuse;
-    let result = brepkit_algo::gfa::boolean(&mut topo, algo_op, a, b).unwrap();
+    let algo_op = remus_algo::bop::BooleanOp::Fuse;
+    let result = remus_algo::gfa::boolean(&mut topo, algo_op, a, b).unwrap();
 
     let s = topo.solid(result).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
@@ -835,7 +835,7 @@ fn fuse_overlapping_3d() {
 
 #[test]
 fn fuse_evolution_is_faithful() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
     use std::collections::HashSet;
 
     let mut topo = Topology::new();
@@ -848,7 +848,7 @@ fn fuse_evolution_is_faithful() {
         .unwrap()
         .into_iter()
         .chain(solid_faces(&topo, b).unwrap())
-        .map(brepkit_topology::arena::Id::index)
+        .map(remus_topology::arena::Id::index)
         .collect();
     assert_eq!(
         input_set.len(),
@@ -862,7 +862,7 @@ fn fuse_evolution_is_faithful() {
     let result_faces: HashSet<usize> = solid_faces(&topo, result)
         .unwrap()
         .into_iter()
-        .map(brepkit_topology::arena::Id::index)
+        .map(remus_topology::arena::Id::index)
         .collect();
 
     // Every modified mapping is input-face → result-face, both real entities.
@@ -894,7 +894,7 @@ fn fuse_evolution_is_faithful() {
 
 #[test]
 fn cut_evolution_rejects_untouched_gfa_blank() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     // The cylinder crosses the plate's x=0 wall by 0.5 mm. GFA can lose the
     // tool in this configuration and return the original six-face plate: a
@@ -967,7 +967,7 @@ fn cylinder_circle_edges() {
         let wire = topo.wire(face.outer_wire()).unwrap();
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge()).unwrap();
-            if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+            if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                 has_circle_edge = true;
             }
         }
@@ -989,7 +989,7 @@ fn circle_edge_length() {
         let wire = topo.wire(face.outer_wire()).unwrap();
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge()).unwrap();
-            if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+            if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                 let len = crate::measure::edge_length(&topo, oe.edge()).unwrap();
                 let expected = 2.0 * std::f64::consts::PI * 1.0; // circumference
                 assert!(
@@ -1006,11 +1006,11 @@ fn circle_edge_length() {
 #[test]
 #[allow(clippy::panic)]
 fn exact_plane_cylinder_circle() {
-    use brepkit_math::analytic_intersection::{
+    use remus_math::analytic_intersection::{
         AnalyticSurface, ExactIntersectionCurve, exact_plane_analytic,
     };
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point3 as P3, Vec3 as V3};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3 as P3, Vec3 as V3};
 
     let cyl = CylindricalSurface::new(P3::new(0.0, 0.0, 0.0), V3::new(0.0, 0.0, 1.0), 2.0).unwrap();
     let curves =
@@ -1031,11 +1031,11 @@ fn exact_plane_cylinder_circle() {
 #[test]
 #[allow(clippy::panic)]
 fn exact_plane_sphere_circle() {
-    use brepkit_math::analytic_intersection::{
+    use remus_math::analytic_intersection::{
         AnalyticSurface, ExactIntersectionCurve, exact_plane_analytic,
     };
-    use brepkit_math::surfaces::SphericalSurface;
-    use brepkit_math::vec::{Point3 as P3, Vec3 as V3};
+    use remus_math::surfaces::SphericalSurface;
+    use remus_math::vec::{Point3 as P3, Vec3 as V3};
 
     let sphere = SphericalSurface::new(P3::new(0.0, 0.0, 0.0), 3.0).unwrap();
     let curves = exact_plane_analytic(
@@ -1059,11 +1059,11 @@ fn exact_plane_sphere_circle() {
 #[test]
 #[allow(clippy::panic)]
 fn exact_plane_cylinder_ellipse() {
-    use brepkit_math::analytic_intersection::{
+    use remus_math::analytic_intersection::{
         AnalyticSurface, ExactIntersectionCurve, exact_plane_analytic,
     };
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point3 as P3, Vec3 as V3};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3 as P3, Vec3 as V3};
 
     let cyl = CylindricalSurface::new(P3::new(0.0, 0.0, 0.0), V3::new(0.0, 0.0, 1.0), 1.0).unwrap();
     // Oblique plane (45 degrees)
@@ -1094,7 +1094,7 @@ fn box_fuse_box_unchanged() {
     crate::transform::transform_solid(
         &mut topo,
         b,
-        &brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0),
+        &remus_math::mat::Mat4::translation(1.0, 0.0, 0.0),
     )
     .unwrap();
     let result = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
@@ -1139,7 +1139,7 @@ fn cone_has_circle_edges() {
         for oe in wire.edges() {
             if matches!(
                 topo.edge(oe.edge()).unwrap().curve(),
-                brepkit_topology::edge::EdgeCurve::Circle(_)
+                remus_topology::edge::EdgeCurve::Circle(_)
             ) {
                 has_circle = true;
             }
@@ -1233,7 +1233,7 @@ fn assemble_mixed_planar_only() {
 
 #[test]
 fn assemble_mixed_with_nurbs() {
-    use brepkit_math::nurbs::surface::NurbsSurface;
+    use remus_math::nurbs::surface::NurbsSurface;
 
     let mut topo = Topology::new();
 
@@ -1310,12 +1310,12 @@ fn intersect_box_sphere_succeeds() {
     let sp = crate::primitives::make_sphere(&mut topo, 7.0, 16).unwrap();
     let result = boolean(&mut topo, BooleanOp::Intersect, bx, sp).unwrap();
 
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let (mut planes, mut spheres, mut others) = (0usize, 0usize, 0usize);
     for fid in &face_ids {
         match topo.face(*fid).unwrap().surface() {
-            brepkit_topology::face::FaceSurface::Plane { .. } => planes += 1,
-            brepkit_topology::face::FaceSurface::Sphere(_) => spheres += 1,
+            remus_topology::face::FaceSurface::Plane { .. } => planes += 1,
+            remus_topology::face::FaceSurface::Sphere(_) => spheres += 1,
             _ => others += 1,
         }
     }
@@ -1332,7 +1332,7 @@ fn intersect_box_sphere_succeeds() {
     );
     assert_eq!(others, 0, "no non-analytic faces expected, got {others}");
 
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
     let euler = v as i64 - e as i64 + f as i64;
     assert_eq!(
         euler, 2,
@@ -1370,17 +1370,17 @@ fn intersect_box_centered_sphere_is_analytic_collar() {
     crate::transform::transform_solid(
         &mut topo,
         sp,
-        &brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+        &remus_math::mat::Mat4::translation(5.0, 5.0, 5.0),
     )
     .unwrap();
     let result = boolean(&mut topo, BooleanOp::Intersect, bx, sp).unwrap();
 
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let (mut planes, mut spheres, mut others) = (0usize, 0usize, 0usize);
     for fid in &face_ids {
         match topo.face(*fid).unwrap().surface() {
-            brepkit_topology::face::FaceSurface::Plane { .. } => planes += 1,
-            brepkit_topology::face::FaceSurface::Sphere(_) => spheres += 1,
+            remus_topology::face::FaceSurface::Plane { .. } => planes += 1,
+            remus_topology::face::FaceSurface::Sphere(_) => spheres += 1,
             _ => others += 1,
         }
     }
@@ -1399,7 +1399,7 @@ fn intersect_box_centered_sphere_is_analytic_collar() {
 
     // Watertight: every edge shared by exactly two faces (analytic B-rep, not a
     // mesh fallback).
-    let adj = brepkit_topology::adjacency::AdjacencyIndex::build(&topo, result).unwrap();
+    let adj = remus_topology::adjacency::AdjacencyIndex::build(&topo, result).unwrap();
     assert_eq!(
         adj.boundary_edges().len(),
         0,
@@ -1434,17 +1434,17 @@ fn cut_torus_by_box_notch_is_analytic_watertight() {
     crate::transform::transform_solid(
         &mut topo,
         bx,
-        &brepkit_math::mat::Mat4::translation(6.0, -4.0, -4.0),
+        &remus_math::mat::Mat4::translation(6.0, -4.0, -4.0),
     )
     .unwrap();
     let result = boolean(&mut topo, BooleanOp::Cut, tor, bx).unwrap();
 
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let (mut planes, mut tori, mut others) = (0usize, 0usize, 0usize);
     for fid in &face_ids {
         match topo.face(*fid).unwrap().surface() {
-            brepkit_topology::face::FaceSurface::Plane { .. } => planes += 1,
-            brepkit_topology::face::FaceSurface::Torus(_) => tori += 1,
+            remus_topology::face::FaceSurface::Plane { .. } => planes += 1,
+            remus_topology::face::FaceSurface::Torus(_) => tori += 1,
             _ => others += 1,
         }
     }
@@ -1466,7 +1466,7 @@ fn cut_torus_by_box_notch_is_analytic_watertight() {
 
     // Watertight analytic B-rep (not a mesh fallback): every edge shared by
     // exactly two faces.
-    let adj = brepkit_topology::adjacency::AdjacencyIndex::build(&topo, result).unwrap();
+    let adj = remus_topology::adjacency::AdjacencyIndex::build(&topo, result).unwrap();
     assert_eq!(
         adj.boundary_edges().len(),
         0,
@@ -1539,7 +1539,7 @@ fn cut_box_by_sphere_succeeds() {
 /// tunnel-rim hole) plus the inner cylinder wall — and watertight, NOT a 1392-
 /// face mesh fallback.
 fn cut_sphere_by_through_cylinder_is_analytic_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let s = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
@@ -1550,7 +1550,7 @@ fn cut_sphere_by_through_cylinder_is_analytic_watertight() {
 
     // Exact analytic surface mix: spheres + the cylinder tunnel wall, no
     // mesh-fallback plane explosion.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, res).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, res).unwrap();
     let mut spheres = 0;
     let mut cylinders = 0;
     for &fid in &faces {
@@ -1611,7 +1611,7 @@ fn cut_box_by_translated_sphere() {
     let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let sp = crate::primitives::make_sphere(&mut topo, 3.0, 32).unwrap();
     // Translate sphere to center of box
-    let mat = brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0);
+    let mat = remus_math::mat::Mat4::translation(5.0, 5.0, 5.0);
     crate::transform::transform_solid(&mut topo, sp, &mat).unwrap();
 
     // Sanity: sphere is entirely inside box
@@ -1629,7 +1629,7 @@ fn cut_box_by_translated_sphere() {
     let expected = 1000.0 - sph_vol;
     eprintln!("cut volume: {vol:.1} (expected ~{expected:.1})");
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, r).unwrap();
     eprintln!("result has {} faces", faces.len());
 
     assert!(
@@ -1666,7 +1666,7 @@ fn fuse_body_inside_cavity_does_not_take_false_containment_shortcut() {
     crate::transform::transform_solid(
         &mut topo,
         void,
-        &brepkit_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
     )
     .unwrap();
     let hollow = boolean(&mut topo, BooleanOp::Cut, outer, void).unwrap();
@@ -1676,7 +1676,7 @@ fn fuse_body_inside_cavity_does_not_take_false_containment_shortcut() {
     crate::transform::transform_solid(
         &mut topo,
         insert,
-        &brepkit_math::mat::Mat4::translation(1.25, 1.25, 1.25),
+        &remus_math::mat::Mat4::translation(1.25, 1.25, 1.25),
     )
     .unwrap();
 
@@ -1721,7 +1721,7 @@ fn disjoint_box_sphere_cut_preserves_box() {
     // Sphere at origin, box far away → no overlap → cut should preserve box.
     let mut topo = Topology::new();
     let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(100.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(100.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, bx, &mat).unwrap();
     let sp = crate::primitives::make_sphere(&mut topo, 5.0, 16).unwrap();
     let result = boolean(&mut topo, BooleanOp::Cut, bx, sp);
@@ -1745,7 +1745,7 @@ fn cut_box_by_translated_cylinder() {
     let cyl = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
 
     // Translate cylinder to center of box, extending through it.
-    let mat = brepkit_math::mat::Mat4::translation(25.0, 15.0, -5.0);
+    let mat = remus_math::mat::Mat4::translation(25.0, 15.0, -5.0);
     crate::transform::transform_solid(&mut topo, cyl, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, bx, cyl);
@@ -1774,7 +1774,7 @@ fn sequential_cylinder_cuts() {
 
     // First drill: small cylinder at (10, 10)
     let cyl1 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
-    let mat1 = brepkit_math::mat::Mat4::translation(10.0, 10.0, -5.0);
+    let mat1 = remus_math::mat::Mat4::translation(10.0, 10.0, -5.0);
     crate::transform::transform_solid(&mut topo, cyl1, &mat1).unwrap();
     let r1 = boolean(&mut topo, BooleanOp::Cut, plate, cyl1).unwrap();
 
@@ -1784,7 +1784,7 @@ fn sequential_cylinder_cuts() {
 
     // Second drill: small cylinder at (40, 10) — non-overlapping
     let cyl2 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
-    let mat2 = brepkit_math::mat::Mat4::translation(40.0, 10.0, -5.0);
+    let mat2 = remus_math::mat::Mat4::translation(40.0, 10.0, -5.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat2).unwrap();
     let r2 = boolean(&mut topo, BooleanOp::Cut, r1, cyl2).unwrap();
 
@@ -1797,7 +1797,7 @@ fn sequential_cylinder_cuts() {
 
     // Third drill at (25, 20)
     let cyl3 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
-    let mat3 = brepkit_math::mat::Mat4::translation(25.0, 20.0, -5.0);
+    let mat3 = remus_math::mat::Mat4::translation(25.0, 20.0, -5.0);
     crate::transform::transform_solid(&mut topo, cyl3, &mat3).unwrap();
     let r3 = boolean(&mut topo, BooleanOp::Cut, r2, cyl3).unwrap();
 
@@ -1817,7 +1817,7 @@ fn intersect_two_cylinders() {
     let cyl2 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
 
     // Offset second cylinder so it partially overlaps the first.
-    let mat = brepkit_math::mat::Mat4::translation(2.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(2.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Intersect, cyl1, cyl2);
@@ -1845,7 +1845,7 @@ fn intersect_two_equal_cylinders() {
     let mut topo = Topology::new();
     let cyl1 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
     let cyl2 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(3.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(3.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Intersect, cyl1, cyl2);
@@ -1866,7 +1866,7 @@ fn intersect_two_equal_cylinders() {
 /// ellipses as holes) plus four planar end caps — NOT a mesh fallback.
 #[test]
 fn fuse_perpendicular_cylinders_is_analytic_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let c1 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
@@ -1884,7 +1884,7 @@ fn fuse_perpendicular_cylinders_is_analytic_watertight() {
 
     // Analytic surface mix: two cylinder walls + four planar caps, not a mesh
     // fallback plane explosion.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, res).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, res).unwrap();
     let mut cylinders = 0;
     let mut planes = 0;
     for &fid in &faces {
@@ -1950,7 +1950,7 @@ fn fuse_two_cylinders() {
 
     // Offset x=4 so cyl2 protrudes beyond cyl1 (max extent x=7 > r1=5).
     // At x=2 offset, cyl2 would be entirely inside cyl1 (tangent at x=5).
-    let mat = brepkit_math::mat::Mat4::translation(4.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(4.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat).unwrap();
 
     let opts = BooleanOptions {
@@ -2001,7 +2001,7 @@ fn cut_cylinder_by_cylinder() {
     let cyl1 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
     let cyl2 = crate::primitives::make_cylinder(&mut topo, 3.0, 20.0).unwrap();
 
-    let mat = brepkit_math::mat::Mat4::translation(1.5, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(1.5, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, cyl1, cyl2).unwrap();
@@ -2030,12 +2030,12 @@ fn staircase_fuse_with_cylinders() {
     let mut shapes: Vec<SolidId> = Vec::new();
     for i in 0..10 {
         let step = crate::primitives::make_box(&mut topo, 20.0, 30.0, 2.0).unwrap();
-        let mat_step = brepkit_math::mat::Mat4::translation(0.0, 0.0, f64::from(i) * 10.0);
+        let mat_step = remus_math::mat::Mat4::translation(0.0, 0.0, f64::from(i) * 10.0);
         crate::transform::transform_solid(&mut topo, step, &mat_step).unwrap();
         shapes.push(step);
 
         let post = crate::primitives::make_cylinder(&mut topo, 1.5, 10.0).unwrap();
-        let mat_post = brepkit_math::mat::Mat4::translation(10.0, 15.0, f64::from(i) * 10.0 + 2.0);
+        let mat_post = remus_math::mat::Mat4::translation(10.0, 15.0, f64::from(i) * 10.0 + 2.0);
         crate::transform::transform_solid(&mut topo, post, &mat_post).unwrap();
         shapes.push(post);
     }
@@ -2058,14 +2058,14 @@ fn profile_cylinder_cylinder_intersect() {
     let mut topo = Topology::new();
     let cyl1 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
     let cyl2 = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(3.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(3.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, cyl2, &mat).unwrap();
 
     for i in 0..5 {
         let mut t = Topology::new();
         let c1 = crate::primitives::make_cylinder(&mut t, 5.0, 20.0).unwrap();
         let c2 = crate::primitives::make_cylinder(&mut t, 5.0, 20.0).unwrap();
-        let m = brepkit_math::mat::Mat4::translation(3.0, 0.0, 0.0);
+        let m = remus_math::mat::Mat4::translation(3.0, 0.0, 0.0);
         crate::transform::transform_solid(&mut t, c2, &m).unwrap();
 
         let start = std::time::Instant::now();
@@ -2093,14 +2093,14 @@ fn box_cut_cylinder_edge_count() {
     let b = crate::primitives::make_box(&mut topo, 40.0, 20.0, 5.0).unwrap();
     let cyl = crate::primitives::make_cylinder(&mut topo, 3.0, 10.0).unwrap();
 
-    let mat = brepkit_math::mat::Mat4::translation(20.0, 10.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(20.0, 10.0, 0.0);
     let hole = crate::copy::copy_solid(&mut topo, cyl).unwrap();
     crate::transform::transform_solid(&mut topo, hole, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, b, hole).unwrap();
 
-    let edges = brepkit_topology::explorer::solid_edges(&topo, result).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
 
     // 7 faces: 6 planar (4 sides + top/bottom with holes) + 1 cylinder barrel
     assert_eq!(faces.len(), 7, "expected 7 faces for box-cylinder cut");
@@ -2128,13 +2128,13 @@ fn fuse_overlapping_boxes_validates() {
     let mut topo = Topology::new();
     let a = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0);
+    let mat = remus_math::mat::Mat4::translation(5.0, 5.0, 5.0);
     crate::transform::transform_solid(&mut topo, b, &mat).unwrap();
 
     let fused = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
 
     // Check for boundary edges
-    let edge_map = brepkit_topology::explorer::edge_to_face_map(&topo, fused).unwrap();
+    let edge_map = remus_topology::explorer::edge_to_face_map(&topo, fused).unwrap();
     let boundary: Vec<_> = edge_map
         .iter()
         .filter(|(_, faces)| faces.len() == 1)
@@ -2160,7 +2160,7 @@ fn fuse_adjacent_boxes_shared_face() {
     let mut topo = Topology::new();
     let a = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, b, &mat).unwrap();
 
     let fused = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
@@ -2189,7 +2189,7 @@ fn fuse_adjacent_boxes_with_unify() {
     let mut topo = Topology::new();
     let a = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, b, &mat).unwrap();
 
     let opts = BooleanOptions {
@@ -2219,7 +2219,7 @@ fn test_boolean_heal_after_boolean_option() {
     let mut topo = Topology::new();
     let a = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, b, &mat).unwrap();
 
     let opts = BooleanOptions {
@@ -2246,12 +2246,12 @@ fn fuse_adjacent_boxes_3x1_grid() {
     let a = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     let c = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let mat_b = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
-    let mat_c = brepkit_math::mat::Mat4::translation(2.0, 0.0, 0.0);
+    let mat_b = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    let mat_c = remus_math::mat::Mat4::translation(2.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, b, &mat_b).unwrap();
     crate::transform::transform_solid(&mut topo, c, &mat_c).unwrap();
 
-    let cid = topo.add_compound(brepkit_topology::compound::Compound::new(vec![a, b, c]));
+    let cid = topo.add_compound(remus_topology::compound::Compound::new(vec![a, b, c]));
     let fused = crate::compound_ops::fuse_all(&mut topo, cid).unwrap();
 
     let vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
@@ -2265,7 +2265,7 @@ fn fuse_adjacent_boxes_3x1_grid() {
 fn near_tolerance_overlap() {
     // Overlap of exactly the linear tolerance amount
     let mut topo = Topology::new();
-    let tol = brepkit_math::tolerance::Tolerance::new();
+    let tol = remus_math::tolerance::Tolerance::new();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 1.0 - tol.linear, 0.0, 0.0);
 
@@ -2294,7 +2294,7 @@ fn compound_cut_empty_tools_returns_target() {
 
 #[test]
 fn compound_cut_single_tool_matches_boolean() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let target = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
@@ -2312,7 +2312,7 @@ fn compound_cut_single_tool_matches_boolean() {
 
 #[test]
 fn compound_cut_two_disjoint_cylinders() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let target = crate::primitives::make_box(&mut topo, 4.0, 4.0, 2.0).unwrap();
@@ -2332,7 +2332,7 @@ fn compound_cut_two_disjoint_cylinders() {
 
 #[test]
 fn compound_cut_all_tools_disjoint_returns_unchanged_volume() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let target = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
@@ -2349,7 +2349,7 @@ fn compound_cut_all_tools_disjoint_returns_unchanged_volume() {
 
 #[test]
 fn compound_cut_matches_sequential_2x2_grid() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let target = crate::primitives::make_box(&mut topo, 4.0, 4.0, 2.0).unwrap();
@@ -2411,7 +2411,7 @@ fn compound_cut_matches_sequential_2x2_grid() {
 /// 3×3 grid (9 tools) exercises the compound path (threshold = 8).
 #[test]
 fn compound_cut_matches_sequential_3x3_grid() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let target = crate::primitives::make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
@@ -2480,7 +2480,7 @@ fn compound_cut_matches_sequential_3x3_grid() {
 /// 4×4 grid (16 tools) — larger compound cut test.
 #[test]
 fn compound_cut_matches_sequential_4x4_grid() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let target = crate::primitives::make_box(&mut topo, 20.0, 20.0, 2.0).unwrap();
@@ -2551,7 +2551,7 @@ fn compound_cut_matches_sequential_4x4_grid() {
 /// has cylindrical fillets (rounded corners) and the tools are boxes.
 #[test]
 fn compound_cut_shelled_target_many_tools() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -2627,7 +2627,7 @@ fn compound_cut_shelled_target_many_tools() {
 /// Shelled box + 9 box cutters — exercises raycast classification path.
 #[test]
 fn compound_cut_shelled_target_9_tools() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -2714,15 +2714,15 @@ fn fuse_ring_inside_shelled_box() {
     let box_solid = crate::primitives::make_box(&mut topo, outer, outer, height).unwrap();
 
     // Find the top face (+Z)
-    let top_faces: Vec<brepkit_topology::face::FaceId> = {
+    let top_faces: Vec<remus_topology::face::FaceId> = {
         let s = topo.solid(box_solid).unwrap();
         let sh = topo.shell(s.outer_shell()).unwrap();
-        let tol = brepkit_math::tolerance::Tolerance::loose();
+        let tol = remus_math::tolerance::Tolerance::loose();
         sh.faces()
             .iter()
             .filter(|&&fid| {
                 if let Ok(f) = topo.face(fid)
-                    && let brepkit_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
+                    && let remus_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
                 {
                     return tol.approx_eq(normal.z(), 1.0);
                 }
@@ -2742,14 +2742,14 @@ fn fuse_ring_inside_shelled_box() {
     crate::transform::transform_solid(
         &mut topo,
         ring_outer,
-        &brepkit_math::mat::Mat4::translation(2.0, 2.0, 7.0),
+        &remus_math::mat::Mat4::translation(2.0, 2.0, 7.0),
     )
     .unwrap();
     let ring_inner = crate::primitives::make_box(&mut topo, outer - 8.0, outer - 8.0, 3.0).unwrap();
     crate::transform::transform_solid(
         &mut topo,
         ring_inner,
-        &brepkit_math::mat::Mat4::translation(4.0, 4.0, 7.0),
+        &remus_math::mat::Mat4::translation(4.0, 4.0, 7.0),
     )
     .unwrap();
     let ring = boolean(&mut topo, BooleanOp::Cut, ring_outer, ring_inner).unwrap();
@@ -2805,15 +2805,15 @@ fn fuse_ring_inside_shelled_cylinder() {
     let cyl = crate::primitives::make_cylinder(&mut topo, r, h).unwrap();
 
     // Find top face
-    let top_faces: Vec<brepkit_topology::face::FaceId> = {
+    let top_faces: Vec<remus_topology::face::FaceId> = {
         let s = topo.solid(cyl).unwrap();
         let sh = topo.shell(s.outer_shell()).unwrap();
-        let tol = brepkit_math::tolerance::Tolerance::loose();
+        let tol = remus_math::tolerance::Tolerance::loose();
         sh.faces()
             .iter()
             .filter(|&&fid| {
                 if let Ok(f) = topo.face(fid)
-                    && let brepkit_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
+                    && let remus_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
                 {
                     return tol.approx_eq(normal.z(), 1.0);
                 }
@@ -2831,14 +2831,14 @@ fn fuse_ring_inside_shelled_cylinder() {
     crate::transform::transform_solid(
         &mut topo,
         ring_outer,
-        &brepkit_math::mat::Mat4::translation(0.0, 0.0, h - 3.0),
+        &remus_math::mat::Mat4::translation(0.0, 0.0, h - 3.0),
     )
     .unwrap();
     let ring_inner = crate::primitives::make_cylinder(&mut topo, 5.0, 3.0).unwrap();
     crate::transform::transform_solid(
         &mut topo,
         ring_inner,
-        &brepkit_math::mat::Mat4::translation(0.0, 0.0, h - 3.0),
+        &remus_math::mat::Mat4::translation(0.0, 0.0, h - 3.0),
     )
     .unwrap();
     let ring = boolean(&mut topo, BooleanOp::Cut, ring_outer, ring_inner).unwrap();
@@ -2871,15 +2871,15 @@ fn fuse_ring_overlapping_shelled_box_height() {
     let wall = 1.2;
     let box_solid = crate::primitives::make_box(&mut topo, outer, outer, h).unwrap();
 
-    let top_faces: Vec<brepkit_topology::face::FaceId> = {
+    let top_faces: Vec<remus_topology::face::FaceId> = {
         let s = topo.solid(box_solid).unwrap();
         let sh = topo.shell(s.outer_shell()).unwrap();
-        let tol = brepkit_math::tolerance::Tolerance::loose();
+        let tol = remus_math::tolerance::Tolerance::loose();
         sh.faces()
             .iter()
             .filter(|&&fid| {
                 if let Ok(f) = topo.face(fid)
-                    && let brepkit_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
+                    && let remus_topology::face::FaceSurface::Plane { normal, .. } = f.surface()
                 {
                     return tol.approx_eq(normal.z(), 1.0);
                 }
@@ -2904,7 +2904,7 @@ fn fuse_ring_overlapping_shelled_box_height() {
     crate::transform::transform_solid(
         &mut topo,
         ring_o,
-        &brepkit_math::mat::Mat4::translation(3.0, 3.0, ring_z),
+        &remus_math::mat::Mat4::translation(3.0, 3.0, ring_z),
     )
     .unwrap();
     let ring_i =
@@ -2912,7 +2912,7 @@ fn fuse_ring_overlapping_shelled_box_height() {
     crate::transform::transform_solid(
         &mut topo,
         ring_i,
-        &brepkit_math::mat::Mat4::translation(5.0, 5.0, ring_z),
+        &remus_math::mat::Mat4::translation(5.0, 5.0, ring_z),
     )
     .unwrap();
     let ring = boolean(&mut topo, BooleanOp::Cut, ring_o, ring_i).unwrap();
@@ -3087,7 +3087,7 @@ fn cut_lofted_frustums_consistent_normals() {
 
     // Translation invariance: proves normal consistency
     let lip_up = copy_solid(&mut topo, lip).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(0.0, 0.0, 100.0);
+    let mat = remus_math::mat::Mat4::translation(0.0, 0.0, 100.0);
     transform_solid(&mut topo, lip_up, &mat).unwrap();
     let lip_up_vol = crate::measure::solid_volume(&topo, lip_up, 0.01).unwrap();
 
@@ -3100,7 +3100,7 @@ fn cut_lofted_frustums_consistent_normals() {
     // Compare watertight vs per-face tessellation signed volume.
     // This mirrors the difference between WASM tessellateSolid and
     // tessellateSolidGrouped paths.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, lip).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, lip).unwrap();
     let mut per_face_signed = 0.0_f64;
     #[allow(unused_assignments)]
     let mut per_face_abs = 0.0_f64;
@@ -3132,7 +3132,7 @@ fn cut_lofted_frustums_consistent_normals() {
     );
 
     // Also check per-face on translated copy
-    let faces_up = brepkit_topology::explorer::solid_faces(&topo, lip_up).unwrap();
+    let faces_up = remus_topology::explorer::solid_faces(&topo, lip_up).unwrap();
     let mut per_face_signed_up = 0.0_f64;
     for &fid in &faces_up {
         let mesh = crate::tessellate::tessellate(&topo, fid, 0.01).unwrap();
@@ -3265,7 +3265,7 @@ fn cut_lofted_frustums_octagon_profiles() {
 
     // Translation invariance: proves normal consistency
     let lip_up = copy_solid(&mut topo, lip).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(0.0, 0.0, 16.0);
+    let mat = remus_math::mat::Mat4::translation(0.0, 0.0, 16.0);
     transform_solid(&mut topo, lip_up, &mat).unwrap();
     let lip_up_vol = crate::measure::solid_volume(&topo, lip_up, 0.01).unwrap();
 
@@ -3298,7 +3298,7 @@ fn test_boolean_concave_face_chord_clip() {
 
     // Box B: 1×1×1, occupies (0,0,0)→(1,1,1); translate to (0,1,0)→(1,2,1)
     let box_b = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let translate = brepkit_math::mat::Mat4::translation(0.0, 1.0, 0.0);
+    let translate = remus_math::mat::Mat4::translation(0.0, 1.0, 0.0);
     crate::transform::transform_solid(&mut topo, box_b, &translate).unwrap();
 
     // Use unify_faces=false to keep individual convex face fragments — this test
@@ -3321,7 +3321,7 @@ fn test_boolean_concave_face_chord_clip() {
     //   Total cut volume = 0.75
     // Expected result: 3.0 - 0.75 = 2.25
     let slab = crate::primitives::make_box(&mut topo, 1.0, 1.0, 2.0).unwrap();
-    let slab_translate = brepkit_math::mat::Mat4::translation(0.5, 0.5, -0.5);
+    let slab_translate = remus_math::mat::Mat4::translation(0.5, 0.5, -0.5);
     crate::transform::transform_solid(&mut topo, slab, &slab_translate).unwrap();
 
     let result = boolean_with_options(&mut topo, BooleanOp::Cut, l_shape, slab, no_unify).unwrap();
@@ -3343,7 +3343,7 @@ fn test_boolean_convex_face_chord_clip_regression() {
     // Overlap region: (1.5,0.5,0.5)→(2,1.5,1.5) = 0.5×1×1 = 0.5
     // Expected result: 8.0 - 0.5 = 7.5
     let tool = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let translate = brepkit_math::mat::Mat4::translation(1.5, 0.5, 0.5);
+    let translate = remus_math::mat::Mat4::translation(1.5, 0.5, 0.5);
     crate::transform::transform_solid(&mut topo, tool, &translate).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, base, tool).unwrap();
@@ -3359,12 +3359,12 @@ fn test_boolean_large_scale_vertex_merge() {
     // Two 100m cubes, second offset by 50m in x → overlap = 50×100×100
     let a = crate::primitives::make_box(&mut topo, 100.0, 100.0, 100.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 100.0, 100.0, 100.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(50.0, 0.0, 0.0);
+    let mat = remus_math::mat::Mat4::translation(50.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, b, &mat).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, a, b).unwrap();
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert!(
         faces.len() >= 6 && faces.len() < 100,
         "expected 6..100 faces for large-scale cut, got {}",
@@ -3384,7 +3384,7 @@ fn boolean_fuse_box_cylinder_positive_volume() {
     let c = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
 
     // Translate cylinder so it overlaps with box interior.
-    let t = brepkit_math::mat::Mat4::translation(0.0, 0.0, 1.0);
+    let t = remus_math::mat::Mat4::translation(0.0, 0.0, 1.0);
     crate::transform::transform_solid(&mut topo, c, &t).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, b, c);
@@ -3401,7 +3401,7 @@ fn boolean_fuse_overlapping_boxes_positive_volume() {
     let mut topo = Topology::new();
     let a = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
-    let t = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    let t = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
     crate::transform::transform_solid(&mut topo, b, &t).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, a, b);
@@ -3426,7 +3426,7 @@ fn compound_cut_sequential_reduces_volume() {
     for i in 0..5 {
         let cyl = crate::primitives::make_cylinder(&mut topo, 0.5, 12.0).unwrap();
         let offset = 2.0 * (i as f64) + 1.0;
-        let t = brepkit_math::mat::Mat4::translation(offset, 5.0, 0.0);
+        let t = remus_math::mat::Mat4::translation(offset, 5.0, 0.0);
         crate::transform::transform_solid(&mut topo, cyl, &t).unwrap();
         tools.push(cyl);
     }
@@ -3477,7 +3477,7 @@ fn sequential_boolean_face_count_bounded() {
     let mut result = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
     for i in 1..5 {
         let next = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let mat = brepkit_math::mat::Mat4::translation(i as f64, 0.0, 0.0);
+        let mat = remus_math::mat::Mat4::translation(i as f64, 0.0, 0.0);
         crate::transform::transform_solid(&mut topo, next, &mat).unwrap();
         result = boolean(&mut topo, BooleanOp::Fuse, result, next).unwrap();
     }
@@ -3505,13 +3505,13 @@ fn sequential_cut_preserves_surface_types() {
     for i in 0..3 {
         let cyl = crate::primitives::make_cylinder(&mut topo, 1.0, 8.0).unwrap();
         let offset = 2.5 + 2.5 * (i as f64);
-        let t = brepkit_math::mat::Mat4::translation(offset, 5.0, -1.5);
+        let t = remus_math::mat::Mat4::translation(offset, 5.0, -1.5);
         crate::transform::transform_solid(&mut topo, cyl, &t).unwrap();
         result = boolean(&mut topo, BooleanOp::Cut, result, cyl).unwrap();
     }
 
     // Verify cylinder surfaces survive.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let has_cylinder = faces
         .iter()
         .any(|&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)));
@@ -3535,7 +3535,7 @@ fn non_convex_face_survives_subsequent_cut() {
     // L-shape: 2×1×1 box + 1×1×1 box at (0,1,0) → volume = 3.0
     let box_a = crate::primitives::make_box(&mut topo, 2.0, 1.0, 1.0).unwrap();
     let box_b = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let t = brepkit_math::mat::Mat4::translation(0.0, 1.0, 0.0);
+    let t = remus_math::mat::Mat4::translation(0.0, 1.0, 0.0);
     crate::transform::transform_solid(&mut topo, box_b, &t).unwrap();
 
     let l_shape = boolean(&mut topo, BooleanOp::Fuse, box_a, box_b).unwrap();
@@ -3543,7 +3543,7 @@ fn non_convex_face_survives_subsequent_cut() {
 
     // Cut a box through the concave inner corner.
     let cutter = crate::primitives::make_box(&mut topo, 0.5, 0.5, 2.0).unwrap();
-    let t2 = brepkit_math::mat::Mat4::translation(0.75, 0.75, -0.5);
+    let t2 = remus_math::mat::Mat4::translation(0.75, 0.75, -0.5);
     crate::transform::transform_solid(&mut topo, cutter, &t2).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Cut, l_shape, cutter).unwrap();
@@ -3575,7 +3575,7 @@ fn non_convex_face_survives_subsequent_cut() {
 /// edges, mesh fallback at the operations gate).
 #[test]
 fn fuse_shelled_box_with_socket_loft() {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
 
     // Helper: create a rounded-rect profile with Circle arc edges at corners.
     // This matches what brepjs drawRoundedRectangle() produces, giving
@@ -3791,7 +3791,7 @@ fn fuse_shelled_box_with_socket_loft() {
     let fused_shell = topo
         .shell(topo.solid(fused).unwrap().outer_shell())
         .unwrap();
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     let fused_vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
@@ -3799,7 +3799,7 @@ fn fuse_shelled_box_with_socket_loft() {
     eprintln!("fused: F={f}, E={e}, V={v}, euler={euler}, vol={fused_vol:.1}");
 
     // The fused solid should be manifold.
-    let val_result = brepkit_topology::validation::validate_shell_manifold(fused_shell, &topo);
+    let val_result = remus_topology::validation::validate_shell_manifold(fused_shell, &topo);
     let is_manifold = val_result.is_ok();
     if let Err(ref issues) = val_result {
         eprintln!("manifold issues: {issues:?}");
@@ -3808,8 +3808,8 @@ fn fuse_shelled_box_with_socket_loft() {
     // Watertight: every edge of every wire is used exactly twice, and the
     // face count stays in the analytic range (a mesh fallback is hundreds of
     // all-planar faces).
-    let fused_faces = brepkit_topology::explorer::solid_faces(&topo, fused).unwrap();
-    let mut edge_use: std::collections::HashMap<brepkit_topology::edge::EdgeId, usize> =
+    let fused_faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
+    let mut edge_use: std::collections::HashMap<remus_topology::edge::EdgeId, usize> =
         std::collections::HashMap::new();
     let mut inner_wire_count: i64 = 0;
     for &fid in &fused_faces {
@@ -3873,7 +3873,7 @@ fn fuse_shelled_box_with_socket_loft() {
 /// phantom face holes and duplicate junction edges this junction exposes.)
 #[test]
 fn fuse_coincident_rrect_cap_with_frustum() {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
 
     fn make_rr_arcs(topo: &mut Topology, hw: f64, hd: f64, r: f64, z: f64) -> FaceId {
         let r = r.min(hw.min(hd));
@@ -3932,14 +3932,14 @@ fn fuse_coincident_rrect_cap_with_frustum() {
     let vol_a = crate::measure::solid_volume(&topo, solid_a, 0.01).unwrap();
     let vol_b = crate::measure::solid_volume(&topo, solid_b, 0.01).unwrap();
     let fused = boolean(&mut topo, BooleanOp::Fuse, solid_a, solid_b).unwrap();
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     let fused_vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
     let shell = topo
         .shell(topo.solid(fused).unwrap().outer_shell())
         .unwrap();
-    let manifold = brepkit_topology::validation::validate_shell_manifold(shell, &topo);
+    let manifold = remus_topology::validation::validate_shell_manifold(shell, &topo);
     eprintln!(
         "rrect+frustum cap fuse: F={f} E={e} V={v} euler={euler} vol={fused_vol:.1} (a+b={:.1}) manifold={}",
         vol_a + vol_b,
@@ -3971,7 +3971,7 @@ fn gfa_box_sphere_cut() {
     );
 
     let solid = result.unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
     // Sphere (r=0.5) is fully inside box (2x2x2), so cut produces a
     // void — the result may be the original box (6 faces) or have
     // additional interior faces depending on the pipeline path.
@@ -3994,7 +3994,7 @@ fn box_cylinder_fuse_returns_manifold_result() {
         .shell(topo.solid(solid).unwrap().outer_shell())
         .unwrap();
     assert!(
-        brepkit_topology::validation::validate_shell_manifold(shell, &topo).is_ok(),
+        remus_topology::validation::validate_shell_manifold(shell, &topo).is_ok(),
         "box-cylinder fuse must be manifold"
     );
 
@@ -4013,13 +4013,13 @@ fn box_cylinder_fuse_returns_manifold_result() {
     // discretization error happens to land inside 1e-3 would pass every
     // assertion above. The surface census is what separates the analytic
     // result from the mesh that approximates it.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
     let cylinders = faces
         .iter()
         .filter(|fid| {
             matches!(
                 topo.face(**fid).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Cylinder(_)
+                remus_topology::face::FaceSurface::Cylinder(_)
             )
         })
         .count();
@@ -4110,7 +4110,7 @@ fn box_cone_intersect_returns_quarter_cone() {
     // regular `4k`-gon inscribed in the circle, and the solid is the cone over
     // it. Deriving `k` from the face count keeps this exact rather than
     // approximate, and keeps it honest if the fallback's density ever changes.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
     let all_planar = faces.iter().all(|&f| {
         topo.face(f)
             .is_ok_and(|fd| matches!(fd.surface(), FaceSurface::Plane { .. }))
@@ -4158,12 +4158,12 @@ fn d4_shelled_box_fuse_lip() {
     let box_solid = crate::primitives::make_box(&mut topo, 10.0, 10.0, 5.0).unwrap();
 
     // Find top face (z=5)
-    let faces = brepkit_topology::explorer::solid_faces(&topo, box_solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, box_solid).unwrap();
     let top_face = faces
         .iter()
         .find(|&&fid| {
             let f = topo.face(fid).unwrap();
-            if let brepkit_topology::face::FaceSurface::Plane { normal, d } = f.surface() {
+            if let remus_topology::face::FaceSurface::Plane { normal, d } = f.surface() {
                 normal.z() > 0.9 && *d > 4.0
             } else {
                 false
@@ -4174,7 +4174,7 @@ fn d4_shelled_box_fuse_lip() {
 
     // Shell: remove top, 1mm walls
     let shelled = crate::shell_op::shell(&mut topo, box_solid, 1.0, &[top_face]).unwrap();
-    let (sf, se, sv) = brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+    let (sf, se, sv) = remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     let s_euler = sv as i64 - se as i64 + sf as i64;
     eprintln!("shelled: F={sf} E={se} V={sv} euler={s_euler}");
     // Euler=3 for shelled box: 11 faces (5 outer + 5 inner + 1 bottom with hole)
@@ -4185,7 +4185,7 @@ fn d4_shelled_box_fuse_lip() {
     // Box is z∈[-2.5, 2.5]. Lip should start at z=1 (below box top) to z=4.
     // Translate lip center from z=0 to z=2.5 so lip goes z=[1.0, 4.0].
     let translate = |topo: &mut Topology, solid: SolidId, dx: f64, dy: f64, dz: f64| {
-        let mat = brepkit_math::mat::Mat4::translation(dx, dy, dz);
+        let mat = remus_math::mat::Mat4::translation(dx, dy, dz);
         crate::transform::transform_solid(topo, solid, &mat)
     };
     let outer = crate::primitives::make_box(&mut topo, 12.0, 12.0, 3.0).unwrap();
@@ -4199,7 +4199,7 @@ fn d4_shelled_box_fuse_lip() {
         ..BooleanOptions::default()
     };
     let lip = boolean_with_options(&mut topo, BooleanOp::Cut, outer, inner, no_unify).unwrap();
-    let (lf, le, lv) = brepkit_topology::explorer::solid_entity_counts(&topo, lip).unwrap();
+    let (lf, le, lv) = remus_topology::explorer::solid_entity_counts(&topo, lip).unwrap();
     let l_euler = lv as i64 - le as i64 + lf as i64;
     eprintln!("lip: F={lf} E={le} V={lv} euler={l_euler}");
 
@@ -4207,7 +4207,7 @@ fn d4_shelled_box_fuse_lip() {
     let result = boolean_with_options(&mut topo, BooleanOp::Fuse, shelled, lip, no_unify);
     match result {
         Ok(fused) => {
-            let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
+            let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
             let euler = v as i64 - e as i64 + f as i64;
             let inner_loops: i64 = {
                 let s = topo.solid(fused).unwrap();
@@ -4315,7 +4315,7 @@ fn coplanar_box_cut_d1a2() {
     let b = crate::primitives::make_box(&mut topo, 0.5, 0.5, 1.0).unwrap();
 
     // Translate B to (0.25, 0.25, 0) → occupies [0.25,0.75]×[0.25,0.75]×[0,1]
-    let xlate = brepkit_math::mat::Mat4::translation(0.25, 0.25, 0.0);
+    let xlate = remus_math::mat::Mat4::translation(0.25, 0.25, 0.0);
     crate::transform::transform_solid(&mut topo, b, &xlate).unwrap();
 
     // Cut A - B → should produce a hollow square tube (frame cross-section)
@@ -4335,7 +4335,7 @@ fn coplanar_box_cut_d1a2() {
 /// the #696 diagnostic tests so they always measure the same thing.
 fn count_nm_and_boundary_edges_696(topo: &Topology, solid: SolidId) -> (usize, usize) {
     let mut edge_count: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     for fid in &faces {
         let face = topo.face(*fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -4353,7 +4353,7 @@ fn count_nm_and_boundary_edges_696(topo: &Topology, solid: SolidId) -> (usize, u
 //
 // The gridfinity-layout-tool dovetail tests fail with 6–20 non-manifold
 // mesh edges in the exported STL. Diagnostic logging from #701 showed
-// brepkit's GFA path produces invalid topology on **every** boolean op
+// remus's GFA path produces invalid topology on **every** boolean op
 // in that pipeline (Euler ≠ 2, NM edges, boundary edges, wires-not-
 // closed) and falls back to mesh boolean each time. Synthetic dovetail
 // tests in `tessellate/tests.rs` all PASS, so the bug needs the
@@ -4366,7 +4366,7 @@ fn count_nm_and_boundary_edges_696(topo: &Topology, solid: SolidId) -> (usize, u
 // can be investigated against a minimal repro instead of the full
 // consumer geometry. It is `#[ignore]`d in CI — invoke explicitly:
 //
-//     cargo test -p brepkit-operations --lib n_iteration_repro \
+//     cargo test -p remus-operations --lib n_iteration_repro \
 //         -- --ignored --nocapture
 //
 // Approximates a 4×4 gridfinity baseplate (168×168×8mm) with 16 pocket
@@ -4375,26 +4375,26 @@ fn count_nm_and_boundary_edges_696(topo: &Topology, solid: SolidId) -> (usize, u
 #[ignore = "diagnostic — prints topology degradation per step, see #696"]
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
 fn n_iteration_repro_dovetail_pipeline_issue_696() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::builder::{make_face_from_wire, make_polygon_wire};
+    use remus_math::mat::Mat4;
+    use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
 
     let mut topo = Topology::new();
 
     fn report(topo: &Topology, solid: SolidId, label: &str) {
-        let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(topo, solid).unwrap();
+        let (f, e, v) = remus_topology::explorer::solid_entity_counts(topo, solid).unwrap();
         #[allow(clippy::cast_possible_wrap)]
         let euler = (v as i64) - (e as i64) + (f as i64);
         let (nm, bd) = count_nm_and_boundary_edges_696(topo, solid);
 
         // Wire-closure validation: count wires that don't form a closed loop.
-        let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+        let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
         let mut wire_open = 0;
         for fid in &faces {
             let face = topo.face(*fid).unwrap();
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
                 let wire = topo.wire(wid).unwrap();
-                if brepkit_topology::validation::validate_wire_closed(wire, topo).is_err() {
+                if remus_topology::validation::validate_wire_closed(wire, topo).is_err() {
                     wire_open += 1;
                 }
             }
@@ -4539,13 +4539,13 @@ fn n_iteration_repro_dovetail_pipeline_issue_696() {
     // No assertions — the goal is observation, not a pass/fail gate. The
     // intent is to watch which step first breaks Euler / introduces NM
     // edges, so the GFA path's behavior can be investigated on a known
-    // brepkit-side input.
+    // remus-side input.
 }
 
 /// Minimal repro distilled from `n_iteration_repro_dovetail_pipeline_issue_696`:
 /// the very first pocket cut already breaks Euler. A 168×168×8 slab cut by a
 /// single 37×37×6 box positioned 2.5mm in from a corner and 2mm below the top
-/// should produce a closed manifold solid. brepkit currently leaves boundary
+/// should produce a closed manifold solid. remus currently leaves boundary
 /// edges in the topology — Euler=1 instead of 2, 4 boundary edges, 4 extra
 /// vertices.
 ///
@@ -4568,7 +4568,7 @@ fn n_iteration_repro_dovetail_pipeline_issue_696() {
 /// of the pipeline depends on each boolean being clean.
 #[test]
 fn minimal_box_cut_pocket_should_be_manifold() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let _ = env_logger::try_init();
     let mut topo = Topology::new();
@@ -4586,7 +4586,7 @@ fn minimal_box_cut_pocket_should_be_manifold() {
 
     let result = boolean(&mut topo, BooleanOp::Cut, slab, pocket).unwrap();
 
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     let (nm, bd) = count_nm_and_boundary_edges_696(&topo, result);
@@ -4611,7 +4611,7 @@ fn minimal_box_cut_pocket_should_be_manifold() {
 #[test]
 #[ignore = "diagnostic — prints boundary edge positions for #696 next-step planning"]
 fn dump_boundary_edges_after_two_pocket_cuts() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let _ = env_logger::try_init();
     let mut topo = Topology::new();
@@ -4639,9 +4639,9 @@ fn dump_boundary_edges_after_two_pocket_cuts() {
     // Walk faces; count edge usage; print the (Vertex, Vertex) positions
     // for every edge that appears in exactly 1 wire.
     let mut edge_count: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-    let mut edge_owner: std::collections::HashMap<usize, brepkit_topology::face::FaceId> =
+    let mut edge_owner: std::collections::HashMap<usize, remus_topology::face::FaceId> =
         std::collections::HashMap::new();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, current).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, current).unwrap();
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -4668,12 +4668,12 @@ fn dump_boundary_edges_after_two_pocket_cuts() {
         let e = topo.vertex(edge.end()).unwrap().point();
         let owner = edge_owner.get(eidx).copied();
         let curve_kind = match edge.curve() {
-            brepkit_topology::edge::EdgeCurve::Line => "Line",
-            brepkit_topology::edge::EdgeCurve::Circle(_) => "Circle",
-            brepkit_topology::edge::EdgeCurve::Ellipse(_) => "Ellipse",
-            brepkit_topology::edge::EdgeCurve::NurbsCurve(_) => "Nurbs",
-            brepkit_topology::edge::EdgeCurve::Hyperbola(_) => "Hyperbola",
-            brepkit_topology::edge::EdgeCurve::Parabola(_) => "Parabola",
+            remus_topology::edge::EdgeCurve::Line => "Line",
+            remus_topology::edge::EdgeCurve::Circle(_) => "Circle",
+            remus_topology::edge::EdgeCurve::Ellipse(_) => "Ellipse",
+            remus_topology::edge::EdgeCurve::NurbsCurve(_) => "Nurbs",
+            remus_topology::edge::EdgeCurve::Hyperbola(_) => "Hyperbola",
+            remus_topology::edge::EdgeCurve::Parabola(_) => "Parabola",
         };
         eprintln!(
             "  Edge {eidx:>4} [{curve_kind}] ({:.3}, {:.3}, {:.3}) → ({:.3}, {:.3}, {:.3}) owner={owner:?}",
@@ -4688,7 +4688,7 @@ fn dump_boundary_edges_after_two_pocket_cuts() {
     eprintln!("=== {} boundary edges total ===", boundary.len());
 
     // Dump full wire structure for every face touching a boundary edge.
-    let mut faces_to_dump: std::collections::HashSet<brepkit_topology::face::FaceId> =
+    let mut faces_to_dump: std::collections::HashSet<remus_topology::face::FaceId> =
         std::collections::HashSet::new();
     for eidx in &boundary {
         if let Some(&owner) = edge_owner.get(eidx) {
@@ -4702,7 +4702,7 @@ fn dump_boundary_edges_after_two_pocket_cuts() {
     for fid in faces_to_dump {
         let face = topo.face(fid).unwrap();
         let surface_kind = match face.surface() {
-            brepkit_topology::face::FaceSurface::Plane { normal, d } => {
+            remus_topology::face::FaceSurface::Plane { normal, d } => {
                 format!("Plane(n={:.3?}, d={:.3})", normal, d)
             }
             _ => "Other".to_string(),
@@ -4754,7 +4754,7 @@ fn dump_boundary_edges_after_two_pocket_cuts() {
 /// Euler balance, so every such cut fell through to the mesh fallback.
 #[test]
 fn cut_shelled_target_single_tool_exact_gfa() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let opts = BooleanOptions {
@@ -4783,13 +4783,13 @@ fn cut_shelled_target_single_tool_exact_gfa() {
 
     // Exact B-Rep result: 11 tray faces + 4 hole walls; the rim face keeps
     // exactly its one cavity inner wire (no nested loop from the tool).
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert_eq!(faces.len(), 15, "expected exact GFA topology, not mesh");
     assert!(is_closed_manifold(&topo, result).unwrap());
     assert!(!has_free_edges(&topo, result).unwrap());
 
     // Genus-1 Euler balance: V - E + F = 2(1 - g) + L = 0 + 3.
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
     let euler = v as i64 - e as i64 + f as i64;
     let inner_wires = solid_inner_wire_count(&topo, result).unwrap();
     assert_eq!(inner_wires, 3);
@@ -4811,7 +4811,7 @@ fn cut_shelled_target_single_tool_exact_gfa() {
 /// Build a rounded-rectangle planar face at height `z` with 4 line edges
 /// and 4 true quarter-circle `EdgeCurve::Circle` arc edges (CCW, +Z normal).
 fn make_rounded_rect_arc_face(topo: &mut Topology, hw: f64, hd: f64, r: f64, z: f64) -> FaceId {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
 
     let tol_val = 1e-7;
     // 8 tangent points, CCW starting at bottom of the right edge.
@@ -4885,7 +4885,7 @@ fn rounded_rect_area(hw: f64, hd: f64, r: f64) -> f64 {
 }
 
 fn count_cylinder_faces(topo: &Topology, solid: SolidId) -> usize {
-    brepkit_topology::explorer::solid_faces(topo, solid)
+    remus_topology::explorer::solid_faces(topo, solid)
         .unwrap()
         .iter()
         .filter(|&&fid| {
@@ -4901,7 +4901,7 @@ fn count_cylinder_faces(topo: &Topology, solid: SolidId) -> usize {
 /// for a watertight manifold, and each free (once-used) edge is a rim the
 /// splitter failed to cap.
 fn count_non_manifold_edges(topo: &Topology, solid: SolidId) -> usize {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     let mut edge_use: std::collections::HashMap<EdgeId, usize> = std::collections::HashMap::new();
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
@@ -5060,7 +5060,7 @@ fn fuse_arc_frame_lip_is_manifold_nonsquare() {
 }
 
 fn find_top_face(topo: &Topology, solid: SolidId) -> FaceId {
-    brepkit_topology::explorer::solid_faces(topo, solid)
+    remus_topology::explorer::solid_faces(topo, solid)
         .unwrap()
         .into_iter()
         .find(|&fid| {
@@ -5199,7 +5199,7 @@ fn assert_cut_fuse_back_recovers(a_dim: f64, b_dim: f64, b_dx: f64) {
         crate::transform::transform_solid(
             &mut topo,
             b,
-            &brepkit_math::mat::Mat4::translation(b_dx, 0.0, 0.0),
+            &remus_math::mat::Mat4::translation(b_dx, 0.0, 0.0),
         )
         .unwrap();
     }
@@ -5252,7 +5252,7 @@ fn issue_801_recombined_box_is_genus0_manifold() {
     let recombined = boolean(&mut topo, BooleanOp::Fuse, a_minus_b, a_and_b).unwrap();
 
     check_result(&topo, recombined); // asserts manifold
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, recombined).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, recombined).unwrap();
     let euler = v as i64 - e as i64 + f as i64;
     assert_eq!(euler, 2, "recombined union must be genus-0 (V-E+F=2)");
     assert_volume_near(&topo, recombined, 8.0, 1e-4);
@@ -5402,7 +5402,7 @@ fn baseplate_dovetail_tongue_fuse_is_watertight() {
     let sh = topo
         .shell(topo.solid(fused).unwrap().outer_shell())
         .unwrap();
-    brepkit_topology::validation::validate_shell_closed(sh, &topo)
+    remus_topology::validation::validate_shell_closed(sh, &topo)
         .expect("dovetail fuse must be a closed manifold");
 
     // Volume = slab + the part of the tongue outside the slab (the 0.01 overlap
@@ -5445,7 +5445,7 @@ fn baseplate_dovetail_sequential_fuse_no_mesh_blowup() {
         // Every step must stay a closed manifold. Fusing tongue N into a slab
         // whose +X wall earlier tongues already split must re-split that face
         // cleanly — the multi-tongue bug left ~20 free/over-shared edges here.
-        brepkit_topology::validation::validate_shell_closed(sh, &topo)
+        remus_topology::validation::validate_shell_closed(sh, &topo)
             .unwrap_or_else(|e| panic!("step y={y}: result not watertight: {e:?}"));
         let vol = crate::measure::solid_volume(&topo, acc, 0.01).unwrap();
         let increment = vol - prev_vol;
@@ -5473,12 +5473,12 @@ fn extrude_down_solid_fuses_without_hole_misclassification() {
         let slab = dovetail_slab(&mut topo, 20.0, 30.0, 5.0);
         let tongue = dovetail_tongue(&mut topo, 20.0, 15.0, 5.0, 0.01, base_half, tip_half);
         let fused =
-            brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, slab, tongue)
+            remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, slab, tongue)
                 .unwrap_or_else(|e| panic!("GFA fuse failed for ({base_half},{tip_half}): {e:?}"));
         let sh = topo
             .shell(topo.solid(fused).unwrap().outer_shell())
             .unwrap();
-        brepkit_topology::validation::validate_shell_closed(sh, &topo)
+        remus_topology::validation::validate_shell_closed(sh, &topo)
             .unwrap_or_else(|e| panic!("({base_half},{tip_half}) not watertight: {e:?}"));
     }
 }
@@ -5500,7 +5500,7 @@ fn baseplate_two_tongues_far_apart_resplit_is_watertight() {
     let sh_a = topo
         .shell(topo.solid(after_a).unwrap().outer_shell())
         .unwrap();
-    brepkit_topology::validation::validate_shell_closed(sh_a, &topo)
+    remus_topology::validation::validate_shell_closed(sh_a, &topo)
         .expect("tongue A on a clean slab must be watertight");
 
     // Tongue B, 40 mm away, fused into the A-result. Attaches to the SAME +X
@@ -5510,7 +5510,7 @@ fn baseplate_two_tongues_far_apart_resplit_is_watertight() {
     let sh_b = topo
         .shell(topo.solid(after_b).unwrap().outer_shell())
         .unwrap();
-    brepkit_topology::validation::validate_shell_closed(sh_b, &topo)
+    remus_topology::validation::validate_shell_closed(sh_b, &topo)
         .expect("tongue B fused into the A-split wall must stay watertight");
 }
 
@@ -5523,7 +5523,7 @@ fn quantized_edge_use(topo: &Topology, solid: SolidId) -> (usize, usize) {
     let q = |x: f64| (x / 1e-5).round() as i64;
     let key = |p: Point3| [q(p.x()), q(p.y()), q(p.z())];
     let mut counts: HashMap<EdgeKey, usize> = HashMap::new();
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             let wire = topo.wire(wid).unwrap();
@@ -5551,7 +5551,7 @@ fn quantized_edge_use(topo: &Topology, solid: SolidId) -> (usize, usize) {
 /// genus-0, fully-analytic solid (every corner cylinder preserved).
 #[test]
 fn cut_wall_notch_straddling_top_edge_is_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     use std::f64::consts::FRAC_PI_2;
     let mut topo = Topology::new();
     // Solid wall body: rounded-rect arc prism 21x21 r=3.75 z=0..30.
@@ -5566,8 +5566,7 @@ fn cut_wall_notch_straddling_top_edge_is_watertight() {
         .unwrap();
 
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, body, tool)
-            .unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, body, tool).unwrap();
 
     let (free, over) = quantized_edge_use(&topo, result);
     assert_eq!(free, 0, "wall-cutout notch cut must have no free edges");
@@ -5575,7 +5574,7 @@ fn cut_wall_notch_straddling_top_edge_is_watertight() {
         over, 0,
         "wall-cutout notch cut must have no over-shared edges"
     );
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
     assert_eq!(
         v as i64 - e as i64 + f as i64,
         2,
@@ -5613,7 +5612,7 @@ fn make_wall_notch_tool(
     wall_y: f64,
     top_z: f64,
 ) -> SolidId {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     use std::f64::consts::FRAC_PI_2;
     let tool = make_rounded_rect_arc_prism(topo, cut_hw, total_hh, r, 0.0, depth);
     crate::transform::transform_solid(topo, tool, &Mat4::rotation_x(-FRAC_PI_2)).unwrap();
@@ -5643,8 +5642,7 @@ fn cut_wall_notch_through_solid_wall_is_watertight() {
     // the +Y wall at y=21 so it cuts through.
     let tool = make_wall_notch_tool(&mut topo, 14.0, 5.95, 1.485, 3.4, 21.0, 32.0);
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, body, tool)
-            .unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, body, tool).unwrap();
     let (free, over) = quantized_edge_use(&topo, result);
     assert_eq!(free, 0, "through-wall notch cut must have no free edges");
     assert_eq!(
@@ -5682,8 +5680,7 @@ fn cut_wall_notch_through_shelled_wall_is_watertight() {
     let cup = crate::shell_op::shell(&mut topo, body, 1.2, &[top]).unwrap();
     let tool = make_wall_notch_tool(&mut topo, 14.0, 5.95, 1.485, 3.4, 21.0, 32.0);
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, cup, tool)
-            .unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, cup, tool).unwrap();
     let (free, over) = quantized_edge_use(&topo, result);
     assert_eq!(
         free, 0,
@@ -5723,7 +5720,7 @@ fn cut_wall_notch_through_shelled_wall_is_watertight() {
 /// watertight (free = over = 0) deterministically.
 #[test]
 fn cut_2x2_wall_cutouts_four_walls_is_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     use std::f64::consts::FRAC_PI_2;
     let mut topo = Topology::new();
     let hw = 41.75;
@@ -5756,8 +5753,7 @@ fn cut_2x2_wall_cutouts_four_walls_is_watertight() {
     }
     let merged = crate::compound_ops::merge_disjoint_solids(&mut topo, &tools).unwrap();
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, cup, merged)
-            .unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, cup, merged).unwrap();
     let (free, over) = quantized_edge_use(&topo, result);
     assert_eq!(free, 0, "four-wall cutout cut must have no free edges");
     assert_eq!(
@@ -5773,9 +5769,9 @@ fn cut_2x2_wall_cutouts_four_walls_is_watertight() {
 /// silently inverts the face's effective outward direction.
 #[test]
 fn flatten_plane_normal_matches_nurbs_du_cross_dv() {
-    use brepkit_math::nurbs::surface::NurbsSurface;
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
 
     let mut topo = Topology::new();
 
@@ -5851,8 +5847,8 @@ fn planar_nurbs_patch(
     c10: Point3,
     c01: Point3,
     c11: Point3,
-) -> brepkit_math::nurbs::surface::NurbsSurface {
-    brepkit_math::nurbs::surface::NurbsSurface::new(
+) -> remus_math::nurbs::surface::NurbsSurface {
+    remus_math::nurbs::surface::NurbsSurface::new(
         1,
         1,
         vec![0.0, 0.0, 1.0, 1.0],
@@ -5867,7 +5863,7 @@ fn planar_nurbs_patch(
 /// what `recognize_curve` reports as `Line`.
 fn straight_nurbs_curve(a: Point3, b: Point3) -> EdgeCurve {
     EdgeCurve::NurbsCurve(
-        brepkit_math::nurbs::curve::NurbsCurve::new(
+        remus_math::nurbs::curve::NurbsCurve::new(
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![a, b],
@@ -5881,8 +5877,8 @@ fn straight_nurbs_curve(a: Point3, b: Point3) -> EdgeCurve {
 /// supplied as NURBS. `nurbs_surface` chooses whether the face carries the
 /// planar NURBS patch or the already-analytic `Plane`.
 fn flattenable_nurbs_patch_solid(topo: &mut Topology, nurbs_surface: bool) -> SolidId {
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
 
     let p00 = Point3::new(0.0, 0.0, 5.0);
     let p10 = Point3::new(1.0, 0.0, 5.0);
@@ -5999,7 +5995,7 @@ fn boolean_over_planar_nurbs_operand_keeps_the_flatten_pre_pass() {
     // Re-express the cube's top face (z=1) as the planar NURBS patch a STEP
     // import would deliver, so the fuse routes through the flatten pre-pass.
     let tol = Tolerance::new();
-    let top = brepkit_topology::explorer::solid_faces(&topo, a)
+    let top = remus_topology::explorer::solid_faces(&topo, a)
         .unwrap()
         .into_iter()
         .find(|&fid| {
@@ -6048,8 +6044,7 @@ fn perforated_panel_cut_is_correct_and_manifold() {
 
     let (slab, tool) = build_perforated_panel(&mut topo, n_grid);
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, slab, tool)
-            .unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, slab, tool).unwrap();
 
     // Manifold: the result is a clean analytic solid, not a mesh-fallback shell.
     let (free, over) = quantized_edge_use(&topo, result);
@@ -6058,7 +6053,7 @@ fn perforated_panel_cut_is_correct_and_manifold() {
 
     // With every hole strictly interior: the slab keeps its 6 outer faces (the
     // top/bottom caps now holed) and each prism adds 4 wall faces — 4N + 6.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result)
+    let faces = remus_topology::explorer::solid_faces(&topo, result)
         .unwrap()
         .len();
     assert_eq!(faces, 4 * n + 6, "perforated panel face count");
@@ -6077,7 +6072,7 @@ fn perforated_panel_cut_is_correct_and_manifold() {
 /// walls per hole). Returns `(slab, tool)`.
 #[cfg(test)]
 fn build_perforated_panel(topo: &mut Topology, g: usize) -> (SolidId, SolidId) {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     let pitch = 2.4;
     let span = (g + 1) as f64 * pitch;
     let slab = crate::primitives::make_box(topo, span, span, 2.0).unwrap();
@@ -6124,13 +6119,12 @@ fn build_perforated_panel(topo: &mut Topology, g: usize) -> (SolidId, SolidId) {
 #[cfg(feature = "perf-counters")]
 #[test]
 fn scaling_perforated_cut_is_subquadratic() {
-    let cut_counts = |g: usize| -> brepkit_algo::perf::PerfSnapshot {
+    let cut_counts = |g: usize| -> remus_algo::perf::PerfSnapshot {
         let mut topo = Topology::new();
         let (slab, tool) = build_perforated_panel(&mut topo, g);
-        brepkit_algo::perf::reset();
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, slab, tool)
-            .unwrap();
-        brepkit_algo::perf::snapshot()
+        remus_algo::perf::reset();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, slab, tool).unwrap();
+        remus_algo::perf::snapshot()
     };
 
     let s1 = cut_counts(9); // 81 holes
@@ -6230,7 +6224,7 @@ fn cut_cylinder_by_box_slot_perpendicular_walls_is_watertight() {
     crate::transform::transform_solid(
         &mut topo,
         bx,
-        &brepkit_math::mat::Mat4::translation(-2.0, -8.0, 5.0),
+        &remus_math::mat::Mat4::translation(-2.0, -8.0, 5.0),
     )
     .unwrap();
 
@@ -6250,7 +6244,7 @@ fn cut_cylinder_by_box_slot_perpendicular_walls_is_watertight() {
         count_cylinder_faces(&topo, result) >= 1,
         "cyl - box slot must keep the analytic cylinder face (no mesh fallback)"
     );
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result)
+    let faces = remus_topology::explorer::solid_faces(&topo, result)
         .unwrap()
         .len();
     assert!(
@@ -6293,7 +6287,7 @@ fn cut_cylinder_by_box_slot_perpendicular_walls_is_watertight() {
 /// drills TWO.
 #[test]
 fn fuse_capping_slab_preserves_drilled_hole_caps() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -6322,7 +6316,7 @@ fn fuse_capping_slab_preserves_drilled_hole_caps() {
 
     // Analytic, not a mesh fallback: a compact face count, and BOTH drilled
     // cylinder walls survive as analytic cylinders.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, fused).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
     assert!(
         faces.len() < 30,
         "expected a compact analytic fuse, got {} faces (mesh fallback?)",
@@ -6368,7 +6362,7 @@ fn fuse_capping_slab_preserves_drilled_hole_caps() {
 /// test above (empty base split) never reaches.
 #[test]
 fn fuse_embedded_drilled_block_carves_caps_across_split_sub_faces() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -6433,7 +6427,7 @@ fn fuse_embedded_drilled_block_carves_caps_across_split_sub_faces() {
 /// opening, where the top slab has no material to carve.
 /// `distribute_cap_circles` must drop them rather than emit free-floating
 /// discs across the opening (the drop itself is pinned down by
-/// `distribute_cap_circles_drops_caps_inside_holes` in `brepkit-algo`).
+/// `distribute_cap_circles_drops_caps_inside_holes` in `remus-algo`).
 ///
 /// The GFA path currently fails post-assembly validation on this interface
 /// and the fuse falls back to the mesh boolean, so this test asserts the
@@ -6443,7 +6437,7 @@ fn fuse_embedded_drilled_block_carves_caps_across_split_sub_faces() {
 // passes GFA validation.
 #[test]
 fn fuse_counterbore_drops_drill_rims_inside_opening() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -6517,7 +6511,7 @@ fn fuse_counterbore_drops_drill_rims_inside_opening() {
 
 #[test]
 fn severing_cut_keeps_pocketed_pieces_analytic() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -6543,7 +6537,7 @@ fn severing_cut_keeps_pocketed_pieces_analytic() {
     // Analytic, not a mesh fallback. The fallback for this shape is ~114
     // all-planar faces and is itself watertight, valid, and correct-volume —
     // the face census is the only signal that separates the two.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, severed).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, severed).unwrap();
     assert!(
         faces.len() < 30,
         "expected a compact analytic result, got {} faces (mesh fallback?)",
@@ -6575,7 +6569,7 @@ fn severing_cut_keeps_pocketed_pieces_analytic() {
 
 #[test]
 fn compound_cut_unify_keeps_bore_opening() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
 
@@ -6618,7 +6612,7 @@ fn compound_cut_unify_keeps_bore_opening() {
 
 #[test]
 fn compound_cut_unify_still_merges_normally() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     // The unify pass rolls itself back when a merge would orphan edges. That
     // guard must not fire on healthy geometry, or every boolean result keeps
@@ -6652,7 +6646,7 @@ fn compound_cut_unify_still_merges_normally() {
         },
     )
     .unwrap();
-    let unified_faces = brepkit_topology::explorer::solid_faces(&topo, unified)
+    let unified_faces = remus_topology::explorer::solid_faces(&topo, unified)
         .unwrap()
         .len();
 
@@ -6667,7 +6661,7 @@ fn compound_cut_unify_still_merges_normally() {
         },
     )
     .unwrap();
-    let raw_faces = brepkit_topology::explorer::solid_faces(&topo, raw)
+    let raw_faces = remus_topology::explorer::solid_faces(&topo, raw)
         .unwrap()
         .len();
 
@@ -6694,20 +6688,20 @@ fn fuse_multi_component_tool_folds_each_piece() {
     crate::transform::transform_solid(
         &mut topo,
         p1,
-        &brepkit_math::mat::Mat4::translation(1.0, 1.0, 0.0),
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 0.0),
     )
     .unwrap();
     let p2 = crate::primitives::make_box(&mut topo, 2.0, 2.0, 4.0).unwrap();
     crate::transform::transform_solid(
         &mut topo,
         p2,
-        &brepkit_math::mat::Mat4::translation(7.0, 7.0, 0.0),
+        &remus_math::mat::Mat4::translation(7.0, 7.0, 0.0),
     )
     .unwrap();
-    let mut tool_faces = brepkit_topology::explorer::solid_faces(&topo, p1).unwrap();
-    tool_faces.extend(brepkit_topology::explorer::solid_faces(&topo, p2).unwrap());
-    let tool_shell = topo.add_shell(brepkit_topology::shell::Shell::new(tool_faces).unwrap());
-    let tool = topo.add_solid(brepkit_topology::solid::Solid::new(tool_shell, Vec::new()));
+    let mut tool_faces = remus_topology::explorer::solid_faces(&topo, p1).unwrap();
+    tool_faces.extend(remus_topology::explorer::solid_faces(&topo, p2).unwrap());
+    let tool_shell = topo.add_shell(remus_topology::shell::Shell::new(tool_faces).unwrap());
+    let tool = topo.add_solid(remus_topology::solid::Solid::new(tool_shell, Vec::new()));
     let components = super::assembly::face_components(&topo, tool);
     assert_eq!(components.len(), 2, "tool must split into two pieces");
 
@@ -6731,7 +6725,7 @@ fn fuse_corner_poking_cylinder_stays_analytic() {
     // trace and the fuse fell back to the mesh path (all planes).
     use crate::measure::solid_volume;
     use crate::transform::transform_solid;
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let plate = crate::primitives::make_box(&mut topo, 10.0, 10.0, 5.0).unwrap();
@@ -6739,7 +6733,7 @@ fn fuse_corner_poking_cylinder_stays_analytic() {
     transform_solid(&mut topo, pad, &Mat4::translation(9.0, 9.0, 0.0)).unwrap();
     let fused = boolean(&mut topo, BooleanOp::Fuse, plate, pad).unwrap();
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, fused).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
     let curved = faces
         .iter()
         .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
@@ -6767,7 +6761,7 @@ fn compound_cut_coaxial_pair_clusters_match_sequential() {
     // analytic bores.
     use crate::measure::solid_volume;
     use crate::transform::transform_solid;
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     let make = |topo: &mut Topology| -> (SolidId, Vec<SolidId>) {
         let base = crate::primitives::make_box(topo, 20.0, 20.0, 6.0).unwrap();
@@ -6803,7 +6797,7 @@ fn compound_cut_coaxial_pair_clusters_match_sequential() {
         (vol - vol_seq).abs() < 0.05,
         "cluster-batched volume {vol} must match sequential {vol_seq}"
     );
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let cylinders = faces
         .iter()
         .filter(|&&f| topo.face(f).unwrap().surface().type_tag() == "cylinder")
@@ -6834,16 +6828,16 @@ fn compound_cut_coaxial_pair_clusters_match_sequential() {
 ///      and zips rims of unequal shared-vertex counts.
 #[test]
 fn cone_union_box_should_be_analytic() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     let mut topo = Topology::new();
     let cone = crate::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
     crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-4.0, -4.0, 6.0)).unwrap();
 
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let z0_discs = faces
         .iter()
         .filter(|&&fid| {
@@ -6890,16 +6884,16 @@ fn cone_union_box_should_be_analytic() {
 /// with the same oracles.
 #[test]
 fn cylinder_union_inscribed_box_is_analytic_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     let mut topo = Topology::new();
     let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
     crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-4.0, -4.0, 6.0)).unwrap();
 
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b).unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cyl, b).unwrap();
     assert_eq!(count_non_manifold_edges(&topo, result), 0);
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert!(
         faces
             .iter()
@@ -6924,7 +6918,7 @@ fn cylinder_union_inscribed_box_is_analytic_watertight() {
 #[test]
 #[ignore = "diagnostic — how wide is the tangency failure band?"]
 fn diag_tangency_epsilon_band() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     for &eps in &[-1e-3f64, -1e-5, -1e-7, -1e-9, 0.0, 1e-9, 1e-7, 1e-5, 1e-3] {
         let d = 8.0 + 2.0 * eps; // half-width 4+eps vs cylinder r=4
         let mut topo = Topology::new();
@@ -6937,10 +6931,9 @@ fn diag_tangency_epsilon_band() {
         )
         .unwrap();
         let msg =
-            match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b)
-            {
+            match remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cyl, b) {
                 Ok(r) => {
-                    let n = brepkit_topology::explorer::solid_faces(&topo, r)
+                    let n = remus_topology::explorer::solid_faces(&topo, r)
                         .unwrap()
                         .len();
                     match super::assembly::validate_boolean_result(&topo, r) {
@@ -6957,7 +6950,7 @@ fn diag_tangency_epsilon_band() {
 #[test]
 #[ignore = "diagnostic — is a tangent section circle broken for cylinders too?"]
 fn diag_cylinder_box_tangency() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     // Cylinder r=4: a d=8 box is tangent to it on all four walls; d=10 is clear.
     for &(label, d) in &[("cyl tangent  d=8", 8.0), ("cyl clear    d=10", 10.0)] {
         let mut topo = Topology::new();
@@ -6969,9 +6962,9 @@ fn diag_cylinder_box_tangency() {
             &Mat4::translation(-d / 2.0, -d / 2.0, 6.0),
         )
         .unwrap();
-        match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b) {
+        match remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cyl, b) {
             Ok(r) => {
-                let faces = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+                let faces = remus_topology::explorer::solid_faces(&topo, r).unwrap();
                 eprintln!(
                     "{label}: F={:3} validate={:?}",
                     faces.len(),
@@ -6988,7 +6981,7 @@ fn diag_cylinder_box_tangency() {
 #[test]
 #[ignore = "diagnostic — is the cone-box fallback caused by the tangency?"]
 fn diag_cone_box_tangency_sweep() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     // cone r=6@z0 -> r=2@z12, so radius at z is 6 - z/3.
     // Box is d x d centred on the axis, bottom at zb. Tangency iff d/2 == r(zb).
     for &(label, d, zb) in &[
@@ -7003,9 +6996,9 @@ fn diag_cone_box_tangency_sweep() {
         let b = crate::primitives::make_box(&mut topo, d, d, 8.0).unwrap();
         crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-d / 2.0, -d / 2.0, zb))
             .unwrap();
-        match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b) {
+        match remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cone, b) {
             Ok(r) => {
-                let faces = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+                let faces = remus_topology::explorer::solid_faces(&topo, r).unwrap();
                 let z0 = faces
                     .iter()
                     .filter(|&&fid| {
@@ -7045,7 +7038,7 @@ fn tangent_wall_fuse_configurations_stay_analytic() {
     // are clean since the classifier conflict re-cast and the SD
     // cross-shell gate; this pins every configuration of the diagnostic
     // sweep as watertight with its exact analytic face count.
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     for &(label, xlo, xhi, ylo, yhi, expect_f) in &[
         ("4 tangent walls", -4.0, 4.0, -4.0, 4.0, 15usize),
         ("2 tangent walls (x only)", -4.0, 4.0, -9.0, 9.0, 11),
@@ -7056,9 +7049,9 @@ fn tangent_wall_fuse_configurations_stay_analytic() {
         let cyl = crate::primitives::make_cylinder(&mut topo, 4.0, 12.0).unwrap();
         let b = crate::primitives::make_box(&mut topo, xhi - xlo, yhi - ylo, 8.0).unwrap();
         crate::transform::transform_solid(&mut topo, b, &Mat4::translation(xlo, ylo, 6.0)).unwrap();
-        let r = brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b)
+        let r = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cyl, b)
             .unwrap_or_else(|e| panic!("{label}: fuse must not abort: {e}"));
-        let n = brepkit_topology::explorer::solid_faces(&topo, r)
+        let n = remus_topology::explorer::solid_faces(&topo, r)
             .unwrap()
             .len();
         assert_eq!(n, expect_f, "{label}: analytic face count");
@@ -7070,7 +7063,7 @@ fn tangent_wall_fuse_configurations_stay_analytic() {
 #[test]
 #[ignore = "diagnostic — how many tangency points break the section circle?"]
 fn diag_tangency_count() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     // Cylinder r=4 on the z axis, z 0..12. Box top-face z range 6..14 always.
     // Vary how many of the box's four walls are tangent to the r=4 circle.
     for &(label, xlo, xhi, ylo, yhi) in &[
@@ -7084,10 +7077,9 @@ fn diag_tangency_count() {
         let b = crate::primitives::make_box(&mut topo, xhi - xlo, yhi - ylo, 8.0).unwrap();
         crate::transform::transform_solid(&mut topo, b, &Mat4::translation(xlo, ylo, 6.0)).unwrap();
         let msg =
-            match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cyl, b)
-            {
+            match remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cyl, b) {
                 Ok(r) => {
-                    let n = brepkit_topology::explorer::solid_faces(&topo, r)
+                    let n = remus_topology::explorer::solid_faces(&topo, r)
                         .unwrap()
                         .len();
                     match super::assembly::validate_boolean_result(&topo, r) {
@@ -7116,8 +7108,8 @@ fn diag_tangency_count() {
 /// == 8`, `cut_safe`, `intersect_safe`, validation Ok).
 #[test]
 fn rotated_separate_pieces_are_recognised_as_disjoint() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_math::mat::Mat4;
+    use remus_topology::explorer::solid_faces;
 
     let mut topo = Topology::new();
     let diag = std::f64::consts::FRAC_PI_4;
@@ -7183,8 +7175,8 @@ fn rotated_separate_pieces_are_recognised_as_disjoint() {
 /// while letting side-by-side rotated pieces through.
 #[test]
 fn nested_pieces_are_not_disjoint() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_math::mat::Mat4;
+    use remus_topology::explorer::solid_faces;
 
     let mut topo = Topology::new();
     let outer = crate::primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
@@ -7206,8 +7198,8 @@ fn nested_pieces_are_not_disjoint() {
 /// acceptance guard merely because neither AABB contains the other.
 #[test]
 fn overlapping_components_are_not_disjoint() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_math::mat::Mat4;
+    use remus_topology::explorer::solid_faces;
 
     let mut topo = Topology::new();
     let a = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
@@ -7264,8 +7256,8 @@ fn euler_balance_allows_genus_across_components() {
 /// `disjoint=false`).
 #[test]
 fn a_piece_in_a_rings_hole_is_disjoint() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_math::mat::Mat4;
+    use remus_topology::explorer::solid_faces;
 
     let mut topo = Topology::new();
     let ring = crate::primitives::make_torus(&mut topo, 10.0, 2.0, 48).unwrap();
@@ -7311,7 +7303,7 @@ fn a_piece_in_a_rings_hole_is_disjoint() {
 /// the full oracles for both quadrics.
 #[test]
 fn two_tangency_box_fuse_is_analytic_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     for &cone in &[false, true] {
         let mut topo = Topology::new();
         let quad = if cone {
@@ -7323,10 +7315,9 @@ fn two_tangency_box_fuse_is_analytic_watertight() {
         crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-4.0, -9.0, 6.0))
             .unwrap();
         let result =
-            brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, quad, b)
-                .unwrap();
+            remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, quad, b).unwrap();
         assert_eq!(count_non_manifold_edges(&topo, result), 0);
-        let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
         assert!(
             faces
                 .iter()
@@ -7376,16 +7367,16 @@ fn two_tangency_box_fuse_is_analytic_watertight() {
 /// path is correct and is what volume, export, and parity consume.
 #[test]
 fn circle_outside_cone_box_fuse_is_watertight() {
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
     let mut topo = Topology::new();
     let cone = crate::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 6.0, 6.0, 8.0).unwrap();
     crate::transform::transform_solid(&mut topo, b, &Mat4::translation(-3.0, -3.0, 6.0)).unwrap();
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
 
     assert_eq!(count_non_manifold_edges(&topo, result), 0);
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert!(
         faces
             .iter()
@@ -7407,7 +7398,7 @@ fn circle_outside_cone_box_fuse_is_watertight() {
         (0.0, 3.3, 6.8),
         (0.0, -3.3, 6.8),
     ] {
-        let p = brepkit_math::vec::Point3::new(x, y, z);
+        let p = remus_math::vec::Point3::new(x, y, z);
         let c = crate::classify::classify_point(&topo, result, p, 0.001, 1e-7).unwrap();
         assert_eq!(
             c,
@@ -7435,8 +7426,8 @@ fn circle_outside_cone_box_fuse_is_watertight() {
 /// so fusing it must add the annulus instead of copying the target unchanged.
 #[test]
 fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
-    use brepkit_algo::classifier::try_build_analytic_classifier;
-    use brepkit_math::mat::Mat4;
+    use remus_algo::classifier::try_build_analytic_classifier;
+    use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let base = crate::primitives::make_box(&mut topo, 80.0, 40.0, 8.0).unwrap();
@@ -7487,7 +7478,7 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
         "annulus was not incorporated: before={before}, actual={actual}, expected={expected}"
     );
 
-    let radii: Vec<f64> = brepkit_topology::explorer::solid_faces(&topo, result)
+    let radii: Vec<f64> = remus_topology::explorer::solid_faces(&topo, result)
         .unwrap()
         .into_iter()
         .filter_map(|fid| match topo.face(fid).unwrap().surface() {
@@ -7517,7 +7508,7 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
 /// A consistent closed shell has zero.
 fn same_sense_pairs(topo: &Topology, solid: SolidId) -> Vec<(EdgeId, FaceId, FaceId)> {
     use std::collections::HashMap;
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     let mut uses: HashMap<EdgeId, Vec<(FaceId, bool)>> = HashMap::new();
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
@@ -7623,7 +7614,7 @@ fn fillet_v2_cylinder_rim_bands_are_orientation_consistent() {
     // Select the two physical rims, not the cylinder's parameterization seam:
     // this fork deliberately rejects partial modifier selections, so asking
     // for the non-filletable seam together with the rims must remain an error.
-    let edges: Vec<EdgeId> = brepkit_topology::explorer::solid_edges(&topo, cyl)
+    let edges: Vec<EdgeId> = remus_topology::explorer::solid_edges(&topo, cyl)
         .unwrap()
         .into_iter()
         .filter(|&eid| {
@@ -7661,7 +7652,7 @@ fn coplanar_flush_pocket_cut_is_orientation_consistent() {
         crate::transform::transform_solid(
             &mut topo,
             b,
-            &brepkit_math::mat::Mat4::translation(7.0, 7.0, z0),
+            &remus_math::mat::Mat4::translation(7.0, 7.0, z0),
         )
         .unwrap();
         let cut = boolean(&mut topo, BooleanOp::Cut, a, b).unwrap();
@@ -7670,7 +7661,7 @@ fn coplanar_flush_pocket_cut_is_orientation_consistent() {
             pairs.is_empty(),
             "{label} pocket cut must have no same-sense edge pairs, got {pairs:?}"
         );
-        for fid in brepkit_topology::explorer::solid_faces(&topo, cut).unwrap() {
+        for fid in remus_topology::explorer::solid_faces(&topo, cut).unwrap() {
             if let Some((outer, inners)) = planar_effective_windings(&topo, fid) {
                 assert!(
                     outer > 0.0,
@@ -7777,8 +7768,8 @@ fn bench_equiv_cut_box_corner_cylinder_volume_is_exact() {
 /// whole and analytic.
 #[test]
 fn fuse_cylinder_tangent_to_box_wall_succeeds() {
-    use brepkit_check::classify::{ClassifyOptions, classify_point};
-    use brepkit_math::mat::Mat4;
+    use remus_check::classify::{ClassifyOptions, classify_point};
+    use remus_math::mat::Mat4;
 
     // Box x∈[0,60], y∈[0,40], z∈[0,40]; cylinder axis at (-8, 20), r=8 —
     // its wall is tangent to the box's x=0 face — spanning z∈[-5,50], so
@@ -7794,7 +7785,7 @@ fn fuse_cylinder_tangent_to_box_wall_succeeds() {
 
     // Analytic result, no mesh fallback: the cylinder wall survives as a
     // cylinder face and the face count stays in single digits.
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert!(
         (7..=12).contains(&faces.len()),
         "expected an analytic two-body result, got {} faces",
@@ -7851,8 +7842,8 @@ fn fuse_cylinder_tangent_to_box_wall_succeeds() {
 /// mesh-fell-back to 65 all-planar faces with the analytic surfaces lost.
 #[test]
 fn fuse_cylinder_tangent_to_box_corner_edge_stays_analytic() {
-    use brepkit_check::classify::{ClassifyOptions, classify_point};
-    use brepkit_math::mat::Mat4;
+    use remus_check::classify::{ClassifyOptions, classify_point};
+    use remus_math::mat::Mat4;
 
     // Box x∈[0,60], y∈[0,40], z∈[0,40]. The cylinder axis sits on the corner
     // diagonal at distance r from the box's vertical edge at (0,0), so the
@@ -7871,7 +7862,7 @@ fn fuse_cylinder_tangent_to_box_corner_edge_stays_analytic() {
 
         // The census is the only reliable fallback detector: the mesh result
         // is watertight and valid, it is just 65 planes with no cylinder.
-        let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
         assert!(
             (7..=12).contains(&faces.len()),
             "h={h}: expected an analytic two-body result, got {} faces",
@@ -7923,8 +7914,8 @@ fn fuse_cylinder_tangent_to_box_corner_edge_stays_analytic() {
 /// which the volume assertion below would catch.
 #[test]
 fn fuse_cylinder_crossing_a_wall_at_its_rim_still_merges() {
-    use brepkit_check::classify::{ClassifyOptions, classify_point};
-    use brepkit_math::mat::Mat4;
+    use remus_check::classify::{ClassifyOptions, classify_point};
+    use remus_math::mat::Mat4;
 
     let cy = (64.0_f64 - 16.0).sqrt();
     let mut topo = Topology::new();
@@ -7935,7 +7926,7 @@ fn fuse_cylinder_crossing_a_wall_at_its_rim_still_merges() {
     let result =
         boolean(&mut topo, BooleanOp::Fuse, bx, cyl).expect("rim-crossing fuse must not error");
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     let cyl_faces = faces
         .iter()
         .filter(|&&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)))

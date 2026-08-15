@@ -1,11 +1,11 @@
-# brepkit Review Rules
+# remus Review Rules
 
 Refer to `CLAUDE.md` for full architecture docs, module map, and coding conventions.
 These rules tell Greptile what to **flag during review**.
 
 ## Layer Violations
 
-Flag any `use brepkit_*` import or `[dependencies]` entry that breaks the layer
+Flag any `use remus_*` import or `[dependencies]` entry that breaks the layer
 hierarchy defined in `CLAUDE.md` "Architecture". This is also enforced by
 `scripts/check-boundaries.sh` in CI.
 

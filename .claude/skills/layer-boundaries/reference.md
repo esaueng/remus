@@ -21,9 +21,9 @@ Every call site that goes through a delegate is done once the delegate impl has 
 ### Procedure with checkpoints
 
 1. Define the geometry type first. New analytic curve: `crates/math/src/curves.rs`. New analytic surface: `crates/math/src/surfaces.rs`. Implement the relevant trait from `math/src/traits.rs` (`ParametricCurve` or `ParametricSurface`) so sampling and extrema code can use it.
-   - Checkpoint: `cargo build -p brepkit-math` is green before touching topology.
+   - Checkpoint: `cargo build -p remus-math` is green before touching topology.
 2. Add the enum variant in `topology/src/edge.rs` or `topology/src/face.rs` and add its arm to every delegate method in the same file.
-   - Checkpoint: `cargo build -p brepkit-topology` is green.
+   - Checkpoint: `cargo build -p remus-topology` is green.
 3. Enumerate the blast radius (informational; the compiler is the real list):
    ```bash
    rg -l 'EdgeCurve::' crates/*/src/    # ~110 files at time of writing
@@ -56,29 +56,29 @@ Every call site that goes through a delegate is done once the delegate impl has 
 
 ## check-boundaries.sh internals
 
-- Extracts only `[dependencies]` per crate: `sed -n '/^\[dependencies\]/,/^\[/p'`, then greps each `brepkit-*` name against the crate's allowlist.
+- Extracts only `[dependencies]` per crate: `sed -n '/^\[dependencies\]/,/^\[/p'`, then greps each `remus-*` name against the crate's allowlist.
 - `[dev-dependencies]` are exempt by design (integration tests may reach upward). Consequence: the script cannot catch the topology dev-dep cycle trap; that one only shows up as "two different versions of crate" build errors.
 - Output shapes:
   - Pass: `Checking crate boundary rules...` then `✅ All crate boundaries valid.`, exit 0.
   - Fail: one `VIOLATION: crates/<crate> depends on <dep> (not allowed)` per offense, then `❌ Boundary check failed.`, exit 1.
   - `SKIP: crates/<name>/Cargo.toml not found` means a crate was renamed or removed; update the script's `check_deps` calls.
-- Allowlist vs CLAUDE.md table: the script permits `brepkit-geometry` for `algo` and `blend`, and a direct `brepkit-blend` dep for `wasm` (the table allows blend only transitively, via operations; wasm's other deps, including offset and sketch, are allowed by both). None of the extra allowances are used in the actual Cargo.tomls today. If you find yourself needing one, it passes CI, but confirm the layering intent in review first; the CLAUDE.md table is the source of truth for intent.
+- Allowlist vs CLAUDE.md table: the script permits `remus-geometry` for `algo` and `blend`, and a direct `remus-blend` dep for `wasm` (the table allows blend only transitively, via operations; wasm's other deps, including offset and sketch, are allowed by both). None of the extra allowances are used in the actual Cargo.tomls today. If you find yourself needing one, it passes CI, but confirm the layering intent in review first; the CLAUDE.md table is the source of truth for intent.
 - Enforcement points: CI job `boundaries` in `.github/workflows/ci.yml`, gated into `ci-pass`. The `.husky/pre-push` hook runs nothing (it delegates to CI), and `.husky/pre-commit` runs fmt + clippy + taplo + machete only. So a boundary violation surfaces at PR time unless you run the script yourself.
 
 ## Symptom-to-cause: boundary and cycle failures
 
 | Symptom | Cause | Action |
 |---|---|---|
-| `error[E0432]: unresolved import brepkit_x` in crate Y | Missing Cargo dep, possibly because the layer forbids it | Check the CLAUDE.md table. If forbidden: move the code down or restructure. If allowed: add the dep and re-run the script |
+| `error[E0432]: unresolved import remus_x` in crate Y | Missing Cargo dep, possibly because the layer forbids it | Check the CLAUDE.md table. If forbidden: move the code down or restructure. If allowed: add the dep and re-run the script |
 | Script prints VIOLATION for a dep you believe is fine | The dep string appears in `[dependencies]` (even transitively via a table entry you edited) | Read the crate's Cargo.toml `[dependencies]` block; the script only sees that section |
-| `expected struct brepkit_topology::Topology, found struct brepkit_topology::Topology` | Two feature-resolved builds of topology, usually from an upward dev-dep on topology | Remove the offending dev-dep; move the helper into `topology/src/test_utils.rs` behind `test-utils` |
+| `expected struct remus_topology::Topology, found struct remus_topology::Topology` | Two feature-resolved builds of topology, usually from an upward dev-dep on topology | Remove the offending dev-dep; move the helper into `topology/src/test_utils.rs` behind `test-utils` |
 | A crate compiles locally but the `boundaries` CI job fails | You added the dep but never ran the script | `./scripts/check-boundaries.sh` locally, fix, push |
 | Reviewer flags mesh/triangle code in algo, check, math, etc. | Tessellation-based shortcut below L3 | Reformulate analytically; tessellation belongs in `operations/src/tessellate/` or `render/`. Current ground truth: `rg -in 'tessellat' crates/{math,geometry,topology,algo,blend,heal,check,offset,sketch}/src/` matches roughly 15 files, and every hit is a comment or docstring (e.g. "Instead of tessellating a face" in `math/src/quadrature.rs`). Any hit on executable code is a violation. Keep it that way |
 
 ## Glossary for newcomers
 
 - B-Rep: boundary representation. Solids as faces/edges/vertices with exact analytic or NURBS geometry, not triangles.
-- GFA: brepkit's general fuse algorithm, the boolean engine (`crates/algo/src/gfa.rs`).
+- GFA: remus's general fuse algorithm, the boolean engine (`crates/algo/src/gfa.rs`).
 - PCurve: a 2D curve in a face's UV parameter space representing an edge on that surface.
 - Analytic geometry: exact closed-form types (plane, cylinder, cone, sphere, torus; line, circle, ellipse), as opposed to NURBS approximation.
 - Arena / `Id<T>`: topology entities live in a central arena (`topology/src/arena.rs`) and are referenced by typed handles.

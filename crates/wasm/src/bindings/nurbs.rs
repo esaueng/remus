@@ -4,11 +4,11 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::Point3;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::vertex::Vertex;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::Point3;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::vertex::Vertex;
 
 use crate::error::WasmError;
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
@@ -204,7 +204,7 @@ impl BrepKernel {
         }
 
         let deg = std::cmp::min(degree as usize, points.len() - 1);
-        let curve = brepkit_math::nurbs::fitting::interpolate(&points, deg)?;
+        let curve = remus_math::nurbs::fitting::interpolate(&points, deg)?;
 
         let start = points[0];
         let end = points[points.len() - 1];
@@ -236,7 +236,7 @@ impl BrepKernel {
         }
         let deg = std::cmp::min(degree as usize, points.len() - 1);
         let curve =
-            brepkit_math::nurbs::fitting::approximate(&points, deg, num_control_points as usize)?;
+            remus_math::nurbs::fitting::approximate(&points, deg, num_control_points as usize)?;
         Ok(edge_id_to_u32(self.nurbs_curve_to_edge(&points, curve)))
     }
 
@@ -261,7 +261,7 @@ impl BrepKernel {
             .into());
         }
         let deg = std::cmp::min(degree as usize, points.len() - 1);
-        let curve = brepkit_math::nurbs::fitting::approximate_lspia(
+        let curve = remus_math::nurbs::fitting::approximate_lspia(
             &points,
             deg,
             num_control_points as usize,
@@ -286,7 +286,7 @@ impl BrepKernel {
         degree_v: u32,
     ) -> Result<u32, JsError> {
         let grid = parse_point_grid(&coords, rows as usize, cols as usize)?;
-        let surface = brepkit_math::nurbs::surface_fitting::interpolate_surface(
+        let surface = remus_math::nurbs::surface_fitting::interpolate_surface(
             &grid,
             degree_u as usize,
             degree_v as usize,
@@ -312,7 +312,7 @@ impl BrepKernel {
         max_iterations: u32,
     ) -> Result<u32, JsError> {
         let grid = parse_point_grid(&coords, rows as usize, cols as usize)?;
-        let surface = brepkit_math::nurbs::surface_fitting::approximate_surface_lspia(
+        let surface = remus_math::nurbs::surface_fitting::approximate_surface_lspia(
             &grid,
             degree_u as usize,
             degree_v as usize,
@@ -330,8 +330,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "curveKnotInsert")]
     pub fn curve_knot_insert(&mut self, edge: u32, knot: f64, times: u32) -> Result<u32, JsError> {
         let curve = self.extract_nurbs_curve(edge)?;
-        let refined =
-            brepkit_math::nurbs::knot_ops::curve_knot_insert(&curve, knot, times as usize)?;
+        let refined = remus_math::nurbs::knot_ops::curve_knot_insert(&curve, knot, times as usize)?;
         Ok(edge_id_to_u32(
             self.nurbs_curve_to_edge_from_curve(&refined),
         ))
@@ -348,7 +347,7 @@ impl BrepKernel {
         tolerance: f64,
     ) -> Result<u32, JsError> {
         let curve = self.extract_nurbs_curve(edge)?;
-        let simplified = brepkit_math::nurbs::knot_ops::curve_knot_remove(&curve, knot, tolerance)?;
+        let simplified = remus_math::nurbs::knot_ops::curve_knot_remove(&curve, knot, tolerance)?;
         Ok(edge_id_to_u32(
             self.nurbs_curve_to_edge_from_curve(&simplified),
         ))
@@ -360,7 +359,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "curveSplit")]
     pub fn curve_split(&mut self, edge: u32, u: f64) -> Result<Vec<u32>, JsError> {
         let curve = self.extract_nurbs_curve(edge)?;
-        let (left, right) = brepkit_math::nurbs::knot_ops::curve_split(&curve, u)?;
+        let (left, right) = remus_math::nurbs::knot_ops::curve_split(&curve, u)?;
         let e1 = self.nurbs_curve_to_edge_from_curve(&left);
         let e2 = self.nurbs_curve_to_edge_from_curve(&right);
         Ok(vec![edge_id_to_u32(e1), edge_id_to_u32(e2)])
@@ -373,7 +372,7 @@ impl BrepKernel {
     pub fn curve_degree_elevate(&mut self, edge: u32, elevate_by: u32) -> Result<u32, JsError> {
         let curve = self.extract_nurbs_curve(edge)?;
         let elevated =
-            brepkit_math::nurbs::decompose::curve_degree_elevate(&curve, elevate_by as usize)?;
+            remus_math::nurbs::decompose::curve_degree_elevate(&curve, elevate_by as usize)?;
         Ok(edge_id_to_u32(
             self.nurbs_curve_to_edge_from_curve(&elevated),
         ))
@@ -427,7 +426,7 @@ impl BrepKernel {
         &self,
         face: u32,
     ) -> Result<serde_json::Value, WasmError> {
-        use brepkit_topology::face::FaceSurface;
+        use remus_topology::face::FaceSurface;
 
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
@@ -446,10 +445,10 @@ impl BrepKernel {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
 
-    use brepkit_math::nurbs::surface::NurbsSurface;
-    use brepkit_math::nurbs::surface_fitting::interpolate_surface;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::builder::{make_nurbs_edge_from_curve, make_nurbs_face};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::nurbs::surface_fitting::interpolate_surface;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::builder::{make_nurbs_edge_from_curve, make_nurbs_face};
 
     use crate::handles::{edge_id_to_u32, face_id_to_u32};
     use crate::helpers::TOL;
@@ -595,7 +594,7 @@ mod tests {
             Point3::new(3.0, 1.5, 1.0),
             Point3::new(5.0, 0.0, 0.0),
         ];
-        let curve = brepkit_math::nurbs::fitting::interpolate(&points, 3).unwrap();
+        let curve = remus_math::nurbs::fitting::interpolate(&points, 3).unwrap();
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
         let handle = edge_id_to_u32(eid);
 
@@ -621,7 +620,7 @@ mod tests {
                 Point3::new(t * 6.0, (t * std::f64::consts::PI).sin() * 2.0, t)
             })
             .collect();
-        let curve = brepkit_math::nurbs::fitting::approximate(&points, 3, 5).unwrap();
+        let curve = remus_math::nurbs::fitting::approximate(&points, 3, 5).unwrap();
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
         let handle = edge_id_to_u32(eid);
 
@@ -640,8 +639,7 @@ mod tests {
                 Point3::new(t * 4.0, (t * 6.0).cos(), t * t)
             })
             .collect();
-        let curve =
-            brepkit_math::nurbs::fitting::approximate_lspia(&points, 3, 6, 1e-6, 50).unwrap();
+        let curve = remus_math::nurbs::fitting::approximate_lspia(&points, 3, 6, 1e-6, 50).unwrap();
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
         let handle = edge_id_to_u32(eid);
 
@@ -653,7 +651,7 @@ mod tests {
     fn two_point_interpolation_degree_clamped() {
         let mut k = BrepKernel::new();
         let points = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 1.0)];
-        let curve = brepkit_math::nurbs::fitting::interpolate(&points, 3).unwrap();
+        let curve = remus_math::nurbs::fitting::interpolate(&points, 3).unwrap();
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
         let handle = edge_id_to_u32(eid);
 
@@ -674,7 +672,7 @@ mod tests {
                 Point3::new(t * 10.0, t * 10.0, 0.0)
             })
             .collect();
-        let curve = brepkit_math::nurbs::fitting::interpolate(&points, 3).unwrap();
+        let curve = remus_math::nurbs::fitting::interpolate(&points, 3).unwrap();
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
         let handle = edge_id_to_u32(eid);
 
@@ -691,7 +689,7 @@ mod tests {
     fn circle_edge_extracts_rational_quadratic() {
         let mut k = BrepKernel::new();
         let radius = 2.5;
-        let circle = brepkit_math::curves::Circle3D::new(
+        let circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             radius,
@@ -702,7 +700,7 @@ mod tests {
         let eid = k.topo_mut().add_edge(Edge::new(
             v,
             v,
-            brepkit_topology::edge::EdgeCurve::Circle(circle),
+            remus_topology::edge::EdgeCurve::Circle(circle),
         ));
         let handle = edge_id_to_u32(eid);
 
@@ -805,8 +803,8 @@ mod tests {
     #[test]
     fn planar_face_extracts_unit_degree1_grid() {
         let mut k = BrepKernel::new();
-        let solid = brepkit_operations::primitives::make_box(k.topo_mut(), 4.0, 6.0, 2.0).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid).unwrap();
+        let solid = remus_operations::primitives::make_box(k.topo_mut(), 4.0, 6.0, 2.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
         let handle = face_id_to_u32(faces[0]);
 
         let data = dispatch_ok(
@@ -831,15 +829,15 @@ mod tests {
         let radius = 3.0;
         let height = 5.0;
         let solid =
-            brepkit_operations::primitives::make_cylinder(k.topo_mut(), radius, height).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid).unwrap();
+            remus_operations::primitives::make_cylinder(k.topo_mut(), radius, height).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
         let cap = faces
             .iter()
             .copied()
             .find(|&f| {
                 matches!(
                     k.topo.face(f).unwrap().surface(),
-                    brepkit_topology::face::FaceSurface::Plane { .. }
+                    remus_topology::face::FaceSurface::Plane { .. }
                 )
             })
             .unwrap();
@@ -871,15 +869,15 @@ mod tests {
         assert!(dy >= 2.0 * radius - 1e-9, "cap v-extent {dy}");
     }
 
-    fn first_analytic_face(k: &BrepKernel, solid: brepkit_topology::solid::SolidId) -> u32 {
-        let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid).unwrap();
+    fn first_analytic_face(k: &BrepKernel, solid: remus_topology::solid::SolidId) -> u32 {
+        let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
         face_id_to_u32(faces[0])
     }
 
     #[test]
     fn parity_planar_face_returns_null() {
         let mut k = BrepKernel::new();
-        let solid = brepkit_operations::primitives::make_box(k.topo_mut(), 4.0, 6.0, 2.0).unwrap();
+        let solid = remus_operations::primitives::make_box(k.topo_mut(), 4.0, 6.0, 2.0).unwrap();
         let handle = first_analytic_face(&k, solid);
 
         let before = entity_counts(&k);
@@ -895,13 +893,13 @@ mod tests {
     #[test]
     fn parity_analytic_faces_return_null() {
         let mut k = BrepKernel::new();
-        let cyl = brepkit_operations::primitives::make_cylinder(k.topo_mut(), 3.0, 5.0).unwrap();
-        let cone = brepkit_operations::primitives::make_cone(k.topo_mut(), 3.0, 1.0, 5.0).unwrap();
-        let sphere = brepkit_operations::primitives::make_sphere(k.topo_mut(), 2.0, 16).unwrap();
-        let torus = brepkit_operations::primitives::make_torus(k.topo_mut(), 4.0, 1.0, 16).unwrap();
+        let cyl = remus_operations::primitives::make_cylinder(k.topo_mut(), 3.0, 5.0).unwrap();
+        let cone = remus_operations::primitives::make_cone(k.topo_mut(), 3.0, 1.0, 5.0).unwrap();
+        let sphere = remus_operations::primitives::make_sphere(k.topo_mut(), 2.0, 16).unwrap();
+        let torus = remus_operations::primitives::make_torus(k.topo_mut(), 4.0, 1.0, 16).unwrap();
 
         for solid in [cyl, cone, sphere, torus] {
-            let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid).unwrap();
+            let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
             for fid in faces {
                 let handle = face_id_to_u32(fid);
                 let data = dispatch_ok(
@@ -1015,15 +1013,15 @@ mod tests {
         let radius = 3.0;
         let height = 5.0;
         let solid =
-            brepkit_operations::primitives::make_cylinder(k.topo_mut(), radius, height).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid).unwrap();
+            remus_operations::primitives::make_cylinder(k.topo_mut(), radius, height).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
         let side = faces
             .iter()
             .copied()
             .find(|&f| {
                 matches!(
                     k.topo.face(f).unwrap().surface(),
-                    brepkit_topology::face::FaceSurface::Cylinder(_)
+                    remus_topology::face::FaceSurface::Cylinder(_)
                 )
             })
             .unwrap();

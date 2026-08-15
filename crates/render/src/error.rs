@@ -69,9 +69,9 @@ pub enum RenderError {
 
     /// Tessellation of the input solid failed.
     #[error(transparent)]
-    Operations(#[from] brepkit_operations::OperationsError),
+    Operations(#[from] remus_operations::OperationsError),
 
     /// Topology traversal of the input solid failed.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 }

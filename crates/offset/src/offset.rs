@@ -1,13 +1,11 @@
 //! Offset surface construction for each face.
 
-use brepkit_math::nurbs::surface_fitting::interpolate_surface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::traits::ParametricSurface;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::nurbs::surface_fitting::interpolate_surface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::traits::ParametricSurface;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 use crate::data::{OffsetData, OffsetFace, OffsetStatus};
 use crate::error::OffsetError;
@@ -108,7 +106,7 @@ pub fn build_offset_faces(
                 // d / cos(a). The sign is negative because offsetting outward
                 // moves the apex in the opposite direction of the axis.
                 let apex_shift = -effective_distance / cos_ha;
-                let new_apex = brepkit_math::vec::Point3::new(
+                let new_apex = remus_math::vec::Point3::new(
                     cone.apex().x() + apex_shift * cone.axis().x(),
                     cone.apex().y() + apex_shift * cone.axis().y(),
                     cone.apex().z() + apex_shift * cone.axis().z(),
@@ -148,7 +146,7 @@ pub fn build_offset_faces(
 
             FaceSurface::Nurbs(nurbs) => {
                 log::debug!(
-                    target: "brepkit_approx",
+                    target: "remus_approx",
                     "offset: NURBS face {face_id:?} offset via {NURBS_GRID_SIZE}x{NURBS_GRID_SIZE} sampled-NURBS refit (degree {NURBS_DEGREE}) — not an exact analytic offset"
                 );
                 let (u_min, u_max) = nurbs.domain_u();
@@ -164,7 +162,7 @@ pub fn build_offset_faces(
                         let n = nurbs.normal(u, v).map_err(|_| OffsetError::InvalidInput {
                             reason: format!("NURBS normal evaluation failed at ({u:.6}, {v:.6})"),
                         })?;
-                        row.push(brepkit_math::vec::Point3::new(
+                        row.push(remus_math::vec::Point3::new(
                             pt.x() + effective_distance * n.x(),
                             pt.y() + effective_distance * n.y(),
                             pt.z() + effective_distance * n.z(),
@@ -196,9 +194,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::data::{OffsetData, OffsetOptions, OffsetStatus};
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::Topology;
-    use brepkit_topology::face::FaceSurface;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::Topology;
+    use remus_topology::face::FaceSurface;
 
     fn run_phases_1_2(topo: &Topology, solid: SolidId, distance: f64) -> OffsetData {
         let mut data = OffsetData::new(distance, OffsetOptions::default(), vec![]);
@@ -210,7 +208,7 @@ mod tests {
     #[test]
     fn box_offset_faces_are_planes() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_2(&topo, solid, 0.5);
         assert_eq!(data.offset_faces.len(), 6);
         for of in data.offset_faces.values() {
@@ -222,7 +220,7 @@ mod tests {
     #[test]
     fn box_plane_d_shifted() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_2(&topo, solid, 0.5);
         let tol = Tolerance::new();
         let mut d_values: Vec<f64> = data
@@ -256,7 +254,7 @@ mod tests {
     #[test]
     fn excluded_faces_marked() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let shell = topo.solid(solid).unwrap().outer_shell();
         let faces: Vec<_> = topo.shell(shell).unwrap().faces().to_vec();
         let exclude = vec![faces[0]];
