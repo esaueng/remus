@@ -1238,7 +1238,7 @@ fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
         .unwrap()
         .edges()[0]
         .edge();
-    topo.pcurves_mut().set(
+    topo.set_pcurve(
         source_edge,
         source_face,
         PCurve::new(
@@ -1246,7 +1246,8 @@ fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
             0.0,
             1.0,
         ),
-    );
+    )
+    .unwrap();
     let (copy, face_map) =
         brepkit_operations::copy::copy_solid_with_face_map(&mut topo, solid).unwrap();
     let copied_face_index = face_map[&source_face.index()];
@@ -1256,9 +1257,9 @@ fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
         .unwrap()
         .edges()[0]
         .edge();
-    assert!(topo.pcurves().contains(source_edge, source_face));
+    assert!(topo.has_pcurve(source_edge, source_face).unwrap());
     assert!(
-        !topo.pcurves().contains(copied_edge, copied_face),
+        !topo.has_pcurve(copied_edge, copied_face).unwrap(),
         "update this probe when copy_solid_with_entity_maps remaps pcurves"
     );
     assert_ne!(copy, solid);
@@ -1275,21 +1276,21 @@ fn e14_current_analytic_blends_and_step_import_have_no_registry_pcurves() {
     let _open = fillet_v2(&mut open_topo, open_sharp, &[open_edge], 3.0)
         .unwrap()
         .solid;
-    println!("E14 open fillet pcurves={}", open_topo.pcurves().len());
-    assert_eq!(open_topo.pcurves().len(), 0);
+    println!("E14 open fillet pcurves={}", open_topo.num_pcurves());
+    assert_eq!(open_topo.num_pcurves(), 0);
 
     let mut ring_topo = Topology::new();
     let (plate, rim) = drilled_plate(&mut ring_topo);
     let _ring = fillet_v2(&mut ring_topo, plate, &[rim], 3.0).unwrap().solid;
-    println!("E14 ring fillet pcurves={}", ring_topo.pcurves().len());
-    assert_eq!(ring_topo.pcurves().len(), 0);
+    println!("E14 ring fillet pcurves={}", ring_topo.num_pcurves());
+    assert_eq!(ring_topo.num_pcurves(), 0);
 
     let step = include_str!("../../io/tests/data/openzcad_e_analytic_fillet_plate.step");
     let mut step_topo = Topology::new();
     let solids = brepkit_io::step::reader::read_step(step, &mut step_topo).unwrap();
     assert_eq!(solids.len(), 1);
-    println!("E14 STEP import pcurves={}", step_topo.pcurves().len());
-    assert_eq!(step_topo.pcurves().len(), 0);
+    println!("E14 STEP import pcurves={}", step_topo.num_pcurves());
+    assert_eq!(step_topo.num_pcurves(), 0);
 }
 
 fn effective_normal(topo: &Topology, face: FaceId, point: Point3) -> Option<Vec3> {

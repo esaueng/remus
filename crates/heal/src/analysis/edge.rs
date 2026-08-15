@@ -57,7 +57,7 @@ pub fn has_pcurve(
     // Validate that both entities exist.
     let _ = topo.edge(edge_id)?;
     let _ = topo.face(face_id)?;
-    Ok(topo.pcurves().contains(edge_id, face_id))
+    Ok(topo.has_pcurve(edge_id, face_id)?)
 }
 
 /// Returns `true` if the edge is a seam edge on the given face.

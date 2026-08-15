@@ -139,7 +139,7 @@ pub fn check_edge_same_parameter(
     face_id: FaceId,
     tolerance: f64,
 ) -> Result<Vec<ValidationIssue>, CheckError> {
-    let pcurve = match topo.pcurves().get(edge_id, face_id) {
+    let pcurve = match topo.pcurve(edge_id, face_id)? {
         Some(pc) => pc,
         None => return Ok(vec![]), // No PCurve registered — can't check
     };

@@ -196,7 +196,7 @@ fn arc_param_range(t_start: f64, t_end: f64, tol_ang: f64) -> Option<(f64, f64)>
 fn drop_face_pcurves(topo: &mut Topology, fid: FaceId) -> Result<(), HealError> {
     let edges = face_edges(topo, fid)?;
     for eid in edges {
-        topo.pcurves_mut().remove(eid, fid);
+        let _ = topo.remove_pcurve(eid, fid)?;
     }
     Ok(())
 }
