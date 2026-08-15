@@ -253,7 +253,7 @@ impl ReproBundle {
 
     /// Replays the bundle and checks every expectation.
     ///
-    /// The operation sequence runs in [`DETERMINISM_RUNS`] fresh kernels and
+    /// The operation sequence runs in two fresh kernels and
     /// the raw result JSON must be byte-identical across runs before any
     /// expectation is evaluated.
     ///
