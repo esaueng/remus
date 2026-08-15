@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "invalid-handle-typed-error",
+  "description": "Seed bundle for expected failures: an unresolvable handle and an unknown operation fail with their stable executeBatchV2 codes, and a failed step does not stop the batch.",
+  "revision": "e16ec194",
+  "operations": [
+    {"op": "volume", "args": {"solid": 42, "deflection": 0.1}},
+    {"op": "definitelyNotAnOperation", "args": {}},
+    {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}}
+  ],
+  "expect": [
+    {"errorCode": "invalid_handle"},
+    {"errorCode": "unknown_operation"},
+    {"ok": 0}
+  ]
+}
