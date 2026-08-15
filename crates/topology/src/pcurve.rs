@@ -1,12 +1,26 @@
-//! `PCurve` — 2D parametric curves on surfaces.
+//! `PCurve` — 2D parametric curves on surfaces, stored per edge **use**.
 //!
 //! A pcurve represents an edge's geometry projected into a face's surface
-//! parameter space (u, v). `PCurves` are essential for exact boolean operations,
-//! surface trimming, and proper I/O with STEP/IGES formats.
+//! parameter space (u, v). `PCurves` are essential for exact boolean
+//! operations, surface trimming, and proper I/O with STEP/IGES formats.
 //!
-//! `PCurves` are stored in a central registry on [`Topology`](crate::Topology),
-//! keyed by (edge, face) pairs. This avoids modifying the `OrientedEdge`
-//! struct (which is `Copy`) and follows a relational design.
+//! # Per-use storage (RFC 0002, Stage 2)
+//!
+//! Storage is keyed by `(edge, face, orientation)` — one entry per edge
+//! *use*. A periodic face's seam edge is used twice with opposite
+//! orientations, so both parameter-space branches are retained
+//! independently; the old `(edge, face)` key silently overwrote one branch
+//! with the other. A manifold face boundary cannot use one edge twice in
+//! the *same* direction, so orientation fully identifies the use, and —
+//! unlike a stored position index — it survives in-place wire edits.
+//!
+//! The registry itself is raw storage, internal to the crate. Public access
+//! goes through [`Topology`](crate::Topology): the oriented methods
+//! (`pcurve_oriented`, `set_pcurve_oriented`, …) address a use exactly, and
+//! the `(edge, face)` convenience methods (`pcurve`, `set_pcurve`, …)
+//! resolve the single use — failing closed with
+//! [`TopologyError::SeamPcurveAmbiguous`](crate::TopologyError::SeamPcurveAmbiguous)
+//! when both branches are present, instead of answering arbitrarily.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,20 +29,28 @@ use brepkit_math::curves2d::Curve2D;
 use crate::edge::EdgeId;
 use crate::face::FaceId;
 
-/// Key identifying a pcurve: which edge on which face.
+/// Key identifying one pcurve use: which edge, on which face, traversed in
+/// which direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PCurveKey {
     /// The edge this pcurve belongs to.
     pub edge: EdgeId,
     /// The face whose surface parameter space the pcurve lives in.
     pub face: FaceId,
+    /// The traversal orientation of this use relative to the edge's
+    /// natural direction. Distinguishes the two branches of a seam edge.
+    pub forward: bool,
 }
 
 impl PCurveKey {
-    /// Creates a new pcurve key.
+    /// Creates a new pcurve use key.
     #[must_use]
-    pub const fn new(edge: EdgeId, face: FaceId) -> Self {
-        Self { edge, face }
+    pub const fn new(edge: EdgeId, face: FaceId, forward: bool) -> Self {
+        Self {
+            edge,
+            face,
+            forward,
+        }
     }
 }
 
@@ -83,10 +105,8 @@ impl PCurve {
     }
 }
 
-/// Registry of pcurves, mapping (edge, face) pairs to 2D curves.
-///
-/// Each edge on a face can have an associated pcurve that represents
-/// the edge's geometry in the face's surface parameter space.
+/// Raw per-use pcurve storage. Access goes through
+/// [`Topology`](crate::Topology)'s pcurve methods.
 #[derive(Debug, Default, Clone)]
 pub struct PCurveRegistry {
     curves: HashMap<PCurveKey, PCurve>,
@@ -99,26 +119,34 @@ impl PCurveRegistry {
         Self::default()
     }
 
-    /// Sets the pcurve for an (edge, face) pair.
-    pub fn set(&mut self, edge: EdgeId, face: FaceId, pcurve: PCurve) {
-        self.curves.insert(PCurveKey::new(edge, face), pcurve);
+    /// Sets the pcurve for one edge use.
+    pub(crate) fn set_use(&mut self, edge: EdgeId, face: FaceId, forward: bool, pcurve: PCurve) {
+        self.curves
+            .insert(PCurveKey::new(edge, face, forward), pcurve);
     }
 
-    /// Gets the pcurve for an (edge, face) pair, if one exists.
-    #[must_use]
-    pub fn get(&self, edge: EdgeId, face: FaceId) -> Option<&PCurve> {
-        self.curves.get(&PCurveKey::new(edge, face))
+    /// Gets the pcurve for one edge use, if present.
+    pub(crate) fn get_use(&self, edge: EdgeId, face: FaceId, forward: bool) -> Option<&PCurve> {
+        self.curves.get(&PCurveKey::new(edge, face, forward))
     }
 
-    /// Returns true if a pcurve exists for the given (edge, face) pair.
-    #[must_use]
-    pub fn contains(&self, edge: EdgeId, face: FaceId) -> bool {
-        self.curves.contains_key(&PCurveKey::new(edge, face))
+    /// Removes the pcurve for one edge use.
+    pub(crate) fn remove_use(
+        &mut self,
+        edge: EdgeId,
+        face: FaceId,
+        forward: bool,
+    ) -> Option<PCurve> {
+        self.curves.remove(&PCurveKey::new(edge, face, forward))
     }
 
-    /// Removes the pcurve for an (edge, face) pair.
-    pub fn remove(&mut self, edge: EdgeId, face: FaceId) -> Option<PCurve> {
-        self.curves.remove(&PCurveKey::new(edge, face))
+    /// The stored uses of `edge` on `face`: `(forward, pcurve)` per entry,
+    /// forward branch first. At most two entries.
+    pub(crate) fn uses_on_face(&self, edge: EdgeId, face: FaceId) -> Vec<(bool, &PCurve)> {
+        [true, false]
+            .into_iter()
+            .filter_map(|forward| self.get_use(edge, face, forward).map(|pc| (forward, pc)))
+            .collect()
     }
 
     /// Removes pcurves whose edge or face has been retired.
@@ -132,7 +160,7 @@ impl PCurveRegistry {
         });
     }
 
-    /// Returns the number of pcurves in the registry.
+    /// Returns the number of stored pcurve uses.
     #[must_use]
     pub fn len(&self) -> usize {
         self.curves.len()
@@ -144,24 +172,28 @@ impl PCurveRegistry {
         self.curves.is_empty()
     }
 
-    /// Returns all pcurves for a given face.
-    #[must_use]
-    pub fn pcurves_for_face(&self, face: FaceId) -> Vec<(EdgeId, &PCurve)> {
-        self.curves
+    /// All stored uses for a given face.
+    pub(crate) fn uses_for_face(&self, face: FaceId) -> Vec<(EdgeId, bool, &PCurve)> {
+        let mut out: Vec<_> = self
+            .curves
             .iter()
             .filter(|(k, _)| k.face == face)
-            .map(|(k, v)| (k.edge, v))
-            .collect()
+            .map(|(k, v)| (k.edge, k.forward, v))
+            .collect();
+        out.sort_by_key(|(e, forward, _)| (e.index(), !forward));
+        out
     }
 
-    /// Returns all pcurves for a given edge (typically 1-2 per edge).
-    #[must_use]
-    pub fn pcurves_for_edge(&self, edge: EdgeId) -> Vec<(FaceId, &PCurve)> {
-        self.curves
+    /// All stored uses for a given edge.
+    pub(crate) fn uses_for_edge(&self, edge: EdgeId) -> Vec<(FaceId, bool, &PCurve)> {
+        let mut out: Vec<_> = self
+            .curves
             .iter()
             .filter(|(k, _)| k.edge == edge)
-            .map(|(k, v)| (k.face, v))
-            .collect()
+            .map(|(k, v)| (k.face, k.forward, v))
+            .collect();
+        out.sort_by_key(|(f, forward, _)| (f.index(), !forward));
+        out
     }
 }
 
@@ -171,8 +203,8 @@ mod tests {
     use brepkit_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
     use brepkit_math::vec::{Point2, Point3, Vec2};
 
-    use crate::edge::{Edge, EdgeCurve};
-    use crate::face::{Face, FaceSurface};
+    use crate::edge::{Edge, EdgeCurve, EdgeId};
+    use crate::face::{Face, FaceId, FaceSurface};
     use crate::topology::Topology;
     use crate::vertex::Vertex;
     use crate::wire::{OrientedEdge, Wire};
@@ -214,62 +246,57 @@ mod tests {
         (topo, e0, face_id)
     }
 
+    fn line_pcurve(x0: f64, y0: f64, dx: f64, dy: f64) -> PCurve {
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(x0, y0), Vec2::new(dx, dy)).unwrap()),
+            0.0,
+            1.0,
+        )
+    }
+
     #[test]
-    fn set_and_get_pcurve() {
+    fn set_and_get_pcurve_resolves_the_single_use() {
         let (mut topo, edge_id, face_id) = make_simple_topology();
 
-        let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
-        let pcurve = PCurve::new(Curve2D::Line(line), 0.0, 1.0);
+        topo.set_pcurve(edge_id, face_id, line_pcurve(0.0, 0.0, 1.0, 0.0))
+            .unwrap();
 
-        topo.pcurves_mut().set(edge_id, face_id, pcurve);
-
-        assert!(topo.pcurves().contains(edge_id, face_id));
-        let pc = topo.pcurves().get(edge_id, face_id).unwrap();
+        assert!(topo.has_pcurve(edge_id, face_id).unwrap());
+        let pc = topo.pcurve(edge_id, face_id).unwrap().unwrap();
         assert!((pc.t_start() - 0.0).abs() < f64::EPSILON);
         assert!((pc.t_end() - 1.0).abs() < f64::EPSILON);
+        // Stored under the wire's actual use orientation (forward here).
+        assert!(topo.pcurve_oriented(edge_id, face_id, true).is_some());
+        assert!(topo.pcurve_oriented(edge_id, face_id, false).is_none());
     }
 
     #[test]
     fn pcurve_evaluate() {
-        let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
-        let pcurve = PCurve::new(Curve2D::Line(line), 0.0, 1.0);
-
+        let pcurve = line_pcurve(0.0, 0.0, 1.0, 0.0);
         let p = pcurve.evaluate(0.5);
         assert!((p.x() - 0.5).abs() < 1e-10);
         assert!((p.y() - 0.0).abs() < 1e-10);
     }
 
     #[test]
-    fn pcurve_registry_empty() {
-        let registry = PCurveRegistry::new();
-        assert!(registry.is_empty());
-        assert_eq!(registry.len(), 0);
+    fn remove_pcurve_round_trip() {
+        let (mut topo, edge_id, face_id) = make_simple_topology();
+        topo.set_pcurve(edge_id, face_id, line_pcurve(0.0, 0.0, 1.0, 0.0))
+            .unwrap();
+        assert!(topo.has_pcurve(edge_id, face_id).unwrap());
+        assert!(topo.remove_pcurve(edge_id, face_id).unwrap().is_some());
+        assert!(!topo.has_pcurve(edge_id, face_id).unwrap());
     }
 
     #[test]
-    fn pcurve_remove() {
+    fn pcurves_for_face_reports_uses() {
         let (mut topo, edge_id, face_id) = make_simple_topology();
-
-        let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
-        topo.pcurves_mut()
-            .set(edge_id, face_id, PCurve::new(Curve2D::Line(line), 0.0, 1.0));
-
-        assert!(topo.pcurves().contains(edge_id, face_id));
-        topo.pcurves_mut().remove(edge_id, face_id);
-        assert!(!topo.pcurves().contains(edge_id, face_id));
-    }
-
-    #[test]
-    fn pcurves_for_face() {
-        let (mut topo, edge_id, face_id) = make_simple_topology();
-
-        let line = Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
-        topo.pcurves_mut()
-            .set(edge_id, face_id, PCurve::new(Curve2D::Line(line), 0.0, 1.0));
-
-        let pcurves = topo.pcurves().pcurves_for_face(face_id);
-        assert_eq!(pcurves.len(), 1);
-        assert_eq!(pcurves[0].0, edge_id);
+        topo.set_pcurve(edge_id, face_id, line_pcurve(0.0, 0.0, 1.0, 0.0))
+            .unwrap();
+        let uses = topo.pcurves_for_face(face_id);
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].0, edge_id);
+        assert!(uses[0].1, "stored under the forward use");
     }
 
     #[test]
@@ -283,14 +310,10 @@ mod tests {
     }
 }
 
-/// Characterization of the periodic-seam representation gap (RFC 0002).
-///
-/// A periodic face's seam uses one 3D edge twice — once per parameter-space
-/// branch (u = 0 and u = 2π on a cylinder). These tests pin what the current
-/// `(EdgeId, FaceId)`-keyed registry actually does with that configuration.
-/// They are **characterization, not endorsement**: the asserted behavior is
-/// the defect the coedge architecture exists to fix, and each test states
-/// how it must flip when p-curves become per-use.
+/// The periodic-seam tests from RFC 0002 — **flipped** from characterizing
+/// the defect (PR #10) to proving the fix, exactly as each test's comment
+/// promised. One seam edge, one face, two independent parameter-space
+/// branches.
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod seam_characterization {
@@ -299,121 +322,167 @@ mod seam_characterization {
     use brepkit_math::surfaces::CylindricalSurface;
     use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
 
+    use crate::TopologyError;
     use crate::edge::{Edge, EdgeCurve, EdgeId};
-    use crate::face::{Face, FaceSurface};
+    use crate::face::{Face, FaceId, FaceSurface};
     use crate::pcurve::PCurve;
     use crate::topology::Topology;
     use crate::vertex::Vertex;
     use crate::wire::{OrientedEdge, Wire};
 
-    /// A unit cylinder's side face: bottom/top rim circles plus one vertical
-    /// seam edge that the boundary wire traverses twice (forward on one
-    /// periodic branch, reversed on the other).
-    fn make_cylinder_side_face_with_seam() -> (Topology, EdgeId, crate::face::FaceId) {
+    /// A unit cylinder's side face whose boundary wire uses one vertical
+    /// seam edge twice: forward on the u = 0 branch, reversed at u = 2π.
+    fn make_cylinder_side_face_with_seam() -> (Topology, EdgeId, FaceId) {
         let mut topo = Topology::new();
 
         let v_bottom = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
         let v_top = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
 
         let seam = topo.add_edge(Edge::new(v_bottom, v_top, EdgeCurve::Line));
-        let bottom_circle =
-            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
-        let top_circle =
-            Circle3D::new(Point3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
         let bottom = topo.add_edge(Edge::new(
             v_bottom,
             v_bottom,
-            EdgeCurve::Circle(bottom_circle),
+            EdgeCurve::Circle(
+                Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap(),
+            ),
         ));
-        let top = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+        let top = topo.add_edge(Edge::new(
+            v_top,
+            v_top,
+            EdgeCurve::Circle(
+                Circle3D::new(Point3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap(),
+            ),
+        ));
 
-        // Boundary traversal: up the seam, around the top, back down the
-        // SAME seam edge, around the bottom. The seam edge appears twice.
-        let wire = Wire::new(
-            vec![
-                OrientedEdge::new(seam, true),
-                OrientedEdge::new(top, true),
-                OrientedEdge::new(seam, false),
-                OrientedEdge::new(bottom, false),
-            ],
-            true,
-        )
-        .unwrap();
-        let wire_id = topo.add_wire(wire);
-
-        let surface = FaceSurface::Cylinder(
-            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
-                .unwrap(),
+        let wire_id = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(top, true),
+                    OrientedEdge::new(seam, false),
+                    OrientedEdge::new(bottom, false),
+                ],
+                true,
+            )
+            .unwrap(),
         );
-        let face_id = topo.add_face(Face::new(wire_id, vec![], surface));
+
+        let face_id = topo.add_face(Face::new(
+            wire_id,
+            vec![],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
 
         (topo, seam, face_id)
     }
 
-    #[test]
-    fn a_wire_can_use_the_same_edge_twice() {
-        // The seam configuration is constructible today: nothing rejects a
-        // wire that traverses one edge in both directions. The gap is not
-        // construction — it is that the two uses cannot carry independent
-        // per-use data.
-        let (topo, seam, face_id) = make_cylinder_side_face_with_seam();
-        let face = topo.face(face_id).unwrap();
-        let wire = topo.wire(face.outer_wire()).unwrap();
-        let seam_uses = wire.edges().iter().filter(|oe| oe.edge() == seam).count();
-        assert_eq!(seam_uses, 2, "the seam edge must appear twice in the wire");
+    fn branch_pcurve(u: f64, upward: bool) -> PCurve {
+        let (y0, dy) = if upward { (0.0, 1.0) } else { (1.0, -1.0) };
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(u, y0), Vec2::new(0.0, dy)).unwrap()),
+            0.0,
+            1.0,
+        )
     }
 
     #[test]
-    fn second_seam_pcurve_silently_replaces_the_first() {
-        // CHARACTERIZATION OF A DEFECT: the registry key is (edge, face), so
-        // the second periodic branch's p-curve silently overwrites the
-        // first. No error, no second entry — the u = 0 branch is gone.
-        //
-        // When RFC 0002 lands (p-curves keyed per coedge), this test must
-        // FLIP: both branches retained, and the (edge, face) accessor must
-        // fail closed on the ambiguity instead of answering arbitrarily.
+    fn both_seam_branches_are_retained_independently() {
+        // FLIPPED from "second_seam_pcurve_silently_replaces_the_first":
+        // per-use keys retain both parameter-space branches.
         const TAU: f64 = std::f64::consts::TAU;
         let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
 
-        // Branch 1: the seam at u = 0, v traversed 0 → 1.
-        let branch_at_0 = PCurve::new(
-            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
-            0.0,
-            1.0,
-        );
-        // Branch 2: the same 3D edge at u = 2π, v traversed 1 → 0.
-        let branch_at_tau = PCurve::new(
-            Curve2D::Line(Line2D::new(Point2::new(TAU, 1.0), Vec2::new(0.0, -1.0)).unwrap()),
-            0.0,
-            1.0,
-        );
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
 
-        topo.pcurves_mut().set(seam, face_id, branch_at_0);
-        topo.pcurves_mut().set(seam, face_id, branch_at_tau);
-
-        // One entry survives — and it is the second branch. The first
-        // write is silently lost.
-        assert_eq!(topo.pcurves().len(), 1);
-        let survivor = topo.pcurves().get(seam, face_id).unwrap();
-        assert!(
-            (survivor.evaluate(0.0).x() - TAU).abs() < 1e-12,
-            "the surviving p-curve is the second write; the u = 0 branch is gone"
-        );
+        assert_eq!(topo.num_pcurves(), 2, "both branches stored");
+        let at_zero = topo.pcurve_oriented(seam, face_id, true).unwrap();
+        let at_tau = topo.pcurve_oriented(seam, face_id, false).unwrap();
+        assert!((at_zero.evaluate(0.0).x() - 0.0).abs() < 1e-12);
+        assert!((at_tau.evaluate(0.0).x() - TAU).abs() < 1e-12);
     }
 
     #[test]
-    fn pcurves_for_edge_reports_one_use_for_a_seam_edge() {
-        // CHARACTERIZATION OF A DEFECT: the seam edge has two uses on this
-        // face, but the registry can only report one (FaceId is the whole
-        // key). Consumers walking "all p-curves of this edge" see half the
-        // seam. Must FLIP to two per-use entries under RFC 0002.
+    fn edge_face_access_on_a_seam_fails_closed() {
+        // FLIPPED: the (edge, face) pair no longer answers arbitrarily on a
+        // seam — every unoriented accessor returns the typed ambiguity.
+        const TAU: f64 = std::f64::consts::TAU;
         let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
-        let pc = PCurve::new(
-            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
-            0.0,
-            1.0,
-        );
-        topo.pcurves_mut().set(seam, face_id, pc);
-        assert_eq!(topo.pcurves().pcurves_for_edge(seam).len(), 1);
+
+        // set_pcurve refuses before any entry exists: the WIRE uses the
+        // edge twice, so the pair cannot identify a use.
+        assert!(matches!(
+            topo.set_pcurve(seam, face_id, branch_pcurve(0.0, true)),
+            Err(TopologyError::SeamPcurveAmbiguous { .. })
+        ));
+
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
+
+        assert!(matches!(
+            topo.pcurve(seam, face_id),
+            Err(TopologyError::SeamPcurveAmbiguous { .. })
+        ));
+        assert!(matches!(
+            topo.has_pcurve(seam, face_id),
+            Err(TopologyError::SeamPcurveAmbiguous { .. })
+        ));
+        assert!(matches!(
+            topo.remove_pcurve(seam, face_id),
+            Err(TopologyError::SeamPcurveAmbiguous { .. })
+        ));
+    }
+
+    #[test]
+    fn per_edge_query_reports_both_uses() {
+        // FLIPPED from "pcurves_for_edge_reports_one_use_for_a_seam_edge":
+        // consumers walking the edge's pcurves now see the whole seam.
+        const TAU: f64 = std::f64::consts::TAU;
+        let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
+
+        assert_eq!(topo.pcurves_for_edge(seam).len(), 2);
+        assert_eq!(topo.pcurves_for_face(face_id).len(), 2);
+    }
+
+    #[test]
+    fn coedges_resolve_their_own_branch() {
+        // The derived per-use identities (Issue 6) and per-use pcurves
+        // (this change) meet: each seam coedge resolves exactly its branch.
+        const TAU: f64 = std::f64::consts::TAU;
+        let (mut topo, seam, face_id) = make_cylinder_side_face_with_seam();
+        topo.set_pcurve_oriented(seam, face_id, true, branch_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face_id, false, branch_pcurve(TAU, false));
+
+        topo.build_face_loops(face_id).unwrap();
+        let uses = topo.coedges_of_edge(seam);
+        assert_eq!(uses.len(), 2);
+        for coedge_id in uses {
+            let forward = topo.coedge(coedge_id).unwrap().is_forward();
+            let pc = topo.coedge_pcurve(coedge_id).unwrap().unwrap();
+            let expected_u = if forward { 0.0 } else { TAU };
+            assert!(
+                (pc.evaluate(0.0).x() - expected_u).abs() < 1e-12,
+                "each coedge use resolves its own parameter-space branch"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_ambiguity_diagnostic_is_pinned() {
+        use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+        let (topo, seam, face_id) = make_cylinder_side_face_with_seam();
+        drop(topo);
+        let d = TopologyError::SeamPcurveAmbiguous {
+            edge: seam,
+            face: face_id,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidTopology);
+        assert_eq!(d.code(), "seam_pcurve_ambiguous");
     }
 }

@@ -13,7 +13,7 @@ use crate::compsolid::{CompSolid, CompSolidId};
 use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
 use crate::face_loop::{Loop, LoopId};
-use crate::pcurve::PCurveRegistry;
+use crate::pcurve::{PCurve, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
 use crate::vertex::{Vertex, VertexId};
@@ -611,15 +611,182 @@ impl Topology {
         })
     }
 
-    /// Returns a shared reference to the pcurve registry.
+    /// The pcurve of one edge use, addressed exactly by orientation.
+    ///
+    /// This — not the `(edge, face)` pair — is how the two parameter-space
+    /// branches of a seam edge are addressed (RFC 0002, Stage 2).
     #[must_use]
-    pub fn pcurves(&self) -> &PCurveRegistry {
-        &self.pcurves
+    pub fn pcurve_oriented(&self, edge: EdgeId, face: FaceId, forward: bool) -> Option<&PCurve> {
+        self.pcurves.get_use(edge, face, forward)
     }
 
-    /// Returns an exclusive reference to the pcurve registry.
-    pub fn pcurves_mut(&mut self) -> &mut PCurveRegistry {
-        &mut self.pcurves
+    /// Sets the pcurve of one edge use, addressed exactly by orientation.
+    pub fn set_pcurve_oriented(
+        &mut self,
+        edge: EdgeId,
+        face: FaceId,
+        forward: bool,
+        pcurve: PCurve,
+    ) {
+        self.pcurves.set_use(edge, face, forward, pcurve);
+    }
+
+    /// Removes the pcurve of one edge use.
+    pub fn remove_pcurve_oriented(
+        &mut self,
+        edge: EdgeId,
+        face: FaceId,
+        forward: bool,
+    ) -> Option<PCurve> {
+        self.pcurves.remove_use(edge, face, forward)
+    }
+
+    /// The pcurve of `edge` on `face`, when that pair identifies at most
+    /// one stored use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::SeamPcurveAmbiguous`] when both orientation
+    /// branches are stored (a seam edge): the pair no longer identifies a
+    /// use, and answering with either branch would be arbitrary. Seam-aware
+    /// callers address the use with [`Self::pcurve_oriented`].
+    pub fn pcurve(&self, edge: EdgeId, face: FaceId) -> Result<Option<&PCurve>, TopologyError> {
+        let uses = self.pcurves.uses_on_face(edge, face);
+        match uses.as_slice() {
+            [] => Ok(None),
+            [(_, pcurve)] => Ok(Some(pcurve)),
+            _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
+        }
+    }
+
+    /// Whether `edge` has a pcurve on `face`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::SeamPcurveAmbiguous`] when both orientation
+    /// branches are stored; a bare boolean would hide the seam.
+    pub fn has_pcurve(&self, edge: EdgeId, face: FaceId) -> Result<bool, TopologyError> {
+        match self.pcurves.uses_on_face(edge, face).len() {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
+        }
+    }
+
+    /// Sets the pcurve of `edge` on `face`, resolving which use it is.
+    ///
+    /// Resolution: if the face's wires use the edge exactly once, the entry
+    /// is stored under that use's orientation and any stale opposite entry
+    /// is replaced (preserving the legacy single-slot overwrite semantics).
+    /// If the edge is not currently in the boundary (construction-order
+    /// tolerance), an existing single entry is overwritten in place, or a
+    /// new entry is stored under the forward orientation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::SeamPcurveAmbiguous`] when the face uses
+    /// the edge twice (a seam): the pair does not identify a use, and the
+    /// legacy behavior — silently destroying one branch — is exactly the
+    /// defect this API retires. Callers storing seam branches use
+    /// [`Self::set_pcurve_oriented`]. Returns a not-found error when the
+    /// face or one of its wires is invalid.
+    pub fn set_pcurve(
+        &mut self,
+        edge: EdgeId,
+        face: FaceId,
+        pcurve: PCurve,
+    ) -> Result<(), TopologyError> {
+        let uses = self.face_edge_uses(edge, face)?;
+        let forward = match uses.as_slice() {
+            [forward] => *forward,
+            [] => match self.pcurves.uses_on_face(edge, face).as_slice() {
+                [] => true,
+                [(forward, _)] => *forward,
+                _ => return Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
+            },
+            _ => return Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
+        };
+        self.pcurves.remove_use(edge, face, !forward);
+        self.pcurves.set_use(edge, face, forward, pcurve);
+        Ok(())
+    }
+
+    /// Removes the pcurve of `edge` on `face`, when the pair identifies at
+    /// most one stored use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::SeamPcurveAmbiguous`] when both orientation
+    /// branches are stored.
+    pub fn remove_pcurve(
+        &mut self,
+        edge: EdgeId,
+        face: FaceId,
+    ) -> Result<Option<PCurve>, TopologyError> {
+        let stored: Vec<bool> = self
+            .pcurves
+            .uses_on_face(edge, face)
+            .iter()
+            .map(|(forward, _)| *forward)
+            .collect();
+        match stored.as_slice() {
+            [] => Ok(None),
+            [forward] => Ok(self.pcurves.remove_use(edge, face, *forward)),
+            _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
+        }
+    }
+
+    /// All stored pcurve uses for a face: `(edge, forward, pcurve)`, in
+    /// deterministic (edge index, forward-first) order. A seam edge yields
+    /// two entries.
+    #[must_use]
+    pub fn pcurves_for_face(&self, face: FaceId) -> Vec<(EdgeId, bool, &PCurve)> {
+        self.pcurves.uses_for_face(face)
+    }
+
+    /// All stored pcurve uses for an edge: `(face, forward, pcurve)`, in
+    /// deterministic order.
+    #[must_use]
+    pub fn pcurves_for_edge(&self, edge: EdgeId) -> Vec<(FaceId, bool, &PCurve)> {
+        self.pcurves.uses_for_edge(edge)
+    }
+
+    /// Number of stored pcurve uses.
+    #[must_use]
+    pub fn num_pcurves(&self) -> usize {
+        self.pcurves.len()
+    }
+
+    /// The pcurve of one derived coedge use, resolved through its owning
+    /// loop's face and its orientation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when the coedge or its loop is stale.
+    pub fn coedge_pcurve(&self, coedge_id: CoedgeId) -> Result<Option<&PCurve>, TopologyError> {
+        let coedge = self.coedge(coedge_id)?;
+        let face = self.face_loop(coedge.parent_loop())?.face();
+        Ok(self
+            .pcurves
+            .get_use(coedge.edge(), face, coedge.is_forward()))
+    }
+
+    /// The orientations with which `face`'s wires use `edge`, in boundary
+    /// order (outer wire first).
+    fn face_edge_uses(&self, edge: EdgeId, face: FaceId) -> Result<Vec<bool>, TopologyError> {
+        let face_data = self.face(face)?;
+        let mut wire_ids = vec![face_data.outer_wire()];
+        wire_ids.extend(face_data.inner_wires().iter().copied());
+        let mut uses = Vec::new();
+        for wire_id in wire_ids {
+            let wire = self.wire(wire_id)?;
+            for oriented in wire.edges() {
+                if oriented.edge() == edge {
+                    uses.push(oriented.is_forward());
+                }
+            }
+        }
+        Ok(uses)
     }
 
     /// Builds an adjacency index for the given solid.
@@ -797,8 +964,8 @@ mod tests {
                 1.0,
             )
         };
-        topo.pcurves_mut().set(deleted_edge, deleted_face, line());
-        topo.pcurves_mut().set(kept_edge, kept_face, line());
+        topo.set_pcurve(deleted_edge, deleted_face, line()).unwrap();
+        topo.set_pcurve(kept_edge, kept_face, line()).unwrap();
         let deleted_entities = topo.collect_solid_entities(deleted).unwrap();
 
         topo.delete_solid(deleted).unwrap();
@@ -811,9 +978,9 @@ mod tests {
         assert_eq!(topo.num_wires(), 1);
         assert_eq!(topo.num_edges(), 3);
         assert_eq!(topo.num_vertices(), 3);
-        assert_eq!(topo.pcurves().len(), 1);
-        assert!(!topo.pcurves().contains(deleted_edge, deleted_face));
-        assert!(topo.pcurves().contains(kept_edge, kept_face));
+        assert_eq!(topo.num_pcurves(), 1);
+        assert!(!topo.has_pcurve(deleted_edge, deleted_face).unwrap());
+        assert!(topo.has_pcurve(kept_edge, kept_face).unwrap());
         assert!(
             deleted_entities
                 .shells
@@ -982,7 +1149,7 @@ mod tests {
     fn restore_preserves_deleted_solid_and_pcurve_retirement() {
         let mut topo = Topology::new();
         let (retired, face, edge) = make_triangle_solid(&mut topo, 0.0);
-        topo.pcurves_mut().set(
+        topo.set_pcurve(
             edge,
             face,
             PCurve::new(
@@ -990,7 +1157,8 @@ mod tests {
                 0.0,
                 1.0,
             ),
-        );
+        )
+        .unwrap();
         let snapshot = topo.clone();
 
         topo.delete_solid(retired).unwrap();
@@ -999,7 +1167,7 @@ mod tests {
         assert!(topo.solid(retired).is_err());
         assert!(topo.face(face).is_err());
         assert!(topo.edge(edge).is_err());
-        assert!(!topo.pcurves().contains(edge, face));
+        assert!(!topo.has_pcurve(edge, face).unwrap());
         let (fresh, _, _) = make_triangle_solid(&mut topo, 10.0);
         assert!(fresh.index() > retired.index());
     }

@@ -109,7 +109,39 @@ Exit gate: every face constructed through public APIs has loops; the
 seam-characterization face has **two** coedges for its seam edge; no
 consumer behavior changes.
 
-### Stage 2 — authority flip (Issue 7)
+### Stage 2 — per-use p-curves (Issue 7; landed) and the authority flip
+
+*Refined during implementation.* The boundary-mutation audit found ~25
+uncontrolled in-place wire/face mutation sites across five crates
+(`wire_mut` rewrites, `inner_wires_mut`, `set_outer_wire`), so storing
+p-curves inside stored `Coedge`s — whose derivations go stale on any such
+mutation — would have required migrating every mutation site at once: the
+big-bang this RFC forbids. Issue 7 therefore delivered the per-use
+capability with a **mutation-robust key** instead: p-curve storage is keyed
+by `(edge, face, orientation)`. A manifold face boundary cannot use one
+edge twice in the same direction, so orientation fully identifies the use
+(the two seam branches have opposite orientations), and — being identity-
+rather than position-based — the key survives every in-place wire edit.
+
+What landed:
+
+- storage keyed per use; both seam branches retained independently;
+- oriented accessors (`pcurve_oriented`, `set_pcurve_oriented`,
+  `remove_pcurve_oriented`) address a use exactly;
+- the `(edge, face)` accessors became the fail-closed adapter specified
+  below (typed `seam_pcurve_ambiguous` when both branches exist);
+- `Topology::coedge_pcurve` resolves a derived coedge's own branch;
+- the boolean assembly p-curve pass is per-use (seam-capable);
+- the seam characterization tests flipped as promised;
+- the arena format records the orientation additively (older documents
+  resolve the use from the face's wires on load).
+
+The physical move of storage into `Coedge` and the boundary-sequence
+authority flip below remain future work, gated on sanctioned mutation
+(the transactional wrapper, backlog Issue 9) — at which point the stored
+coedge is the key and this registry becomes its index.
+
+#### The remaining authority flip (original Stage 2 plan)
 
 - Loops become authoritative. `Face` stores `outer_loop` + `inner_loops`;
   the wire the face was built from becomes an input artifact, not state.
