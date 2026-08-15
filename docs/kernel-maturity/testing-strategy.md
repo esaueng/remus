@@ -1,0 +1,101 @@
+# Testing strategy
+
+What evidence qualifies a capability cell, how defects become permanent
+regressions, and what CI gates grow toward. Complements the repo's existing
+test layout (unit, proptest, golden, integration, wasm contract, bench) — it
+does not replace it.
+
+## Evidence classes
+
+A capability cell moves to **Qualified** ([capability-matrix.md](capability-matrix.md))
+only with:
+
+1. **Matrix-generated tests** — the cell's configuration is produced by the
+   family's matrix harness (axes × axes), not a hand-picked fixture, so
+   coverage claims are enumerable.
+2. **Postcondition checks** — tests assert the universal postconditions of
+   [operation-contract.md](operation-contract.md) (validity, determinism,
+   bounded budgets, typed failure, disclosed fallback), not only the value.
+3. **Negative/boundary tests** — the cell's declared boundary is tested from
+   both sides; refusals pin their stable code.
+4. **Native + WASM agreement** — for user-visible behavior, a contract test
+   through the WASM path (the `execute_batch` contract-test pattern).
+
+Characterization-first: a slice that changes behavior lands its failing
+characterization or regression test before the implementation.
+
+## Reproduction bundles (Issue 2)
+
+A versioned format + runner containing: model input, operation sequence,
+operation context, build revision, and expected invariant results. Every new
+regression uses it; every confirmed bug becomes a minimized permanent bundle.
+Bundles must replay deterministically on native and WASM builds and against
+future builds (versioned schema).
+
+## Property and metamorphic testing
+
+Standing properties, applied per family as they qualify:
+
+- transform invariance; uniform-scale invariance with correspondingly scaled
+  tolerance;
+- parameter reversal; operand symmetry where applicable;
+- boolean idempotence; split-then-rejoin;
+- tessellation refinement convergence;
+- STEP read/write/read stability;
+- native/WASM equivalence; determinism across repeated runs.
+
+## Differential testing
+
+Compare against an established open-source kernel as an oracle, and against
+commercial kernels only where appropriately licensed. Mechanics:
+
+- The oracle runs **out-of-process** in a separate harness outside this
+  workspace — no copyleft code links into the Apache-2.0 workspace, and no
+  oracle source is read while implementing kernel code (clean-room rule in
+  [target.md](target.md)). Repository policy also bans naming the reference
+  kernel in committed text; harness scripts are referenced by path.
+- Compare invariant outcomes, not raw face ordering: validity, volume/area,
+  containment, region count/type, surface types, intersection curves,
+  bounding boxes, distances, expected-failure classification.
+- A disagreement is a triage input, not automatic proof the oracle is right.
+
+## Fuzzing
+
+Persistent fuzz targets (extending `fuzz/`): STEP/IGES parsing, NURBS
+construction/evaluation, curve and surface intersections, topology mutations,
+boolean operation sequences, blend and offset inputs, WASM batch decoding,
+native serialization. Minimized corpus inputs are stored under version control
+when licensing permits.
+
+## Corpus
+
+Licensed or generated corpora: primitive adversarial cases, imported STEP,
+periodic seams, tangency/coincidence, slivers and short edges, large and tiny
+scales, cavities and nested shells, high-degree NURBS, realistic mechanical
+parts, long operation sequences. Corpus replay is deterministic and becomes a
+CI stage.
+
+## Performance and resource qualification
+
+Track runtime, peak memory, entity growth, iteration counts, generated
+intersection segments, tessellation size, and WASM package/memory behavior
+(the criterion suite and the existing 64-cut determinism/perf gate are the
+seeds). Correctness gates pass before performance comparisons are accepted.
+
+## CI growth path
+
+Gradually added, in roughly this order: persistent corpus replay; fuzz smoke
+tests; risk-based coverage gates and changed-line coverage; native/WASM parity
+tests; platform matrix; performance regression budgets; memory/entity-growth
+budgets; sanitizer-compatible tests where applicable; determinism reruns.
+
+Do not pursue a single global coverage percentage at the expense of testing
+critical geometric states — a matrix cell with no test is a coverage gap even
+when line coverage is high.
+
+## Anti-goals
+
+- No test weakened, tolerance widened, or fallback added merely to pass.
+- No promotion on one fixture.
+- No silent cap: when a harness bounds coverage (top-N, sampling), it says so
+  in its output.
