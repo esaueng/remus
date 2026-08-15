@@ -17,6 +17,8 @@ pub mod holed_face;
 pub mod kernel;
 mod logging;
 pub mod panics;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod repro;
 pub mod shapes;
 mod state;
 mod types;
