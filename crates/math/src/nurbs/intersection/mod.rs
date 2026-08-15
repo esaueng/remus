@@ -35,16 +35,7 @@ pub use chaining::chain_intersection_points;
 pub use curve_surface::{CurveSurfaceHit, intersect_curve_surface};
 pub use line::intersect_line_nurbs;
 pub use plane::intersect_plane_nurbs;
-pub use surface_seeding::intersect_nurbs_nurbs;
-
-/// Maximum work-queue entries for the branch-aware SSI marcher.
-const MAX_QUEUE_SIZE: usize = 100;
-
-/// Maximum traced curve segments before stopping branch exploration.
-const MAX_SEGMENTS: usize = 50;
-
-/// Maximum branch points detected per march direction.
-const MAX_BRANCHES_PER_DIRECTION: usize = 10;
+pub use surface_seeding::{intersect_nurbs_nurbs, intersect_nurbs_nurbs_with_context};
 
 /// Maximum iterations for Newton-type solvers.
 ///

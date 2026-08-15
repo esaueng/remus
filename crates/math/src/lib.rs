@@ -105,6 +105,7 @@ pub mod analytic_intersection;
 pub mod bvh;
 pub mod cdt;
 pub mod chord;
+pub mod context;
 pub mod convex_hull;
 pub mod curves;
 pub mod curves2d;
