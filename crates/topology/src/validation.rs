@@ -174,6 +174,119 @@ pub fn validate_shell_closed(shell: &Shell, topo: &Topology) -> Result<(), Topol
     Ok(())
 }
 
+/// Validates a face's derived loops against its authoritative wires
+/// (RFC 0002, Stage 1 consistency invariant).
+///
+/// A face with no derivation (no [`Topology::build_face_loops`] call)
+/// passes vacuously. A face with a derivation must agree with its wires
+/// exactly: loop count and order (outer first, then inner), per-loop
+/// closure flag, and per-position edge identity and orientation. Loops are
+/// only ever written by the kernel, so any divergence is a kernel bug.
+///
+/// # Errors
+///
+/// Returns [`TopologyError::LoopWireMismatch`] on divergence, or a
+/// not-found error when a stored id is stale.
+pub fn validate_face_loops(
+    topo: &Topology,
+    face_id: crate::face::FaceId,
+) -> Result<(), TopologyError> {
+    let Some(loop_ids) = topo.loops_of_face(face_id) else {
+        return Ok(());
+    };
+    let face = topo.face(face_id)?;
+    let mut wire_ids = vec![face.outer_wire()];
+    wire_ids.extend(face.inner_wires().iter().copied());
+
+    if loop_ids.len() != wire_ids.len() {
+        return Err(TopologyError::LoopWireMismatch { face: face_id });
+    }
+    for (&loop_id, &wire_id) in loop_ids.iter().zip(&wire_ids) {
+        let boundary_loop = topo.face_loop(loop_id)?;
+        let wire = topo.wire(wire_id)?;
+        if boundary_loop.face() != face_id
+            || boundary_loop.is_closed() != wire.is_closed()
+            || boundary_loop.coedges().len() != wire.edges().len()
+        {
+            return Err(TopologyError::LoopWireMismatch { face: face_id });
+        }
+        for (&coedge_id, oriented) in boundary_loop.coedges().iter().zip(wire.edges()) {
+            let coedge = topo.coedge(coedge_id)?;
+            if coedge.edge() != oriented.edge()
+                || coedge.is_forward() != oriented.is_forward()
+                || coedge.parent_loop() != loop_id
+            {
+                return Err(TopologyError::LoopWireMismatch { face: face_id });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validates that a loop's coedges connect end-to-start under their
+/// orientations, and (for a closed loop) that the last connects back to
+/// the first.
+///
+/// Connection follows the same rule as [`validate_wire_closed`]: `VertexId`
+/// equality, falling back to coincident position within `CLOSURE_POS_TOL`.
+///
+/// # Errors
+///
+/// Returns [`TopologyError::LoopNotConnected`] when adjacent coedges do
+/// not connect, or a not-found error when a referenced entity is stale.
+pub fn validate_loop_connected(
+    topo: &Topology,
+    loop_id: crate::face_loop::LoopId,
+) -> Result<(), TopologyError> {
+    let boundary_loop = topo.face_loop(loop_id)?;
+    let face = boundary_loop.face();
+    let coedges = boundary_loop.coedges();
+    if coedges.is_empty() {
+        return Err(TopologyError::LoopNotConnected { face });
+    }
+
+    let connects = |a: crate::vertex::VertexId, b: crate::vertex::VertexId| {
+        if a == b {
+            return Ok(true);
+        }
+        let pa = topo.vertex(a)?.point();
+        let pb = topo.vertex(b)?.point();
+        Ok::<bool, TopologyError>((pa - pb).length() <= CLOSURE_POS_TOL)
+    };
+    let oriented_end = |coedge: &crate::coedge::Coedge| -> Result<_, TopologyError> {
+        let edge = topo.edge(coedge.edge())?;
+        Ok(if coedge.is_forward() {
+            edge.end()
+        } else {
+            edge.start()
+        })
+    };
+    let oriented_start = |coedge: &crate::coedge::Coedge| -> Result<_, TopologyError> {
+        let edge = topo.edge(coedge.edge())?;
+        Ok(if coedge.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        })
+    };
+
+    for window in coedges.windows(2) {
+        let current = topo.coedge(window[0])?;
+        let next = topo.coedge(window[1])?;
+        if !connects(oriented_end(current)?, oriented_start(next)?)? {
+            return Err(TopologyError::LoopNotConnected { face });
+        }
+    }
+    if boundary_loop.is_closed() {
+        let last = topo.coedge(coedges[coedges.len() - 1])?;
+        let first = topo.coedge(coedges[0])?;
+        if !connects(oriented_end(last)?, oriented_start(first)?)? {
+            return Err(TopologyError::LoopNotConnected { face });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
