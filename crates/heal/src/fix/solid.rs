@@ -81,13 +81,11 @@ const NORMAL_PARALLEL_COS_TOL: f64 = 1e-6;
 
 /// Detect and remove geometrically duplicate faces in a solid's outer shell.
 ///
-/// Two faces are duplicates when they share the same representative surface
-/// orientation (parallel or anti-parallel normal within
-/// [`NORMAL_PARALLEL_COS_TOL`]), the same outer-wire edge count, and a
-/// coincident centroid (within `ctx.tolerance.linear`). The later-indexed face
-/// of each duplicate pair is removed via the `ReShape` tracker. NURBS faces are
-/// skipped — detecting duplicate trimmed NURBS faces needs a parameter-space
-/// comparison this pass does not perform.
+/// This conservative pass only compares unperforated planar polygon faces.
+/// Their ordered outer-boundary vertices must coincide (allowing a cyclic shift
+/// and opposite traversal). Curved edges and surfaces, NURBS, and perforated
+/// faces are skipped because proving their trimmed regions equal requires a
+/// parameter-space comparison.
 ///
 /// This must be a solid-scoped pass: a duplicate can only be found by comparing
 /// a face against the others, so a per-face fix (which sees one face in
@@ -103,41 +101,35 @@ fn fix_duplicate_faces(
     let shell = topo.shell(solid_data.outer_shell())?;
     let face_ids: Vec<_> = shell.faces().to_vec();
 
-    // (face, centroid, representative normal, outer-wire edge count).
-    let mut face_data: Vec<(FaceId, Point3, Vec3, usize)> = Vec::new();
+    // (face, plane normal, ordered outer-boundary vertices).
+    let mut face_data: Vec<(FaceId, Vec3, Vec<Point3>)> = Vec::new();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
+        if !face.inner_wires().is_empty() {
+            continue;
+        }
         let normal = match face.surface() {
             FaceSurface::Plane { normal, .. } => *normal,
-            FaceSurface::Cylinder(c) => c.axis(),
-            FaceSurface::Cone(c) => c.axis(),
-            FaceSurface::Sphere(_) => Vec3::new(0.0, 0.0, 1.0),
-            FaceSurface::Torus(t) => t.z_axis(),
-            FaceSurface::Nurbs(_) => continue,
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => continue,
         };
 
         let wire = topo.wire(face.outer_wire())?;
-        let mut centroid = Vec3::new(0.0, 0.0, 0.0);
-        let mut count = 0usize;
+        let mut points = Vec::with_capacity(wire.edges().len());
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
-            // Use the wire-traversal start so reversed edges sample the
-            // correct vertex.
-            let p = topo.vertex(oe.oriented_start(edge))?.point();
-            centroid += Vec3::new(p.x(), p.y(), p.z());
-            count += 1;
+            if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                points.clear();
+                break;
+            }
+            points.push(topo.vertex(oe.oriented_start(edge))?.point());
         }
-        if count > 0 {
-            #[allow(clippy::cast_precision_loss)]
-            let inv = 1.0 / count as f64;
-            centroid = centroid * inv;
+        if !points.is_empty() {
+            face_data.push((fid, normal, points));
         }
-        face_data.push((
-            fid,
-            Point3::new(centroid.x(), centroid.y(), centroid.z()),
-            normal,
-            count,
-        ));
     }
 
     // O(n²) pair scan — mark the later face of each duplicate pair.
@@ -150,15 +142,15 @@ fn fix_duplicate_faces(
             if duplicates.contains(&face_data[j].0.index()) {
                 continue;
             }
-            let (_, ca, na, cnt_a) = &face_data[i];
-            let (fid_j, cb, nb, cnt_b) = &face_data[j];
-            if cnt_a != cnt_b {
+            let (_, na, points_a) = &face_data[i];
+            let (fid_j, nb, points_b) = &face_data[j];
+            if points_a.len() != points_b.len() {
                 continue;
             }
             if na.dot(*nb).abs() < 1.0 - NORMAL_PARALLEL_COS_TOL {
                 continue;
             }
-            if (*ca - *cb).length() < tol {
+            if boundaries_coincide(points_a, points_b, tol) {
                 duplicates.insert(fid_j.index());
             }
         }
@@ -184,6 +176,21 @@ fn fix_duplicate_faces(
     Ok(FixResult {
         status: Status::DONE2,
         actions_taken: removed,
+    })
+}
+
+fn boundaries_coincide(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
+    if a.is_empty() || a.len() != b.len() {
+        return false;
+    }
+
+    (0..b.len()).any(|offset| {
+        (a[0] - b[offset]).length() < tolerance
+            && ((0..a.len())
+                .all(|index| (a[index] - b[(offset + index) % b.len()]).length() < tolerance)
+                || (0..a.len()).all(|index| {
+                    (a[index] - b[(offset + b.len() - index) % b.len()]).length() < tolerance
+                }))
     })
 }
 
@@ -429,5 +436,31 @@ mod tests {
             result.actions_taken, 0,
             "no duplicates among distinct faces"
         );
+    }
+
+    #[test]
+    fn keeps_same_centroid_faces_with_different_boundaries() {
+        let mut topo = Topology::new();
+        let small = add_triangle(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+        );
+        let large = add_triangle(
+            &mut topo,
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(5.0, -1.0, 0.0),
+            Point3::new(-1.0, 5.0, 0.0),
+        );
+        let shell = topo.add_shell(Shell::new(vec![small, large]).unwrap());
+        let solid_id = topo.add_solid(Solid::new(shell, vec![]));
+
+        let mut ctx = HealContext::new();
+        let result = fix_duplicate_faces(&topo, solid_id, &mut ctx).unwrap();
+
+        assert_eq!(result.actions_taken, 0);
+        assert!(!ctx.reshape.is_face_removed(small));
+        assert!(!ctx.reshape.is_face_removed(large));
     }
 }

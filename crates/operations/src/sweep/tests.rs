@@ -1628,6 +1628,24 @@ fn densify_short_input_is_identity() {
 }
 
 #[test]
+fn densify_caps_total_output_for_uneven_gaps() {
+    // A tiny median gap must not let many long gaps amplify a modest input
+    // into an unbounded global interpolation problem.
+    let mut pts = Vec::new();
+    let mut x = 0.0;
+    pts.push(Point3::new(x, 0.0, 0.0));
+    for i in 0..49 {
+        x += if i < 25 { 1e-6 } else { 1.0 };
+        pts.push(Point3::new(x, 0.0, 0.0));
+    }
+
+    let dense = densify_path_points(&pts);
+    assert_eq!(dense.len(), 256);
+    assert_eq!(dense.first(), pts.first());
+    assert_eq!(dense.last(), pts.last());
+}
+
+#[test]
 fn sweep_planar_profile_caps_are_planar() {
     // Regression: a planar profile must still produce flat `Plane` caps. The
     // path is curved (but starts tangent +Z) so the general sweep runs — a

@@ -1414,7 +1414,15 @@ pub(super) fn split_torus_band_by_arrangement(
         }
         acc
     };
-    if loops.iter().any(|l| net_phi(l).abs() < PI) {
+    // Coverage of more than half a period is not sufficient: a closed,
+    // non-periodic rim can cover that much parameter space while having zero
+    // winding.  Only the actual single-period winding used by this fast path
+    // is safe to turn into a full toroidal band.
+    let winding_tol = 1.0e-6;
+    if loops
+        .iter()
+        .any(|l| (net_phi(l).abs() - TAU).abs() > winding_tol)
+    {
         return None;
     }
 

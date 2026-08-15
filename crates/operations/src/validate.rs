@@ -438,41 +438,62 @@ fn ambiguous_circle_arc_warnings(
     wire_id: brepkit_topology::wire::WireId,
     tol: Tolerance,
 ) -> Result<Vec<ValidationIssue>, crate::OperationsError> {
+    // One diagnostic identifies the wire-level hazard. Bounding comparisons also
+    // prevents a malformed wire with a huge endpoint bucket from making strict
+    // validation quadratic when none of its circles match.
+    const MAX_COMPARISONS: usize = 4_096;
+
     let wire = topo.wire(wire_id)?;
-    let mut issues = Vec::new();
-    for (position, first_oe) in wire.edges().iter().enumerate() {
-        let first = topo.edge(first_oe.edge())?;
-        let EdgeCurve::Circle(first_circle) = first.curve() else {
+    let mut by_endpoints = std::collections::HashMap::new();
+    let mut comparisons = 0;
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
             continue;
         };
-        for second_oe in wire.edges().iter().skip(position + 1) {
-            if first_oe.edge() == second_oe.edge() {
+        if edge.start() == edge.end() {
+            continue;
+        }
+        let candidates = by_endpoints
+            .entry((edge.start(), edge.end()))
+            .or_insert_with(Vec::new);
+        for &candidate_id in candidates.iter() {
+            if comparisons == MAX_COMPARISONS {
+                return Ok(vec![ValidationIssue {
+                    severity: Severity::Warning,
+                    description: format!(
+                        "wire {} on face {} has too many same-endpoint circle arcs to check \
+                         individually",
+                        wire_id.index(),
+                        face_id.index()
+                    ),
+                }]);
+            }
+            comparisons += 1;
+            if oriented.edge() == candidate_id {
                 continue;
             }
-            let second = topo.edge(second_oe.edge())?;
-            let EdgeCurve::Circle(second_circle) = second.curve() else {
+            let candidate = topo.edge(candidate_id)?;
+            let EdgeCurve::Circle(candidate_circle) = candidate.curve() else {
                 continue;
             };
-            if first.start() == second.start()
-                && first.end() == second.end()
-                && first.start() != first.end()
-                && same_oriented_circle(first_circle, second_circle, tol)
-            {
-                issues.push(ValidationIssue {
+            if same_oriented_circle(candidate_circle, circle, tol) {
+                return Ok(vec![ValidationIssue {
                     severity: Severity::Warning,
                     description: format!(
                         "wire {} on face {} has ambiguous complementary circle arcs {} and {} \
                          with the same stored vertex order",
                         wire_id.index(),
                         face_id.index(),
-                        first_oe.edge().index(),
-                        second_oe.edge().index()
+                        candidate_id.index(),
+                        oriented.edge().index()
                     ),
-                });
+                }]);
             }
         }
+        candidates.push(oriented.edge());
     }
-    Ok(issues)
+    Ok(Vec::new())
 }
 
 fn periodic_outer_rims_are_full_turns(
@@ -520,16 +541,10 @@ fn periodic_outer_rims_are_full_turns(
     }
 
     let accepts = |project: &dyn Fn(brepkit_math::vec::Point3) -> f64| {
-        for expected in 1..=curved.len() {
-            if crate::tessellate::rim_chain::collect_full_turn_rim_cycles(
-                topo, &curved, project, expected,
-            )?
-            .is_some()
-            {
-                return Ok(true);
-            }
-        }
-        Ok::<bool, crate::OperationsError>(false)
+        Ok::<bool, crate::OperationsError>(
+            crate::tessellate::rim_chain::collect_full_turn_rim_cycles_any(topo, &curved, project)?
+                .is_some(),
+        )
     };
     let project_u = |point| face.surface().project_point(point).map_or(0.0, |uv| uv.0);
     if accepts(&project_u)? {

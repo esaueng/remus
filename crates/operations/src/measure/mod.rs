@@ -185,6 +185,23 @@ mod tests {
         assert_aabb_contains(&aabb, -3.0, -3.0, 0.0, 3.0, 3.0, 10.0);
     }
 
+    /// A closed circular edge may use coincident endpoints, so volume's
+    /// accuracy clamp must account for curve extent rather than treating a
+    /// large-radius, very thin solid as nanoscale geometry.
+    #[test]
+    fn volume_deflection_uses_curved_extent() {
+        use crate::primitives::make_cylinder;
+
+        let mut topo = Topology::new();
+        let solid = make_cylinder(&mut topo, 10.0, 1e-5).unwrap();
+
+        let deflection = volume::volume_tessellation_deflection(&topo, solid, 0.5);
+        assert!(
+            deflection >= 5e-4,
+            "curved extent must prevent a resource-exhausting deflection: {deflection}"
+        );
+    }
+
     /// AABB for a torus at origin, R=10, r=3, axis along Z.
     /// Radial extent: +/-(R+r) = +/-13 in x,y.
     /// Axial extent: +/-r = +/-3 in z.

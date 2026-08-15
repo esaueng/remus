@@ -876,14 +876,29 @@ pub(super) fn tessellate_torus_two_rim_band(
 /// longitude during stitching.
 type LatRing = Vec<(f64, u32)>;
 
+fn has_single_period_winding(angles: &[f64]) -> bool {
+    use std::f64::consts::{PI, TAU};
+
+    if angles.len() < 2 {
+        return false;
+    }
+    let unwrap_delta = |from: f64, to: f64| {
+        let delta = to - from;
+        delta - TAU * ((delta + PI) / TAU).floor()
+    };
+    let winding = angles
+        .windows(2)
+        .fold(0.0, |acc, pair| acc + unwrap_delta(pair[0], pair[1]))
+        + unwrap_delta(angles[angles.len() - 1], angles[0]);
+    (winding.abs() - TAU).abs() <= 1.0e-6
+}
+
 /// Collect a torus face wire's boundary as a ring of `(tube-angle v, shared gid)`
 /// sorted by `v`, taking the SHARED global vertices (so the ring shares the
 /// notch walls' vertices) and projecting to the torus `(u, v)`. Accepts edges of
 /// any curve type (the notch seam arcs are NURBS). Returns `None` if any edge is
-/// missing from the shared pool, or the ring does NOT wrap the tube — detected
-/// as the largest gap between consecutive sorted `v` samples (including the
-/// wrap-around gap) EXCEEDING half a turn (`π`): a ring that encircles the tube
-/// has all its `v`-gaps below `π`, whereas a partial arc leaves one gap above it.
+/// missing from the shared pool, or its ordered edge samples do not have a
+/// single full-period winding in `v`.
 fn collect_torus_phi_ring(
     topo: &Topology,
     wire_id: brepkit_topology::wire::WireId,
@@ -893,11 +908,26 @@ fn collect_torus_phi_ring(
 ) -> Result<Option<Vec<(f64, u32)>>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut gids: Vec<u32> = Vec::new();
+    let mut phi_path = Vec::new();
     for oe in wire.edges() {
         let Some(edge_gids) = edge_global_indices.get(&oe.edge().index()) else {
             return Ok(None);
         };
         gids.extend_from_slice(edge_gids);
+        let edge = topo.edge(oe.edge())?;
+        let (start, end) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        for k in 0..=8 {
+            let f = f64::from(k) / 8.0;
+            let t = if oe.is_forward() { f } else { 1.0 - f };
+            let point = edge.curve().evaluate_with_endpoints(t, start, end);
+            phi_path.push(torus.project_point(point).1);
+        }
+    }
+    if !has_single_period_winding(&phi_path) {
+        return Ok(None);
     }
     let mut seen: DetHashSet<u32> = DetHashSet::default();
     let mut ring: Vec<(f64, u32)> = Vec::with_capacity(gids.len());
@@ -912,17 +942,6 @@ fn collect_torus_phi_ring(
         return Ok(None);
     }
     ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    // Must wrap the tube once: largest v-gap (incl. wrap) under a full turn.
-    let max_gap = ring
-        .windows(2)
-        .map(|w| w[1].0 - w[0].0)
-        .chain(std::iter::once(
-            ring[0].0 + std::f64::consts::TAU - ring[ring.len() - 1].0,
-        ))
-        .fold(0.0_f64, f64::max);
-    if max_gap > std::f64::consts::PI {
-        return Ok(None);
-    }
     Ok(Some(ring))
 }
 
@@ -2876,4 +2895,21 @@ pub(super) fn tessellate_nonplanar_snap(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod torus_winding_tests {
+    use super::has_single_period_winding;
+
+    #[test]
+    fn partial_torus_rim_is_not_a_full_period_winding() {
+        let partial_rim = [0.0, 1.0, 2.0, 3.0, 3.8, 3.0, 2.0, 1.0, 0.0];
+        assert!(!has_single_period_winding(&partial_rim));
+    }
+
+    #[test]
+    fn complete_torus_rim_has_a_single_period_winding() {
+        let full_rim = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0];
+        assert!(has_single_period_winding(&full_rim));
+    }
 }

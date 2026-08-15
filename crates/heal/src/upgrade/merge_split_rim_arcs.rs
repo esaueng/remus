@@ -236,12 +236,8 @@ fn candidate_cycle(
     if (span - std::f64::consts::TAU).abs() > angular_tol {
         return Ok(None);
     }
-    for (i, edge_a) in component.iter().enumerate() {
-        for edge_b in component.iter().skip(i + 1) {
-            if (arcs[edge_a].midpoint - arcs[edge_b].midpoint).length() <= tol.linear {
-                return Ok(None);
-            }
-        }
+    if has_near_midpoints(&component, arcs, &reference.circle, tol.linear) {
+        return Ok(None);
     }
 
     let Some(anchor) = common_attachment(topo, wire_ids, &edges)? else {
@@ -265,6 +261,35 @@ fn candidate_cycle(
         anchor,
         circle: reference.circle.clone(),
     }))
+}
+
+fn has_near_midpoints(
+    component: &[EdgeId],
+    arcs: &HashMap<EdgeId, ArcInfo>,
+    circle: &Circle3D,
+    linear_tol: f64,
+) -> bool {
+    let center = circle.center();
+    let u_axis = (circle.evaluate(0.0) - center) * circle.radius().recip();
+    let v_axis = circle.tangent(0.0);
+    let mut midpoints: Vec<(f64, Point3)> = component
+        .iter()
+        .map(|edge_id| {
+            let midpoint = arcs[edge_id].midpoint;
+            let radial = midpoint - center;
+            (radial.dot(v_axis).atan2(radial.dot(u_axis)), midpoint)
+        })
+        .collect();
+    midpoints.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+
+    midpoints
+        .windows(2)
+        .any(|pair| (pair[0].1 - pair[1].1).length() <= linear_tol)
+        || midpoints.first().is_some_and(|first| {
+            midpoints
+                .last()
+                .is_some_and(|last| (first.1 - last.1).length() <= linear_tol)
+        })
 }
 
 fn same_oriented_circle(a: &Circle3D, b: &Circle3D, tol: Tolerance) -> bool {

@@ -223,6 +223,26 @@ impl NurbsSurface {
         validate_weight_values(&self.weights)
     }
 
+    /// Validate all structural invariants normally enforced by [`Self::new`].
+    ///
+    /// This is intended for serialization formats that populate the private
+    /// fields directly in order to preserve their exact floating-point values.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors as [`Self::new`].
+    pub fn validate(&self) -> Result<(), MathError> {
+        Self::new(
+            self.degree_u,
+            self.degree_v,
+            self.knots_u.clone(),
+            self.knots_v.clone(),
+            self.control_points.clone(),
+            self.weights.clone(),
+        )?;
+        Ok(())
+    }
+
     /// Evaluate the surface at parameters `(u, v)`.
     ///
     /// Uses tensor-product basis function evaluation (NURBS Book A3.5).

@@ -1054,6 +1054,39 @@ fn ambiguous_same_order_circle_arcs_are_reported_as_a_warning() {
 }
 
 #[test]
+fn ambiguous_circle_arc_diagnostics_are_bounded_per_wire() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(std::f64::consts::PI), 1e-7));
+    let edges = (0..1_000)
+        .map(|index| {
+            let edge = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle.clone())));
+            OrientedEdge::new(edge, index % 2 == 0)
+        })
+        .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+
+    let warnings = ambiguous_circle_arc_warnings(&topo, face, wire, Tolerance::new()).unwrap();
+    assert_eq!(warnings.len(), 1);
+}
+
+#[test]
 fn incomplete_periodic_rim_chain_is_reported_as_a_warning() {
     use brepkit_math::curves::Circle3D;
     use brepkit_math::surfaces::CylindricalSurface;

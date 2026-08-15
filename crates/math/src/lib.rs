@@ -8,6 +8,17 @@
 /// Errors from math operations.
 #[derive(Debug, thiserror::Error)]
 pub enum MathError {
+    /// NURBS degree is not smaller than the number of control points.
+    #[error(
+        "invalid NURBS degree {degree}: degree must be less than the control point count ({control_points})"
+    )]
+    InvalidDegree {
+        /// Requested polynomial degree.
+        degree: usize,
+        /// Number of supplied control points.
+        control_points: usize,
+    },
+
     /// Knot vector length does not match control points and degree.
     #[error("invalid knot vector: expected {expected} knots, got {got}")]
     InvalidKnotVector {

@@ -397,30 +397,44 @@ pub fn remove_wire_spurs(
 }
 
 /// Strip consecutive same-edge opposite-orientation pairs (out-and-back spurs)
-/// from an oriented-edge loop, including the wrap-around pair. Iterates because
-/// removing one spur can expose another. Returns the count removed.
+/// from an oriented-edge loop, including pairs exposed across the wrap-around
+/// boundary. Returns the count removed.
 fn strip_wire_spurs(oes: &mut Vec<OrientedEdge>) -> usize {
-    let mut removed = 0;
-    loop {
-        let n = oes.len();
-        if n < 2 {
-            break;
-        }
-        let spur = (0..n).find_map(|i| {
-            let j = (i + 1) % n;
-            (oes[i].edge() == oes[j].edge() && oes[i].is_forward() != oes[j].is_forward())
-                .then_some((i, j))
-        });
-        match spur {
-            Some((i, j)) => {
-                let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-                oes.remove(hi);
-                oes.remove(lo);
-                removed += 2;
-            }
-            None => break,
+    fn is_spur(a: OrientedEdge, b: OrientedEdge) -> bool {
+        a.edge() == b.edge() && a.is_forward() != b.is_forward()
+    }
+
+    let original_len = oes.len();
+    let input = std::mem::take(oes);
+    let mut reduced = Vec::with_capacity(input.len());
+
+    // A stack cancels every linear adjacent pair in one pass. Each edge is
+    // pushed and popped at most once, avoiding repeated scans and Vec shifts
+    // for spur-heavy, potentially imported wires.
+    for edge in input {
+        if reduced.last().is_some_and(|&last| is_spur(last, edge)) {
+            reduced.pop();
+        } else {
+            reduced.push(edge);
         }
     }
+
+    // The wire is cyclic. Linear reduction can leave inverse pairs at its two
+    // ends, so peel those pairs using indices and pop (both O(1)). Removing a
+    // boundary pair can expose another one.
+    let mut first = 0;
+    while reduced.len().saturating_sub(first) >= 2
+        && is_spur(reduced[first], reduced[reduced.len() - 1])
+    {
+        first += 1;
+        reduced.pop();
+    }
+
+    if first > 0 {
+        reduced.drain(..first);
+    }
+    let removed = original_len - reduced.len();
+    *oes = reduced;
     removed
 }
 

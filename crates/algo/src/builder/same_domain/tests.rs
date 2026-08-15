@@ -3,9 +3,31 @@
 use super::*;
 use crate::builder::FaceClass;
 use crate::ds::Rank;
+use brepkit_math::aabb::Aabb3;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::builder::{make_face_from_wire, make_polygon_wire};
+
+#[test]
+fn overlap_candidates_stream_dense_pairs_in_order() {
+    const FACE_COUNT: usize = 256;
+    let bb = Aabb3 {
+        min: Point3::new(0.0, 0.0, 0.0),
+        max: Point3::new(1.0, 1.0, 1.0),
+    };
+    let aabbs: Vec<_> = (0..FACE_COUNT).map(|idx| (idx, bb)).collect();
+    let mut previous = None;
+    let mut count = 0;
+
+    for_each_overlap_candidate_pair(&aabbs, 0.0, |i, j| {
+        assert!(i < j);
+        assert!(previous.is_none_or(|pair| pair < (i, j)));
+        previous = Some((i, j));
+        count += 1;
+    });
+
+    assert_eq!(count, FACE_COUNT * (FACE_COUNT - 1) / 2);
+}
 
 /// Build a planar rectangular sub-face on the z=0 plane.
 fn rect_sub_face(

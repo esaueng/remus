@@ -27,6 +27,16 @@ pub fn collect_full_turn_rim_cycles(
     project_u: &dyn Fn(Point3) -> f64,
     expected_cycles: usize,
 ) -> Result<Option<Vec<RimCycle>>, crate::OperationsError> {
+    let cycles = collect_full_turn_rim_cycles_any(topo, curved, project_u)?;
+    Ok(cycles.filter(|cycles| cycles.len() == expected_cycles))
+}
+
+/// Collect all full-turn rim cycles without requiring a particular count.
+pub fn collect_full_turn_rim_cycles_any(
+    topo: &Topology,
+    curved: &[(usize, VertexId, VertexId)],
+    project_u: &dyn Fn(Point3) -> f64,
+) -> Result<Option<Vec<RimCycle>>, crate::OperationsError> {
     let mut by_vertex: HashMap<VertexId, Vec<usize>> = HashMap::new();
     for (position, &(_, start, end)) in curved.iter().enumerate() {
         by_vertex.entry(start).or_default().push(position);
@@ -114,9 +124,6 @@ pub fn collect_full_turn_rim_cycles(
         });
     }
 
-    if cycles.len() != expected_cycles {
-        return Ok(None);
-    }
     Ok(Some(cycles))
 }
 

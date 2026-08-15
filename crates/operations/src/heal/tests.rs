@@ -10,6 +10,44 @@ use brepkit_topology::Topology;
 use super::*;
 
 #[test]
+fn strip_wire_spurs_cancels_nested_wraparound_pairs() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let edges = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap();
+    let [a, b, c] = edges[..3] else {
+        panic!("box should provide at least three edges");
+    };
+    let mut wire = vec![
+        OrientedEdge::new(a, true),
+        OrientedEdge::new(b, true),
+        OrientedEdge::new(c, true),
+        OrientedEdge::new(b, false),
+        OrientedEdge::new(a, false),
+    ];
+
+    assert_eq!(strip_wire_spurs(&mut wire), 4);
+    assert_eq!(wire.len(), 1);
+    assert_eq!(wire[0].edge(), c);
+    assert!(wire[0].is_forward());
+}
+
+#[test]
+fn strip_wire_spurs_handles_large_spur_heavy_wire() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let edge = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+    let pair_count = 50_000;
+    let mut wire = Vec::with_capacity(pair_count * 2);
+    for _ in 0..pair_count {
+        wire.push(OrientedEdge::new(edge, true));
+        wire.push(OrientedEdge::new(edge, false));
+    }
+
+    assert_eq!(strip_wire_spurs(&mut wire), pair_count * 2);
+    assert!(wire.is_empty());
+}
+
+#[test]
 fn no_merge_on_clean_box() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();

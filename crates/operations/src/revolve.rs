@@ -34,6 +34,43 @@ const AXIS_IN_PLANE_DOT_TOL: f64 = 1e-9;
 /// Scale-relative threshold for rejecting zero-area profile polygons.
 const DEGENERATE_PROFILE_AREA_REL_TOL: f64 = 1e-9;
 
+/// Reject cap wires whose trimmed curve geometry leaves the proposed plane.
+///
+/// Checking vertices alone is insufficient: a spline or conic can have both
+/// endpoints on a plane while bowing away from it. Sampling every trimmed edge
+/// also covers inner wires, which become holes in both partial-revolve caps.
+fn validate_cap_wires_planar(
+    topo: &Topology,
+    wire_ids: impl IntoIterator<Item = brepkit_topology::wire::WireId>,
+    plane_point: Point3,
+    normal: Vec3,
+    tolerance: f64,
+) -> Result<(), crate::OperationsError> {
+    const CURVE_INTERVALS: usize = 32;
+
+    for wire_id in wire_ids {
+        for oriented in topo.wire(wire_id)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+            for index in 0..=CURVE_INTERVALS {
+                #[allow(clippy::cast_precision_loss)]
+                let fraction = index as f64 / CURVE_INTERVALS as f64;
+                let point =
+                    edge.curve()
+                        .evaluate_with_endpoints(t0 + (t1 - t0) * fraction, start, end);
+                if (point - plane_point).dot(normal).abs() > tolerance {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "partial revolve cap boundary is not planar".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Rotate a point around an axis (origin + unit direction) by angle θ.
 ///
 /// Uses Rodrigues' rotation formula:
@@ -1293,6 +1330,22 @@ pub fn revolve(
             normal
         }
     };
+
+    if !is_full {
+        let plane_point = wire_positions[0];
+        let scale = wire_positions
+            .iter()
+            .map(|point| (*point - plane_point).length())
+            .fold(0.0, f64::max);
+        let cap_tolerance = (PLANARITY_REL_TOL * scale).max(tol.linear);
+        validate_cap_wires_planar(
+            topo,
+            std::iter::once(input_wire_id).chain(inner_wire_ids.iter().copied()),
+            plane_point,
+            input_normal,
+            cap_tolerance,
+        )?;
+    }
 
     // The sweep runs in +θ = axis × e_r, so a profile whose traversal is CCW in
     // the (radial, axial) chart faces AGAINST it and revolves into an inward
@@ -3009,6 +3062,113 @@ mod tests {
         assert!(
             result.is_err(),
             "partial revolve of a non-planar boundary must be rejected"
+        );
+    }
+
+    #[test]
+    fn revolve_partial_curved_boundary_leaving_cap_plane_is_rejected() {
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(4.0, 3.0, 0.0),
+            Point3::new(2.0, 3.0, 0.0),
+        ];
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|&point| topo.add_vertex(Vertex::new(point, 1e-7)))
+            .collect();
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![points[0], Point3::new(3.0, 0.0, 1.0), points[1]],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let mut edges = vec![OrientedEdge::new(
+            topo.add_edge(Edge::new(
+                vertices[0],
+                vertices[1],
+                EdgeCurve::NurbsCurve(curve),
+            )),
+            true,
+        )];
+        for index in 1..4 {
+            edges.push(OrientedEdge::new(
+                topo.add_edge(Edge::new(
+                    vertices[index],
+                    vertices[(index + 1) % 4],
+                    EdgeCurve::Line,
+                )),
+                true,
+            ));
+        }
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let surface = brepkit_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(surface)));
+
+        let result = revolve(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            PI,
+        );
+        assert!(
+            result.is_err(),
+            "an off-plane curve cannot bound a planar cap"
+        );
+    }
+
+    #[test]
+    fn revolve_partial_nonplanar_inner_wire_is_rejected() {
+        let mut topo = Topology::new();
+        let outer = brepkit_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(5.0, 0.0, 0.0),
+                Point3::new(5.0, 4.0, 0.0),
+                Point3::new(2.0, 4.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let inner = brepkit_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(3.0, 1.0, 0.0),
+                Point3::new(4.0, 1.0, 0.8),
+                Point3::new(4.0, 2.0, 0.0),
+                Point3::new(3.0, 2.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![inner],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let result = revolve(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            PI,
+        );
+        assert!(
+            result.is_err(),
+            "an off-plane hole cannot bound a planar cap"
         );
     }
 
