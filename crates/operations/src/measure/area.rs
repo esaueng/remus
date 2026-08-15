@@ -82,6 +82,10 @@ pub fn face_area(
             }
         }
         FaceSurface::Sphere(sph) => {
+            if topo.wire(face.outer_wire())?.edges().len() == 3 {
+                let mesh = tessellate::tessellate(topo, face_id, deflection)?;
+                return Ok(triangle_mesh_area(&mesh));
+            }
             // Spherical zone area = 2*pi*r^2 * (sin(v_max) - sin(v_min))
             // where v is the latitude parameter (-pi/2 to pi/2).
             let r = sph.radius();

@@ -3,6 +3,8 @@
 use brepkit_operations::tessellate::{EdgeLines, TriangleMesh};
 use wasm_bindgen::prelude::*;
 
+use crate::error::WasmError;
+
 /// A 3D point exposed to JavaScript.
 #[wasm_bindgen]
 #[derive(Debug, Clone, Copy)]
@@ -201,27 +203,38 @@ impl JsGroupedMesh {
     ///
     /// Takes the mesh by value so `indices` is moved rather than cloned — index
     /// buffers can be large (3 × triangle count) and this is the only consumer.
-    #[must_use]
     #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn new(mesh: TriangleMesh, face_offsets: Vec<u32>) -> Self {
+    pub(crate) fn new(mesh: TriangleMesh, face_offsets: Vec<u32>) -> Result<Self, WasmError> {
         let mut positions = Vec::with_capacity(mesh.positions.len() * 3);
         for p in &mesh.positions {
-            positions.push(p.x() as f32);
-            positions.push(p.y() as f32);
-            positions.push(p.z() as f32);
+            positions.push(grouped_mesh_f32(p.x())?);
+            positions.push(grouped_mesh_f32(p.y())?);
+            positions.push(grouped_mesh_f32(p.z())?);
         }
         let mut normals = Vec::with_capacity(mesh.normals.len() * 3);
         for n in &mesh.normals {
-            normals.push(n.x() as f32);
-            normals.push(n.y() as f32);
-            normals.push(n.z() as f32);
+            normals.push(grouped_mesh_f32(n.x())?);
+            normals.push(grouped_mesh_f32(n.y())?);
+            normals.push(grouped_mesh_f32(n.z())?);
         }
-        Self {
+        Ok(Self {
             positions,
             normals,
             indices: mesh.indices,
             face_offsets,
-        }
+        })
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn grouped_mesh_f32(value: f64) -> Result<f32, WasmError> {
+    let converted = value as f32;
+    if converted.is_finite() {
+        Ok(converted)
+    } else {
+        Err(WasmError::InvalidInput {
+            reason: "tessellated coordinate cannot be represented as a finite f32".into(),
+        })
     }
 }
 
@@ -349,7 +362,7 @@ mod tests {
         };
         // Two faces: first triangle (indices 0..3), second (indices 3..6).
         let offsets = vec![0, 3, 6];
-        let gm = JsGroupedMesh::new(mesh, offsets.clone());
+        let gm = JsGroupedMesh::new(mesh, offsets.clone()).unwrap();
 
         // Positions are flattened f32 [x,y,z,...] — 4 verts × 3 = 12 floats.
         assert_eq!(gm.positions().len(), 12);
@@ -367,6 +380,22 @@ mod tests {
         assert_eq!(
             *gm.face_offsets().last().unwrap() as usize,
             gm.indices().len()
+        );
+    }
+
+    #[test]
+    fn grouped_mesh_rejects_f32_overflow() {
+        let mesh = TriangleMesh {
+            positions: vec![Point3::new(f64::from(f32::MAX) * 2.0, 0.0, 0.0)],
+            normals: vec![Vec3::new(0.0, 0.0, 1.0)],
+            indices: Vec::new(),
+        };
+
+        let error = JsGroupedMesh::new(mesh, vec![0]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be represented as a finite f32")
         );
     }
 }

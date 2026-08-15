@@ -964,6 +964,9 @@ struct ClosedRimInfo {
     /// the inner loop to `r_c + r`, replacing that loop and leaving the outer
     /// wire and the cap's other holes alone.
     rim_is_inner: bool,
+    /// Whether the rim is convex (the fillet removes material) rather than
+    /// concave (it fills the re-entrant corner).
+    convex: bool,
     /// Contact circle on the plate (radius `r_c ∓ r`), in the plane.
     plate_circle: Circle3D,
     /// Contact circle on the wall (radius `r_c` for a cylinder), one fillet
@@ -1188,11 +1191,22 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         }
     }
 
+    // Keep the analytic arm's convexity fact for assembly. For cylinders the
+    // rim-loop position plus the wall's reversed flag reproduces
+    // `plane_cylinder_fillet`'s bounded/material table exactly. The cone arm
+    // carries its own convention: reversed means a tapered hole (concave).
+    let wall_reversed = topo.face(wall_face)?.is_reversed();
+    let convex = match wall_surf {
+        FaceSurface::Cone(_) => !wall_reversed,
+        _ => rim_is_inner == wall_reversed,
+    };
+
     Ok(Some(ClosedRimInfo {
         plane_face,
         wall_face,
         rim_edge,
         rim_is_inner,
+        convex,
         plate_circle,
         wall_circle,
     }))
@@ -1477,7 +1491,12 @@ fn torus_band_needs_reversal(
     // wall_center) i.e. from the wall contact toward the plate.
     let axis = torus.z_axis();
     let to_plate = rim.plate_circle.center() - rim.wall_circle.center();
-    let outward_axial = axis * axis.dot(to_plate); // component along the axis toward the plate
+    // The empty side is toward the plate on a convex rim. A concave rim fills
+    // the void corner, so its empty side is the axial opposite.
+    let mut outward_axial = axis * axis.dot(to_plate);
+    if !rim.convex {
+        outward_axial = -outward_axial;
+    }
     // Mid-arc point and its geometric normal.
     let v_plate = torus.project_point(rim.plate_circle.evaluate(0.0)).1;
     let v_wall = torus.project_point(rim.wall_circle.evaluate(0.0)).1;

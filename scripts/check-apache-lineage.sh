@@ -34,4 +34,6 @@ if rg -n 'AGPL-3.0-only|MIT OR Apache-2.0|LICENSE-MIT' \
   exit 1
 fi
 
+python3 scripts/check-apache-replay-provenance.py
+
 echo "Apache lineage and project-license metadata verified."

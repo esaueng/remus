@@ -536,6 +536,15 @@ pub fn render(
             height: opts.height,
         });
     }
+    // Direct callers bypass `crate::validate_offscreen_size`, so re-apply the
+    // pixel budget before any target is allocated.
+    let pixels = u64::from(opts.width) * u64::from(opts.height);
+    if pixels > crate::MAX_OFFSCREEN_PIXELS {
+        return Err(RenderError::PixelBudgetExceeded {
+            pixels,
+            max: crate::MAX_OFFSCREEN_PIXELS,
+        });
+    }
 
     let ctx = GpuContext::new()?;
     let device = &ctx.device;

@@ -16,6 +16,7 @@
 use brepkit_math::mat::Mat4;
 use brepkit_math::vec::Point3;
 use brepkit_operations::OperationsError;
+use brepkit_operations::blend_ops::fillet_v2;
 use brepkit_operations::boolean::{BooleanOp, boolean, face_polygon};
 use brepkit_operations::defeature::defeature;
 use brepkit_operations::primitives::{make_box, make_cylinder};
@@ -121,6 +122,38 @@ fn chamfer_removal_restores_the_sharp_edge() {
 
     let healed = defeature(&mut topo, chamfered, &bevel).unwrap();
     // Extending the top and front faces until they meet puts the box back.
+    assert_healed(&topo, healed, 1000.0);
+    assert_eq!(faces_of(&topo, healed).len(), 6);
+}
+
+#[test]
+fn plane_plane_fillet_removal_restores_the_sharp_edge() {
+    let mut topo = Topology::new();
+    let box_solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edge = brepkit_topology::explorer::solid_edges(&topo, box_solid)
+        .unwrap()
+        .into_iter()
+        .find(|edge_id| {
+            let edge = topo.edge(*edge_id).unwrap();
+            [edge.start(), edge.end()].iter().all(|vertex| {
+                let point = topo.vertex(*vertex).unwrap().point();
+                (point.x() - 10.0).abs() < 1e-9 && (point.y() - 10.0).abs() < 1e-9
+            })
+        })
+        .unwrap();
+    let filleted = fillet_v2(&mut topo, box_solid, &[edge], 2.0).unwrap().solid;
+    let bands: Vec<FaceId> = faces_of(&topo, filleted)
+        .into_iter()
+        .filter(|face| {
+            matches!(
+                topo.face(*face).unwrap().surface(),
+                FaceSurface::Cylinder(cylinder) if (cylinder.radius() - 2.0).abs() < 1e-9
+            )
+        })
+        .collect();
+    assert_eq!(bands.len(), 1);
+
+    let healed = defeature(&mut topo, filleted, &bands).unwrap();
     assert_healed(&topo, healed, 1000.0);
     assert_eq!(faces_of(&topo, healed).len(), 6);
 }

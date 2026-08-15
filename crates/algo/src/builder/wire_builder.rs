@@ -462,47 +462,74 @@ pub fn remove_pendant_sections(
     u_periodic: bool,
     v_periodic: bool,
 ) -> Vec<OrientedPCurveEdge> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
     let u_period = if u_periodic { Some(TAU) } else { None };
     let v_period = if v_periodic { Some(TAU) } else { None };
     let mut alive = vec![true; edges.len()];
+    let mut vertex_ids = HashMap::new();
+    let mut vertices: Vec<HashMap<Option<usize>, usize>> = Vec::new();
+    let mut edge_vertices = Vec::with_capacity(edges.len());
+    let mut source_edges: HashMap<usize, Vec<usize>> = HashMap::new();
 
-    loop {
-        let mut vmap: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-        for (i, e) in edges.iter().enumerate() {
+    for (i, e) in edges.iter().enumerate() {
+        let sk = quantize_uv_periodic(e.start_uv, tol, u_period, v_period);
+        let ek = quantize_uv_periodic(e.end_uv, tol, u_period, v_period);
+        let mut vertex_id = |key| {
+            *vertex_ids.entry(key).or_insert_with(|| {
+                vertices.push(HashMap::new());
+                vertices.len() - 1
+            })
+        };
+        let start = vertex_id(sk);
+        let end = (ek != sk).then(|| vertex_id(ek));
+        edge_vertices.push((start, end));
+        *vertices[start].entry(e.source_edge_idx).or_default() += 1;
+        if let Some(end) = end {
+            *vertices[end].entry(e.source_edge_idx).or_default() += 1;
+        }
+        if let Some(src) = e.source_edge_idx {
+            source_edges.entry(src).or_default().push(i);
+        }
+    }
+
+    let sole_section = |counts: &HashMap<Option<usize>, usize>| {
+        (counts.len() == 1)
+            .then(|| counts.keys().next().copied().flatten())
+            .flatten()
+    };
+    // A min-heap preserves deterministic lowest-source-first peeling while
+    // incremental incidence counts visit each edge only when it is removed.
+    let mut pending = BinaryHeap::new();
+    for counts in &vertices {
+        if let Some(src) = sole_section(counts) {
+            pending.push(Reverse(src));
+        }
+    }
+
+    while let Some(Reverse(src)) = pending.pop() {
+        let Some(indices) = source_edges.remove(&src) else {
+            continue;
+        };
+        for i in indices {
             if !alive[i] {
                 continue;
             }
-            let sk = quantize_uv_periodic(e.start_uv, tol, u_period, v_period);
-            let ek = quantize_uv_periodic(e.end_uv, tol, u_period, v_period);
-            vmap.entry(sk).or_default().push(i);
-            if ek != sk {
-                vmap.entry(ek).or_default().push(i);
-            }
-        }
-
-        let mut pendant_src: Option<usize> = None;
-        for incident in vmap.values() {
-            let mut srcs = incident.iter().map(|&i| edges[i].source_edge_idx);
-            let first = srcs.next().flatten();
-            if let Some(src) = first
-                && incident
-                    .iter()
-                    .all(|&i| edges[i].source_edge_idx == Some(src))
-            {
-                pendant_src = Some(src);
-                break;
-            }
-        }
-
-        match pendant_src {
-            Some(src) => {
-                for (i, e) in edges.iter().enumerate() {
-                    if e.source_edge_idx == Some(src) {
-                        alive[i] = false;
+            alive[i] = false;
+            let (start, end) = edge_vertices[i];
+            for vertex in std::iter::once(start).chain(end) {
+                let counts = &mut vertices[vertex];
+                if let Some(count) = counts.get_mut(&Some(src)) {
+                    *count -= 1;
+                    if *count == 0 {
+                        counts.remove(&Some(src));
                     }
                 }
+                if let Some(next) = sole_section(counts) {
+                    pending.push(Reverse(next));
+                }
             }
-            None => break,
         }
     }
 

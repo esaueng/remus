@@ -62,12 +62,19 @@ fn ff_trace_x() -> Option<f64> {
 /// four faces meet), and the disagreeing copies mint micro-sliver free edges.
 #[derive(Default)]
 struct JunctionRegistry {
-    cells: std::collections::HashMap<(i64, i64, i64), Point3>,
+    cells: std::collections::HashMap<(i64, i64, i64), JunctionEntry>,
+}
+
+#[derive(Clone, Copy)]
+struct JunctionEntry {
+    point: Point3,
+    faces: Option<(FaceId, FaceId)>,
+    source_edge: Option<brepkit_topology::edge::EdgeId>,
 }
 
 impl JunctionRegistry {
     const CELL: f64 = 1e-4;
-    const ADOPT_MAX: f64 = 1e-3;
+    const BOUNDARY_TRIGGER_MAX: f64 = 1e-3;
 
     fn key(p: Point3) -> (i64, i64, i64) {
         #[allow(clippy::cast_possible_truncation)]
@@ -81,10 +88,10 @@ impl JunctionRegistry {
         for dx in -1..=1_i64 {
             for dy in -1..=1_i64 {
                 for dz in -1..=1_i64 {
-                    if let Some(&j) = self.cells.get(&(kx + dx, ky + dy, kz + dz)) {
-                        let d = (j - p).length();
+                    if let Some(entry) = self.cells.get(&(kx + dx, ky + dy, kz + dz)) {
+                        let d = (entry.point - p).length();
                         if d <= band && best.is_none_or(|(bd, _)| d < bd) {
-                            best = Some((d, j));
+                            best = Some((d, entry.point));
                         }
                     }
                 }
@@ -101,54 +108,99 @@ impl JunctionRegistry {
         p: Point3,
         tol: Tolerance,
     ) -> Point3 {
-        let band = tol.linear * 1000.0;
-        if let Some(j) = self.lookup(p, band) {
+        // A broad trigger is safe only for finding a boundary candidate: the
+        // returned point is recomputed on a boundary of this exact face pair.
+        // Never adopt a registry point directly from the untrusted fitted
+        // endpoint, because an unrelated nearby feature could redirect it.
+        let trigger = (tol.linear * 1000.0).max(Self::BOUNDARY_TRIGGER_MAX);
+        let Some(boundary_junction) = snap_to_boundary_junction_band(topo, fa, fb, p, tol, trigger)
+        else {
+            return p;
+        };
+
+        // Reuse only a near-identical, already-validated junction. The wider
+        // trigger above must not become a dimensional snap band.
+        let weld = tol.linear * 100.0;
+        if let Some(j) = self.lookup(boundary_junction, weld) {
             return j;
         }
-        // A cross-pair copy of an already-registered junction can sit up to
-        // ~8e-4 away when the two pairs refined against boundary features
-        // that themselves disagree at facet scale, which is outside the weld
-        // band above. Adopt the existing junction only when it is
-        // UNAMBIGUOUS: within the adoption ceiling and at least 10x closer
-        // than the next-nearest junction (measured genuine junction spacing
-        // is >= 1.1e-2, copies <= 7.9e-4 — a bimodal gap this guard encodes
-        // rather than assumes).
-        if let Some((d1, j1, d2)) = self.nearest_two(p)
-            && d1 <= Self::ADOPT_MAX
-            && d2 >= d1 * 10.0
-        {
-            return j1;
-        }
-        match snap_to_boundary_junction_band(topo, fa, fb, p, tol, band) {
-            Some(j) => {
-                self.cells.insert(Self::key(j), j);
-                j
-            }
-            None => p,
-        }
-    }
 
-    fn seed(&mut self, p: Point3) {
-        if self.lookup(p, 1e-4).is_none() {
-            self.cells.insert(Self::key(p), p);
-        }
-    }
-
-    fn nearest_two(&self, p: Point3) -> Option<(f64, Point3, f64)> {
-        let mut best: Option<(f64, Point3)> = None;
-        let mut second = f64::INFINITY;
-        for &j in self.cells.values() {
-            let d = (j - p).length();
-            match best {
-                Some((bd, _)) if d < bd => {
-                    second = bd;
-                    best = Some((d, j));
+        // Independent face-pair refinements of one physical triple junction
+        // can disagree at facet scale. Reuse a wider candidate only when it
+        // was itself produced by FF, the old and current pairs share a face,
+        // and the candidate independently revalidates as this pair's boundary
+        // junction. Raw VE/EF seed points never pass this route.
+        let mut proven = self
+            .cells
+            .values()
+            .filter_map(|entry| {
+                let face_uses_source = entry.source_edge.is_some_and(|source| {
+                    [fa, fb].into_iter().any(|face_id| {
+                        topo.face(face_id).is_ok_and(|face| {
+                            std::iter::once(face.outer_wire())
+                                .chain(face.inner_wires().iter().copied())
+                                .filter_map(|wire_id| topo.wire(wire_id).ok())
+                                .flat_map(brepkit_topology::wire::Wire::edges)
+                                .any(|edge| edge.edge() == source)
+                        })
+                    })
+                });
+                let shares_face = entry.faces.is_some_and(|(prev_a, prev_b)| {
+                    [prev_a, prev_b].contains(&fa) || [prev_a, prev_b].contains(&fb)
+                });
+                if (!shares_face && !face_uses_source)
+                    || (entry.point - boundary_junction).length() > Self::BOUNDARY_TRIGGER_MAX
+                {
+                    return None;
                 }
-                Some(_) => second = second.min(d),
-                None => best = Some((d, j)),
-            }
+                let validated = snap_to_boundary_junction_band(
+                    topo,
+                    fa,
+                    fb,
+                    entry.point,
+                    tol,
+                    Self::BOUNDARY_TRIGGER_MAX,
+                )?;
+                ((validated - entry.point).length() <= weld).then_some(entry.point)
+            })
+            .collect::<Vec<_>>();
+        proven.sort_by(|a, b| {
+            (*a - boundary_junction)
+                .length_squared()
+                .partial_cmp(&(*b - boundary_junction).length_squared())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(&candidate) = proven.first()
+            && proven
+                .iter()
+                .skip(1)
+                .all(|other| (*other - candidate).length() <= weld)
+        {
+            return candidate;
         }
-        best.map(|(d, j)| (d, j, second))
+
+        self.cells.insert(
+            Self::key(boundary_junction),
+            JunctionEntry {
+                point: boundary_junction,
+                faces: Some((fa, fb)),
+                source_edge: None,
+            },
+        );
+        boundary_junction
+    }
+
+    fn seed(&mut self, p: Point3, source_edge: brepkit_topology::edge::EdgeId) {
+        if self.lookup(p, 1e-4).is_none() {
+            self.cells.insert(
+                Self::key(p),
+                JunctionEntry {
+                    point: p,
+                    faces: None,
+                    source_edge: Some(source_edge),
+                },
+            );
+        }
     }
 }
 
@@ -163,32 +215,29 @@ pub fn perform(
     let faces_b = brepkit_topology::explorer::solid_faces(topo, solid_b)?;
 
     let mut junction_registry = JunctionRegistry::default();
-    // Seed the registry with every vertex the earlier phases already minted
-    // (operand vertices from block init plus VE/EE/VF/EF interference
-    // vertices). A section endpoint refined here lands up to ~1e-3 from the
-    // EF crossing another solver placed at the same physical corner (the
-    // operands themselves disagree at that scale); without the seed the FF
-    // side registers its own copy first-wins and the two anchors never
-    // weld. Guarded adoption (band + 10x ambiguity ratio) does the rest.
+    // Seed prior pave endpoints so a boundary junction computed here can
+    // reuse the exact vertex already minted by VE/EE/VF/EF. Resolve never
+    // snaps to these raw points directly: it first derives a validated
+    // junction from the current face pair and only then performs a narrow
+    // lookup, so unrelated operand vertices cannot become section anchors.
     for pbs in arena.edge_pave_blocks.values() {
         for &pb_id in pbs {
             if let Some(pb) = arena.pave_blocks.get(pb_id) {
                 for vid in [pb.start.vertex, pb.end.vertex] {
                     let resolved = arena.resolve_vertex(vid);
                     if let Ok(v) = topo.vertex(resolved) {
-                        junction_registry.seed(v.point());
+                        junction_registry.seed(v.point(), pb.original_edge);
                     }
                 }
                 for pave in &pb.extra_paves {
                     let resolved = arena.resolve_vertex(pave.vertex);
                     if let Ok(v) = topo.vertex(resolved) {
-                        junction_registry.seed(v.point());
+                        junction_registry.seed(v.point(), pb.original_edge);
                     }
                 }
             }
         }
     }
-
     // Pre-compute face AABBs for rejection
     let bboxes_a = compute_face_bboxes(topo, &faces_a, tol)?;
     let bboxes_b = compute_face_bboxes(topo, &faces_b, tol)?;
@@ -3348,7 +3397,7 @@ fn compute_raw_curves(
 
         (FaceSurface::Plane { normal, d }, other) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic)
+                plane_analytic_intersection(*normal, *d, &analytic, bbox_b)
             } else {
                 Ok(Vec::new())
             }
@@ -3356,7 +3405,7 @@ fn compute_raw_curves(
 
         (other, FaceSurface::Plane { normal, d }) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic)
+                plane_analytic_intersection(*normal, *d, &analytic, bbox_a)
             } else {
                 Ok(Vec::new())
             }
@@ -3638,8 +3687,33 @@ fn plane_analytic_intersection(
     normal: Vec3,
     d: f64,
     analytic: &analytic_intersection::AnalyticSurface<'_>,
+    analytic_bbox: &Aabb3,
 ) -> Result<Vec<RawCurve>, AlgoError> {
-    let exact_curves = analytic_intersection::exact_plane_analytic(*analytic, normal, d)?;
+    let cone_v_max = match analytic {
+        analytic_intersection::AnalyticSurface::Cone(cone) => {
+            let apex = cone.apex();
+            let max_distance = [analytic_bbox.min.x(), analytic_bbox.max.x()]
+                .into_iter()
+                .flat_map(|x| {
+                    [analytic_bbox.min.y(), analytic_bbox.max.y()]
+                        .into_iter()
+                        .flat_map(move |y| {
+                            [analytic_bbox.min.z(), analytic_bbox.max.z()]
+                                .into_iter()
+                                .map(move |z| (Point3::new(x, y, z) - apex).length())
+                        })
+                })
+                .fold(0.0_f64, f64::max);
+            // The face boxes bound topology/sample points rather than every
+            // point of an analytic curved edge. Keep a scale-aware envelope
+            // around that finite bound so an oblique branch is sampled past
+            // both trim boundaries before downstream clipping.
+            Some(max_distance.mul_add(2.0, 1.0))
+        }
+        _ => None,
+    };
+    let exact_curves =
+        analytic_intersection::exact_plane_analytic_bounded(*analytic, normal, d, cone_v_max)?;
 
     let mut results = Vec::new();
     for exact in exact_curves {
@@ -5142,15 +5216,28 @@ fn clip_line_to_polygon(
             continue;
         }
         if denom.abs() < n_len * d_len * 1e-9 {
+            let start_distance = num / n_len;
+            let end_distance = (num + denom) / n_len;
+            // Do not turn roundoff-scale straddling of a nominally collinear
+            // boundary into two independently computed trim vertices. This
+            // band is far below the adversarial/real crossing scale; larger
+            // straddles still compute the exact crossing parameter below.
+            if start_distance.abs() <= 1e-7 && end_distance.abs() <= 1e-7 {
+                continue;
+            }
             // A near-parallel segment can still drift across the edge by up
             // to d_len·1e-9 over its length, so dropping on the start point
             // alone would discard a segment that genuinely enters the face —
             // reject only when BOTH endpoints sit outside the band
             // (num + denom is the end point's signed offset).
-            if num < -n_len * 1e-9 && num + denom < -n_len * 1e-9 {
+            let start_outside = num < -n_len * 1e-9;
+            let end_outside = num + denom < -n_len * 1e-9;
+            if start_outside && end_outside {
                 return None;
             }
-            continue;
+            if start_outside == end_outside {
+                continue;
+            }
         }
         let t = -num / denom;
         if denom > 0.0 {

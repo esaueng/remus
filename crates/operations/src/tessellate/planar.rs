@@ -14,6 +14,33 @@ type CylinderUv = (f64, f64);
 type CylinderSample = (Point3, CylinderUv);
 type CylinderLoop = (Vec<Point3>, Vec<CylinderUv>);
 
+/// Maximum number of interior samples added by the hole-aware cylinder grid.
+///
+/// This grid is only a quality aid for the CDT; bounding it prevents extreme
+/// radius-to-height ratios from turning a compact face into unbounded work.
+const MAX_CYLINDER_GRID_POINTS: usize = 1_000_000;
+
+fn cylinder_grid_rows(
+    physical_u_step: f64,
+    v_span: f64,
+    u_columns: usize,
+) -> Result<usize, crate::OperationsError> {
+    let rows = (v_span / physical_u_step.max(f64::EPSILON)).ceil().max(2.0);
+    let max_rows = MAX_CYLINDER_GRID_POINTS
+        .checked_div(u_columns)
+        .unwrap_or(0)
+        .saturating_add(1);
+    #[allow(clippy::cast_precision_loss)]
+    if !rows.is_finite() || rows > max_rows as f64 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "cylindrical face tessellation grid exceeds the {MAX_CYLINDER_GRID_POINTS}-point work limit"
+            ),
+        });
+    }
+    Ok(rows as usize)
+}
+
 /// Tessellate a cylindrical face using its actual boundary polygon (CDT-based).
 ///
 /// Used for faces with non-rectangular boundaries (e.g., boolean sub-faces
@@ -511,9 +538,7 @@ pub(super) fn tessellate_cylinder_with_holes(
     // pockets or bands are harmless: the pocket-parity and band predicates
     // below remove their triangles.
     let physical_u_step = cyl.radius() * (outer_u.1 - outer_u.0) / nu as f64;
-    let nv = ((outer_v.1 - outer_v.0) / physical_u_step.max(f64::EPSILON))
-        .ceil()
-        .max(2.0) as usize;
+    let nv = cylinder_grid_rows(physical_u_step, outer_v.1 - outer_v.0, nu.saturating_sub(1))?;
     for iu in 1..nu {
         #[allow(clippy::cast_precision_loss)]
         let u = (outer_u.1 - outer_u.0).mul_add(iu as f64 / nu as f64, outer_u.0);
@@ -1093,7 +1118,7 @@ fn tessellate_planar_with_holes(
         })
         .collect();
 
-    for seed in hole_removal_seeds(&pts2d, &inner_wire_ranges) {
+    for seed in hole_removal_seeds(&pts2d, &inner_wire_ranges)? {
         let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
     }
 
@@ -1241,9 +1266,11 @@ fn find_interior_seed(polygon: &[brepkit_math::vec::Point2]) -> brepkit_math::ve
 pub(super) fn hole_removal_seeds(
     pts2d: &[brepkit_math::vec::Point2],
     inner_wire_ranges: &[(usize, usize)],
-) -> Vec<brepkit_math::vec::Point2> {
+) -> Result<Vec<brepkit_math::vec::Point2>, crate::OperationsError> {
     use brepkit_math::predicates::point_in_polygon;
     use brepkit_math::vec::Point2;
+
+    const PARENT_SEARCH_BUDGET_PER_WIRE: usize = 64;
 
     let polys: Vec<Vec<Point2>> = inner_wire_ranges
         .iter()
@@ -1257,7 +1284,7 @@ pub(super) fn hole_removal_seeds(
     // One wire cannot nest, so skip the containment scan entirely — the common
     // case, and it keeps this off the hot path for ordinary single-hole faces.
     if polys.len() < 2 {
-        return seeds.into_iter().flatten().collect();
+        return Ok(seeds.into_iter().flatten().collect());
     }
 
     // Bounds gate the winding-number tests: honeycomb faces carry dozens of
@@ -1276,38 +1303,71 @@ pub(super) fn hole_removal_seeds(
         })
         .collect();
 
-    let mut out = Vec::new();
-    for (i, seed) in seeds.iter().enumerate() {
-        let Some(seed) = *seed else { continue };
+    // Process smaller boxes first.  For valid, non-intersecting face wires the
+    // first larger polygon containing a wire is its immediate parent.  This
+    // turns concentric inputs from an all-pairs containment pass into one test
+    // per wire.
+    let mut order: Vec<usize> = (0..polys.len()).collect();
+    order.sort_by(|&a, &b| {
+        let area = |bbox: Option<(f64, f64, f64, f64)>| {
+            bbox.map_or(f64::INFINITY, |(x0, y0, x1, y1)| (x1 - x0) * (y1 - y0))
+        };
+        area(boxes[a]).total_cmp(&area(boxes[b]))
+    });
+
+    // Bounding boxes can overlap without their wires nesting.  Bound those
+    // rejected candidates as well, so a face made from many interlocking thin
+    // boxes cannot restore quadratic CPU work.  Ordinary wires find their
+    // parent immediately (or have disjoint bounds), leaving ample headroom.
+    let mut search_budget = polys.len().saturating_mul(PARENT_SEARCH_BUDGET_PER_WIRE);
+    let mut parents = vec![None; polys.len()];
+    let mut unconditional = vec![false; polys.len()];
+    for (position, &i) in order.iter().enumerate() {
+        let Some(seed) = seeds[i] else { continue };
         // `find_interior_seed` falls back to the centroid when no vertex
         // bisector candidate lands inside, and that fallback can sit outside a
         // sufficiently degenerate wire. Depth measured from a point that is not
         // in its own wire is meaningless, so drop back to the pre-nesting
         // behaviour — flood from it unconditionally — rather than guess.
         if !point_in_polygon(seed, &polys[i]) {
-            out.push(seed);
+            unconditional[i] = true;
             continue;
         }
-        let mut depth = 1;
-        for (j, poly) in polys.iter().enumerate() {
-            if j == i {
-                continue;
-            }
+        for &j in &order[position + 1..] {
             let Some((x0, y0, x1, y1)) = boxes[j] else {
                 continue;
             };
             if seed.x() < x0 || seed.x() > x1 || seed.y() < y0 || seed.y() > y1 {
                 continue;
             }
-            if point_in_polygon(seed, poly) {
-                depth += 1;
+            if search_budget == 0 {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "hole nesting exceeds the bounded containment budget".into(),
+                });
+            }
+            search_budget -= 1;
+            if point_in_polygon(seed, &polys[j]) {
+                parents[i] = Some(j);
+                break;
             }
         }
-        if depth % 2 == 1 {
+    }
+
+    // Parents always have larger boxes, so reverse order computes each parent
+    // depth before its children without another containment query.
+    let mut depths = vec![1usize; polys.len()];
+    let mut out = Vec::new();
+    for &i in order.iter().rev() {
+        if let Some(parent) = parents[i] {
+            depths[i] = depths[parent] + 1;
+        }
+        if let Some(seed) = seeds[i]
+            && (unconditional[i] || depths[i] % 2 == 1)
+        {
             out.push(seed);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Reconstruct a 3D point from a 2D projection, using the face plane.
@@ -1617,7 +1677,7 @@ pub(super) fn tessellate_planar_shared_with_holes(
         })
         .collect();
 
-    for seed in hole_removal_seeds(&pts2d, &inner_wire_ranges) {
+    for seed in hole_removal_seeds(&pts2d, &inner_wire_ranges)? {
         let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
     }
 
@@ -1737,7 +1797,7 @@ pub(super) fn run_planar_cdt(
         })
         .collect();
 
-    for seed in hole_removal_seeds(pts2d, inner_wire_ranges) {
+    for seed in hole_removal_seeds(pts2d, inner_wire_ranges)? {
         let _removed = cdt.flood_remove_from_point(seed, &constraint_set);
     }
 
@@ -1771,4 +1831,52 @@ pub(super) fn run_planar_cdt(
     }
 
     Ok((result, steiner))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{MAX_CYLINDER_GRID_POINTS, cylinder_grid_rows};
+
+    #[test]
+    fn cylinder_grid_rows_accepts_bounded_grid() {
+        assert_eq!(cylinder_grid_rows(0.5, 10.0, 18).unwrap(), 20);
+    }
+
+    #[test]
+    fn cylinder_grid_rows_rejects_excessive_work() {
+        let error = cylinder_grid_rows(1.0e-9, 1.0, 18).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{MAX_CYLINDER_GRID_POINTS}-point work limit"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod hole_seed_tests {
+    use super::hole_removal_seeds;
+    use brepkit_math::vec::Point2;
+
+    #[test]
+    fn concentric_wires_keep_even_odd_parity_at_scale() {
+        let wire_count = 1_000;
+        let mut points = Vec::with_capacity(wire_count * 3);
+        let mut ranges = Vec::with_capacity(wire_count);
+        for i in 0..wire_count {
+            let radius = (wire_count - i) as f64;
+            let start = points.len();
+            points.extend([
+                Point2::new(0.0, radius),
+                Point2::new(-radius, -radius),
+                Point2::new(radius, -radius),
+            ]);
+            ranges.push((start, points.len()));
+        }
+
+        let seeds = hole_removal_seeds(&points, &ranges).unwrap_or_default();
+
+        assert_eq!(seeds.len(), wire_count / 2);
+    }
 }

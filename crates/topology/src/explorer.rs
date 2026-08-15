@@ -4,7 +4,7 @@
 //! for traversing the B-Rep topology graph and querying relationships
 //! between entities.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use smallvec::SmallVec;
 
@@ -134,14 +134,21 @@ pub fn face_vertices(topo: &Topology, face: FaceId) -> Result<Vec<VertexId>, Top
 /// This is useful for finding shared edges (manifold edges appear in
 /// exactly 2 faces) and boundary edges (appear in only 1 face).
 ///
+/// Keyed by a `BTreeMap`, not a `HashMap`, because callers iterate the map
+/// and the resulting order reaches their output: the offset engine reports
+/// the first face pair it fails to intersect, `heal` unions faces in map
+/// order, and the shell rim builder picks a chain start from it. Under a
+/// seed-dependent hash order those results differed between processes on
+/// identical input.
+///
 /// # Errors
 ///
 /// Returns an error if any topology lookup fails.
 pub fn edge_to_face_map(
     topo: &Topology,
     solid: SolidId,
-) -> Result<HashMap<usize, SmallVec<[FaceId; 2]>>, TopologyError> {
-    let mut map: HashMap<usize, SmallVec<[FaceId; 2]>> = HashMap::new();
+) -> Result<BTreeMap<usize, SmallVec<[FaceId; 2]>>, TopologyError> {
+    let mut map: BTreeMap<usize, SmallVec<[FaceId; 2]>> = BTreeMap::new();
 
     for face_id in solid_faces(topo, solid)? {
         // Iterate wire edges directly (without deduplication) so that seam
@@ -195,7 +202,7 @@ pub fn shared_edges(
 pub fn adjacent_faces<V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     face: FaceId,
-    edge_face_map: &HashMap<usize, V, impl std::hash::BuildHasher>,
+    edge_face_map: &BTreeMap<usize, V>,
 ) -> Result<Vec<FaceId>, TopologyError> {
     let mut seen = HashSet::new();
     let mut neighbors = Vec::new();
@@ -297,6 +304,24 @@ mod tests {
                 faces.len()
             );
         }
+    }
+
+    #[test]
+    fn edge_to_face_map_iterates_in_edge_index_order() {
+        // Callers iterate this map and let the order reach their output — the
+        // offset engine reported whichever face pair it happened to hit first,
+        // so the same NURBS solid produced a different error message in each
+        // process. A `HashMap` return type fails this assertion in almost
+        // every run; the `BTreeMap` makes it structural.
+        let mut topo = Topology::new();
+        let cube = make_unit_cube_manifold(&mut topo);
+
+        let keys: Vec<usize> = edge_to_face_map(&topo, cube).unwrap().into_keys().collect();
+        assert!(keys.len() >= 12, "cube should have at least 12 edges");
+
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted, "edge_to_face_map must yield ascending keys");
     }
 
     #[test]

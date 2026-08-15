@@ -793,6 +793,157 @@ fn genuinely_degenerate_matrices_are_still_refused() {
 }
 
 #[test]
+fn singular_non_affine_transforms_are_refused_without_mutation() {
+    let matrix = Mat4([
+        [1.0, 0.0, 0.0, 10.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 10.0],
+        [0.0, 0.0, 0.0, 0.0],
+    ]);
+
+    let mut topo = Topology::new();
+    let solid = make_single_face_solid(
+        &mut topo,
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    );
+    let before: Vec<_> = topo.vertices().iter().map(|(_, v)| v.point()).collect();
+
+    assert!(transform_solid(&mut topo, solid, &matrix).is_err());
+    let after: Vec<_> = topo.vertices().iter().map(|(_, v)| v.point()).collect();
+    assert_eq!(after, before, "a rejected transform must be atomic");
+
+    let face = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap()
+        .faces()[0];
+    assert!(transform_face(&mut topo, face, &matrix).is_err());
+    let after_face: Vec<_> = topo.vertices().iter().map(|(_, v)| v.point()).collect();
+    assert_eq!(
+        after_face, before,
+        "a rejected face transform must be atomic"
+    );
+}
+
+#[test]
+fn non_finite_and_projective_matrices_are_rejected() {
+    for (what, matrix) in [
+        (
+            "NaN in the bottom row",
+            Mat4([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [f64::NAN, 0.0, 0.0, 1.0],
+            ]),
+        ),
+        (
+            // Not reached by the linear-column check: the translation column
+            // is not one of the three columns that get normalized.
+            "NaN in the translation column",
+            Mat4([
+                [1.0, 0.0, 0.0, f64::NAN],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]),
+        ),
+        (
+            "infinity in the linear part",
+            Mat4([
+                [f64::INFINITY, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]),
+        ),
+        (
+            // A real perspective divide, not ulp noise: this is the row shape
+            // the affine band exists to exclude.
+            "perspective term in the bottom row",
+            Mat4([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [1e-3, 0.0, 0.0, 1.0],
+            ]),
+        ),
+        (
+            "a homogeneous scale in w",
+            Mat4([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 2.0],
+            ]),
+        ),
+    ] {
+        assert!(
+            reject_degenerate_transform(&matrix).is_err(),
+            "{what}: must be refused",
+        );
+    }
+}
+
+/// The regression behind the affine band: `Mat4::inverse` is an adjugate
+/// inversion, so round-tripping a rigid frame through it yields a bottom row
+/// that is *near* `[0, 0, 0, 1]` rather than exactly it. Every such matrix is
+/// a legitimate transform and must keep being accepted.
+#[test]
+fn inverses_of_rigid_frames_are_accepted() {
+    // The shape `push_pull::frame_matrix` produces before it normalizes an
+    // operand into the canonical +Z frame.
+    let frames = [
+        rigid_frame(Vec3::new(0.3, 0.5, 0.81), Vec3::new(11.0, -4.0, 7.5)),
+        rigid_frame(Vec3::new(-0.2, 0.97, 0.14), Vec3::new(-1e3, 250.0, 0.0)),
+        rigid_frame(Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.001, 0.002, -0.003)),
+        rigid_frame(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 0.0)),
+    ];
+
+    for (i, frame) in frames.iter().enumerate() {
+        assert!(
+            reject_degenerate_transform(frame).is_ok(),
+            "frame {i}: a rigid frame must be accepted",
+        );
+
+        let inverse = frame.inverse().unwrap();
+        assert!(
+            reject_degenerate_transform(&inverse).is_ok(),
+            "frame {i}: Mat4::inverse of a rigid frame must be accepted, \
+             bottom row was {:?}",
+            inverse.0[3],
+        );
+
+        // And it must be usable, not merely pass the guard.
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        transform_solid(&mut topo, solid, frame).unwrap();
+        transform_solid(&mut topo, solid, &inverse).unwrap();
+    }
+}
+
+/// An orthonormal frame rotating `+Z` onto `axis`, then translating.
+fn rigid_frame(axis: Vec3, translation: Vec3) -> Mat4 {
+    let z = axis.normalize().unwrap();
+    // Any seed not parallel to `z` gives an orthonormal completion.
+    let seed = if z.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let x = (seed - z * seed.dot(z)).normalize().unwrap();
+    let y = z.cross(x);
+    Mat4([
+        [x.x(), y.x(), z.x(), translation.x()],
+        [x.y(), y.y(), z.y(), translation.y()],
+        [x.z(), y.z(), z.z(), translation.z()],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+}
+
+#[test]
 fn the_degeneracy_verdict_does_not_move_with_the_units() {
     // The guard's whole contract in one assertion: multiplying a matrix by a
     // uniform scale changes |det| by s³ but never changes whether the

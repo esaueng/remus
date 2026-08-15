@@ -27,11 +27,13 @@ impl NurbsCurve {
     ///
     /// # Errors
     ///
-    /// Returns [`MathError::InvalidDegree`] if the degree is not smaller than
-    /// the number of control points.
+    /// Returns [`MathError::InvalidDegree`] if `degree` is zero or not
+    /// smaller than the number of control points.
     ///
     /// Returns [`MathError::InvalidKnotVector`] if the knot vector length is
-    /// not equal to `control_points.len() + degree + 1`.
+    /// not equal to `control_points.len() + degree + 1`, or
+    /// [`MathError::InvalidKnotValue`] if a knot is non-finite or the vector
+    /// is not non-decreasing.
     ///
     /// Returns [`MathError::InvalidWeights`] if the weights vector length does
     /// not match the number of control points, or
@@ -44,7 +46,7 @@ impl NurbsCurve {
         weights: Vec<f64>,
     ) -> Result<Self, MathError> {
         let n = control_points.len();
-        if degree >= n {
+        if degree == 0 || degree >= n {
             return Err(MathError::InvalidDegree {
                 degree,
                 control_points: n,
@@ -57,6 +59,8 @@ impl NurbsCurve {
                 got: knots.len(),
             });
         }
+        super::validate_knot_values(&knots)?;
+        super::validate_knot_domain(&knots, degree, n)?;
         if weights.len() != n {
             return Err(MathError::InvalidWeights {
                 expected: n,
@@ -380,6 +384,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_degree_zero() {
+        assert!(matches!(
+            NurbsCurve::new(
+                0,
+                vec![0.0, 0.5, 1.0],
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0),],
+                vec![1.0, 1.0],
+            ),
+            Err(MathError::InvalidDegree { degree: 0, .. })
+        ));
+    }
+
+    #[test]
     fn rejects_degree_without_enough_control_points() {
         let result = NurbsCurve::new(
             2,
@@ -412,6 +429,59 @@ mod tests {
                 make(weights),
                 Err(MathError::InvalidWeightValue { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn rejects_nonfinite_and_decreasing_knots() {
+        let make = |knots| {
+            NurbsCurve::new(
+                1,
+                knots,
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)],
+                vec![1.0, 1.0],
+            )
+        };
+
+        for knots in [vec![0.0, 0.0, f64::NAN, 1.0], vec![1.0, 1.0, 0.0, 0.0]] {
+            assert!(matches!(
+                make(knots),
+                Err(MathError::InvalidKnotValue { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_tolerated_decreases_that_reverse_the_domain() {
+        let epsilon = f64::EPSILON;
+        for knots in [
+            vec![
+                1.0,
+                1.0,
+                1.0 - 4.0 * epsilon,
+                1.0 - 8.0 * epsilon,
+                1.0 - 12.0 * epsilon,
+            ],
+            vec![
+                1.0,
+                1.0,
+                1.0 - 4.0 * epsilon,
+                1.0 - 4.0 * epsilon,
+                1.0 - 4.0 * epsilon,
+            ],
+        ] {
+            let curve = NurbsCurve::new(
+                1,
+                knots,
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(1.0, 0.0, 0.0),
+                    Point3::new(2.0, 0.0, 0.0),
+                ],
+                vec![1.0; 3],
+            );
+
+            assert!(matches!(curve, Err(MathError::InvalidKnotValue { .. })));
         }
     }
 

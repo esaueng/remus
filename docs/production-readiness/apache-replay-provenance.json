@@ -1,0 +1,1694 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-14",
+  "purpose": "Engineering provenance record for every fork pull request after the Apache cutoff through the phase-two replay; not legal advice.",
+  "source_repository": "https://github.com/esaueng/brepkit",
+  "replay": {
+    "parent_commit": "e142b5727f56188014ebec723b81e8104063fd1d",
+    "parent_tree": "4c4650e0aa43cc3443c8d6eddcf53b5031198d13",
+    "first_commit": "a49092d2fdfe9472794cb77f58ffdbff51d38b43",
+    "last_commit": "7aeb36a802188de0e158326c15049ebaaa634ddc",
+    "commit_count": 73,
+    "source_pull_request_count": 73,
+    "source_author": "petergstfsn",
+    "allowed_replay_authors": [
+      {
+        "name": "Peter",
+        "email": "171875562+petergstfsn@users.noreply.github.com"
+      },
+      {
+        "name": "Peter",
+        "email": "171875562+petergstfsn@users.noreply.github.com"
+      }
+    ]
+  },
+  "source_pull_requests": [
+    {
+      "number": 145,
+      "url": "https://github.com/esaueng/brepkit/pull/145",
+      "audited_head_sha": "2dab3055b81998e94796b28c6114a9850d4d64d2",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:06:12Z",
+      "title": "fix(algo): avoid quadratic pendant pruning in `remove_pendant_sections`",
+      "replay_commits": [
+        "6855688423ae2714048695649082f1ed3853db90"
+      ]
+    },
+    {
+      "number": 149,
+      "url": "https://github.com/esaueng/brepkit/pull/149",
+      "audited_head_sha": "18668c026ac56ecb55e8644c454d85e47a513d10",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T20:01:52Z",
+      "title": "fix(operations): bound Minkowski sum work",
+      "replay_commits": [
+        "a7ac8d04b69c8a49200428c8d15afb408b3f7218"
+      ]
+    },
+    {
+      "number": 164,
+      "url": "https://github.com/esaueng/brepkit/pull/164",
+      "audited_head_sha": "3d066135cabfed3bbffee4872185a219d9551217",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T20:24:24Z",
+      "title": "fix(algo): scope split registry anchors by pave block",
+      "replay_commits": [
+        "04c626ee3366790cd2652972c6e8cf6463f2351f"
+      ]
+    },
+    {
+      "number": 165,
+      "url": "https://github.com/esaueng/brepkit/pull/165",
+      "audited_head_sha": "36e05b41ff9ed4074f517a58b620fd5f16c61cc4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T20:51:21Z",
+      "title": "fix(math): reject degree-zero NURBS curves",
+      "replay_commits": [
+        "3cd0780cec96379c80411ef819eed5a32b3ceae0"
+      ]
+    },
+    {
+      "number": 166,
+      "url": "https://github.com/esaueng/brepkit/pull/166",
+      "audited_head_sha": "379f5af508658730e06e95338dfa713811f2861a",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:46:45Z",
+      "title": "fix(operations): randomize boolean assembly hashing",
+      "replay_commits": [
+        "a49092d2fdfe9472794cb77f58ffdbff51d38b43"
+      ]
+    },
+    {
+      "number": 167,
+      "url": "https://github.com/esaueng/brepkit/pull/167",
+      "audited_head_sha": "d96205b10e1d994d3a81966eaa51e39746d6a081",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T20:57:20Z",
+      "title": "math: reject malformed NURBS knot vectors to avoid evaluation panics",
+      "replay_commits": [
+        "d75d4d7dee8fc8fc904b7f88c7d0df1b975a84ad"
+      ]
+    },
+    {
+      "number": 168,
+      "url": "https://github.com/esaueng/brepkit/pull/168",
+      "audited_head_sha": "2b561604959cda0379ac33c7e6f949ed1d7b23bb",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:48:22Z",
+      "title": "io: stream STEP statements to avoid pre-DATA memory DoS",
+      "replay_commits": [
+        "6631544b0ba71cda637cab361982a0afce3d6490"
+      ]
+    },
+    {
+      "number": 169,
+      "url": "https://github.com/esaueng/brepkit/pull/169",
+      "audited_head_sha": "46cddaae6534906f87e2bf982105ad96c62ac324",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:49:41Z",
+      "title": "fix(io): reject zero-vertex ASCII PLY faces",
+      "replay_commits": [
+        "c2a2bfdc704395949462518e6022b52480eba553"
+      ]
+    },
+    {
+      "number": 170,
+      "url": "https://github.com/esaueng/brepkit/pull/170",
+      "audited_head_sha": "29abf0551f7f67a2c071a8d3c1c8f936dcff7c45",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:51:08Z",
+      "title": "fix(operations): bound nested-wire classification to avoid quadratic DoS",
+      "replay_commits": [
+        "535e5ea07c0731760b5fa765868642f4877939d7"
+      ]
+    },
+    {
+      "number": 171,
+      "url": "https://github.com/esaueng/brepkit/pull/171",
+      "audited_head_sha": "67ea8fb9b0e27d8f4c05452436492d8ac6475783",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:53:18Z",
+      "title": "fix(algo): avoid vertex-only AABB pruning in N-way fuse by processing every source pair",
+      "replay_commits": [
+        "896c6d9005df5d767c1fc129dff316923437860e"
+      ]
+    },
+    {
+      "number": 172,
+      "url": "https://github.com/esaueng/brepkit/pull/172",
+      "audited_head_sha": "4fbb36a006f94e0e990fa19f06098d1d1d256524",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:54:44Z",
+      "title": "fix(operations): bound compound_cut batching to prevent quadratic DoS",
+      "replay_commits": [
+        "e163bce1fb3bc5c6ce9f7240c2fc730e791c25d5"
+      ]
+    },
+    {
+      "number": 173,
+      "url": "https://github.com/esaueng/brepkit/pull/173",
+      "audited_head_sha": "37f9396a9e280a8ee6204f3d69de215465497e17",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:56:07Z",
+      "title": "fix(math): reject skew cone/cylinder algebraic intersections",
+      "replay_commits": [
+        "cc90c063981c5be2a8f5c6e8f4e1f66f8d78fe59"
+      ]
+    },
+    {
+      "number": 174,
+      "url": "https://github.com/esaueng/brepkit/pull/174",
+      "audited_head_sha": "8b50ee0ceff5bc2c0901befdc983b0adf3e9e719",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:57:31Z",
+      "title": "fix(ci): scope GitHub App credentials to token-minting step in publish workflow",
+      "replay_commits": [
+        "abc839b2fef0ec8cb9b07b75f2ce73207616b375"
+      ]
+    },
+    {
+      "number": 175,
+      "url": "https://github.com/esaueng/brepkit/pull/175",
+      "audited_head_sha": "3222a9a0ee6a23fa519dc3e258a65167315faae4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:28:01Z",
+      "title": "fix(io): bound PLY polygon triangulation",
+      "replay_commits": [
+        "846aaf3c2b8811381681f0d2c5b5f6cb6a0c6180"
+      ]
+    },
+    {
+      "number": 176,
+      "url": "https://github.com/esaueng/brepkit/pull/176",
+      "audited_head_sha": "e4945ab1d8c201a64e4d27d0e7fe02887e16a18d",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:16:34Z",
+      "title": "fix(ci): restrict manual package sync to main and pin checkout/push",
+      "replay_commits": [
+        "abc839b2fef0ec8cb9b07b75f2ce73207616b375"
+      ]
+    },
+    {
+      "number": 177,
+      "url": "https://github.com/esaueng/brepkit/pull/177",
+      "audited_head_sha": "92ef4a8dc6927246273f3187bb079df3dc9cdb50",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:16:41Z",
+      "title": "fix(io): make STEP imports transactional",
+      "replay_commits": [
+        "de07787c375d758ef316384ad18b895d65fdb633"
+      ]
+    },
+    {
+      "number": 178,
+      "url": "https://github.com/esaueng/brepkit/pull/178",
+      "audited_head_sha": "f4e5b40228524cfca7d816d06eac4ec8b60931c4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:16:47Z",
+      "title": "fix(io): reject cyclic ORIENTED_CLOSED_SHELL references",
+      "replay_commits": [
+        "00701f00f06ff8bfb8922cd1a20fe336869b071a"
+      ]
+    },
+    {
+      "number": 179,
+      "url": "https://github.com/esaueng/brepkit/pull/179",
+      "audited_head_sha": "0a6e524d820895da3b42fb9c887f0be7f0519d5e",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:18:20Z",
+      "title": "fix(check): bound curved face trim integration",
+      "replay_commits": [
+        "4d71cfba77d3ce7cdb1acf59013652e308b7ac28"
+      ]
+    },
+    {
+      "number": 180,
+      "url": "https://github.com/esaueng/brepkit/pull/180",
+      "audited_head_sha": "ef658f2656b7eb4f45b993bc3b6d1af66bc23c52",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:19:47Z",
+      "title": "fix(offset): limit cavity overlap checks to prevent quadratic CPU DoS",
+      "replay_commits": [
+        "2a9c5c6105e176ef8744787fcc1c2101e797d570"
+      ]
+    },
+    {
+      "number": 181,
+      "url": "https://github.com/esaueng/brepkit/pull/181",
+      "audited_head_sha": "4f91e27b639d75b72e9bab70ee08fc344d219a51",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:22:25Z",
+      "title": "fix(offset): reject collapsing cavity offsets",
+      "replay_commits": [
+        "894981dada577e32275418394199f10538e3a8e2"
+      ]
+    },
+    {
+      "number": 182,
+      "url": "https://github.com/esaueng/brepkit/pull/182",
+      "audited_head_sha": "b088ce19939fea775db756e4dfb0c71aa8d25bed",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T21:21:30Z",
+      "title": "fix(operations): reject non-affine transforms atomically",
+      "replay_commits": [
+        "8d1f59deb88d825269ac6cc78486cf77700864b4"
+      ]
+    },
+    {
+      "number": 183,
+      "url": "https://github.com/esaueng/brepkit/pull/183",
+      "audited_head_sha": "14fa34a1a99bb789873b1a226ca971d57209b7e4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:25:37Z",
+      "title": "fix(boolean): reject sampled NURBS disjoint proofs",
+      "replay_commits": [
+        "2b9476343ed14bf304fe1f835b4a4d63cb0c5d7a"
+      ]
+    },
+    {
+      "number": 184,
+      "url": "https://github.com/esaueng/brepkit/pull/184",
+      "audited_head_sha": "903ec55c47037c08fa4521740b2c88c7dcbf3d24",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:27:31Z",
+      "title": "operations: reject intersecting boolean components with narrow-phase triangle test",
+      "replay_commits": [
+        "07434b659059bc62673e55be3b711d1652008e5b"
+      ]
+    },
+    {
+      "number": 185,
+      "url": "https://github.com/esaueng/brepkit/pull/185",
+      "audited_head_sha": "d5128cb905d7036d84a02ca4612ffd647390de44",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:47:07Z",
+      "title": "ci: isolate WASM package push from untrusted build",
+      "replay_commits": [
+        "abc839b2fef0ec8cb9b07b75f2ce73207616b375"
+      ]
+    },
+    {
+      "number": 186,
+      "url": "https://github.com/esaueng/brepkit/pull/186",
+      "audited_head_sha": "e19ae835eb990afa31c6369859faff5871500233",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:32:23Z",
+      "title": "fix(io): validate arena solid references before replay",
+      "replay_commits": [
+        "41632fa2db9cc997ded165ae5d8e56ae6c44b79c"
+      ]
+    },
+    {
+      "number": 187,
+      "url": "https://github.com/esaueng/brepkit/pull/187",
+      "audited_head_sha": "f857bf7b9a4ce61256fb1f7a916cfcd1a17da852",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:33:48Z",
+      "title": "fix(topology): deduplicate solid retirement traversal",
+      "replay_commits": [
+        "0ca0ff21998e7537d1fc3b1a086c0e50f0fa6d76"
+      ]
+    },
+    {
+      "number": 188,
+      "url": "https://github.com/esaueng/brepkit/pull/188",
+      "audited_head_sha": "483915b9934600fd53b82c55a7853cebd07b1702",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:35:20Z",
+      "title": "fix(operations): bound circular pattern fitting",
+      "replay_commits": [
+        "6977cc84e32f20960ff7329ff540baa6961e0bb5"
+      ]
+    },
+    {
+      "number": 189,
+      "url": "https://github.com/esaueng/brepkit/pull/189",
+      "audited_head_sha": "b0cea5d21c09efbea0c536e34a4814610889a4eb",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:36:48Z",
+      "title": "fix(operations): bound helical sweep work to prevent unbounded allocations",
+      "replay_commits": [
+        "132cee01307b29b3a0d8ed9d0f92539d216f460e"
+      ]
+    },
+    {
+      "number": 190,
+      "url": "https://github.com/esaueng/brepkit/pull/190",
+      "audited_head_sha": "a7728466c1310f9b050979ca50e7c7411c9cfd04",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:38:13Z",
+      "title": "Keep holed periodic face bounds conservative",
+      "replay_commits": [
+        "9eb58a2b678f46f485e9087d15f18c4698141d98"
+      ]
+    },
+    {
+      "number": 191,
+      "url": "https://github.com/esaueng/brepkit/pull/191",
+      "audited_head_sha": "d28ee8e6dd4a35020e9426c56a42e68a353d3108",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:39:38Z",
+      "title": "fix(blend): validate reused contact geometry",
+      "replay_commits": [
+        "cc43ead885fccb0cc7ae175c25b1a595b1b8e302"
+      ]
+    },
+    {
+      "number": 192,
+      "url": "https://github.com/esaueng/brepkit/pull/192",
+      "audited_head_sha": "d012d0aa11bdac8d9add37fd9ac1b59672ea52b6",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:41:08Z",
+      "title": "fix(algo): hoist trimmed NURBS domain projection out of arc bisection loop",
+      "replay_commits": [
+        "9bffcd3029718f0d4cd417835db3a03c07de64b7"
+      ]
+    },
+    {
+      "number": 193,
+      "url": "https://github.com/esaueng/brepkit/pull/193",
+      "audited_head_sha": "10d199214bb6ffc93b55c8ac293f0c57faee64ad",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:42:39Z",
+      "title": "fix(algo): scale face splitter bridge bands",
+      "replay_commits": [
+        "e7663fdb0d2550266c94449e4643cedae22d9a13"
+      ]
+    },
+    {
+      "number": 194,
+      "url": "https://github.com/esaueng/brepkit/pull/194",
+      "audited_head_sha": "2cd9888667b0ea8095fdc3d283169043005b50d5",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:45:20Z",
+      "title": "fix(operations): reject non-finite band parameters",
+      "replay_commits": [
+        "dd920d2ac9a8e050ced5276534085b3919ef75e3"
+      ]
+    },
+    {
+      "number": 195,
+      "url": "https://github.com/esaueng/brepkit/pull/195",
+      "audited_head_sha": "543fe8d1debf1dc3d556896cce23987d8007fa5f",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:46:52Z",
+      "title": "fix(fillet): validate net area for holed faces",
+      "replay_commits": [
+        "8d635055ea23942560dfd5d6f349ca8a1965f136"
+      ]
+    },
+    {
+      "number": 198,
+      "url": "https://github.com/esaueng/brepkit/pull/198",
+      "audited_head_sha": "01fba0e19f10922f007be38d1f149f3cc7e0a1a4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:48:39Z",
+      "title": "fix(operations): prevent quadratic blowup in face connectivity construction",
+      "replay_commits": [
+        "8233f85f2857ff213c5c120aad377895e7836910"
+      ]
+    },
+    {
+      "number": 200,
+      "url": "https://github.com/esaueng/brepkit/pull/200",
+      "audited_head_sha": "0891f735e3238f00246b3d47bacbd003aff23efc",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:51:38Z",
+      "title": "fix(operations): bound component overlap validation",
+      "replay_commits": [
+        "ec01c1ca1235eb7bce82fabbceb9e35157dcebf2"
+      ]
+    },
+    {
+      "number": 201,
+      "url": "https://github.com/esaueng/brepkit/pull/201",
+      "audited_head_sha": "c03f7d6e24c6e4147e8e9a6e828f9ed1049ea89d",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T17:54:18Z",
+      "title": "fix(operations): bound NURBS trim recovery work",
+      "replay_commits": [
+        "406de2ca79bd4774ab7b157321a9d2f03d04f187"
+      ]
+    },
+    {
+      "number": 202,
+      "url": "https://github.com/esaueng/brepkit/pull/202",
+      "audited_head_sha": "af912a17af699895766d79e56d876523551a2e0e",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:31:58Z",
+      "title": "Bound NURBS trim sampling to prevent quadratic CPU DoS",
+      "replay_commits": [
+        "b4efff0c568ae8d668b7f2d6a457605a503a1c56"
+      ]
+    },
+    {
+      "number": 203,
+      "url": "https://github.com/esaueng/brepkit/pull/203",
+      "audited_head_sha": "c4401174d3d5f33a484abb335db128d5f24f3b0b",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:33:58Z",
+      "title": "fix(operations): reject intersecting shell components",
+      "replay_commits": [
+        "a8ae288235a58e2524f830d76b2d824bb4280240"
+      ]
+    },
+    {
+      "number": 204,
+      "url": "https://github.com/esaueng/brepkit/pull/204",
+      "audited_head_sha": "1dbaecef8316fb967367f8c72840b0ddd735afee",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:06:25Z",
+      "title": "fix(boolean): reject non-manifold tangent pinches",
+      "replay_commits": [
+        "4a04bc6371d539cd7d015a05cf8f592cc1f85324"
+      ]
+    },
+    {
+      "number": 208,
+      "url": "https://github.com/esaueng/brepkit/pull/208",
+      "audited_head_sha": "c2831512605051eca11272fdce5e054e445af2b4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:14:43Z",
+      "title": "fix(release): isolate crates.io publish token from build-time verification",
+      "replay_commits": [
+        "abc839b2fef0ec8cb9b07b75f2ce73207616b375"
+      ]
+    },
+    {
+      "number": 209,
+      "url": "https://github.com/esaueng/brepkit/pull/209",
+      "audited_head_sha": "7700f724b68f163a59523a119d451aa632a26f55",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:39:53Z",
+      "title": "security: bound cylinder-with-holes tessellation grid to prevent DoS",
+      "replay_commits": [
+        "d630923554dfeeb89000cde9dc7952e27c873d07"
+      ]
+    },
+    {
+      "number": 210,
+      "url": "https://github.com/esaueng/brepkit/pull/210",
+      "audited_head_sha": "8895083bb818724c74224980ee9bc242758bcbe9",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:54:10Z",
+      "title": "fix(ci): validate committed WASM artifact",
+      "replay_commits": [
+        "abc839b2fef0ec8cb9b07b75f2ce73207616b375"
+      ]
+    },
+    {
+      "number": 211,
+      "url": "https://github.com/esaueng/brepkit/pull/211",
+      "audited_head_sha": "60a81b2016ea4a38d3030a217a0fba3303397a58",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:57:39Z",
+      "title": "fix(blend): reuse nonuniform straight contacts",
+      "replay_commits": [
+        "ffb900bf84a2904370d3ef53ed3b3e290339e33e"
+      ]
+    },
+    {
+      "number": 212,
+      "url": "https://github.com/esaueng/brepkit/pull/212",
+      "audited_head_sha": "7625383d625f00fe65f5f9d9299d563d738313bb",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:54:14Z",
+      "title": "fix(operations): bound component intersection checks",
+      "replay_commits": [
+        "c0c097b7e451e3f3b6b161c421632fa9e61fc020"
+      ]
+    },
+    {
+      "number": 215,
+      "url": "https://github.com/esaueng/brepkit/pull/215",
+      "audited_head_sha": "b5a629d8eba5915c7bd0cf9aca5a78d49678072d",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T19:00:36Z",
+      "title": "fix(algo): bound widened EF vertex lookup",
+      "replay_commits": [
+        "62b7fa0eea6d135fc519ccb28d9df1ec9fb7008e"
+      ]
+    },
+    {
+      "number": 216,
+      "url": "https://github.com/esaueng/brepkit/pull/216",
+      "audited_head_sha": "65acec8538da81ecf4cd195caf382bcd76791514",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T21:34:32Z",
+      "title": "test(operations): cover bounded periodic rim reconciliation",
+      "replay_commits": [
+        "537766b99806baa8066d54cc547b48cfa0001a79"
+      ]
+    },
+    {
+      "number": 218,
+      "url": "https://github.com/esaueng/brepkit/pull/218",
+      "audited_head_sha": "99804991b51394c25165cf3b16a7a9664d39eae8",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T22:43:50Z",
+      "title": "feat(operations): add exact blend resizing",
+      "replay_commits": [
+        "6a1ce9cde3abfed0475e63efa58002ca7ac1e75c",
+        "c6160ac18a1a649670c9f4accea1aaffc1d910ab"
+      ]
+    },
+    {
+      "number": 220,
+      "url": "https://github.com/esaueng/brepkit/pull/220",
+      "audited_head_sha": "272adef426b77fb8387a0445381c3876bf77a06c",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-13T02:13:58Z",
+      "title": "fix(math): reject reversed NURBS domains",
+      "replay_commits": [
+        "134aa062516f42822048ed4aceae9d288245c7d0"
+      ]
+    },
+    {
+      "number": 221,
+      "url": "https://github.com/esaueng/brepkit/pull/221",
+      "audited_head_sha": "dc18e44e674cf37600fcec6c559cf1ae6bca66b6",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T04:58:56Z",
+      "title": "test(wasm): exercise installed tarball consumer",
+      "replay_commits": [
+        "6a9bdb32349af431f5d12c7fb28747451a3ec408"
+      ]
+    },
+    {
+      "number": 222,
+      "url": "https://github.com/esaueng/brepkit/pull/222",
+      "audited_head_sha": "5c157c56c913d67dee69057d8d78d63e5767ed04",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T05:32:53Z",
+      "title": "ci: use free hosted runners during beta",
+      "replay_commits": [
+        "c71734753b516e960017d02ad917c3af26a96004"
+      ]
+    },
+    {
+      "number": 223,
+      "url": "https://github.com/esaueng/brepkit/pull/223",
+      "audited_head_sha": "e7b2af00f6e48487dd16546c594c70c8fb965aa4",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T12:47:29Z",
+      "title": "feat(blend): add exact direct blend editing foundations",
+      "replay_commits": [
+        "37b06de8d5e87558e243e12e8d0388910be39153"
+      ]
+    },
+    {
+      "number": 224,
+      "url": "https://github.com/esaueng/brepkit/pull/224",
+      "audited_head_sha": "910c7636924cc049c9a8739985a07f5f1381ad5d",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(tessellate): validate shared rim angle alignment",
+      "replay_commits": [
+        "5e00047f25b51711c3efe0201a031ed3d0233ee5"
+      ]
+    },
+    {
+      "number": 225,
+      "url": "https://github.com/esaueng/brepkit/pull/225",
+      "audited_head_sha": "6d70cb45dd29125096d01500cdb8d1204aeeee85",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T06:01:03Z",
+      "title": "wasm: validate f32 conversion for grouped tessellation to avoid non-finite coords",
+      "replay_commits": [
+        "0a53075cbc182c5590b248e9a2c4cfb33a329858"
+      ]
+    },
+    {
+      "number": 226,
+      "url": "https://github.com/esaueng/brepkit/pull/226",
+      "audited_head_sha": "becd63de9d661ce0172d31dda37b0fef5ebfc99e",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T12:21:23Z",
+      "title": "fix(operations): bound hidden-line projection sampling",
+      "replay_commits": [
+        "96b34af75c19bb78b72eb0772025f88c9514c950"
+      ]
+    },
+    {
+      "number": 227,
+      "url": "https://github.com/esaueng/brepkit/pull/227",
+      "audited_head_sha": "17757fb089130ed337ba361130501f28c399b7f7",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T12:21:25Z",
+      "title": "fix(section): preserve large-coordinate section outlines",
+      "replay_commits": [
+        "d6f24c03e6ddc57755823ffc7a6b6278ab3abde8"
+      ]
+    },
+    {
+      "number": 228,
+      "url": "https://github.com/esaueng/brepkit/pull/228",
+      "audited_head_sha": "905fb37e00e6d34f78be91c559522ba08d80b034",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T12:29:51Z",
+      "title": "Validate ellipse-arc endpoints and reject off-ellipse points",
+      "replay_commits": [
+        "b0bbfec92cc6fff3c642b78dab8f0bd69feb836c"
+      ]
+    },
+    {
+      "number": 229,
+      "url": "https://github.com/esaueng/brepkit/pull/229",
+      "audited_head_sha": "642c049e9980e606e1309cddb64f4cf7df935731",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T13:43:29Z",
+      "title": "fix: resolve imported Codex security findings",
+      "replay_commits": [
+        "6fdfb4d1447611e824ee6bbff47149286d552f23",
+        "58c876bdeef2e2984a9a72da47c6e5061f88a38b"
+      ]
+    },
+    {
+      "number": 230,
+      "url": "https://github.com/esaueng/brepkit/pull/230",
+      "audited_head_sha": "2cc97d61d9c1f5b99f0dd5be04a44d4372de5330",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T11:41:00Z",
+      "title": "fix(build): pin workspace sibling requirements to exact versions",
+      "replay_commits": [
+        "8f4c35c47c1d8f9b94aa00d2a9c41d80e204a59f"
+      ]
+    },
+    {
+      "number": 233,
+      "url": "https://github.com/esaueng/brepkit/pull/233",
+      "audited_head_sha": "0406d649da37feb553b70dd8963783184ff1e29c",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T15:33:16Z",
+      "title": "fix(wasm): do not gate checkpoint restore on lifetime slot count",
+      "replay_commits": [
+        "703802c2bfbc83dc706632ec01364af2f9ead74e"
+      ]
+    },
+    {
+      "number": 234,
+      "url": "https://github.com/esaueng/brepkit/pull/234",
+      "audited_head_sha": "d50292ad149bca33810d74a205603e0f287f406b",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T16:01:28Z",
+      "title": "fix(blend): accept whole-part and duplicated fillet selections",
+      "replay_commits": [
+        "63a931d9fd8c038e365256ef01677b8156b00068"
+      ]
+    },
+    {
+      "number": 235,
+      "url": "https://github.com/esaueng/brepkit/pull/235",
+      "audited_head_sha": "03602a56405b1b40173bb0933e04d4447ceeb72e",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T16:01:32Z",
+      "title": "fix(operations): restore the tolerant affine bottom-row check",
+      "replay_commits": [
+        "a022ad3a7d4599eae7cc25bbfde3cb9070bbe84f"
+      ]
+    },
+    {
+      "number": 236,
+      "url": "https://github.com/esaueng/brepkit/pull/236",
+      "audited_head_sha": "319fd76d7f8f0160c60d868cdcdefda491f79742",
+      "author": "petergstfsn",
+      "state_at_audit": "open",
+      "merged_at": null,
+      "title": "fix(section): prevent quadratic edge matching",
+      "replay_commits": [
+        "e2bf905a6dae4cf5705b75b45201119e67427d80"
+      ]
+    },
+    {
+      "number": 237,
+      "url": "https://github.com/esaueng/brepkit/pull/237",
+      "audited_head_sha": "658d2f5411b26b6923ee2f793442a6344d815fca",
+      "author": "petergstfsn",
+      "state_at_audit": "open",
+      "merged_at": null,
+      "title": "fix(operations): avoid per-edge full-solid tessellation in feature recognition",
+      "replay_commits": [
+        "13da9a3b1c728bf97f15d9153edebf286533c58a"
+      ]
+    },
+    {
+      "number": 238,
+      "url": "https://github.com/esaueng/brepkit/pull/238",
+      "audited_head_sha": "64bf8a7ffc2c7ae5b33770fd01effc76eaae3dd4",
+      "author": "petergstfsn",
+      "state_at_audit": "open",
+      "merged_at": null,
+      "title": "fix(wasm): avoid batch snapshots for read-only ops",
+      "replay_commits": [
+        "adcb6a66a4372342c9e05fa6148aa41200a34395"
+      ]
+    },
+    {
+      "number": 239,
+      "url": "https://github.com/esaueng/brepkit/pull/239",
+      "audited_head_sha": "23d520a1334e739826d3b2b8883e194b8b37684a",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T17:04:02Z",
+      "title": "fix(algo): canonical same-domain key for closed ellipse edges too",
+      "replay_commits": [
+        "af05ed90dafbfac01174732936f7031f2ac161cc"
+      ]
+    },
+    {
+      "number": 240,
+      "url": "https://github.com/esaueng/brepkit/pull/240",
+      "audited_head_sha": "ed2081ef7cb562ee17a92f54000ae7c26edae417",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T16:20:30Z",
+      "title": "fix(algo): restore partial-overlap same-domain pairing reverted by #229",
+      "replay_commits": [
+        "cfff12f5440def307e1b7e57c0cab3d2ccbb9f0d"
+      ]
+    },
+    {
+      "number": 241,
+      "url": "https://github.com/esaueng/brepkit/pull/241",
+      "audited_head_sha": "dbe679991770b8a6e5b50d0aa1cb192b91504229",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T16:39:17Z",
+      "title": "fix(operations): bound the boolean flatten pre-pass recursion",
+      "replay_commits": [
+        "cb0c89bd68e4fbb97ae834d54bd61382eddd996f"
+      ]
+    },
+    {
+      "number": 242,
+      "url": "https://github.com/esaueng/brepkit/pull/242",
+      "audited_head_sha": "0a9ad54a627d80b7452b378ba19d92d754b36750",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T16:48:22Z",
+      "title": "perf(wasm): skip the batch rollback snapshot for read-only ops",
+      "replay_commits": [
+        "2a3a8b9963de5253ea7c86614ba1ea38178ef263"
+      ]
+    },
+    {
+      "number": 243,
+      "url": "https://github.com/esaueng/brepkit/pull/243",
+      "audited_head_sha": "42ad472202200c5454f08ebbd6d94948b188c8fc",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T16:33:44Z",
+      "title": "fix(topology): order edge_to_face_map so offset results stop varying per process",
+      "replay_commits": [
+        "361dbe6791804016a8c9ca0c534b44a0a916e97d",
+        "0198bccb6eb3e510d945718fb29c7fffb22b7449"
+      ]
+    },
+    {
+      "number": 244,
+      "url": "https://github.com/esaueng/brepkit/pull/244",
+      "audited_head_sha": "3adbcca1a667a5f943dff82e7e365e0067b8c8e0",
+      "author": "petergstfsn",
+      "state_at_audit": "open",
+      "merged_at": null,
+      "title": "fix(math): ignore translation in inverse conditioning",
+      "replay_commits": [
+        "6e65aefda1a20cea3274c92cd4bc6a3bb64ddd5b"
+      ]
+    },
+    {
+      "number": 245,
+      "url": "https://github.com/esaueng/brepkit/pull/245",
+      "audited_head_sha": "e5b3c3ed065d7f6171abf053eed132c3b8a07edc",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-14T17:10:14Z",
+      "title": "test(operations): gate offset face-pair determinism in CI",
+      "replay_commits": [
+        "6e6ed4e00f7a0c0078dfba00fa51c327fb0fc6d1"
+      ]
+    },
+    {
+      "number": 247,
+      "url": "https://github.com/esaueng/brepkit/pull/247",
+      "audited_head_sha": "a2886647a8ca2b4d1cd45c535866ad0801df2ad8",
+      "author": "petergstfsn",
+      "state_at_audit": "open",
+      "merged_at": null,
+      "title": "fix(wasm): validate executeBatch deflection",
+      "replay_commits": [
+        "6c2d99bff19bfd15099ebf89a0432256bc85a620"
+      ]
+    }
+  ],
+  "independent_replay_commits": [
+    {
+      "sha": "7aeb36a802188de0e158326c15049ebaaa634ddc",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix(ci): keep generated WASM tied to its source commit"
+    }
+  ],
+  "adaptations": [
+    {
+      "source_pull_requests": [
+        243
+      ],
+      "replay_commits": [
+        "361dbe6791804016a8c9ca0c534b44a0a916e97d",
+        "0198bccb6eb3e510d945718fb29c7fffb22b7449"
+      ],
+      "reason": "The source delta was ported first, then tessellation was adapted to the ordered edge map."
+    },
+    {
+      "source_pull_requests": [
+        229
+      ],
+      "replay_commits": [
+        "6fdfb4d1447611e824ee6bbff47149286d552f23",
+        "58c876bdeef2e2984a9a72da47c6e5061f88a38b"
+      ],
+      "reason": "Only clean source fixes were ported; the remainder was adapted to the Apache staging tree."
+    },
+    {
+      "source_pull_requests": [
+        218
+      ],
+      "replay_commits": [
+        "6a1ce9cde3abfed0475e63efa58002ca7ac1e75c",
+        "c6160ac18a1a649670c9f4accea1aaffc1d910ab"
+      ],
+      "reason": "The source replay and its deterministic lockfile refresh are recorded separately."
+    },
+    {
+      "source_pull_requests": [
+        174,
+        176,
+        185,
+        208,
+        210
+      ],
+      "replay_commits": [
+        "abc839b2fef0ec8cb9b07b75f2ce73207616b375"
+      ],
+      "reason": "The five CI contributions were consolidated into one Apache-safe generated-package workflow with secrets isolated from build work."
+    },
+    {
+      "source_pull_requests": [
+        224
+      ],
+      "replay_commits": [
+        "5e00047f25b51711c3efe0201a031ed3d0233ee5"
+      ],
+      "reason": "The tests were retained; the implementation was superseded by the later security replay."
+    }
+  ],
+  "deliberately_excluded": [
+    {
+      "number": 135,
+      "url": "https://github.com/esaueng/brepkit/pull/135",
+      "audited_head_sha": "43c4544a5830f14a080bacb7bde8abbbeaaa35bf",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T00:20:53Z",
+      "title": "docs: rewrite agent instructions from verified repository state",
+      "reason": "Repository-specific agent instructions describe the continuing fork and must be regenerated for the standalone successor rather than transplanted verbatim."
+    },
+    {
+      "number": 136,
+      "url": "https://github.com/esaueng/brepkit/pull/136",
+      "audited_head_sha": "33b1af0f3fd4604ae4bd27b345793109bb6b74a3",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "docs: rewrite agent instructions from verified repository state",
+      "reason": "Closed review branch superseded by the merged PR #135 and PR #137 documentation sequence."
+    },
+    {
+      "number": 137,
+      "url": "https://github.com/esaueng/brepkit/pull/137",
+      "audited_head_sha": "12d79344909fafa81948f2f58851d5d20f955ff6",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T00:38:28Z",
+      "title": "docs: correct agent guide invariants",
+      "reason": "Repository-specific corrections to PR #135 are deferred with that guide for regeneration in the standalone successor."
+    },
+    {
+      "number": 148,
+      "url": "https://github.com/esaueng/brepkit/pull/148",
+      "audited_head_sha": "8877c975067d2ef56a231ade7cf3916c1705e1a8",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(math): reject malformed NURBS curves (validate control-point count)",
+      "reason": "Closed alternative; the replayed PR #147 constructor contract already rejects a degree not smaller than the control-point count."
+    },
+    {
+      "number": 153,
+      "url": "https://github.com/esaueng/brepkit/pull/153",
+      "audited_head_sha": "191ba141fa029804736ed4cc09e9a53068f33b29",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(operations): remove unsound disjoint boolean shortcut",
+      "reason": "Closed broad-removal alternative superseded by the conservative sampled-NURBS disjoint guard replayed from PR #183."
+    },
+    {
+      "number": 154,
+      "url": "https://github.com/esaueng/brepkit/pull/154",
+      "audited_head_sha": "25c83705f1ddeb6c05cbde859cb2387b19931262",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(algo): reject hidden boundary arc crossings",
+      "reason": "No post-cutoff delta remained: the true line-arc crossing implementation is already in the final permissive upstream lineage."
+    },
+    {
+      "number": 196,
+      "url": "https://github.com/esaueng/brepkit/pull/196",
+      "audited_head_sha": "4c865f80d1a59257df9b6b5bdc6879e8b958efab",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(operations): reject sampled NURBS disjoint bounds",
+      "reason": "Closed duplicate of the sampled-NURBS disjoint guard replayed from PR #183."
+    },
+    {
+      "number": 197,
+      "url": "https://github.com/esaueng/brepkit/pull/197",
+      "audited_head_sha": "e3d1648b5129bec9d25791896f51c1ee59c20fbb",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(operations): reject intersecting boolean components",
+      "reason": "Closed duplicate of the component surface-intersection guard replayed from PR #184."
+    },
+    {
+      "number": 199,
+      "url": "https://github.com/esaueng/brepkit/pull/199",
+      "audited_head_sha": "9d859854de78de775f56cebd54f624c1a861d420",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(operations): bound validation connectivity work",
+      "reason": "Closed duplicate of the linear face-connectivity construction replayed from PR #198."
+    },
+    {
+      "number": 205,
+      "url": "https://github.com/esaueng/brepkit/pull/205",
+      "audited_head_sha": "3d70f77710a16a237e8d9f989650d8ab2c1a3274",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(boolean): reject non-manifold tangent pinches",
+      "reason": "Closed duplicate of the tangent-pinch rejection replayed from PR #204."
+    },
+    {
+      "number": 206,
+      "url": "https://github.com/esaueng/brepkit/pull/206",
+      "audited_head_sha": "3711694d46842410df28895a1a2c4821cf42e69a",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:34:04Z",
+      "title": "fix(blend): retain cross edges for near-pinched stripes by using closure tolerance",
+      "reason": "Not applicable because its target post-license blend stripe architecture is absent from the Apache staging tree."
+    },
+    {
+      "number": 207,
+      "url": "https://github.com/esaueng/brepkit/pull/207",
+      "audited_head_sha": "2e5541b2240f8090aa2794ae3b38338e225442bb",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T18:50:29Z",
+      "title": "fix(fillet): reject non-manifold weld results",
+      "reason": "Not applicable because its target post-license fillet weld architecture is absent from the Apache staging tree."
+    },
+    {
+      "number": 213,
+      "url": "https://github.com/esaueng/brepkit/pull/213",
+      "audited_head_sha": "8abf71b8c512db6c3da3b5c40b07769f02381fdc",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(blend): reuse nonuniform straight contacts",
+      "reason": "Closed duplicate of the straight-contact reuse fix replayed from PR #211."
+    },
+    {
+      "number": 214,
+      "url": "https://github.com/esaueng/brepkit/pull/214",
+      "audited_head_sha": "0ee6f6ecf35f992861a171bf6c79f0a4a4674515",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(operations): bound component intersection checks",
+      "reason": "Closed duplicate of the bounded component intersection checks replayed from PR #212."
+    },
+    {
+      "number": 217,
+      "url": "https://github.com/esaueng/brepkit/pull/217",
+      "audited_head_sha": "4f7907d2a559d9ec265260d64c4adbcb79a0c29c",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": null,
+      "title": "fix(wasm): verify packaged consumer",
+      "reason": "Its installed-consumer test is superseded by PR #221; repository-specific installation prose must be regenerated for the standalone successor."
+    },
+    {
+      "number": 219,
+      "url": "https://github.com/esaueng/brepkit/pull/219",
+      "audited_head_sha": "addb1b731666d0389fdbae7c93143993f4c78198",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T23:39:38Z",
+      "title": "chore(release): bump kernel to 3.2.32",
+      "reason": "Release-only version metadata is intentionally excluded from the fresh Apache successor line."
+    },
+    {
+      "number": 246,
+      "url": "https://github.com/esaueng/brepkit/pull/246",
+      "audited_head_sha": "4a246d0dc29e6d2d337cc6a71128f8a8f63d900f",
+      "author": "petergstfsn",
+      "state_at_audit": "open",
+      "merged_at": null,
+      "title": "docs(skills): correct pr-workflow for this fork's actual gates",
+      "reason": "Repository-specific workflow documentation hard-codes BrepKit settings and must be regenerated for the standalone successor."
+    }
+  ],
+  "audit_window": {
+    "first_pull_request": 127,
+    "last_pull_request": 247,
+    "pull_requests_audited": 119,
+    "replayed_or_superseding_pull_requests": 102,
+    "excluded_or_deferred_pull_requests": 17,
+    "note": "Pull-request numbers 231 and 232 are not pull requests in this repository."
+  },
+  "staging_lineage": {
+    "fork_cutoff_commit": "1886e873fa4c24bf1880f2d3a868905c9d5e407f",
+    "final_permissive_upstream": {
+      "tag": "v2.129.15",
+      "commit": "a878e2b9c42cd36e4f9d2c00504502a6ef2f9687"
+    },
+    "forbidden_ancestry": {
+      "upstream_relicensing_commit": "bd7d1ba7",
+      "first_fork_relicensed_merge": "8fbaea57"
+    },
+    "migration_pull_requests": [
+      {
+        "number": 248,
+        "url": "https://github.com/esaueng/brepkit/pull/248",
+        "base_sha": "1886e873fa4c24bf1880f2d3a868905c9d5e407f",
+        "audited_head_sha": "63ad49d54d42b3cccec6fd5dc34750100c0d93a9",
+        "author": "petergstfsn",
+        "state_at_audit": "closed",
+        "merged_at": "2026-08-14T17:41:07Z",
+        "merge_commit_sha": "0e5e81d9e207555e4c48e34fa62ab9beb42651dd",
+        "title": "chore: establish permanent Apache-2.0 line"
+      },
+      {
+        "number": 249,
+        "url": "https://github.com/esaueng/brepkit/pull/249",
+        "base_sha": "55a951be26374ba75bf3aa6337473e1406008132",
+        "audited_head_sha": "0ec21c5e77d3f7eb7467c645fb1b00c7c9a6f2b5",
+        "author": "petergstfsn",
+        "state_at_audit": "closed",
+        "merged_at": "2026-08-14T18:00:13Z",
+        "merge_commit_sha": "0feb8d567110005a12ce02a17aa392e88a4c3569",
+        "title": "ci: stop Apache staging releases"
+      },
+      {
+        "number": 250,
+        "url": "https://github.com/esaueng/brepkit/pull/250",
+        "base_sha": "0feb8d567110005a12ce02a17aa392e88a4c3569",
+        "audited_head_sha": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f",
+        "author": "petergstfsn",
+        "state_at_audit": "closed",
+        "merged_at": "2026-08-14T18:24:18Z",
+        "merge_commit_sha": "303441a27f7fe086f1a4c1f63e32a399ccc9a351",
+        "title": "fix: replay Apache-compatible baseline repairs"
+      },
+      {
+        "number": 251,
+        "url": "https://github.com/esaueng/brepkit/pull/251",
+        "base_sha": "303441a27f7fe086f1a4c1f63e32a399ccc9a351",
+        "audited_head_sha": "f6a88a8597219930015d14739f6dd0a091f7915d",
+        "author": "petergstfsn",
+        "state_at_audit": "closed",
+        "merged_at": "2026-08-14T19:16:22Z",
+        "merge_commit_sha": "2b67947af5e7ee6ef58a9f5ea489120709b29ba6",
+        "title": "fix: replay Apache-compatible STEP periodic repairs"
+      },
+      {
+        "number": 252,
+        "url": "https://github.com/esaueng/brepkit/pull/252",
+        "base_sha": "2b67947af5e7ee6ef58a9f5ea489120709b29ba6",
+        "audited_head_sha": "a7a17f1e0944eb80b91d863a4e5bb1a8b7ad3191",
+        "author": "petergstfsn",
+        "state_at_audit": "closed",
+        "merged_at": "2026-08-15T02:43:21Z",
+        "merge_commit_sha": "e142b5727f56188014ebec723b81e8104063fd1d",
+        "title": "fix: replay Apache-compatible security hardening"
+      }
+    ],
+    "generated_package_refreshes": [
+      {
+        "commit": "55a951be26374ba75bf3aa6337473e1406008132",
+        "source_commit": "0e5e81d9e207555e4c48e34fa62ab9beb42651dd",
+        "reason": "Generated from the merged Apache source after PR #248."
+      }
+    ],
+    "phase_one_parent_tree": "4c4650e0aa43cc3443c8d6eddcf53b5031198d13"
+  },
+  "prior_source_pull_requests": [
+    {
+      "number": 127,
+      "url": "https://github.com/esaueng/brepkit/pull/127",
+      "audited_head_sha": "a03e338b44d819bce550d6582251bbc78f97a4c2",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-11T05:54:12Z",
+      "title": "fix(io): classify generic STEP face bounds",
+      "staging_pull_request": 251,
+      "replay_commits": [
+        "6a58743dfc303d560efa44d72c9f016ce1bbdeda"
+      ]
+    },
+    {
+      "number": 128,
+      "url": "https://github.com/esaueng/brepkit/pull/128",
+      "audited_head_sha": "7e3fdd99d734306028bd49c648d5dcf2ad6f082b",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-11T23:08:24Z",
+      "title": "fix(operations): close concave blend baselines",
+      "staging_pull_request": 250,
+      "replay_commits": [
+        "24c2920a42a88c1734db7288c3ef0f3507c1ac83",
+        "6352de1435fbdf9db62223e356a846f214582268"
+      ]
+    },
+    {
+      "number": 129,
+      "url": "https://github.com/esaueng/brepkit/pull/129",
+      "audited_head_sha": "359c98be4351a864bc7908a1bc5380a45ef6ef82",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-11T23:30:25Z",
+      "title": "fix(io): classify generic periodic STEP face bounds",
+      "staging_pull_request": 251,
+      "replay_commits": [
+        "5a54adadd8b02afe7ef77e99800f742137c634c6"
+      ]
+    },
+    {
+      "number": 130,
+      "url": "https://github.com/esaueng/brepkit/pull/130",
+      "audited_head_sha": "1934d00ce292fb3aac9b737584e7f8b78a4e1cca",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-11T23:35:45Z",
+      "title": "fix(heal): apply reshape actions across cavity shells",
+      "staging_pull_request": 250,
+      "replay_commits": [
+        "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
+      ]
+    },
+    {
+      "number": 131,
+      "url": "https://github.com/esaueng/brepkit/pull/131",
+      "audited_head_sha": "4bfc3edc8fe15c559b4b5afcab00f5867d6f50ca",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-11T23:35:43Z",
+      "title": "fix(heal): apply reshape actions across cavity shells",
+      "staging_pull_request": 250,
+      "replay_commits": [
+        "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
+      ]
+    },
+    {
+      "number": 132,
+      "url": "https://github.com/esaueng/brepkit/pull/132",
+      "audited_head_sha": "3138798c1722d0cdae5f36b932e0f70a6876afad",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-11T23:30:23Z",
+      "title": "fix(io): classify generic periodic STEP face bounds",
+      "staging_pull_request": 251,
+      "replay_commits": [
+        "5a54adadd8b02afe7ef77e99800f742137c634c6"
+      ]
+    },
+    {
+      "number": 133,
+      "url": "https://github.com/esaueng/brepkit/pull/133",
+      "audited_head_sha": "e33c9deefedef24c595df881117bfeabe970ca68",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T00:06:32Z",
+      "title": "Harden periodic faces against split circle rims",
+      "staging_pull_request": 251,
+      "replay_commits": [
+        "f6a88a8597219930015d14739f6dd0a091f7915d"
+      ]
+    },
+    {
+      "number": 134,
+      "url": "https://github.com/esaueng/brepkit/pull/134",
+      "audited_head_sha": "98b4fb0d36719081f8488d47aef83a5993050773",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T00:06:31Z",
+      "title": "fix(operations): harden periodic faces against split circle rims",
+      "staging_pull_request": 251,
+      "replay_commits": [
+        "f6a88a8597219930015d14739f6dd0a091f7915d"
+      ]
+    },
+    {
+      "number": 138,
+      "url": "https://github.com/esaueng/brepkit/pull/138",
+      "audited_head_sha": "5a80b3f5dfed6ec5e221b9fc7c156a85e7fc7b93",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T15:20:14Z",
+      "title": "fix(operations): bound periodic rim validation and cap ambiguous-arc diagnostics",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "1408ef3238ae8f78f81d79d253987cb96775d3d4"
+      ]
+    },
+    {
+      "number": 139,
+      "url": "https://github.com/esaueng/brepkit/pull/139",
+      "audited_head_sha": "8f2c7d659359c525e19483b3cc6fe4987fc72cf2",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T15:20:53Z",
+      "title": "fix(heal): bound split rim midpoint validation to avoid quadratic DoS",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "e7d5064b09c99bfb0da77583946817b3a85387be"
+      ]
+    },
+    {
+      "number": 140,
+      "url": "https://github.com/esaueng/brepkit/pull/140",
+      "audited_head_sha": "4542a32d7988fe082c2b66cf44971545893d93a9",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:02:59Z",
+      "title": "fix(operations): avoid quadratic split-rim scans",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "8dfa398c6e7c744700ef3a634a4b98b2970e0bc4"
+      ]
+    },
+    {
+      "number": 141,
+      "url": "https://github.com/esaueng/brepkit/pull/141",
+      "audited_head_sha": "767e5486b6a9ab9893a1dffe064546dbb7b43ce1",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:04:18Z",
+      "title": "fix(heal): deduplicate cavity shells in linear time",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "721e8c6e5648f55a7752083c9fac5144b0211498"
+      ]
+    },
+    {
+      "number": 142,
+      "url": "https://github.com/esaueng/brepkit/pull/142",
+      "audited_head_sha": "2ad2932720b270c20d4d9869ea1c3c051d6623fd",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:04:25Z",
+      "title": "fix(io): fail closed for generic multi-bound cone faces (reject periodic UV classification)",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "de40bf44defdb79504e565231a9801b9bed46786"
+      ]
+    },
+    {
+      "number": 143,
+      "url": "https://github.com/esaueng/brepkit/pull/143",
+      "audited_head_sha": "1cebe8f260350c84cda4604be846d092e64f3e16",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:04:31Z",
+      "title": "Keep planar blend convexity classification local",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "d4ed9abf229db18c28b12957e52148ad408cfdc4"
+      ]
+    },
+    {
+      "number": 144,
+      "url": "https://github.com/esaueng/brepkit/pull/144",
+      "audited_head_sha": "9b6f1776a37d6cec9466aa990601cf7baf86d0a8",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:06:05Z",
+      "title": "fix(io): cap work & sampling for generic STEP face-bound classification",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "2a49528fa7481a14aecf6399665c1a215c2fe82b"
+      ]
+    },
+    {
+      "number": 146,
+      "url": "https://github.com/esaueng/brepkit/pull/146",
+      "audited_head_sha": "ad2a54248b1f444e53efb147a7d8b6fba8cc9f89",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:06:19Z",
+      "title": "fix(security): make wire spur stripping linear",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "8af043f425ae77d882a5efe19f2ef9d11b3273aa"
+      ]
+    },
+    {
+      "number": 147,
+      "url": "https://github.com/esaueng/brepkit/pull/147",
+      "audited_head_sha": "14821f48d09b5649144a4424047564d2986dd003",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:06:27Z",
+      "title": "fix(math): reject invalid NURBS curve degrees",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "7a8c942d28bf122ea3cb5ae8b8fdae766419547a"
+      ]
+    },
+    {
+      "number": 150,
+      "url": "https://github.com/esaueng/brepkit/pull/150",
+      "audited_head_sha": "d58ba61f7ab7d5046bb10fb9a2a4b8f20369752e",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:09:29Z",
+      "title": "fix(heal): require matching face boundaries for deduplication",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "85c3821348117560fbfe96bcc2dce15c02283b9d"
+      ]
+    },
+    {
+      "number": 151,
+      "url": "https://github.com/esaueng/brepkit/pull/151",
+      "audited_head_sha": "a4d23f33e72e5ed9b678339a28a894cb433d53f6",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:10:38Z",
+      "title": "fix(sweep): bound path densification output",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "4a1125151f40877c4760ae4d55df34669848449e"
+      ]
+    },
+    {
+      "number": 152,
+      "url": "https://github.com/esaueng/brepkit/pull/152",
+      "audited_head_sha": "bd99dcabbbfe2990d9c4a24c36fdb9e0bcf893a7",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:12:07Z",
+      "title": "fix(math): avoid unsound analytic-analytic intersection rejection",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "20d8bc8a2f2269486cb35e2f947a2a815d09e021"
+      ]
+    },
+    {
+      "number": 155,
+      "url": "https://github.com/esaueng/brepkit/pull/155",
+      "audited_head_sha": "316cd320775eaa0bac5099fbff81ab57eec90646",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:15:31Z",
+      "title": "fix(algo): bound interior chord sampling to mitigate quadratic CPU path",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "e5c32a02ab424a249053a074bc53127b7e207546"
+      ]
+    },
+    {
+      "number": 156,
+      "url": "https://github.com/esaueng/brepkit/pull/156",
+      "audited_head_sha": "e72d83b88c51ccac2614cc1891fcb29c6baf0338",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:35:01Z",
+      "title": "fix(io): make arena deserialization atomic and validate deserialized NURBS/surfaces",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "da7e7cb0606e52b92523cd030b1e48cc3a826c91"
+      ]
+    },
+    {
+      "number": 157,
+      "url": "https://github.com/esaueng/brepkit/pull/157",
+      "audited_head_sha": "3b259376b02415a2aa4adbe329a2aa5dc7041a7f",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:35:40Z",
+      "title": "fix(algo): stream same-domain overlap candidates to bound broad-phase memory",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "df592dd3cd51638e80dacc61e935f3ce9a44c9d1"
+      ]
+    },
+    {
+      "number": 158,
+      "url": "https://github.com/esaueng/brepkit/pull/158",
+      "audited_head_sha": "2375f1699d38bec5db55a8e5558ca56d25b0a27f",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:36:53Z",
+      "title": "fix(algo): preserve holes in partial-overlap caps",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "37d32ff2303628420c7f008532372a224a8d1ade"
+      ]
+    },
+    {
+      "number": 159,
+      "url": "https://github.com/esaueng/brepkit/pull/159",
+      "audited_head_sha": "d497135c11be182b3d50b56597962239962d5893",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:38:16Z",
+      "title": "fix(measure): bound volume tessellation by curved extent",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "15a9a0016fb116ad4ba328884f3725fd370c6ced"
+      ]
+    },
+    {
+      "number": 160,
+      "url": "https://github.com/esaueng/brepkit/pull/160",
+      "audited_head_sha": "0abdd48437f3c65890dcccf6826dc4a185f78cf3",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:39:36Z",
+      "title": "fix(operations): validate evolution boolean semantics",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "0cdb333d54e56333e2be276eae8e297b69c72408"
+      ]
+    },
+    {
+      "number": 161,
+      "url": "https://github.com/esaueng/brepkit/pull/161",
+      "audited_head_sha": "e90de0aa2b62f7bb3793309fd9331c47109676cd",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:40:54Z",
+      "title": "fix(operations): validate partial revolve cap curves",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "1a4d1df0366215379c2f2eded22db816c5ff19fe"
+      ]
+    },
+    {
+      "number": 162,
+      "url": "https://github.com/esaueng/brepkit/pull/162",
+      "audited_head_sha": "97a4b7d82b3685fe6d6291f344b241dc09fd1cb8",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:42:18Z",
+      "title": "Require full torus winding for torus‑notch fast path",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "8535326c2b5bf237c6e7cb70a5eb673894af0743"
+      ]
+    },
+    {
+      "number": 163,
+      "url": "https://github.com/esaueng/brepkit/pull/163",
+      "audited_head_sha": "0d41b30c12f3fdbdbce1e82c404c41ad3abefc65",
+      "author": "petergstfsn",
+      "state_at_audit": "closed",
+      "merged_at": "2026-08-12T16:43:35Z",
+      "title": "fix(operations): verify spline geometry before normalization",
+      "staging_pull_request": 252,
+      "replay_commits": [
+        "e142b5727f56188014ebec723b81e8104063fd1d"
+      ]
+    }
+  ],
+  "prior_source_commits": [
+    {
+      "sha": "1059267922433be804f4c10566626c5b2ea697b8",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix(algo): preserve meridian winding samples",
+      "staging_pull_request": 250,
+      "replay_commit": "d1521f60ba6db871970f6884854843d130be566f"
+    },
+    {
+      "sha": "e33c2b78380e30c4176dcd9fba512678e92aea5d",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix box-cylinder two-lobe fuse volume",
+      "staging_pull_request": 250,
+      "replay_commit": "23fa548ecffc151b9ec04cd6778025f286a9c1be"
+    },
+    {
+      "sha": "0c0b8893c9129b8ec4faad2462130c5cc8de517c",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix: repair BrepKit 3.0.1 geometry regressions",
+      "staging_pull_request": 250,
+      "replay_commit": "c4c9b36e6ce68b90dae0ee8a99572d59e8b42450"
+    },
+    {
+      "sha": "f8b0af5f8150cb9c4720d207b1e8df1808d11433",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "test: preserve fork chamfer fail-closed contract",
+      "staging_pull_request": 250,
+      "replay_commit": "b3571d887d74fcda5488aa7fa74aeab21e0ddde8"
+    },
+    {
+      "sha": "6490ca8e165071ae1bf22cd7aafb47522fa917fb",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix(operations): close 9 of 11 red-baseline tests across revolve, fuse, and split",
+      "staging_pull_request": 250,
+      "replay_commit": "b8e0a5fb94bcef121b5fd30fef3dc4fed45c041d"
+    },
+    {
+      "sha": "5c37c99a0cafdf1021e7b4f71f4f2a8bb37e02dd",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "test(operations): re-ignore the two concave-notch blend pins behind the fork's engine policy",
+      "staging_pull_request": 250,
+      "replay_commit": "24c2920a42a88c1734db7288c3ef0f3507c1ac83"
+    },
+    {
+      "sha": "7e3fdd99d734306028bd49c648d5dcf2ad6f082b",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix(operations): close concave blend baselines",
+      "staging_pull_request": 250,
+      "replay_commit": "6352de1435fbdf9db62223e356a846f214582268"
+    },
+    {
+      "sha": "1934d00ce292fb3aac9b737584e7f8b78a4e1cca",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix(heal): apply reshape actions across cavity shells",
+      "staging_pull_request": 250,
+      "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
+    },
+    {
+      "sha": "c7d52fdd8e73130bc8cfb0122237e79dfcb1ebf9",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "fix(heal): preserve reversed split traversal",
+      "staging_pull_request": 250,
+      "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
+    },
+    {
+      "sha": "6671d593fa1905863c9e8538756c8585de8b2859",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "style: apply rustfmt to reshape regression",
+      "staging_pull_request": 250,
+      "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
+    },
+    {
+      "sha": "4bfc3edc8fe15c559b4b5afcab00f5867d6f50ca",
+      "author_name": "Peter",
+      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "subject": "test(heal): assert split edge orientation",
+      "staging_pull_request": 250,
+      "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
+    }
+  ]
+}

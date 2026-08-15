@@ -1123,3 +1123,139 @@ fn chord_split_disc_halves_are_not_duplicates() {
     );
     assert!(result.pairs.is_empty());
 }
+
+/// A planar disc face whose whole outer wire is ONE closed edge, seamed at
+/// `seam`. Used to compare the same-domain key of two coincident rims that
+/// carry the same geometry under different parameterizations.
+fn closed_rim_face(topo: &mut Topology, curve: EdgeCurve, seam: Point3) -> FaceId {
+    use brepkit_topology::edge::Edge;
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+    let e = topo.add_edge(Edge::new(v, v, curve));
+    let wid = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
+    topo.add_face(Face::new(
+        wid,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ))
+}
+
+/// Two coincident CLOSED-ELLIPSE rims that store opposed major axes must
+/// produce the same same-domain key.
+///
+/// `Ellipse3D` evaluates as `centre + a·cos(t)·u + b·sin(t)·v` over the full
+/// `[0, 2π]` domain, so a closed ellipse edge sampled at `t = 0.5` yields
+/// `centre - a·u` — a point that jumps by `2a` when the stored frame flips.
+/// Two instances of one ellipse (an oblique section carried by each operand)
+/// therefore hashed apart, the same-domain pair was missed, and the coincident
+/// face pair survived the boolean. The closed-edge centroid is invariant under
+/// that flip because the equally-spaced angular offsets cancel.
+#[test]
+fn closed_ellipse_rims_with_opposed_axes_share_one_key() {
+    use brepkit_math::curves::Ellipse3D;
+
+    let centre = Point3::new(10.0, 4.0, 0.0);
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let (a, b) = (8.0, 3.0);
+    let seam = Point3::new(centre.x() + a, centre.y(), centre.z());
+
+    let mut topo = Topology::new();
+    let arena = GfaArena::new();
+    let scale = 1.0 / Tolerance::new().linear;
+
+    let forward = Ellipse3D::new_with_ref(centre, normal, a, b, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    let reversed =
+        Ellipse3D::new_with_ref(centre, normal, a, b, Vec3::new(-1.0, 0.0, 0.0)).unwrap();
+
+    // Same point set: the reversed frame traces the identical ellipse.
+    for k in 0..16 {
+        let t = f64::from(k) * std::f64::consts::TAU / 16.0;
+        let p = forward.evaluate(t);
+        let q = reversed.evaluate(t + std::f64::consts::PI);
+        assert!(
+            (p - q).length() <= Tolerance::new().linear,
+            "the two frames must describe the same ellipse"
+        );
+    }
+
+    let fwd_face = closed_rim_face(&mut topo, EdgeCurve::Ellipse(forward), seam);
+    let rev_face = closed_rim_face(&mut topo, EdgeCurve::Ellipse(reversed), seam);
+
+    let fwd_key = compute_edge_set_quantized(&topo, &arena, fwd_face, scale).unwrap();
+    let rev_key = compute_edge_set_quantized(&topo, &arena, rev_face, scale).unwrap();
+
+    assert_eq!(
+        fwd_key, rev_key,
+        "coincident closed-ellipse rims must hash together regardless of the stored major axis"
+    );
+}
+
+/// The circle case this discriminator was introduced for must not regress:
+/// two coincident CLOSED-CIRCLE rims seeded with reference directions a
+/// quarter turn apart still share one key.
+#[test]
+fn closed_circle_rims_with_rotated_axes_share_one_key() {
+    use brepkit_math::curves::Circle3D;
+
+    let centre = Point3::new(-6.0, 2.5, 3.0);
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let r = 24.0;
+    let seam = Point3::new(centre.x() + r, centre.y(), centre.z());
+
+    let mut topo = Topology::new();
+    let arena = GfaArena::new();
+    let scale = 1.0 / Tolerance::new().linear;
+
+    let at_zero = Circle3D::new_with_ref(centre, normal, r, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    let quarter_turn = Circle3D::new_with_ref(centre, normal, r, Vec3::new(0.0, 1.0, 0.0)).unwrap();
+
+    let a_face = closed_rim_face(&mut topo, EdgeCurve::Circle(at_zero), seam);
+    let b_face = closed_rim_face(&mut topo, EdgeCurve::Circle(quarter_turn), seam);
+
+    let a_key = compute_edge_set_quantized(&topo, &arena, a_face, scale).unwrap();
+    let b_key = compute_edge_set_quantized(&topo, &arena, b_face, scale).unwrap();
+
+    assert_eq!(
+        a_key, b_key,
+        "coincident closed-circle rims must hash together regardless of the seam angle"
+    );
+}
+
+/// The centroid must land on the centre for both uniform-angle closed curves,
+/// whatever frame they store — that exactness is what the key relies on.
+#[test]
+fn closed_edge_centroid_is_the_centre_for_circle_and_ellipse() {
+    use brepkit_math::curves::{Circle3D, Ellipse3D};
+
+    let tol = Tolerance::new();
+    let centre = Point3::new(1.5, -7.25, 11.0);
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let seam = Point3::new(centre.x() + 5.0, centre.y(), centre.z());
+
+    for reference in [
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(-1.0, 0.0, 0.0),
+        Vec3::new(0.6, -0.8, 0.0),
+    ] {
+        let circle =
+            EdgeCurve::Circle(Circle3D::new_with_ref(centre, normal, 5.0, reference).unwrap());
+        let ellipse = EdgeCurve::Ellipse(
+            Ellipse3D::new_with_ref(centre, normal, 5.0, 2.0, reference).unwrap(),
+        );
+        for curve in [circle, ellipse] {
+            let c = closed_edge_centroid(&curve, seam, seam);
+            assert!(
+                (c - centre).length() <= tol.linear,
+                "{} centroid {c:?} must be the centre {centre:?}",
+                curve.type_tag()
+            );
+        }
+    }
+}

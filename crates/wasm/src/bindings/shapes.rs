@@ -486,7 +486,7 @@ impl BrepKernel {
     ///
     /// Returns an error if any coordinate is NaN/infinite, a semi-axis is
     /// non-positive, `semi_minor` exceeds `semi_major`, or `axis`/`ref` is
-    /// a zero vector.
+    /// a zero vector, or an endpoint does not lie on the ellipse.
     #[wasm_bindgen(js_name = "makeEllipseArc3d")]
     #[allow(clippy::too_many_arguments)]
     pub fn make_ellipse_arc_3d(

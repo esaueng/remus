@@ -22,6 +22,7 @@ use crate::ds::{GfaArena, Rank};
 use crate::error::AlgoError;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_topology::Topology;
+use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::face::{FaceId, FaceSurface};
 
 /// A detected same-domain face pair.
@@ -613,7 +614,20 @@ pub fn detect_same_domain_with_shells<S: BuildHasher>(
             // Keep the lowest-indexed face as representative; mark the rest
             // as duplicates so the BOP selector can drop them before
             // classification (issue #696).
-            (Some(rep), None) | (None, Some(rep)) => {
+            (Some(initial_rep), None) | (None, Some(initial_rep)) => {
+                let rep = if geometric_overlap {
+                    members
+                        .iter()
+                        .copied()
+                        .max_by(|&a, &b| {
+                            let aa = repr_face_area(topo, sub_faces[a].face_id).unwrap_or(0.0);
+                            let ab = repr_face_area(topo, sub_faces[b].face_id).unwrap_or(0.0);
+                            aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .unwrap_or(initial_rep)
+                } else {
+                    initial_rep
+                };
                 for &idx in members {
                     if idx != rep && is_residue(idx, rep) {
                         within_rank_dups.push(WithinRankDuplicate {
@@ -829,7 +843,27 @@ fn compute_edge_set_quantized(
         // parameterization starts or which way it runs. Combined with the
         // shared endpoint (which fixes the radius) it discriminates as well
         // as the midpoint did, and it is canonical.
-        let disc = if qs == qe {
+        //
+        // Circle AND Ellipse qualify: both evaluate as
+        // `centre + a·cos(t)·u + b·sin(t)·v` over the full `[0, 2π]` domain,
+        // so uniform `t` is uniform angle and the sampled offsets cancel for
+        // any stored frame. Two coincident ellipses may store opposed major
+        // axes (or opposed normals), which moves the t=0.5 midpoint by `2a`
+        // while leaving the centroid on the centre.
+        //
+        // A closed NURBS edge is deliberately excluded. Uniform `t` walks the
+        // knot span, so two instances of one curve carrying different knots or
+        // a different seam sample different points and the centroid is not
+        // invariant. Resampling by arc length would remove the knot dependence
+        // but not the seam dependence — only the arc-length-weighted integral
+        // `∮p ds / ∮ds` is seam-independent, and a finite-sample estimate of it
+        // has no error bound below this key's quantization bucket, so it could
+        // still split true duplicates. A closed NURBS therefore keeps the
+        // stored-order midpoint: stable per instance, not canonical across
+        // instances.
+        let closed_uniform_angle =
+            qs == qe && matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_));
+        let disc = if closed_uniform_angle {
             closed_edge_centroid(edge.curve(), sp, ep)
         } else {
             crate::builder::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, 0.5)
@@ -918,18 +952,21 @@ fn opposite_boundary_traversal(a: &DirectedBoundary, b: &DirectedBoundary) -> bo
 
 /// Number of samples used for the closed-edge centroid discriminator.
 ///
-/// Any `N >= 2` makes the equally-spaced offsets of a circle cancel exactly;
-/// 16 keeps the estimate stable for non-circular closed curves too.
+/// Any `N >= 2` makes the equally-spaced angular offsets of a circle or an
+/// ellipse cancel exactly; 16 keeps the residue well inside the discriminator
+/// bucket even for large radii.
 const CLOSED_EDGE_SAMPLES: usize = 16;
 
 /// Parameterization-independent point identifying a CLOSED edge.
 ///
 /// Samples uniformly over the whole period and averages. The endpoint is
 /// deliberately excluded (it duplicates the start on a closed curve and
-/// would bias the average toward it). For a circle the sampled offsets sum
-/// to zero whatever the start angle or direction, so this returns the exact
-/// centre — which is what makes two differently-parameterized instances of
-/// one circle hash together.
+/// would bias the average toward it). For a circle or an ellipse — both
+/// parameterized by a uniform angle over `[0, 2π]` — the sampled offsets sum
+/// to zero whatever the stored frame or direction, so this returns the exact
+/// centre, which is what makes two differently-parameterized instances of one
+/// curve hash together. Callers must not hand it a closed NURBS: uniform `t`
+/// walks the knot span there and the average is not invariant.
 fn closed_edge_centroid(
     curve: &brepkit_topology::edge::EdgeCurve,
     sp: brepkit_math::vec::Point3,
@@ -1112,6 +1149,96 @@ fn planar_faces_overlap(
             .all(|p| in_hole(p, face))
     };
 
+    // A sampled polygon is an inscribed approximation of a circular boundary.
+    // A point on the true circle can therefore sit outside the chord polygon.
+    // Recover full containment only when the container is convex and every
+    // sampled candidate point is either inside that polygon or proven on one
+    // of the container's true analytic boundary edges.
+    let convex = |poly: &[brepkit_math::vec::Point2]| -> bool {
+        let mut sign = 0.0_f64;
+        for idx in 0..poly.len() {
+            let ab = poly[(idx + 1) % poly.len()] - poly[idx];
+            let bc = poly[(idx + 2) % poly.len()] - poly[(idx + 1) % poly.len()];
+            let cross = ab.x() * bc.y() - ab.y() * bc.x();
+            if cross.abs() <= tol.linear_sq() {
+                continue;
+            }
+            if sign * cross < 0.0 {
+                return false;
+            }
+            sign = cross.signum();
+        }
+        sign != 0.0
+    };
+    let on_true_outer_boundary =
+        |p: brepkit_math::vec::Point3, face: &brepkit_topology::face::Face| -> bool {
+            topo.wire(face.outer_wire()).is_ok_and(|wire| {
+                wire.edges().iter().any(|oe| {
+                    topo.edge(oe.edge()).is_ok_and(|edge| {
+                        let Ok(start) = topo
+                            .vertex(edge.start())
+                            .map(brepkit_topology::vertex::Vertex::point)
+                        else {
+                            return false;
+                        };
+                        let Ok(end) = topo
+                            .vertex(edge.end())
+                            .map(brepkit_topology::vertex::Vertex::point)
+                        else {
+                            return false;
+                        };
+                        super::fill_images_faces::point_on_edge(
+                            edge.curve(),
+                            start,
+                            end,
+                            p,
+                            tol.linear * 10.0,
+                        )
+                    })
+                })
+            })
+        };
+    let safely_contained = |points: &[brepkit_math::vec::Point3],
+                            projected: &[brepkit_math::vec::Point2],
+                            container: &[brepkit_math::vec::Point2],
+                            face: &brepkit_topology::face::Face|
+     -> bool {
+        convex(container)
+            && points.len() == projected.len()
+            && points.iter().zip(projected).all(|(&point, &uv)| {
+                super::classify_2d::point_in_polygon_2d(uv, container)
+                    || on_true_outer_boundary(point, face)
+            })
+    };
+    let contained_to_tolerance =
+        |candidate: &[brepkit_math::vec::Point2], container: &[brepkit_math::vec::Point2]| {
+            candidate.iter().all(|&point| {
+                super::classify_2d::point_in_polygon_2d(point, container)
+                    || super::classify_2d::distance_to_polygon_boundary(point, container)
+                        <= tol.linear * 10.0
+            })
+        };
+
+    // Full containment is representable by the same-domain selection rules;
+    // unlike a mere area threshold, every boundary point of the smaller face
+    // is proven inside the larger face here.
+    // A convex analytic-boundary proof recovers containment that the sampled
+    // chord polygon cannot represent exactly.
+    if ip_i_in_j
+        && safely_contained(&pts_i, &poly_i, &poly_j, face_j)
+        && !in_hole(p_i_2d, face_j)
+        && !footprint_in_holes(p_i_2d, &poly_i, &poly_j, face_j)
+    {
+        return true;
+    }
+    if ip_j_in_i
+        && safely_contained(&pts_j, &poly_j, &poly_i, face_i)
+        && !in_hole(p_j_2d, face_i)
+        && !footprint_in_holes(p_j_2d, &poly_j, &poly_i, face_i)
+    {
+        return true;
+    }
+
     // i fully contained in j: every vertex of i (plus its interior sample)
     // is inside j's polygon.
     if ip_i_in_j
@@ -1130,45 +1257,75 @@ fn planar_faces_overlap(
         return true;
     }
 
-    // Partial overlap. Two coplanar faces can share a genuine 2D area without
-    // either being fully contained in the other — e.g. a faceted scoop ramp's
-    // staircase-shaped wall sub-face lying against a rectangular ramp side
-    // facet. Full-containment misses these; the result is a coincident face
-    // pair that survives the boolean and goes non-manifold.
-    //
-    // Detect it by the intersection AREA of the projected polygons. A positive
-    // intersection area means real overlap; faces that merely tile side-by-side
-    // (sharing only a boundary segment) have zero intersection area, so this
-    // does not reintroduce the side-by-side false positive the containment
-    // guards above defend against. Require the overlap to cover a meaningful
-    // fraction of the smaller face so a sliver of numerical overlap along a
-    // shared edge does not pair disjoint faces.
-    if face_j.inner_wires().is_empty() && face_i.inner_wires().is_empty() {
-        let area_i = super::classify_2d::signed_area_2d(&poly_i).abs();
-        let area_j = super::classify_2d::signed_area_2d(&poly_j).abs();
-        let smaller = area_i.min(area_j);
-        // The polygon intersection is contained in the overlap of the two 2D
-        // bounding boxes, so `area(poly∩poly) ≤ area(bbox∩bbox)`. The exact
-        // (and costly) polygon clip can only clear the 50%-of-smaller threshold
-        // below when the box overlap already does — so gate the clip on the
-        // cheap box test. This skips the clip for the common touching /
-        // side-by-side coplanar pairs (e.g. stacked wall-piece bands) without
-        // changing the result. `smaller`/`overlap` are areas, so the degenerate
-        // guard compares against the squared linear tolerance.
-        if smaller > tol.linear_sq() && bbox2d_overlap_area(&poly_i, &poly_j) > smaller * 0.5 {
-            crate::perf::bump_sd_poly_clip();
-            let inter = brepkit_math::polygon_boolean::polygon_boolean(
-                &poly_i,
-                &poly_j,
-                brepkit_math::polygon_boolean::BooleanOp::Intersection,
-                tol.linear,
-            );
-            if inter.area().abs() > smaller * 0.5 {
-                return true;
-            }
-        }
+    // Plane-line splitters can leave a copied boundary vertex a few units of
+    // tolerance outside the polygon used for classification. Every boundary
+    // vertex still has to be inside or boundary-close; unlike an area ratio,
+    // this cannot accept a face with any materially exposed edge or corner.
+    if ip_i_in_j
+        && contained_to_tolerance(&poly_i, &poly_j)
+        && !in_hole(p_i_2d, face_j)
+        && !footprint_in_holes(p_i_2d, &poly_i, &poly_j, face_j)
+    {
+        return true;
     }
-    false
+    if ip_j_in_i
+        && contained_to_tolerance(&poly_j, &poly_i)
+        && !in_hole(p_j_2d, face_i)
+        && !footprint_in_holes(p_j_2d, &poly_j, &poly_i, face_i)
+    {
+        return true;
+    }
+
+    face_i.inner_wires().is_empty()
+        && face_j.inner_wires().is_empty()
+        && polygons_overlap_majority(&poly_i, &poly_j, tol)
+}
+
+/// Whether two projected face polygons share a genuine 2D region.
+///
+/// Two coplanar (or co-surface) faces can overlap without either being fully
+/// contained in the other — e.g. a faceted scoop ramp's staircase-shaped wall
+/// sub-face lying against a rectangular ramp side facet. The containment tests
+/// above miss these, so the coincident pair survives classification and the
+/// fused result goes non-manifold (#895).
+///
+/// Detect it by the intersection AREA of the projected polygons. Faces that
+/// merely tile side-by-side share only a boundary segment (zero intersection
+/// area), so this does not reintroduce the side-by-side false positive the
+/// containment guards defend against. Requiring the overlap to cover more than
+/// half of the smaller face keeps a sliver of numerical overlap along a shared
+/// edge from pairing disjoint faces.
+fn polygons_overlap_majority(
+    a: &[brepkit_math::vec::Point2],
+    b: &[brepkit_math::vec::Point2],
+    tol: Tolerance,
+) -> bool {
+    let area_a = super::classify_2d::signed_area_2d(a).abs();
+    let area_b = super::classify_2d::signed_area_2d(b).abs();
+    let smaller = area_a.min(area_b);
+    // `smaller` and the overlap are areas, so the degenerate-face guard
+    // compares against the squared linear tolerance (area), not `linear`.
+    if smaller <= tol.linear_sq() {
+        return false;
+    }
+    // The polygon intersection is contained in the overlap of the two 2D
+    // bounding boxes, so `area(poly∩poly) ≤ area(bbox∩bbox)`. The exact (and
+    // costly) polygon clip can only clear the 50%-of-smaller threshold below
+    // when the box overlap already does — so gate the clip on the cheap box
+    // test. This skips the clip for the common touching / side-by-side
+    // coplanar pairs (e.g. stacked wall-piece bands) without changing the
+    // result.
+    if bbox2d_overlap_area(a, b) <= smaller * 0.5 {
+        return false;
+    }
+    crate::perf::bump_sd_poly_clip();
+    let intersection = brepkit_math::polygon_boolean::polygon_boolean(
+        a,
+        b,
+        brepkit_math::polygon_boolean::BooleanOp::Intersection,
+        tol.linear,
+    );
+    intersection.area().abs() > smaller * 0.5
 }
 
 /// Area of the overlap of two 2D point sets' axis-aligned bounding boxes.
@@ -1388,9 +1545,13 @@ fn analytic_faces_overlap(
     // exact. Projecting each face through its OWN surface would reference the
     // axial v to a different origin (e.g. a body cylinder at z=0 vs a lip
     // cylinder at z=13.3) and falsely overlap disjoint z-bands.
-    let Ok(ref_surface) = topo.face(sub_faces[i].face_id).map(|f| f.surface().clone()) else {
+    let Ok(face_i) = topo.face(sub_faces[i].face_id) else {
         return false;
     };
+    let Ok(face_j) = topo.face(sub_faces[j].face_id) else {
+        return false;
+    };
+    let ref_surface = face_i.surface().clone();
     let Some(pts_i) = wire_points_3d(topo, sub_faces[i].face_id) else {
         return false;
     };
@@ -1480,6 +1641,46 @@ fn analytic_faces_overlap(
             all_inside_strict(verts, poly) || (outlines_coincide && all_inside_tol(verts, poly))
         };
 
+    // A hole-free line-and-circle cylinder/cone patch maps exactly to a
+    // polygon with straight iso-parametric sides. If that polygon is convex,
+    // boundary-tolerant containment of every sampled vertex is a whole-patch
+    // proof, not an area-percentage guess. Imported NURBS and other curve kinds
+    // remain on the conservative path below.
+    let exact_iso_patch = |face: &brepkit_topology::face::Face| -> bool {
+        face.inner_wires().is_empty()
+            && topo.wire(face.outer_wire()).is_ok_and(|wire| {
+                wire.edges().iter().all(|oe| {
+                    topo.edge(oe.edge()).is_ok_and(|edge| {
+                        matches!(edge.curve(), EdgeCurve::Line | EdgeCurve::Circle(_))
+                    })
+                })
+            })
+    };
+    let convex = |poly: &[brepkit_math::vec::Point2]| -> bool {
+        let mut sign = 0.0_f64;
+        for idx in 0..poly.len() {
+            let ab = poly[(idx + 1) % poly.len()] - poly[idx];
+            let bc = poly[(idx + 2) % poly.len()] - poly[(idx + 1) % poly.len()];
+            let cross = ab.x() * bc.y() - ab.y() * bc.x();
+            if cross.abs() <= tol.linear_sq() {
+                continue;
+            }
+            if sign * cross < 0.0 {
+                return false;
+            }
+            sign = cross.signum();
+        }
+        sign != 0.0
+    };
+    if exact_iso_patch(face_i) && exact_iso_patch(face_j) {
+        if ip_i_in_j && convex(&poly_j) && all_inside_tol(&poly_i, &poly_j) {
+            return true;
+        }
+        if ip_j_in_i && convex(&poly_i) && all_inside_tol(&poly_j, &poly_i) {
+            return true;
+        }
+    }
+
     // i contained in j, or j contained in i — the eighth-in-quarter case.
     if ip_i_in_j && all_inside(&poly_i, &poly_j) {
         return true;
@@ -1488,21 +1689,8 @@ fn analytic_faces_overlap(
         return true;
     }
 
-    // Partial overlap by intersection area (mirrors the planar path). Faces
-    // that merely tile side-by-side share only a boundary segment (zero
-    // intersection area) and are not paired; a genuine shared band covers a
-    // meaningful fraction of the smaller patch.
-    let inter = brepkit_math::polygon_boolean::polygon_boolean(
-        &poly_i,
-        &poly_j,
-        brepkit_math::polygon_boolean::BooleanOp::Intersection,
-        tol.linear,
-    );
-    let overlap_area = inter.area().abs();
-    let area_i = super::classify_2d::signed_area_2d(&poly_i).abs();
-    let area_j = super::classify_2d::signed_area_2d(&poly_j).abs();
-    let smaller = area_i.min(area_j);
-    smaller > tol.linear_sq() && overlap_area > smaller * 0.5
+    // Partial overlap by intersection area (mirrors the planar path).
+    polygons_overlap_majority(&poly_i, &poly_j, tol)
 }
 
 /// Approximate `(arc-length, axial)` parameter-space area of a cylinder/cone

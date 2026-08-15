@@ -14,7 +14,7 @@ use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::vertex::{Vertex, VertexId};
 use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 
-use crate::data::{OffsetData, OffsetStatus, find_or_create_vertex};
+use crate::data::{OffsetData, OffsetStatus, VertexCache, find_or_create_vertex};
 use crate::error::OffsetError;
 
 type LoopBuild = (Vec<WireId>, Vec<(EdgeId, EdgeId)>);
@@ -48,7 +48,7 @@ pub fn build_wire_loops(topo: &mut Topology, data: &mut OffsetData) -> Result<()
     // geometric lines. Keep one tolerance-deduplicated vertex and one
     // topological edge for every corner pair so adjacent faces form a
     // manifold shell instead of merely coincident, disconnected polygons.
-    let mut corner_cache: Vec<(Point3, VertexId)> = Vec::new();
+    let mut corner_cache = VertexCache::new(data.options.tolerance.linear);
     let mut edge_cache: HashMap<(usize, usize), EdgeId> = HashMap::new();
 
     for face_id in active_faces {
@@ -96,7 +96,7 @@ fn build_loops_for_face(
     topo: &mut Topology,
     data: &OffsetData,
     face_id: FaceId,
-    corner_cache: &mut Vec<(Point3, VertexId)>,
+    corner_cache: &mut VertexCache,
     edge_cache: &mut HashMap<(usize, usize), EdgeId>,
 ) -> Result<LoopBuild, OffsetError> {
     let mut face_edges: Vec<EdgeId> = Vec::new();
@@ -435,7 +435,7 @@ fn build_loops_via_line_intersection(
     topo: &mut Topology,
     data: &OffsetData,
     face_id: FaceId,
-    corner_cache: &mut Vec<(Point3, VertexId)>,
+    corner_cache: &mut VertexCache,
     edge_cache: &mut HashMap<(usize, usize), EdgeId>,
 ) -> Result<LoopBuild, OffsetError> {
     let mut line_segs: Vec<LineSeg> = Vec::new();

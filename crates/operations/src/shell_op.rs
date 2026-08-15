@@ -252,7 +252,9 @@ pub fn shell(
         // normals puts the miter on the intersection of the two offset
         // surfaces, which is exactly the sharp corner.
         let collapsing = match face.surface() {
-            FaceSurface::Cylinder(cyl) => cyl.radius() - thickness <= tol.linear,
+            FaceSurface::Cylinder(cyl) => {
+                !face.is_reversed() && cyl.radius() - thickness <= tol.linear
+            }
             FaceSurface::Plane { .. }
             | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)

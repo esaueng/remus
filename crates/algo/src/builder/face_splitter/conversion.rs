@@ -10,6 +10,22 @@ use super::super::pcurve_compute::{
 use super::super::plane_frame::PlaneFrame;
 use super::super::split_types::OrientedPCurveEdge;
 
+pub(super) fn reconciliation_band(points: &[Point3], minimum: f64) -> f64 {
+    let (min, max) = points.iter().fold(
+        (
+            Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(min, max), p| {
+            (
+                Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z())),
+                Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z())),
+            )
+        },
+    );
+    minimum.max((max - min).length() * 1e-3)
+}
+
 /// Collect 3D vertex positions from a wire's edges.
 pub fn collect_wire_points(
     topo: &Topology,
@@ -55,7 +71,7 @@ pub(super) fn boundary_edges_to_pcurve(
         frame,
         &std::collections::HashMap::new(),
         &[],
-        false,
+        0.0,
     )
 }
 
@@ -66,8 +82,8 @@ pub(super) fn boundary_edges_to_pcurve(
 /// Without the expansion the outer boundary keeps the unsplit original, the
 /// face cannot partition at its own exit pave, and its sub-faces mismatch
 /// the neighbouring faces' image-split edges along the whole span (the
-/// kumiko z~9.9 missing-face root). Line edges only, mirroring
-/// `rebuild_face_with_edge_images`.
+/// kumiko z~9.9 missing-face root). Expansion covers demand-gated line images
+/// and circular NURBS junctions, mirroring `rebuild_face_with_edge_images`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
     topo: &Topology,
@@ -81,40 +97,33 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
         S,
     >,
     anchors: &[Point3],
-    expand_lines: bool,
+    linear_tolerance: f64,
 ) -> Vec<OrientedPCurveEdge> {
-    // Demand-driven: expand an edge only when one of its interior image
-    // junctions sits near a section endpoint (an exit pave a chain must
-    // anchor to). Every other face keeps its unexpanded boundary and stays
-    // byte-identical to the historical behaviour.
-    const ANCHOR_BAND: f64 = 3e-3;
-    // A junction COINCIDENT with a section endpoint (within the weld band)
-    // is already served by the calibrated boundary-splitting machinery —
-    // expanding there perturbs partitions that were correct (the
-    // divider-lip fuse de-analytics). Only a junction the sections point AT
-    // but do not REACH (the operands' own disagreement scale) demands the
-    // expansion.
-    const WELD_BAND: f64 = 1e-5;
+    // Scale the reconciliation band with this face rather than treating
+    // 0.003 model units as universally negligible. This preserves the
+    // measured allowance on the reference-size fixture without consuming
+    // intentional clearances in geometrically smaller models.
+    let anchor_band = reconciliation_band(wire_pts, linear_tolerance);
+    let weld_band = linear_tolerance * 100.0;
     let wire = match topo.wire(wire_id) {
         Ok(w) => w,
         Err(_) => return Vec::new(),
     };
 
     let junction_near_anchor = |imgs: &[brepkit_topology::edge::EdgeId]| -> bool {
-        for w in imgs.windows(2) {
-            let (Ok(e0), Ok(e1)) = (topo.edge(w[0]), topo.edge(w[1])) else {
+        for pair in imgs.windows(2) {
+            let (Ok(e0), Ok(e1)) = (topo.edge(pair[0]), topo.edge(pair[1])) else {
                 continue;
             };
             for vid in [e0.start(), e0.end()] {
                 if (vid == e1.start() || vid == e1.end())
-                    && let Ok(v) = topo.vertex(vid)
+                    && let Ok(vertex) = topo.vertex(vid)
                 {
-                    let p = v.point();
-                    if anchors.iter().any(|a| {
-                        let d = (*a - p).length();
-                        d <= ANCHOR_BAND && d > WELD_BAND
-                    }) && !anchors.iter().any(|a| (*a - p).length() <= WELD_BAND)
-                    {
+                    let point = vertex.point();
+                    if anchors.iter().any(|anchor| {
+                        let distance = (*anchor - point).length();
+                        distance > weld_band && distance <= anchor_band
+                    }) {
                         return true;
                     }
                 }
@@ -180,7 +189,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
                     && let Ok(v) = topo.vertex(vid)
                 {
                     let p = v.point();
-                    if anchors.iter().any(|a| (*a - p).length() <= WELD_BAND) {
+                    if anchors.iter().any(|a| (*a - p).length() <= weld_band) {
                         return true;
                     }
                 }
@@ -200,15 +209,25 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
         match edge_images.get(&oe.edge()) {
             Some(imgs)
                 if imgs.len() > 1
-                    && ((is_line && expand_lines && junction_near_anchor(imgs))
+                    && ((frame.is_some() && is_line && junction_near_anchor(imgs))
                         || (is_nurbs
                             && nurbs_is_circular(oe.edge())
                             && junction_in_band_nurbs(imgs))) =>
             {
                 if oe.is_forward() {
-                    pieces.extend(imgs.iter().map(|&i| (i, true)));
+                    pieces.extend(imgs.iter().filter_map(|&i| {
+                        topo.edge(i)
+                            .ok()
+                            .filter(|edge| edge.start() != edge.end())
+                            .map(|_| (i, true))
+                    }));
                 } else {
-                    pieces.extend(imgs.iter().rev().map(|&i| (i, false)));
+                    pieces.extend(imgs.iter().rev().filter_map(|&i| {
+                        topo.edge(i)
+                            .ok()
+                            .filter(|edge| edge.start() != edge.end())
+                            .map(|_| (i, false))
+                    }));
                 }
             }
             _ => pieces.push((oe.edge(), oe.is_forward())),
@@ -533,5 +552,22 @@ pub(super) fn uv_endpoints_from_pcurve(
             project_point_on_surface(start_3d, surface, wire_pts, None),
             project_point_on_surface(end_3d, surface, wire_pts, None),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconciliation_band_scales_with_the_face() {
+        let unit = [Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)];
+        let small = [Point3::new(0.0, 0.0, 0.0), Point3::new(0.01, 0.01, 0.0)];
+
+        let unit_band = reconciliation_band(&unit, 1e-7);
+        let small_band = reconciliation_band(&small, 1e-7);
+
+        assert!(unit_band < 2.5e-3);
+        assert!(small_band < unit_band / 50.0);
     }
 }

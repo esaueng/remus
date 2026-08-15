@@ -196,6 +196,28 @@ fn segments(poly: &[Point2]) -> impl Iterator<Item = (Point2, Point2)> + '_ {
     (0..poly.len()).map(move |i| (poly[i], poly[(i + 1) % poly.len()]))
 }
 
+fn point_segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
+    let ab = b - a;
+    let len_sq = ab.dot(ab);
+    if len_sq <= f64::EPSILON {
+        return (p - a).length();
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    (p - (a + ab * t)).length()
+}
+
+fn loops_touch(a: &[Point3], b: &[Point3], normal: Vec3, tolerance: f64) -> bool {
+    let (a2, b2) = (project_to_2d(a, normal), project_to_2d(b, normal));
+    segments(&a2).any(|(a0, a1)| {
+        segments(&b2).any(|(b0, b1)| {
+            point_segment_distance_2d(a0, b0, b1) <= tolerance
+                || point_segment_distance_2d(a1, b0, b1) <= tolerance
+                || point_segment_distance_2d(b0, a0, a1) <= tolerance
+                || point_segment_distance_2d(b1, a0, a1) <= tolerance
+        })
+    })
+}
+
 /// True when any segment of `a` properly crosses any segment of `b`.
 ///
 /// The companion to [`first_point_outside`]. Containment cannot be decided by
@@ -362,6 +384,15 @@ pub fn validate_hole_wires(
 
     // ── Containment in the outer wire ─────────────────────────────
     for (i, poly) in new_polys.iter().enumerate() {
+        if loops_touch(poly, &outer_poly, normal, surf_tol) {
+            return Err(WasmError::InvalidInput {
+                reason: format!(
+                    "hole wire {} (wire {}) touches the face's outer boundary",
+                    i,
+                    new_holes[i].index()
+                ),
+            });
+        }
         if let Some(k) = first_point_outside(poly, &outer_poly, normal) {
             let p = poly[k];
             return Err(WasmError::InvalidInput {
@@ -413,7 +444,9 @@ pub fn validate_hole_wires(
                     .map(|(_, (p, w))| (p, *w, false)),
             );
         for (other_poly, other_wire, other_is_existing) in others {
-            if loops_overlap(poly, other_poly, normal) {
+            if loops_overlap(poly, other_poly, normal)
+                || loops_touch(poly, other_poly, normal, surf_tol)
+            {
                 let which = if other_is_existing {
                     "an existing inner wire"
                 } else {
@@ -525,6 +558,40 @@ mod tests {
                 .contains("does not lie on the face's surface"),
             "message was: {err}"
         );
+    }
+
+    #[test]
+    fn planar_hole_touching_outer_boundary_is_rejected() {
+        let mut topo = Topology::new();
+        let outer = wire(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(10.0, 0.0, 0.0),
+                Point3::new(10.0, 10.0, 0.0),
+                Point3::new(0.0, 10.0, 0.0),
+            ],
+        );
+        let touching = wire(
+            &mut topo,
+            &[
+                Point3::new(0.0, 4.0, 0.0),
+                Point3::new(2.0, 4.0, 0.0),
+                Point3::new(2.0, 6.0, 0.0),
+                Point3::new(0.0, 6.0, 0.0),
+            ],
+        );
+        let result = validate_hole_wires(
+            &topo,
+            &FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+            outer,
+            &[],
+            &[touching],
+        );
+        assert!(result.is_err());
     }
 
     #[test]

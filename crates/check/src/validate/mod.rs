@@ -9,8 +9,9 @@ pub(crate) mod vertex;
 pub(crate) mod wire;
 
 pub use checks::{CheckId, EntityRef, Severity, ValidationIssue, ValidationReport};
+pub use wire::check_wire_self_intersection;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use brepkit_topology::Topology;
 use brepkit_topology::shell::ShellId;
@@ -122,6 +123,26 @@ fn validate_shell_checks(
     }
 
     let shell = topo.shell(shell_id)?;
+    let mut wire_periodicity = HashMap::new();
+    for &fid in shell.faces() {
+        let face = topo.face(fid)?;
+        let periodic = match face.surface() {
+            brepkit_topology::face::FaceSurface::Plane { .. } => false,
+            brepkit_topology::face::FaceSurface::Nurbs(surface) => {
+                surface.is_periodic_u() || surface.is_periodic_v()
+            }
+            brepkit_topology::face::FaceSurface::Cylinder(_)
+            | brepkit_topology::face::FaceSurface::Cone(_)
+            | brepkit_topology::face::FaceSurface::Sphere(_)
+            | brepkit_topology::face::FaceSurface::Torus(_) => true,
+        };
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            wire_periodicity
+                .entry(wid)
+                .and_modify(|all_periodic| *all_periodic &= periodic)
+                .or_insert(periodic);
+        }
+    }
     let mut checked_wires = HashSet::new();
     for &fid in shell.faces() {
         let face = topo.face(fid)?;
@@ -148,11 +169,14 @@ fn validate_shell_checks(
                     .disabled_checks
                     .contains(&CheckId::WireSelfIntersection)
                 {
-                    issues.extend(wire::check_wire_self_intersection(
-                        topo,
-                        wid,
-                        options.tolerance_scale * 1e-6,
-                    )?);
+                    let tolerance = options.tolerance_scale * 1e-6;
+                    if wire_periodicity.get(&wid).copied().unwrap_or(false) {
+                        issues.extend(wire::check_wire_self_intersection_on_periodic_surface(
+                            topo, wid, tolerance,
+                        )?);
+                    } else {
+                        issues.extend(wire::check_wire_self_intersection(topo, wid, tolerance)?);
+                    }
                 }
             }
         }

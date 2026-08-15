@@ -85,7 +85,7 @@ pub(super) fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
 /// Display callers pass `false` (the chord count is exact for a constant-
 /// curvature circle); the boolean mesh-fallback passes `true` because its
 /// co-refinement robustness depends on the denser floored sampling.
-pub(super) fn edge_sample_count(
+pub fn edge_sample_count(
     topo: &Topology,
     edge: &brepkit_topology::edge::Edge,
     deflection: f64,
@@ -338,7 +338,15 @@ pub(super) fn sample_edge(
     use brepkit_geometry::sampling::sample_uniform;
     use brepkit_topology::edge::EdgeCurve;
 
+    const MAX_EDGE_SAMPLE_POINTS: usize = 16_384;
     let n = edge_sample_count(topo, edge, deflection, angular_tol, circle_floor);
+    if n > MAX_EDGE_SAMPLE_POINTS {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "edge sampling needs {n} points; limit is {MAX_EDGE_SAMPLE_POINTS}; increase tolerances"
+            ),
+        });
+    }
 
     let points = match edge.curve() {
         EdgeCurve::Line => {

@@ -510,10 +510,10 @@ mod tests {
         let face = make_unit_square_face(&mut topo);
 
         let path = NurbsCurve::new(
-            0,
-            vec![0.0, 1.0],
-            vec![Point3::new(0.0, 0.0, 0.0)],
-            vec![1.0],
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.0)],
+            vec![1.0, 1.0],
         )
         .unwrap();
 

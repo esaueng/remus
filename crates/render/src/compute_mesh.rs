@@ -46,6 +46,9 @@ const MAX_TESS: u32 = 16_384;
 /// pos(3) + normal(3) + face_id(1).
 const WORDS_PER_VERT: u64 = 7;
 
+/// Maximum combined vertex and index allocation for one compute-meshed face.
+const MAX_COMPUTE_MESH_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Tessellation factor (level of detail) for the compute mesher.
 ///
 /// `n_u` angular steps around the surface and `n_v` steps along it. Higher
@@ -378,6 +381,8 @@ struct GpuDescriptor {
 /// # Errors
 ///
 /// - [`RenderError::InvalidSize`] if `opts.width` or `opts.height` is zero.
+/// - [`RenderError::PixelBudgetExceeded`] if `width * height` exceeds the
+///   offscreen pixel budget.
 /// - [`RenderError::NoAdapter`] / [`RenderError::DeviceRequest`] on GPU setup.
 /// - [`RenderError::BufferMap`] / [`RenderError::Poll`] on readback failure.
 #[allow(clippy::too_many_lines)]
@@ -388,12 +393,7 @@ pub fn render_cylinder_compute_offscreen(
     cam: &Camera,
     opts: &RenderOpts,
 ) -> Result<RenderOutput, RenderError> {
-    if opts.width == 0 || opts.height == 0 {
-        return Err(RenderError::InvalidSize {
-            width: opts.width,
-            height: opts.height,
-        });
-    }
+    crate::validate_offscreen_size(opts.width, opts.height)?;
 
     // Normalize the factor at the boundary: the public `TessFactor::new` clamps
     // to `[3, MAX_TESS]` / `[1, MAX_TESS]`, but the fields are `pub`, so a
@@ -434,6 +434,19 @@ pub fn render_cylinder_compute_offscreen(
     let index_count_u32 = u32::try_from(index_count).unwrap_or(u32::MAX);
     let vert_bytes = vertex_count * WORDS_PER_VERT * 4; // 4 bytes per u32 word
     let index_bytes = index_count * 4;
+    let limits = device.limits();
+    if vert_bytes.saturating_add(index_bytes) > MAX_COMPUTE_MESH_BYTES
+        || vert_bytes > limits.max_buffer_size
+        || index_bytes > limits.max_buffer_size
+        || vert_bytes > limits.max_storage_buffer_binding_size
+        || index_bytes > limits.max_storage_buffer_binding_size
+    {
+        return Err(RenderError::Operations(
+            brepkit_operations::OperationsError::InvalidInput {
+                reason: "compute tessellation exceeds the GPU buffer budget".into(),
+            },
+        ));
+    }
 
     // --- Descriptor uniform -----------------------------------------------
     #[allow(clippy::cast_possible_truncation)]

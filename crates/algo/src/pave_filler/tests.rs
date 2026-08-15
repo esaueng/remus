@@ -1591,24 +1591,16 @@ fn gfa_cut_shelled_box_through_floor_is_manifold() {
 // ── N-way pave filler (run_pave_filler_n) ───────────────────────────────
 
 #[test]
-fn interacting_pairs_prunes_disjoint_boxes() {
+fn source_pairs_include_every_pair() {
     use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
     let mut topo = Topology::default();
-    // Unit cubes span [0,1], [0.5,1.5], [1.0,2.0]: 0&1 overlap, 1&2 overlap,
-    // 0&2 only touch at x=1.0 (within tol → still interacting), 0&3 disjoint.
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
     let c = make_unit_cube_manifold_at(&mut topo, 1.0, 0.0, 0.0);
-    let d = make_unit_cube_manifold_at(&mut topo, 3.0, 0.0, 0.0); // far away
+    let d = make_unit_cube_manifold_at(&mut topo, 3.0, 0.0, 0.0);
 
-    let pairs = super::interacting_pairs(&topo, &[a, b, c, d], tol);
-    assert!(pairs.contains(&(0, 1)), "0&1 overlap");
-    assert!(pairs.contains(&(1, 2)), "1&2 overlap");
-    // 0&3 and 1&3 and 2&3 are far apart and must be pruned.
-    assert!(!pairs.contains(&(0, 3)), "0&3 disjoint, pruned");
-    assert!(!pairs.contains(&(1, 3)), "1&3 disjoint, pruned");
-    assert!(!pairs.contains(&(2, 3)), "2&3 disjoint, pruned");
+    let pairs = super::source_pairs(&[a, b, c, d]);
+    assert_eq!(pairs, vec![(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]);
 }
 
 #[test]

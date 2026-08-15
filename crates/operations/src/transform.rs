@@ -35,23 +35,50 @@ use brepkit_topology::wire::WireId;
 /// round-off.
 const DEGENERATE_SHAPE_RATIO: f64 = 1e-12;
 
+/// Half-width of the ulp-scale band around `[0, 0, 0, 1]` inside which a
+/// bottom row still counts as affine.
+///
+/// This is deliberately a tolerance and not an exact comparison. `Mat4::inverse`
+/// is an adjugate inversion, so inverting a perfectly rigid frame legitimately
+/// returns a bottom row like `[0, 0, -0.0, 1.0000000000000002]`: the `w` entry
+/// is a sum of 2×2 minors divided by the determinant, and that division does
+/// not have to land on exactly `1.0`. Rejecting those rows would refuse every
+/// caller that feeds a `Mat4::inverse()` result back into a transform.
+///
+/// A genuinely projective row is nowhere near this band — perspective entries
+/// are on the order of the reciprocal of the model's size, some twelve or more
+/// orders of magnitude above `8·f64::EPSILON`.
+const AFFINE_ROW_WOBBLE: f64 = 8.0 * f64::EPSILON;
+
 /// Reject a transform that collapses the model; accept every one that does not.
 ///
-/// Tests the 3×3 linear part only. Translation cannot make a transform
-/// singular, and `Mat4::mul_point` ignores the bottom row, so the linear part
-/// is exactly what gets applied.
+/// Validates the affine bottom row before testing the 3×3 linear part.
+/// `Mat4::mul_point` ignores the bottom row, so accepting a projective matrix
+/// here would apply a different transform from the one the caller supplied.
 ///
 /// # Errors
 ///
-/// Returns [`crate::OperationsError::InvalidInput`] when a linear column is
-/// zero or non-finite, or when the Hadamard ratio is at or below
-/// [`DEGENERATE_SHAPE_RATIO`].
+/// Returns [`crate::OperationsError::InvalidInput`] when any entry is
+/// non-finite, the matrix is not affine, a linear column is zero, or the
+/// Hadamard ratio is at or below [`DEGENERATE_SHAPE_RATIO`].
 pub(crate) fn reject_degenerate_transform(matrix: &Mat4) -> Result<(), crate::OperationsError> {
     let degenerate = |reason: &str| crate::OperationsError::InvalidInput {
         reason: format!("transform matrix is degenerate ({reason})"),
     };
 
     let m = &matrix.0;
+    // Checked over the whole matrix, and before the band below: a NaN fails
+    // every `>` comparison, so an unchecked NaN would slip through as affine.
+    if m.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(degenerate("an entry is not finite"));
+    }
+    if m[3][0].abs() > AFFINE_ROW_WOBBLE
+        || m[3][1].abs() > AFFINE_ROW_WOBBLE
+        || m[3][2].abs() > AFFINE_ROW_WOBBLE
+        || (m[3][3] - 1.0).abs() > AFFINE_ROW_WOBBLE
+    {
+        return Err(degenerate("the bottom row is not affine"));
+    }
     // Normalize each column before taking the determinant, rather than
     // dividing the determinant by the product of the norms afterwards: the
     // product of three norms can overflow or underflow to 0/∞ for extreme
@@ -97,6 +124,8 @@ pub fn transform_solid(
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
     reject_degenerate_transform(matrix)?;
+    // Validate every part of the matrix before changing live topology.
+    let normal_matrix = matrix.inverse()?.transpose();
 
     // Collect all unique vertex IDs, edge IDs, and face IDs in a read phase.
     let (vertex_ids, edge_ids, face_ids) = collect_solid_entities(topo, solid)?;
@@ -113,8 +142,6 @@ pub fn transform_solid(
 
     // Mutate phase 3: transform face surface geometry.
     // For plane normals, use the inverse transpose: n' = (M⁻¹)ᵀ · n
-    let normal_matrix = matrix.inverse()?.transpose();
-
     for fid in face_ids {
         let face = topo.face(fid)?;
         match face.surface() {
@@ -770,6 +797,8 @@ pub fn transform_face(
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
     reject_degenerate_transform(matrix)?;
+    // Validate every part of the matrix before changing live topology.
+    let normal_matrix = matrix.inverse()?.transpose();
 
     // Collect all vertices and edges from the face's wires.
     let (vertex_ids, edge_ids) = collect_face_entities(topo, face_id)?;
@@ -785,7 +814,6 @@ pub fn transform_face(
     transform_edges(topo, &edge_ids, matrix)?;
 
     // Transform face surface.
-    let normal_matrix = matrix.inverse()?.transpose();
     transform_face_surface(topo, face_id, matrix, &normal_matrix)?;
 
     Ok(())

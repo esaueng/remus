@@ -33,23 +33,22 @@ pub(crate) fn install_hook() {
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let msg = info.to_string();
             #[cfg(target_arch = "wasm32")]
-            console_error(&format!("[brepkit] panic: {msg}"));
+            console_error(&format!("[brepkit] panic: {info}"));
             if let Ok(mut slot) = LAST_PANIC.lock() {
-                *slot = Some(msg);
+                *slot = Some("brepkit kernel panic".to_string());
             }
             previous(info);
         }));
     });
 }
 
-/// Returns the message and source location of the most recent panic inside
-/// the kernel, or `undefined` if none has occurred.
+/// Returns a non-sensitive marker when any kernel in this module panicked, or
+/// `undefined` if none has occurred.
 ///
 /// After a panic the kernel object is unusable (every method throws
 /// "recursive use of an object"); this free function remains callable and
-/// carries the root-cause text for the failed call.
+/// avoids exposing one kernel's diagnostics to another kernel instance.
 #[wasm_bindgen(js_name = "lastPanicMessage")]
 #[must_use]
 pub fn last_panic_message() -> Option<String> {
@@ -88,8 +87,7 @@ mod tests {
         assert!(caught.is_err());
 
         let msg = last_panic_message().expect("hook should have recorded the panic");
-        assert!(msg.contains("panics-module-marker-7391"), "got: {msg}");
-        assert!(msg.contains("panics.rs"), "location missing: {msg}");
+        assert_eq!(msg, "brepkit kernel panic");
 
         clear_last_panic_message();
         assert_eq!(last_panic_message(), None);

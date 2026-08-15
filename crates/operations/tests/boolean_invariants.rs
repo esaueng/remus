@@ -331,19 +331,16 @@ fn boolean_3d_euler_genus0() {
 fn fuse_edge_on_edge_boxes() {
     // Two unit cubes sharing only an edge (diagonal contact) cannot form a
     // closed 2-manifold shell — the shared edge is a genuine tangent pinch
-    // used by four faces. The tangent-pinch acceptance now returns the
-    // correct pinched solid (exact union volume, no free edges) instead of
-    // failing closed and forcing users to nudge bodies into overlap.
+    // used by four faces. It must fail closed rather than expose an invalid
+    // solid to downstream consumers.
     let mut topo = Topology::new();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 1.0, 1.0, 0.0);
 
-    let fused = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
-    let v = vol(&topo, fused);
-    assert!(
-        (v - 2.0).abs() < 0.01,
-        "edge-on-edge fuse volume {v:.6}, expected 2.0"
-    );
+    assert!(matches!(
+        boolean(&mut topo, BooleanOp::Fuse, a, b),
+        Err(OperationsError::NonManifoldResult)
+    ));
 }
 
 // -- Vertex-on-face contact -----------------------------------------------

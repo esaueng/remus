@@ -193,6 +193,10 @@ impl<T> Arena<T> {
         self.live_len
     }
 
+    pub(crate) fn slot_len(&self) -> usize {
+        self.items.len()
+    }
+
     /// Returns `true` if the arena contains no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {

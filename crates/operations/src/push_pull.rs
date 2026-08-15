@@ -172,7 +172,7 @@ pub fn resize_cylindrical_face(
     let (base, _) = axial_extent(topo, face, &cyl)?;
     let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
     let to_world = frame_matrix(base, axis, seam_direction)?;
-    let to_local = to_world.inverse().map_err(crate::OperationsError::Math)?;
+    let to_local = inverse_rigid_frame(&to_world);
     let (local_solid, face_map) = copy_solid_with_face_map(topo, solid)?;
     let local_face_index = face_map.get(&face.index()).copied().ok_or_else(|| {
         crate::OperationsError::InvalidInput {
@@ -783,6 +783,42 @@ fn frame_matrix(base: Point3, axis: Vec3, x_axis: Vec3) -> Result<Mat4, crate::O
         [x.z(), y.z(), z.z(), base.z()],
         [0.0, 0.0, 0.0, 1.0],
     ]))
+}
+
+/// Invert an orthonormal affine frame by transposing its rotation block.
+///
+/// Exact where the generic adjugate `Mat4::inverse` is not: the rotation
+/// entries come back bit-identical and the bottom row is literally
+/// `[0, 0, 0, 1]`, so the `to_local` → edit → `to_world` round trip does not
+/// accumulate inversion round-off in the frame itself. It is also infallible,
+/// which `Mat4::inverse` is not. Valid only for an orthonormal frame —
+/// `frame_matrix` builds one.
+fn inverse_rigid_frame(frame: &Mat4) -> Mat4 {
+    let m = &frame.0;
+    let tx = m[0][3];
+    let ty = m[1][3];
+    let tz = m[2][3];
+    Mat4([
+        [
+            m[0][0],
+            m[1][0],
+            m[2][0],
+            -m[0][0].mul_add(tx, m[1][0].mul_add(ty, m[2][0] * tz)),
+        ],
+        [
+            m[0][1],
+            m[1][1],
+            m[2][1],
+            -m[0][1].mul_add(tx, m[1][1].mul_add(ty, m[2][1] * tz)),
+        ],
+        [
+            m[0][2],
+            m[1][2],
+            m[2][2],
+            -m[0][2].mul_add(tx, m[1][2].mul_add(ty, m[2][2] * tz)),
+        ],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
 }
 
 /// A cylinder of `radius`/`height` based at `base` and running along `axis`.

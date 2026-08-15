@@ -204,7 +204,7 @@ fn apply_sd_selection(
             //    area outside one operand and can leave the shell non-manifold.
             // For coextensive pairs both faces span the same domain, so larger
             // and smaller coincide and either choice is order-independent.
-            let keep = if op == BooleanOp::Intersect {
+            let keep = if op == BooleanOp::Intersect && pair.geometric_overlap {
                 // The smaller face is the endpoint that is NOT the
                 // (area-larger) representative.
                 if pair.representative == pair.idx_a {

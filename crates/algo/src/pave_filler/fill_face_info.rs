@@ -232,7 +232,7 @@ fn fill_ef_in(topo: &Topology, arena: &mut GfaArena) {
             // max(weld band, deviation-ratio × chord).
             let on_band = ON_SURFACE_BAND_FACTOR * brepkit_math::tolerance::Tolerance::new().linear;
             let surface = match topo.face(face_id) {
-                Ok(f) => f.surface().clone(),
+                Ok(f) => f.surface(),
                 Err(_) => continue,
             };
             let fi_selected: Vec<PaveBlockId> = selected
@@ -265,7 +265,7 @@ fn fill_ef_in(topo: &Topology, arena: &mut GfaArena) {
                         .chain(std::iter::once(pev.point()))
                         .chain(interior)
                     {
-                        match dist_to_surface(&surface, p) {
+                        match dist_to_surface(surface, p) {
                             Some(d) => dev = dev.max(d),
                             // Untrustworthy measurement (NURBS projection can
                             // silently return a wrong foot): keep the leaf —

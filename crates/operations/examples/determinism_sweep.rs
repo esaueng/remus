@@ -79,6 +79,36 @@ fn report(name: &str, topo: &Topology, solid: SolidId) {
     );
 }
 
+/// An axis-aligned square face at height `z`, for lofting a NURBS-walled solid.
+fn square_profile(topo: &mut Topology, half: f64, z: f64) -> brepkit_topology::face::FaceId {
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
+    let v: Vec<_> = corners
+        .iter()
+        .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, z), 1e-7)))
+        .collect();
+    let edges: Vec<_> = (0..4)
+        .map(|i| {
+            let e = topo.add_edge(Edge::new(v[i], v[(i + 1) % 4], EdgeCurve::Line));
+            OrientedEdge::new(e, true)
+        })
+        .collect();
+    let wid = topo.add_wire(Wire::new(edges, true).unwrap());
+    topo.add_face(Face::new(
+        wid,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: z,
+        },
+    ))
+}
+
 fn at(topo: &mut Topology, s: SolidId, x: f64, y: f64, z: f64) -> SolidId {
     transform_solid(topo, s, &Mat4::translation(x, y, z)).unwrap();
     s
@@ -255,6 +285,44 @@ fn main() {
             }
         }
         report("nine_cuts", &t, acc);
+    }
+
+    // --- offsets, including the NURBS case that only reports an error ---
+    //
+    // The error TEXT is part of the fingerprint here on purpose. Offset names
+    // the first face pair it fails to intersect, and it walked the face pairs
+    // in `edge_to_face_map` order — so an unordered map made a failing offset
+    // blame a different pair in each process while the verdict stayed put.
+    for (name, distance) in [("offset_cyl_out", 0.4), ("offset_cyl_in", -0.4)] {
+        let mut t = Topology::new();
+        let c = make_cylinder(&mut t, 6.0, 12.0).unwrap();
+        match brepkit_operations::offset_v2::offset_solid_v2(&mut t, c, distance) {
+            Ok(r) => report(name, &t, r),
+            Err(e) => println!("{name} ERR {e}"),
+        }
+    }
+    {
+        let mut t = Topology::new();
+        let b = make_box(&mut t, 10.0, 8.0, 6.0).unwrap();
+        match brepkit_operations::offset_v2::offset_solid_v2(&mut t, b, 0.5) {
+            Ok(r) => report("offset_box", &t, r),
+            Err(e) => println!("offset_box ERR {e}"),
+        }
+    }
+    {
+        let mut t = Topology::new();
+        // Same three-square loft the approx_census "nurbs-loft" row builds.
+        let profiles: Vec<_> = [(3.0, 0.0), (1.5, 5.0), (3.0, 10.0)]
+            .iter()
+            .map(|&(half, z)| square_profile(&mut t, half, z))
+            .collect();
+        match brepkit_operations::loft::loft_smooth(&mut t, &profiles) {
+            Ok(s) => match brepkit_operations::offset_v2::offset_solid_v2(&mut t, s, 0.5) {
+                Ok(r) => report("offset_nurbs_loft", &t, r),
+                Err(e) => println!("offset_nurbs_loft ERR {e}"),
+            },
+            Err(e) => println!("offset_nurbs_loft LOFT_ERR {e}"),
+        }
     }
 
     // --- tessellation ---
