@@ -1,12 +1,12 @@
 //! Read-only analytic blend queries for higher-level modeling operations.
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::vertex::Vertex;
+use remus_math::curves::Circle3D;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::vertex::Vertex;
 
 /// Exact topology-independent geometry for a single blend spine.
 ///
@@ -425,14 +425,14 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::explorer::{solid_edges, solid_faces};
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+    use remus_topology::explorer::{solid_edges, solid_faces};
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     fn adjacent_faces(
         topo: &Topology,
-        solid: brepkit_topology::solid::SolidId,
+        solid: remus_topology::solid::SolidId,
     ) -> (FaceId, FaceId, GeometricSpine) {
         let edge = solid_edges(topo, solid).unwrap()[0];
         let edge_data = topo.edge(edge).unwrap();

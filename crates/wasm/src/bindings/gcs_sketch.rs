@@ -2,7 +2,7 @@
 //!
 //! Unlike the legacy `sketch*` bindings (point-index based, system rebuilt on
 //! every solve, no constraint removal), the `gcs*` surface holds a persistent
-//! [`brepkit_sketch::GcsSystem`] per sketch and speaks typed entity
+//! [`remus_sketch::GcsSystem`] per sketch and speaks typed entity
 //! handles: points, lines, circles, and arcs are created explicitly and
 //! constraints reference them by handle. All 24 GCS constraint types are
 //! reachable, constraints can be removed, and solving does not lose state.
@@ -16,7 +16,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_sketch::{ArcId, CircleId, Constraint, LineId, PointId};
+use remus_sketch::{ArcId, CircleId, Constraint, LineId, PointId};
 
 use crate::error::WasmError;
 use crate::kernel::BrepKernel;
@@ -226,7 +226,7 @@ impl BrepKernel {
             });
         }
         let sk = self.gcs_sketch_mut(sketch)?;
-        let id = sk.sys.add_point(brepkit_sketch::PointData { x, y, fixed });
+        let id = sk.sys.add_point(remus_sketch::PointData { x, y, fixed });
         sk.points.push(id);
         #[allow(clippy::cast_possible_truncation)]
         Ok((sk.points.len() - 1) as u32)
@@ -424,7 +424,7 @@ impl BrepKernel {
         // Reverse the handle table so residuals can be keyed by the same
         // opaque `u32` JS already holds. Later entries win, which matters only
         // if a table ever aliased — it does not, since handles are append-only.
-        let handle_of: std::collections::HashMap<brepkit_sketch::ConstraintId, u32> = sk
+        let handle_of: std::collections::HashMap<remus_sketch::ConstraintId, u32> = sk
             .constraints
             .iter()
             .enumerate()

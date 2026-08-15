@@ -1,6 +1,6 @@
 //! Boolean operations on solids: fuse, cut, and intersect.
 //!
-//! Uses the GFA pipeline (`brepkit_algo::gfa`) as the primary boolean engine,
+//! Uses the GFA pipeline (`remus_algo::gfa`) as the primary boolean engine,
 //! with mesh boolean (co-refinement) as a fallback when GFA fails or produces
 //! invalid results.
 
@@ -41,12 +41,12 @@ pub(super) fn timer_elapsed_ms(_t: f64) -> f64 {
     0.0
 }
 
-use brepkit_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 thread_local! {
     /// How often the flatten pre-pass's recursion guard has had to abandon the
@@ -82,13 +82,13 @@ pub fn boolean(
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    let tol = brepkit_math::tolerance::Tolerance::new();
+    let tol = remus_math::tolerance::Tolerance::new();
 
     // Detect A⊂B or B⊂A (including A=B) and handle directly. A positive
     // containment result requires an analytic classifier for the containing
     // operand; AABB enclosure alone is only a necessary condition.
     {
-        use brepkit_algo::classifier::try_build_analytic_classifier;
+        use remus_algo::classifier::try_build_analytic_classifier;
         let ca = try_build_analytic_classifier(topo, a);
         let cb = try_build_analytic_classifier(topo, b);
         let TrivialRelation {
@@ -162,14 +162,14 @@ pub fn boolean(
         // cap-on-cap and lateral-SD coplanar handling, which currently
         // falls through to a non-manifold mesh fallback.
         if let (
-            Some(brepkit_algo::classifier::AnalyticClassifier::Cylinder {
+            Some(remus_algo::classifier::AnalyticClassifier::Cylinder {
                 origin: oa,
                 axis: aa,
                 radius: ra,
                 z_min: za_min,
                 z_max: za_max,
             }),
-            Some(brepkit_algo::classifier::AnalyticClassifier::Cylinder {
+            Some(remus_algo::classifier::AnalyticClassifier::Cylinder {
                 origin: ob,
                 axis: ab,
                 radius: rb,
@@ -203,7 +203,7 @@ pub fn boolean(
         // surface (shared apex, axis, and tan(half_angle) = r/z ratio)
         // collapse to a single frustum spanning the combined axial range.
         if let (
-            Some(brepkit_algo::classifier::AnalyticClassifier::Cone {
+            Some(remus_algo::classifier::AnalyticClassifier::Cone {
                 origin: oa,
                 axis: aa,
                 z_min: za_min,
@@ -211,7 +211,7 @@ pub fn boolean(
                 r_at_z_min: rmin_a,
                 r_at_z_max: rmax_a,
             }),
-            Some(brepkit_algo::classifier::AnalyticClassifier::Cone {
+            Some(remus_algo::classifier::AnalyticClassifier::Cone {
                 origin: ob,
                 axis: ab,
                 z_min: zb_min,
@@ -269,11 +269,11 @@ pub fn boolean(
         // GFA so chained operations get clean fresh-primitive topology
         // rather than residual GFA splits that confuse subsequent steps.
         if let (
-            Some(brepkit_algo::classifier::AnalyticClassifier::Box {
+            Some(remus_algo::classifier::AnalyticClassifier::Box {
                 min: a_min,
                 max: a_max,
             }),
-            Some(brepkit_algo::classifier::AnalyticClassifier::Box {
+            Some(remus_algo::classifier::AnalyticClassifier::Box {
                 min: b_min,
                 max: b_max,
             }),
@@ -299,15 +299,15 @@ pub fn boolean(
         if op == BooleanOp::Intersect {
             let (box_args, sphere_args) = match (ca.as_ref(), cb.as_ref()) {
                 (
-                    Some(brepkit_algo::classifier::AnalyticClassifier::Box {
+                    Some(remus_algo::classifier::AnalyticClassifier::Box {
                         min: bmin,
                         max: bmax,
                     }),
-                    Some(brepkit_algo::classifier::AnalyticClassifier::Sphere { center, radius }),
+                    Some(remus_algo::classifier::AnalyticClassifier::Sphere { center, radius }),
                 ) => (Some((*bmin, *bmax)), Some((*center, *radius))),
                 (
-                    Some(brepkit_algo::classifier::AnalyticClassifier::Sphere { center, radius }),
-                    Some(brepkit_algo::classifier::AnalyticClassifier::Box {
+                    Some(remus_algo::classifier::AnalyticClassifier::Sphere { center, radius }),
+                    Some(remus_algo::classifier::AnalyticClassifier::Box {
                         min: bmin,
                         max: bmax,
                     }),
@@ -315,9 +315,9 @@ pub fn boolean(
                 _ => (None, None),
             };
             if let (Some((bmin, bmax)), Some((sc, sr))) = (box_args, sphere_args) {
-                let segs = brepkit_topology::explorer::solid_vertices(topo, a)?
+                let segs = remus_topology::explorer::solid_vertices(topo, a)?
                     .len()
-                    .max(brepkit_topology::explorer::solid_vertices(topo, b)?.len())
+                    .max(remus_topology::explorer::solid_vertices(topo, b)?.len())
                     .max(16);
                 if let Some(result) =
                     box_sphere_intersect_shortcut(topo, bmin, bmax, sc, sr, segs, tol)?
@@ -338,11 +338,11 @@ pub fn boolean(
         // (outer shell + inner shell) requires builder support beyond the
         // single-sphere primitive used here.
         if let (
-            Some(brepkit_algo::classifier::AnalyticClassifier::Sphere {
+            Some(remus_algo::classifier::AnalyticClassifier::Sphere {
                 center: ca_center,
                 radius: ra,
             }),
-            Some(brepkit_algo::classifier::AnalyticClassifier::Sphere {
+            Some(remus_algo::classifier::AnalyticClassifier::Sphere {
                 center: cb_center,
                 radius: rb,
             }),
@@ -364,13 +364,13 @@ pub fn boolean(
         // above; sidesteps GFA's torus same-domain handling for the
         // common shared-major case.
         if let (
-            Some(brepkit_algo::classifier::AnalyticClassifier::Torus {
+            Some(remus_algo::classifier::AnalyticClassifier::Torus {
                 center: ca_center,
                 axis: aa,
                 major_radius: maj_a,
                 minor_radius: min_a,
             }),
-            Some(brepkit_algo::classifier::AnalyticClassifier::Torus {
+            Some(remus_algo::classifier::AnalyticClassifier::Torus {
                 center: cb_center,
                 axis: ab,
                 major_radius: maj_b,
@@ -474,9 +474,9 @@ pub fn boolean(
     }
 
     let algo_op = match op {
-        BooleanOp::Fuse => brepkit_algo::bop::BooleanOp::Fuse,
-        BooleanOp::Cut => brepkit_algo::bop::BooleanOp::Cut,
-        BooleanOp::Intersect => brepkit_algo::bop::BooleanOp::Intersect,
+        BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+        BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+        BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
     };
     // Recognise flat NURBS walls/edges as analytic planes/lines so the engine's
     // face-face intersections take the exact plane×plane path (the tool's
@@ -542,9 +542,9 @@ pub fn boolean(
     }
     let (gfa_a, gfa_b) = (a, b);
     let gfa_start = timer_now();
-    match brepkit_algo::gfa::boolean(topo, algo_op, gfa_a, gfa_b) {
+    match remus_algo::gfa::boolean(topo, algo_op, gfa_a, gfa_b) {
         Ok(result) => {
-            let result_faces = brepkit_topology::explorer::solid_faces(topo, result)?.len();
+            let result_faces = remus_topology::explorer::solid_faces(topo, result)?.len();
             // Narrow-phase empty intersect: overlapping AABBs but the engine
             // selected no faces for the common region (e.g. boxes whose boxes
             // overlap by tolerance but whose interiors do not). This is the
@@ -580,7 +580,7 @@ pub fn boolean(
                 // Check Euler before unify_faces — if already valid, skip
                 // unify to avoid its face-merging bugs (non-manifold edges).
                 let (f_pre, e_pre, v_pre) =
-                    brepkit_topology::explorer::solid_entity_counts(topo, result)?;
+                    remus_topology::explorer::solid_entity_counts(topo, result)?;
                 #[allow(clippy::cast_possible_wrap)]
                 let euler_pre = (v_pre as i64) - (e_pre as i64) + (f_pre as i64);
 
@@ -597,7 +597,7 @@ pub fn boolean(
                 // are unchanged from the pre-merge measurement (the merge is the
                 // only mutation in between).
                 let (f2, e2, v2) = if merged_vertices {
-                    brepkit_topology::explorer::solid_entity_counts(topo, result)?
+                    remus_topology::explorer::solid_entity_counts(topo, result)?
                 } else {
                     (f_pre, e_pre, v_pre)
                 };
@@ -683,7 +683,7 @@ pub fn boolean(
                 // Re-count only when unify actually merged faces; otherwise the
                 // counts are unchanged from the (post-merge) measurement above.
                 let (f, e, v) = if unified {
-                    brepkit_topology::explorer::solid_entity_counts(topo, result)?
+                    remus_topology::explorer::solid_entity_counts(topo, result)?
                 } else {
                     (f2, e2, v2)
                 };
@@ -775,7 +775,7 @@ pub fn boolean(
                 // and should be rejected. Fuse/Intersect don't have this
                 // failure mode.
                 let cut_safe = op != BooleanOp::Cut
-                    || brepkit_algo::classifier::try_build_analytic_classifier(topo, b)
+                    || remus_algo::classifier::try_build_analytic_classifier(topo, b)
                         .as_ref()
                         .is_none_or(|cls_b| {
                             all_component_centers_outside(topo, &components_vec, cls_b, tol)
@@ -859,7 +859,7 @@ pub fn boolean(
         // which is exactly the silent degradation the refusal exists to
         // prevent. Every other GFA failure is a robustness problem where an
         // approximate result still beats none, so those still fall through.
-        Err(e @ brepkit_algo::error::AlgoError::UnsupportedCurve { .. }) => {
+        Err(e @ remus_algo::error::AlgoError::UnsupportedCurve { .. }) => {
             return Err(crate::OperationsError::Algo(e));
         }
         Err(e) => {
@@ -905,7 +905,7 @@ pub fn boolean(
 
     // Mesh boolean fallback (no recursion).
     log::debug!(
-        target: "brepkit_approx",
+        target: "remus_approx",
         "boolean {op:?}: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost"
     );
     let opts = BooleanOptions::default();
@@ -937,7 +937,7 @@ pub fn boolean(
 ///
 /// Runs the standard GFA boolean pipeline, then applies post-processing
 /// options. Currently supported: `unify_faces` (merges co-surface face
-/// fragments via `brepkit_heal::unify_same_domain`).
+/// fragments via `remus_heal::unify_same_domain`).
 ///
 /// # Errors
 ///
@@ -951,9 +951,9 @@ pub fn boolean_with_options(
 ) -> Result<SolidId, crate::OperationsError> {
     let result = boolean(topo, op, a, b)?;
     if opts.unify_faces {
-        let unify_opts = brepkit_heal::upgrade::unify_same_domain::UnifyOptions::default();
+        let unify_opts = remus_heal::upgrade::unify_same_domain::UnifyOptions::default();
         if let Err(e) =
-            brepkit_heal::upgrade::unify_same_domain::unify_same_domain(topo, result, &unify_opts)
+            remus_heal::upgrade::unify_same_domain::unify_same_domain(topo, result, &unify_opts)
         {
             log::debug!("boolean unify_faces post-processing failed: {e}");
         }
@@ -1035,9 +1035,9 @@ pub fn compound_cut(
         }
     }
     if opts.unify_faces {
-        let unify_opts = brepkit_heal::upgrade::unify_same_domain::UnifyOptions::default();
+        let unify_opts = remus_heal::upgrade::unify_same_domain::UnifyOptions::default();
         if let Err(e) =
-            brepkit_heal::upgrade::unify_same_domain::unify_same_domain(topo, result, &unify_opts)
+            remus_heal::upgrade::unify_same_domain::unify_same_domain(topo, result, &unify_opts)
         {
             log::debug!("compound_cut unify_faces failed: {e}");
         }
@@ -1048,7 +1048,7 @@ pub fn compound_cut(
 /// Fuse one AABB-overlap cluster into a single solid.
 ///
 /// For a cluster of 3+ interpenetrating/touching tools, tries the single-pass
-/// N-way GFA fuse (`brepkit_algo::gfa::fuse_n`) — one arrangement over all tools
+/// N-way GFA fuse (`remus_algo::gfa::fuse_n`) — one arrangement over all tools
 /// instead of the sequential pairwise fuse's O(n²) re-processing of a growing
 /// accumulator. Falls back to the sequential fuse when the N-way path errors
 /// (e.g. a non-planar coincident contact it does not yet handle) or yields an
@@ -1065,7 +1065,7 @@ pub(crate) fn fuse_cluster(
         });
     };
     if cluster.len() >= 3
-        && let Ok(fused) = brepkit_algo::gfa::fuse_n(topo, cluster)
+        && let Ok(fused) = remus_algo::gfa::fuse_n(topo, cluster)
         && validate_boolean_result(topo, fused).is_ok()
     {
         return Ok(fused);
@@ -1085,7 +1085,7 @@ fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<S
         }
         parent[i]
     }
-    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+    let tol = remus_math::tolerance::Tolerance::new().linear;
     let mut boxes = Vec::with_capacity(tools.len());
     for &t in tools {
         boxes.push(crate::measure::solid_bounding_box(topo, t).ok()?);
@@ -1115,7 +1115,7 @@ fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<S
 ///
 /// Prefers **faithful** provenance from the GFA builder — each result face
 /// records the input face it was split/derived from
-/// (`brepkit_algo::gfa::boolean_with_face_origins`). Because that path runs the
+/// (`remus_algo::gfa::boolean_with_face_origins`). Because that path runs the
 /// GFA directly, it can take a different route than [`boolean`] (which
 /// short-circuits some cases via AABB/containment fast paths), so its result is
 /// validated; on a GFA error or an invalid result — and for identical or
@@ -1139,7 +1139,7 @@ pub fn boolean_with_evolution(
     a: SolidId,
     b: SolidId,
 ) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
 
     // Faithful path: the GFA reports each result face's true input source.
     // Identical/contained operand pairs must NOT take it: those are the
@@ -1155,8 +1155,8 @@ pub fn boolean_with_evolution(
     // which is accepted — deduplicating would mean threading the relation
     // through `boolean`'s public signature.
     let trivial = a != b && {
-        use brepkit_algo::classifier::try_build_analytic_classifier;
-        let tol = brepkit_math::tolerance::Tolerance::new();
+        use remus_algo::classifier::try_build_analytic_classifier;
+        let tol = remus_math::tolerance::Tolerance::new();
         let ca = try_build_analytic_classifier(topo, a);
         let cb = try_build_analytic_classifier(topo, b);
         let rel = detect_trivial_relation(topo, a, b, ca.as_ref(), cb.as_ref(), tol);
@@ -1166,15 +1166,15 @@ pub fn boolean_with_evolution(
         let input_indices: Vec<usize> = solid_faces(topo, a)?
             .into_iter()
             .chain(solid_faces(topo, b)?)
-            .map(brepkit_topology::arena::Id::index)
+            .map(remus_topology::arena::Id::index)
             .collect();
         let algo_op = match op {
-            BooleanOp::Fuse => brepkit_algo::bop::BooleanOp::Fuse,
-            BooleanOp::Cut => brepkit_algo::bop::BooleanOp::Cut,
-            BooleanOp::Intersect => brepkit_algo::bop::BooleanOp::Intersect,
+            BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+            BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+            BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
         };
         if let Ok((result, origins)) =
-            brepkit_algo::gfa::boolean_with_face_origins(topo, algo_op, a, b)
+            remus_algo::gfa::boolean_with_face_origins(topo, algo_op, a, b)
         {
             // Apply the face-id-preserving result heals so the evolution result
             // is as correct as the standard boolean (manifold, no #801 wire
@@ -1185,7 +1185,7 @@ pub fn boolean_with_evolution(
             // A heal failure here is not fatal: fall through to boolean()'s
             // full pipeline rather than propagating (the result solid stays as
             // orphaned topology, which is harmless in the arena).
-            let tol = brepkit_math::tolerance::Tolerance::default();
+            let tol = remus_math::tolerance::Tolerance::default();
             let healed_ok = crate::heal::remove_degenerate_edges(topo, result, tol.linear).is_ok()
                 && crate::heal::remove_wire_spurs(topo, result).is_ok();
 
@@ -1194,7 +1194,7 @@ pub fn boolean_with_evolution(
             // that incorrectly retains the tool interior.
             let components = crate::boolean::assembly::face_components(topo, result);
             let cut_safe = op != BooleanOp::Cut
-                || brepkit_algo::classifier::try_build_analytic_classifier(topo, b)
+                || remus_algo::classifier::try_build_analytic_classifier(topo, b)
                     .as_ref()
                     .is_none_or(|cls_b| {
                         all_component_centers_outside(topo, &components, cls_b, tol)
@@ -1267,7 +1267,7 @@ fn box_pair_shortcut(
     a_max: Point3,
     b_min: Point3,
     b_max: Point3,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let eps = tol.linear;
     let (min, max) = match op {
@@ -1348,7 +1348,7 @@ fn box_pair_shortcut(
     }
     let bx = crate::primitives::make_box(topo, dx, dy, dz)?;
     if min.x().abs() > eps || min.y().abs() > eps || min.z().abs() > eps {
-        let xform = brepkit_math::mat::Mat4::translation(min.x(), min.y(), min.z());
+        let xform = remus_math::mat::Mat4::translation(min.x(), min.y(), min.z());
         crate::transform::transform_solid(topo, bx, &xform)?;
     }
     Ok(Some(bx))
@@ -1442,7 +1442,7 @@ fn box_pair_cut_shortcut(
             };
             let bx = crate::primitives::make_box(topo, dx, dy, dz)?;
             if tx.abs() > eps || ty.abs() > eps || tz.abs() > eps {
-                let xform = brepkit_math::mat::Mat4::translation(tx, ty, tz);
+                let xform = remus_math::mat::Mat4::translation(tx, ty, tz);
                 crate::transform::transform_solid(topo, bx, &xform)?;
             }
             Ok(bx)
@@ -1454,7 +1454,7 @@ fn box_pair_cut_shortcut(
     }
 
     // Combine pieces into a single multi-region solid.
-    let mut all_faces: Vec<brepkit_topology::face::FaceId> = Vec::new();
+    let mut all_faces: Vec<remus_topology::face::FaceId> = Vec::new();
     for &p in &piece_solids {
         let p_data = topo.solid(p)?;
         for &fid in topo.shell(p_data.outer_shell())?.faces() {
@@ -1476,7 +1476,7 @@ fn coaxial_cylinder_shortcut(
     radius: f64,
     a_range: (f64, f64),
     b_range: (f64, f64),
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let (za_min, za_max) = a_range;
     let (zb_min, zb_max) = b_range;
@@ -1531,7 +1531,7 @@ fn coaxial_cone_shortcut(
     slope: f64,
     a_range: (f64, f64),
     b_range: (f64, f64),
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let (za_min, za_max) = a_range;
     let (zb_min, zb_max) = b_range;
@@ -1618,7 +1618,7 @@ fn box_sphere_intersect_shortcut(
     sphere_center: Point3,
     sphere_radius: f64,
     sphere_segments: usize,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let r = sphere_radius;
     let eps = tol.linear;
@@ -1670,7 +1670,7 @@ fn box_sphere_intersect_shortcut(
             || sphere_center.y().abs() > eps
             || sphere_center.z().abs() > eps
         {
-            let xform = brepkit_math::mat::Mat4::translation(
+            let xform = remus_math::mat::Mat4::translation(
                 sphere_center.x(),
                 sphere_center.y(),
                 sphere_center.z(),
@@ -1702,16 +1702,16 @@ fn build_box_sphere_octant(
     cuts: &[usize],
     sphere_center: Point3,
     r: f64,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::SphericalSurface;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::SphericalSurface;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     // Cutting plane normals + their box-plane-d values.
     let cut_planes: Vec<(Vec3, f64)> = cuts.iter().map(|&i| faces[i]).collect();
@@ -1805,52 +1805,51 @@ fn build_box_sphere_octant(
     // sits on cutting plane `i` (normal `n_i`), because those two vertices
     // lie on edges perpendicular to the remaining two normals — and both
     // of those edges lie within the plane perpendicular to `n_i`.
-    let mut build_arc_edge =
-        |n: Vec3,
-         p_start: Point3,
-         p_end: Point3,
-         start_vid,
-         end_vid|
-         -> Result<brepkit_topology::edge::EdgeId, crate::OperationsError> {
-            let dist = n.x() * (sphere_center.x() - p_start.x())
-                + n.y() * (sphere_center.y() - p_start.y())
-                + n.z() * (sphere_center.z() - p_start.z());
-            let circle_center = Point3::new(
-                sphere_center.x() - dist * n.x(),
-                sphere_center.y() - dist * n.y(),
-                sphere_center.z() - dist * n.z(),
-            );
-            let circle_r = (r * r - dist * dist).max(0.0).sqrt();
-            if circle_r <= tol.linear {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "box-sphere octant: degenerate arc radius".into(),
-                });
-            }
-            let dx = p_start.x() - circle_center.x();
-            let dy = p_start.y() - circle_center.y();
-            let dz = p_start.z() - circle_center.z();
-            let len = (dx * dx + dy * dy + dz * dz).sqrt();
-            if len <= tol.linear {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "box-sphere octant: degenerate arc reference".into(),
-                });
-            }
-            let u_ref = Vec3::new(dx / len, dy / len, dz / len);
-            // The circle's CCW direction must take start -> end the SHORT
-            // way (the quarter arc bounding the octant). About the cutting
-            // plane's OUTWARD normal that span is the 270-degree
-            // complement (the wrong-region 1304.8 volume); the INWARD
-            // normal makes it the intended quarter.
-            let inward = Vec3::new(-n.x(), -n.y(), -n.z());
-            let circle =
-                Circle3D::new_with_ref(circle_center, inward, circle_r, u_ref).map_err(|e| {
-                    crate::OperationsError::InvalidInput {
-                        reason: format!("box-sphere octant: circle construction failed: {e}"),
-                    }
-                })?;
-            let _ = p_end; // p_end is used only via end_vid (already pre-placed at the correct sphere point)
-            Ok(topo.add_edge(Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle))))
-        };
+    let mut build_arc_edge = |n: Vec3,
+                              p_start: Point3,
+                              p_end: Point3,
+                              start_vid,
+                              end_vid|
+     -> Result<remus_topology::edge::EdgeId, crate::OperationsError> {
+        let dist = n.x() * (sphere_center.x() - p_start.x())
+            + n.y() * (sphere_center.y() - p_start.y())
+            + n.z() * (sphere_center.z() - p_start.z());
+        let circle_center = Point3::new(
+            sphere_center.x() - dist * n.x(),
+            sphere_center.y() - dist * n.y(),
+            sphere_center.z() - dist * n.z(),
+        );
+        let circle_r = (r * r - dist * dist).max(0.0).sqrt();
+        if circle_r <= tol.linear {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "box-sphere octant: degenerate arc radius".into(),
+            });
+        }
+        let dx = p_start.x() - circle_center.x();
+        let dy = p_start.y() - circle_center.y();
+        let dz = p_start.z() - circle_center.z();
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len <= tol.linear {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "box-sphere octant: degenerate arc reference".into(),
+            });
+        }
+        let u_ref = Vec3::new(dx / len, dy / len, dz / len);
+        // The circle's CCW direction must take start -> end the SHORT
+        // way (the quarter arc bounding the octant). About the cutting
+        // plane's OUTWARD normal that span is the 270-degree
+        // complement (the wrong-region 1304.8 volume); the INWARD
+        // normal makes it the intended quarter.
+        let inward = Vec3::new(-n.x(), -n.y(), -n.z());
+        let circle =
+            Circle3D::new_with_ref(circle_center, inward, circle_r, u_ref).map_err(|e| {
+                crate::OperationsError::InvalidInput {
+                    reason: format!("box-sphere octant: circle construction failed: {e}"),
+                }
+            })?;
+        let _ = p_end; // p_end is used only via end_vid (already pre-placed at the correct sphere point)
+        Ok(topo.add_edge(Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle))))
+    };
 
     // Arc on cut plane 0 (between v_y and v_z, i.e., the edge "opposite" v_x).
     let arc_yz = build_arc_edge(n0, sphere_pts[1], sphere_pts[2], v_y, v_z)?;
@@ -1973,7 +1972,7 @@ fn concentric_sphere_shortcut(
     center: Point3,
     r_a: f64,
     r_b: f64,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     if r_a <= tol.linear || r_b <= tol.linear {
         return Ok(None);
@@ -1995,8 +1994,8 @@ fn concentric_sphere_shortcut(
     // `make_sphere(r, n)` allocates exactly `n` equatorial vertices; because
     // sphere primitives are fully describe by (center, radius), all vertices
     // belong to that ring. Floor at 4 to satisfy `make_sphere`'s lower bound.
-    let segments_a = brepkit_topology::explorer::solid_vertices(topo, a)?.len();
-    let segments_b = brepkit_topology::explorer::solid_vertices(topo, b)?.len();
+    let segments_a = remus_topology::explorer::solid_vertices(topo, a)?.len();
+    let segments_b = remus_topology::explorer::solid_vertices(topo, b)?.len();
     let segments = segments_a.max(segments_b).max(4);
 
     let sphere = crate::primitives::make_sphere(topo, r_result, segments)?;
@@ -2004,7 +2003,7 @@ fn concentric_sphere_shortcut(
         || center.y().abs() > tol.linear
         || center.z().abs() > tol.linear
     {
-        let xform = brepkit_math::mat::Mat4::translation(center.x(), center.y(), center.z());
+        let xform = remus_math::mat::Mat4::translation(center.x(), center.y(), center.z());
         crate::transform::transform_solid(topo, sphere, &xform)?;
     }
     Ok(Some(sphere))
@@ -2028,7 +2027,7 @@ fn coaxial_torus_shortcut(
     major_radius: f64,
     minor_a: f64,
     minor_b: f64,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     if minor_a <= tol.linear || minor_b <= tol.linear || major_radius <= tol.linear {
         return Ok(None);
@@ -2055,8 +2054,8 @@ fn coaxial_torus_shortcut(
     // unlike make_sphere torus topology has internal seam vertices that
     // make the relationship less clean. Approximate by the larger vertex
     // count.
-    let segments_a = brepkit_topology::explorer::solid_vertices(topo, a)?.len();
-    let segments_b = brepkit_topology::explorer::solid_vertices(topo, b)?.len();
+    let segments_a = remus_topology::explorer::solid_vertices(topo, a)?.len();
+    let segments_b = remus_topology::explorer::solid_vertices(topo, b)?.len();
     let segments = segments_a.max(segments_b).max(8);
 
     // Build a fresh torus at the origin then transform to the shared
@@ -2079,10 +2078,10 @@ fn coaxial_torus_shortcut(
 fn xform_from_canonical_z(
     world_origin: Point3,
     axis: Vec3,
-    tol: brepkit_math::tolerance::Tolerance,
-) -> brepkit_math::mat::Mat4 {
+    tol: remus_math::tolerance::Tolerance,
+) -> remus_math::mat::Mat4 {
     let translate =
-        brepkit_math::mat::Mat4::translation(world_origin.x(), world_origin.y(), world_origin.z());
+        remus_math::mat::Mat4::translation(world_origin.x(), world_origin.y(), world_origin.z());
     let canonical = Vec3::new(0.0, 0.0, 1.0);
     let dot = canonical.dot(axis).clamp(-1.0, 1.0);
     // Parallel to +Z: pure translation.
@@ -2091,7 +2090,7 @@ fn xform_from_canonical_z(
     }
     // Antiparallel: rotate canonical (+z) by π around X to flip to −z.
     if 1.0 + dot < tol.angular {
-        return translate * brepkit_math::mat::Mat4::rotation_x(std::f64::consts::PI);
+        return translate * remus_math::mat::Mat4::rotation_x(std::f64::consts::PI);
     }
     // Rotate canonical (0,0,1) → axis via Rodrigues' formula:
     //   R = I + sin(θ) K + (1 - cos(θ)) K²,  K = [k]× for k = ẑ × axis / sin(θ).
@@ -2109,7 +2108,7 @@ fn xform_from_canonical_z(
     let r20 = -sin_t * ky;
     let r21 = sin_t * kx;
     let r22 = dot;
-    let rot = brepkit_math::mat::Mat4([
+    let rot = remus_math::mat::Mat4([
         [r00, r01, r02, 0.0],
         [r10, r11, r12, 0.0],
         [r20, r21, r22, 0.0],
@@ -2145,7 +2144,7 @@ fn operands_are_represented(
     result: SolidId,
     a: SolidId,
     b: SolidId,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     let Ok(r_box) = crate::measure::solid_bounding_box(topo, result) else {
         return true; // unmeasurable: keep the historic acceptance
@@ -2166,8 +2165,8 @@ fn operands_are_represented(
             // alone: a blind pocket keeps the blank's box but adds its walls,
             // and a through trim changes the box.
             let (Ok(r_faces), Ok(a_faces)) = (
-                brepkit_topology::explorer::solid_faces(topo, result),
-                brepkit_topology::explorer::solid_faces(topo, a),
+                remus_topology::explorer::solid_faces(topo, result),
+                remus_topology::explorer::solid_faces(topo, a),
             ) else {
                 return true;
             };
@@ -2219,11 +2218,7 @@ fn operands_are_represented(
 /// The `margin` shrinks the overlap test so boxes that only touch (or
 /// nearly touch) within `margin` are treated as separated: a shared
 /// face/edge/corner has zero overlap volume.
-fn aabbs_separated(
-    a: &brepkit_math::aabb::Aabb3,
-    b: &brepkit_math::aabb::Aabb3,
-    margin: f64,
-) -> bool {
+fn aabbs_separated(a: &remus_math::aabb::Aabb3, b: &remus_math::aabb::Aabb3, margin: f64) -> bool {
     a.max.x() < b.min.x() + margin
         || b.max.x() < a.min.x() + margin
         || a.max.y() < b.min.y() + margin
@@ -2240,11 +2235,7 @@ fn aabbs_separated(
 /// face/edge/corner (zero gap) returns `false` here. Touching solids must NOT
 /// be treated as disjoint by the fuse fast path — their shared geometry has to
 /// be welded by GFA.
-fn aabbs_clear_gap(
-    a: &brepkit_math::aabb::Aabb3,
-    b: &brepkit_math::aabb::Aabb3,
-    margin: f64,
-) -> bool {
+fn aabbs_clear_gap(a: &remus_math::aabb::Aabb3, b: &remus_math::aabb::Aabb3, margin: f64) -> bool {
     b.min.x() - a.max.x() > margin
         || a.min.x() - b.max.x() > margin
         || b.min.y() - a.max.y() > margin
@@ -2282,7 +2273,7 @@ fn solids_provably_disjoint(topo: &Topology, a: SolidId, b: SolidId, margin: f64
     if comps_a.is_empty() || comps_b.is_empty() {
         return false;
     }
-    let boxes = |comps: &[Vec<FaceId>]| -> Option<Vec<brepkit_math::aabb::Aabb3>> {
+    let boxes = |comps: &[Vec<FaceId>]| -> Option<Vec<remus_math::aabb::Aabb3>> {
         comps
             .iter()
             .map(|faces| {
@@ -2334,9 +2325,9 @@ fn detect_trivial_relation(
     topo: &Topology,
     a: SolidId,
     b: SolidId,
-    ca: Option<&brepkit_algo::classifier::AnalyticClassifier>,
-    cb: Option<&brepkit_algo::classifier::AnalyticClassifier>,
-    tol: brepkit_math::tolerance::Tolerance,
+    ca: Option<&remus_algo::classifier::AnalyticClassifier>,
+    cb: Option<&remus_algo::classifier::AnalyticClassifier>,
+    tol: remus_math::tolerance::Tolerance,
 ) -> TrivialRelation {
     // Use measure::solid_bounding_box — it expands for surface curvature
     // (cylinder vertex projection, sphere/torus analytic). The naive
@@ -2402,7 +2393,7 @@ fn detect_trivial_relation(
                 false,
             ));
         }
-        if let Ok(vids) = brepkit_topology::explorer::solid_vertices(topo, inner) {
+        if let Ok(vids) = remus_topology::explorer::solid_vertices(topo, inner) {
             let step = (vids.len() / CONTAINMENT_PROBES).max(1);
             for vid in vids.iter().step_by(step).take(CONTAINMENT_PROBES) {
                 if let Ok(v) = topo.vertex(*vid) {
@@ -2496,8 +2487,8 @@ fn detect_trivial_relation(
 fn all_vertices_inside_or_on(
     topo: &Topology,
     solid: SolidId,
-    classifier: &brepkit_algo::classifier::AnalyticClassifier,
-    tol: brepkit_math::tolerance::Tolerance,
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     let Ok(s) = topo.solid(solid) else {
         return false;
@@ -2520,7 +2511,7 @@ fn all_vertices_inside_or_on(
                 };
                 // The analytic classifier returns `None` for points within
                 // tol.linear of the boundary — treat as "on" for this check.
-                if classifier.classify(v.point(), tol) == Some(brepkit_algo::FaceClass::Outside) {
+                if classifier.classify(v.point(), tol) == Some(remus_algo::FaceClass::Outside) {
                     return false;
                 }
             }
@@ -2536,8 +2527,8 @@ fn all_vertices_inside_or_on(
 fn solid_strictly_inside(
     topo: &Topology,
     inner: SolidId,
-    classifier: &brepkit_algo::classifier::AnalyticClassifier,
-    tol: brepkit_math::tolerance::Tolerance,
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     let Ok(s) = topo.solid(inner) else {
         return false;
@@ -2564,8 +2555,7 @@ fn solid_strictly_inside(
                     let Ok(v) = topo.vertex(vid) else {
                         return false;
                     };
-                    if classifier.classify(v.point(), tol) != Some(brepkit_algo::FaceClass::Inside)
-                    {
+                    if classifier.classify(v.point(), tol) != Some(remus_algo::FaceClass::Inside) {
                         return false;
                     }
                     saw_vertex = true;
@@ -2619,7 +2609,7 @@ fn mesh_boolean_fallback(
     a: SolidId,
     b: SolidId,
     deflection: f64,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
     opts: &BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
     // Mesh density here is a boolean-robustness concern, independent of the
@@ -2667,7 +2657,7 @@ fn mesh_boolean_fallback(
     // eliminating the residual non-manifold edges that `unify_faces`
     // can't symmetrize from per-face surface matching alone.
     let collapsed =
-        brepkit_heal::upgrade::collapse_collinear_vertices::collapse_collinear_wire_vertices(
+        remus_heal::upgrade::collapse_collinear_vertices::collapse_collinear_wire_vertices(
             topo, result, tol,
         )?;
     if collapsed > 0 {
@@ -2686,7 +2676,7 @@ fn mesh_boolean_fallback(
     // bridge edges themselves remain as boundary edges (those are a
     // separate cleanup).
     let wires_split =
-        brepkit_heal::upgrade::split_self_intersecting_wires::split_self_intersecting_inner_wires(
+        remus_heal::upgrade::split_self_intersecting_wires::split_self_intersecting_inner_wires(
             topo, result,
         )?;
     if wires_split > 0 {
@@ -2746,11 +2736,11 @@ fn intersect_multi_region_semantically_safe(
     result: SolidId,
     a: SolidId,
     b: SolidId,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     const MAX_BOUNDARY_SAMPLES: usize = 100_000;
 
-    let Ok(faces) = brepkit_topology::explorer::solid_faces(topo, result) else {
+    let Ok(faces) = remus_topology::explorer::solid_faces(topo, result) else {
         return false;
     };
     let mut samples = Vec::new();
@@ -2777,10 +2767,10 @@ fn intersect_multi_region_semantically_safe(
         }
     }
     let classify_tol = tol.linear * 100.0;
-    let Ok(a_faces) = brepkit_topology::explorer::solid_faces(topo, a) else {
+    let Ok(a_faces) = remus_topology::explorer::solid_faces(topo, a) else {
         return false;
     };
-    let Ok(b_faces) = brepkit_topology::explorer::solid_faces(topo, b) else {
+    let Ok(b_faces) = remus_topology::explorer::solid_faces(topo, b) else {
         return false;
     };
     let mut distance_checks = 0_usize;
@@ -2804,7 +2794,7 @@ fn intersect_multi_region_semantically_safe(
                 if distance_checks > 200_000 {
                     return false;
                 }
-                let in_face_box = brepkit_check::util::face_aabb(topo, fid)
+                let in_face_box = remus_check::util::face_aabb(topo, fid)
                     .is_ok_and(|bbox| bbox.expanded(classify_tol).contains_point(point));
                 in_face_box
                     && crate::distance::point_to_face_distance(topo, point, fid, tol)
@@ -2932,10 +2922,10 @@ fn intersection_audit_mesh_volumes(
 fn all_component_centers_outside(
     topo: &Topology,
     components: &[Vec<FaceId>],
-    classifier: &brepkit_algo::classifier::AnalyticClassifier,
-    tol: brepkit_math::tolerance::Tolerance,
+    classifier: &remus_algo::classifier::AnalyticClassifier,
+    tol: remus_math::tolerance::Tolerance,
 ) -> bool {
-    use brepkit_algo::FaceClass;
+    use remus_algo::FaceClass;
     for comp in components {
         let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
         let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -3028,9 +3018,9 @@ pub(crate) fn component_encloses_any_point(
             );
             any_triangle = true;
             for (&point, count) in points.iter().zip(&mut crossings) {
-                if let Some(hit) = brepkit_math::ray_triangle::watertight_ray_triangle_intersect(
-                    point, dir, a, b, c,
-                ) && hit.t > 1e-9
+                if let Some(hit) =
+                    remus_math::ray_triangle::watertight_ray_triangle_intersect(point, dir, a, b, c)
+                    && hit.t > 1e-9
                 {
                     *count += 1;
                 }
@@ -3246,7 +3236,7 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
 fn fuse_multi_component_tool(
     topo: &mut Topology,
     a: SolidId,
-    b_components: Vec<Vec<brepkit_topology::face::FaceId>>,
+    b_components: Vec<Vec<remus_topology::face::FaceId>>,
 ) -> Result<SolidId, crate::OperationsError> {
     let mut result = a;
     for comp_faces in b_components {
@@ -3301,7 +3291,7 @@ fn cut_multi_region_input(
     // results are pairwise disjoint by construction (each came from a
     // disjoint input component cut by the same tool), so a single shell
     // containing all their faces is a valid manifold representation.
-    let mut all_faces: Vec<brepkit_topology::face::FaceId> = Vec::new();
+    let mut all_faces: Vec<remus_topology::face::FaceId> = Vec::new();
     for &r in &per_component_results {
         let r_data = topo.solid(r)?;
         for &fid in topo.shell(r_data.outer_shell())?.faces() {
@@ -3323,12 +3313,12 @@ fn cut_multi_region_input(
 /// orientation-normalized solid recovers the fresh-primitive code path.
 fn make_solid_from_face_subset(
     topo: &mut Topology,
-    faces: &[brepkit_topology::face::FaceId],
+    faces: &[remus_topology::face::FaceId],
 ) -> Result<SolidId, crate::OperationsError> {
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::wire::{OrientedEdge, Wire};
 
-    let mut normalized: Vec<brepkit_topology::face::FaceId> = Vec::with_capacity(faces.len());
+    let mut normalized: Vec<remus_topology::face::FaceId> = Vec::with_capacity(faces.len());
     for &fid in faces {
         let face = topo.face(fid)?;
         if !face.is_reversed() {
@@ -3383,17 +3373,17 @@ fn make_solid_from_face_subset(
         normalized.push(topo.add_face(new_face));
     }
 
-    let shell = brepkit_topology::shell::Shell::new(normalized)
-        .map_err(crate::OperationsError::Topology)?;
+    let shell =
+        remus_topology::shell::Shell::new(normalized).map_err(crate::OperationsError::Topology)?;
     let shell_id = topo.add_shell(shell);
-    let solid = brepkit_topology::solid::Solid::new(shell_id, Vec::new());
+    let solid = remus_topology::solid::Solid::new(shell_id, Vec::new());
     Ok(topo.add_solid(solid))
 }
 
 /// Count inner wire loops across all faces of a solid (outer + inner shells).
 fn solid_inner_wire_count(topo: &Topology, solid: SolidId) -> Result<i64, crate::OperationsError> {
     let mut count: i64 = 0;
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         #[allow(clippy::cast_possible_wrap)]
         {
@@ -3433,7 +3423,7 @@ fn solid_edge_use_counts(
     solid: SolidId,
 ) -> Result<HashMap<usize, usize>, crate::OperationsError> {
     let mut counts: HashMap<usize, usize> = HashMap::default();
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             let wire = topo.wire(wid)?;
@@ -3452,7 +3442,7 @@ fn solid_edge_use_counts(
 /// each shell is an independent closed surface, so a single pooled count
 /// per shell is correct.
 ///
-/// Stricter than [`brepkit_topology::validation::validate_shell_manifold`],
+/// Stricter than [`remus_topology::validation::validate_shell_manifold`],
 /// which only rejects edges shared by *more* than two faces.
 fn is_closed_manifold(topo: &Topology, solid: SolidId) -> Result<bool, crate::OperationsError> {
     let s = topo.solid(solid)?;
@@ -3470,7 +3460,7 @@ fn is_closed_manifold(topo: &Topology, solid: SolidId) -> Result<bool, crate::Op
 
 fn shell_is_closed_manifold(
     topo: &Topology,
-    shell: &brepkit_topology::shell::Shell,
+    shell: &remus_topology::shell::Shell,
 ) -> Result<bool, crate::OperationsError> {
     let mut counts: HashMap<usize, usize> = HashMap::default();
     for &fid in shell.faces() {
@@ -3512,11 +3502,11 @@ fn solid_has_flattenable_nurbs(
     solid: SolidId,
     tol: f64,
 ) -> Result<bool, crate::OperationsError> {
-    use brepkit_geometry::convert::{
+    use remus_geometry::convert::{
         RecognizedCurve, RecognizedSurface, recognize_curve, recognize_surface,
     };
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_faces;
 
     let mut seen = HashSet::default();
     for fid in solid_faces(topo, solid)? {
@@ -3573,11 +3563,11 @@ fn flatten_planar_nurbs_faces(
     solid: SolidId,
     tol: f64,
 ) -> Result<usize, crate::OperationsError> {
-    use brepkit_geometry::convert::{
+    use remus_geometry::convert::{
         RecognizedCurve, RecognizedSurface, recognize_curve, recognize_surface,
     };
-    use brepkit_topology::edge::{EdgeCurve, EdgeId};
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::edge::{EdgeCurve, EdgeId};
+    use remus_topology::explorer::solid_faces;
 
     let face_ids = solid_faces(topo, solid)?;
     // Snapshot the surfaces first (immutable borrow), then mutate.
@@ -3664,7 +3654,7 @@ pub fn flatten_planar_nurbs_faces_for_tests(
 fn merge_result_vertices(
     topo: &mut Topology,
     solid: SolidId,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<(), crate::OperationsError> {
     use std::collections::BTreeMap;
 
@@ -3672,7 +3662,7 @@ fn merge_result_vertices(
     let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
 
     let scale = 1.0 / tol.linear;
-    let quantize = |p: brepkit_math::vec::Point3| -> (i64, i64, i64) {
+    let quantize = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,
@@ -3681,11 +3671,11 @@ fn merge_result_vertices(
     };
 
     // Build vertex canonical map: position → first VertexId seen
-    let mut canonical: BTreeMap<(i64, i64, i64), brepkit_topology::vertex::VertexId> =
+    let mut canonical: BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId> =
         BTreeMap::new();
     let mut replacements: HashMap<
-        brepkit_topology::vertex::VertexId,
-        brepkit_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
     > = HashMap::default();
 
     for &fid in &face_ids {
@@ -3714,33 +3704,33 @@ fn merge_result_vertices(
     // Cache: (old_edge, new_start, new_end) → new_edge to share edges
     let mut edge_cache: HashMap<
         (
-            brepkit_topology::edge::EdgeId,
-            brepkit_topology::vertex::VertexId,
-            brepkit_topology::vertex::VertexId,
+            remus_topology::edge::EdgeId,
+            remus_topology::vertex::VertexId,
+            remus_topology::vertex::VertexId,
         ),
-        brepkit_topology::edge::EdgeId,
+        remus_topology::edge::EdgeId,
     > = HashMap::default();
 
     // Snapshot face data, then rebuild with merged vertices
     struct FaceSnap {
-        surface: brepkit_topology::face::FaceSurface,
+        surface: remus_topology::face::FaceSurface,
         reversed: bool,
         outer_oes: Vec<(
-            brepkit_topology::edge::EdgeId,
+            remus_topology::edge::EdgeId,
             bool,
-            brepkit_topology::edge::EdgeCurve,
-            brepkit_topology::vertex::VertexId,
-            brepkit_topology::vertex::VertexId,
+            remus_topology::edge::EdgeCurve,
+            remus_topology::vertex::VertexId,
+            remus_topology::vertex::VertexId,
             Option<f64>, // edge tolerance
         )>,
         outer_closed: bool,
         inner_wires: Vec<(
             Vec<(
-                brepkit_topology::edge::EdgeId,
+                remus_topology::edge::EdgeId,
                 bool,
-                brepkit_topology::edge::EdgeCurve,
-                brepkit_topology::vertex::VertexId,
-                brepkit_topology::vertex::VertexId,
+                remus_topology::edge::EdgeCurve,
+                remus_topology::vertex::VertexId,
+                remus_topology::vertex::VertexId,
                 Option<f64>,
             )>,
             bool, // wire closed flag
@@ -3802,44 +3792,44 @@ fn merge_result_vertices(
 
     #[allow(clippy::type_complexity)]
     let remap_oes = |oes: &[(
-        brepkit_topology::edge::EdgeId,
+        remus_topology::edge::EdgeId,
         bool,
-        brepkit_topology::edge::EdgeCurve,
-        brepkit_topology::vertex::VertexId,
-        brepkit_topology::vertex::VertexId,
+        remus_topology::edge::EdgeCurve,
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
         Option<f64>,
     )],
                      replacements: &HashMap<
-        brepkit_topology::vertex::VertexId,
-        brepkit_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
     >,
                      edge_cache: &mut HashMap<
         (
-            brepkit_topology::edge::EdgeId,
-            brepkit_topology::vertex::VertexId,
-            brepkit_topology::vertex::VertexId,
+            remus_topology::edge::EdgeId,
+            remus_topology::vertex::VertexId,
+            remus_topology::vertex::VertexId,
         ),
-        brepkit_topology::edge::EdgeId,
+        remus_topology::edge::EdgeId,
     >,
                      topo: &mut Topology|
-     -> Vec<brepkit_topology::wire::OrientedEdge> {
+     -> Vec<remus_topology::wire::OrientedEdge> {
         oes.iter()
             .map(|(eid, fwd, curve, start, end, edge_tol)| {
                 let ns = replacements.get(start).copied().unwrap_or(*start);
                 let ne = replacements.get(end).copied().unwrap_or(*end);
                 if ns == *start && ne == *end {
-                    return brepkit_topology::wire::OrientedEdge::new(*eid, *fwd);
+                    return remus_topology::wire::OrientedEdge::new(*eid, *fwd);
                 }
                 let key = (*eid, ns, ne);
                 let new_eid = *edge_cache.entry(key).or_insert_with(|| {
-                    topo.add_edge(brepkit_topology::edge::Edge::with_tolerance(
+                    topo.add_edge(remus_topology::edge::Edge::with_tolerance(
                         ns,
                         ne,
                         curve.clone(),
                         *edge_tol,
                     ))
                 });
-                brepkit_topology::wire::OrientedEdge::new(new_eid, *fwd)
+                remus_topology::wire::OrientedEdge::new(new_eid, *fwd)
             })
             .collect()
     };
@@ -3847,7 +3837,7 @@ fn merge_result_vertices(
     let mut new_face_ids = Vec::with_capacity(snaps.len());
     for snap in &snaps {
         let outer_oes = remap_oes(&snap.outer_oes, &replacements, &mut edge_cache, topo);
-        let Ok(outer_wire) = brepkit_topology::wire::Wire::new(outer_oes, snap.outer_closed) else {
+        let Ok(outer_wire) = remus_topology::wire::Wire::new(outer_oes, snap.outer_closed) else {
             // Wire rebuild failed — keep the original face unchanged
             // rather than silently dropping it
             continue;
@@ -3857,13 +3847,13 @@ fn merge_result_vertices(
         let mut inner_ids = Vec::new();
         for (inner_oes_snap, inner_closed) in &snap.inner_wires {
             let oes = remap_oes(inner_oes_snap, &replacements, &mut edge_cache, topo);
-            if let Ok(w) = brepkit_topology::wire::Wire::new(oes, *inner_closed) {
+            if let Ok(w) = remus_topology::wire::Wire::new(oes, *inner_closed) {
                 inner_ids.push(topo.add_wire(w));
             }
         }
 
         let mut new_face =
-            brepkit_topology::face::Face::new(outer_id, inner_ids, snap.surface.clone());
+            remus_topology::face::Face::new(outer_id, inner_ids, snap.surface.clone());
         if snap.reversed {
             new_face.set_reversed(true);
         }
@@ -3871,7 +3861,7 @@ fn merge_result_vertices(
     }
 
     // Replace the shell's faces
-    let new_shell = brepkit_topology::shell::Shell::new(new_face_ids)?;
+    let new_shell = remus_topology::shell::Shell::new(new_face_ids)?;
     let new_shell_id = topo.add_shell(new_shell);
     let solid_mut = topo.solid_mut(solid)?;
     solid_mut.set_outer_shell(new_shell_id);
@@ -3908,9 +3898,9 @@ fn unify_coincident_boundary_edges(
     solid: SolidId,
     tol_merge: f64,
 ) -> Result<bool, crate::OperationsError> {
-    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-    use brepkit_topology::vertex::VertexId;
-    use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::vertex::VertexId;
+    use remus_topology::wire::{OrientedEdge, Wire, WireId};
     let shell_id = topo.solid(solid)?.outer_shell();
     let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
 
@@ -4075,7 +4065,7 @@ fn unify_coincident_boundary_edges(
             inner_ids.push(topo.add_wire(w));
         }
         let mut new_face =
-            brepkit_topology::face::Face::new(outer_id, inner_ids, snap.surface.clone());
+            remus_topology::face::Face::new(outer_id, inner_ids, snap.surface.clone());
         if snap.reversed {
             new_face.set_reversed(true);
         }
@@ -4086,7 +4076,7 @@ fn unify_coincident_boundary_edges(
         return Ok(false);
     }
 
-    let new_shell = brepkit_topology::shell::Shell::new(new_face_ids)?;
+    let new_shell = remus_topology::shell::Shell::new(new_face_ids)?;
     let new_shell_id = topo.add_shell(new_shell);
     topo.solid_mut(solid)?.set_outer_shell(new_shell_id);
     Ok(true)
@@ -4140,7 +4130,7 @@ fn enforce_manifold_shell(
     );
 
     // Build vertex-pair → face adjacency for neighbor discovery.
-    let mut vpair_faces: HashMap<(usize, usize), Vec<brepkit_topology::face::FaceId>> =
+    let mut vpair_faces: HashMap<(usize, usize), Vec<remus_topology::face::FaceId>> =
         HashMap::default();
     for &fid in &face_ids {
         if let Ok(face) = topo.face(fid) {
@@ -4161,9 +4151,9 @@ fn enforce_manifold_shell(
     }
 
     // Greedy flood-fill shell construction.
-    let available: HashSet<brepkit_topology::face::FaceId> = face_ids.iter().copied().collect();
-    let mut processed: HashSet<brepkit_topology::face::FaceId> = HashSet::default();
-    let mut shells: Vec<Vec<brepkit_topology::face::FaceId>> = Vec::new();
+    let available: HashSet<remus_topology::face::FaceId> = face_ids.iter().copied().collect();
+    let mut processed: HashSet<remus_topology::face::FaceId> = HashSet::default();
+    let mut shells: Vec<Vec<remus_topology::face::FaceId>> = Vec::new();
 
     for &start_face in &face_ids {
         if processed.contains(&start_face) {
@@ -4218,7 +4208,7 @@ fn enforce_manifold_shell(
                 }
 
                 // Find candidate neighbor faces via vertex-pair.
-                let candidates: Vec<brepkit_topology::face::FaceId> = vpair_faces
+                let candidates: Vec<remus_topology::face::FaceId> = vpair_faces
                     .get(&vpair)
                     .map(|fs| {
                         fs.iter()
@@ -4265,7 +4255,7 @@ fn enforce_manifold_shell(
     }
 
     // Add any unprocessed faces to a final shell.
-    let remaining: Vec<brepkit_topology::face::FaceId> = available
+    let remaining: Vec<remus_topology::face::FaceId> = available
         .iter()
         .filter(|f| !processed.contains(f))
         .copied()
@@ -4295,20 +4285,20 @@ fn enforce_manifold_shell(
         }
     }
 
-    let outer = brepkit_topology::shell::Shell::new(shells[best_idx].clone())
+    let outer = remus_topology::shell::Shell::new(shells[best_idx].clone())
         .map_err(crate::OperationsError::Topology)?;
     let outer_id = topo.add_shell(outer);
     let mut inner_ids = Vec::new();
     for (i, faces) in shells.iter().enumerate() {
         if i != best_idx
             && !faces.is_empty()
-            && let Ok(inner) = brepkit_topology::shell::Shell::new(faces.clone())
+            && let Ok(inner) = remus_topology::shell::Shell::new(faces.clone())
         {
             inner_ids.push(topo.add_shell(inner));
         }
     }
 
-    Ok(topo.add_solid(brepkit_topology::solid::Solid::new(outer_id, inner_ids)))
+    Ok(topo.add_solid(remus_topology::solid::Solid::new(outer_id, inner_ids)))
 }
 
 /// Sample `n` evenly-spaced points along a closed edge curve.
@@ -4385,7 +4375,7 @@ pub fn face_polygon(
 /// Returns an error if the wire or any of its edges cannot be resolved.
 pub fn wire_polygon(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut pts = Vec::new();
@@ -4439,7 +4429,7 @@ pub fn wire_polygon(
 /// Returns an error if the wire or any of its edges cannot be resolved.
 pub fn wire_polygon_closed_subloops(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut pts = Vec::new();

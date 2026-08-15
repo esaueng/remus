@@ -178,7 +178,7 @@ pub fn validate_shell_closed(shell: &Shell, topo: &Topology) -> Result<(), Topol
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     use crate::edge::{Edge, EdgeCurve};
     use crate::face::{Face, FaceSurface};

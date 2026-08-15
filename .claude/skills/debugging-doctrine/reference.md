@@ -6,7 +6,7 @@ Companion to [SKILL.md](SKILL.md). All symbols verified against the repo; locate
 
 Capture mechanics, the three fixture tiers (native primitive repro, STEP, arena `.bin`), and templates to copy: see the testing skill. The doctrine-level rules:
 
-- STEP tier: replay via `brepkit_io::step::reader::read_step`; full template `crates/io/tests/lipfuse_fixture.rs`. **Faithfulness gate before debugging:** iterate the imported faces and match on `FaceSurface`. Cylinder/Cone/Plane coming back as `Nurbs` means the export went lossy, the numbers differ, and any fix will overfit the fixture. This gate is the exact difference between a tractable case (lip fuse: analytic round trip) and a thrash (scoop: lossy NURBS reconstruction).
+- STEP tier: replay via `remus_io::step::reader::read_step`; full template `crates/io/tests/lipfuse_fixture.rs`. **Faithfulness gate before debugging:** iterate the imported faces and match on `FaceSurface`. Cylinder/Cone/Plane coming back as `Nurbs` means the export went lossy, the numbers differ, and any fix will overfit the fixture. This gate is the exact difference between a tractable case (lip fuse: analytic round trip) and a thrash (scoop: lossy NURBS reconstruction).
 - Arena tier: failures living in the in-memory id layout (edge/vertex ordering, arena numbering) vanish under STEP renumbering. Snapshot losslessly with `serialize_solid` / `deserialize_solid` in `crates/io/src/arena_io.rs` (JS: `serializeSolid` / `deserializeSolid`); the `*_inmem.rs` tests in `crates/io/tests/` are the pattern. This tooling exists because a five-pass thrash proved "no stable repro" was the real blocker. When you hit the same wall, capture, do not attempt another debugging pass on a proxy.
 
 ### Faithfulness checklist
@@ -25,7 +25,7 @@ Before spending a single pass, the repro must match the real case on ALL of:
 `crates/operations/examples/debug_boolean.rs`. Edit it in place for the investigation at hand (swap in your fixture load, your op). Run:
 
 ```bash
-cargo run --release --example debug_boolean -p brepkit-operations
+cargo run --release --example debug_boolean -p remus-operations
 ```
 
 What it dumps and the output shape:
@@ -44,7 +44,7 @@ Expected volume: 14214.60
 
 Per-face signed volume is the sharpest tool here: a face contributing the wrong sign or a wildly wrong magnitude localizes the bad face immediately, where a total volume only says "something is off".
 
-Caveat: the example walks `outer_shell()` only. For hollow solids use `brepkit_topology::explorer::solid_faces` (see CLAUDE.md, "Walking faces in a solid").
+Caveat: the example walks `outer_shell()` only. For hollow solids use `remus_topology::explorer::solid_faces` (see CLAUDE.md, "Walking faces in a solid").
 
 ### Edge-incidence dump (free / over-shared edges)
 
@@ -54,7 +54,7 @@ Subtlety recorded in its doc comment: the quantization grid matters. Too coarse 
 
 ### Entity counts and Euler
 
-- Rust: `brepkit_topology::explorer::solid_entity_counts` returns `(faces, edges, vertices)`.
+- Rust: `remus_topology::explorer::solid_entity_counts` returns `(faces, edges, vertices)`.
 - JS: `getEntityCounts` returns `[faces, edges, vertices]`, `getSurfaceType` per face (`crates/wasm/src/bindings/query.rs`).
 
 **Face count is the only reliable mesh-fallback tell.** A clean analytic boolean result has roughly 3 to 80 faces with the expected curved types; mesh fallback produces hundreds of faces, all planar, zero curved. Triangle count and mesh validity both MASK the fallback (this exact trap silently invalidated a parity scorecard). Re-probe face counts after every GFA change.
@@ -69,7 +69,7 @@ The full boolean pipeline is:
 
 ```
 operations::boolean::boolean
-  -> brepkit_algo::gfa::boolean          (the real GFA engine)
+  -> remus_algo::gfa::boolean          (the real GFA engine)
   -> gate: euler_ok && open_shell_ok && validate_boolean_result(...)
   -> on gate failure, Cut only: multi-region acceptance (N disjoint closed
      manifolds, Euler = 2N, plus a B-interior component check)
@@ -97,7 +97,7 @@ Technique, not infrastructure: add a temporary early-return, a counter, or an `i
 
 ## Ground truth: point classification
 
-- **Use:** `brepkit_check::classify::classify_point(topo, solid, point, &ClassifyOptions::default())` in `crates/check/src/classify/mod.rs`. Ray casting along three irrational directions with majority vote. This is the ground truth for in/out/on.
+- **Use:** `remus_check::classify::classify_point(topo, solid, point, &ClassifyOptions::default())` in `crates/check/src/classify/mod.rs`. Ray casting along three irrational directions with majority vote. This is the ground truth for in/out/on.
 - **Never:** `classify_point_winding` / `classify_point_robust` on faceted, stepped, or NURBS-heavy solids. They return OUT for points clearly inside such solids; that behavior sent three debugging agents down a wrong "multi-surface envelope" theory. The GFA builder itself uses ray casting (`crates/algo/src/classifier/ray_cast.rs`) for the same reason.
 - **Never volume as ground truth.** `measure::solid_volume` is tessellation-based with deflection clamped to `bbox_diag * 5e-5` (`crates/operations/src/measure/volume.rs`); it once read 1.4 percent HIGH and nearly masked a fully un-carved slot. It also has four short-circuit paths, tried in order inside `solid_volume`: closed-form analytic (`try_analytic_solid_volume`), per-face analytic Gauss quadrature (`analytic_faces_solid_volume`), analytic surface-of-revolution (`analytic_revolution_solid_volume`), then tessellation. "Volume looks right" can mean the wrong path answered.
 
@@ -125,7 +125,7 @@ A general "arc-identity merge key" for duplicate-edge merging is provably imposs
 
 ## Glossary
 
-- **GFA**: brepkit's general fuse algorithm, the boolean engine in `crates/algo`. Raw entry `gfa::boolean`; `operations::boolean::boolean` wraps it with the acceptance gate and mesh fallback.
+- **GFA**: remus's general fuse algorithm, the boolean engine in `crates/algo`. Raw entry `gfa::boolean`; `operations::boolean::boolean` wraps it with the acceptance gate and mesh fallback.
 - **PaveFiller**: GFA phase computing pairwise interferences (VV/VE/EE/VF/EF/FF) and splitting edges at intersection parameters. `crates/algo/src/pave_filler/`.
 - **FF phase**: face-face intersection (`pave_filler/phase_ff.rs`), producing section curves. Historically the richest bug habitat.
 - **Section**: an FF intersection curve threaded into a face's splitting arrangement (`build_section_edges`). Degenerate sections poison everything downstream.
@@ -134,4 +134,4 @@ A general "arc-identity merge key" for duplicate-edge merging is provably imposs
 - **Free / over-shared edge**: edge used by exactly 1 face (open) or 3+ faces (non-manifold). Both zero means watertight-manifold.
 - **Spur**: consecutive out-and-back same-edge pair in a wire. Zero area, breaks manifoldness.
 - **Faithful fixture**: the real failing operands captured losslessly (STEP if analytic round trip holds, arena snapshot otherwise) and replayed in a Rust test.
-- **The reference kernel**: the incumbent C++ B-Rep kernel brepkit replaces. Its source may be consulted for algorithm structure (see the fuse note: it keeps sub-blocks whose midpoint classifies in-or-on both faces, rather than clipping to the opposing polygon). Never name it in commits, PRs, code, or docs. For head-to-head benchmarks, use the brepjs harness (see the **parity-benchmarking** skill).
+- **The reference kernel**: the incumbent C++ B-Rep kernel remus replaces. Its source may be consulted for algorithm structure (see the fuse note: it keeps sub-blocks whose midpoint classifies in-or-on both faces, rather than clipping to the opposing polygon). Never name it in commits, PRs, code, or docs. For head-to-head benchmarks, use the brepjs harness (see the **parity-benchmarking** skill).

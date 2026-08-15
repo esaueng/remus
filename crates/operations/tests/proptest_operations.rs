@@ -1,4 +1,4 @@
-//! Property-based tests for brepkit operations layer.
+//! Property-based tests for remus operations layer.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -6,17 +6,17 @@ use std::collections::HashMap;
 
 use proptest::prelude::*;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+use remus_math::mat::Mat4;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::test_utils::make_unit_cube_manifold_at;
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::copy::copy_solid;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::tessellate::tessellate_solid;
-use brepkit_operations::transform::transform_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::copy::copy_solid;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::tessellate::tessellate_solid;
+use remus_operations::transform::transform_solid;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
@@ -178,7 +178,7 @@ proptest! {
 
         // Snap positions to 6 decimal places for matching
         let snap = |v: f64| -> i64 { (v * 1_000_000.0).round() as i64 };
-        let key = |p: &brepkit_math::vec::Point3| -> (i64, i64, i64) {
+        let key = |p: &remus_math::vec::Point3| -> (i64, i64, i64) {
             (snap(p.x()), snap(p.y()), snap(p.z()))
         };
 

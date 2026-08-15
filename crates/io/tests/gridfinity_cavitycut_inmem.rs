@@ -21,13 +21,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_algo::gfa;
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_algo::bop::BooleanOp;
+use remus_algo::gfa;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,7 +50,7 @@ fn curved_count(topo: &Topology, solid: SolidId) -> usize {
 fn free_and_over(topo: &Topology, solid: SolidId) -> (usize, usize) {
     type QPoint = (i64, i64, i64);
     let scale = 1.0e6;
-    let q = |p: brepkit_math::vec::Point3| -> QPoint {
+    let q = |p: remus_math::vec::Point3| -> QPoint {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,

@@ -9,12 +9,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::FaceId;
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::FaceId;
+use remus_topology::shell::Shell;
+use remus_topology::solid::SolidId;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::HealError;
 use crate::analysis::surface::surfaces_equivalent;
@@ -153,10 +153,10 @@ pub fn unify_same_domain(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut uf = UnionFind::new(n_faces);
-    let tol = brepkit_math::tolerance::Tolerance {
+    let tol = remus_math::tolerance::Tolerance {
         linear: options.linear_tolerance,
         angular: options.angular_tolerance,
-        ..brepkit_math::tolerance::Tolerance::new()
+        ..remus_math::tolerance::Tolerance::new()
     };
 
     for faces in edge_faces.values() {
@@ -351,7 +351,7 @@ fn unpaired_edge_count(topo: &Topology, faces: &[FaceId]) -> Result<usize, HealE
 fn merge_group_simple(
     topo: &mut Topology,
     group_face_ids: &[FaceId],
-    surface: &brepkit_topology::face::FaceSurface,
+    surface: &remus_topology::face::FaceSurface,
 ) -> Result<Option<Vec<FaceId>>, HealError> {
     let mut edge_count: HashMap<usize, usize> = HashMap::new();
     let mut all_oes: Vec<OrientedEdge> = Vec::new();
@@ -385,9 +385,9 @@ fn merge_group_simple(
     let new_wire_id = topo.add_wire(merged_wire);
     let reversed = topo.face(group_face_ids[0])?.is_reversed();
     let new_face = if reversed {
-        brepkit_topology::face::Face::new_reversed(new_wire_id, Vec::new(), surface.clone())
+        remus_topology::face::Face::new_reversed(new_wire_id, Vec::new(), surface.clone())
     } else {
-        brepkit_topology::face::Face::new(new_wire_id, Vec::new(), surface.clone())
+        remus_topology::face::Face::new(new_wire_id, Vec::new(), surface.clone())
     };
     Ok(Some(vec![topo.add_face(new_face)]))
 }
@@ -395,8 +395,8 @@ fn merge_group_simple(
 /// A surviving edge with its traversal endpoints and 2D outgoing tangent.
 struct SurvEdge {
     oe: OrientedEdge,
-    start: brepkit_topology::vertex::VertexId,
-    end: brepkit_topology::vertex::VertexId,
+    start: remus_topology::vertex::VertexId,
+    end: remus_topology::vertex::VertexId,
     start_uv: (f64, f64),
     tangent_uv: (f64, f64),
 }
@@ -423,16 +423,16 @@ struct LoopInfo {
 fn merge_group_with_holes(
     topo: &mut Topology,
     group_face_ids: &[FaceId],
-    surface: &brepkit_topology::face::FaceSurface,
+    surface: &remus_topology::face::FaceSurface,
     options: &UnifyOptions,
 ) -> Result<Option<Vec<FaceId>>, HealError> {
-    use brepkit_topology::vertex::VertexId;
+    use remus_topology::vertex::VertexId;
 
-    let brepkit_topology::face::FaceSurface::Plane { normal, d } = surface else {
+    let remus_topology::face::FaceSurface::Plane { normal, d } = surface else {
         return Ok(None);
     };
-    let origin = brepkit_math::vec::Point3::new(normal.x() * *d, normal.y() * *d, normal.z() * *d);
-    let Ok(frame) = brepkit_math::frame::Frame3::from_normal(origin, *normal) else {
+    let origin = remus_math::vec::Point3::new(normal.x() * *d, normal.y() * *d, normal.z() * *d);
+    let Ok(frame) = remus_math::frame::Frame3::from_normal(origin, *normal) else {
         return Ok(None);
     };
 
@@ -475,7 +475,7 @@ fn merge_group_with_holes(
         return Ok(None);
     }
 
-    let to_uv = |p: brepkit_math::vec::Point3| -> (f64, f64) {
+    let to_uv = |p: remus_math::vec::Point3| -> (f64, f64) {
         let rel = p - origin;
         (rel.dot(frame.x), rel.dot(frame.y))
     };
@@ -693,9 +693,9 @@ fn merge_group_with_holes(
             }
         }
         let new_face = if reversed {
-            brepkit_topology::face::Face::new_reversed(outer_wire, inner_wires, surface.clone())
+            remus_topology::face::Face::new_reversed(outer_wire, inner_wires, surface.clone())
         } else {
-            brepkit_topology::face::Face::new(outer_wire, inner_wires, surface.clone())
+            remus_topology::face::Face::new(outer_wire, inner_wires, surface.clone())
         };
         new_face_ids.push(topo.add_face(new_face));
     }
@@ -793,7 +793,7 @@ fn merge_collinear_edges(
     wire_id: WireId,
     options: &UnifyOptions,
 ) -> Result<usize, HealError> {
-    use brepkit_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::curves::{Circle3D, Ellipse3D};
 
     /// Curve-kind snapshot used to decide whether two consecutive edges live
     /// on the same geometric host. `Other` blocks merging (NurbsCurve, etc.).
@@ -807,10 +807,10 @@ fn merge_collinear_edges(
 
     struct EdgeData {
         oe: OrientedEdge,
-        start_vid: brepkit_topology::vertex::VertexId,
-        end_vid: brepkit_topology::vertex::VertexId,
-        start_pos: brepkit_math::vec::Point3,
-        end_pos: brepkit_math::vec::Point3,
+        start_vid: remus_topology::vertex::VertexId,
+        end_vid: remus_topology::vertex::VertexId,
+        start_pos: remus_math::vec::Point3,
+        end_pos: remus_math::vec::Point3,
         kind: EdgeKind,
     }
 
@@ -980,14 +980,14 @@ fn merge_collinear_edges(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod hole_merge_tests {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::{Vertex, VertexId};
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::{Vertex, VertexId};
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
 
@@ -1205,12 +1205,12 @@ mod hole_merge_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod merge_tests {
-    use brepkit_math::curves::{Circle3D, Ellipse3D};
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::{Vertex, VertexId};
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::{Vertex, VertexId};
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
 
@@ -1228,7 +1228,7 @@ mod merge_tests {
     /// Build a wire from a sequence of edges, all forward-oriented.
     fn build_wire_from_edges(
         topo: &mut Topology,
-        edge_ids: &[brepkit_topology::edge::EdgeId],
+        edge_ids: &[remus_topology::edge::EdgeId],
         is_closed: bool,
     ) -> WireId {
         let oes: Vec<_> = edge_ids
@@ -1360,7 +1360,7 @@ mod merge_tests {
         // NurbsCurve edges are intentionally skipped — they are not handled
         // by this pass and should be left untouched even when they share a
         // vertex.
-        use brepkit_math::nurbs::curve::NurbsCurve;
+        use remus_math::nurbs::curve::NurbsCurve;
         let mut topo = Topology::default();
         let nurbs = NurbsCurve::new(
             1,

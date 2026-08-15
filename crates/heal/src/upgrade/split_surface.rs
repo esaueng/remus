@@ -4,15 +4,15 @@
 //! has insufficient continuity, and splitting at a chosen iso-parameter
 //! line (`split_surface_at_u`, `split_surface_at_v`).
 //!
-//! The split algorithm mirrors `brepkit_math::nurbs::knot_ops::curve_split`
+//! The split algorithm mirrors `remus_math::nurbs::knot_ops::curve_split`
 //! generalized to the 2D control grid: insert the knot to full multiplicity
 //! along the split direction, then partition rows (or columns) of the CP
 //! grid into the two sub-surfaces. The knots in the orthogonal direction
 //! are unchanged.
 
-use brepkit_math::nurbs::knot_ops::{surface_knot_insert_u, surface_knot_insert_v};
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::Point3;
+use remus_math::nurbs::knot_ops::{surface_knot_insert_u, surface_knot_insert_v};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::Point3;
 
 use crate::HealError;
 
@@ -94,7 +94,7 @@ pub fn split_surface_at_u(
     let (u_lo, u_hi) = surface.domain_u();
     if u <= u_lo + KNOT_EPS || u >= u_hi - KNOT_EPS {
         return Err(HealError::Math(
-            brepkit_math::MathError::ParameterOutOfRange {
+            remus_math::MathError::ParameterOutOfRange {
                 value: u,
                 min: u_lo,
                 max: u_hi,
@@ -179,7 +179,7 @@ pub fn split_surface_at_v(
     let (v_lo, v_hi) = surface.domain_v();
     if v <= v_lo + KNOT_EPS || v >= v_hi - KNOT_EPS {
         return Err(HealError::Math(
-            brepkit_math::MathError::ParameterOutOfRange {
+            remus_math::MathError::ParameterOutOfRange {
                 value: v,
                 min: v_lo,
                 max: v_hi,
@@ -271,8 +271,8 @@ mod tests {
     )]
 
     use super::*;
-    use brepkit_math::nurbs::surface::NurbsSurface;
-    use brepkit_math::vec::Point3;
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::Point3;
 
     fn make_surface_with_u_break() -> NurbsSurface {
         // Degree 2 in u, degree 1 in v.
@@ -340,7 +340,7 @@ mod tests {
         // Splitting the surface at u=u_split must produce two patches
         // whose evaluations on either side of the split match the
         // original surface within tolerance.
-        use brepkit_math::traits::ParametricSurface;
+        use remus_math::traits::ParametricSurface;
 
         let surface = make_smooth_patch();
         let u_split = 0.4_f64;
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn split_at_v_preserves_evaluation() {
-        use brepkit_math::traits::ParametricSurface;
+        use remus_math::traits::ParametricSurface;
 
         let surface = make_smooth_patch();
         let v_split = 0.6_f64;
@@ -406,7 +406,7 @@ mod tests {
     fn split_at_u_then_v_gives_4_patches_covering_original() {
         // Splitting in u then v of each result yields 4 sub-patches
         // that together evaluate identically to the original.
-        use brepkit_math::traits::ParametricSurface;
+        use remus_math::traits::ParametricSurface;
 
         let surface = make_smooth_patch();
         let (l, r) = split_surface_at_u(&surface, 0.5).unwrap();
@@ -438,11 +438,8 @@ mod tests {
         // callers can react programmatically (not just the catch-all
         // UpgradeFailed string).
         match err {
-            HealError::Math(brepkit_math::MathError::ParameterOutOfRange {
-                value,
-                min,
-                max,
-                ..
+            HealError::Math(remus_math::MathError::ParameterOutOfRange {
+                value, min, max, ..
             }) => {
                 assert!(
                     (value - 1.5).abs() < 1e-12,
@@ -464,11 +461,8 @@ mod tests {
         let surface = make_smooth_patch();
         let err = split_surface_at_v(&surface, -0.3).unwrap_err();
         match err {
-            HealError::Math(brepkit_math::MathError::ParameterOutOfRange {
-                value,
-                min,
-                max,
-                ..
+            HealError::Math(remus_math::MathError::ParameterOutOfRange {
+                value, min, max, ..
             }) => {
                 assert!(
                     (value + 0.3).abs() < 1e-12,

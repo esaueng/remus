@@ -5,11 +5,11 @@
 pub enum AlgoError {
     /// A topology entity was not found in the arena.
     #[error("topology error: {0}")]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math operation failed.
     #[error("math error: {0}")]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// Intersection computation failed.
     #[error("intersection failed: {0}")]
@@ -34,7 +34,7 @@ pub enum AlgoError {
     /// than deep inside the pipeline, so the operation refuses by name
     /// instead of falling back to a chord or a line and returning a
     /// plausible but wrong solid. `variant` is the
-    /// [`EdgeCurve`](brepkit_topology::edge::EdgeCurve) type tag, e.g.
+    /// [`EdgeCurve`](remus_topology::edge::EdgeCurve) type tag, e.g.
     /// `"hyperbola"`.
     #[error(
         "unsupported edge curve type `{variant}`: the boolean engine cannot \

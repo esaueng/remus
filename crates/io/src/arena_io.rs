@@ -21,23 +21,21 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
-use brepkit_math::curves2d::Curve2D;
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::compound::{Compound, CompoundId};
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::pcurve::PCurve;
-use brepkit_topology::shell::{Shell, ShellId};
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::topology::Topology;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+use remus_math::curves2d::Curve2D;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::compound::{Compound, CompoundId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::pcurve::PCurve;
+use remus_topology::shell::{Shell, ShellId};
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::topology::Topology;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 use serde::{Deserialize, Serialize};
 
 use crate::IoError;
@@ -279,7 +277,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn intern_vertex(&mut self, id: brepkit_topology::vertex::VertexId) -> Result<usize, IoError> {
+    fn intern_vertex(&mut self, id: remus_topology::vertex::VertexId) -> Result<usize, IoError> {
         if let Some(&local) = self.vertex_map.get(&id.index()) {
             return Ok(local);
         }
@@ -313,7 +311,7 @@ impl<'a> Builder<'a> {
         Ok(local)
     }
 
-    fn intern_wire(&mut self, id: brepkit_topology::wire::WireId) -> Result<usize, IoError> {
+    fn intern_wire(&mut self, id: remus_topology::wire::WireId) -> Result<usize, IoError> {
         if let Some(&local) = self.wire_map.get(&id.index()) {
             return Ok(local);
         }
@@ -333,7 +331,7 @@ impl<'a> Builder<'a> {
         Ok(local)
     }
 
-    fn intern_face(&mut self, id: brepkit_topology::face::FaceId) -> Result<usize, IoError> {
+    fn intern_face(&mut self, id: remus_topology::face::FaceId) -> Result<usize, IoError> {
         if let Some(&local) = self.face_map.get(&id.index()) {
             return Ok(local);
         }
@@ -925,8 +923,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_operations::primitives::{make_box, make_cylinder};
-    use brepkit_topology::explorer::solid_faces;
+    use remus_operations::primitives::{make_box, make_cylinder};
+    use remus_topology::explorer::solid_faces;
 
     fn face_type_histogram(
         topo: &Topology,

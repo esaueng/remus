@@ -1,9 +1,9 @@
 //! Face and solid surface area computation.
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::tessellate;
 
@@ -130,7 +130,7 @@ fn cylinder_arc_sweep(
     axis: Vec3,
     origin: Point3,
 ) -> Result<Option<f64>, crate::OperationsError> {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     // Axial-level merge guard. `v` is `axis · (center − origin)`, which
     // accumulates more rounding error than a single distance comparison, so
@@ -214,7 +214,7 @@ fn analytic_cone_face_area(
                 }
             }
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
                 && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
             {
                 let ts = circle.project(sv.point());
@@ -286,7 +286,7 @@ fn analytic_torus_face_area(
                 }
             }
             if !edge.is_closed()
-                && let brepkit_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
+                && let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve()
                 && let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
             {
                 let ts = circle.project(sv.point());

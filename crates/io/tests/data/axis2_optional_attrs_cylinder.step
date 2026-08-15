@@ -1,7 +1,7 @@
 ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION(('hand-written fixture: AXIS2_PLACEMENT_3D with omitted OPTIONAL attributes'), '2;1');
-FILE_NAME('axis2_optional_attrs_cylinder.step', '2026-01-01T00:00:00', ('brepkit'), ('brepkit'), 'brepkit test fixture', 'brepkit test fixture', '');
+FILE_NAME('axis2_optional_attrs_cylinder.step', '2026-01-01T00:00:00', ('remus'), ('remus'), 'remus test fixture', 'remus test fixture', '');
 FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));
 ENDSEC;
 DATA;

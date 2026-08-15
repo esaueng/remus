@@ -13,9 +13,9 @@
 
 use std::f64::consts::FRAC_PI_4;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::Point3;
+use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::Point3;
 
 use crate::HealError;
 
@@ -124,7 +124,7 @@ pub fn parabola_to_nurbs(
     t_max: f64,
 ) -> Result<NurbsCurve, HealError> {
     if t_max <= t_min {
-        return Err(brepkit_math::MathError::ParameterOutOfRange {
+        return Err(remus_math::MathError::ParameterOutOfRange {
             value: t_max,
             min: t_min,
             max: f64::INFINITY,
@@ -185,7 +185,7 @@ pub fn hyperbola_to_nurbs(
     t_max: f64,
 ) -> Result<NurbsCurve, HealError> {
     if t_max <= t_min {
-        return Err(brepkit_math::MathError::ParameterOutOfRange {
+        return Err(remus_math::MathError::ParameterOutOfRange {
             value: t_max,
             min: t_min,
             max: f64::INFINITY,
@@ -278,7 +278,7 @@ pub fn ellipse_to_nurbs(ellipse: &Ellipse3D) -> Result<NurbsCurve, HealError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
 
     use super::*;
 
@@ -403,9 +403,7 @@ mod tests {
             Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
         let err = parabola_to_nurbs(&parabola, 5.0, 1.0).unwrap_err();
         match err {
-            HealError::Math(brepkit_math::MathError::ParameterOutOfRange {
-                value, min, ..
-            }) => {
+            HealError::Math(remus_math::MathError::ParameterOutOfRange { value, min, .. }) => {
                 assert!((value - 1.0).abs() < 1e-12);
                 assert!((min - 5.0).abs() < 1e-12);
             }
@@ -476,9 +474,7 @@ mod tests {
         .unwrap();
         let err = hyperbola_to_nurbs(&hyp, 5.0, 1.0).unwrap_err();
         match err {
-            HealError::Math(brepkit_math::MathError::ParameterOutOfRange {
-                value, min, ..
-            }) => {
+            HealError::Math(remus_math::MathError::ParameterOutOfRange { value, min, .. }) => {
                 assert!((value - 1.0).abs() < 1e-12);
                 assert!((min - 5.0).abs() < 1e-12);
             }

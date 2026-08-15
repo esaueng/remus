@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 //! Cross-section of a blend surface at a spine parameter.
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 /// A circular cross-section of the blend at a given spine parameter.
 #[derive(Debug, Clone)]

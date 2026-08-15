@@ -13,7 +13,7 @@ use crate::kernel::BrepKernel;
 
 impl BrepKernel {
     /// Resolve a `u32` face handle to a typed `FaceId`.
-    pub fn resolve_face(&self, handle: u32) -> Result<brepkit_topology::face::FaceId, WasmError> {
+    pub fn resolve_face(&self, handle: u32) -> Result<remus_topology::face::FaceId, WasmError> {
         let index = handle as usize;
         self.topo
             .face_id_from_index(index)
@@ -27,7 +27,7 @@ impl BrepKernel {
     pub fn resolve_vertex(
         &self,
         handle: u32,
-    ) -> Result<brepkit_topology::vertex::VertexId, WasmError> {
+    ) -> Result<remus_topology::vertex::VertexId, WasmError> {
         let index = handle as usize;
         self.topo
             .vertex_id_from_index(index)
@@ -38,7 +38,7 @@ impl BrepKernel {
     }
 
     /// Resolve a `u32` edge handle to a typed `EdgeId`.
-    pub fn resolve_edge(&self, handle: u32) -> Result<brepkit_topology::edge::EdgeId, WasmError> {
+    pub fn resolve_edge(&self, handle: u32) -> Result<remus_topology::edge::EdgeId, WasmError> {
         let index = handle as usize;
         self.topo
             .edge_id_from_index(index)
@@ -49,10 +49,7 @@ impl BrepKernel {
     }
 
     /// Resolve a `u32` solid handle to a typed `SolidId`.
-    pub fn resolve_solid(
-        &self,
-        handle: u32,
-    ) -> Result<brepkit_topology::solid::SolidId, WasmError> {
+    pub fn resolve_solid(&self, handle: u32) -> Result<remus_topology::solid::SolidId, WasmError> {
         let index = handle as usize;
         self.topo
             .solid_id_from_index(index)
@@ -63,7 +60,7 @@ impl BrepKernel {
     }
 
     /// Resolve a `u32` wire handle to a typed `WireId`.
-    pub fn resolve_wire(&self, handle: u32) -> Result<brepkit_topology::wire::WireId, WasmError> {
+    pub fn resolve_wire(&self, handle: u32) -> Result<remus_topology::wire::WireId, WasmError> {
         let index = handle as usize;
         self.topo
             .wire_id_from_index(index)
@@ -74,10 +71,7 @@ impl BrepKernel {
     }
 
     /// Resolve a `u32` shell handle to a typed `ShellId`.
-    pub fn resolve_shell(
-        &self,
-        handle: u32,
-    ) -> Result<brepkit_topology::shell::ShellId, WasmError> {
+    pub fn resolve_shell(&self, handle: u32) -> Result<remus_topology::shell::ShellId, WasmError> {
         let index = handle as usize;
         self.topo
             .shell_id_from_index(index)
@@ -91,7 +85,7 @@ impl BrepKernel {
     pub fn resolve_compound(
         &self,
         handle: u32,
-    ) -> Result<brepkit_topology::compound::CompoundId, WasmError> {
+    ) -> Result<remus_topology::compound::CompoundId, WasmError> {
         let index = handle as usize;
         self.topo
             .compound_id_from_index(index)
@@ -106,42 +100,42 @@ impl BrepKernel {
 
 /// Convert a `FaceId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn face_id_to_u32(id: brepkit_topology::face::FaceId) -> u32 {
+pub const fn face_id_to_u32(id: remus_topology::face::FaceId) -> u32 {
     id.index() as u32
 }
 
 /// Convert a `SolidId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn solid_id_to_u32(id: brepkit_topology::solid::SolidId) -> u32 {
+pub const fn solid_id_to_u32(id: remus_topology::solid::SolidId) -> u32 {
     id.index() as u32
 }
 
 /// Convert a `VertexId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn vertex_id_to_u32(id: brepkit_topology::vertex::VertexId) -> u32 {
+pub const fn vertex_id_to_u32(id: remus_topology::vertex::VertexId) -> u32 {
     id.index() as u32
 }
 
 /// Convert an `EdgeId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn edge_id_to_u32(id: brepkit_topology::edge::EdgeId) -> u32 {
+pub const fn edge_id_to_u32(id: remus_topology::edge::EdgeId) -> u32 {
     id.index() as u32
 }
 
 /// Convert a `WireId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn wire_id_to_u32(id: brepkit_topology::wire::WireId) -> u32 {
+pub const fn wire_id_to_u32(id: remus_topology::wire::WireId) -> u32 {
     id.index() as u32
 }
 
 /// Convert a `ShellId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn shell_id_to_u32(id: brepkit_topology::shell::ShellId) -> u32 {
+pub const fn shell_id_to_u32(id: remus_topology::shell::ShellId) -> u32 {
     id.index() as u32
 }
 
 /// Convert a `CompoundId` to a `u32` handle for JavaScript.
 #[allow(clippy::cast_possible_truncation)]
-pub const fn compound_id_to_u32(id: brepkit_topology::compound::CompoundId) -> u32 {
+pub const fn compound_id_to_u32(id: remus_topology::compound::CompoundId) -> u32 {
     id.index() as u32
 }

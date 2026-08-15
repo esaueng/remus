@@ -3,9 +3,9 @@
 //! Runs the complete General Fuse Algorithm pipeline:
 //! PaveFiller -> Builder -> BOP -> assemble.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::bop::BooleanOp;
 use crate::builder::Builder;
@@ -243,8 +243,8 @@ pub fn boolean_with_face_origins(
 /// like a solid but has the wrong geometry — the failure mode that is
 /// hardest to notice downstream. Refusing here fails closed instead.
 fn reject_unsupported_curves(topo: &Topology, solid_id: SolidId) -> Result<(), AlgoError> {
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_faces;
 
     for fid in solid_faces(topo, solid_id)? {
         let face = topo.face(fid)?;

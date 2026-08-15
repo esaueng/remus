@@ -11,12 +11,12 @@
 
 #![allow(clippy::unwrap_used)]
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_algo::gfa;
-use brepkit_operations::primitives::make_cone;
-use brepkit_topology::Topology;
-use brepkit_topology::adjacency::AdjacencyIndex;
-use brepkit_topology::explorer::solid_faces;
+use remus_algo::bop::BooleanOp;
+use remus_algo::gfa;
+use remus_operations::primitives::make_cone;
+use remus_topology::Topology;
+use remus_topology::adjacency::AdjacencyIndex;
+use remus_topology::explorer::solid_faces;
 
 #[test]
 fn coaxial_cone_cut_keeps_inner_cavity_wall() {

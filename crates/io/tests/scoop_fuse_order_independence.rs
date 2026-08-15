@@ -14,11 +14,11 @@
 
 use std::path::{Path, PathBuf};
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -28,7 +28,7 @@ fn fixture(name: &str) -> PathBuf {
 
 fn read_one(name: &str, topo: &mut Topology) -> SolidId {
     let text = std::fs::read_to_string(fixture(name)).unwrap();
-    let solids = brepkit_io::step::reader::read_step(&text, topo).unwrap();
+    let solids = remus_io::step::reader::read_step(&text, topo).unwrap();
     assert_eq!(solids.len(), 1, "expected exactly one solid in {name}");
     solids[0]
 }

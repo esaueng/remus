@@ -3,10 +3,10 @@
 //! These types carry edge and face data through the splitting stages:
 //! pcurve computation, wire building, and sub-face construction.
 
-use brepkit_math::curves2d::Curve2D;
-use brepkit_math::vec::{Point2, Point3};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::curves2d::Curve2D;
+use remus_math::vec::{Point2, Point3};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use super::plane_frame::PlaneFrame;
 use crate::ds::Rank;

@@ -6,10 +6,10 @@ Symbol catalog for the verification ladder. All paths and symbols verified again
 
 ### Rung 1: entity counts and surface census
 
-- `brepkit_topology::explorer::solid_entity_counts(topo, solid) -> (faces, edges, vertices)`. Locate: `rg -n 'pub fn solid_entity_counts' crates/topology/src/explorer.rs`.
-- `brepkit_topology::explorer::solid_faces(topo, solid) -> Result<Vec<FaceId>, _>` flattens outer plus inner shells. Always use this over walking `outer_shell()` (see CLAUDE.md, Walking faces in a solid).
+- `remus_topology::explorer::solid_entity_counts(topo, solid) -> (faces, edges, vertices)`. Locate: `rg -n 'pub fn solid_entity_counts' crates/topology/src/explorer.rs`.
+- `remus_topology::explorer::solid_faces(topo, solid) -> Result<Vec<FaceId>, _>` flattens outer plus inner shells. Always use this over walking `outer_shell()` (see CLAUDE.md, Walking faces in a solid).
 - Surface census: iterate `solid_faces`, call `FaceSurface::type_tag()` (an inherent method on the enum in `crates/topology/src/face.rs`). Edge equivalent: `EdgeCurve::type_tag()` in `crates/topology/src/edge.rs`.
-- Approximation census tool: `cargo run --release --example approx_census -p brepkit-operations` (source: `crates/operations/examples/approx_census.rs`). It installs a logger capturing `brepkit_approx`-target debug probes and reports, per operation, whether the result stayed analytic or which approximation path fired. Probe sites: `rg -n 'brepkit_approx' crates/operations/src/`.
+- Approximation census tool: `cargo run --release --example approx_census -p remus-operations` (source: `crates/operations/examples/approx_census.rs`). It installs a logger capturing `remus_approx`-target debug probes and reports, per operation, whether the result stayed analytic or which approximation path fired. Probe sites: `rg -n 'remus_approx' crates/operations/src/`.
 - Mesh-fallback tell: a clean analytic boolean of primitives yields roughly 3 to 80 faces with quadric surface types present. A mesh fallback yields hundreds to thousands of faces, all `plane`. Face count and census are the ONLY reliable tell; triangle count and validity both look normal after a fallback.
 - WASM: `getEntityCounts(solid) -> [f, e, v]`, `getSurfaceType(face)`, `getEdgeCurveType(edge)` in `crates/wasm/src/bindings/query.rs`.
 - Does not prove: representation quality is not correctness. An all-analytic, no-probe result can still be missing a carved feature (recorded precedent: PR #997).
@@ -23,7 +23,7 @@ Symbol catalog for the verification ladder. All paths and symbols verified again
 - `euler_characteristic(topo, solid) -> i64`.
 - Its Euler check is loop-aware: V-E+F = 2(1-g) + L with L the count of inner wire loops; it errors only when the implied genus is negative or non-integral. Its edge checks come from `explorer::edge_to_face_map`: 0 faces per edge is an orphan (Error), 1 is a boundary edge ("shell is not closed", Error), 3 or more is non-manifold (Error).
 
-**(b) check-crate validator, richer per-check report.** `brepkit_check::validate::validate_solid(topo, solid, &ValidateOptions::default()) -> ValidationReport` in `crates/check/src/validate/mod.rs`. Options: `ValidateOptions { tolerance_scale, disabled_checks: HashSet<CheckId> }`. Report API: `is_valid()`, `error_count()`, `warning_count()`. `CheckId` variants (in `crates/check/src/validate/checks.rs`): `VertexOnCurve`, `VertexOnSurface`, `EdgeNoCurve3D`, `EdgeSameParameter`, `EdgeRangeValid`, `EdgeDegenerate`, `WireEmpty`, `WireNotConnected`, `WireClosure3D`, `WireRedundantEdge`, `WireSelfIntersection`, `FaceNoSurface`, `FaceOrientationConsistency`, `ShellEmpty`, `ShellConnected`, `ShellClosed`, `ShellOrientationConsistent`, `SolidEulerCharacteristic`, `SolidDuplicateFaces`. Severities: Info, Warning, Error.
+**(b) check-crate validator, richer per-check report.** `remus_check::validate::validate_solid(topo, solid, &ValidateOptions::default()) -> ValidationReport` in `crates/check/src/validate/mod.rs`. Options: `ValidateOptions { tolerance_scale, disabled_checks: HashSet<CheckId> }`. Report API: `is_valid()`, `error_count()`, `warning_count()`. `CheckId` variants (in `crates/check/src/validate/checks.rs`): `VertexOnCurve`, `VertexOnSurface`, `EdgeNoCurve3D`, `EdgeSameParameter`, `EdgeRangeValid`, `EdgeDegenerate`, `WireEmpty`, `WireNotConnected`, `WireClosure3D`, `WireRedundantEdge`, `WireSelfIntersection`, `FaceNoSurface`, `FaceOrientationConsistency`, `ShellEmpty`, `ShellConnected`, `ShellClosed`, `ShellOrientationConsistent`, `SolidEulerCharacteristic`, `SolidDuplicateFaces`. Severities: Info, Warning, Error.
 - Caveat: its `check_euler` (`crates/check/src/validate/solid.rs`) requires V-E+F == 2 exactly (Warning). It does not correct for genus or inner loops, so a legitimate solid with a through-hole warns here. Disable via `disabled_checks` or use validator (a).
 - WASM: `validateSolid(solid) -> u32` error count (routes to the operations validator, count only), `validateSolidRelaxed`, `validateSolidWithOptions(solid, tolerance_scale)` in `crates/wasm/src/bindings/measure.rs`.
 - Does not prove: all checks are topological or local-geometric. None compares against intent. A watertight, manifold, Euler-consistent solid can be the wrong shape.
@@ -31,14 +31,14 @@ Symbol catalog for the verification ladder. All paths and symbols verified again
 ### Rung 3: free edges and Euler (B-Rep watertightness)
 
 - Programmatic: validator (a) errors quoted above; or check-crate `ShellClosed` ("shell has {n} free (boundary) edges", `crates/check/src/validate/shell.rs`).
-- To get the actual open loops for inspection: `brepkit_heal::analysis::free_bounds::find_free_bounds(topo, shell_id) -> Result<Vec<Vec<EdgeId>>, _>`. Per shell: for hollow solids run it on the outer shell and every inner shell.
+- To get the actual open loops for inspection: `remus_heal::analysis::free_bounds::find_free_bounds(topo, shell_id) -> Result<Vec<Vec<EdgeId>>, _>`. Per shell: for hollow solids run it on the outer shell and every inner shell.
 - Raw map: `explorer::edge_to_face_map(topo, solid)`; expect every edge to map to exactly 2 faces.
 - JS: `edgeToFaceMap(solid)` binding in `crates/wasm/src/bindings/query.rs`; count 1-face entries.
 - Does not prove: closed and manifold does not mean correctly classified. A boolean can keep the wrong face set and still assemble a perfectly closed manifold. Note a spur (a face fan sharing one edge 3+ ways) does surface here as non-manifold.
 
 ### Rung 4: mesh watertightness
 
-- `brepkit_operations::tessellate::tessellate_solid(topo, solid, deflection) -> Result<TriangleMesh, _>` (`crates/operations/src/tessellate/solid.rs`).
+- `remus_operations::tessellate::tessellate_solid(topo, solid, deflection) -> Result<TriangleMesh, _>` (`crates/operations/src/tessellate/solid.rs`).
 - From `crates/operations/src/tessellate/mesh_ops.rs`:
   - `boundary_edge_count(&mesh)`: directed half-edges without an opposite. Expect 0.
   - `non_manifold_edge_count(&mesh)`: undirected edges referenced by 3+ triangles. Expect 0.
@@ -63,7 +63,7 @@ Probe selection: sample the intent, not the space. Centers of every carved pocke
 
 ### Rung 6: volume and area
 
-- `brepkit_operations::measure::solid_volume(topo, solid, deflection) -> Result<f64, _>` (`crates/operations/src/measure/volume.rs`).
+- `remus_operations::measure::solid_volume(topo, solid, deflection) -> Result<f64, _>` (`crates/operations/src/measure/volume.rs`).
 - `solid_surface_area(topo, solid, deflection)` (`crates/operations/src/measure/area.rs`): sums per-face areas, analytic formulas where the surface type allows, tessellation fallback otherwise.
 - WASM: `volume(solid, deflection)` in `crates/wasm/src/bindings/measure.rs`. The deflection clamp lives in the kernel, so preview-tuned caller deflections still produce accurate volumes.
 
@@ -74,7 +74,7 @@ Probe selection: sample the intent, not the space. Centers of every carved pocke
 | # | Path | Symbol | Fires when |
 |---|---|---|---|
 | 1 | Closed form | `try_analytic_solid_volume` | Pure primitive: sphere, cylinder, cone/frustum, torus. Not box (all-planar solids fall through and are exact via tessellation). Bails on any NURBS face or any face with inner wires |
-| 2 | Guarded Gauss | `analytic_faces_solid_volume` | All-analytic solid matching narrow structural guards (e.g. bored sphere with constant-v outer wire); uses `brepkit_check::properties::face_integrator::integrate_face` per face |
+| 2 | Guarded Gauss | `analytic_faces_solid_volume` | All-analytic solid matching narrow structural guards (e.g. bored sphere with constant-v outer wire); uses `remus_check::properties::face_integrator::integrate_face` per face |
 | 3 | Revolution | `analytic_revolution_solid_volume` | Fully analytic surface-of-revolution solid: one shared axis, concentric circular caps, no NURBS, no inner wires. Deliberately narrow so it never fires on boolean results with arc-bounded planar caps |
 | 4-5 | Gated mesh | shape guards + `signed_volume_from_mesh` | Specific boolean shapes (scalloped-sphere collar, torus notch band), gated on `mesh_boundary_edge_count == 0`; falls through rather than return a leaky volume |
 | 6 | Direct faces | `solid_volume_from_faces` | All-planar-triangular solids (mesh imports) |
@@ -91,7 +91,7 @@ Convergence-test consequence: two coarse requests (say 0.1 and 0.01) may both cl
 
 ### Why the check-crate Gauss integrator is not a general oracle
 
-`brepkit_check::properties::solid_volume` (`crates/check/src/properties/mod.rs`, default `gauss_order: 5`) sums `face_integrator::integrate_face` over all faces with no structural guards. It mishandles trimmed periodic faces (a half-cylinder lateral integrates as the full period) and is sensitive to face orientation errors that the tessellation path's abs() tolerates. Recorded findings from the PR #959 investigation: half-disc prism 54.08 vs true 39.27; wrong results on box-sphere booleans. The engine only trusts `integrate_face` behind the narrow guards of paths 2 and 3. Known latent issue feeding this: `wire_polygon` in `crates/check/src/util.rs` samples closed circle/ellipse/NURBS edges but reduces a NON-closed arc edge to its endpoint vertex, so open arcs become chords and corrupt `check::properties` area/volume for arc-bounded planar faces.
+`remus_check::properties::solid_volume` (`crates/check/src/properties/mod.rs`, default `gauss_order: 5`) sums `face_integrator::integrate_face` over all faces with no structural guards. It mishandles trimmed periodic faces (a half-cylinder lateral integrates as the full period) and is sensitive to face orientation errors that the tessellation path's abs() tolerates. Recorded findings from the PR #959 investigation: half-disc prism 54.08 vs true 39.27; wrong results on box-sphere booleans. The engine only trusts `integrate_face` behind the narrow guards of paths 2 and 3. Known latent issue feeding this: `wire_polygon` in `crates/check/src/util.rs` samples closed circle/ellipse/NURBS edges but reduces a NON-closed arc edge to its endpoint vertex, so open arcs become chords and corrupt `check::properties` area/volume for arc-bounded planar faces.
 
 ### Divergence heuristics (recorded findings, not code facts)
 
@@ -102,7 +102,7 @@ Convergence-test consequence: two coarse requests (say 0.1 and 0.01) may both cl
 ## Quick command crib
 
 ```bash
-cargo run --release --example approx_census -p brepkit-operations
+cargo run --release --example approx_census -p remus-operations
 rg -n 'pub fn solid_volume' crates/operations/src/measure/volume.rs
 rg -n 'pub fn classify_point' crates/check/src/classify/mod.rs crates/operations/src/classify.rs
 rg -n 'pub fn (is_watertight|boundary_edge_count|non_manifold_edge_count)' crates/operations/src/tessellate/mesh_ops.rs
@@ -113,9 +113,9 @@ For head-to-head numeric comparison against the reference kernel, use the brepjs
 
 ## Glossary
 
-- **GFA**: brepkit's boolean engine (`crates/algo`): pave-filler intersection phases plus a builder that splits faces, classifies pieces, and assembles the result.
+- **GFA**: remus's boolean engine (`crates/algo`): pave-filler intersection phases plus a builder that splits faces, classifies pieces, and assembles the result.
 - **Mesh fallback**: when the analytic boolean fails, meshes are co-refined instead; detected by face count and census, not triangle count.
-- **Census**: the `approx_census` example; per-operation analytic-vs-approximation report driven by `brepkit_approx` log probes.
+- **Census**: the `approx_census` example; per-operation analytic-vs-approximation report driven by `remus_approx` log probes.
 - **Deflection**: max chord deviation for tessellation; smaller is finer.
 - **Free (boundary) edge**: a B-Rep edge referenced by exactly one face, meaning an open shell. Mesh analogue: a half-edge with no opposite.
 - **Inscribed-mesh undercount**: tessellation vertices lie on curved surfaces, so mesh volume of good geometry converges from below; upward drift under refinement means broken geometry.

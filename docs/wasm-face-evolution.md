@@ -2,7 +2,7 @@
 
 ## Characterized baseline
 
-The pre-hardening contract is pinned to BrepKit fork revision
+The pre-hardening contract is pinned to Remus source revision
 `65e3840c221b20b3d8fd64ca45513d5687c868d6` (the refreshed `origin/main` used
 as this work's branch base).
 

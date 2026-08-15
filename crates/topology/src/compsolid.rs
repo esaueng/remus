@@ -56,7 +56,7 @@ impl CompSolid {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     use crate::topology::Topology;
     use crate::vertex::Vertex;

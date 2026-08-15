@@ -2,7 +2,7 @@
 
 use std::f64::consts::PI;
 
-use brepkit_topology::Topology;
+use remus_topology::Topology;
 
 use super::*;
 use crate::test_helpers::{assert_euler_genus0, assert_volume_near, euler_characteristic};
@@ -85,8 +85,7 @@ fn make_box_manifold_edges() {
     let s = topo.solid(solid).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
 
-    brepkit_topology::validation::validate_shell_manifold(sh, &topo)
-        .expect("box should be manifold");
+    remus_topology::validation::validate_shell_manifold(sh, &topo).expect("box should be manifold");
 }
 
 #[test]
@@ -293,11 +292,11 @@ fn cylinder_seam_continuity() {
     // Cylinder surface should evaluate to the same point at u=0 and u=2π
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 1.0, 2.0).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
     for fid in &faces {
         let face = topo.face(*fid).unwrap();
-        if let brepkit_topology::face::FaceSurface::Cylinder(cyl) = face.surface() {
+        if let remus_topology::face::FaceSurface::Cylinder(cyl) = face.surface() {
             let p0 = cyl.evaluate(0.0, 0.5);
             let p2pi = cyl.evaluate(std::f64::consts::TAU, 0.5);
             let dist = ((p0.x() - p2pi.x()).powi(2)
@@ -318,7 +317,7 @@ fn sphere_pole_degenerate() {
     let mut topo = Topology::new();
     let solid = make_sphere(&mut topo, 1.0, 8).unwrap();
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
     // Sphere has 2 hemisphere faces
     assert_eq!(faces.len(), 2, "sphere should have 2 faces");
 }
@@ -328,11 +327,11 @@ fn torus_seam_u_and_v() {
     // Torus surface should be periodic in both u and v
     let mut topo = Topology::new();
     let solid = make_torus(&mut topo, 3.0, 1.0, 8).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
     for fid in &faces {
         let face = topo.face(*fid).unwrap();
-        if let brepkit_topology::face::FaceSurface::Torus(tor) = face.surface() {
+        if let remus_topology::face::FaceSurface::Torus(tor) = face.surface() {
             // Check u-periodicity
             let p00 = tor.evaluate(0.0, 0.5);
             let p2pi_0 = tor.evaluate(std::f64::consts::TAU, 0.5);
@@ -359,7 +358,7 @@ fn cone_apex_singular() {
     // A cone with top_radius=0 has an apex vertex
     let mut topo = Topology::new();
     let solid = make_cone(&mut topo, 2.0, 0.0, 3.0).unwrap();
-    let verts = brepkit_topology::explorer::solid_vertices(&topo, solid).unwrap();
+    let verts = remus_topology::explorer::solid_vertices(&topo, solid).unwrap();
 
     // The apex should be at (0, 0, 3.0) — the top of the cone
     let has_apex = verts.iter().any(|vid| {

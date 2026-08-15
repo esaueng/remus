@@ -5,7 +5,7 @@
 //! (solid → shell → face → wire → edge) so that all fixers share a
 //! consistent view of tolerance and accumulated changes.
 
-use brepkit_math::tolerance::Tolerance;
+use remus_math::tolerance::Tolerance;
 
 use crate::reshape::ReShape;
 use crate::status::Status;

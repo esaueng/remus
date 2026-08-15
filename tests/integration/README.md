@@ -7,10 +7,10 @@ documentation and fixtures rather than a separate workspace crate.
 ## Boolean workflow
 
 ```rust
-use brepkit_operations::boolean::{boolean, BooleanOp};
-use brepkit_operations::measure::{solid_bounding_box, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_topology::Topology;
+use remus_operations::boolean::{boolean, BooleanOp};
+use remus_operations::measure::{solid_bounding_box, solid_volume};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_topology::Topology;
 
 let mut topo = Topology::new();
 let target = make_box(&mut topo, 10.0, 10.0, 10.0)?;
@@ -30,10 +30,10 @@ same `Topology`.
 ## STEP round trip
 
 ```rust
-use brepkit_io::step::{read_step, write_step};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_box;
-use brepkit_topology::Topology;
+use remus_io::step::{read_step, write_step};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_box;
+use remus_topology::Topology;
 
 let mut source = Topology::new();
 let solid = make_box(&mut source, 5.0, 3.0, 2.0)?;

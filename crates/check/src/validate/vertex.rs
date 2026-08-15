@@ -1,9 +1,9 @@
 //! Vertex geometric validation checks.
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::vertex::VertexId;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::vertex::VertexId;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;
@@ -81,7 +81,7 @@ pub fn check_vertex_on_surface(
 
     let deviation = match face.surface() {
         FaceSurface::Plane { normal, d } => {
-            let pv = brepkit_math::vec::Vec3::new(pos.x(), pos.y(), pos.z());
+            let pv = remus_math::vec::Vec3::new(pos.x(), pos.y(), pos.z());
             (normal.dot(pv) - d).abs()
         }
         FaceSurface::Cylinder(s) => {
@@ -101,7 +101,7 @@ pub fn check_vertex_on_surface(
             (pos - s.evaluate(u, v)).length()
         }
         FaceSurface::Nurbs(s) => {
-            match brepkit_math::nurbs::projection::project_point_to_surface(s, pos, tolerance) {
+            match remus_math::nurbs::projection::project_point_to_surface(s, pos, tolerance) {
                 Ok(proj) => proj.distance,
                 Err(_) => return Ok(vec![]),
             }

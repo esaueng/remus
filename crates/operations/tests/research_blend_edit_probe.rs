@@ -20,19 +20,19 @@
     clippy::print_stdout
 )]
 
-use brepkit_blend::query::{GeometricSpine, try_analytic_fillet_surface};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::defeature::defeature;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_blend::query::{GeometricSpine, try_analytic_fillet_surface};
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::defeature::defeature;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 fn edge_curve_name(curve: &EdgeCurve) -> &'static str {
     match curve {
@@ -156,7 +156,7 @@ fn e1_plane_plane_fillet_structure() {
     // E6: exact tier-2 removal. The two circular wound arcs collapse to the
     // recovered sharp corners instead of being silently chorded.
     let healed = defeature(&mut topo, result.solid, &[band]).unwrap();
-    let healed_volume = brepkit_operations::measure::solid_volume(&topo, healed, 0.02).unwrap();
+    let healed_volume = remus_operations::measure::solid_volume(&topo, healed, 0.02).unwrap();
     println!("E6 unfillet volume={healed_volume:.9}");
     assert!((healed_volume - 16_000.0).abs() < 1e-6);
     assert_eq!(solid_faces(&topo, healed).unwrap().len(), 6);
@@ -237,7 +237,7 @@ fn drilled_plate(topo: &mut Topology) -> (SolidId, EdgeId) {
 fn e3_boss_base_fillet_structure() {
     let mut topo = Topology::new();
     let (fused, ridgeline) = drilled_plate(&mut topo);
-    let vol = brepkit_operations::measure::solid_volume(&topo, fused, 0.05).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, fused, 0.05).unwrap();
     println!("E3 drilled volume = {vol:.3} (expect 25600-pi*100*8=23086.7)");
     let result = fillet_v2(&mut topo, fused, &[ridgeline], 3.0).unwrap();
     census_print(&topo, result.solid, "E3 boss base fillet");
@@ -273,9 +273,9 @@ fn e4_step_roundtrip_preserves_analytics() {
         .unwrap()
         .solid;
 
-    let step = brepkit_io::step::writer::write_step(&topo, &[filleted]).unwrap();
+    let step = remus_io::step::writer::write_step(&topo, &[filleted]).unwrap();
     let mut topo2 = Topology::new();
-    let reread = brepkit_io::step::reader::read_step(&step, &mut topo2).unwrap();
+    let reread = remus_io::step::reader::read_step(&step, &mut topo2).unwrap();
     assert_eq!(reread.len(), 1);
     census_print(&topo2, reread[0], "E4 re-read body");
 
@@ -391,7 +391,7 @@ fn e5_inverse_analytic_check() {
     // And the full creation-path reuse: query with the recovered ridgeline.
     // (Ridgeline: boss circle at z = plate top = 8.)
     let plate_top_z = 8.0_f64;
-    let circle = brepkit_math::curves::Circle3D::new(
+    let circle = remus_math::curves::Circle3D::new(
         Point3::new(boss.origin().x(), boss.origin().y(), plate_top_z),
         Vec3::new(0.0, 0.0, 1.0),
         boss.radius(),
@@ -498,7 +498,7 @@ fn e7_in_place_resize_ring_band() {
     let center_xy = torus.center();
 
     // New torus: center circle radius r_c + r_new at height z_top - r_new.
-    let new_torus = brepkit_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
+    let new_torus = remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
         Point3::new(center_xy.x(), center_xy.y(), z_top - r_new),
         r_c + r_new,
         r_new,
@@ -530,7 +530,7 @@ fn e7_in_place_resize_ring_band() {
             )
         };
         let new_circle =
-            brepkit_math::curves::Circle3D::new_with_ref(center, c.normal(), radius, c.u_axis())
+            remus_math::curves::Circle3D::new_with_ref(center, c.normal(), radius, c.u_axis())
                 .unwrap();
         topo.edge_mut(e)
             .unwrap()
@@ -549,7 +549,7 @@ fn e7_in_place_resize_ring_band() {
         let new_center =
             Point3::new(center_xy.x(), center_xy.y(), z_top - r_new) + radial_dir * (r_c + r_new);
         let new_circle =
-            brepkit_math::curves::Circle3D::new_with_ref(new_center, c.normal(), r_new, c.u_axis())
+            remus_math::curves::Circle3D::new_with_ref(new_center, c.normal(), r_new, c.u_axis())
                 .unwrap();
         topo.edge_mut(e)
             .unwrap()
@@ -562,8 +562,8 @@ fn e7_in_place_resize_ring_band() {
     let mut targets = Vec::new();
     for fid in &solid_data_faces {
         let (outer, inners): (
-            brepkit_topology::wire::WireId,
-            Vec<brepkit_topology::wire::WireId>,
+            remus_topology::wire::WireId,
+            Vec<remus_topology::wire::WireId>,
         ) = {
             let face = topo.face(*fid).unwrap();
             (face.outer_wire(), face.inner_wires().to_vec())
@@ -601,12 +601,12 @@ fn e7_in_place_resize_ring_band() {
     }
     println!("E7 moved {moved} vertex records");
 
-    let report = brepkit_operations::validate::validate_solid(&topo, solid).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, solid).unwrap();
     println!("E7 validate_solid valid = {}", report.is_valid());
     for issue in &report.issues {
         println!("  issue: {:?} {}", issue.severity, issue.description);
     }
-    let vol = brepkit_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
     // r=3 band: 23086.726 - removed ring; r=5 removes more. Print both.
     println!("E7 volume after resize to r=5: {vol:.3}");
     // Closed-form expectation via Pappus: removed ring cross-section is
@@ -654,7 +654,7 @@ fn e8_resized_matches_fresh_fillet() {
         .unwrap()
         .edges()
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
     let mut springs = Vec::new();
     let mut cross = Vec::new();
@@ -671,7 +671,7 @@ fn e8_resized_matches_fresh_fillet() {
         }
     }
     topo.face_mut(band).unwrap().set_surface(FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
+        remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
             Point3::new(cxy.x(), cxy.y(), z_top - r_new),
             r_c + r_new,
             r_new,
@@ -694,7 +694,7 @@ fn e8_resized_matches_fresh_fillet() {
             )
         };
         topo.edge_mut(e).unwrap().set_curve(EdgeCurve::Circle(
-            brepkit_math::curves::Circle3D::new_with_ref(center, c.normal(), radius, c.u_axis())
+            remus_math::curves::Circle3D::new_with_ref(center, c.normal(), radius, c.u_axis())
                 .unwrap(),
         ));
     }
@@ -703,7 +703,7 @@ fn e8_resized_matches_fresh_fillet() {
         let radial_dir = (d - axis * d.dot(axis)).normalize().unwrap();
         let new_center = Point3::new(cxy.x(), cxy.y(), z_top - r_new) + radial_dir * (r_c + r_new);
         topo.edge_mut(e).unwrap().set_curve(EdgeCurve::Circle(
-            brepkit_math::curves::Circle3D::new_with_ref(new_center, c.normal(), r_new, c.u_axis())
+            remus_math::curves::Circle3D::new_with_ref(new_center, c.normal(), r_new, c.u_axis())
                 .unwrap(),
         ));
     }
@@ -781,8 +781,8 @@ fn e8_resized_matches_fresh_fillet() {
     );
 
     // Volume agreement.
-    let va = brepkit_operations::measure::solid_volume(&topo, resized, 0.05).unwrap();
-    let vb = brepkit_operations::measure::solid_volume(&topo, fresh, 0.05).unwrap();
+    let va = remus_operations::measure::solid_volume(&topo, resized, 0.05).unwrap();
+    let vb = remus_operations::measure::solid_volume(&topo, fresh, 0.05).unwrap();
     println!("E8 volumes: resized={va:.4} fresh={vb:.4}");
     assert!((va - vb).abs() < 0.5);
 }
@@ -804,7 +804,7 @@ fn e9_boss_base_characterization() {
             .unwrap();
         let result = fillet_v2(&mut topo, fused, &[rim], r).unwrap();
         assert!(result.failed.is_empty(), "{:?}", result.failed);
-        let report = brepkit_operations::validate::validate_solid(&topo, result.solid).unwrap();
+        let report = remus_operations::validate::validate_solid(&topo, result.solid).unwrap();
         assert!(report.is_valid(), "{report:?}");
 
         let bands: Vec<FaceId> = solid_faces(&topo, result.solid)
@@ -831,8 +831,8 @@ fn e9_boss_base_characterization() {
                 * (10.0 + r - 4.0 * r / (3.0 * std::f64::consts::PI)))
             / area;
         let expected_add = area * 2.0 * std::f64::consts::PI * centroid;
-        let before = brepkit_operations::measure::solid_volume(&topo, fused, 0.05).unwrap();
-        let after = brepkit_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
+        let before = remus_operations::measure::solid_volume(&topo, fused, 0.05).unwrap();
+        let after = remus_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
         println!(
             "E9 r={r}: added={:.6} expected={expected_add:.6}",
             after - before
@@ -880,7 +880,7 @@ fn e10_in_place_resize_open_plane_plane_band() {
 
     // The r=3 cylinder axis is (37,37); at r=5 it is (35,35).
     let axis_shift = Vec3::new(-2.0, -2.0, 0.0);
-    let new_cylinder = brepkit_math::surfaces::CylindricalSurface::with_ref_dir(
+    let new_cylinder = remus_math::surfaces::CylindricalSurface::with_ref_dir(
         cylinder.origin() + axis_shift,
         cylinder.axis(),
         5.0,
@@ -896,9 +896,9 @@ fn e10_in_place_resize_open_plane_plane_band() {
         .unwrap()
         .edges()
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
-    let cross_edges: Vec<(EdgeId, brepkit_math::curves::Circle3D)> = band_edges
+    let cross_edges: Vec<(EdgeId, remus_math::curves::Circle3D)> = band_edges
         .iter()
         .filter_map(|&edge| match topo.edge(edge).unwrap().curve() {
             EdgeCurve::Circle(circle) => Some((edge, circle.clone())),
@@ -908,7 +908,7 @@ fn e10_in_place_resize_open_plane_plane_band() {
     assert_eq!(cross_edges.len(), 2);
 
     for (edge, circle) in cross_edges {
-        let new_circle = brepkit_math::curves::Circle3D::new_with_ref(
+        let new_circle = remus_math::curves::Circle3D::new_with_ref(
             circle.center() + axis_shift,
             circle.normal(),
             5.0,
@@ -942,7 +942,7 @@ fn e10_in_place_resize_open_plane_plane_band() {
         topo.vertex_mut(vertex).unwrap().set_point(moved);
     }
 
-    let report = brepkit_operations::validate::validate_solid(&topo, resized).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, resized).unwrap();
     for issue in &report.issues {
         println!("E10 issue: {:?} {}", issue.severity, issue.description);
     }
@@ -950,8 +950,8 @@ fn e10_in_place_resize_open_plane_plane_band() {
 
     // The exact removed prism is L*r^2*(1-pi/4) for a right-angle round.
     let expected = 40.0 * 40.0 * 10.0 - 10.0 * 5.0_f64.powi(2) * (1.0 - std::f64::consts::PI / 4.0);
-    let resized_volume = brepkit_operations::measure::solid_volume(&topo, resized, 0.02).unwrap();
-    let fresh_volume = brepkit_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
+    let resized_volume = remus_operations::measure::solid_volume(&topo, resized, 0.02).unwrap();
+    let fresh_volume = remus_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
     println!(
         "E10 volumes resized={resized_volume:.9} fresh={fresh_volume:.9} expected={expected:.9}"
     );
@@ -1062,7 +1062,7 @@ fn e11_in_place_resize_trihedral_corner() {
             FaceSurface::Cylinder(cylinder) if (cylinder.radius() - 3.0).abs() < 1e-9 => {
                 cylinders += 1;
                 Some(FaceSurface::Cylinder(
-                    brepkit_math::surfaces::CylindricalSurface::with_ref_dir(
+                    remus_math::surfaces::CylindricalSurface::with_ref_dir(
                         map_point(cylinder.origin()),
                         cylinder.axis(),
                         5.0,
@@ -1074,7 +1074,7 @@ fn e11_in_place_resize_trihedral_corner() {
             FaceSurface::Sphere(sphere) if (sphere.radius() - 3.0).abs() < 1e-9 => {
                 spheres += 1;
                 Some(FaceSurface::Sphere(
-                    brepkit_math::surfaces::SphericalSurface::new(map_point(sphere.center()), 5.0)
+                    remus_math::surfaces::SphericalSurface::new(map_point(sphere.center()), 5.0)
                         .unwrap(),
                 ))
             }
@@ -1093,7 +1093,7 @@ fn e11_in_place_resize_trihedral_corner() {
             EdgeCurve::Circle(circle) if (circle.radius() - 3.0).abs() < 1e-9 => {
                 circle_count += 1;
                 Some(EdgeCurve::Circle(
-                    brepkit_math::curves::Circle3D::new_with_ref(
+                    remus_math::curves::Circle3D::new_with_ref(
                         map_point(circle.center()),
                         circle.normal(),
                         5.0,
@@ -1130,14 +1130,14 @@ fn e11_in_place_resize_trihedral_corner() {
         "E11 retargeted {cylinders} cylinders, {spheres} sphere, {circle_count} circles, {moved} vertices"
     );
 
-    let report = brepkit_operations::validate::validate_solid(&topo, resized).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, resized).unwrap();
     for issue in &report.issues {
         println!("E11 issue: {:?} {}", issue.severity, issue.description);
     }
     assert!(report.is_valid());
 
-    let resized_volume = brepkit_operations::measure::solid_volume(&topo, resized, 0.02).unwrap();
-    let fresh_volume = brepkit_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
+    let resized_volume = remus_operations::measure::solid_volume(&topo, resized, 0.02).unwrap();
+    let fresh_volume = remus_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
     println!("E11 volumes resized={resized_volume:.9} fresh={fresh_volume:.9}");
     assert!((resized_volume - fresh_volume).abs() < 1e-8);
 
@@ -1204,8 +1204,7 @@ fn e12_convert_to_elementary_recovers_exact_nurbs_cylinder() {
         FaceSurface::Nurbs(_)
     ));
 
-    let converted =
-        brepkit_operations::heal::convert_to_elementary(&mut topo, solid, 1e-7).unwrap();
+    let converted = remus_operations::heal::convert_to_elementary(&mut topo, solid, 1e-7).unwrap();
     println!("E12 converted {converted} entities");
     assert!(converted >= 1);
     let recovered = match topo.face(wall).unwrap().surface() {
@@ -1226,9 +1225,9 @@ fn e12_convert_to_elementary_recovers_exact_nurbs_cylinder() {
 // that also remaps pcurves; copy_solid_with_face_map currently drops them.
 #[test]
 fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::{Point2, Vec2};
-    use brepkit_topology::pcurve::PCurve;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::pcurve::PCurve;
 
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
@@ -1248,7 +1247,7 @@ fn e13_copy_solid_face_map_does_not_copy_pcurves_yet() {
         ),
     );
     let (copy, face_map) =
-        brepkit_operations::copy::copy_solid_with_face_map(&mut topo, solid).unwrap();
+        remus_operations::copy::copy_solid_with_face_map(&mut topo, solid).unwrap();
     let copied_face_index = face_map[&source_face.index()];
     let copied_face = topo.face_id_from_index(copied_face_index).unwrap();
     let copied_edge = topo
@@ -1286,7 +1285,7 @@ fn e14_current_analytic_blends_and_step_import_have_no_registry_pcurves() {
 
     let step = include_str!("../../io/tests/data/openzcad_e_analytic_fillet_plate.step");
     let mut step_topo = Topology::new();
-    let solids = brepkit_io::step::reader::read_step(step, &mut step_topo).unwrap();
+    let solids = remus_io::step::reader::read_step(step, &mut step_topo).unwrap();
     assert_eq!(solids.len(), 1);
     println!("E14 STEP import pcurves={}", step_topo.pcurves().len());
     assert_eq!(step_topo.pcurves().len(), 0);
@@ -1335,7 +1334,7 @@ fn edge_is_g1_between(topo: &Topology, edge: EdgeId, a: FaceId, b: FaceId) -> bo
 fn e15_step_fillet_candidates_use_aligned_normals_not_pi_dihedral() {
     let import = |text: &str| {
         let mut topo = Topology::new();
-        let solid = brepkit_io::step::reader::read_step(text, &mut topo).unwrap()[0];
+        let solid = remus_io::step::reader::read_step(text, &mut topo).unwrap()[0];
         (topo, solid)
     };
     let fillet_step = include_str!("../../io/tests/data/openzcad_e_analytic_fillet_plate.step");
@@ -1452,7 +1451,7 @@ fn e16_counterbore_large_stage_radius_edit_matches_fresh_feature() {
     topo.face_mut(large_face)
         .unwrap()
         .set_surface(FaceSurface::Cylinder(
-            brepkit_math::surfaces::CylindricalSurface::with_ref_dir(
+            remus_math::surfaces::CylindricalSurface::with_ref_dir(
                 old_cylinder.origin(),
                 old_cylinder.axis(),
                 4.0,
@@ -1512,7 +1511,7 @@ fn e16_counterbore_large_stage_radius_edit_matches_fresh_feature() {
             {
                 changed_circles += 1;
                 Some(EdgeCurve::Circle(
-                    brepkit_math::curves::Circle3D::new_with_ref(
+                    remus_math::curves::Circle3D::new_with_ref(
                         circle.center(),
                         circle.normal(),
                         4.0,
@@ -1553,8 +1552,8 @@ fn e16_counterbore_large_stage_radius_edit_matches_fresh_feature() {
 
     let mut fresh_topo = Topology::new();
     let fresh = counterbore(&mut fresh_topo, 4.0, 3.0);
-    let edited_volume = brepkit_operations::measure::solid_volume(&topo, edited, 0.02).unwrap();
-    let fresh_volume = brepkit_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
+    let edited_volume = remus_operations::measure::solid_volume(&topo, edited, 0.02).unwrap();
+    let fresh_volume = remus_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
     let expected = 4000.0
         - std::f64::consts::PI
             * (1.5_f64.powi(2) * 10.0 + (4.0_f64.powi(2) - 1.5_f64.powi(2)) * 3.0);
@@ -1564,7 +1563,7 @@ fn e16_counterbore_large_stage_radius_edit_matches_fresh_feature() {
     assert!((edited_volume - fresh_volume).abs() < 1e-8);
     assert!((edited_volume - expected).abs() < 0.1);
     assert!(
-        brepkit_operations::validate::validate_solid(&topo, edited)
+        remus_operations::validate::validate_solid(&topo, edited)
             .unwrap()
             .is_valid()
     );
@@ -1653,7 +1652,7 @@ fn e17_counterbore_depth_edit_matches_fresh_feature() {
             EdgeCurve::Circle(circle) if (circle.center().z() - 7.0).abs() < 1e-9 => {
                 changed_circles += 1;
                 Some(EdgeCurve::Circle(
-                    brepkit_math::curves::Circle3D::new_with_ref(
+                    remus_math::curves::Circle3D::new_with_ref(
                         Point3::new(circle.center().x(), circle.center().y(), 5.0),
                         circle.normal(),
                         circle.radius(),
@@ -1683,8 +1682,8 @@ fn e17_counterbore_depth_edit_matches_fresh_feature() {
 
     let mut fresh_topo = Topology::new();
     let fresh = counterbore(&mut fresh_topo, 3.0, 5.0);
-    let edited_volume = brepkit_operations::measure::solid_volume(&topo, edited, 0.02).unwrap();
-    let fresh_volume = brepkit_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
+    let edited_volume = remus_operations::measure::solid_volume(&topo, edited, 0.02).unwrap();
+    let fresh_volume = remus_operations::measure::solid_volume(&fresh_topo, fresh, 0.02).unwrap();
     let expected = 4000.0
         - std::f64::consts::PI
             * (1.5_f64.powi(2) * 10.0 + (3.0_f64.powi(2) - 1.5_f64.powi(2)) * 5.0);
@@ -1693,7 +1692,7 @@ fn e17_counterbore_depth_edit_matches_fresh_feature() {
     );
     assert!((edited_volume - fresh_volume).abs() < 1e-8);
     assert!((edited_volume - expected).abs() < 0.1);
-    let report = brepkit_operations::validate::validate_solid(&topo, edited).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, edited).unwrap();
     for issue in &report.issues {
         println!("E17 issue: {:?} {}", issue.severity, issue.description);
     }
@@ -1792,7 +1791,7 @@ fn e18_counterbore_certificate_recovers_ordered_stages_and_interfaces() {
 fn e19_unfillet_plane_cylinder_ring_restores_sharp_bore() {
     let mut topo = Topology::new();
     let (sharp, rim) = drilled_plate(&mut topo);
-    let sharp_volume = brepkit_operations::measure::solid_volume(&topo, sharp, 0.02).unwrap();
+    let sharp_volume = remus_operations::measure::solid_volume(&topo, sharp, 0.02).unwrap();
     let filleted = fillet_v2(&mut topo, sharp, &[rim], 3.0).unwrap().solid;
 
     let band = solid_faces(&topo, filleted)
@@ -1806,7 +1805,7 @@ fn e19_unfillet_plane_cylinder_ring_restores_sharp_bore() {
         .unwrap()
         .edges()
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
     let mut spring_data = Vec::new();
     for edge in band_edges {
@@ -1861,7 +1860,7 @@ fn e19_unfillet_plane_cylinder_ring_restores_sharp_bore() {
             wall.origin().z(),
         ));
     let sharp_center = wall.origin() + plane_normal * step;
-    let sharp_circle = brepkit_math::curves::Circle3D::new_with_ref(
+    let sharp_circle = remus_math::curves::Circle3D::new_with_ref(
         sharp_center,
         wall_circle.normal(),
         wall.radius(),
@@ -1906,7 +1905,7 @@ fn e19_unfillet_plane_cylinder_ring_restores_sharp_bore() {
                 !occurrence.is_forward()
             };
             topo.wire_mut(wire).unwrap().edges_mut()[slot] =
-                brepkit_topology::wire::OrientedEdge::new(wall_edge, forward);
+                remus_topology::wire::OrientedEdge::new(wall_edge, forward);
             replaced += 1;
         }
     }
@@ -1921,15 +1920,15 @@ fn e19_unfillet_plane_cylinder_ring_restores_sharp_bore() {
         .copied()
         .filter(|face| *face != band)
         .collect();
-    let new_shell = topo.add_shell(brepkit_topology::shell::Shell::new(kept_faces).unwrap());
-    let healed = topo.add_solid(brepkit_topology::solid::Solid::new(new_shell, Vec::new()));
+    let new_shell = topo.add_shell(remus_topology::shell::Shell::new(kept_faces).unwrap());
+    let healed = topo.add_solid(remus_topology::solid::Solid::new(new_shell, Vec::new()));
 
-    let report = brepkit_operations::validate::validate_solid(&topo, healed).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, healed).unwrap();
     for issue in &report.issues {
         println!("E19 issue: {:?} {}", issue.severity, issue.description);
     }
     assert!(report.is_valid());
-    let healed_volume = brepkit_operations::measure::solid_volume(&topo, healed, 0.02).unwrap();
+    let healed_volume = remus_operations::measure::solid_volume(&topo, healed, 0.02).unwrap();
     println!("E19 volumes healed={healed_volume:.9} sharp={sharp_volume:.9}");
     assert!((healed_volume - sharp_volume).abs() < 1e-8);
     assert_eq!(solid_faces(&topo, healed).unwrap().len(), 7);

@@ -7,18 +7,18 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use brepkit_io::step::{read_step, write_step};
-use brepkit_math::mat::Mat4;
-use brepkit_math::nurbs::{NurbsCurve, NurbsSurface};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_io::step::{read_step, write_step};
+use remus_math::mat::Mat4;
+use remus_math::nurbs::{NurbsCurve, NurbsSurface};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 fn one_edge_solid(topo: &mut Topology, curve: NurbsCurve) -> SolidId {
     let (start, end) = curve.domain();
@@ -39,7 +39,7 @@ fn one_edge_solid(topo: &mut Topology, curve: NurbsCurve) -> SolidId {
 }
 
 fn one_face_solid(topo: &mut Topology, surface: NurbsSurface) -> SolidId {
-    let face = brepkit_topology::builder::make_nurbs_face(topo, surface, 1e-7).unwrap();
+    let face = remus_topology::builder::make_nurbs_face(topo, surface, 1e-7).unwrap();
     let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
     topo.add_solid(Solid::new(shell, vec![]))
 }
@@ -182,8 +182,8 @@ fn near_unity_surface_weight_survives_step_round_trip_exactly() {
 #[test]
 fn rational_torus_surface_weights_survive_step_round_trip() {
     let mut topo = Topology::new();
-    let solid = brepkit_operations::primitives::make_torus(&mut topo, 5.0, 1.5, 24).unwrap();
-    brepkit_operations::transform::transform_solid(&mut topo, solid, &Mat4::scale(1.25, 1.0, 1.0))
+    let solid = remus_operations::primitives::make_torus(&mut topo, 5.0, 1.5, 24).unwrap();
+    remus_operations::transform::transform_solid(&mut topo, solid, &Mat4::scale(1.25, 1.0, 1.0))
         .unwrap();
 
     let source_surfaces = nurbs_surfaces(&topo, solid);

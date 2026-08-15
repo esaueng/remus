@@ -1,7 +1,7 @@
-//! `CONICAL_SURFACE` uses ISO 10303-42's angle convention, not brepkit's.
+//! `CONICAL_SURFACE` uses ISO 10303-42's angle convention, not remus's.
 //!
 //! ISO 10303-42 states `semi_angle` as the half-angle at the apex measured
-//! **from the axis**. brepkit's `ConicalSurface::half_angle` is measured from
+//! **from the axis**. remus's `ConicalSurface::half_angle` is measured from
 //! the **radial plane**. They are complements, and they coincide only at 45
 //! degrees — which is why writing `half_angle` straight into the STEP field
 //! round-tripped through our own reader while every other CAD system read our
@@ -15,12 +15,12 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use brepkit_io::step::reader::read_step;
-use brepkit_io::step::write_step;
-use brepkit_operations::primitives::make_cone;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceSurface;
+use remus_io::step::reader::read_step;
+use remus_io::step::write_step;
+use remus_operations::primitives::make_cone;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceSurface;
 
 /// Pull the single `semi_angle` literal out of the exported file.
 fn exported_semi_angle(step: &str) -> f64 {
@@ -60,14 +60,14 @@ fn exported_semi_angle_is_measured_from_the_axis() {
     // Guard the specific regression: the complement must not be what we wrote.
     assert!(
         (semi_angle - (FRAC_PI_2 - expected)).abs() > 1e-6,
-        "wrote brepkit's radial-plane angle instead of ISO's axial one"
+        "wrote remus's radial-plane angle instead of ISO's axial one"
     );
 }
 
 #[test]
 fn a_foreign_cone_imports_at_the_angle_its_author_meant() {
     // A hand-authored cone declaring semi_angle = atan(1/2) from the axis.
-    // brepkit must land on the complement internally.
+    // remus must land on the complement internally.
     let iso_semi_angle = (1.0f64 / 2.0).atan();
     let step = format!(
         "ISO-10303-21;
@@ -113,7 +113,7 @@ END-ISO-10303-21;
     assert!(step.contains("CONICAL_SURFACE"));
 }
 
-fn cone_half_angle(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> f64 {
+fn cone_half_angle(topo: &Topology, solid: remus_topology::solid::SolidId) -> f64 {
     for fid in solid_faces(topo, solid).unwrap() {
         if let FaceSurface::Cone(cone) = topo.face(fid).unwrap().surface() {
             return cone.half_angle();

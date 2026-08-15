@@ -5,15 +5,15 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D};
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 struct VertexSnap {
     old_index: usize,
@@ -332,7 +332,7 @@ pub fn copy_solid_with_face_map(
         vertex_map.insert(vsnap.old_index, new_vid);
     }
 
-    let mut edge_map: HashMap<usize, brepkit_topology::edge::EdgeId> = HashMap::new();
+    let mut edge_map: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::new();
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
@@ -400,10 +400,10 @@ pub fn copy_solid_with_face_map(
 pub fn copy_and_transform_solid(
     topo: &mut Topology,
     solid_id: SolidId,
-    matrix: &brepkit_math::mat::Mat4,
+    matrix: &remus_math::mat::Mat4,
 ) -> Result<SolidId, crate::OperationsError> {
-    use brepkit_math::nurbs::{NurbsCurve, NurbsSurface};
-    use brepkit_math::vec::Vec3;
+    use remus_math::nurbs::{NurbsCurve, NurbsSurface};
+    use remus_math::vec::Vec3;
 
     crate::transform::reject_degenerate_transform(matrix)?;
     let normal_matrix = matrix.inverse()?.transpose();
@@ -543,7 +543,7 @@ pub fn copy_and_transform_solid(
         vertex_map.insert(vsnap.old_index, new_vid);
     }
 
-    let mut edge_map: HashMap<usize, brepkit_topology::edge::EdgeId> = HashMap::new();
+    let mut edge_map: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::new();
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
@@ -570,7 +570,7 @@ pub fn copy_and_transform_solid(
             EdgeCurve::Circle(c) => {
                 let new_center = matrix.mul_point(c.center());
                 let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
-                let transform_dir = |d: brepkit_math::vec::Vec3| -> brepkit_math::vec::Vec3 {
+                let transform_dir = |d: remus_math::vec::Vec3| -> remus_math::vec::Vec3 {
                     matrix.mul_point(Point3::new(d.x(), d.y(), d.z())) - origin
                 };
                 let new_u = transform_dir(c.u_axis());
@@ -610,7 +610,7 @@ pub fn copy_and_transform_solid(
             EdgeCurve::Ellipse(e) => {
                 let new_center = matrix.mul_point(e.center());
                 let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
-                let transform_dir = |d: brepkit_math::vec::Vec3| -> brepkit_math::vec::Vec3 {
+                let transform_dir = |d: remus_math::vec::Vec3| -> remus_math::vec::Vec3 {
                     matrix.mul_point(Point3::new(d.x(), d.y(), d.z())) - origin
                 };
                 let new_u = transform_dir(e.u_axis());
@@ -704,7 +704,7 @@ pub fn copy_and_transform_solid(
                 FaceSurface::Cylinder(cyl) => {
                     let new_origin = matrix.mul_point(cyl.origin());
                     let new_axis = transform_dir(cyl.axis())?;
-                    FaceSurface::Cylinder(brepkit_math::surfaces::CylindricalSurface::new(
+                    FaceSurface::Cylinder(remus_math::surfaces::CylindricalSurface::new(
                         new_origin,
                         new_axis,
                         cyl.radius(),
@@ -713,7 +713,7 @@ pub fn copy_and_transform_solid(
                 FaceSurface::Cone(cone) => {
                     let new_apex = matrix.mul_point(cone.apex());
                     let new_axis = transform_dir(cone.axis())?;
-                    FaceSurface::Cone(brepkit_math::surfaces::ConicalSurface::new(
+                    FaceSurface::Cone(remus_math::surfaces::ConicalSurface::new(
                         new_apex,
                         new_axis,
                         cone.half_angle(),
@@ -721,14 +721,14 @@ pub fn copy_and_transform_solid(
                 }
                 FaceSurface::Sphere(sph) => {
                     let new_center = matrix.mul_point(sph.center());
-                    FaceSurface::Sphere(brepkit_math::surfaces::SphericalSurface::new(
+                    FaceSurface::Sphere(remus_math::surfaces::SphericalSurface::new(
                         new_center,
                         sph.radius(),
                     )?)
                 }
                 FaceSurface::Torus(tor) => {
                     let new_center = matrix.mul_point(tor.center());
-                    FaceSurface::Torus(brepkit_math::surfaces::ToroidalSurface::new(
+                    FaceSurface::Torus(remus_math::surfaces::ToroidalSurface::new(
                         new_center,
                         tor.major_radius(),
                         tor.minor_radius(),
@@ -815,7 +815,7 @@ pub fn copy_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, crate::
         vertex_map.insert(vsnap.old_index, new_vid);
     }
 
-    let mut edge_map: HashMap<usize, brepkit_topology::edge::EdgeId> = HashMap::new();
+    let mut edge_map: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::new();
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
@@ -928,7 +928,7 @@ pub fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, crate::
         vertex_map.insert(vsnap.old_index, new_vid);
     }
 
-    let mut edge_map: HashMap<usize, brepkit_topology::edge::EdgeId> = HashMap::new();
+    let mut edge_map: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::new();
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
@@ -967,9 +967,9 @@ pub fn copy_face(topo: &mut Topology, face_id: FaceId) -> Result<FaceId, crate::
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
 
@@ -1018,7 +1018,7 @@ mod tests {
 
     #[test]
     fn copy_is_independent() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
 
         let mut topo = Topology::new();
         let orig = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
@@ -1046,8 +1046,8 @@ mod tests {
 
     #[test]
     fn copy_wire_creates_new_wire() {
-        use brepkit_math::vec::Point3;
-        use brepkit_topology::builder::make_polygon_wire;
+        use remus_math::vec::Point3;
+        use remus_topology::builder::make_polygon_wire;
 
         let mut topo = Topology::new();
         let orig = make_polygon_wire(
@@ -1067,8 +1067,8 @@ mod tests {
 
     #[test]
     fn copy_wire_preserves_edge_count() {
-        use brepkit_math::vec::Point3;
-        use brepkit_topology::builder::make_polygon_wire;
+        use remus_math::vec::Point3;
+        use remus_topology::builder::make_polygon_wire;
 
         let mut topo = Topology::new();
         let orig = make_polygon_wire(
@@ -1090,9 +1090,9 @@ mod tests {
 
     #[test]
     fn copy_wire_is_independent() {
-        use brepkit_math::mat::Mat4;
-        use brepkit_math::vec::Point3;
-        use brepkit_topology::builder::make_polygon_wire;
+        use remus_math::mat::Mat4;
+        use remus_math::vec::Point3;
+        use remus_topology::builder::make_polygon_wire;
 
         let mut topo = Topology::new();
         let orig = make_polygon_wire(
@@ -1126,11 +1126,11 @@ mod tests {
 
     #[test]
     fn copy_wire_with_circle_edge() {
-        use brepkit_math::curves::Circle3D;
-        use brepkit_math::vec::{Point3, Vec3};
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::curves::Circle3D;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let mut topo = Topology::new();
 
@@ -1154,10 +1154,10 @@ mod tests {
         );
     }
 
-    fn make_plane_quad(topo: &mut Topology) -> brepkit_topology::face::FaceId {
-        use brepkit_math::vec::{Point3, Vec3};
-        use brepkit_topology::builder::make_polygon_wire;
-        use brepkit_topology::face::{Face, FaceSurface};
+    fn make_plane_quad(topo: &mut Topology) -> remus_topology::face::FaceId {
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::builder::make_polygon_wire;
+        use remus_topology::face::{Face, FaceSurface};
 
         let outer = make_polygon_wire(
             topo,
@@ -1177,7 +1177,7 @@ mod tests {
         topo.add_face(Face::new(outer, Vec::new(), surface))
     }
 
-    fn distinct_vertex_count(topo: &Topology, face_id: brepkit_topology::face::FaceId) -> usize {
+    fn distinct_vertex_count(topo: &Topology, face_id: remus_topology::face::FaceId) -> usize {
         let face = topo.face(face_id).unwrap();
         let mut seen = std::collections::HashSet::new();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -1190,7 +1190,7 @@ mod tests {
         seen.len()
     }
 
-    fn total_edge_count(topo: &Topology, face_id: brepkit_topology::face::FaceId) -> usize {
+    fn total_edge_count(topo: &Topology, face_id: remus_topology::face::FaceId) -> usize {
         let face = topo.face(face_id).unwrap();
         let mut seen = std::collections::HashSet::new();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -1201,7 +1201,7 @@ mod tests {
         seen.len()
     }
 
-    fn loop_count(topo: &Topology, face_id: brepkit_topology::face::FaceId) -> usize {
+    fn loop_count(topo: &Topology, face_id: remus_topology::face::FaceId) -> usize {
         let face = topo.face(face_id).unwrap();
         1 + face.inner_wires().len()
     }
@@ -1216,7 +1216,7 @@ mod tests {
 
     #[test]
     fn copy_face_preserves_topology_counts() {
-        use brepkit_topology::explorer::solid_faces;
+        use remus_topology::explorer::solid_faces;
 
         let mut topo = Topology::new();
         let solid = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
@@ -1248,10 +1248,10 @@ mod tests {
         );
     }
 
-    fn make_holed_face(topo: &mut Topology) -> brepkit_topology::face::FaceId {
-        use brepkit_math::vec::{Point3, Vec3};
-        use brepkit_topology::builder::make_polygon_wire;
-        use brepkit_topology::face::{Face, FaceSurface};
+    fn make_holed_face(topo: &mut Topology) -> remus_topology::face::FaceId {
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::builder::make_polygon_wire;
+        use remus_topology::face::{Face, FaceSurface};
 
         let outer = make_polygon_wire(
             topo,
@@ -1284,7 +1284,7 @@ mod tests {
 
     #[test]
     fn copy_face_is_independent() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
 
         let mut topo = Topology::new();
         let orig = make_plane_quad(&mut topo);
@@ -1321,9 +1321,9 @@ mod tests {
 
     #[test]
     fn copy_face_preserves_orientation() {
-        use brepkit_math::vec::{Point3, Vec3};
-        use brepkit_topology::builder::make_polygon_wire;
-        use brepkit_topology::face::{Face, FaceSurface};
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::builder::make_polygon_wire;
+        use remus_topology::face::{Face, FaceSurface};
 
         let mut topo = Topology::new();
         let outer = make_polygon_wire(
@@ -1351,12 +1351,12 @@ mod tests {
 
     #[test]
     fn copy_face_with_circle_edge() {
-        use brepkit_math::curves::Circle3D;
-        use brepkit_math::vec::{Point3, Vec3};
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::{Face, FaceSurface};
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::curves::Circle3D;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let mut topo = Topology::new();
         let v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));

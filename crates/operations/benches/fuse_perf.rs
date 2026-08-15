@@ -3,7 +3,7 @@
 //! Measures `fuse_all` (balanced pair-wise reduction) vs sequential left-fold
 //! for grids of adjacent boxes. Exercises the Fuse code path in `boolean()`.
 //!
-//! Run with: `cargo bench -p brepkit-operations --bench fuse_perf`
+//! Run with: `cargo bench -p remus-operations --bench fuse_perf`
 
 #![allow(
     clippy::unwrap_used,
@@ -16,13 +16,13 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::compound_ops::fuse_all;
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::compound::Compound;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::compound_ops::fuse_all;
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::compound::Compound;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,7 +30,7 @@ use brepkit_topology::compound::Compound;
 
 /// Build an N×N grid of unit boxes, each touching its neighbors (shared edges).
 /// Returns (topology, vec_of_solid_ids).
-fn build_box_grid(n: usize) -> (Topology, Vec<brepkit_topology::solid::SolidId>) {
+fn build_box_grid(n: usize) -> (Topology, Vec<remus_topology::solid::SolidId>) {
     let mut topo = Topology::new();
     let mut solids = Vec::with_capacity(n * n);
     for row in 0..n {
@@ -45,7 +45,7 @@ fn build_box_grid(n: usize) -> (Topology, Vec<brepkit_topology::solid::SolidId>)
 }
 
 /// Build an N×N grid of slightly overlapping boxes (0.01 overlap on each edge).
-fn build_overlapping_box_grid(n: usize) -> (Topology, Vec<brepkit_topology::solid::SolidId>) {
+fn build_overlapping_box_grid(n: usize) -> (Topology, Vec<remus_topology::solid::SolidId>) {
     let mut topo = Topology::new();
     let size = 1.01; // slight overlap
     let mut solids = Vec::with_capacity(n * n);

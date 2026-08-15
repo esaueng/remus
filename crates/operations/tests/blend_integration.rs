@@ -2,12 +2,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_operations::blend_ops::{chamfer_distance_angle, chamfer_v2, fillet_v2};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cone, make_cylinder};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::{solid_edges, solid_faces};
+use remus_operations::blend_ops::{chamfer_distance_angle, chamfer_v2, fillet_v2};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cone, make_cylinder};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::{solid_edges, solid_faces};
 
 const BOX_VOLUME: f64 = 1000.0; // 10 x 10 x 10
 
@@ -129,7 +129,7 @@ fn fillet_empty_edges_error() {
     assert!(fillet_v2(&mut topo, solid, &[], 1.0).is_err());
 }
 
-fn bottom_circle_edge(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> EdgeId {
+fn bottom_circle_edge(topo: &Topology, solid: remus_topology::solid::SolidId) -> EdgeId {
     solid_edges(topo, solid)
         .unwrap()
         .into_iter()
@@ -148,17 +148,17 @@ fn bottom_circle_edge(topo: &Topology, solid: brepkit_topology::solid::SolidId) 
 /// wall plus the band).
 fn assert_valid_closed_chamfer(
     topo: &Topology,
-    result: &brepkit_blend::BlendResult,
+    result: &remus_blend::BlendResult,
     expected_cones: usize,
 ) {
     assert!(!result.is_partial);
     assert_eq!(result.succeeded.len(), 1);
     assert!(result.failed.is_empty());
 
-    let report = brepkit_check::validate::validate_solid(
+    let report = remus_check::validate::validate_solid(
         topo,
         result.solid,
-        &brepkit_check::validate::ValidateOptions::default(),
+        &remus_check::validate::ValidateOptions::default(),
     )
     .unwrap();
     assert!(report.is_valid(), "{:#?}", report.issues);
@@ -169,7 +169,7 @@ fn assert_valid_closed_chamfer(
         .filter(|&face_id| {
             matches!(
                 topo.face(face_id).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Cone(_)
+                remus_topology::face::FaceSurface::Cone(_)
             )
         })
         .count();
@@ -179,15 +179,15 @@ fn assert_valid_closed_chamfer(
     );
 }
 
-fn assert_valid_closed_fillet(topo: &Topology, result: &brepkit_blend::BlendResult) {
+fn assert_valid_closed_fillet(topo: &Topology, result: &remus_blend::BlendResult) {
     assert!(!result.is_partial);
     assert_eq!(result.succeeded.len(), 1);
     assert!(result.failed.is_empty());
 
-    let report = brepkit_check::validate::validate_solid(
+    let report = remus_check::validate::validate_solid(
         topo,
         result.solid,
-        &brepkit_check::validate::ValidateOptions::default(),
+        &remus_check::validate::ValidateOptions::default(),
     )
     .unwrap();
     assert!(report.is_valid(), "{:#?}", report.issues);
@@ -198,7 +198,7 @@ fn assert_valid_closed_fillet(topo: &Topology, result: &brepkit_blend::BlendResu
         .filter(|&face_id| {
             matches!(
                 topo.face(face_id).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Torus(_)
+                remus_topology::face::FaceSurface::Torus(_)
             )
         })
         .count();
@@ -261,24 +261,24 @@ fn chamfer_cone_closed_rim_is_valid() {
 
 /// Boxes on a grid, fused into one body: a cheap stand-in for the many-edged
 /// parts that "fillet all edges" is used on.
-fn box_grid(topo: &mut Topology, nx: usize, ny: usize) -> brepkit_topology::solid::SolidId {
+fn box_grid(topo: &mut Topology, nx: usize, ny: usize) -> remus_topology::solid::SolidId {
     let mut solids = Vec::with_capacity(nx * ny);
     for i in 0..nx {
         for j in 0..ny {
             let s = make_box(topo, 4.0, 4.0, 4.0).unwrap();
             #[allow(clippy::cast_precision_loss)]
             let step = (i as f64 * 10.0, j as f64 * 10.0);
-            brepkit_operations::transform::transform_solid(
+            remus_operations::transform::transform_solid(
                 topo,
                 s,
-                &brepkit_math::mat::Mat4::translation(step.0, step.1, 0.0),
+                &remus_math::mat::Mat4::translation(step.0, step.1, 0.0),
             )
             .unwrap();
             solids.push(s);
         }
     }
-    let compound = topo.add_compound(brepkit_topology::compound::Compound::new(solids));
-    brepkit_operations::compound_ops::fuse_all(topo, compound).unwrap()
+    let compound = topo.add_compound(remus_topology::compound::Compound::new(solids));
+    remus_operations::compound_ops::fuse_all(topo, compound).unwrap()
 }
 
 /// A duplicated seed says nothing new about the geometry, so it must be

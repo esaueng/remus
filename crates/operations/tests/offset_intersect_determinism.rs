@@ -28,14 +28,14 @@
 
 #![allow(clippy::unwrap_used)]
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::loft::loft_smooth;
-use brepkit_operations::offset_v2::offset_solid_v2;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::loft::loft_smooth;
+use remus_operations::offset_v2::offset_solid_v2;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// A closed square profile in the z = `z` plane, as `approx_census` builds it.
 fn square_at(topo: &mut Topology, size: f64, z: f64) -> FaceId {

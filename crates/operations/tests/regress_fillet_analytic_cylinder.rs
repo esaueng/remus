@@ -18,15 +18,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const W: f64 = 80.0;
 const D: f64 = 40.0;
@@ -42,7 +42,7 @@ const FILLET_R: f64 = 3.0;
 /// other).
 fn census(topo: &Topology, solid: SolidId) -> (usize, usize, usize, usize) {
     let mut counts = (0, 0, 0, 0);
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid).expect("faces") {
+    for fid in remus_topology::explorer::solid_faces(topo, solid).expect("faces") {
         match topo.face(fid).expect("face").surface() {
             FaceSurface::Plane { .. } => counts.0 += 1,
             FaceSurface::Cylinder(_) => counts.1 += 1,
@@ -55,7 +55,7 @@ fn census(topo: &Topology, solid: SolidId) -> (usize, usize, usize, usize) {
 
 /// Faces of `solid` that are cylinders of exactly `radius`.
 fn cylinders_of_radius(topo: &Topology, solid: SolidId, radius: f64) -> Vec<FaceId> {
-    brepkit_topology::explorer::solid_faces(topo, solid)
+    remus_topology::explorer::solid_faces(topo, solid)
         .expect("faces")
         .into_iter()
         .filter(|&fid| {
@@ -86,7 +86,7 @@ fn near(a: f64, b: f64) -> bool {
 /// A plain plate's four vertical corner edges.
 fn corner_edges(topo: &Topology, solid: SolidId, w: f64, d: f64, z_hi: f64) -> Vec<EdgeId> {
     let mut picked = Vec::new();
-    for eid in brepkit_topology::explorer::solid_edges(topo, solid).expect("edges") {
+    for eid in remus_topology::explorer::solid_edges(topo, solid).expect("edges") {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("vertex").point();
         let b = topo.vertex(edge.end()).expect("vertex").point();
@@ -118,7 +118,7 @@ fn rot_x90_translate(tx: f64, ty: f64, tz: f64) -> Mat4 {
 /// blend onto the rolling-ball rebuild in the first place.
 fn build_bracket(topo: &mut Topology) -> SolidId {
     let unify = |topo: &mut Topology, solid: SolidId| {
-        brepkit_operations::heal::unify_faces(topo, solid).expect("unify");
+        remus_operations::heal::unify_faces(topo, solid).expect("unify");
         solid
     };
 
@@ -240,7 +240,7 @@ fn bracket_corner_fillets_are_analytic_cylinders() {
     );
 
     let shell = topo.solid(result.solid).expect("solid").outer_shell();
-    brepkit_topology::validation::validate_shell_closed(topo.shell(shell).expect("shell"), &topo)
+    remus_topology::validation::validate_shell_closed(topo.shell(shell).expect("shell"), &topo)
         .expect("the filleted bracket must stay a closed shell");
 }
 

@@ -8,15 +8,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_render::{
+use remus_math::vec::{Point3, Vec3};
+use remus_render::{
     Camera, CylinderDescriptor, RenderOpts, RenderOutput, TessFactor, extract_cylinder_descriptor,
     probe_adapter, render_cylinder_compute_offscreen, render_solid_offscreen,
 };
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const RADIUS: f64 = 8.0;
 const HEIGHT: f64 = 20.0;
@@ -198,7 +198,7 @@ fn compute_mesh_cylinder_is_nonblank_and_plausible() {
     println!("using wgpu adapter: {adapter}");
 
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
     let face = cylinder_face(&topo, cyl);
     let desc = extract_cylinder_descriptor(&topo, face).unwrap();
 
@@ -220,7 +220,7 @@ fn compute_mesh_cylinder_is_nonblank_and_plausible() {
     let tess = TessFactor::new(48, 1);
     let out = render_cylinder_compute_offscreen(&desc, tess, 1, &cam, &opts).unwrap();
 
-    let path = std::env::temp_dir().join("brepkit_compute_cylinder.png");
+    let path = std::env::temp_dir().join("remus_compute_cylinder.png");
     out.color.save(&path).unwrap();
     println!("wrote {}", path.display());
 
@@ -262,7 +262,7 @@ fn compute_mesh_matches_cpu_silhouette() {
     };
 
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
     let face = cylinder_face(&topo, cyl);
     let desc = extract_cylinder_descriptor(&topo, face).unwrap();
 
@@ -330,7 +330,7 @@ fn compute_mesh_lod_scales_triangles_and_smooths_silhouette() {
     };
 
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
     let face = cylinder_face(&topo, cyl);
     let desc = extract_cylinder_descriptor(&topo, face).unwrap();
 
@@ -361,11 +361,11 @@ fn compute_mesh_lod_scales_triangles_and_smooths_silhouette() {
 
     coarse_out
         .color
-        .save(std::env::temp_dir().join("brepkit_compute_cylinder_coarse.png"))
+        .save(std::env::temp_dir().join("remus_compute_cylinder_coarse.png"))
         .unwrap();
     fine_out
         .color
-        .save(std::env::temp_dir().join("brepkit_compute_cylinder_fine.png"))
+        .save(std::env::temp_dir().join("remus_compute_cylinder_fine.png"))
         .unwrap();
 
     // Side-on, the silhouette half-width is the projected distance of the
@@ -404,7 +404,7 @@ fn compute_mesh_seam_is_watertight() {
     };
 
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
     let face = cylinder_face(&topo, cyl);
     let desc = extract_cylinder_descriptor(&topo, face).unwrap();
 
@@ -432,7 +432,7 @@ fn compute_mesh_seam_is_watertight() {
     let out =
         render_cylinder_compute_offscreen(&desc, TessFactor::new(12, 3), 1, &cam, &opts).unwrap();
     out.color
-        .save(std::env::temp_dir().join("brepkit_compute_cylinder_seam.png"))
+        .save(std::env::temp_dir().join("remus_compute_cylinder_seam.png"))
         .unwrap();
 
     // The front wall fills the whole silhouette interior — no background cracks,
@@ -471,11 +471,11 @@ fn compute_mesh_matches_cpu_for_off_origin_cylinder() {
     // origin would hide a missing-translation bug).
     let shift = Vec3::new(50.0, -30.0, 12.0);
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
-    brepkit_operations::transform::transform_solid(
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+    remus_operations::transform::transform_solid(
         &mut topo,
         cyl,
-        &brepkit_math::mat::Mat4::translation(shift.x(), shift.y(), shift.z()),
+        &remus_math::mat::Mat4::translation(shift.x(), shift.y(), shift.z()),
     )
     .unwrap();
 

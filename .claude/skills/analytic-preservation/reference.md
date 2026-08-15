@@ -5,11 +5,11 @@ current tree; cite symbol plus rg pattern, never line numbers.
 
 ## 1. Degradation probe sites and the census
 
-Every degradation site carries a permanent `log::debug!(target: "brepkit_approx", ...)`
+Every degradation site carries a permanent `log::debug!(target: "remus_approx", ...)`
 probe. The census example (`crates/operations/examples/approx_census.rs`) installs an
 in-process logger filtering on that target and drains events per operation.
 
-Probe sites (`rg -l 'brepkit_approx' crates/`):
+Probe sites (`rg -l 'remus_approx' crates/`):
 
 | File | Path that degrades |
 |---|---|
@@ -229,6 +229,6 @@ Reconstruct the exact boundary curve and intersect analytically.
   means zero free edges. The cheap correctness proxy fixtures assert.
 - **Splitter-side split**: giving an emitted section arc its own midpoint vertex so
   the endpoint-keyed duplicate-edge merge cannot collapse co-endpoint arcs.
-- **The reference kernel**: the incumbent C++ CAD kernel brepkit benchmarks against.
+- **The reference kernel**: the incumbent C++ CAD kernel remus benchmarks against.
   Head-to-head harness lives in the sibling repo `~/Git/brepjs` (see the
   parity-benchmarking skill).

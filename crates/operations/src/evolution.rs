@@ -34,7 +34,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point3, Vec3};
 
 /// How an [`EvolutionMap`] was derived.
 ///
@@ -509,7 +509,7 @@ fn all_cosurface(input_faces: &[FaceSignature], indices: &[usize], plane_tol: f6
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
 
@@ -688,9 +688,9 @@ mod tests {
 
     #[test]
     fn fillet_evolution_accepts_valid_planar_topology() {
-        use brepkit_topology::explorer::{solid_edges, solid_faces};
+        use remus_topology::explorer::{solid_edges, solid_faces};
 
-        let mut topo = brepkit_topology::Topology::new();
+        let mut topo = remus_topology::Topology::new();
         let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edges(&topo, cube).unwrap();
         let result = crate::blend_ops::fillet_v2(&mut topo, cube, &[edges[0]], 1.0)
@@ -699,10 +699,10 @@ mod tests {
         assert!(!result.is_partial);
         assert!(solid_faces(&topo, result.solid).unwrap().len() > 6);
 
-        let report = brepkit_check::validate::validate_solid(
+        let report = remus_check::validate::validate_solid(
             &topo,
             result.solid,
-            &brepkit_check::validate::ValidateOptions::default(),
+            &remus_check::validate::ValidateOptions::default(),
         )
         .unwrap();
         assert!(report.is_valid(), "{:#?}", report.issues);

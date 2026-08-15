@@ -12,11 +12,11 @@
 //!
 //! Stubs exist for self-intersection, lacking, notched, intersecting, seam.
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use super::FixResult;
 use super::config::{FixConfig, FixMode};
@@ -592,7 +592,7 @@ fn fix_self_intersection(
     }
 
     let num_samples = 10;
-    let mut polylines: Vec<Vec<brepkit_math::vec::Point3>> = Vec::with_capacity(n);
+    let mut polylines: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(n);
     for oe in &edges_list {
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(oe.oriented_start(edge))?.point();
@@ -643,8 +643,8 @@ fn fix_self_intersection(
 
 /// Find the axis with the least variance across all sampled points,
 /// returning `0` (project onto YZ), `1` (XZ), or `2` (XY).
-fn find_dominant_axis(polylines: &[Vec<brepkit_math::vec::Point3>]) -> usize {
-    use brepkit_math::vec::Vec3;
+fn find_dominant_axis(polylines: &[Vec<remus_math::vec::Point3>]) -> usize {
+    use remus_math::vec::Vec3;
 
     let mut sum = Vec3::new(0.0, 0.0, 0.0);
     let mut count = 0usize;
@@ -691,11 +691,11 @@ fn find_dominant_axis(polylines: &[Vec<brepkit_math::vec::Point3>]) -> usize {
 /// Check if any segment in polyline `a` crosses any segment in polyline `b`
 /// when projected onto a 2D plane (dropping the `drop_axis` coordinate).
 fn segments_cross_2d(
-    a: &[brepkit_math::vec::Point3],
-    b: &[brepkit_math::vec::Point3],
+    a: &[remus_math::vec::Point3],
+    b: &[remus_math::vec::Point3],
     drop_axis: usize,
 ) -> bool {
-    let project = |p: &brepkit_math::vec::Point3| -> (f64, f64) {
+    let project = |p: &remus_math::vec::Point3| -> (f64, f64) {
         match drop_axis {
             0 => (p.y(), p.z()),
             1 => (p.x(), p.z()),
@@ -763,10 +763,10 @@ fn fix_lacking(
     struct EdgeSnapshot {
         start_vid: VertexId,
         end_vid: VertexId,
-        start_pos: brepkit_math::vec::Point3,
-        end_pos: brepkit_math::vec::Point3,
-        curve_start: brepkit_math::vec::Point3,
-        curve_end: brepkit_math::vec::Point3,
+        start_pos: remus_math::vec::Point3,
+        end_pos: remus_math::vec::Point3,
+        curve_start: remus_math::vec::Point3,
+        curve_end: remus_math::vec::Point3,
     }
 
     let wire = topo.wire(wire_id)?;
@@ -805,7 +805,7 @@ fn fix_lacking(
         let start_dev = (snap.start_pos - snap.curve_start).length();
         if start_dev > tol {
             let new_vid =
-                topo.add_vertex(brepkit_topology::vertex::Vertex::new(snap.curve_start, tol));
+                topo.add_vertex(remus_topology::vertex::Vertex::new(snap.curve_start, tol));
             ctx.reshape.replace_vertex(snap.start_vid, new_vid);
             adjusted += 1;
             ctx.info(format!(
@@ -816,8 +816,7 @@ fn fix_lacking(
 
         let end_dev = (snap.end_pos - snap.curve_end).length();
         if end_dev > tol {
-            let new_vid =
-                topo.add_vertex(brepkit_topology::vertex::Vertex::new(snap.curve_end, tol));
+            let new_vid = topo.add_vertex(remus_topology::vertex::Vertex::new(snap.curve_end, tol));
             ctx.reshape.replace_vertex(snap.end_vid, new_vid);
             adjusted += 1;
             ctx.info(format!(
@@ -858,8 +857,8 @@ fn fix_notched(
         start_vid: VertexId,
         end_vid: VertexId,
         length: f64,
-        end_tangent: brepkit_math::vec::Vec3,
-        start_tangent: brepkit_math::vec::Vec3,
+        end_tangent: remus_math::vec::Vec3,
+        start_tangent: remus_math::vec::Vec3,
     }
 
     let wire = topo.wire(wire_id)?;
@@ -995,7 +994,7 @@ fn fix_intersecting_edges(
     }
 
     let num_samples = 20;
-    let mut polylines: Vec<Vec<brepkit_math::vec::Point3>> = Vec::with_capacity(n);
+    let mut polylines: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(n);
     for oe in &edges_list {
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(oe.oriented_start(edge))?.point();
@@ -1169,9 +1168,9 @@ mod tests {
     use super::*;
     use crate::context::HealContext;
     use crate::fix::config::FixConfig;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::vertex::Vertex;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
 
     /// Build an open wire of two collinear edges with a gap of `gap`
     /// between the end of edge1 and the start of edge2 (along +x).

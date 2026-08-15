@@ -4,10 +4,10 @@
 //! extracting individual solids, fusing all solids in a compound,
 //! and computing compound-level measurements.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_topology::Topology;
-use brepkit_topology::compound::CompoundId;
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_topology::Topology;
+use remus_topology::compound::CompoundId;
+use remus_topology::solid::SolidId;
 
 /// Extract all solid IDs from a compound.
 ///
@@ -57,7 +57,7 @@ pub fn fuse_all(
     // whose loose AABBs overlap are actually disjoint (e.g. honeycomb hex prisms
     // packed tighter than their corner-to-corner AABB extent), keeping them off
     // the expensive boolean path.
-    let margin = brepkit_math::tolerance::Tolerance::new().linear;
+    let margin = remus_math::tolerance::Tolerance::new().linear;
     let poly_bounds: Vec<Option<PolyhedralBounds>> =
         solids.iter().map(|&s| polyhedral_bounds(topo, s)).collect();
     let cylinder_bounds: Vec<Option<SimpleCylinder>> =
@@ -93,8 +93,8 @@ pub fn fuse_all(
 
 #[derive(Clone)]
 struct SimpleCylinder {
-    center: brepkit_math::vec::Point3,
-    axis: brepkit_math::vec::Vec3,
+    center: remus_math::vec::Point3,
+    axis: remus_math::vec::Vec3,
     radius: f64,
     axial_min: f64,
     axial_max: f64,
@@ -131,7 +131,7 @@ fn cylinder_relation(
     }
 }
 
-fn point_axis_coordinate(point: brepkit_math::vec::Point3, axis: brepkit_math::vec::Vec3) -> f64 {
+fn point_axis_coordinate(point: remus_math::vec::Point3, axis: remus_math::vec::Vec3) -> f64 {
     point.x() * axis.x() + point.y() * axis.y() + point.z() * axis.z()
 }
 
@@ -139,7 +139,7 @@ fn point_axis_coordinate(point: brepkit_math::vec::Point3, axis: brepkit_math::v
 /// cylindrical wall). This intentionally declines bores, partial cylinders,
 /// and already-booleaned solids.
 fn simple_cylinder(topo: &Topology, solid: SolidId) -> Option<SimpleCylinder> {
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::face::FaceSurface;
 
     let solid_data = topo.solid(solid).ok()?;
     if !solid_data.inner_shells().is_empty() {
@@ -169,7 +169,7 @@ fn simple_cylinder(topo: &Topology, solid: SolidId) -> Option<SimpleCylinder> {
     let axis = cylinder.axis().normalize().ok()?;
     let mut axial_min = f64::INFINITY;
     let mut axial_max = f64::NEG_INFINITY;
-    for vertex_id in brepkit_topology::explorer::solid_vertices(topo, solid).ok()? {
+    for vertex_id in remus_topology::explorer::solid_vertices(topo, solid).ok()? {
         let value = point_axis_coordinate(topo.vertex(vertex_id).ok()?.point(), axis);
         axial_min = axial_min.min(value);
         axial_max = axial_max.max(value);
@@ -198,12 +198,12 @@ fn fuse_parallel_cylinder_cluster(
     topo: &mut Topology,
     solids: &[SolidId],
 ) -> Result<Option<SolidId>, crate::OperationsError> {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::{Vertex, VertexId};
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::{Vertex, VertexId};
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     if solids.len() < 2 {
         return Ok(None);
@@ -211,7 +211,7 @@ fn fuse_parallel_cylinder_cluster(
     let Some(first) = simple_cylinder(topo, solids[0]) else {
         return Ok(None);
     };
-    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+    let tol = remus_math::tolerance::Tolerance::new().linear;
     let mut cylinders = Vec::with_capacity(solids.len());
     cylinders.push(first.clone());
     for &solid in &solids[1..] {
@@ -388,7 +388,7 @@ fn fuse_parallel_cylinder_cluster(
         by_start.entry(start.index()).or_default().push(index);
     }
     let mut unused = vec![true; arc_edges.len()];
-    let mut loops = Vec::<(brepkit_topology::wire::WireId, f64)>::new();
+    let mut loops = Vec::<(remus_topology::wire::WireId, f64)>::new();
     while let Some(first_index) = unused.iter().position(|&value| value) {
         let loop_start = arc_edges[first_index].0;
         let mut current = first_index;
@@ -470,7 +470,7 @@ pub fn solid_count(topo: &Topology, compound: CompoundId) -> Result<usize, crate
 pub fn compound_bounding_box(
     topo: &Topology,
     compound: CompoundId,
-) -> Result<brepkit_math::aabb::Aabb3, crate::OperationsError> {
+) -> Result<remus_math::aabb::Aabb3, crate::OperationsError> {
     let comp = topo.compound(compound)?;
     let solids = comp.solids();
 
@@ -501,8 +501,8 @@ fn uf_find(parent: &mut [usize], mut x: usize) -> usize {
 /// Plane normals (candidate separating axes) and boundary vertices of a
 /// solid, used to prove disjointness via the separating-axis theorem.
 struct PolyhedralBounds {
-    normals: Vec<brepkit_math::vec::Vec3>,
-    verts: Vec<brepkit_math::vec::Point3>,
+    normals: Vec<remus_math::vec::Vec3>,
+    verts: Vec<remus_math::vec::Point3>,
 }
 
 /// Collect a solid's plane normals and vertices — but only if *every* outer-shell
@@ -511,7 +511,7 @@ struct PolyhedralBounds {
 /// A single curved face can bulge past that hull, so any non-`Plane` face makes
 /// this return `None` (the caller then falls back to the conservative AABB test).
 fn polyhedral_bounds(topo: &Topology, sid: SolidId) -> Option<PolyhedralBounds> {
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::face::FaceSurface;
 
     let solid = topo.solid(sid).ok()?;
     let shell = topo.shell(solid.outer_shell()).ok()?;
@@ -533,7 +533,7 @@ fn polyhedral_bounds(topo: &Topology, sid: SolidId) -> Option<PolyhedralBounds> 
             let wire = topo.wire(wid).ok()?;
             for oe in wire.edges() {
                 let edge = topo.edge(oe.edge()).ok()?;
-                if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                     return None;
                 }
                 vert_ids.insert(edge.start());
@@ -562,7 +562,7 @@ fn polyhedral_bounds(topo: &Topology, sid: SolidId) -> Option<PolyhedralBounds> 
 /// just falls through to the boolean, never a false "disjoint" for touching
 /// inputs.
 fn polyhedral_separated(a: &PolyhedralBounds, b: &PolyhedralBounds, margin: f64) -> bool {
-    let project = |verts: &[brepkit_math::vec::Point3], axis: &brepkit_math::vec::Vec3| {
+    let project = |verts: &[remus_math::vec::Point3], axis: &remus_math::vec::Vec3| {
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
         for p in verts {
@@ -640,14 +640,14 @@ pub(crate) fn merge_disjoint_solids(
     topo: &mut Topology,
     solids: &[SolidId],
 ) -> Result<SolidId, crate::OperationsError> {
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
 
     let mut all_faces = Vec::new();
     let mut inner_shell_ids = Vec::new();
 
     // Snapshot phase: collect all face IDs and inner shell face sets.
-    let mut inner_face_sets: Vec<Vec<brepkit_topology::face::FaceId>> = Vec::new();
+    let mut inner_face_sets: Vec<Vec<remus_topology::face::FaceId>> = Vec::new();
     for &sid in solids {
         let solid_data = topo.solid(sid)?;
         let outer_shell = topo.shell(solid_data.outer_shell())?;
@@ -675,9 +675,9 @@ pub(crate) fn merge_disjoint_solids(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::Topology;
-    use brepkit_topology::compound::Compound;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::Topology;
+    use remus_topology::compound::Compound;
 
     use super::*;
 
@@ -710,7 +710,7 @@ mod tests {
         crate::transform::transform_solid(
             &mut topo,
             s2,
-            &brepkit_math::mat::Mat4::translation(5.0, 0.0, 0.0),
+            &remus_math::mat::Mat4::translation(5.0, 0.0, 0.0),
         )
         .unwrap();
 
@@ -733,7 +733,7 @@ mod tests {
         crate::transform::transform_solid(
             &mut topo,
             s2,
-            &brepkit_math::mat::Mat4::translation(0.5, 0.0, 0.0),
+            &remus_math::mat::Mat4::translation(0.5, 0.0, 0.0),
         )
         .unwrap();
 
@@ -753,7 +753,7 @@ mod tests {
     /// [0,2.5]×[0,1]×[0,1] bar, so the result must be watertight with volume 2.5.
     #[test]
     fn fuse_all_connected_cluster_is_watertight_bar() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
 
         let offsets = [0.0, 0.5, 1.0, 1.5];
 
@@ -774,7 +774,7 @@ mod tests {
 
         // Every edge of a watertight solid is used by exactly two faces.
         let mut uses: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-        for fid in brepkit_topology::explorer::solid_faces(&topo, fused).unwrap() {
+        for fid in remus_topology::explorer::solid_faces(&topo, fused).unwrap() {
             let face = topo.face(fid).unwrap();
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
@@ -796,7 +796,7 @@ mod tests {
     /// Build a hexagonal prism (flat top at z=0..h) centred at the origin via
     /// convex hull — a polyhedral stand-in for a honeycomb pocket.
     fn make_hex_prism(topo: &mut Topology, circumradius: f64, height: f64) -> SolidId {
-        use brepkit_math::vec::Point3;
+        use remus_math::vec::Point3;
         let mut pts = Vec::with_capacity(12);
         for k in 0..6 {
             let a = std::f64::consts::PI / 3.0 * k as f64;
@@ -832,7 +832,7 @@ mod tests {
                 crate::transform::transform_solid(
                     &mut topo,
                     s,
-                    &brepkit_math::mat::Mat4::translation(x, y, 0.0),
+                    &remus_math::mat::Mat4::translation(x, y, 0.0),
                 )
                 .unwrap();
                 bboxes.push(crate::measure::solid_bounding_box(&topo, s).unwrap());
@@ -842,7 +842,7 @@ mod tests {
         let n = solids.len();
 
         // Every prism is provably disjoint from the others -> one group each.
-        let margin = brepkit_math::tolerance::Tolerance::new().linear;
+        let margin = remus_math::tolerance::Tolerance::new().linear;
         let pb: Vec<Option<PolyhedralBounds>> = solids
             .iter()
             .map(|&s| polyhedral_bounds(&topo, s))
@@ -870,7 +870,7 @@ mod tests {
     }
 
     fn assert_cylinder_union_health(topo: &Topology, solid: SolidId) {
-        use brepkit_topology::face::FaceSurface;
+        use remus_topology::face::FaceSurface;
 
         let validation = crate::validate::validate_solid(topo, solid).unwrap();
         assert!(
@@ -878,7 +878,7 @@ mod tests {
             "overlapping cylinder union must be a valid solid: {:?}",
             validation.issues
         );
-        let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+        let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
         assert!(
             faces.iter().all(|&face_id| matches!(
                 topo.face(face_id).unwrap().surface(),
@@ -951,7 +951,7 @@ mod tests {
 
     #[test]
     fn simple_cylinders_classify_separated_touching_and_overlap() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
 
         let mut topo = Topology::new();
         let make_at = |topo: &mut Topology, x: f64| {
@@ -964,7 +964,7 @@ mod tests {
         let separated = make_at(&mut topo, 10.1);
         let touching = make_at(&mut topo, 10.0);
         let overlapping = make_at(&mut topo, 9.9);
-        let margin = brepkit_math::tolerance::Tolerance::new().linear;
+        let margin = remus_math::tolerance::Tolerance::new().linear;
         assert_eq!(
             cylinder_relation(&origin, &separated, margin),
             Some(CylinderRelation::Separated)
@@ -981,7 +981,7 @@ mod tests {
 
     #[test]
     fn fuse_all_overlapping_linear_cylinder_patterns_are_exact() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
 
         for spacing in [3.0, 0.5] {
             let mut topo = Topology::new();
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn fuse_all_overlapping_circular_cylinder_patterns_are_exact() {
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
 
         for count in [6, 12] {
             let mut topo = Topology::new();

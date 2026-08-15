@@ -3,7 +3,7 @@ name: add-operation
 description: Use when adding a new modeling operation to crates/operations (a new pub fn taking &mut Topology and returning a SolidId or similar), when extending an existing operation with a new code path, or when an operation's tests need to prove correctness before shipping. Covers implementation traps, error handling, test placement, wasm exposure, and the verification bar.
 ---
 
-# Adding an Operation to brepkit
+# Adding an Operation to remus
 
 ## When to use
 
@@ -17,13 +17,13 @@ You are creating or substantially extending an operation in `crates/operations/s
 | Measure | `crate::measure::solid_volume(&topo, solid, 0.001)` | relative error < 1% vs closed form |
 | Validate | `crate::validate::validate_solid(&topo, solid)` | `report.is_valid()` true |
 | Watertight | `tessellate_solid_with_tolerance` + `tessellate::is_watertight` | 0 boundary + 0 non-manifold edges (index-based); also re-check with the positional-weld helper from `tessellate_watertight.rs` |
-| Census | `cargo run --release --example approx_census -p brepkit-operations` | no new `brepkit_approx` probe fires for your op |
+| Census | `cargo run --release --example approx_census -p remus-operations` | no new `remus_approx` probe fires for your op |
 | Gate | `cargo clippy --all-targets -- -D warnings && cargo fmt --all && ./scripts/check-boundaries.sh` | clean |
 
 ## Procedure
 
 1. **Scaffold per CLAUDE.md Recipe 3.** Signature `pub fn op_name(topo: &mut Topology, ...) -> Result<SolidId, OperationsError>`.
-2. **Walk faces correctly.** Any solid-scoped loop over faces must use `brepkit_topology::explorer::solid_faces` (there is also `solid_edges`). See CLAUDE.md "Walking faces in a solid" for the exception rule for per-shell operations. Iterating only `outer_shell()` compiles, passes on simple boxes, and silently skips cavity faces on hollow solids.
+2. **Walk faces correctly.** Any solid-scoped loop over faces must use `remus_topology::explorer::solid_faces` (there is also `solid_edges`). See CLAUDE.md "Walking faces in a solid" for the exception rule for per-shell operations. Iterating only `outer_shell()` compiles, passes on simple boxes, and silently skips cavity faces on hollow solids.
 3. **Respect the borrow pattern and error rules.** Snapshot-then-allocate and closure return type annotations: see CLAUDE.md Common Pitfalls. The workspace denies `unwrap_used`, `panic`, and `unsafe_code` in production code; test modules opt out with `#![allow(clippy::unwrap_used, clippy::expect_used)]`.
 4. **If your op copies edges that may carry periodic curves** (`EdgeCurve::Circle` or `Ellipse`), read reference.md "Periodic edge copies" before writing the copy loop. Getting this wrong recovers the complementary arc (minor instead of major) and only reversed edges expose it.
 5. **Write tests** (placement below). Every geometry-producing op needs at least: a volume-vs-closed-form test, a `validate_solid` test, and a watertight-tessellation test.
