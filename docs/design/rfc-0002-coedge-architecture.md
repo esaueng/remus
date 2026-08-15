@@ -89,13 +89,19 @@ authority and one derived view, and flips them once.
 ### Stage 1 — additive entities (Issue 6)
 
 - Add the `Coedge`/`Loop` arenas, constructors, traversal
-  (`loop_coedges`, `coedges_of_edge`), and validators.
-- **Wires remain authoritative** for face boundaries. When a face is
-  created or its wire replaced, the topology builder derives and stores the
+  (`loops_of_face`, `coedges_of_edge`), and validators.
+- **Wires remain authoritative** for face boundaries. Derivation is
+  **explicit**: `Topology::build_face_loops(face)` derives and stores the
   face's loops (one coedge per `OrientedEdge` occurrence — a seam edge gets
-  two coedges naturally).
-- A consistency validator asserts loop ↔ wire agreement and runs in
-  `validate_solid`'s structural pass. Divergence is a bug, not a state.
+  two coedges naturally), retiring any previous derivation. *Refined during
+  implementation:* automatic derivation at face creation was dropped for
+  Stage 1 because faces are mutated in place throughout L2/L3
+  (`face_mut`, `set_outer_wire`), so eager derivation would guarantee stale
+  loops; automatic derivation joins the Stage 2 authority flip, where
+  mutation goes through the loop representation itself.
+- A consistency validator (`validate_face_loops`) asserts loop ↔ wire
+  agreement; faces without a derivation pass vacuously, so it is safe in
+  any validation pass today. Divergence is a bug, not a state.
 - P-curves stay in the registry; each derived coedge that has a registry
   entry caches nothing yet (no dual storage of geometry).
 

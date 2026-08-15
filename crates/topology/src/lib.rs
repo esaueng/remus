@@ -13,11 +13,13 @@
 pub mod adjacency;
 pub mod arena;
 pub mod builder;
+pub mod coedge;
 pub mod compound;
 pub mod compsolid;
 pub mod edge;
 pub mod explorer;
 pub mod face;
+pub mod face_loop;
 
 pub mod pcurve;
 pub mod shell;
@@ -30,10 +32,12 @@ pub mod vertex;
 pub mod wire;
 
 pub use arena::Arena;
+pub use coedge::{Coedge, CoedgeId};
 pub use compound::CompoundId;
 pub use compsolid::CompSolidId;
 pub use edge::EdgeId;
 pub use face::FaceId;
+pub use face_loop::{Loop, LoopId};
 pub use shell::ShellId;
 pub use solid::SolidId;
 pub use topology::Topology;
@@ -97,6 +101,31 @@ pub enum TopologyError {
     /// plane, so a planar face cannot be constructed from it.
     #[error("wire is not planar")]
     NotPlanar,
+
+    /// A referenced loop ID does not exist in the arena.
+    #[error("loop {0:?} not found")]
+    LoopNotFound(face_loop::LoopId),
+
+    /// A referenced coedge ID does not exist in the arena.
+    #[error("coedge {0:?} not found")]
+    CoedgeNotFound(coedge::CoedgeId),
+
+    /// A face's derived loops disagree with its authoritative wires
+    /// (RFC 0002, Stage 1 consistency invariant). Divergence is a kernel
+    /// bug, not a modeling failure.
+    #[error("derived loops of face {face:?} do not match its wires")]
+    LoopWireMismatch {
+        /// The face whose derivation is stale or wrong.
+        face: face::FaceId,
+    },
+
+    /// A loop's coedges do not connect end-to-start under their
+    /// orientations.
+    #[error("loop of face {face:?} is not connected")]
+    LoopNotConnected {
+        /// The face whose loop fails connectivity.
+        face: face::FaceId,
+    },
 }
 
 /// Errors from retiring a solid and its unshared topology.
@@ -150,6 +179,20 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
             Self::NotPlanar => {
                 Diagnostic::new(FailureCategory::InvalidTopology, "wire_not_planar", message)
             }
+            Self::LoopNotFound(id) => entity_not_found("loop", id.index()),
+            Self::CoedgeNotFound(id) => entity_not_found("coedge", id.index()),
+            Self::LoopWireMismatch { face } => {
+                // Internal, not invalid_topology: only the kernel writes
+                // derivations, so divergence is a kernel defect.
+                Diagnostic::new(FailureCategory::Internal, "loop_wire_mismatch", message)
+                    .with_detail("face", face.index())
+            }
+            Self::LoopNotConnected { face } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "loop_not_connected",
+                message,
+            )
+            .with_detail("face", face.index()),
         }
     }
 }
