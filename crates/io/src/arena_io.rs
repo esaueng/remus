@@ -128,6 +128,10 @@ struct SerEdge {
     end: usize,
     curve: SerEdgeCurve,
     tolerance: Option<f64>,
+    /// Explicit trim interval on the curve (RFC 0002, Stage 3). Absent in
+    /// documents written before trims were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trim: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +317,7 @@ impl<'a> Builder<'a> {
             end,
             curve,
             tolerance,
+            trim: e.trim(),
         });
         self.edge_map.insert(id.index(), local);
         Ok(local)
@@ -807,12 +812,11 @@ fn replay_document_into(
                 reason: format!("invalid arena NURBS curve: {err}"),
             })?;
         }
-        edge_ids.push(topo.add_edge(Edge::with_tolerance(
-            start,
-            end,
-            e.curve.into_curve(),
-            e.tolerance,
-        )));
+        edge_ids.push(topo.add_edge({
+            let mut restored = Edge::with_tolerance(start, end, e.curve.into_curve(), e.tolerance);
+            restored.set_trim(e.trim);
+            restored
+        }));
     }
 
     let mut wire_ids = Vec::with_capacity(wires.len());

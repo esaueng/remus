@@ -280,3 +280,136 @@ fn compute_pcurve_deviation(
 
     Ok(max_dev)
 }
+
+/// Outcome of a budget-bound pcurve repair.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PcurveRepairReport {
+    /// Maximum deviation before the repair (`f64::INFINITY` when no pcurve
+    /// existed).
+    pub deviation_before: f64,
+    /// Maximum deviation after the repair.
+    pub deviation_after: f64,
+}
+
+/// Rebuilds the pcurve of `edge` on `face` by projection, **within a
+/// declared error budget** (RFC 0002, Stage 3 controlled repair).
+///
+/// The repair is never silent and never commits a result that misses its
+/// budget: when the rebuilt pcurve still deviates beyond `budget`, the
+/// original pcurve (or its absence) is restored and a typed error reports
+/// the achieved deviation. On success the report discloses the deviation
+/// before and after, for the caller's tolerance ledger.
+///
+/// # Errors
+///
+/// Returns [`HealError::RepairBudgetExceeded`] when the rebuilt pcurve
+/// cannot meet `budget` (topology unchanged), or other [`HealError`]s when
+/// projection or topology access fails.
+pub fn repair_pcurve_within_budget(
+    topo: &mut Topology,
+    edge_id: EdgeId,
+    face_id: FaceId,
+    ctx: &mut HealContext,
+    budget: f64,
+) -> Result<PcurveRepairReport, HealError> {
+    let deviation_before = if topo.has_pcurve(edge_id, face_id)? {
+        compute_pcurve_deviation(topo, edge_id, face_id)?
+    } else {
+        f64::INFINITY
+    };
+    let original = topo.pcurve(edge_id, face_id)?.cloned();
+
+    let config = crate::fix::config::FixConfig {
+        fix_same_parameter: crate::fix::config::FixMode::On,
+        ..Default::default()
+    };
+    fix_same_parameter_on_face(topo, edge_id, face_id, ctx, &config)?;
+
+    let deviation_after = compute_pcurve_deviation(topo, edge_id, face_id)?;
+    if deviation_after > budget {
+        // Roll back: a repair that misses its budget must not look like
+        // success, and must not replace the caller's data.
+        match original {
+            Some(pcurve) => topo.set_pcurve(edge_id, face_id, pcurve)?,
+            None => {
+                let _ = topo.remove_pcurve(edge_id, face_id)?;
+            }
+        }
+        return Err(HealError::RepairBudgetExceeded {
+            achieved: deviation_after,
+            budget,
+        });
+    }
+    ctx.info(format!(
+        "Edge {edge_id:?} on Face {face_id:?}: pcurve repaired, deviation \
+         {deviation_before:.2e} -> {deviation_after:.2e} (budget {budget:.2e})",
+    ));
+    Ok(PcurveRepairReport {
+        deviation_before,
+        deviation_after,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod repair_budget_tests {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::surfaces::CylindricalSurface;
+    use brepkit_math::traits::ParametricCurve;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::Topology;
+    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use brepkit_topology::face::{Face, FaceId, FaceSurface};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    use crate::context::HealContext;
+    use crate::error::HealError;
+
+    use super::repair_pcurve_within_budget;
+
+    fn cylinder_rim() -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let p0 = ParametricCurve::evaluate(&circle, 0.0);
+        let v = topo.add_vertex(Vertex::new(p0, 1e-7));
+        let rim = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(
+                CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                    .unwrap(),
+            ),
+        ));
+        (topo, rim, face)
+    }
+
+    #[test]
+    fn repair_within_budget_reports_before_and_after() {
+        let (mut topo, rim, face) = cylinder_rim();
+        let mut ctx = HealContext::new();
+        let report = repair_pcurve_within_budget(&mut topo, rim, face, &mut ctx, 1e-3).unwrap();
+        assert!(report.deviation_before.is_infinite(), "no pcurve existed");
+        assert!(
+            report.deviation_after <= 1e-3,
+            "repaired deviation {} must meet the budget",
+            report.deviation_after
+        );
+        assert!(topo.has_pcurve(rim, face).unwrap());
+    }
+
+    #[test]
+    fn repair_missing_an_impossible_budget_fails_typed_and_rolls_back() {
+        let (mut topo, rim, face) = cylinder_rim();
+        let mut ctx = HealContext::new();
+        let err = repair_pcurve_within_budget(&mut topo, rim, face, &mut ctx, 1e-30).unwrap_err();
+        assert!(matches!(err, HealError::RepairBudgetExceeded { .. }));
+        assert!(
+            !topo.has_pcurve(rim, face).unwrap(),
+            "a repair that misses its budget must not leave its result behind"
+        );
+    }
+}

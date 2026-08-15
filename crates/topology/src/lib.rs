@@ -140,6 +140,42 @@ pub enum TopologyError {
         /// The face using it twice.
         face: face::FaceId,
     },
+
+    /// A pcurve's surface image deviates from the 3D edge beyond tolerance
+    /// under the shared parameterization (`SameParameter`).
+    #[error(
+        "pcurve of edge {edge:?} on face {face:?} deviates {max_deviation} \
+         from the 3D curve (limit {tolerance}) at parameter {at_parameter}"
+    )]
+    SameParameterExceeded {
+        /// The edge whose pcurve deviates.
+        edge: edge::EdgeId,
+        /// The face carrying the pcurve.
+        face: face::FaceId,
+        /// Largest sampled deviation, in model units.
+        max_deviation: f64,
+        /// The pcurve parameter where it occurred.
+        at_parameter: f64,
+        /// The limit that was exceeded.
+        tolerance: f64,
+    },
+
+    /// A pcurve's endpoints do not map to the edge's bounding vertices
+    /// within tolerance (`SameRange`).
+    #[error(
+        "pcurve of edge {edge:?} on face {face:?} misses the edge's \
+         endpoints by {max_deviation} (limit {tolerance})"
+    )]
+    SameRangeExceeded {
+        /// The edge whose pcurve range is wrong.
+        edge: edge::EdgeId,
+        /// The face carrying the pcurve.
+        face: face::FaceId,
+        /// Larger of the two endpoint deviations, in model units.
+        max_deviation: f64,
+        /// The limit that was exceeded.
+        tolerance: f64,
+    },
 }
 
 /// Errors from retiring a solid and its unshared topology.
@@ -214,6 +250,36 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
             )
             .with_detail("edge", edge.index())
             .with_detail("face", face.index()),
+            Self::SameParameterExceeded {
+                edge,
+                face,
+                max_deviation,
+                at_parameter,
+                tolerance,
+            } => Diagnostic::new(
+                FailureCategory::ToleranceViolation,
+                "same_parameter_exceeded",
+                message,
+            )
+            .with_detail("edge", edge.index())
+            .with_detail("face", face.index())
+            .with_detail("maxDeviation", *max_deviation)
+            .with_detail("atParameter", *at_parameter)
+            .with_detail("tolerance", *tolerance),
+            Self::SameRangeExceeded {
+                edge,
+                face,
+                max_deviation,
+                tolerance,
+            } => Diagnostic::new(
+                FailureCategory::ToleranceViolation,
+                "same_range_exceeded",
+                message,
+            )
+            .with_detail("edge", edge.index())
+            .with_detail("face", face.index())
+            .with_detail("maxDeviation", *max_deviation)
+            .with_detail("tolerance", *tolerance),
         }
     }
 }
