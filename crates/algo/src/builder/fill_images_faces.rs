@@ -736,7 +736,18 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                 }
                 if ns != trav_start || ne != trav_end {
                     // Create NEW edge in traversal order (start→end = forward).
-                    let new_eid = topo.add_edge(Edge::new(ns, ne, edge.curve().clone()));
+                    // The curve is shared, so the trim survives; a reversed
+                    // use flips vertex order, so the span flips with it to
+                    // keep the start→end domain convention.
+                    let mut rebuilt = Edge::new(ns, ne, edge.curve().clone());
+                    rebuilt.set_trim(
+                        edge.trim().map(
+                            |(t0, t1)| {
+                                if oe.is_forward() { (t0, t1) } else { (t1, t0) }
+                            },
+                        ),
+                    );
+                    let new_eid = topo.add_edge(rebuilt);
                     new_oes.push(OrientedEdge::new(new_eid, true));
                     any_changed = true;
                 } else {
@@ -1102,7 +1113,7 @@ fn rebuild_face_with_cb_edges(
             .iter()
             .map(|oe| {
                 let edge = topo.edge(oe.edge()).ok();
-                let (start_vid, end_vid, start_q, end_q, curve) = if let Some(e) = edge {
+                let (start_vid, end_vid, start_q, end_q, curve, trim) = if let Some(e) = edge {
                     let sv = topo
                         .vertex(e.start())
                         .ok()
@@ -1119,9 +1130,10 @@ fn rebuild_face_with_cb_edges(
                         qs,
                         qe,
                         Some(e.curve().clone()),
+                        e.trim(),
                     )
                 } else {
-                    (None, None, None, None, None)
+                    (None, None, None, None, None, None)
                 };
                 (
                     oe.edge(),
@@ -1131,6 +1143,7 @@ fn rebuild_face_with_cb_edges(
                     start_q,
                     end_q,
                     curve,
+                    trim,
                 )
             })
             .collect();
@@ -1150,7 +1163,7 @@ fn rebuild_face_with_cb_edges(
 
         // Allocate new edges where needed
         let mut oes = Vec::with_capacity(snap.len());
-        for (eid, fwd, start_vid, end_vid, start_q, end_q, curve) in snap {
+        for (eid, fwd, start_vid, end_vid, start_q, end_q, curve, trim) in snap {
             let (Some(sv), Some(ev), Some(qs), Some(qe)) = (start_vid, end_vid, start_q, end_q)
             else {
                 oes.push(OrientedEdge::new(eid, fwd));
@@ -1179,7 +1192,10 @@ fn rebuild_face_with_cb_edges(
             if let (true, Some(curve)) = (canon_start.is_some() || canon_end.is_some(), curve) {
                 let new_s = canon_start.unwrap_or(sv);
                 let new_e = canon_end.unwrap_or(ev);
-                let new_edge = Edge::new(new_s, new_e, curve);
+                // Canonicalization substitutes coincident vertices in the
+                // same order on the same curve: the stored trim stays valid.
+                let mut new_edge = Edge::new(new_s, new_e, curve);
+                new_edge.set_trim(trim);
                 let new_eid = topo.add_edge(new_edge);
                 oes.push(OrientedEdge::new(new_eid, fwd));
                 continue;
