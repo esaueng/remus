@@ -126,6 +126,20 @@ pub enum TopologyError {
         /// The face whose loop fails connectivity.
         face: face::FaceId,
     },
+
+    /// An `(edge, face)` pcurve request is ambiguous because the face uses
+    /// the edge twice (a periodic seam). The per-use oriented API must be
+    /// used instead; answering with either branch would be arbitrary.
+    #[error(
+        "pcurve request for edge {edge:?} on face {face:?} is ambiguous: \
+         the face uses this edge twice (seam); address the use by orientation"
+    )]
+    SeamPcurveAmbiguous {
+        /// The seam edge.
+        edge: edge::EdgeId,
+        /// The face using it twice.
+        face: face::FaceId,
+    },
 }
 
 /// Errors from retiring a solid and its unshared topology.
@@ -192,6 +206,13 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
                 "loop_not_connected",
                 message,
             )
+            .with_detail("face", face.index()),
+            Self::SeamPcurveAmbiguous { edge, face } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "seam_pcurve_ambiguous",
+                message,
+            )
+            .with_detail("edge", edge.index())
             .with_detail("face", face.index()),
         }
     }

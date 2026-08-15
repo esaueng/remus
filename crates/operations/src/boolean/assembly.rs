@@ -2532,8 +2532,9 @@ pub(super) fn register_pcurves(
             let edges: Vec<_> = wire.edges().to_vec();
             for oe in &edges {
                 let eid = oe.edge();
-                // Skip if already registered.
-                if topo.pcurves().contains(eid, fid) {
+                // Skip if this USE is already registered. Keyed per use, so
+                // a seam edge gets one pcurve per orientation branch.
+                if topo.pcurve_oriented(eid, fid, oe.is_forward()).is_some() {
                     continue;
                 }
 
@@ -2547,7 +2548,7 @@ pub(super) fn register_pcurves(
 
                 // Parameter range: [0, 1] for the pcurve.
                 let pc = PCurve::new(pcurve_2d, 0.0, 1.0);
-                topo.pcurves_mut().set(eid, fid, pc);
+                topo.set_pcurve_oriented(eid, fid, oe.is_forward(), pc);
             }
         }
     }
@@ -2585,8 +2586,9 @@ fn pcurve_binormal(
         return initial_dir;
     }
 
-    // Look up the pcurve for this (edge, face).
-    let Some(pcurve) = topo.pcurves().get(edge_id, face_id) else {
+    // Look up the pcurve for this (edge, face). A seam edge (two uses,
+    // ambiguous without orientation) falls back like a missing pcurve.
+    let Ok(Some(pcurve)) = topo.pcurve(edge_id, face_id) else {
         return initial_dir;
     };
 
