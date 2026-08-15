@@ -7,11 +7,11 @@
 
 use std::collections::HashMap;
 
-use brepkit_io::step::reader::read_step;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::step::reader::read_step;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn main() {
     let path = std::env::args()
@@ -120,8 +120,8 @@ fn main() {
                 let zmin = zvals.iter().copied().fold(f64::MAX, f64::min);
                 let zmax = zvals.iter().copied().fold(f64::MIN, f64::max);
                 if (zmax - zmin).abs() < 1e-6 && (zmin - target).abs() < 1e-3 {
-                    let area = brepkit_operations::measure::face_area(&topo, fid, 0.01)
-                        .unwrap_or(f64::NAN);
+                    let area =
+                        remus_operations::measure::face_area(&topo, fid, 0.01).unwrap_or(f64::NAN);
                     println!(
                         "    plane@{target}: {fid:?} outer_edges={} inners={} area={area:.3}",
                         wire.edges().len(),

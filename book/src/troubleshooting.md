@@ -8,7 +8,7 @@ before changing tolerances. For a cut, verify target/tool order.
 
 ## Imported geometry is huge or tiny
 
-brepkit does not infer file or application units. Normalize coordinates at the
+remus does not infer file or application units. Normalize coordinates at the
 integration boundary and scale linear tolerances and mesh deflection by the
 same factor.
 
@@ -28,7 +28,7 @@ with its `BrepKernel` instance.
 
 Install a supported GPU driver or a software Vulkan implementation such as
 Mesa lavapipe. Set `WGPU_BACKEND=vulkan` when selecting lavapipe. CI additionally
-sets `BREPKIT_REQUIRE_WGPU_ADAPTER=1`, which turns an unavailable adapter into
+sets `REMUS_REQUIRE_WGPU_ADAPTER=1`, which turns an unavailable adapter into
 a hard failure.
 
 ## An importer rejects a large file

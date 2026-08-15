@@ -39,10 +39,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,12 +50,12 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 /// (free, over, curved face count, total faces)
-fn health(topo: &Topology, sid: brepkit_topology::solid::SolidId) -> (usize, usize, usize, usize) {
+fn health(topo: &Topology, sid: remus_topology::solid::SolidId) -> (usize, usize, usize, usize) {
     let faces = solid_faces(topo, sid).unwrap();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     let mut curved = 0;
@@ -94,7 +94,7 @@ fn thickwall_operands_are_clean_and_outward() {
         assert_eq!(over, 0, "{name}: operand must be manifold, got {over} over");
         assert!(faces > 0, "{name}: operand has no faces");
         assert!(
-            brepkit_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap() > 0.0,
+            remus_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap() > 0.0,
             "{name}: operand must be OUTWARD oriented"
         );
     }
@@ -124,10 +124,10 @@ fn thickwall_sharp_cavity_fuse_is_closed() {
     let body = load("thickwall_sharp_cavity_body.bin", &mut topo);
     let sockets = load("thickwall_socket_assembly.bin", &mut topo);
 
-    let body_vol = brepkit_operations::measure::oriented_solid_volume(&topo, body, 0.01).unwrap();
+    let body_vol = remus_operations::measure::oriented_solid_volume(&topo, body, 0.01).unwrap();
 
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, body, sockets)
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, body, sockets)
             .expect("analytic fuse should not abort");
 
     let (free, over, curved, faces) = health(&topo, result);
@@ -139,7 +139,7 @@ fn thickwall_sharp_cavity_fuse_is_closed() {
     );
 
     // A union can only add material to the body.
-    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
+    let vol = remus_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
     assert!(
         vol >= body_vol,
         "a fuse cannot shrink its operand: got {vol} against {body_vol}"

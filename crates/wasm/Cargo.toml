@@ -1,32 +1,32 @@
 [package]
 categories = ["wasm", "mathematics", "science"]
-description = "WebAssembly bindings for brepkit — browser-native B-Rep solid modeling"
+description = "WebAssembly bindings for remus — browser-native B-Rep solid modeling"
 edition.workspace = true
 keywords = ["cad", "brep", "wasm", "geometry", "solid-modeling"]
 license.workspace = true
-name = "brepkit-wasm"
+name = "remus-wasm"
 repository.workspace = true
 rust-version.workspace = true
-version = "2.130.0"
+version = "0.1.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["io"]
-io = ["dep:brepkit-io"]
+io = ["dep:remus-io"]
 
 [dependencies]
-brepkit-algo.workspace = true
-brepkit-check.workspace = true
-brepkit-geometry.workspace = true
-brepkit-heal.workspace = true
-brepkit-io = {workspace = true, optional = true}
-brepkit-math.workspace = true
-brepkit-operations.workspace = true
-brepkit-sketch.workspace = true
-brepkit-topology.workspace = true
 log.workspace = true
+remus-algo.workspace = true
+remus-check.workspace = true
+remus-geometry.workspace = true
+remus-heal.workspace = true
+remus-io = {workspace = true, optional = true}
+remus-math.workspace = true
+remus-operations.workspace = true
+remus-sketch.workspace = true
+remus-topology.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

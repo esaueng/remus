@@ -7,14 +7,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::test_utils::make_unit_cube_manifold;
-use brepkit_topology::validation::validate_shell_manifold;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::test_utils::make_unit_cube_manifold;
+use remus_topology::validation::validate_shell_manifold;
 
 use crate::test_helpers::assert_euler_genus0;
 
@@ -284,7 +284,7 @@ fn rolling_ball_fillet_has_analytic_cylinder_face() {
 /// boundary-polygon area first, so this pins that the shortcut cannot turn that
 /// refusal into an acceptance and silently ship the corrupt solid.
 ///
-/// Ported from upstream andymai/brepkit#1248, which asserts the guard's own
+/// Ported from upstream andymai/remus#1248, which asserts the guard's own
 /// "degenerate face" `InvalidInput`. This fork refuses the same input EARLIER
 /// and more specifically — `Blend(EdgesNotBlended)` from edge selection, before
 /// any face is measured — so the assertion is on the refusal that matters to
@@ -443,7 +443,7 @@ fn rolling_ball_two_edges_shared_corner_watertight() {
         let s = t.solid(result).expect("result solid");
         let sh = t.shell(s.outer_shell()).expect("shell");
         assert!(
-            brepkit_topology::validation::validate_shell_closed(sh, &t).is_ok(),
+            remus_topology::validation::validate_shell_closed(sh, &t).is_ok(),
             "shared-corner pair {i},{j} should be watertight"
         );
         assert!(
@@ -492,7 +492,7 @@ fn rolling_ball_two_edges_no_shared_corner_watertight() {
     let sh = topo.shell(s.outer_shell()).expect("shell");
     // 6 trimmed planar + 2 fillet strips = 8 faces, no corner patch.
     assert_eq!(sh.faces().len(), 8, "non-shared pair should add no patch");
-    brepkit_topology::validation::validate_shell_closed(sh, &topo)
+    remus_topology::validation::validate_shell_closed(sh, &topo)
         .expect("non-shared-corner fillet should be watertight");
     assert_euler_genus0(&topo, result);
 }
@@ -754,7 +754,7 @@ fn vertex_blend_cap_mesh_on_sphere_and_outward() {
     let (mesh, face_offsets) =
         crate::tessellate::tessellate_solid_grouped_with_tolerance(&topo, result, 0.002, 0.06)
             .expect("grouped tessellation should succeed");
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert_eq!(face_ids.len() + 1, face_offsets.len());
 
     let mut checked_faces = 0;
@@ -823,7 +823,7 @@ fn vertex_blend_cap_single_face_tessellation_trims_to_wire() {
         .copied()
         .find(|&fid| {
             matches!(
-                topo.face(fid).map(brepkit_topology::face::Face::surface),
+                topo.face(fid).map(remus_topology::face::Face::surface),
                 Ok(FaceSurface::Sphere(_))
             )
         })
@@ -889,7 +889,7 @@ fn fillet_on_boolean_result() {
     let mut topo = Topology::new();
     let base = crate::primitives::make_box(&mut topo, 80.0, 60.0, 10.0).unwrap();
     let boss = crate::primitives::make_cylinder(&mut topo, 15.0, 30.0).unwrap();
-    let mat = brepkit_math::mat::Mat4::translation(40.0, 30.0, 10.0);
+    let mat = remus_math::mat::Mat4::translation(40.0, 30.0, 10.0);
     crate::transform::transform_solid(&mut topo, boss, &mat).unwrap();
 
     let fused =
@@ -1359,7 +1359,7 @@ fn fillet_rolling_ball_second_pass_on_blended_solid() {
         matches!(
             refused,
             Err(crate::OperationsError::Blend(
-                brepkit_blend::BlendError::EdgesNotBlended { .. }
+                remus_blend::BlendError::EdgesNotBlended { .. }
             ))
         ),
         "a tangent contact line must be refused by name, got: {:?}",
@@ -1521,7 +1521,7 @@ fn dihedral_deg(topo: &Topology, e: EdgeId, fs: &[FaceId]) -> f64 {
 /// non-degenerate edges are concave end-caps, so the fillet fills the seam.
 #[test]
 fn fillet_edge_adjacent_to_blend_is_watertight() {
-    use brepkit_topology::validation::validate_shell_closed;
+    use remus_topology::validation::validate_shell_closed;
 
     let mut topo = Topology::new();
     let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();

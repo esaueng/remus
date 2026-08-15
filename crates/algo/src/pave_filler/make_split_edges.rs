@@ -10,8 +10,8 @@
 
 use std::collections::HashSet;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeId};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeId};
 
 use crate::ds::{CommonBlockId, GfaArena, PaveBlockId};
 use crate::error::AlgoError;

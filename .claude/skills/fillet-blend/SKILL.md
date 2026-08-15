@@ -56,9 +56,9 @@ It slips through sign-off because no error is thrown and `validateSolid` / `isCl
 Detection recipe. A real fillet MUST change topology and volume. Assert change, do not assert success:
 
 ```rust
-let before = brepkit_topology::explorer::solid_entity_counts(&topo, solid)?; // (F,E,V)
+let before = remus_topology::explorer::solid_entity_counts(&topo, solid)?; // (F,E,V)
 // ... fillet ...
-let after = brepkit_topology::explorer::solid_entity_counts(&topo, solid)?;
+let after = remus_topology::explorer::solid_entity_counts(&topo, solid)?;
 assert_ne!(before, after, "fillet was a silent no-op");
 ```
 

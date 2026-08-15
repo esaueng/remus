@@ -1,13 +1,13 @@
 //! Edge curve sampling and parametrization.
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
 
 use super::shorter_arc_range;
 
 /// Combined linear+angular segment count for a circular arc.
 ///
-/// Delegates to [`brepkit_math::chord::segments_for_chord_deviation_with_angle`]
+/// Delegates to [`remus_math::chord::segments_for_chord_deviation_with_angle`]
 /// with no minimum-edge-length clamp. `apply_curvature_floor` is forwarded:
 /// constant-curvature circles pass `false` (the chord formula is exact),
 /// variable/doubly-curved geometry passes `true`.
@@ -18,7 +18,7 @@ pub(super) fn segments_for_chord_deviation_a(
     angular_tol: f64,
     apply_curvature_floor: bool,
 ) -> usize {
-    brepkit_math::chord::segments_for_chord_deviation_with_angle(
+    remus_math::chord::segments_for_chord_deviation_with_angle(
         radius,
         arc_range,
         deflection,
@@ -87,12 +87,12 @@ pub(super) fn plane_axes(normal: Vec3) -> (Vec3, Vec3) {
 /// co-refinement robustness depends on the denser floored sampling.
 pub fn edge_sample_count(
     topo: &Topology,
-    edge: &brepkit_topology::edge::Edge,
+    edge: &remus_topology::edge::Edge,
     deflection: f64,
     angular_tol: f64,
     circle_floor: bool,
 ) -> usize {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     match edge.curve() {
         EdgeCurve::Line => 2,
@@ -124,9 +124,9 @@ pub fn edge_sample_count(
         EdgeCurve::Hyperbola(h) => {
             let (Ok(sp), Ok(ep)) = (
                 topo.vertex(edge.start())
-                    .map(brepkit_topology::vertex::Vertex::point),
+                    .map(remus_topology::vertex::Vertex::point),
                 topo.vertex(edge.end())
-                    .map(brepkit_topology::vertex::Vertex::point),
+                    .map(remus_topology::vertex::Vertex::point),
             ) else {
                 return 2;
             };
@@ -141,9 +141,9 @@ pub fn edge_sample_count(
         EdgeCurve::Parabola(p) => {
             let (Ok(sp), Ok(ep)) = (
                 topo.vertex(edge.start())
-                    .map(brepkit_topology::vertex::Vertex::point),
+                    .map(remus_topology::vertex::Vertex::point),
                 topo.vertex(edge.end())
-                    .map(brepkit_topology::vertex::Vertex::point),
+                    .map(remus_topology::vertex::Vertex::point),
             ) else {
                 return 2;
             };
@@ -169,9 +169,9 @@ pub fn edge_sample_count(
                 std::f64::consts::TAU
             } else if let (Ok(sp), Ok(ep)) = (
                 topo.vertex(edge.start())
-                    .map(brepkit_topology::vertex::Vertex::point),
+                    .map(remus_topology::vertex::Vertex::point),
                 topo.vertex(edge.end())
-                    .map(brepkit_topology::vertex::Vertex::point),
+                    .map(remus_topology::vertex::Vertex::point),
             ) {
                 let ts = ellipse.project(sp);
                 let mut te = ellipse.project(ep);
@@ -237,7 +237,7 @@ pub fn edge_sample_count(
 /// For each segment `[u_i, u_{i+1}]`, evaluates the curve at the midpoint and
 /// measures its distance from the chord midpoint. Returns the maximum deviation.
 pub(super) fn measure_max_chord_deviation(
-    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
     u0: f64,
     u1: f64,
     n: usize,
@@ -267,7 +267,7 @@ pub(super) fn measure_max_chord_deviation(
 /// For each segment the curve tangent is compared at the segment endpoints; the
 /// angle between them is the swing across that segment.
 pub(super) fn measure_max_segment_turn(
-    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
     u0: f64,
     u1: f64,
     n: usize,
@@ -301,8 +301,8 @@ pub(super) fn measure_max_segment_turn(
 /// Returns an error if vertex lookup fails.
 pub(super) fn circle_param_range(
     topo: &Topology,
-    edge: &brepkit_topology::edge::Edge,
-    circle: &brepkit_math::curves::Circle3D,
+    edge: &remus_topology::edge::Edge,
+    circle: &remus_math::curves::Circle3D,
 ) -> Result<(f64, f64), crate::OperationsError> {
     if edge.is_closed() {
         let ts = circle.project(topo.vertex(edge.start())?.point());
@@ -330,13 +330,13 @@ pub(super) fn circle_param_range(
 /// Returns an error if vertex lookup fails for edge endpoints.
 pub(super) fn sample_edge(
     topo: &Topology,
-    edge: &brepkit_topology::edge::Edge,
+    edge: &remus_topology::edge::Edge,
     deflection: f64,
     angular_tol: f64,
     circle_floor: bool,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
-    use brepkit_geometry::sampling::sample_uniform;
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_geometry::sampling::sample_uniform;
+    use remus_topology::edge::EdgeCurve;
 
     const MAX_EDGE_SAMPLE_POINTS: usize = 16_384;
     let n = edge_sample_count(topo, edge, deflection, angular_tol, circle_floor);
@@ -432,8 +432,8 @@ pub(super) fn sample_edge(
 /// itself (a double-covered strip along the shared section curve).
 pub(super) fn nurbs_runs_end_to_start(
     topo: &Topology,
-    edge: &brepkit_topology::edge::Edge,
-    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
 ) -> Result<bool, crate::OperationsError> {
     if edge.start() == edge.end() {
         return Ok(false);
@@ -451,12 +451,12 @@ pub(super) fn nurbs_runs_end_to_start(
 /// Sample a wire into a list of 3D positions, skipping consecutive duplicates.
 pub(super) fn sample_wire_positions(
     topo: &Topology,
-    wire: &brepkit_topology::wire::Wire,
+    wire: &remus_topology::wire::Wire,
     tol: f64,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     let mut positions = Vec::new();
 

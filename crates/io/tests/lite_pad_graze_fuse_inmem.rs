@@ -32,14 +32,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::tessellate::tessellate_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
+use remus_io::arena_io::deserialize_solid;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::tessellate::tessellate_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -87,7 +87,7 @@ fn edge_health(topo: &Topology, solid: SolidId) -> (usize, usize) {
 }
 
 /// Position-welded mesh boundary/non-manifold counts (the export oracle).
-fn mesh_health(mesh: &brepkit_operations::tessellate::TriangleMesh) -> (usize, usize) {
+fn mesh_health(mesh: &remus_operations::tessellate::TriangleMesh) -> (usize, usize) {
     let s = 1.0e4;
     let q = |i: u32| -> Q {
         let p = mesh.positions[i as usize];

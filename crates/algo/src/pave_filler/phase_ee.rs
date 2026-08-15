@@ -5,12 +5,12 @@
 //! adds extra paves to both edges.
 
 use crate::ds::{GfaArena, Interference, Pave};
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
 
 use super::helpers::{add_pave_to_edge, find_nearby_pave_vertex};
 use crate::error::AlgoError;
@@ -33,8 +33,8 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
-    let edges_a = brepkit_topology::explorer::solid_edges(topo, solid_a)?;
-    let edges_b = brepkit_topology::explorer::solid_edges(topo, solid_b)?;
+    let edges_a = remus_topology::explorer::solid_edges(topo, solid_a)?;
+    let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
 
     // Collect edge data up front to avoid repeated lookups
     let data_a = collect_edge_data(topo, &edges_a)?;
@@ -277,7 +277,7 @@ fn find_edge_edge_crossings(
 fn line_circle_intersection(
     line: &EdgeData,
     arc: &EdgeData,
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     tol: Tolerance,
     circle_is_a: bool,
 ) -> Vec<(f64, f64, Point3)> {
@@ -438,8 +438,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::Vec3;
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
 
     fn line_data(start: Point3, end: Point3) -> EdgeData {
         EdgeData {

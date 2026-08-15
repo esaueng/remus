@@ -512,8 +512,8 @@ impl Topology {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 
     use crate::compound::Compound;
     use crate::compsolid::CompSolid;

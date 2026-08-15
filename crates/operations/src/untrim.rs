@@ -25,11 +25,11 @@
     clippy::tuple_array_conversions
 )]
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::nurbs::surface_fitting::{approximate_surface_lspia, interpolate_surface};
-use brepkit_math::vec::{Point2, Point3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::nurbs::surface_fitting::{approximate_surface_lspia, interpolate_surface};
+use remus_math::vec::{Point2, Point3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::OperationsError;
 
@@ -308,8 +308,8 @@ fn closest_point_on_polyline(point: Point2, polyline: &[Point2]) -> Point2 {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use brepkit_math::nurbs::surface::NurbsSurface;
-    use brepkit_math::vec::{Point2, Point3};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::{Point2, Point3};
 
     use super::*;
 

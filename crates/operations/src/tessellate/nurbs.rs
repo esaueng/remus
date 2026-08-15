@@ -1,8 +1,8 @@
 //! NURBS adaptive quadtree tessellation.
 
-use brepkit_math::det_hash::DetHashMap;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
+use remus_math::det_hash::DetHashMap;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
 
 use super::rim_chain::{collect_full_turn_rim_cycles, collect_full_turn_rim_cycles_any};
 use super::{TriangleMesh, TriangleMeshUV};
@@ -30,7 +30,7 @@ const INITIAL_CELLS: usize = 4;
 /// Falls back to (-1.0, 1.0) if the face has no usable vertices.
 pub(super) fn compute_v_param_range(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     project_v: impl Fn(Point3) -> f64,
 ) -> (f64, f64) {
     let mut v_min = f64::MAX;
@@ -69,10 +69,10 @@ pub(super) fn compute_v_param_range(
 /// a band (preserving full-tube tessellation for every other toroidal face).
 pub(super) fn compute_torus_v_range(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
-    torus: &brepkit_math::surfaces::ToroidalSurface,
+    face_data: &remus_topology::face::Face,
+    torus: &remus_math::surfaces::ToroidalSurface,
 ) -> (f64, f64) {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
     use std::f64::consts::{PI, TAU};
 
     let full_range = (0.0, TAU);
@@ -166,7 +166,7 @@ pub(super) fn compute_torus_v_range(
 /// Falls back to (-1.0, 1.0) if the face has no usable vertices.
 pub(super) fn compute_axial_range(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     origin: Point3,
     axis: Vec3,
 ) -> (f64, f64) {
@@ -225,13 +225,13 @@ pub(super) fn compute_axial_range(
 /// together (measured: two tangent unit balls fused read 6.03 against 8.38).
 fn full_turn_anchor<F>(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     project: &F,
 ) -> Option<f64>
 where
     F: Fn(Point3) -> (f64, f64),
 {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     let wire = topo.wire(face_data.outer_wire()).ok()?;
     for oe in wire.edges() {
@@ -291,13 +291,13 @@ where
 /// [`full_turn_anchor`]), at the surface frame's `u = 0` when it does not.
 pub(super) fn compute_angular_range<F>(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     project: F,
 ) -> (f64, f64)
 where
     F: Fn(Point3) -> (f64, f64),
 {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
     use std::f64::consts::TAU;
 
     let full_turn = || {
@@ -380,7 +380,7 @@ where
     }
 
     angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    angles.dedup_by(|a, b| (*a - *b).abs() < brepkit_math::tolerance::Tolerance::default().linear);
+    angles.dedup_by(|a, b| (*a - *b).abs() < remus_math::tolerance::Tolerance::default().linear);
 
     if angles.len() < 3 {
         return full_turn();
@@ -427,8 +427,8 @@ where
 #[must_use]
 pub fn compute_sphere_v_range(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
-    sphere: &brepkit_math::surfaces::SphericalSurface,
+    face_data: &remus_topology::face::Face,
+    sphere: &remus_math::surfaces::SphericalSurface,
 ) -> (f64, f64) {
     use std::f64::consts::FRAC_PI_2;
 
@@ -490,7 +490,7 @@ pub(super) fn sphere_analytic_kind(v_range: (f64, f64)) -> super::AnalyticKind {
 }
 
 /// Evaluate the surface normal at `(u, v)`, returning a fallback for degenerate points.
-fn safe_normal(surface: &brepkit_math::nurbs::surface::NurbsSurface, u: f64, v: f64) -> Vec3 {
+fn safe_normal(surface: &remus_math::nurbs::surface::NurbsSurface, u: f64, v: f64) -> Vec3 {
     surface.normal(u, v).unwrap_or(Vec3::new(0.0, 0.0, 1.0))
 }
 
@@ -500,7 +500,7 @@ fn safe_normal(surface: &brepkit_math::nurbs::surface::NurbsSurface, u: f64, v: 
 /// `angular_tol <= 0` disables the angular criterion.
 #[allow(clippy::similar_names)]
 fn cell_exceeds_angular(
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
     u_min: f64,
     u_max: f64,
     v_min: f64,
@@ -531,7 +531,7 @@ fn cell_exceeds_angular(
 /// Compute the refinement error for a quad cell using combined metrics.
 #[allow(clippy::similar_names)]
 fn cell_refinement_error(
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
     u_min: f64,
     u_max: f64,
     v_min: f64,
@@ -607,7 +607,7 @@ fn lerp_point(a: Point3, b: Point3) -> Point3 {
 /// Build the adaptive quadtree by recursive subdivision.
 #[allow(clippy::similar_names)]
 fn build_quadtree(
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
     cells: &mut Vec<AdaptiveCell>,
     cell_idx: usize,
     threshold: f64,
@@ -677,7 +677,7 @@ fn build_quadtree(
 
 /// Conforming pass: ensure no more than 1 level difference between adjacent leaf cells.
 fn conforming_pass(
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
     cells: &mut Vec<AdaptiveCell>,
 ) {
     for _pass in 0..MAX_DEPTH {
@@ -779,7 +779,7 @@ fn find_leaf_depth_recursive(cells: &[AdaptiveCell], idx: usize, u: f64, v: f64)
 /// Force-subdivide a leaf cell (for conforming pass, no curvature check).
 #[allow(clippy::similar_names)]
 fn force_subdivide(
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
     cells: &mut Vec<AdaptiveCell>,
     cell_idx: usize,
 ) {
@@ -838,7 +838,7 @@ fn force_subdivide(
 /// Tessellate a NURBS surface via curvature-adaptive subdivision.
 #[allow(clippy::too_many_lines)]
 pub(super) fn tessellate_nurbs(
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
     deflection: f64,
     angular_tol: f64,
 ) -> TriangleMeshUV {
@@ -982,12 +982,12 @@ mod tests {
     use std::cell::Cell;
     use std::f64::consts::{PI, TAU};
 
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
 

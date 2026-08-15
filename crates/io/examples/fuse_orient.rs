@@ -3,17 +3,17 @@
 //! half-edges.
 //!
 //! ```sh
-//! A=a.bin B=b.bin cargo run --release -p brepkit-io --example fuse_orient
+//! A=a.bin B=b.bin cargo run --release -p remus-io --example fuse_orient
 //! ```
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::classify::{PointClassification, classify_point};
-use brepkit_operations::validate::{ValidationOptions, validate_solid_with_options};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::classify::{PointClassification, classify_point};
+use remus_operations::validate::{ValidationOptions, validate_solid_with_options};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 
 fn main() {
     let a_path = std::env::var("A").expect("A=<path>");
@@ -39,9 +39,9 @@ fn main() {
                 face.surface().type_tag(),
                 face.is_reversed()
             );
-            if let brepkit_topology::face::FaceSurface::Plane { normal, d } = face.surface() {
+            if let remus_topology::face::FaceSurface::Plane { normal, d } = face.surface() {
                 let wire = topo.wire(face.outer_wire()).unwrap();
-                let mut pts: Vec<brepkit_math::vec::Point3> = Vec::new();
+                let mut pts: Vec<remus_math::vec::Point3> = Vec::new();
                 for oe in wire.edges() {
                     let edge = topo.edge(oe.edge()).unwrap();
                     let vid = if oe.is_forward() {
@@ -58,7 +58,7 @@ fn main() {
                     println!(" degenerate outer wire ({} points)", pts.len());
                     continue;
                 }
-                let mut area2 = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+                let mut area2 = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
                 for w in 1..pts.len().saturating_sub(1) {
                     let u = pts[w] - pts[0];
                     let v = pts[w + 1] - pts[0];
@@ -81,9 +81,9 @@ fn main() {
     // Outwardness audit: faces whose effective surface normal points INTO the
     // material (plus-side classifies Inside). Invisible to the combinatorial
     // same-sense check when the wire winding is coherently double-flipped.
-    let audit = |topo: &Topology, solid: brepkit_topology::solid::SolidId, label: &str| {
+    let audit = |topo: &Topology, solid: remus_topology::solid::SolidId, label: &str| {
         let (mesh, offsets) =
-            brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+            remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
                 topo,
                 solid,
                 0.05,
@@ -114,7 +114,7 @@ fn main() {
                     mesh.positions[t[1] as usize],
                     mesh.positions[t[2] as usize],
                 );
-                let centroid = brepkit_math::vec::Point3::new(
+                let centroid = remus_math::vec::Point3::new(
                     (pa.x() + pb.x() + pc.x()) / 3.0,
                     (pa.y() + pb.y() + pc.y()) / 3.0,
                     (pa.z() + pb.z() + pc.z()) / 3.0,
@@ -189,7 +189,7 @@ fn main() {
     audit(&topo, b, "operand B");
 
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, a, b).unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, a, b).unwrap();
     audit(&topo, result, "fuse result");
 
     let opts = ValidationOptions {
@@ -204,7 +204,7 @@ fn main() {
 
     // Per-edge attribution of same-sense pairs in the B-Rep itself.
     let faces = solid_faces(&topo, result).unwrap();
-    let mut edge_uses: HashMap<brepkit_topology::edge::EdgeId, Vec<(usize, bool, bool)>> =
+    let mut edge_uses: HashMap<remus_topology::edge::EdgeId, Vec<(usize, bool, bool)>> =
         HashMap::new();
     for (fi, &fid) in faces.iter().enumerate() {
         let face = topo.face(fid).unwrap();
@@ -265,11 +265,11 @@ fn main() {
     for fi in suspects {
         let fid = faces[fi];
         let face = topo.face(fid).unwrap();
-        let brepkit_topology::face::FaceSurface::Plane { normal, .. } = face.surface() else {
+        let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface() else {
             continue;
         };
         let wire = topo.wire(face.outer_wire()).unwrap();
-        let mut pts: Vec<brepkit_math::vec::Point3> = Vec::new();
+        let mut pts: Vec<remus_math::vec::Point3> = Vec::new();
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge()).unwrap();
             let vid = if oe.is_forward() {
@@ -287,7 +287,7 @@ fn main() {
         }
         let n = *normal;
         let origin = pts[0];
-        let mut area2 = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+        let mut area2 = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
         for w in 1..pts.len().saturating_sub(1) {
             let a = pts[w] - origin;
             let b = pts[w + 1] - origin;
@@ -305,7 +305,7 @@ fn main() {
     }
 
     let (mesh, face_offsets) =
-        brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+        remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
             &topo,
             result,
             0.01,
@@ -363,7 +363,7 @@ fn main() {
             if tn.length() < 1e-12 {
                 continue;
             }
-            let centroid = brepkit_math::vec::Point3::new(
+            let centroid = remus_math::vec::Point3::new(
                 (a.x() + b.x() + c.x()) / 3.0,
                 (a.y() + b.y() + c.y()) / 3.0,
                 (a.z() + b.z() + c.z()) / 3.0,
@@ -386,7 +386,7 @@ fn main() {
                 mesh.positions[t[1] as usize],
                 mesh.positions[t[2] as usize],
             );
-            let centroid = brepkit_math::vec::Point3::new(
+            let centroid = remus_math::vec::Point3::new(
                 (a.x() + b.x() + c.x()) / 3.0,
                 (a.y() + b.y() + c.y()) / 3.0,
                 (a.z() + b.z() + c.z()) / 3.0,
@@ -397,10 +397,9 @@ fn main() {
                 if let Ok(n_eff) = (sn * eff).normalize() {
                     let plus = centroid + n_eff * 0.05;
                     let minus = centroid - n_eff * 0.05;
-                    let cp = brepkit_operations::classify::classify_point(
-                        &topo, result, plus, 0.01, 1e-6,
-                    );
-                    let cm = brepkit_operations::classify::classify_point(
+                    let cp =
+                        remus_operations::classify::classify_point(&topo, result, plus, 0.01, 1e-6);
+                    let cm = remus_operations::classify::classify_point(
                         &topo, result, minus, 0.01, 1e-6,
                     );
                     outward = format!("plus={cp:?} minus={cm:?}");

@@ -1,30 +1,26 @@
-# Fork maintenance and release policy
+# Origin, license, and release policy
 
-## Upstream relationship
+## Project origin
 
-- Historical upstream: `https://github.com/andymai/brepkit`.
-- Production fork remote: `https://github.com/esaueng/brepkit`.
-- Permanent Apache branch: `apache-main`.
-- Final permissive upstream release: `v2.129.15` (`a878e2b9`).
-- Last fork commit before the AGPL upstream merge: `1886e873`.
-- Fork-only changes must be conventional commits with an audit or issue
-  reference. Do not rewrite upstream history or remove attribution.
+The source boundary and historical repositories are recorded in
+[`docs/PROVENANCE.md`](../PROVENANCE.md). Preserve copyright, license, NOTICE,
+and Git attribution from those source projects.
 
 ## Upstream intake policy
 
-Do not merge upstream v3 or later into `apache-main`. Code from those releases
-can enter this project only when its copyright holder provides an explicit
+Do not merge the post-license source line into `main`. Code from that line can
+enter this project only when its copyright holder provides an explicit
 Apache-2.0 grant. Otherwise specify and implement the behavior independently,
-with a regression that proves the fork contract. Run
+with a regression that proves the Remus contract. Run
 `scripts/check-apache-lineage.sh` before every push and release.
 
 Security fixes are prioritized over feature work. If a vulnerability is
-discovered in fork-only code, create a private maintainer record first; do not
-promise an upstream disclosure SLA that this fork has not formally adopted.
+discovered, create a private maintainer record first; do not promise a
+disclosure SLA that the project has not formally adopted.
 
 ## Release ownership
 
-This fork must not publish Rust crates or npm packages or create GitHub releases
+This project must not publish Rust crates or npm packages or create GitHub releases
 until named maintainers, package identity, vulnerability intake,
 signing/provenance, rollback, and yanking authority are established. The
 project and its first-party packages are Apache-2.0-only; contributions use the
@@ -32,14 +28,16 @@ same inbound license.
 
 The manual `Build OpenZCAD WASM Candidate` workflow is validation-only: it
 builds and uploads a short-lived workflow artifact, but cannot push commits or
-create releases. The checked-in `crates/wasm/pkg` directory remains a frozen
-compatibility snapshot while OpenZCAD consumes
-`github:esaueng/brepkit#apache-main&path:/crates/wasm/pkg`. Remove that snapshot only
-after the consumer has migrated to an independently versioned artifact.
+create releases. The checked-in `crates/wasm/pkg` directory is the current Git
+distribution channel and is refreshed from the exact `main` source by the
+committed-package workflow. Consumers should pin a reviewed commit with
+`github:esaueng/remus#<commit>&path:/crates/wasm/pkg`. Remove that snapshot only
+after consumers have migrated to an independently versioned artifact.
 
 Before any independent release:
 
-1. Confirm the branch contains a recorded upstream base and fork-only diff.
+1. Confirm the branch contains the recorded Apache source base and a reviewed
+   Remus-only diff.
 2. Pass the full native, MSRV, WASM, package smoke, npm dry-run, and dependency
    scanning matrix with checked-in lockfiles.
 3. Review the production-readiness audit for unresolved P0/P1 findings.

@@ -1,11 +1,11 @@
-//! Error types for brepkit-geometry.
+//! Error types for remus-geometry.
 
 /// Errors produced by geometry algorithms.
 #[derive(Debug, thiserror::Error)]
 pub enum GeomError {
-    /// Propagated error from brepkit-math.
+    /// Propagated error from remus-math.
     #[error(transparent)]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
     /// Input geometry is degenerate (e.g. zero-length curve, collapsed surface).
     #[error("degenerate input: {0}")]
     DegenerateInput(String),

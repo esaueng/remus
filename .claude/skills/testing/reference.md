@@ -49,7 +49,7 @@ Doctrine from `tests/integration/README.md`: measure, do not inspect topology. V
 All in `crates/operations/benches/`: `cad_operations.rs`, `boolean_perf.rs`, `boolean_tracking.rs`, `compound_cut_perf.rs`, `fuse_perf.rs`. Bench targets are declared in `crates/operations/Cargo.toml`. Run one:
 
 ```bash
-cargo bench -p brepkit-operations --bench boolean_perf
+cargo bench -p remus-operations --bench boolean_perf
 ```
 
 For profiling a bench, see CLAUDE.md, Profiling, and the profiling skill. For cross-kernel comparison against the reference kernel, use the brepjs harness (see the parity-benchmarking skill).
@@ -68,7 +68,7 @@ let result = k.execute_batch(
 
 then parse the JSON with the file's local helpers (`parse_batch`, `assert_ok`, `assert_no_crash`, `ok_f64`, `ok_bbox`). `execute_batch` is defined in `crates/wasm/src/bindings/batch.rs`.
 
-Why this shape: `JsError` cannot be constructed on non-wasm targets, so binding methods cannot be called directly in native tests. `execute_batch` takes and returns strings, so `cargo test -p brepkit-wasm` runs these on the host. See CLAUDE.md, Recipe 4.
+Why this shape: `JsError` cannot be constructed on non-wasm targets, so binding methods cannot be called directly in native tests. `execute_batch` takes and returns strings, so `cargo test -p remus-wasm` runs these on the host. See CLAUDE.md, Recipe 4.
 
 Handle gotcha, documented in the file header: solid handles in a batch are arena indices, not batch result indices. The header lists which ops create new solids (`makeBox`, `fuse`, `cut`, `extrude`, ...) versus which return the same handle or a float (`transform`, `volume`, `boundingBox`, ...). Count created solids to compute the handle for a later op.
 
@@ -98,7 +98,7 @@ Rebuild the failing scenario from primitives and operations inside a crate test.
 
 ### Tier 2: STEP fixture from real tool geometry
 
-When the failing geometry cannot be reconstructed exactly from a native rebuild (e.g. a tapered multi-section loft), capture the tool's literal operands as STEP and commit them. Template: `crates/io/tests/lipfuse_fixture.rs` with `crates/io/tests/data/lipfuse_*.step` (also `wallcut_*.step`, `scoop_*.step`, `multicavity_*.step`). Load with `brepkit_io::step::reader::read_step`.
+When the failing geometry cannot be reconstructed exactly from a native rebuild (e.g. a tapered multi-section loft), capture the tool's literal operands as STEP and commit them. Template: `crates/io/tests/lipfuse_fixture.rs` with `crates/io/tests/data/lipfuse_*.step` (also `wallcut_*.step`, `scoop_*.step`, `multicavity_*.step`). Load with `remus_io::step::reader::read_step`.
 
 The lipfuse header states the doctrine: the fixtures are the tool's literal operands, exported via STEP, round-tripping as exact cylinders, cones, and planes. Faithfulness gate: after import, confirm the surfaces are analytic types, not NURBS approximations. If STEP degraded them, the fixture no longer exercises the analytic code path where the bug lives.
 
@@ -110,7 +110,7 @@ Some bugs exist only in a specific in-memory id/vertex layout. A STEP round-trip
 
 - Capture tool-side: the `serializeSolid` wasm binding in `crates/wasm/src/bindings/io.rs` returns bytes.
 - Commit as `crates/io/tests/data/<name>.bin`.
-- Load in the test with `brepkit_io::arena_io::deserialize_solid` (module `crates/io/src/arena_io.rs`).
+- Load in the test with `remus_io::arena_io::deserialize_solid` (module `crates/io/src/arena_io.rs`).
 - Name the test file `*_inmem.rs`. Existing examples: `dovetail_cornerclip_intersect_inmem.rs`, `gridfinity_wallcut_seq_inmem.rs`, `scoop_fix_inmem.rs`, and others in `crates/io/tests/`.
 
 Decision rule: try tier 1. If the repro passes while the real tool fails, capture tier 2. If the STEP round-trip also passes while the in-memory case fails, capture tier 3. Never debug on a repro from a lower tier that does not reproduce.
@@ -119,8 +119,8 @@ Decision rule: try tier 1. If the repro passes while the real tool fails, captur
 
 | Property | How | Do NOT use |
 |---|---|---|
-| Cut/fuse actually happened | `brepkit_check::classify::classify_point` probes at points that must be inside/outside | volume alone (tessellated volume can read high over an un-carved cut) |
-| Correct volume | `brepkit_operations::measure` volume vs a closed-form analytic value, tolerance ~1e-6 | comparing against a previously recorded float with no derivation |
+| Cut/fuse actually happened | `remus_check::classify::classify_point` probes at points that must be inside/outside | volume alone (tessellated volume can read high over an un-carved cut) |
+| Correct volume | `remus_operations::measure` volume vs a closed-form analytic value, tolerance ~1e-6 | comparing against a previously recorded float with no derivation |
 | Watertight / manifold | count edge uses via quantized endpoint pairs, every edge used exactly twice (see the `edge_use` / `edge_health` helpers in the io fixture tests) | "it tessellates without error" |
 | Result stayed analytic | face count: analytic results have a handful of faces, mesh fallback produces hundreds to thousands of all-planar facets | triangle count or validity, both mask the fallback |
 | In/out classification on non-analytic solids | ray-cast classifier `classify_point` | winding-number classifier (`classify_point_winding`), wrong for non-analytic solids |
@@ -133,22 +133,22 @@ Boolean gate context: `boolean()` in `crates/operations/src/boolean/mod.rs` vali
 cargo test --workspace
 # per test target: "test result: ok. N passed; 0 failed; K ignored; ..."
 
-cargo test -p brepkit-operations --test parity_boolean_curved
+cargo test -p remus-operations --test parity_boolean_curved
 # runs one integration-test binary
 
-cargo test -p brepkit-io --test dovetail_cornerclip_intersect_inmem -- --ignored
+cargo test -p remus-io --test dovetail_cornerclip_intersect_inmem -- --ignored
 # runs the ready-repro; EXPECTED TO FAIL while the bug is open
 
-cargo test --release -p brepkit-operations --test perf_64cut_determinism -- --ignored --nocapture
+cargo test --release -p remus-operations --test perf_64cut_determinism -- --ignored --nocapture
 # diagnostic tool; its own file header documents this exact invocation
 
 UPDATE_GOLDEN=1 cargo test --workspace golden
 # rewrites tests/golden/data/*.golden; inspect git diff before committing
 
-cargo bench -p brepkit-operations --bench cad_operations
+cargo bench -p remus-operations --bench cad_operations
 # criterion output with per-benchmark timing and change-vs-baseline
 
-cargo run --release --example approx_census -p brepkit-operations
+cargo run --release --example approx_census -p remus-operations
 # enumerates ops that degrade analytic to approximation/mesh; rerun after a fix to confirm a flip
 
 cargo clippy --all-targets -- -D warnings
@@ -169,15 +169,15 @@ Hooks (see `.husky/pre-commit` and `.husky/pre-push` for the authoritative conte
 
 ## 5. Glossary
 
-- **GFA**: brepkit's general boolean engine (`crates/algo`), a pave-filler plus builder pipeline that intersects, splits, classifies, and reassembles faces.
+- **GFA**: remus's general boolean engine (`crates/algo`), a pave-filler plus builder pipeline that intersects, splits, classifies, and reassembles faces.
 - **PaveFiller**: GFA phase 1, computes interferences between entity pairs and splits edges at paves (intersection points). Phases VV/VE/EE/VF/EF/FF; FF (face-face) creates intersection sections and hosts most curved-boolean bugs.
 - **Section**: an intersection curve segment between two faces, produced in FF, later stitched into face-splitting wires.
 - **Same-domain (SD)**: detection that two operand faces lie on the same surface (coincident contact), so they merge instead of splitting each other.
 - **Mesh fallback**: when the analytic GFA result fails validation, `boolean()` falls back to a triangle-mesh co-refinement boolean. Correct but slow and non-analytic; the telltale is exploding face count.
 - **Analytic vs NURBS**: analytic means exact Plane/Cylinder/Cone/Sphere/Torus surfaces and Line/Circle/Ellipse curves. The quality bar is preserving these through operations instead of degrading to fitted NURBS or mesh. See the analytic-preservation skill.
 - **Watertight / manifold**: every edge shared by exactly two faces. Free edges (used once) or over-shared edges (three or more) mean a broken shell.
-- **Ray-cast classifier**: `brepkit_check::classify::classify_point`, the trustworthy in/out oracle. The winding classifier is unreliable on non-analytic solids.
+- **Ray-cast classifier**: `remus_check::classify::classify_point`, the trustworthy in/out oracle. The winding classifier is unreliable on non-analytic solids.
 - **Approx census**: `crates/operations/examples/approx_census.rs`, enumerates operations that still degrade analytic input.
 - **Parity corpus**: the `parity_boolean_*.rs` tests scoring booleans against exact analytic volume oracles, built to match and beat the reference kernel.
-- **Reference kernel**: the mature C++ CAD kernel brepkit benchmarks against via the brepjs harness (see the parity-benchmarking skill).
+- **Reference kernel**: the mature C++ CAD kernel remus benchmarks against via the brepjs harness (see the parity-benchmarking skill).
 - **Ready-repro**: an `#[ignore]`d, compiling test that reproduces a known-open bug and whose assertions encode the fix's acceptance target.

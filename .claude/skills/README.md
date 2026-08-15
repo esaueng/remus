@@ -1,6 +1,6 @@
-# brepkit Skill Library
+# remus Skill Library
 
-Distilled working knowledge for building, debugging, and shipping the brepkit B-Rep kernel:
+Distilled working knowledge for building, debugging, and shipping the remus B-Rep kernel:
 each skill captures the method and traps for one recurring class of task. Written for
 engineers and agents working in this repo (plus `~/Git/brepjs` for cross-repo work), with
 only this repo and CLAUDE.md as context.
@@ -21,19 +21,18 @@ only this repo and CLAUDE.md as context.
 | [layer-boundaries](layer-boundaries/SKILL.md) | Adding a workspace dep, placing new code in a crate, adding an `EdgeCurve` or `FaceSurface` variant, or fixing a boundaries CI failure. |
 | [wasm-bindings](wasm-bindings/SKILL.md) | Adding `BrepKernel` methods, wiring `executeBatch`, building the wasm package, or debugging wasm-only failures. |
 | [io-formats](io-formats/SKILL.md) | A STEP or other file imports wrong (dropped solids, all-NURBS, hard entity errors), verifying writer round-trips, capturing a faithful fixture, or adding a format in `crates/io`. |
-| [render-verify](render-verify/SKILL.md) | Working on `brepkit-render` or visually verifying a solid, including headless capture of a live viewer window. |
+| [render-verify](render-verify/SKILL.md) | Working on `remus-render` or visually verifying a solid, including headless capture of a live viewer window. |
 | [testing](testing/SKILL.md) | Writing or placing tests, building a faithful regression fixture, handling golden mismatches, or ending a session with unverified work. |
 | [profiling](profiling/SKILL.md) | An operation or benchmark is slow, a criterion bench misbehaves, or a PR needs before/after perf numbers. |
-| [parity-benchmarking](parity-benchmarking/SKILL.md) | Proving brepkit matches or beats the reference kernel, overlaying a local build into the gridfinity tool, or quoting any perf or parity claim. |
-| [pr-workflow](pr-workflow/SKILL.md) | Committing, pushing, opening, or merging a PR; hook failures, commitlint, the AI-review merge gate, worktrees. |
-| [release-flow](release-flow/SKILL.md) | Landing a merged brepkit change in brepjs: npm release, wasm pin bump, type sync, adapter update. |
+| [parity-benchmarking](parity-benchmarking/SKILL.md) | Proving remus matches or beats the reference kernel, overlaying a local build into the gridfinity tool, or quoting any perf or parity claim. |
+| [pr-workflow](pr-workflow/SKILL.md) | Branching, validating, pushing, opening, reviewing, or handing off a Remus pull request. |
 
 ## Suggested reading order for a new engineer
 
 1. Doctrine and verification: `roadmap`, `debugging-doctrine`, `solid-verification`, `numerical-robustness`, `testing`.
 2. The engine: `boolean-debugging`, `fillet-blend`, `analytic-preservation`, `tessellation`.
 3. Building: `layer-boundaries`, `add-operation`, `wasm-bindings`, `io-formats`, `render-verify`.
-4. Shipping: `pr-workflow`, `profiling`, `parity-benchmarking`, `release-flow`.
+4. Shipping: `profiling`, `parity-benchmarking`, `pr-workflow`, and the production-readiness release checklist.
 
 ## Glossary
 
@@ -44,7 +43,7 @@ only this repo and CLAUDE.md as context.
 - **Pave block**: the edge segment between two consecutive paves; the unit the builder splits edges into.
 - **SD (same-domain)**: two faces (or edges) from different operands that occupy the same geometry. They must be detected and merged to one representative or booleans produce duplicates and open shells.
 - **PCurve**: the 2D curve in a face's UV parameter space that traces a 3D edge on that surface. Face splitting and classification run in UV space, so a wrong pcurve breaks them.
-- **Analytic vs NURBS**: analytic means an exact typed surface or curve (plane, cylinder, cone, sphere, torus, line, circle, ellipse). NURBS is the free-form spline representation. Keeping results analytic is brepkit's differentiator: exact downstream math, compact data, GPU meshing from parameters.
+- **Analytic vs NURBS**: analytic means an exact typed surface or curve (plane, cylinder, cone, sphere, torus, line, circle, ellipse). NURBS is the free-form spline representation. Keeping results analytic is remus's differentiator: exact downstream math, compact data, GPU meshing from parameters.
 - **Mesh fallback**: when a boolean cannot assemble a valid B-Rep, it degrades to a triangle-mesh boolean and re-imports the triangles as many small planar faces. Always a defect to investigate, never an acceptable result.
 - **Watertight**: the tessellated mesh has zero boundary edges; every triangle edge is shared by exactly two triangles.
 - **Manifold**: at the B-Rep level, every edge is used by exactly two faces with consistent orientation.
@@ -52,4 +51,4 @@ only this repo and CLAUDE.md as context.
 - **Seam**: the edge where a closed surface's parameterization wraps around (u=0 meets u=2*pi on a cylinder). Seam edges appear twice in a face's UV boundary.
 - **Periodic surface**: a surface closed in one or both parameter directions (cylinder, cone, sphere, torus). Periodic wrap-around is a standing source of seam and interval bugs.
 - **Deflection**: the maximum allowed chord deviation between a mesh and the true surface; the knob that controls tessellation density.
-- **The reference kernel**: the established C++ CAD kernel brepkit benchmarks against through the brepjs harness. Parity with it, then beating it, is the project's acceptance bar; see `parity-benchmarking` for how to run the head-to-head.
+- **The reference kernel**: the established C++ CAD kernel remus benchmarks against through the brepjs harness. Parity with it, then beating it, is the project's acceptance bar; see `parity-benchmarking` for how to run the head-to-head.

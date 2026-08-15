@@ -11,13 +11,13 @@
 //! - **Two-edge** — 2 stripes meeting; a simple triangular fill.
 //! - **None** — 0-1 stripes; no corner needed.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::BlendError;
 use crate::section::CircSection;
@@ -516,9 +516,9 @@ fn build_two_edge_patch(
 pub fn compute_corners(
     topo: &mut Topology,
     stripes: &[Stripe],
-    solid: brepkit_topology::solid::SolidId,
+    solid: remus_topology::solid::SolidId,
 ) -> Result<Vec<CornerResult>, BlendError> {
-    use brepkit_topology::explorer::solid_vertices;
+    use remus_topology::explorer::solid_vertices;
 
     let vertices = solid_vertices(topo, solid)?;
     let mut results = Vec::new();
@@ -548,14 +548,14 @@ mod tests {
 
     use super::*;
     use crate::spine::Spine;
-    use brepkit_math::nurbs::curve::NurbsCurve;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     /// Helper: build a simple box topology with 8 vertices, 12 edges, 6 faces,
     /// and return the corner vertex at the origin along with 3 stripes that
@@ -564,7 +564,7 @@ mod tests {
         Topology,
         VertexId,
         Vec<Stripe>,
-        brepkit_topology::solid::SolidId,
+        remus_topology::solid::SolidId,
     ) {
         let mut topo = Topology::new();
 
@@ -745,17 +745,17 @@ mod tests {
                 normal: Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             },
-            pcurve1: brepkit_math::curves2d::Curve2D::Line(
-                brepkit_math::curves2d::Line2D::new(
-                    brepkit_math::vec::Point2::new(0.0, 0.0),
-                    brepkit_math::vec::Vec2::new(1.0, 0.0),
+            pcurve1: remus_math::curves2d::Curve2D::Line(
+                remus_math::curves2d::Line2D::new(
+                    remus_math::vec::Point2::new(0.0, 0.0),
+                    remus_math::vec::Vec2::new(1.0, 0.0),
                 )
                 .unwrap(),
             ),
-            pcurve2: brepkit_math::curves2d::Curve2D::Line(
-                brepkit_math::curves2d::Line2D::new(
-                    brepkit_math::vec::Point2::new(0.0, 0.0),
-                    brepkit_math::vec::Vec2::new(1.0, 0.0),
+            pcurve2: remus_math::curves2d::Curve2D::Line(
+                remus_math::curves2d::Line2D::new(
+                    remus_math::vec::Point2::new(0.0, 0.0),
+                    remus_math::vec::Vec2::new(1.0, 0.0),
                 )
                 .unwrap(),
             ),
@@ -804,17 +804,17 @@ mod tests {
                 normal: Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             },
-            pcurve1: brepkit_math::curves2d::Curve2D::Line(
-                brepkit_math::curves2d::Line2D::new(
-                    brepkit_math::vec::Point2::new(0.0, 0.0),
-                    brepkit_math::vec::Vec2::new(1.0, 0.0),
+            pcurve1: remus_math::curves2d::Curve2D::Line(
+                remus_math::curves2d::Line2D::new(
+                    remus_math::vec::Point2::new(0.0, 0.0),
+                    remus_math::vec::Vec2::new(1.0, 0.0),
                 )
                 .unwrap(),
             ),
-            pcurve2: brepkit_math::curves2d::Curve2D::Line(
-                brepkit_math::curves2d::Line2D::new(
-                    brepkit_math::vec::Point2::new(0.0, 0.0),
-                    brepkit_math::vec::Vec2::new(1.0, 0.0),
+            pcurve2: remus_math::curves2d::Curve2D::Line(
+                remus_math::curves2d::Line2D::new(
+                    remus_math::vec::Point2::new(0.0, 0.0),
+                    remus_math::vec::Vec2::new(1.0, 0.0),
                 )
                 .unwrap(),
             ),
@@ -863,17 +863,17 @@ mod tests {
                 normal: Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             },
-            pcurve1: brepkit_math::curves2d::Curve2D::Line(
-                brepkit_math::curves2d::Line2D::new(
-                    brepkit_math::vec::Point2::new(0.0, 0.0),
-                    brepkit_math::vec::Vec2::new(1.0, 0.0),
+            pcurve1: remus_math::curves2d::Curve2D::Line(
+                remus_math::curves2d::Line2D::new(
+                    remus_math::vec::Point2::new(0.0, 0.0),
+                    remus_math::vec::Vec2::new(1.0, 0.0),
                 )
                 .unwrap(),
             ),
-            pcurve2: brepkit_math::curves2d::Curve2D::Line(
-                brepkit_math::curves2d::Line2D::new(
-                    brepkit_math::vec::Point2::new(0.0, 0.0),
-                    brepkit_math::vec::Vec2::new(1.0, 0.0),
+            pcurve2: remus_math::curves2d::Curve2D::Line(
+                remus_math::curves2d::Line2D::new(
+                    remus_math::vec::Point2::new(0.0, 0.0),
+                    remus_math::vec::Vec2::new(1.0, 0.0),
                 )
                 .unwrap(),
             ),

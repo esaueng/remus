@@ -5,10 +5,10 @@
 
 use std::io::Write;
 
-use brepkit_operations::tessellate;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::tessellate;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// Write one or more solids to glTF binary (.glb) format.
 ///
@@ -111,7 +111,7 @@ pub fn write_glb(
     }
 
     let json = format!(
-        r#"{{"asset":{{"version":"2.0","generator":"brepkit"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":2}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{vertex_count},"type":"VEC3","min":[{min0},{min1},{min2}],"max":[{max0},{max1},{max2}]}},{{"bufferView":1,"componentType":5126,"count":{vertex_count},"type":"VEC3"}},{{"bufferView":2,"componentType":5125,"count":{index_count},"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{pos_bytes}}},{{"buffer":0,"byteOffset":{norm_offset},"byteLength":{norm_bytes}}},{{"buffer":0,"byteOffset":{idx_offset},"byteLength":{idx_bytes}}}],"buffers":[{{"byteLength":{buf_len}}}]}}"#,
+        r#"{{"asset":{{"version":"2.0","generator":"remus"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"indices":2}}]}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{vertex_count},"type":"VEC3","min":[{min0},{min1},{min2}],"max":[{max0},{max1},{max2}]}},{{"bufferView":1,"componentType":5126,"count":{vertex_count},"type":"VEC3"}},{{"bufferView":2,"componentType":5125,"count":{index_count},"type":"SCALAR"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{pos_bytes}}},{{"buffer":0,"byteOffset":{norm_offset},"byteLength":{norm_bytes}}},{{"buffer":0,"byteOffset":{idx_offset},"byteLength":{idx_bytes}}}],"buffers":[{{"byteLength":{buf_len}}}]}}"#,
         vertex_count = vertex_count,
         index_count = index_count,
         min0 = min_pos[0],
@@ -168,14 +168,14 @@ pub fn write_glb(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     use super::*;
 
     #[test]
     fn write_box_glb() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let glb = write_glb(&topo, &[solid], 0.1).unwrap();
 
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn glb_has_json_and_bin_chunks() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let glb = write_glb(&topo, &[solid], 0.1).unwrap();
 
@@ -204,7 +204,7 @@ mod tests {
 
         let json_str = std::str::from_utf8(&glb[20..20 + json_len]).unwrap();
         assert!(json_str.contains("\"version\":\"2.0\""));
-        assert!(json_str.contains("\"generator\":\"brepkit\""));
+        assert!(json_str.contains("\"generator\":\"remus\""));
         assert!(json_str.contains("POSITION"));
         assert!(json_str.contains("NORMAL"));
 
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn glb_is_4byte_aligned() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let glb = write_glb(&topo, &[solid], 0.1).unwrap();
 

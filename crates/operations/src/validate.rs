@@ -2,13 +2,13 @@
 //!
 //! Performs structural and geometric validation on solids.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::TopologyError;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::explorer;
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::TopologyError;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::explorer;
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::solid::SolidId;
 
 /// A validation issue found in a solid.
 #[derive(Debug, Clone)]
@@ -108,7 +108,7 @@ impl Default for ValidationOptions {
         Self {
             tolerance_scale: 1.0,
             orientation: OrientationCheck::Order(
-                brepkit_check::properties::PropertiesOptions::default().gauss_order,
+                remus_check::properties::PropertiesOptions::default().gauss_order,
             ),
             check_orientation: true,
         }
@@ -140,10 +140,10 @@ pub fn euler_characteristic(
 /// Two faces belong to the same component when they share an edge. The
 /// first component contains the solid's first face; ordering beyond that is
 /// discovery order.
-fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::face::FaceId]>>(
-    faces: &[brepkit_topology::face::FaceId],
+fn face_connectivity_components<V: std::ops::Deref<Target = [remus_topology::face::FaceId]>>(
+    faces: &[remus_topology::face::FaceId],
     edge_map: &std::collections::BTreeMap<usize, V>,
-) -> Vec<Vec<brepkit_topology::face::FaceId>> {
+) -> Vec<Vec<remus_topology::face::FaceId>> {
     use std::collections::{HashMap, HashSet, VecDeque};
 
     // Face index -> neighbor face indices via shared edges. A shared edge only
@@ -152,7 +152,7 @@ fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::f
     // high-fanout edges that validation is expected to reject.
     let mut adjacency: HashMap<usize, HashSet<usize>> = HashMap::new();
     for adj_faces in edge_map.values() {
-        let adj_faces: &[brepkit_topology::face::FaceId] = adj_faces;
+        let adj_faces: &[remus_topology::face::FaceId] = adj_faces;
         let Some((first, rest)) = adj_faces.split_first() else {
             continue;
         };
@@ -170,7 +170,7 @@ fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::f
         }
     }
 
-    let by_index: HashMap<usize, brepkit_topology::face::FaceId> =
+    let by_index: HashMap<usize, remus_topology::face::FaceId> =
         faces.iter().map(|f| (f.index(), *f)).collect();
     let mut visited: HashSet<usize> = HashSet::new();
     let mut components = Vec::new();
@@ -230,7 +230,7 @@ fn face_connectivity_components<V: std::ops::Deref<Target = [brepkit_topology::f
 fn outer_components_materially_overlap(
     topo: &Topology,
     solid: SolidId,
-    components: &[Vec<brepkit_topology::face::FaceId>],
+    components: &[Vec<remus_topology::face::FaceId>],
     component_genus_2: &[i64],
 ) -> Result<bool, crate::OperationsError> {
     use std::collections::HashSet;
@@ -251,13 +251,13 @@ fn outer_components_materially_overlap(
         .collect();
 
     // (index into `components`, AABB, genus*2) for each outer-shell component.
-    let mut boxes: Vec<(usize, brepkit_math::aabb::Aabb3, i64)> = Vec::new();
+    let mut boxes: Vec<(usize, remus_math::aabb::Aabb3, i64)> = Vec::new();
     for (ci, comp) in components.iter().enumerate() {
         if !comp.iter().all(|f| outer_faces.contains(&f.index())) {
             continue; // cavity component — containment is expected
         }
         let genus_2 = component_genus_2.get(ci).copied().unwrap_or(0);
-        let mut pts: Vec<brepkit_math::vec::Point3> = Vec::new();
+        let mut pts: Vec<remus_math::vec::Point3> = Vec::new();
         for &fid in comp {
             if let Ok(poly) = crate::boolean::face_polygon(topo, fid) {
                 pts.extend(poly);
@@ -268,11 +268,11 @@ fn outer_components_materially_overlap(
             // "disconnected" report rather than blessing the unknown.
             return Ok(true);
         }
-        boxes.push((ci, brepkit_math::aabb::Aabb3::from_points(pts), genus_2));
+        boxes.push((ci, remus_math::aabb::Aabb3::from_points(pts), genus_2));
     }
 
     let eps = crate::boolean::COMPONENT_OVERLAP_MARGIN_MM;
-    let contains = |o: &brepkit_math::aabb::Aabb3, i: &brepkit_math::aabb::Aabb3| {
+    let contains = |o: &remus_math::aabb::Aabb3, i: &remus_math::aabb::Aabb3| {
         o.min.x() - eps <= i.min.x()
             && o.min.y() - eps <= i.min.y()
             && o.min.z() - eps <= i.min.z()
@@ -280,7 +280,7 @@ fn outer_components_materially_overlap(
             && o.max.y() + eps >= i.max.y()
             && o.max.z() + eps >= i.max.z()
     };
-    let materially_intersects = |a: &brepkit_math::aabb::Aabb3, b: &brepkit_math::aabb::Aabb3| {
+    let materially_intersects = |a: &remus_math::aabb::Aabb3, b: &remus_math::aabb::Aabb3| {
         a.max.x().min(b.max.x()) - a.min.x().max(b.min.x()) > eps
             && a.max.y().min(b.max.y()) - a.min.y().max(b.min.y()) > eps
             && a.max.z().min(b.max.z()) - a.min.z().max(b.min.z()) > eps
@@ -388,7 +388,7 @@ fn outer_components_materially_overlap(
 /// [`explorer::solid_entity_counts`] scoped to the component's faces.
 fn component_counts(
     topo: &Topology,
-    component: &[brepkit_topology::face::FaceId],
+    component: &[remus_topology::face::FaceId],
 ) -> Result<(i64, i64, i64, i64), crate::OperationsError> {
     use std::collections::HashSet;
 
@@ -427,7 +427,7 @@ fn component_counts(
 /// A shell can be closed, 2-manifold and consistently wound and still face
 /// inward; every check above passes on such a body, and so does
 /// `measure::solid_volume`, which returns the magnitude of its integral and so
-/// reads an inside-out solid at its correct positive volume. brepkit#59 built
+/// reads an inside-out solid at its correct positive volume. remus#59 built
 /// exactly that from a segmented revolve and nothing in the kernel could say
 /// so. The winding sign is what an STL facet normal is derived from, so the
 /// body exported inside out.
@@ -490,13 +490,13 @@ fn shell_orientation_issues(
 /// Returns `true` if every edge in the face is a straight line.
 fn face_all_edges_straight(
     topo: &Topology,
-    face: &brepkit_topology::face::Face,
+    face: &remus_topology::face::Face,
 ) -> Result<bool, TopologyError> {
     for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         let wire = topo.wire(wire_id)?;
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                 return Ok(false);
             }
         }
@@ -505,8 +505,8 @@ fn face_all_edges_straight(
 }
 
 fn same_oriented_circle(
-    a: &brepkit_math::curves::Circle3D,
-    b: &brepkit_math::curves::Circle3D,
+    a: &remus_math::curves::Circle3D,
+    b: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> bool {
     (a.center() - b.center()).length() <= tol.linear
@@ -519,8 +519,8 @@ const MAX_AMBIGUOUS_CIRCLE_ARC_COMPARISONS: usize = 4_096;
 
 fn ambiguous_circle_arc_warnings(
     topo: &Topology,
-    face_id: brepkit_topology::face::FaceId,
-    wire_id: brepkit_topology::wire::WireId,
+    face_id: remus_topology::face::FaceId,
+    wire_id: remus_topology::wire::WireId,
     tol: Tolerance,
 ) -> Result<Vec<ValidationIssue>, crate::OperationsError> {
     // One diagnostic identifies the wire-level hazard. Bounding comparisons also
@@ -623,7 +623,7 @@ fn periodic_outer_rims_are_full_turns(
         return Ok(true);
     }
 
-    let accepts = |project: &dyn Fn(brepkit_math::vec::Point3) -> f64| {
+    let accepts = |project: &dyn Fn(remus_math::vec::Point3) -> f64| {
         Ok::<bool, crate::OperationsError>(
             crate::tessellate::rim_chain::collect_full_turn_rim_cycles_any(topo, &curved, project)?
                 .is_some(),
@@ -805,7 +805,7 @@ pub fn validate_solid_with_options(
         let face_data = topo.face(*fid)?;
         let is_planar = matches!(
             face_data.surface(),
-            brepkit_topology::face::FaceSurface::Plane { .. }
+            remus_topology::face::FaceSurface::Plane { .. }
         );
 
         if is_planar && face_all_edges_straight(topo, face_data)? {
@@ -830,7 +830,7 @@ pub fn validate_solid_with_options(
     };
     for fid in &faces {
         let face = topo.face(*fid)?;
-        if let brepkit_topology::face::FaceSurface::Plane { normal, .. } = face.surface() {
+        if let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface() {
             let len = normal.length();
             if !scaled_tol.approx_eq(len, 1.0) {
                 issues.push(ValidationIssue {
@@ -862,7 +862,7 @@ pub fn validate_solid_with_options(
 
         for wire_id in wire_ids {
             let wire = topo.wire(wire_id)?;
-            if let Err(_e) = brepkit_topology::validation::validate_wire_closed(wire, topo) {
+            if let Err(_e) = remus_topology::validation::validate_wire_closed(wire, topo) {
                 issues.push(ValidationIssue {
                     severity: Severity::Error,
                     description: format!(
@@ -890,7 +890,7 @@ pub fn validate_solid_with_options(
         // area formula is only meaningful for planar faces with straight edges.
         if !matches!(
             face.surface(),
-            brepkit_topology::face::FaceSurface::Plane { .. }
+            remus_topology::face::FaceSurface::Plane { .. }
         ) {
             continue;
         }
@@ -1053,7 +1053,7 @@ pub fn validate_solid_with_options(
             .chain(solid_data.inner_shells().iter().copied())
             .collect::<Vec<_>>();
         for shell_id in shells {
-            for issue in brepkit_check::validate::shell::check_shell_orientation(topo, shell_id)
+            for issue in remus_check::validate::shell::check_shell_orientation(topo, shell_id)
                 .map_err(|e| crate::OperationsError::InvalidInput {
                     reason: e.to_string(),
                 })?
@@ -1128,7 +1128,7 @@ pub fn validate_solid_relaxed_with_options(
         let face_data = topo.face(*fid)?;
         let is_planar = matches!(
             face_data.surface(),
-            brepkit_topology::face::FaceSurface::Plane { .. }
+            remus_topology::face::FaceSurface::Plane { .. }
         );
 
         if is_planar && face_all_edges_straight(topo, face_data)? {
@@ -1153,7 +1153,7 @@ pub fn validate_solid_relaxed_with_options(
     };
     for fid in &faces {
         let face = topo.face(*fid)?;
-        if let brepkit_topology::face::FaceSurface::Plane { normal, .. } = face.surface() {
+        if let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface() {
             let len = normal.length();
             if !scaled_tol.approx_eq(len, 1.0) {
                 issues.push(ValidationIssue {
@@ -1179,7 +1179,7 @@ pub fn validate_solid_relaxed_with_options(
 
         for wire_id in wire_ids {
             let wire = topo.wire(wire_id)?;
-            if let Err(_e) = brepkit_topology::validation::validate_wire_closed(wire, topo) {
+            if let Err(_e) = remus_topology::validation::validate_wire_closed(wire, topo) {
                 // Demoted to Warning: boolean operations can produce
                 // micro-gaps in wires from edge splitting that don't affect
                 // downstream tessellation or volume. Strict checking would
@@ -1202,7 +1202,7 @@ pub fn validate_solid_relaxed_with_options(
 
         if !matches!(
             face.surface(),
-            brepkit_topology::face::FaceSurface::Plane { .. }
+            remus_topology::face::FaceSurface::Plane { .. }
         ) {
             continue;
         }
@@ -1328,8 +1328,8 @@ pub fn validate_solid_relaxed_with_options(
 ///
 /// For a planar polygon with vertices `p0, p1, ..., pN`, the area is
 /// half the magnitude of the sum of cross products `(p[i] - p[0]) × (p[i+1] - p[0])`.
-fn polygon_area_3d(positions: &[brepkit_math::vec::Point3]) -> f64 {
-    use brepkit_math::vec::Vec3;
+fn polygon_area_3d(positions: &[remus_math::vec::Point3]) -> f64 {
+    use remus_math::vec::Vec3;
 
     if positions.len() < 3 {
         return 0.0;

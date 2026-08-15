@@ -1,13 +1,14 @@
 # WebAssembly
 
-Install the generated package and construct one kernel per independent model:
+The package is not yet published to npm. Pin a reviewed Remus commit, then
+construct one kernel per independent model:
 
 ```bash
-npm install brepkit-wasm
+pnpm add 'remus-wasm@github:esaueng/remus#<commit>&path:/crates/wasm/pkg'
 ```
 
 ```javascript
-import { BrepKernel } from 'brepkit-wasm';
+import { BrepKernel } from 'remus-wasm';
 
 const kernel = new BrepKernel();
 const box = kernel.makeBox(20, 10, 5);
@@ -23,7 +24,7 @@ The default build includes STEP, IGES, STL, 3MF, OBJ, PLY, and GLB I/O. Build
 with `--no-default-features` for a smaller package without file exchange:
 
 ```bash
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown \
+cargo build -p remus-wasm --target wasm32-unknown-unknown \
   --release --no-default-features
 ```
 

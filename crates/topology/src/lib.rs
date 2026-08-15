@@ -1,8 +1,8 @@
-//! # brepkit-topology
+//! # remus-topology
 //!
 //! Boundary representation (B-Rep) topological data structures.
 //!
-//! This is layer L1, depending only on `brepkit-math`.
+//! This is layer L1, depending only on `remus-math`.
 //!
 //! # Architecture
 //!

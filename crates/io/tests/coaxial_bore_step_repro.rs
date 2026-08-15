@@ -15,16 +15,16 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::push_pull::{push_pull_face, resize_cylindrical_face};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::push_pull::{push_pull_face, resize_cylindrical_face};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
 
@@ -94,11 +94,11 @@ fn top_face(topo: &Topology, solid: SolidId) -> FaceId {
 fn assert_step_round_trip(topo: &Topology, solid: SolidId, label: &str) {
     assert_watertight(topo, solid, &format!("{label} (before export)"));
 
-    let text = brepkit_io::step::writer::write_step(topo, &[solid]).unwrap();
+    let text = remus_io::step::writer::write_step(topo, &[solid]).unwrap();
     let before = solid_volume(topo, solid, DEFLECTION).unwrap();
 
     let mut rt = Topology::new();
-    let solids = brepkit_io::step::reader::read_step(&text, &mut rt).unwrap();
+    let solids = remus_io::step::reader::read_step(&text, &mut rt).unwrap();
     assert_eq!(solids.len(), 1, "{label}: expected one solid after import");
 
     assert_watertight(&rt, solids[0], &format!("{label} (after import)"));

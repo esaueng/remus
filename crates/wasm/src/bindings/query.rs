@@ -6,16 +6,16 @@ use std::f64::consts::PI;
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::FaceSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceSurface;
 
 use crate::error::{WasmError, validate_finite};
 use crate::handles::{
     edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, vertex_id_to_u32,
     wire_id_to_u32,
 };
-use brepkit_geometry::convert::{DetectedCurveKind, detect_curve_kind, detect_surface_kind};
+use remus_geometry::convert::{DetectedCurveKind, detect_curve_kind, detect_surface_kind};
 
 use crate::helpers::{frenet_from_derivatives, sample_full_period_curve, sample_open_span};
 use crate::kernel::BrepKernel;
@@ -34,7 +34,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getSolidFaces")]
     pub fn get_solid_faces(&self, solid: u32) -> Result<Vec<u32>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let faces = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?;
+        let faces = remus_topology::explorer::solid_faces(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(faces.iter().map(|f| f.index() as u32).collect())
     }
@@ -49,7 +49,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getSolidEdges")]
     pub fn get_solid_edges(&self, solid: u32) -> Result<Vec<u32>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let edges = brepkit_topology::explorer::solid_edges(&self.topo, solid_id)?;
+        let edges = remus_topology::explorer::solid_edges(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(edges.iter().map(|e| e.index() as u32).collect())
     }
@@ -64,7 +64,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getSolidVertices")]
     pub fn get_solid_vertices(&self, solid: u32) -> Result<Vec<u32>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let verts = brepkit_topology::explorer::solid_vertices(&self.topo, solid_id)?;
+        let verts = remus_topology::explorer::solid_vertices(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(verts.iter().map(|v| v.index() as u32).collect())
     }
@@ -160,7 +160,7 @@ impl BrepKernel {
         #[cfg(feature = "io")]
         {
             let solid_id = self.resolve_solid(solid)?;
-            let step_str = brepkit_io::step::writer::write_step(&self.topo, &[solid_id])
+            let step_str = remus_io::step::writer::write_step(&self.topo, &[solid_id])
                 .map_err(|e| JsError::new(&e.to_string()))?;
             Ok(step_str.into())
         }
@@ -177,15 +177,15 @@ impl BrepKernel {
     /// Export a solid as a JSON-encoded BREP representation.
     ///
     /// Returns a JSON string with vertices, edges (with curve parameters),
-    /// and faces (with surface parameters). This is a brepkit-specific format
+    /// and faces (with surface parameters). This is a remus-specific format
     /// that preserves all analytic geometry types.
     #[wasm_bindgen(js_name = "toBrepJson")]
     #[allow(clippy::too_many_lines)]
     pub fn to_brep_json(&self, solid: u32) -> Result<JsValue, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let faces = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?;
-        let edges = brepkit_topology::explorer::solid_edges(&self.topo, solid_id)?;
-        let verts = brepkit_topology::explorer::solid_vertices(&self.topo, solid_id)?;
+        let faces = remus_topology::explorer::solid_faces(&self.topo, solid_id)?;
+        let edges = remus_topology::explorer::solid_edges(&self.topo, solid_id)?;
+        let verts = remus_topology::explorer::solid_vertices(&self.topo, solid_id)?;
 
         let vert_json: Vec<serde_json::Value> = verts
             .iter()
@@ -263,12 +263,12 @@ impl BrepKernel {
             .map(|&fid| -> Result<serde_json::Value, JsError> {
                 let f = self.topo.face(fid)?;
                 let surface_type = match f.surface() {
-                    brepkit_topology::face::FaceSurface::Plane { .. } => "plane",
-                    brepkit_topology::face::FaceSurface::Nurbs(_) => "nurbs",
-                    brepkit_topology::face::FaceSurface::Cylinder(_) => "cylinder",
-                    brepkit_topology::face::FaceSurface::Cone(_) => "cone",
-                    brepkit_topology::face::FaceSurface::Sphere(_) => "sphere",
-                    brepkit_topology::face::FaceSurface::Torus(_) => "torus",
+                    remus_topology::face::FaceSurface::Plane { .. } => "plane",
+                    remus_topology::face::FaceSurface::Nurbs(_) => "nurbs",
+                    remus_topology::face::FaceSurface::Cylinder(_) => "cylinder",
+                    remus_topology::face::FaceSurface::Cone(_) => "cone",
+                    remus_topology::face::FaceSurface::Sphere(_) => "sphere",
+                    remus_topology::face::FaceSurface::Torus(_) => "torus",
                 };
                 let surface_params = match f.surface() {
                     FaceSurface::Plane { normal, d } => serde_json::json!({
@@ -327,7 +327,7 @@ impl BrepKernel {
                 let outer_edge_orientations: Vec<bool> = outer_wire
                     .edges()
                     .iter()
-                    .map(brepkit_topology::wire::OrientedEdge::is_forward)
+                    .map(remus_topology::wire::OrientedEdge::is_forward)
                     .collect();
                 let inner_wires: Vec<serde_json::Value> = f
                     .inner_wires()
@@ -339,7 +339,7 @@ impl BrepKernel {
                             let orientations: Vec<bool> = w
                                 .edges()
                                 .iter()
-                                .map(brepkit_topology::wire::OrientedEdge::is_forward)
+                                .map(remus_topology::wire::OrientedEdge::is_forward)
                                 .collect();
                             serde_json::json!({
                                 "edges": edges,
@@ -394,7 +394,7 @@ impl BrepKernel {
             // STEP format — delegate to STEP import
             #[cfg(feature = "io")]
             {
-                let solids = brepkit_io::step::reader::read_step(data, self.topo_mut())
+                let solids = remus_io::step::reader::read_step(data, self.topo_mut())
                     .map_err(|e| JsError::new(&e.to_string()))?;
                 let first = solids
                     .first()
@@ -424,7 +424,7 @@ impl BrepKernel {
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
         match face_data.surface() {
-            brepkit_topology::face::FaceSurface::Plane { normal, .. } => {
+            remus_topology::face::FaceSurface::Plane { normal, .. } => {
                 Ok(vec![normal.x(), normal.y(), normal.z()])
             }
             _ => Err(WasmError::InvalidInput {
@@ -442,7 +442,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getEntityCounts")]
     pub fn get_entity_counts(&self, solid: u32) -> Result<Vec<u32>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&self.topo, solid_id)?;
+        let (f, e, v) = remus_topology::explorer::solid_entity_counts(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(vec![f as u32, e as u32, v as u32])
     }
@@ -455,7 +455,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getFaceEdges")]
     pub fn get_face_edges(&self, face: u32) -> Result<Vec<u32>, JsError> {
         let face_id = self.resolve_face(face)?;
-        let edges = brepkit_topology::explorer::face_edges(&self.topo, face_id)?;
+        let edges = remus_topology::explorer::face_edges(&self.topo, face_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(edges.iter().map(|e| e.index() as u32).collect())
     }
@@ -466,7 +466,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "getFaceVertices")]
     pub fn get_face_vertices(&self, face: u32) -> Result<Vec<u32>, JsError> {
         let face_id = self.resolve_face(face)?;
-        let verts = brepkit_topology::explorer::face_vertices(&self.topo, face_id)?;
+        let verts = remus_topology::explorer::face_vertices(&self.topo, face_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(verts.iter().map(|v| v.index() as u32).collect())
     }
@@ -1228,7 +1228,7 @@ impl BrepKernel {
                 Ok(vec![u0, u1, v0, v1])
             }
             FaceSurface::Cylinder(cyl) => {
-                let v_range = brepkit_check::properties::axial_v_range(
+                let v_range = remus_check::properties::axial_v_range(
                     &self.topo,
                     face_id,
                     cyl.origin(),
@@ -1237,7 +1237,7 @@ impl BrepKernel {
                 Ok(vec![0.0, 2.0 * PI, v_range.0, v_range.1])
             }
             FaceSurface::Cone(cone) => {
-                let v_range = brepkit_check::properties::axial_v_range(
+                let v_range = remus_check::properties::axial_v_range(
                     &self.topo,
                     face_id,
                     cone.apex(),
@@ -1449,7 +1449,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "edgeToFaceMap")]
     pub fn edge_to_face_map(&self, solid: u32) -> Result<String, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let map = brepkit_topology::explorer::edge_to_face_map(&self.topo, solid_id)?;
+        let map = remus_topology::explorer::edge_to_face_map(&self.topo, solid_id)?;
         let json_map: std::collections::HashMap<String, Vec<u32>> = map
             .into_iter()
             .map(|(edge_idx, face_ids)| {
@@ -1467,7 +1467,7 @@ impl BrepKernel {
     pub fn shared_edges(&self, face_a: u32, face_b: u32) -> Result<Vec<u32>, JsError> {
         let fa = self.resolve_face(face_a)?;
         let fb = self.resolve_face(face_b)?;
-        let edges = brepkit_topology::explorer::shared_edges(&self.topo, fa, fb)?;
+        let edges = remus_topology::explorer::shared_edges(&self.topo, fa, fb)?;
         Ok(edges.iter().map(|e| edge_id_to_u32(*e)).collect())
     }
 
@@ -1478,8 +1478,8 @@ impl BrepKernel {
     pub fn adjacent_faces(&self, solid: u32, face: u32) -> Result<Vec<u32>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
         let face_id = self.resolve_face(face)?;
-        let map = brepkit_topology::explorer::edge_to_face_map(&self.topo, solid_id)?;
-        let adj = brepkit_topology::explorer::adjacent_faces(&self.topo, face_id, &map)?;
+        let map = remus_topology::explorer::edge_to_face_map(&self.topo, solid_id)?;
+        let adj = remus_topology::explorer::adjacent_faces(&self.topo, face_id, &map)?;
         Ok(adj.iter().map(|f| face_id_to_u32(*f)).collect())
     }
 
@@ -1489,7 +1489,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "faceWires")]
     pub fn face_wires(&self, face: u32) -> Result<Vec<u32>, JsError> {
         let face_id = self.resolve_face(face)?;
-        let wires = brepkit_topology::explorer::face_wires(&self.topo, face_id)?;
+        let wires = remus_topology::explorer::face_wires(&self.topo, face_id)?;
         Ok(wires.iter().map(|w| wire_id_to_u32(*w)).collect())
     }
 
@@ -1562,7 +1562,7 @@ impl BrepKernel {
         let wire_data = self.topo.wire(wire_id)?;
         let mut total = 0.0;
         for oe in wire_data.edges() {
-            total += brepkit_operations::measure::edge_length(&self.topo, oe.edge())?;
+            total += remus_operations::measure::edge_length(&self.topo, oe.edge())?;
         }
         Ok(total)
     }
@@ -1629,9 +1629,9 @@ impl BrepKernel {
         let face_data = self.topo.face(face_id)?;
         let outer_wire = face_data.outer_wire();
         let surface = face_data.surface().clone();
-        let existing_inner: Vec<brepkit_topology::wire::WireId> = face_data.inner_wires().to_vec();
+        let existing_inner: Vec<remus_topology::wire::WireId> = face_data.inner_wires().to_vec();
 
-        let new_holes: Vec<brepkit_topology::wire::WireId> = hole_wire_handles
+        let new_holes: Vec<remus_topology::wire::WireId> = hole_wire_handles
             .iter()
             .map(|&wh| self.resolve_wire(wh))
             .collect::<Result<_, _>>()?;

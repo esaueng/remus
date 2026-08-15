@@ -11,22 +11,22 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::compound_ops::fuse_all;
-use brepkit_operations::heal::unify_faces;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::push_pull::resize_cylindrical_face;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::compound::Compound;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::validation::validate_shell_closed;
+use remus_math::mat::Mat4;
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::compound_ops::fuse_all;
+use remus_operations::heal::unify_faces;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::push_pull::resize_cylindrical_face;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::compound::Compound;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::validation::validate_shell_closed;
 
 const W: f64 = 80.0;
 const D: f64 = 40.0;
@@ -105,11 +105,11 @@ fn build_filleted_bracket(topo: &mut Topology) -> SolidId {
 
 fn base_corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     let mut picked = Vec::new();
-    for eid in brepkit_topology::explorer::solid_edges(topo, solid).expect("bracket edges") {
+    for eid in remus_topology::explorer::solid_edges(topo, solid).expect("bracket edges") {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("edge start").point();
         let b = topo.vertex(edge.end()).expect("edge end").point();
-        let at_corner = |p: brepkit_math::vec::Point3| {
+        let at_corner = |p: remus_math::vec::Point3| {
             (p.x().abs() < 0.1 || (p.x() - W).abs() < 0.1)
                 && (p.y().abs() < 0.1 || (p.y() - D).abs() < 0.1)
                 && (-0.1..=8.1).contains(&p.z())
@@ -151,7 +151,7 @@ fn assert_closed(topo: &Topology, solid: SolidId) {
         .shell(topo.solid(solid).expect("solid").outer_shell())
         .expect("outer shell");
     validate_shell_closed(shell, topo).expect("result shell must be closed");
-    let orientation = brepkit_check::validate::shell::check_shell_orientation(
+    let orientation = remus_check::validate::shell::check_shell_orientation(
         topo,
         topo.solid(solid).expect("solid").outer_shell(),
     )

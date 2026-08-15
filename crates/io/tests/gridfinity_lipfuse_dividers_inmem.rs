@@ -49,14 +49,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use brepkit_algo::bop::BooleanOp as RawOp;
-use brepkit_algo::gfa;
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp as ProdOp, boolean as prod_boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_algo::bop::BooleanOp as RawOp;
+use remus_algo::gfa;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp as ProdOp, boolean as prod_boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -81,7 +81,7 @@ fn curved_count(topo: &Topology, solid: SolidId) -> usize {
 fn free_edge_count(topo: &Topology, solid: SolidId) -> usize {
     type QPoint = (i64, i64, i64);
     let scale = 1.0e6;
-    let q = |p: brepkit_math::vec::Point3| -> QPoint {
+    let q = |p: remus_math::vec::Point3| -> QPoint {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,
@@ -111,7 +111,7 @@ fn free_edge_count(topo: &Topology, solid: SolidId) -> usize {
 fn divider_cross_free_count(topo: &Topology, solid: SolidId) -> usize {
     type QPoint = (i64, i64, i64);
     let scale = 1.0e6;
-    let q = |p: brepkit_math::vec::Point3| -> QPoint {
+    let q = |p: remus_math::vec::Point3| -> QPoint {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,
@@ -227,7 +227,7 @@ fn lip_fuse_onto_compartmented_body_is_watertight_and_analytic() {
     // Volume sanity: a stacking-lip fuse onto the compartmented bin body is a
     // solid in the low-2e4 mm^3 range (the mesh fallback collapsed it to ~2.9e3
     // when the shell went open). Guard a sane positive, non-collapsed volume.
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 1.0e-7).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result, 1.0e-7).unwrap();
     assert!(
         (20_000.0..30_000.0).contains(&vol),
         "production fuse volume {vol} out of the expected ~2.4e4 mm^3 range"

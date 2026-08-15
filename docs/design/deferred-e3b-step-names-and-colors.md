@@ -8,7 +8,7 @@ presentation entities.
 ## Context
 
 The STEP reader and writer currently exchange geometry and topology. E3a adds
-writer-level product/file metadata, but brepkit has nowhere to retain a name or
+writer-level product/file metadata, but remus has nowhere to retain a name or
 color attached to a solid, shell, face, edge, or compound. Importing STEP
 presentation data directly into a WASM-only side table would lose it during
 native operations, copies, serialization, and round trips.

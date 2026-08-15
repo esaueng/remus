@@ -13,15 +13,15 @@
 
 use std::collections::HashMap;
 
-use brepkit_blend::fillet_builder::FilletBuilder;
-use brepkit_math::vec::Point3;
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::tessellate::{boundary_edge_count, tessellate_solid_with_tolerance};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::{solid_edges, solid_faces};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_blend::fillet_builder::FilletBuilder;
+use remus_math::vec::Point3;
+use remus_operations::primitives::make_box;
+use remus_operations::tessellate::{boundary_edge_count, tessellate_solid_with_tolerance};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::{solid_edges, solid_faces};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 fn edge_use_counts(topo: &Topology, solid: SolidId) -> HashMap<EdgeId, usize> {
     let mut counts: HashMap<EdgeId, usize> = HashMap::new();
@@ -190,7 +190,7 @@ fn fillet_v2_box_edge_propagates_boundary_splits() {
     assert_eq!(bnd, 0, "filleted box mesh must be watertight; bnd = {bnd}");
 
     // A rolled convex edge removes exactly (1 - pi/4)·r²·L = 2.146 mm³.
-    let vol = brepkit_operations::measure::solid_volume(&topo, result.solid, 0.01).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result.solid, 0.01).unwrap();
     assert!(
         (vol - 997.854).abs() < 0.01,
         "expected the exact quarter-round volume 997.854, got {vol}"

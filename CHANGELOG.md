@@ -1,5 +1,9 @@
 # Changelog
 
+Remus begins as the Apache-2.0 continuation of the earlier BrepKit codebase.
+Entries below the first Remus release are retained as historical provenance;
+their original repository links and product names are intentionally unchanged.
+
 ## 2.130.0
 
 ### Licensing

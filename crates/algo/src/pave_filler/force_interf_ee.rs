@@ -7,9 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 
 use crate::ds::{GfaArena, PaveBlockId};
 use crate::error::AlgoError;
@@ -35,8 +35,8 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     let mut leaf_data: Vec<(
         PaveBlockId,
         EdgeId,
-        brepkit_math::vec::Point3,
-        brepkit_math::vec::Point3,
+        remus_math::vec::Point3,
+        remus_math::vec::Point3,
     )> = Vec::new();
 
     for (orig_edge, leaf_pbs) in &all_edge_pbs {
@@ -68,15 +68,15 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     // block; matching blocks have midpoints within `tol.linear`, so probing
     // the 3×3×3 neighbor cells of a block's midpoint covers every true match.
     let cell = (tol.linear * 4.0).max(f64::MIN_POSITIVE);
-    let key = |p: brepkit_math::vec::Point3| -> (i64, i64, i64) {
+    let key = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
         (
             (p.x() / cell).floor() as i64,
             (p.y() / cell).floor() as i64,
             (p.z() / cell).floor() as i64,
         )
     };
-    let midpoint = |a: brepkit_math::vec::Point3, b: brepkit_math::vec::Point3| {
-        brepkit_math::vec::Point3::new(
+    let midpoint = |a: remus_math::vec::Point3, b: remus_math::vec::Point3| {
+        remus_math::vec::Point3::new(
             f64::midpoint(a.x(), b.x()),
             f64::midpoint(a.y(), b.y()),
             f64::midpoint(a.z(), b.z()),

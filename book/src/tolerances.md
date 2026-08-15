@@ -1,13 +1,13 @@
 # Tolerances and Robustness
 
-brepkit conventionally interprets lengths as millimetres and angles as
+remus conventionally interprets lengths as millimetres and angles as
 radians. Scalars are unitless in the Rust and JavaScript type systems, so the
 kernel performs no automatic conversion. A model supplied in metres also
 requires metre-scaled deflections and linear tolerances.
 
 ## Default model
 
-`brepkit_math::tolerance::Tolerance` separates linear, angular, relative, and
+`remus_math::tolerance::Tolerance` separates linear, angular, relative, and
 parametric comparisons. Prefer it over a raw epsilon when an algorithm already
 accepts a tolerance. Exact topological identity is different from geometric
 coincidence: compare typed handles directly, but compare coordinates with the

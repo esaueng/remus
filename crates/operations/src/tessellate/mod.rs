@@ -30,9 +30,9 @@ mod solid;
 #[cfg(test)]
 mod tests;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
 
 // Re-export all public items.
 pub use face::{tessellate_with_uvs, tessellate_with_uvs_a};
@@ -73,9 +73,9 @@ pub(super) fn point_merge_key(pt: Point3, grid: f64) -> (i64, i64, i64) {
 /// When the shorter arc is CW, `t_end < t_start` so that linear interpolation
 /// between them traces the correct (shorter) path via `circle.evaluate()`.
 pub(super) fn shorter_arc_range(
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     topo: &Topology,
-    edge: &brepkit_topology::edge::Edge,
+    edge: &remus_topology::edge::Edge,
 ) -> Result<(f64, f64), crate::OperationsError> {
     let sp = topo.vertex(edge.start())?.point();
     let ep = topo.vertex(edge.end())?.point();
@@ -174,7 +174,7 @@ pub(super) fn position_based_boundary_count(mesh: &TriangleMesh) -> usize {
     /// gaps the production pipeline should have closed.
     const DIAGNOSTIC_GRID: f64 = 1e-6;
 
-    use brepkit_math::det_hash::{DetHashMap, DetHashSet};
+    use remus_math::det_hash::{DetHashMap, DetHashSet};
 
     // Build canonical vertex ID from snapped position.
     let mut pos_to_canonical: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();

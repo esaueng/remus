@@ -1,9 +1,9 @@
 ---
 name: testing
-description: Use when writing, placing, running, or updating tests in brepkit; when a bug fix needs a regression fixture; when deciding whether a repro is faithful to the real failing geometry; when a golden file mismatches; or when ending a session with unverified work (verify-or-revert). Covers unit, proptest, golden, integration, wasm contract, bench, and ignored ready-repro tests.
+description: Use when writing, placing, running, or updating tests in remus; when a bug fix needs a regression fixture; when deciding whether a repro is faithful to the real failing geometry; when a golden file mismatches; or when ending a session with unverified work (verify-or-revert). Covers unit, proptest, golden, integration, wasm contract, bench, and ignored ready-repro tests.
 ---
 
-# Testing in brepkit
+# Testing in remus
 
 ## When to use
 
@@ -19,13 +19,13 @@ Deep catalog, fixture-capture procedures, and glossary: see [reference.md](refer
 
 ```bash
 cargo test --workspace                                        # everything
-cargo test -p brepkit-operations                              # one crate
-cargo test -p brepkit-operations --test regress_hexwall_cuts  # one integration file
-cargo test -p brepkit-operations some_test_name_substring     # filter by name
-cargo test -p brepkit-wasm                                    # wasm contract tests (run native)
-cargo test -p brepkit-io --test dovetail_cornerclip_intersect_inmem -- --ignored   # a ready-repro
+cargo test -p remus-operations                              # one crate
+cargo test -p remus-operations --test regress_hexwall_cuts  # one integration file
+cargo test -p remus-operations some_test_name_substring     # filter by name
+cargo test -p remus-wasm                                    # wasm contract tests (run native)
+cargo test -p remus-io --test dovetail_cornerclip_intersect_inmem -- --ignored   # a ready-repro
 UPDATE_GOLDEN=1 cargo test --workspace golden                 # regenerate golden files
-cargo bench -p brepkit-operations --bench cad_operations      # criterion bench
+cargo bench -p remus-operations --bench cad_operations      # criterion bench
 rg -n '#\[ignore' crates -g '*.rs'                            # list all ignored repros/diagnostics
 ```
 
@@ -57,8 +57,8 @@ Note: root `tests/integration/` holds only a README of patterns. Runnable integr
 Every bug fix ships a fixture that fails before the fix and passes after. Run it against the pre-fix tree at least once to confirm it actually fails. Three tiers, escalate only when the lower tier cannot reproduce:
 
 1. **Minimal native primitive repro** (preferred). Rebuild the failing scenario from primitives in a crate test. Copy the shape of `regress_hexwall_cuts.rs`.
-2. **STEP fixture captured from the real failing tool geometry**, when the geometry does not reconstruct exactly from a native rebuild. Files in `crates/io/tests/data/*.step`, loaded via `brepkit_io::step::reader::read_step`. Faithfulness check: the operands must round-trip as analytic surfaces (Cylinder/Cone/Plane, not NURBS). A NURBS round-trip means the fixture is unfaithful, do not use it.
-3. **Arena `.bin` fixture**, when STEP round-trip renumbers ids or re-derives vertices and the bug disappears. Captured tool-side via the `serializeSolid` wasm binding, loaded via `brepkit_io::arena_io::deserialize_solid`. Tests named `*_inmem.rs` in `crates/io/tests/` are this tier.
+2. **STEP fixture captured from the real failing tool geometry**, when the geometry does not reconstruct exactly from a native rebuild. Files in `crates/io/tests/data/*.step`, loaded via `remus_io::step::reader::read_step`. Faithfulness check: the operands must round-trip as analytic surfaces (Cylinder/Cone/Plane, not NURBS). A NURBS round-trip means the fixture is unfaithful, do not use it.
+3. **Arena `.bin` fixture**, when STEP round-trip renumbers ids or re-derives vertices and the bug disappears. Captured tool-side via the `serializeSolid` wasm binding, loaded via `remus_io::arena_io::deserialize_solid`. Tests named `*_inmem.rs` in `crates/io/tests/` are this tier.
 
 Assert on measurements (volume against an exact analytic value, edge-use counts for watertightness, face counts for analytic-vs-mesh-fallback), not on internal topology layout. See `tests/integration/README.md` and reference.md section "What to assert".
 
@@ -75,7 +75,7 @@ Work that cannot be verified by the end of the session is reverted to a clean tr
 1. Findings written down (PR description, issue, or investigation notes in the ready-repro's doc comment).
 2. An `#[ignore = "open: ..."]` ready-repro test that compiles, whose assertions encode the acceptance target for the eventual fix. `dovetail_cornerclip_intersect_inmem.rs` is the template: its assertions check watertight, analytic, and compact, exactly what the fix must produce.
 
-Verification is empirical, not plausible: vary one variable, dump literal data, and check cut geometry with the ray-cast classifier (`brepkit_check::classify::classify_point`), never with volume alone (tessellated volume can mask an un-carved cut). See the solid-verification and debugging-doctrine skills.
+Verification is empirical, not plausible: vary one variable, dump literal data, and check cut geometry with the ray-cast classifier (`remus_check::classify::classify_point`), never with volume alone (tessellated volume can mask an un-carved cut). See the solid-verification and debugging-doctrine skills.
 
 When a fix ships for a previously ignored repro, remove the `#[ignore]` in the same PR so it becomes a permanent regression test.
 
@@ -100,4 +100,4 @@ Missing file panics with "Run with UPDATE_GOLDEN=1 to create it." New golden fil
 
 ## Sibling skills
 
-boolean-debugging (root-causing the failures these fixtures capture), solid-verification (the measurement oracles), debugging-doctrine (vary-one-variable, diagnosis instability), parity-benchmarking (scoring against the reference kernel via the brepjs harness), add-operation and wasm-bindings (where new-feature tests slot in), pr-workflow (review gates before merge).
+boolean-debugging (root-causing the failures these fixtures capture), solid-verification (the measurement oracles), debugging-doctrine (vary-one-variable, diagnosis instability), parity-benchmarking (scoring against the reference kernel via the brepjs harness), and add-operation and wasm-bindings (where new-feature tests slot in).

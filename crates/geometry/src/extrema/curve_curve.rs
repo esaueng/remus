@@ -3,9 +3,9 @@
 //! Provides analytic fast paths for common curve combinations and a generic
 //! fallback that samples both curves and refines with Newton-Raphson.
 
-use brepkit_math::curves::Line3D;
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::Point3;
+use remus_math::curves::Line3D;
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::Point3;
 
 use super::ExtremaSolution;
 
@@ -30,9 +30,9 @@ const PARAM_TOL: f64 = 1e-10;
 /// # Examples
 ///
 /// ```
-/// use brepkit_math::curves::Line3D;
-/// use brepkit_math::vec::{Point3, Vec3};
-/// use brepkit_geometry::extrema::line_to_line;
+/// use remus_math::curves::Line3D;
+/// use remus_math::vec::{Point3, Vec3};
+/// use remus_geometry::extrema::line_to_line;
 ///
 /// // Two parallel lines offset by 1 in Y.
 /// let l1 = Line3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
@@ -126,9 +126,9 @@ pub fn line_to_line(
 /// # Examples
 ///
 /// ```
-/// use brepkit_math::curves::Circle3D;
-/// use brepkit_math::vec::{Point3, Vec3};
-/// use brepkit_geometry::extrema::curve_to_curve;
+/// use remus_math::curves::Circle3D;
+/// use remus_math::vec::{Point3, Vec3};
+/// use remus_geometry::extrema::curve_to_curve;
 /// use std::f64::consts::TAU;
 ///
 /// // Two concentric coplanar circles of radius 1 and 2.
@@ -229,7 +229,7 @@ pub fn curve_to_curve<C1: ParametricCurve, C2: ParametricCurve>(
         let inv2h1 = 1.0 / (t1_fwd - t1_bwd);
         let p1f = c1.evaluate(t1_fwd);
         let p1b = c1.evaluate(t1_bwd);
-        let vel1 = brepkit_math::vec::Vec3::new(
+        let vel1 = remus_math::vec::Vec3::new(
             (p1f.x() - p1b.x()) * inv2h1,
             (p1f.y() - p1b.y()) * inv2h1,
             (p1f.z() - p1b.z()) * inv2h1,
@@ -240,7 +240,7 @@ pub fn curve_to_curve<C1: ParametricCurve, C2: ParametricCurve>(
         let inv2h2 = 1.0 / (t2_fwd - t2_bwd);
         let p2f = c2.evaluate(t2_fwd);
         let p2b = c2.evaluate(t2_bwd);
-        let vel2 = brepkit_math::vec::Vec3::new(
+        let vel2 = remus_math::vec::Vec3::new(
             (p2f.x() - p2b.x()) * inv2h2,
             (p2f.y() - p2b.y()) * inv2h2,
             (p2f.z() - p2b.z()) * inv2h2,
@@ -295,8 +295,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
     use std::f64::consts::TAU;
 
     fn approx(a: f64, b: f64, tol: f64) -> bool {
