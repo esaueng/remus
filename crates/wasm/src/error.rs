@@ -284,7 +284,9 @@ impl From<brepkit_topology::TopologyError> for StructuredWasmError {
             brepkit_topology::TopologyError::CoedgeNotFound(id) => ("coedge", Some(id.index())),
             brepkit_topology::TopologyError::LoopWireMismatch { face }
             | brepkit_topology::TopologyError::LoopNotConnected { face }
-            | brepkit_topology::TopologyError::SeamPcurveAmbiguous { face, .. } => {
+            | brepkit_topology::TopologyError::SeamPcurveAmbiguous { face, .. }
+            | brepkit_topology::TopologyError::SameParameterExceeded { face, .. }
+            | brepkit_topology::TopologyError::SameRangeExceeded { face, .. } => {
                 ("face", Some(face.index()))
             }
             brepkit_topology::TopologyError::Empty { entity } => (*entity, None),

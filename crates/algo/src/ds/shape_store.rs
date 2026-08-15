@@ -188,6 +188,7 @@ fn deep_copy_solid(
         end_index: usize,
         curve: brepkit_topology::edge::EdgeCurve,
         tolerance: Option<f64>,
+        trim: Option<(f64, f64)>,
     }
     struct WireSnap {
         old_index: usize,
@@ -263,6 +264,7 @@ fn deep_copy_solid(
                         end_index: end_idx,
                         curve: edge.curve().clone(),
                         tolerance: edge.tolerance(),
+                        trim: edge.trim(),
                     });
                 }
 
@@ -297,12 +299,10 @@ fn deep_copy_solid(
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
-        let new_eid = target.add_edge(Edge::with_tolerance(
-            new_start,
-            new_end,
-            esnap.curve.clone(),
-            esnap.tolerance,
-        ));
+        let mut copied =
+            Edge::with_tolerance(new_start, new_end, esnap.curve.clone(), esnap.tolerance);
+        copied.set_trim(esnap.trim);
+        let new_eid = target.add_edge(copied);
         edge_map.insert(esnap.old_index, new_eid);
     }
 

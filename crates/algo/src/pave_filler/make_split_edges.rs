@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 
 use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeId};
+use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 
 use crate::ds::{CommonBlockId, GfaArena, PaveBlockId};
 use crate::error::AlgoError;
@@ -102,7 +102,7 @@ fn create_split_edge(
     arena: &GfaArena,
     pb_id: PaveBlockId,
 ) -> Result<EdgeId, AlgoError> {
-    let (original_edge_id, start_vertex, end_vertex) = {
+    let (original_edge_id, start_vertex, end_vertex, t_start, t_end) = {
         let pb = arena.pave_blocks.get(pb_id).ok_or_else(|| {
             AlgoError::FaceSplitFailed(format!(
                 "MakeSplitEdges: pave block {pb_id:?} not found in arena"
@@ -110,10 +110,108 @@ fn create_split_edge(
         })?;
         let start_v = arena.resolve_vertex(pb.start.vertex);
         let end_v = arena.resolve_vertex(pb.end.vertex);
-        (pb.original_edge, start_v, end_v)
+        (
+            pb.original_edge,
+            start_v,
+            end_v,
+            pb.start.parameter,
+            pb.end.parameter,
+        )
     };
 
     let curve = topo.edge(original_edge_id)?.curve().clone();
-    let new_edge = Edge::new(start_vertex, end_vertex, curve);
+    // The pave block has the exact sub-span on the original curve in hand;
+    // record it so the domain never has to be reconstructed by endpoint
+    // projection (RFC 0002, Stage 3). Per curve type:
+    // - `Line` carries no stored geometry — the sub-edge's line re-anchors
+    //   to its new vertices with domain [0, 1], so parameters measured on
+    //   the ORIGINAL edge do not apply to it: no trim.
+    // - Angular curves (circle, ellipse) evaluate any angle, so a block
+    //   that wraps the parameter seam is stored unwrapped by one period
+    //   (t_end + 2π), keeping the span forward.
+    // - Other curves store only a forward span; a wrapped span keeps the
+    //   legacy projection path.
+    let trim = match &curve {
+        EdgeCurve::Line => None,
+        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+            let span = if t_end > t_start {
+                t_end
+            } else {
+                t_end + std::f64::consts::TAU
+            };
+            Some((t_start, span))
+        }
+        EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            (t_end > t_start).then_some((t_start, t_end))
+        }
+    };
+    let mut new_edge = Edge::new(start_vertex, end_vertex, curve);
+    new_edge.set_trim(trim);
     Ok(topo.add_edge(new_edge))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod trim_tests {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::Topology;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::vertex::Vertex;
+
+    use crate::ds::{GfaArena, Pave, PaveBlock};
+
+    use super::create_split_edge;
+
+    fn arc_split_fixture(t_start: f64, t_end: f64, curve: EdgeCurve) -> Topology {
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(-1.0, 0.0, 0.0), 1e-7));
+        let _edge = topo.add_edge(Edge::new(v0, v1, curve));
+        let _ = (t_start, t_end);
+        topo
+    }
+
+    fn circle() -> EdgeCurve {
+        EdgeCurve::Circle(
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap(),
+        )
+    }
+
+    fn split(topo: &mut Topology, t_start: f64, t_end: f64) -> brepkit_topology::EdgeId {
+        let edge_id = topo.edge_id_from_index(0).unwrap();
+        let v0 = topo.vertex_id_from_index(0).unwrap();
+        let v1 = topo.vertex_id_from_index(1).unwrap();
+        let mut arena = GfaArena::new();
+        let pb = arena.pave_blocks.alloc(PaveBlock::new(
+            edge_id,
+            Pave::new(v0, t_start),
+            Pave::new(v1, t_end),
+        ));
+        create_split_edge(topo, &arena, pb).unwrap()
+    }
+
+    #[test]
+    fn forward_arc_span_is_recorded_exactly() {
+        let mut topo = arc_split_fixture(0.5, 2.5, circle());
+        let eid = split(&mut topo, 0.5, 2.5);
+        assert_eq!(topo.edge(eid).unwrap().trim(), Some((0.5, 2.5)));
+    }
+
+    #[test]
+    fn wrapped_arc_span_is_unwrapped_by_one_period() {
+        const TAU: f64 = std::f64::consts::TAU;
+        let mut topo = arc_split_fixture(5.5, 1.0, circle());
+        let eid = split(&mut topo, 5.5, 1.0);
+        assert_eq!(topo.edge(eid).unwrap().trim(), Some((5.5, 1.0 + TAU)));
+    }
+
+    #[test]
+    fn line_sub_edges_store_no_trim() {
+        // A line re-anchors to its new vertices with domain [0, 1]; the
+        // original-edge parameters do not apply.
+        let mut topo = arc_split_fixture(0.25, 0.75, EdgeCurve::Line);
+        let eid = split(&mut topo, 0.25, 0.75);
+        assert_eq!(topo.edge(eid).unwrap().trim(), None);
+    }
 }

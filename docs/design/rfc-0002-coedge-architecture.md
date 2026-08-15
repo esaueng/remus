@@ -167,12 +167,48 @@ Exit gate: the seam face round-trips two independent p-curve branches;
 `solid_faces`-based consumers pass unchanged through the adapters; the GFA
 boolean suite, blend builders, and tessellation pass on loop-backed faces.
 
-### Stage 3 — trims and SameParameter (Issue 8)
+### Stage 3 — trims and SameParameter (Issue 8; first slice landed)
 
-Explicit 3D trim intervals on `Edge`, per-use p-curve trims and periodic
-winding on `Coedge`, and SameParameter/SameRange validators with a
-non-silent repair operation. Specified separately; this RFC only reserves
-the fields' home.
+What landed:
+
+- `Edge` stores an explicit trim interval `(t0, t1)` on its curve's
+  parameterization; `Edge::domain_with_endpoints` prefers it and falls back
+  to projection reconstruction. `set_curve` clears the trim (a trim is
+  meaningful only on the parameterization it was recorded against);
+  non-finite bounds are refused. Per-use p-curve trims already exist
+  (`PCurve::t_start`/`t_end`, per-use since Stage 2).
+- Trim writers: the GFA pave filler's split edges record the exact pave
+  parameters (angular curves unwrap seam-wrapping spans by one period;
+  `Line` sub-edges store none — a line re-anchors to its vertices); the
+  builder's NURBS/arc split chains record their cut parameters; the
+  vertex-weld remap, image canonicalization, and traversal-order rebuilds
+  carry trims forward (flipping the span with a flipped vertex order).
+- Trim carriers: solid copy, GFA store export, and the arena format
+  (additive optional field) preserve stored trims.
+- `SameParameter`/`SameRange` validators (`check_*` reporting,
+  `validate_*` enforcing) with the registry's first `tolerance_violation`
+  codes (`same_parameter_exceeded`, `same_range_exceeded`); planar faces
+  and missing p-curves pass vacuously, matching the check-crate convention.
+- Controlled repair: `heal::fix::edge::repair_pcurve_within_budget`
+  rebuilds a p-curve by projection **within a declared budget**, reports
+  deviation before/after, and rolls the original back with a typed
+  `RepairBudgetExceeded` when the budget cannot be met — never silent,
+  never committing a miss.
+
+Queued (writer migration continues incrementally):
+
+- The boolean **result-assembly** rebuild paths and the op-level
+  **analytic fast paths** construct result edges without carrying trims,
+  so result topologies do not yet expose the store-level trims (probes
+  confirm split edges inside the GFA store carry them). Migrating those
+  writers — and then switching high-traffic domain readers
+  (~168 `domain_with_endpoints` call sites) to the edge-level accessor —
+  is the follow-up, after which endpoint projection demotes to an
+  import/healing operation per RFC section 1.2.
+- Periodic winding counts on `Coedge` (multi-turn support) arrive with the
+  physical p-curve storage move.
+- The transactional wrapper (Issue 9) supplies the sanctioned-mutation
+  boundary the remaining migration assumes.
 
 ### Migration ratchet
 
