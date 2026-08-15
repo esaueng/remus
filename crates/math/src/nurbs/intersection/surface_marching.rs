@@ -4,8 +4,10 @@
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
 
+use crate::context::WorkBudgets;
+
+use super::IntersectionPoint;
 use super::surface_seeding::refine_ssi_point;
-use super::{IntersectionPoint, MAX_BRANCHES_PER_DIRECTION};
 
 /// March along an intersection curve, detecting branch points.
 ///
@@ -20,18 +22,18 @@ pub(super) fn march_with_branches(
     seed: &IntersectionPoint,
     step_size: f64,
     tolerance: f64,
+    budgets: &WorkBudgets,
 ) -> (Vec<IntersectionPoint>, Vec<IntersectionPoint>) {
-    let max_steps = 200;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // March forward, collecting branch points.
     let (forward, fwd_branches) =
-        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, max_steps);
+        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, budgets);
     branch_seeds.extend(fwd_branches);
 
     // March backward, collecting branch points.
     let (backward, bwd_branches) =
-        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, max_steps);
+        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, budgets);
     branch_seeds.extend(bwd_branches);
 
     // Combine: backward (reversed) + seed + forward.
@@ -109,16 +111,24 @@ fn march_direction_with_branches(
     forward: bool,
     step_size: f64,
     tolerance: f64,
-    max_steps: usize,
+    budgets: &WorkBudgets,
 ) -> (Vec<IntersectionPoint>, Vec<IntersectionPoint>) {
-    let traced = march_direction(s1, s2, seed, forward, step_size, tolerance, max_steps);
+    let traced = march_direction(
+        s1,
+        s2,
+        seed,
+        forward,
+        step_size,
+        tolerance,
+        budgets.march_steps,
+    );
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // Post-process: scan traced points for near-tangential locations.
     let branch_threshold = tolerance * 1000.0;
 
     for pt in &traced {
-        if branch_seeds.len() >= MAX_BRANCHES_PER_DIRECTION {
+        if branch_seeds.len() >= budgets.branches_per_direction {
             break;
         }
 

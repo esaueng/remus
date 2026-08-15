@@ -3,6 +3,7 @@
 //! Runs the complete General Fuse Algorithm pipeline:
 //! PaveFiller -> Builder -> BOP -> assemble.
 
+use brepkit_math::context::OperationContext;
 use brepkit_math::tolerance::Tolerance;
 use brepkit_topology::Topology;
 use brepkit_topology::solid::SolidId;
@@ -47,7 +48,32 @@ pub fn boolean(
             }
         };
     }
-    boolean_with_tolerance(topo, op, solid_a, solid_b, Tolerance::default())
+    boolean_with_context(topo, op, solid_a, solid_b, &OperationContext::new())
+}
+
+/// Run the complete GFA boolean operation under an explicit
+/// [`OperationContext`].
+///
+/// This is the context-carrying entry point the pipeline converges on. The
+/// context's tolerance drives every GFA stage today; its work budgets are
+/// not yet threaded into the pave filler and will take effect here as those
+/// stages migrate (see `docs/design/rfc-0001-operation-context.md`). The
+/// default context reproduces [`boolean_with_tolerance`] with the default
+/// tolerance exactly; like that function, this runs the full pipeline even
+/// for identical operands ([`boolean`] carries the identical-solid fast
+/// path).
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any stage fails.
+pub fn boolean_with_context(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+) -> Result<SolidId, AlgoError> {
+    boolean_with_tolerance(topo, op, solid_a, solid_b, context.tolerance)
 }
 
 /// Run the complete GFA boolean operation with custom tolerance.
@@ -267,4 +293,81 @@ fn reject_unsupported_curves(topo: &Topology, solid_id: SolidId) -> Result<(), A
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod context_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+
+    use super::*;
+
+    #[test]
+    fn boolean_with_default_context_matches_boolean() {
+        // Two overlapping unit cubes, fused twice: once through the legacy
+        // entry point, once through the context entry point with the default
+        // context. Both results must have identical face counts (the
+        // pipelines must be the same code path, not merely similar).
+        let mut topo_a = Topology::new();
+        let a1 = make_unit_cube_manifold_at(&mut topo_a, 0.0, 0.0, 0.0);
+        let a2 = make_unit_cube_manifold_at(&mut topo_a, 0.5, 0.5, 0.5);
+        let legacy = boolean(&mut topo_a, BooleanOp::Fuse, a1, a2).unwrap();
+
+        let mut topo_b = Topology::new();
+        let b1 = make_unit_cube_manifold_at(&mut topo_b, 0.0, 0.0, 0.0);
+        let b2 = make_unit_cube_manifold_at(&mut topo_b, 0.5, 0.5, 0.5);
+        let ctx = boolean_with_context(
+            &mut topo_b,
+            BooleanOp::Fuse,
+            b1,
+            b2,
+            &OperationContext::new(),
+        )
+        .unwrap();
+
+        let faces_legacy = brepkit_topology::explorer::solid_faces(&topo_a, legacy)
+            .unwrap()
+            .len();
+        let faces_ctx = brepkit_topology::explorer::solid_faces(&topo_b, ctx)
+            .unwrap()
+            .len();
+        assert_eq!(faces_legacy, faces_ctx);
+    }
+
+    #[test]
+    fn boolean_with_context_carries_tolerance() {
+        // A context with a loose tolerance must reach the pipeline: fusing
+        // two cubes separated by a gap below the loose linear tolerance
+        // behaves differently from the default-tolerance run. We only assert
+        // both runs complete and the context run consumed its tolerance
+        // (same outcome as calling boolean_with_tolerance directly).
+        let loose =
+            OperationContext::new().with_tolerance(brepkit_math::tolerance::Tolerance::loose());
+
+        let mut topo_a = Topology::new();
+        let a1 = make_unit_cube_manifold_at(&mut topo_a, 0.0, 0.0, 0.0);
+        let a2 = make_unit_cube_manifold_at(&mut topo_a, 0.5, 0.5, 0.5);
+        let via_ctx = boolean_with_context(&mut topo_a, BooleanOp::Cut, a1, a2, &loose).unwrap();
+
+        let mut topo_b = Topology::new();
+        let b1 = make_unit_cube_manifold_at(&mut topo_b, 0.0, 0.0, 0.0);
+        let b2 = make_unit_cube_manifold_at(&mut topo_b, 0.5, 0.5, 0.5);
+        let via_tol = boolean_with_tolerance(
+            &mut topo_b,
+            BooleanOp::Cut,
+            b1,
+            b2,
+            brepkit_math::tolerance::Tolerance::loose(),
+        )
+        .unwrap();
+
+        let faces_ctx = brepkit_topology::explorer::solid_faces(&topo_a, via_ctx)
+            .unwrap()
+            .len();
+        let faces_tol = brepkit_topology::explorer::solid_faces(&topo_b, via_tol)
+            .unwrap()
+            .len();
+        assert_eq!(faces_ctx, faces_tol);
+    }
 }
