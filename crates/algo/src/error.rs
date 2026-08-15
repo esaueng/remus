@@ -45,3 +45,75 @@ pub enum AlgoError {
         variant: &'static str,
     },
 }
+
+impl brepkit_math::diagnostic::ToDiagnostic for AlgoError {
+    fn diagnostic(&self) -> brepkit_math::diagnostic::Diagnostic {
+        use brepkit_math::diagnostic::{Diagnostic, FailureCategory};
+        match self {
+            // Wrapper variants delegate: one failure, one code, regardless
+            // of which layer reports it.
+            Self::Topology(inner) => inner.diagnostic(),
+            Self::Math(inner) => inner.diagnostic(),
+            // Transitional broad codes: these variants carry only prose, so
+            // they classify as `internal` until typed context exists
+            // (registry rules in `brepkit_math::diagnostic`).
+            Self::IntersectionFailed(_) => Diagnostic::new(
+                FailureCategory::Internal,
+                "intersection_failed",
+                self.to_string(),
+            ),
+            Self::FaceSplitFailed(_) => Diagnostic::new(
+                FailureCategory::Internal,
+                "face_split_failed",
+                self.to_string(),
+            ),
+            Self::AssemblyFailed(_) => Diagnostic::new(
+                FailureCategory::Internal,
+                "assembly_failed",
+                self.to_string(),
+            ),
+            Self::ClassificationFailed(_) => Diagnostic::new(
+                FailureCategory::Internal,
+                "classification_failed",
+                self.to_string(),
+            ),
+            Self::UnsupportedCurve { variant } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_edge_curve",
+                self.to_string(),
+            )
+            .with_detail("curveType", *variant),
+        }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_registry_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+
+    use super::*;
+
+    #[test]
+    fn algo_error_registry_is_pinned() {
+        let d = AlgoError::UnsupportedCurve {
+            variant: "hyperbola",
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_edge_curve");
+
+        let d = AlgoError::AssemblyFailed("open shell".into()).diagnostic();
+        assert_eq!(d.category(), FailureCategory::Internal);
+        assert_eq!(d.code(), "assembly_failed");
+    }
+
+    #[test]
+    fn wrapped_errors_delegate_to_the_inner_registry() {
+        let d = AlgoError::Math(brepkit_math::MathError::ConvergenceFailure { iterations: 20 })
+            .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Nonconvergence);
+        assert_eq!(d.code(), "newton_nonconvergence");
+    }
+}
