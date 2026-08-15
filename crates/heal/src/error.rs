@@ -23,6 +23,16 @@ pub enum HealError {
     #[error("fix failed: {0}")]
     FixFailed(String),
 
+    /// A controlled repair could not meet its declared error budget; the
+    /// original data was restored.
+    #[error("repair achieved deviation {achieved} but the budget is {budget}")]
+    RepairBudgetExceeded {
+        /// The deviation the repair achieved.
+        achieved: f64,
+        /// The declared budget it had to meet.
+        budget: f64,
+    },
+
     /// An upgrade operation could not be applied.
     #[error("upgrade failed: {0}")]
     UpgradeFailed(String),

@@ -194,6 +194,11 @@ pub struct Edge {
     /// Optional edge-specific tolerance. When `None`, the edge inherits the
     /// tolerance from its bounding vertices.
     tolerance: Option<f64>,
+    /// Explicit trim interval `(t0, t1)` on the curve's parameterization
+    /// (RFC 0002, Stage 3). When present, this — not endpoint projection —
+    /// is the edge's parameter domain. A reversed span (`t0 > t1`) traces
+    /// start → end, matching the open-curve projection convention.
+    trim: Option<(f64, f64)>,
 }
 
 impl Edge {
@@ -208,6 +213,7 @@ impl Edge {
             end,
             curve,
             tolerance: None,
+            trim: None,
         }
     }
 
@@ -227,6 +233,7 @@ impl Edge {
             end,
             curve,
             tolerance: tol,
+            trim: None,
         }
     }
 
@@ -265,8 +272,43 @@ impl Edge {
     }
 
     /// Sets the curve geometry of this edge.
+    ///
+    /// Clears any stored trim interval: a trim is meaningful only on the
+    /// parameterization it was recorded against.
     pub fn set_curve(&mut self, curve: EdgeCurve) {
         self.curve = curve;
+        self.trim = None;
+    }
+
+    /// The explicit trim interval on the curve's parameterization, when one
+    /// is stored.
+    #[must_use]
+    pub const fn trim(&self) -> Option<(f64, f64)> {
+        self.trim
+    }
+
+    /// Stores (or clears) the explicit trim interval.
+    ///
+    /// Callers that know the exact sub-span of a shared or split curve —
+    /// e.g. the boolean pave filler, which has the pave parameters in hand —
+    /// record it here so the domain never has to be reconstructed by
+    /// endpoint projection. Non-finite bounds are ignored (`None` stored).
+    pub fn set_trim(&mut self, trim: Option<(f64, f64)>) {
+        self.trim = trim.filter(|(t0, t1)| t0.is_finite() && t1.is_finite());
+    }
+
+    /// The edge's parameter domain: the stored trim when present, otherwise
+    /// reconstructed from the endpoints via
+    /// [`EdgeCurve::domain_with_endpoints`].
+    ///
+    /// This is the preferred domain accessor (RFC 0002, Stage 3): explicit
+    /// trims are exact where projection-based reconstruction depends on
+    /// tolerance bands and can mistake a sub-span edge for a whole-curve
+    /// edge when split vertices sit off the fitted curve.
+    #[must_use]
+    pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
+        self.trim
+            .unwrap_or_else(|| self.curve.domain_with_endpoints(start, end))
     }
 
     /// Returns the edge-specific tolerance, or `None` if the edge inherits
@@ -568,5 +610,101 @@ mod conic_domain_tests {
         .unwrap();
         assert_eq!(EdgeCurve::Hyperbola(h).type_tag(), "hyperbola");
         assert_eq!(EdgeCurve::Parabola(p).type_tag(), "parabola");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod trim_tests {
+    use brepkit_math::traits::ParametricCurve;
+    use brepkit_math::vec::{Point3, Vec3};
+
+    use super::*;
+    use crate::arena::Arena;
+    use crate::vertex::Vertex;
+
+    fn vertices(a: Point3, b: Point3) -> (VertexId, VertexId) {
+        let mut arena: Arena<Vertex> = Arena::new();
+        (
+            arena.alloc(Vertex::new(a, 1e-7)),
+            arena.alloc(Vertex::new(b, 1e-7)),
+        )
+    }
+
+    fn fitted_open_nurbs() -> NurbsCurve {
+        let pts = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(2.0, 1.5, 0.0),
+            Point3::new(3.0, 1.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+        ];
+        brepkit_math::nurbs::fitting::interpolate(&pts, 3).unwrap()
+    }
+
+    #[test]
+    fn stored_trim_wins_over_projection() {
+        let n = fitted_open_nurbs();
+        let (d0, d1) = ParametricCurve::domain(&n);
+        let (ta, tb) = (d0 + 0.25 * (d1 - d0), d0 + 0.7 * (d1 - d0));
+        let pa = ParametricCurve::evaluate(&n, ta);
+        let pb = ParametricCurve::evaluate(&n, tb);
+        let (v0, v1) = vertices(pa, pb);
+
+        let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(n));
+        edge.set_trim(Some((ta, tb)));
+        let (t0, t1) = edge.domain_with_endpoints(pa, pb);
+        assert!((t0 - ta).abs() < f64::EPSILON && (t1 - tb).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stored_trim_survives_where_projection_reconstruction_fails() {
+        // The failure mode explicit trims exist to kill: a sub-span edge
+        // whose split vertices sit further off the fitted curve than the
+        // projection weld band (1e-5). Reconstruction cannot validate the
+        // sub-span and silently falls back to the FULL domain — sampling
+        // the whole shared curve instead of the edge's own piece. The
+        // stored trim is exact regardless.
+        let n = fitted_open_nurbs();
+        let (d0, d1) = ParametricCurve::domain(&n);
+        let (ta, tb) = (d0 + 0.25 * (d1 - d0), d0 + 0.7 * (d1 - d0));
+        let off = Vec3::new(0.0, 0.0, 1.0) * 1e-3; // >> weld band
+        let pa = ParametricCurve::evaluate(&n, ta) + off;
+        let pb = ParametricCurve::evaluate(&n, tb) + off;
+        let (v0, v1) = vertices(pa, pb);
+
+        // Without a trim: legacy fallback to the full knot span.
+        let bare = Edge::new(v0, v1, EdgeCurve::NurbsCurve(n.clone()));
+        let (f0, f1) = bare.domain_with_endpoints(pa, pb);
+        assert!(
+            (f0 - d0).abs() < f64::EPSILON && (f1 - d1).abs() < f64::EPSILON,
+            "characterizes the legacy fallback this test exists to beat"
+        );
+
+        // With the trim the exact sub-span survives.
+        let mut trimmed = Edge::new(v0, v1, EdgeCurve::NurbsCurve(n));
+        trimmed.set_trim(Some((ta, tb)));
+        let (t0, t1) = trimmed.domain_with_endpoints(pa, pb);
+        assert!((t0 - ta).abs() < f64::EPSILON && (t1 - tb).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn set_curve_clears_the_trim() {
+        let (v0, v1) = vertices(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let mut edge = Edge::new(v0, v1, EdgeCurve::Line);
+        edge.set_trim(Some((0.2, 0.8)));
+        assert_eq!(edge.trim(), Some((0.2, 0.8)));
+        edge.set_curve(EdgeCurve::Line);
+        assert_eq!(edge.trim(), None, "a trim is meaningless on a new curve");
+    }
+
+    #[test]
+    fn non_finite_trims_are_refused() {
+        let (v0, v1) = vertices(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let mut edge = Edge::new(v0, v1, EdgeCurve::Line);
+        edge.set_trim(Some((f64::NAN, 1.0)));
+        assert_eq!(edge.trim(), None);
+        edge.set_trim(Some((0.0, f64::INFINITY)));
+        assert_eq!(edge.trim(), None);
     }
 }
