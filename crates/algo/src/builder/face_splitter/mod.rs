@@ -959,9 +959,6 @@ fn split_loop_at_pinch_vertices(
     wire: &[OrientedPCurveEdge],
     tol: f64,
 ) -> Vec<Vec<OrientedPCurveEdge>> {
-    if wire.len() < 4 {
-        return vec![wire.to_vec()];
-    }
     let qscale = 1.0 / tol.max(1e-12);
     #[allow(clippy::cast_possible_truncation)]
     let qkey = |p: brepkit_math::vec::Point2| -> (i64, i64) {
@@ -970,37 +967,44 @@ fn split_loop_at_pinch_vertices(
             (p.y() * qscale).round() as i64,
         )
     };
-    let mut seen: std::collections::HashMap<(i64, i64), usize> = std::collections::HashMap::new();
-    let mut pinch: Option<(usize, usize)> = None;
-    for (i, e) in wire.iter().enumerate() {
-        if let Some(&j) = seen.get(&qkey(e.start_uv)) {
-            pinch = Some((j, i));
-            break;
+    let mut pending = vec![wire.to_vec()];
+    let mut out = Vec::new();
+    while let Some(lp) = pending.pop() {
+        if lp.len() < 4 {
+            out.push(lp);
+            continue;
         }
-        seen.insert(qkey(e.start_uv), i);
+        let mut seen: std::collections::HashMap<(i64, i64), usize> =
+            std::collections::HashMap::new();
+        let mut pinch: Option<(usize, usize)> = None;
+        for (i, edge) in lp.iter().enumerate() {
+            if let Some(&j) = seen.get(&qkey(edge.start_uv)) {
+                pinch = Some((j, i));
+                break;
+            }
+            seen.insert(qkey(edge.start_uv), i);
+        }
+        let Some((j, i)) = pinch else {
+            out.push(lp);
+            continue;
+        };
+        let sub = lp[j..i].to_vec();
+        let mut rest = lp[..j].to_vec();
+        rest.extend_from_slice(&lp[i..]);
+        for candidate in [rest, sub] {
+            if candidate.is_empty() {
+                continue;
+            }
+            let pts = sample_wire_loop_uv(&candidate);
+            let mut perimeter: f64 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
+            if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+                perimeter += (*last - *first).length();
+            }
+            if signed_area_2d(&pts).abs() > perimeter * tol {
+                pending.push(candidate);
+            }
+        }
     }
-    let Some((j, i)) = pinch else {
-        return vec![wire.to_vec()];
-    };
-    let sub: Vec<OrientedPCurveEdge> = wire[j..i].to_vec();
-    let mut rest: Vec<OrientedPCurveEdge> = wire[..j].to_vec();
-    rest.extend_from_slice(&wire[i..]);
-    let keep = |lp: Vec<OrientedPCurveEdge>| -> Vec<Vec<OrientedPCurveEdge>> {
-        if lp.is_empty() {
-            return Vec::new();
-        }
-        let pts = sample_wire_loop_uv(&lp);
-        let mut perimeter: f64 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
-        if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
-            perimeter += (*last - *first).length();
-        }
-        if signed_area_2d(&pts).abs() <= perimeter * tol {
-            return Vec::new(); // out-and-back remnant
-        }
-        split_loop_at_pinch_vertices(&lp, tol)
-    };
-    let mut out = keep(sub);
-    out.extend(keep(rest));
     out
 }
 
@@ -2385,6 +2389,7 @@ fn arrangement_regions_from_inputs(
     // welds. So: input endpoints register FIRST (ground truth), and every
     // later point within the snap band adopts the earliest registered vertex
     // via a coarse hash (first-wins).
+    let endpoint_band = tol * 100.0;
     let snap_band = tol * 1000.0;
     let ckey = |p: Point2| -> (i64, i64) {
         (
@@ -2394,28 +2399,50 @@ fn arrangement_regions_from_inputs(
     };
     let mut vert_pos: std::collections::HashMap<(i64, i64), Point2> =
         std::collections::HashMap::new();
-    let mut coarse: std::collections::HashMap<(i64, i64), Point2> =
+    let mut coarse: std::collections::HashMap<(i64, i64), Vec<Point2>> =
         std::collections::HashMap::new();
-    let mut register =
-        |p: Point2, map: &mut std::collections::HashMap<(i64, i64), Point2>| -> (i64, i64) {
-            let (cx, cy) = ckey(p);
-            let mut adopted: Option<(f64, Point2)> = None;
-            for dx in -1..=1_i64 {
-                for dy in -1..=1_i64 {
-                    if let Some(&q) = coarse.get(&(cx + dx, cy + dy)) {
-                        let d = (q - p).length();
-                        if d <= snap_band && adopted.is_none_or(|(bd, _)| d < bd) {
-                            adopted = Some((d, q));
-                        }
+    let mut endpoint_keys: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    let mut register = |p: Point2,
+                        map: &mut std::collections::HashMap<(i64, i64), Point2>,
+                        endpoints: &std::collections::HashSet<(i64, i64)>,
+                        allow_computed_weld: bool,
+                        wide_endpoint_targets: &[(i64, i64)]|
+     -> (i64, i64) {
+        let (cx, cy) = ckey(p);
+        let mut adopted: Option<(f64, Point2)> = None;
+        for dx in -1..=1_i64 {
+            for dy in -1..=1_i64 {
+                for &q in coarse.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                    let d = (q - p).length();
+                    // Operand/section endpoints are exact modeling
+                    // features and only weld in the narrow endpoint band.
+                    // The wider band is reserved for independently
+                    // computed crossing copies, whose conditioning error
+                    // can exceed the vertex tolerance.
+                    let target_key = qkey(q);
+                    let band = if allow_computed_weld
+                        && (!endpoints.contains(&target_key)
+                            || wide_endpoint_targets.contains(&target_key))
+                    {
+                        snap_band
+                    } else {
+                        endpoint_band
+                    };
+                    if d <= band && adopted.is_none_or(|(bd, _)| d < bd) {
+                        adopted = Some((d, q));
                     }
                 }
             }
-            let p = adopted.map_or(p, |(_, q)| q);
-            let k = qkey(p);
-            map.entry(k).or_insert(p);
-            coarse.entry(ckey(p)).or_insert(p);
-            k
-        };
+        }
+        let p = adopted.map_or(p, |(_, q)| q);
+        let k = qkey(p);
+        map.entry(k).or_insert(p);
+        let cell = coarse.entry(ckey(p)).or_default();
+        if cell.iter().all(|&q| (q - p).length() > tol) {
+            cell.push(p);
+        }
+        k
+    };
     // Exact 3D per registered input-endpoint vertex. The generic emission
     // reconstructs 3D as frame.evaluate(uv), which PROJECTS the point onto
     // the stored plane — but an operand's facet-chain vertex can sit ~1e-5
@@ -2425,11 +2452,15 @@ fn arrangement_regions_from_inputs(
     // win over section endpoints at the same vertex.
     let mut exact3d: std::collections::HashMap<(i64, i64), Point3> =
         std::collections::HashMap::new();
+    let mut input_endpoint_keys = Vec::with_capacity(inputs.len());
     for inp in &inputs {
-        let ka = register(inp.a, &mut vert_pos);
+        let ka = register(inp.a, &mut vert_pos, &endpoint_keys, false, &[]);
+        endpoint_keys.insert(ka);
         exact3d.entry(ka).or_insert(inp.edge.start_3d);
-        let kb = register(inp.b, &mut vert_pos);
+        let kb = register(inp.b, &mut vert_pos, &endpoint_keys, false, &[]);
+        endpoint_keys.insert(kb);
         exact3d.entry(kb).or_insert(inp.edge.end_3d);
+        input_endpoint_keys.push([ka, kb]);
     }
 
     // True when a UV point lies on input `idx`'s actual arc geometry (within
@@ -2505,6 +2536,40 @@ fn arrangement_regions_from_inputs(
             })
         })
         .collect();
+    for i in 0..inputs.len() {
+        let Some(poly_i) = &arc_polys[i] else {
+            continue;
+        };
+        for (j, poly_j) in arc_polys.iter().enumerate().skip(i + 1) {
+            let Some(poly_j) = poly_j else {
+                continue;
+            };
+            let same_circle_locus = match (&inputs[i].edge.curve_3d, &inputs[j].edge.curve_3d) {
+                (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
+                    (a.center() - b.center()).length() <= tol
+                        && (a.radius() - b.radius()).abs() <= tol
+                        && a.normal().cross(b.normal()).length() <= 1e-9
+                }
+                _ => false,
+            };
+            if same_circle_locus {
+                // Distinct trims of one analytic circle can overlap or meet,
+                // but they cannot cross transversely. The arrangement already
+                // resolves coincident-carrier pieces; this preflight is only
+                // for a true curved-carrier crossing that chord subdivision
+                // cannot represent safely.
+                continue;
+            }
+            if poly_i.iter().zip(poly_i.iter().skip(1)).any(|(a, b)| {
+                poly_j.iter().zip(poly_j.iter().skip(1)).any(|(c, d)| {
+                    seg_cross_param(a.1, b.1, c.1, d.1).is_some()
+                        || seg_cross_param(c.1, d.1, a.1, b.1).is_some()
+                })
+            }) {
+                return None;
+            }
+        }
+    }
     // True crossings of the segment (la, lb) with arc input `ai`, refined by
     // bisection on the arc's native parameter against the segment's line.
     // Returns the exact crossing UVs.
@@ -2623,7 +2688,7 @@ fn arrangement_regions_from_inputs(
                         ts.push((t, None));
                     }
                 }
-                (false, true) if other.is_section => {
+                (false, true) => {
                     // True crossings replace the chord-derived point when one
                     // is found within the arc's sagitta of it; a chord
                     // crossing with NO nearby true
@@ -2658,7 +2723,7 @@ fn arrangement_regions_from_inputs(
                         ts.push((ct, None));
                     }
                 }
-                (true, false) if inputs[i].is_section => {
+                (true, false) => {
                     let cover = arc_sagitta(i) + tol * 100.0;
                     let truex = line_arc_crossings(b0, b1, i);
                     let mut covered_chord = false;
@@ -2740,8 +2805,20 @@ fn arrangement_regions_from_inputs(
             }
             let pa = w[0].1.unwrap_or(a0 + d * ta);
             let pb = w[1].1.unwrap_or(a0 + d * tb);
-            let ka = register(pa, &mut vert_pos);
-            let kb = register(pb, &mut vert_pos);
+            let ka = register(
+                pa,
+                &mut vert_pos,
+                &endpoint_keys,
+                true,
+                &input_endpoint_keys[i],
+            );
+            let kb = register(
+                pb,
+                &mut vert_pos,
+                &endpoint_keys,
+                true,
+                &input_endpoint_keys[i],
+            );
             // Whole = this is the only sub-segment of the input (no interior
             // breaks): exactly one window spanning [0,1].
             let whole = n_breaks == 2 && wi == 0;
@@ -2909,6 +2986,9 @@ fn arrangement_regions_from_inputs(
         .map(|(_, f)| f)
         .collect();
     if interior.is_empty() {
+        return None;
+    }
+    if even_odd_nesting && (inputs.len() > 512 || interior.len() > 512) {
         return None;
     }
 
@@ -4652,7 +4732,7 @@ fn split_face_2d_impl(
             if is_plane { Some(frame) } else { None },
             edge_images,
             &section_anchor_pts,
-            is_plane,
+            tol.linear,
         )
     } else {
         boundary_edges_to_pcurve(topo, face.outer_wire(), &surface, &wire_pts, None)
@@ -5112,7 +5192,16 @@ fn split_face_2d_impl(
             && sections.iter().all(|s| {
                 (s.start - s.end).length() < tol.linear // closed curve
             });
-        if all_closed && plane_closed_loops_separate(sections, frame) {
+        if all_closed
+            && (sections.len() == 1
+                || plane_closed_loops_separate(
+                    sections,
+                    frame,
+                    &boundary_edges,
+                    &original_inner_wires,
+                    tol.linear,
+                ))
+        {
             true
         } else {
             deduped_line_loops =
@@ -5203,7 +5292,18 @@ fn split_face_2d_impl(
     let mut split_pts_3d: Vec<Point3> = sections.iter().flat_map(|s| [s.start, s.end]).collect();
     split_pts_3d.append(&mut outer_clip_anchors);
     if !is_plane && let Some(reg) = split_registry.as_deref_mut() {
-        split_pts_3d.extend(reg.values().flatten().copied());
+        // Only consume anchors belonging to section curves on this face.  The
+        // registry spans the whole boolean; flattening it here made every
+        // curved face probe every earlier anchor against every NURBS boundary.
+        let pave_blocks: std::collections::HashSet<_> =
+            sections.iter().filter_map(|s| s.pave_block_id).collect();
+        split_pts_3d.extend(
+            pave_blocks
+                .into_iter()
+                .filter_map(|pb_id| reg.get(&pb_id))
+                .flatten()
+                .copied(),
+        );
     }
 
     // For periodic faces, align closed boundary edge UV with seam edge UV.
@@ -5956,8 +6056,9 @@ fn split_face_2d_impl(
     if is_plane && original_inner_wires.is_empty() {
         use brepkit_math::curves2d::{Curve2D, Line2D};
         use brepkit_math::vec::Vec2;
-        const BRIDGE_BAND: f64 = 3e-3;
         let weld = tol.linear * 100.0;
+        let bridge_band = conversion::reconciliation_band(&wire_pts, weld);
+        let isolation_band = conversion::reconciliation_band(&wire_pts, 0.0);
         let n_all = all_edges.len();
         let mut bridges: Vec<OrientedPCurveEdge> = Vec::new();
         let mut pendants: Vec<(Point3, Point2, Point3)> = Vec::new();
@@ -6031,7 +6132,10 @@ fn split_face_2d_impl(
                     })
                 };
                 let boundary_bridge = best.is_some_and(|(d, b3, _)| {
-                    d > weld && d <= BRIDGE_BAND && second >= 1e-2 && !target_in_sections(b3)
+                    d > weld
+                        && d <= bridge_band
+                        && second >= isolation_band
+                        && !target_in_sections(b3)
                 });
                 if !boundary_bridge {
                     pendants.push((p3, puv, own_other));
@@ -6101,7 +6205,7 @@ fn split_face_2d_impl(
             }
             let Some((d, j)) = best_j else { continue };
             let (pj, uvj, own_j) = pendants[j];
-            if d <= weld || d > BRIDGE_BAND || second < 1e-2 {
+            if d <= weld || d > bridge_band || second < isolation_band {
                 continue;
             }
             let mutual = pendants
@@ -6502,6 +6606,7 @@ fn split_face_2d_impl(
     if u_periodic
         && !v_periodic
         && !sections.is_empty()
+        && original_inner_wires.is_empty()
         && (matches!(&surface, FaceSurface::Cylinder(_)) && (greedy_broken || ring_duplicated)
             || matches!(&surface, FaceSurface::Cone(_)) && ring_duplicated)
     {
@@ -6889,7 +6994,7 @@ fn split_face_2d_impl(
     // gridfinity_d4_full_1x1_bin). The first-vertex probe lands those loops in
     // the surrounding region, threading their edges through the rebuild.
     let qscale = 1.0 / tol.linear;
-    let loop_key = move |wl: &[OrientedPCurveEdge]| -> Vec<QKey3> {
+    let loop_key = move |wl: &[OrientedPCurveEdge]| -> Vec<(u8, QKey3, (i64, i64, i64))> {
         let q = |p: Point3| -> (i64, i64, i64) {
             (
                 (p.x() * qscale).round() as i64,
@@ -6901,7 +7006,17 @@ fn split_face_2d_impl(
             .iter()
             .map(|e| {
                 let (a, b) = (q(e.start_3d), q(e.end_3d));
-                if a <= b { (a, b) } else { (b, a) }
+                let endpoints = if a <= b { (a, b) } else { (b, a) };
+                let tag = match e.curve_3d {
+                    EdgeCurve::Line => 0,
+                    EdgeCurve::Circle(_) => 1,
+                    EdgeCurve::Ellipse(_) => 2,
+                    EdgeCurve::NurbsCurve(_) => 3,
+                    EdgeCurve::Hyperbola(_) => 4,
+                    EdgeCurve::Parabola(_) => 5,
+                };
+                let midpoint = q(evaluate_edge_at_t(&e.curve_3d, e.start_3d, e.end_3d, 0.5));
+                (tag, endpoints, midpoint)
             })
             .collect();
         keys.sort_unstable();
@@ -7271,32 +7386,154 @@ pub fn interior_point_3d(sub_face: &SplitSubFace, frame: Option<&PlaneFrame>) ->
 /// face frame and compared by 2D bounding box. Disjoint boxes prove disjoint
 /// discs; anything closer falls through to the generic path unchanged. A
 /// single loop passes vacuously, which is the behaviour this gate replaced.
-fn plane_closed_loops_separate(sections: &[SectionEdge], frame: &PlaneFrame) -> bool {
-    const SAMPLES: usize = 24;
+fn plane_closed_loops_separate(
+    sections: &[SectionEdge],
+    frame: &PlaneFrame,
+    boundary: &[OrientedPCurveEdge],
+    inner_wires: &[Vec<OrientedPCurveEdge>],
+    tol: f64,
+) -> bool {
+    type Bounds = (f64, f64, f64, f64);
 
-    // (min_u, max_u, min_v, max_v) per section outline.
-    let boxes: Vec<(f64, f64, f64, f64)> = sections
+    let point_bounds = |points: &[Point3]| -> Option<Bounds> {
+        let mut bounds = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for &point in points {
+            let uv = frame.project(point);
+            bounds.0 = bounds.0.min(uv.x());
+            bounds.1 = bounds.1.max(uv.x());
+            bounds.2 = bounds.2.min(uv.y());
+            bounds.3 = bounds.3.max(uv.y());
+        }
+        bounds.0.is_finite().then_some(bounds)
+    };
+    let analytic_bounds = |curve: &EdgeCurve| -> Option<Bounds> {
+        let (center, u, v, a, b) = match curve {
+            EdgeCurve::Circle(circle) => (
+                circle.center(),
+                circle.u_axis(),
+                circle.v_axis(),
+                circle.radius(),
+                circle.radius(),
+            ),
+            EdgeCurve::Ellipse(ellipse) => (
+                ellipse.center(),
+                ellipse.u_axis(),
+                ellipse.v_axis(),
+                ellipse.semi_major(),
+                ellipse.semi_minor(),
+            ),
+            _ => return None,
+        };
+        let center = frame.project(center);
+        let extent = |axis: Vec3| (a * u.dot(axis)).hypot(b * v.dot(axis));
+        let du = extent(frame.u_axis());
+        let dv = extent(frame.v_axis());
+        Some((
+            center.x() - du,
+            center.x() + du,
+            center.y() - dv,
+            center.y() + dv,
+        ))
+    };
+    let union = |a: Bounds, b: Bounds| -> Bounds {
+        (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3))
+    };
+    let edge_bounds = |edge: &OrientedPCurveEdge| -> Option<Bounds> {
+        match &edge.curve_3d {
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => analytic_bounds(&edge.curve_3d),
+            EdgeCurve::NurbsCurve(curve) => point_bounds(curve.control_points()),
+            EdgeCurve::Line => point_bounds(&[edge.start_3d, edge.end_3d]),
+            EdgeCurve::Hyperbola(curve) => point_bounds(&[
+                edge.start_3d,
+                edge.end_3d,
+                curve
+                    .tangent_intersection(curve.project(edge.start_3d), curve.project(edge.end_3d)),
+            ]),
+            EdgeCurve::Parabola(curve) => point_bounds(&[
+                edge.start_3d,
+                edge.end_3d,
+                curve
+                    .tangent_intersection(curve.project(edge.start_3d), curve.project(edge.end_3d)),
+            ]),
+        }
+    };
+
+    // Multiple-loop shortcut is limited to closed analytic conics whose exact
+    // projected bounds are available. Sampled/NURBS bounds are insufficient
+    // to prove separation.
+    let Some(boxes): Option<Vec<Bounds>> = sections
         .iter()
-        .map(|s| {
-            let mut bb = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-            for k in 0..SAMPLES {
-                #[allow(clippy::cast_precision_loss)]
-                let t = k as f64 / SAMPLES as f64;
-                let uv = frame.project(evaluate_edge_at_t(&s.curve_3d, s.start, s.end, t));
-                bb.0 = bb.0.min(uv.x());
-                bb.1 = bb.1.max(uv.x());
-                bb.2 = bb.2.min(uv.y());
-                bb.3 = bb.3.max(uv.y());
-            }
-            bb
+        .map(|section| analytic_bounds(&section.curve_3d))
+        .collect()
+    else {
+        return false;
+    };
+
+    let outer = sample_wire_loop_uv(boundary);
+    if outer.len() < 3 {
+        return false;
+    }
+    let mut turn = 0.0_f64;
+    for index in 0..outer.len() {
+        let a = outer[(index + 1) % outer.len()] - outer[index];
+        let b = outer[(index + 2) % outer.len()] - outer[(index + 1) % outer.len()];
+        let cross = a.x() * b.y() - a.y() * b.x();
+        if cross.abs() <= tol * tol {
+            continue;
+        }
+        if turn * cross < 0.0 {
+            return false;
+        }
+        turn = cross.signum();
+    }
+    if turn == 0.0 {
+        return false;
+    }
+
+    let hole_boxes: Option<Vec<Bounds>> = inner_wires
+        .iter()
+        .map(|wire| {
+            wire.iter()
+                .filter_map(&edge_bounds)
+                .reduce(union)
+                .filter(|_| wire.iter().all(|edge| edge_bounds(edge).is_some()))
         })
         .collect();
-
-    boxes.iter().enumerate().all(|(i, a)| {
-        boxes[i + 1..]
+    let Some(hole_boxes) = hole_boxes else {
+        return false;
+    };
+    let overlaps = |a: Bounds, b: Bounds| {
+        a.1 + tol >= b.0 && b.1 + tol >= a.0 && a.3 + tol >= b.2 && b.3 + tol >= a.2
+    };
+    for (index, &bounds) in boxes.iter().enumerate() {
+        let corners = [
+            Point2::new(bounds.0, bounds.2),
+            Point2::new(bounds.0, bounds.3),
+            Point2::new(bounds.1, bounds.2),
+            Point2::new(bounds.1, bounds.3),
+        ];
+        if corners.iter().any(|&corner| {
+            !super::classify_2d::point_in_polygon_2d(corner, &outer)
+                || super::classify_2d::distance_to_polygon_boundary(corner, &outer) <= tol
+        }) {
+            return false;
+        }
+        if hole_boxes.iter().any(|&hole| overlaps(bounds, hole)) {
+            return false;
+        }
+        if boxes[index + 1..]
             .iter()
-            .all(|b| a.1 < b.0 || b.1 < a.0 || a.3 < b.2 || b.3 < a.2)
-    })
+            .any(|&other| overlaps(bounds, other))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Detect section edges (lines, open arcs, and open NURBS conics) forming
@@ -7452,6 +7689,19 @@ fn plane_internal_line_loops(
             let foot = s.start + dir * t;
             (p - foot).length() < margin
         };
+        let span = |a: i64, b: i64| -> u128 { (i128::from(b) - i128::from(a) + 1).max(0) as u128 };
+        let covered_cells = span(lo.0, hi.0)
+            .saturating_mul(span(lo.1, hi.1))
+            .saturating_mul(span(lo.2, hi.2));
+        if covered_cells > endpoints.len().saturating_mul(8) as u128 {
+            for &p in &endpoints {
+                crate::perf::bump_face_split_probe();
+                if subdivided(p) {
+                    return false;
+                }
+            }
+            return true;
+        }
         for cx in lo.0..=hi.0 {
             for cy in lo.1..=hi.1 {
                 for cz in lo.2..=hi.2 {

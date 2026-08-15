@@ -54,16 +54,6 @@ struct SolidEntities {
     shells: HashSet<ShellId>,
 }
 
-impl SolidEntities {
-    fn extend(&mut self, other: Self) {
-        self.vertices.extend(other.vertices);
-        self.edges.extend(other.edges);
-        self.wires.extend(other.wires);
-        self.faces.extend(other.faces);
-        self.shells.extend(other.shells);
-    }
-}
-
 /// Generates an immutable arena accessor method on [`Topology`].
 ///
 /// Usage: `arena_get!(method_name, arena_field, EntityType, IdType, ErrorVariant)`
@@ -139,6 +129,33 @@ impl Topology {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Total arena slots, including retired slots reserved to prevent stale
+    /// numeric handles from aliasing later entities.
+    ///
+    /// This is a lifetime high-water mark, **not** a measure of current model
+    /// size: arenas only ever append, retiring an entity just clears its
+    /// liveness bit, and a checkpoint restore re-extends each arena back to its
+    /// previous slot count. The value therefore never decreases for the life of
+    /// a `Topology`, and rises with every operation — including ones that are
+    /// rolled back. Use the per-arena `len()` accessors (`vertex_count`,
+    /// `face_count`, …) for live entity counts, and never use this as a proxy
+    /// for how much geometry a model currently holds.
+    #[must_use]
+    pub fn allocated_slot_count(&self) -> usize {
+        [
+            self.vertices.slot_len(),
+            self.edges.slot_len(),
+            self.wires.slot_len(),
+            self.faces.slot_len(),
+            self.shells.slot_len(),
+            self.solids.slot_len(),
+            self.compounds.slot_len(),
+            self.compsolids.slot_len(),
+        ]
+        .into_iter()
+        .fold(0usize, usize::saturating_add)
     }
 
     /// Restore a topology snapshot while permanently retiring arena slots
@@ -360,7 +377,7 @@ impl Topology {
         let mut retained = SolidEntities::default();
         for (other_id, _) in self.solids.iter() {
             if other_id != solid {
-                retained.extend(self.collect_solid_entities(other_id)?);
+                self.collect_solid_entities_into(other_id, &mut retained)?;
             }
         }
 
@@ -395,27 +412,44 @@ impl Topology {
     }
 
     fn collect_solid_entities(&self, solid: SolidId) -> Result<SolidEntities, TopologyError> {
-        let solid_data = self.solid(solid)?;
-        let shell_ids = std::iter::once(solid_data.outer_shell())
-            .chain(solid_data.inner_shells().iter().copied())
-            .collect::<Vec<_>>();
         let mut entities = SolidEntities::default();
+        self.collect_solid_entities_into(solid, &mut entities)?;
+        Ok(entities)
+    }
 
-        for shell_id in shell_ids {
-            entities.shells.insert(shell_id);
+    fn collect_solid_entities_into(
+        &self,
+        solid: SolidId,
+        entities: &mut SolidEntities,
+    ) -> Result<(), TopologyError> {
+        let solid_data = self.solid(solid)?;
+        for shell_id in std::iter::once(solid_data.outer_shell())
+            .chain(solid_data.inner_shells().iter().copied())
+        {
+            if !entities.shells.insert(shell_id) {
+                continue;
+            }
             let shell = self.shell(shell_id)?;
             for &face_id in shell.faces() {
-                entities.faces.insert(face_id);
+                if !entities.faces.insert(face_id) {
+                    continue;
+                }
                 let face = self.face(face_id)?;
                 for wire_id in
                     std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
                 {
-                    entities.wires.insert(wire_id);
+                    if !entities.wires.insert(wire_id) {
+                        continue;
+                    }
                     let wire = self.wire(wire_id)?;
                     for oriented_edge in wire.edges() {
                         let edge_id = oriented_edge.edge();
-                        entities.edges.insert(edge_id);
+                        if !entities.edges.insert(edge_id) {
+                            continue;
+                        }
                         let edge = self.edge(edge_id)?;
+                        self.vertex(edge.start())?;
+                        self.vertex(edge.end())?;
                         entities.vertices.insert(edge.start());
                         entities.vertices.insert(edge.end());
                     }
@@ -423,11 +457,7 @@ impl Topology {
             }
         }
 
-        for &vertex_id in &entities.vertices {
-            self.vertex(vertex_id)?;
-        }
-
-        Ok(entities)
+        Ok(())
     }
 
     /// Allocates an empty-result solid: a solid backed by a faceless
@@ -741,6 +771,31 @@ mod tests {
         assert_eq!(topo.num_vertices(), 6);
 
         topo.delete_solid(hollow).unwrap();
+        assert_eq!(topo.num_solids(), 0);
+        assert_eq!(topo.num_shells(), 0);
+        assert_eq!(topo.num_faces(), 0);
+        assert_eq!(topo.num_wires(), 0);
+        assert_eq!(topo.num_edges(), 0);
+        assert_eq!(topo.num_vertices(), 0);
+    }
+
+    #[test]
+    fn delete_solid_deduplicates_shared_and_repeated_shell_roots() {
+        let mut topo = Topology::new();
+        let (owner, face, edge) = make_triangle_solid(&mut topo, 0.0);
+        let shell = topo.solid(owner).unwrap().outer_shell();
+        let repeated = topo.add_solid(Solid::new(shell, vec![shell; 1_000]));
+        let shared = topo.add_solid(Solid::new(shell, Vec::new()));
+
+        topo.delete_solid(owner).unwrap();
+        topo.delete_solid(repeated).unwrap();
+
+        assert!(topo.solid(shared).is_ok());
+        assert!(topo.shell(shell).is_ok());
+        assert!(topo.face(face).is_ok());
+        assert!(topo.edge(edge).is_ok());
+
+        topo.delete_solid(shared).unwrap();
         assert_eq!(topo.num_solids(), 0);
         assert_eq!(topo.num_shells(), 0);
         assert_eq!(topo.num_faces(), 0);

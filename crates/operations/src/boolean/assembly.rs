@@ -5,7 +5,7 @@
 //! sharing. Post-assembly passes refine boundary edges and split non-manifold
 //! edges to ensure a valid manifold result.
 
-use brepkit_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet, DetState};
+use std::collections::{HashMap, HashSet};
 
 use brepkit_math::aabb::Aabb3;
 use brepkit_math::tolerance::Tolerance;
@@ -356,9 +356,9 @@ pub(crate) fn assemble_solid_mixed_with_history(
     );
 
     let mut vertex_map: HashMap<(i64, i64, i64), VertexId> =
-        HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
+        HashMap::with_capacity(face_specs.len() * 4);
     let mut edge_map: HashMap<(usize, usize), brepkit_topology::edge::EdgeId> =
-        HashMap::with_capacity_and_hasher(face_specs.len() * 4, DetState);
+        HashMap::with_capacity(face_specs.len() * 4);
     let mut edge_copies: HashMap<EdgeId, EdgeId> = HashMap::default();
 
     let mut face_ids = Vec::with_capacity(face_specs.len());

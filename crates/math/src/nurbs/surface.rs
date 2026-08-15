@@ -36,7 +36,9 @@ impl NurbsSurface {
     /// rows have inconsistent lengths.
     ///
     /// Returns [`MathError::InvalidKnotVector`] if either knot vector has the
-    /// wrong length for the given degree and control point count.
+    /// wrong length for the given degree and control point count, or
+    /// [`MathError::InvalidKnotValue`] if a knot is non-finite or a vector is
+    /// not non-decreasing.
     ///
     /// Returns [`MathError::InvalidWeights`] if the weights grid dimensions
     /// do not match the control point grid, or
@@ -72,6 +74,8 @@ impl NurbsSurface {
                 got: knots_u.len(),
             });
         }
+        super::validate_knot_values(&knots_u)?;
+        super::validate_knot_domain(&knots_u, degree_u, n_rows)?;
 
         let expected_knots_v = n_cols + degree_v + 1;
         if knots_v.len() != expected_knots_v {
@@ -80,6 +84,8 @@ impl NurbsSurface {
                 got: knots_v.len(),
             });
         }
+        super::validate_knot_values(&knots_v)?;
+        super::validate_knot_domain(&knots_v, degree_v, n_cols)?;
 
         // Validate weights grid dimensions.
         if weights.len() != n_rows {
@@ -576,6 +582,33 @@ mod tests {
                 Err(MathError::InvalidWeightValue { .. })
             ));
         }
+    }
+
+    #[test]
+    fn rejects_nonfinite_and_decreasing_knots() {
+        let points = vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ];
+        let make = |knots_u, knots_v| {
+            NurbsSurface::new(
+                1,
+                1,
+                knots_u,
+                knots_v,
+                points.clone(),
+                vec![vec![1.0; 2]; 2],
+            )
+        };
+
+        assert!(matches!(
+            make(vec![1.0, 1.0, 0.0, 0.0], vec![0.0, 0.0, 1.0, 1.0]),
+            Err(MathError::InvalidKnotValue { .. })
+        ));
+        assert!(matches!(
+            make(vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, f64::INFINITY, 1.0]),
+            Err(MathError::InvalidKnotValue { .. })
+        ));
     }
 
     #[test]

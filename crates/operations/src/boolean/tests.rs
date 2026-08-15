@@ -146,6 +146,26 @@ fn compound_cut_disjoint_drills_matches_sequential() {
 }
 
 #[test]
+fn compound_cut_rejects_excessive_tool_count() {
+    let mut topo = Topology::new();
+    let target = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let tool = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let tools = vec![tool; super::MAX_COMPOUND_CUT_TOOLS + 1];
+    let err = compound_cut(
+        &mut topo,
+        target,
+        &tools,
+        BooleanOptions {
+            unify_faces: false,
+            ..BooleanOptions::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("accepts at most 256 tools"));
+}
+
+#[test]
 fn compound_cut_overlapping_tools_match_union_cut_volume() {
     // Two tools that overlap EACH OTHER form ONE AABB cluster, so this exercises
     // the batched path — though the batch falls back to the sequential loop on
@@ -390,6 +410,36 @@ fn cut_disjoint_returns_a() {
 
     let result = boolean(&mut topo, BooleanOp::Cut, a, b).unwrap();
     assert_eq!(check_result(&topo, result), 6);
+}
+
+#[test]
+fn nurbs_component_is_not_provably_disjoint_from_sampled_box() {
+    use brepkit_math::nurbs::surface::NurbsSurface;
+
+    let mut topo = Topology::new();
+    let blank = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let face_id = brepkit_topology::explorer::solid_faces(&topo, blank).unwrap()[0];
+    let nurbs = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 10.0), Point3::new(1.0, 1.0, 0.0)],
+        ],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap();
+    topo.face_mut(face_id)
+        .unwrap()
+        .set_surface(FaceSurface::Nurbs(nurbs));
+
+    let tool = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 9.5);
+    assert!(
+        !solids_provably_disjoint(&topo, blank, tool, Tolerance::new().linear),
+        "a sampled NURBS AABB cannot prove that the solids are disjoint"
+    );
 }
 
 /// A two-piece accumulator whose overall box spans the tool: whole-solid
@@ -5792,6 +5842,199 @@ fn flatten_plane_normal_matches_nurbs_du_cross_dv() {
     );
 }
 
+/// A degree-1 NURBS patch over four coplanar corners, laid out `grid[i][j]`
+/// with `i` along `c00 -> c10` and `j` along `c00 -> c01`. Geometrically a
+/// plane, so `recognize_surface` accepts it — this is how a STEP import
+/// delivers a straight extruded wall.
+fn planar_nurbs_patch(
+    c00: Point3,
+    c10: Point3,
+    c01: Point3,
+    c11: Point3,
+) -> brepkit_math::nurbs::surface::NurbsSurface {
+    brepkit_math::nurbs::surface::NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![vec![c00, c01], vec![c10, c11]],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap()
+}
+
+/// A NURBS curve that is geometrically the straight segment `a -> b`, which is
+/// what `recognize_curve` reports as `Line`.
+fn straight_nurbs_curve(a: Point3, b: Point3) -> EdgeCurve {
+    EdgeCurve::NurbsCurve(
+        brepkit_math::nurbs::curve::NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![a, b],
+            vec![1.0, 1.0],
+        )
+        .unwrap(),
+    )
+}
+
+/// A one-face solid on the plane z=5, with the surface and every boundary edge
+/// supplied as NURBS. `nurbs_surface` chooses whether the face carries the
+/// planar NURBS patch or the already-analytic `Plane`.
+fn flattenable_nurbs_patch_solid(topo: &mut Topology, nurbs_surface: bool) -> SolidId {
+    use brepkit_topology::shell::Shell;
+    use brepkit_topology::solid::Solid;
+
+    let p00 = Point3::new(0.0, 0.0, 5.0);
+    let p10 = Point3::new(1.0, 0.0, 5.0);
+    let p11 = Point3::new(1.0, 1.0, 5.0);
+    let p01 = Point3::new(0.0, 1.0, 5.0);
+
+    let v00 = topo.add_vertex(Vertex::new(p00, 1e-7));
+    let v10 = topo.add_vertex(Vertex::new(p10, 1e-7));
+    let v11 = topo.add_vertex(Vertex::new(p11, 1e-7));
+    let v01 = topo.add_vertex(Vertex::new(p01, 1e-7));
+    let e0 = topo.add_edge(Edge::new(v00, v10, straight_nurbs_curve(p00, p10)));
+    let e1 = topo.add_edge(Edge::new(v10, v11, straight_nurbs_curve(p10, p11)));
+    let e2 = topo.add_edge(Edge::new(v11, v01, straight_nurbs_curve(p11, p01)));
+    let e3 = topo.add_edge(Edge::new(v01, v00, straight_nurbs_curve(p01, p00)));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e0, true),
+                OrientedEdge::new(e1, true),
+                OrientedEdge::new(e2, true),
+                OrientedEdge::new(e3, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let surface = if nurbs_surface {
+        FaceSurface::Nurbs(planar_nurbs_patch(p00, p10, p01, p11))
+    } else {
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 5.0,
+        }
+    };
+    let fid = topo.add_face(Face::new(wire, vec![], surface));
+    let shell = topo.add_shell(Shell::new(vec![fid]).unwrap());
+    topo.add_solid(Solid::new(shell, vec![]))
+}
+
+/// `boolean_inner` clones the whole arena, flattens, and recurses INTO ITSELF.
+/// Nothing but a fixpoint bounds that recursion: the recursive call re-evaluates
+/// `solid_has_flattenable_nurbs`, so the depth is finite only because
+/// `flatten_planar_nurbs_faces` clears that gate for everything it accepts. Pin
+/// the fixpoint directly — if a future tolerance or recognizer change lets the
+/// gate stay true after the pass, this fails here instead of turning an import
+/// into unbounded recursion over full arena deep-copies.
+#[test]
+fn flatten_pass_clears_the_gate_the_recursion_re_enters() {
+    let tol = Tolerance::new().linear;
+    let mut topo = Topology::new();
+    let solid = flattenable_nurbs_patch_solid(&mut topo, true);
+
+    assert!(
+        solid_has_flattenable_nurbs(&topo, solid, tol).unwrap(),
+        "planar NURBS face + straight NURBS edges must open the flatten gate"
+    );
+    assert_eq!(
+        flatten_planar_nurbs_faces(&mut topo, solid, tol).unwrap(),
+        1,
+        "the planar NURBS face should be flattened"
+    );
+    assert!(
+        !solid_has_flattenable_nurbs(&topo, solid, tol).unwrap(),
+        "flatten must clear the gate it recurses on; a still-true gate is \
+         unbounded recursion in boolean_inner"
+    );
+
+    // Idempotent: a second pass is a no-op and leaves the gate closed, so the
+    // recursion can never be re-entered from the flattened operand.
+    assert_eq!(
+        flatten_planar_nurbs_faces(&mut topo, solid, tol).unwrap(),
+        0,
+        "flatten must be idempotent"
+    );
+    assert!(!solid_has_flattenable_nurbs(&topo, solid, tol).unwrap());
+}
+
+/// The recursion guard re-checks the GATE, not the pass's return value, and this
+/// is why: `flatten_planar_nurbs_faces` counts flattened FACES only, so a solid
+/// whose sole flattenable geometry is straight NURBS EDGES reports zero changes
+/// while the gate is true. A "recurse only if the count moved" guard would drop
+/// the flatten for exactly the straight-edge case it was added to fix.
+#[test]
+fn flatten_face_count_alone_cannot_gate_the_recursion() {
+    let tol = Tolerance::new().linear;
+    let mut topo = Topology::new();
+    let solid = flattenable_nurbs_patch_solid(&mut topo, false);
+
+    assert!(
+        solid_has_flattenable_nurbs(&topo, solid, tol).unwrap(),
+        "straight NURBS edges alone must open the flatten gate"
+    );
+    assert_eq!(
+        flatten_planar_nurbs_faces(&mut topo, solid, tol).unwrap(),
+        0,
+        "no NURBS face here, so the reported face count is zero"
+    );
+    assert!(
+        !solid_has_flattenable_nurbs(&topo, solid, tol).unwrap(),
+        "the edges must still have been straightened, closing the gate"
+    );
+}
+
+/// End-to-end: a boolean whose operand carries a planar NURBS face must still
+/// take the flatten pre-pass and produce the right solid. The trip counter
+/// asserts the recursion guard stayed out of the way — a non-zero delta would
+/// mean the pre-pass was silently abandoned and the analytic recognition lost.
+#[test]
+fn boolean_over_planar_nurbs_operand_keeps_the_flatten_pre_pass() {
+    let mut topo = Topology::new();
+    let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
+
+    // Re-express the cube's top face (z=1) as the planar NURBS patch a STEP
+    // import would deliver, so the fuse routes through the flatten pre-pass.
+    let tol = Tolerance::new();
+    let top = brepkit_topology::explorer::solid_faces(&topo, a)
+        .unwrap()
+        .into_iter()
+        .find(|&fid| {
+            matches!(
+                topo.face(fid).unwrap().surface(),
+                FaceSurface::Plane { normal, d }
+                    if tol.approx_eq(normal.dot(Vec3::new(0.0, 0.0, 1.0)).abs(), 1.0)
+                        && tol.approx_eq(d.abs(), 1.0)
+            )
+        })
+        .expect("unit cube must have a z=1 plane face");
+    topo.face_mut(top)
+        .unwrap()
+        .set_surface(FaceSurface::Nurbs(planar_nurbs_patch(
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(1.0, 0.0, 1.0),
+            Point3::new(0.0, 1.0, 1.0),
+            Point3::new(1.0, 1.0, 1.0),
+        )));
+    assert!(
+        solid_has_flattenable_nurbs(&topo, a, tol.linear).unwrap(),
+        "the rewritten operand must reach the flatten pre-pass"
+    );
+
+    let trips_before = thread_flatten_guard_trips();
+    let result = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap();
+    assert_eq!(
+        thread_flatten_guard_trips(),
+        trips_before,
+        "the flatten recursion guard must not trip on geometry the pass handles"
+    );
+    // Two unit cubes overlapping by 0.5 in x.
+    assert_volume_near(&topo, result, 1.5, 1e-3);
+}
+
 /// Perforated panel (issue #987): cutting a grid of disjoint prisms through a
 /// slab leaves the slab's top/bottom faces each with N inner wires. Guards both
 /// the result's correctness (face count, volume, manifold) and — implicitly, by
@@ -6959,6 +7202,30 @@ fn nested_pieces_are_not_disjoint() {
     );
 }
 
+/// Partially overlapping closed components must not pass the multi-region
+/// acceptance guard merely because neither AABB contains the other.
+#[test]
+fn overlapping_components_are_not_disjoint() {
+    use brepkit_math::mat::Mat4;
+    use brepkit_topology::explorer::solid_faces;
+
+    let mut topo = Topology::new();
+    let a = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let b = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    crate::transform::transform_solid(&mut topo, b, &Mat4::translation(1.0, 0.0, 0.0)).unwrap();
+
+    let comps: Vec<Vec<FaceId>> = [a, b]
+        .iter()
+        .map(|&solid| solid_faces(&topo, solid).unwrap())
+        .collect();
+    assert!(super::is_closed_manifold(&topo, a).unwrap());
+    assert!(super::is_closed_manifold(&topo, b).unwrap());
+    assert!(
+        !super::components_are_disjoint_pieces(&topo, &comps),
+        "partially overlapping boxes must not count as a disjoint union"
+    );
+}
+
 /// Multi-region Euler acceptance must tolerate genus per piece.
 ///
 /// `euler_balanced` used to compare against a fixed bound of 2, i.e. it assumed
@@ -7168,8 +7435,6 @@ fn circle_outside_cone_box_fuse_is_watertight() {
 /// so fusing it must add the annulus instead of copying the target unchanged.
 #[test]
 fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
-    use std::f64::consts::PI;
-
     use brepkit_algo::classifier::try_build_analytic_classifier;
     use brepkit_math::mat::Mat4;
 
@@ -7207,14 +7472,18 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
     );
 
     let before = crate::measure::solid_volume(&topo, target, 0.05).unwrap();
+    let sleeve_volume = crate::measure::solid_volume(&topo, sleeve, 0.05).unwrap();
     let result = boolean(&mut topo, BooleanOp::Fuse, target, sleeve).unwrap();
     crate::heal::unify_faces(&mut topo, result).unwrap();
     check_result(&topo, result);
 
     let actual = crate::measure::solid_volume(&topo, result, 0.05).unwrap();
-    let expected = before + PI * (4.8_f64.powi(2) - 3.8_f64.powi(2)) * 8.0;
+    // Compare like-for-like measurements. Holed planar caps deliberately skip
+    // the unsafe analytic fast path, so both operands and the result use the
+    // same tessellated volume contract at this deflection.
+    let expected = before + sleeve_volume;
     assert!(
-        (actual - expected).abs() <= expected.abs().max(1.0) * 1e-9,
+        (actual - expected).abs() <= sleeve_volume * 5e-4,
         "annulus was not incorporated: before={before}, actual={actual}, expected={expected}"
     );
 

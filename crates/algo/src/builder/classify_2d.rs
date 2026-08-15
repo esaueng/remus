@@ -122,7 +122,21 @@ pub fn sample_interior_point(loop_pts: &[Point2]) -> Point2 {
     if let Some((pt, _)) = best {
         return pt;
     }
-    // All edge midpoints failed -- return centroid as last resort.
+    // All primary edge midpoints failed. Retry without a global-diagonal
+    // clearance threshold so thin, high-aspect regions still receive a point
+    // whose containment is actually verified.
+    for i in 0..n {
+        let a = loop_pts[i];
+        let b = loop_pts[(i + 1) % n];
+        let mid = Point2::new((a.x() + b.x()) * 0.5, (a.y() + b.y()) * 0.5);
+        let candidate = Point2::new(
+            0.75_f64.mul_add(mid.x(), centroid.x() * 0.25),
+            0.75_f64.mul_add(mid.y(), centroid.y() * 0.25),
+        );
+        if point_in_polygon_2d(candidate, loop_pts) {
+            return candidate;
+        }
+    }
     centroid
 }
 

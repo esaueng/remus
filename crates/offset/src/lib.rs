@@ -126,6 +126,8 @@ pub fn thick_solid(
         let scale = cavity::solid_extent_scale(topo, solid)?;
         let clearance = cavity::required_clearance(distance, scale, options.tolerance.linear);
         cavity::check_cavity_extents(topo, solid, clearance, cavity::Stage::Input)?;
+        let clearance_floor = options.tolerance.linear.max(scale * 1e-9);
+        cavity::check_cavity_survival(topo, solid, distance, clearance_floor)?;
     }
 
     let linear_tol = options.tolerance.linear;

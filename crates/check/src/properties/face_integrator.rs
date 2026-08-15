@@ -228,6 +228,15 @@ const DEGENERATE_UV_AREA: f64 = 1e-12;
 /// low.
 const TRIM_SAMPLES: usize = 128;
 
+/// Maximum number of UV vertices a face may contribute to trim quadrature.
+///
+/// Integration repeatedly intersects every sampled loop at every `u` split,
+/// so allowing attacker-controlled topology to grow both dimensions without a
+/// bound makes property measurement an algorithmic-complexity denial of
+/// service. This ceiling still accommodates detailed production trims while
+/// placing a hard upper bound on the superlinear portion of the work.
+const MAX_TRIM_POINTS: usize = 4096;
+
 /// The `v` extent a face's own boundary curves cover on its surface.
 ///
 /// A cylinder's and a cone's analytic domain is unbounded in `v`, so a face
@@ -482,6 +491,24 @@ where
     };
 
     let face = topo.face(face_id)?;
+    let mut trim_points = 0_usize;
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        for oriented_edge in wire.edges() {
+            let edge = topo.edge(oriented_edge.edge())?;
+            let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+                1
+            } else {
+                TRIM_SAMPLES
+            };
+            trim_points = trim_points.saturating_add(samples);
+            if trim_points > MAX_TRIM_POINTS {
+                return Err(CheckError::IntegrationFailed(format!(
+                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+                )));
+            }
+        }
+    }
     let outer = crate::util::wire_polygon_curve_sampled(
         topo,
         face.outer_wire(),
@@ -865,6 +892,9 @@ fn integrate_planar_face(
     face_id: FaceId,
     normal: Vec3,
 ) -> Result<FaceContribution, CheckError> {
+    let normal = normal.normalize().map_err(|_| {
+        CheckError::IntegrationFailed("planar face has a zero or non-finite normal".into())
+    })?;
     // Faces whose wires consist only of line and circular-arc edges take an
     // exact Green's-theorem boundary-integral path — a chord polygon
     // undercounts a circular cap by the sagitta area (~0.2% at the default

@@ -15,6 +15,12 @@ use brepkit_topology::solid::SolidId;
 
 use crate::OperationsError;
 
+/// Upper bound on the NURBS segments generated for one helix.
+///
+/// Helix parameters can cross API boundaries, so bound the work before using
+/// them to size allocations.
+const MAX_HELIX_SEGMENTS: usize = 100_000;
+
 /// Create a helical sweep of a profile face.
 ///
 /// The helix starts at the origin of the axis, spiraling around
@@ -34,7 +40,7 @@ use crate::OperationsError;
 ///
 /// Returns an error if:
 /// - `radius` or `pitch` is non-positive
-/// - `turns` is less than a quarter turn
+/// - `turns` is non-finite, less than a quarter turn, or requires too many segments
 /// - NURBS curve construction or sweep fails
 #[allow(clippy::too_many_arguments)]
 pub fn helical_sweep(
@@ -57,7 +63,7 @@ pub fn helical_sweep(
             reason: format!("helix pitch must be positive, got {pitch}"),
         });
     }
-    if turns < 0.25 {
+    if !turns.is_finite() || turns < 0.25 {
         return Err(OperationsError::InvalidInput {
             reason: format!("helix needs at least 0.25 turns, got {turns}"),
         });
@@ -105,7 +111,15 @@ pub fn make_helix_curve(
     let (u_dir, v_dir) = build_local_frame(axis);
 
     let segs_per_turn = segments_per_turn.max(4);
-    let total_segs = ((turns * segs_per_turn as f64).ceil() as usize).max(1);
+    let requested_segments = (turns * segs_per_turn as f64).ceil();
+    if !requested_segments.is_finite() || requested_segments > MAX_HELIX_SEGMENTS as f64 {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "helix requires too many segments: requested {requested_segments}, maximum is {MAX_HELIX_SEGMENTS}"
+            ),
+        });
+    }
+    let total_segs = (requested_segments as usize).max(1);
     let total_segs_f = total_segs as f64;
     let angle_per_seg = (turns * 2.0 * PI) / total_segs_f;
     let height_per_seg = (turns * pitch) / total_segs_f;
@@ -423,6 +437,39 @@ mod tests {
             0.1,
             8,
         );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn helix_rejects_non_finite_turns() {
+        let mut topo = Topology::new();
+        let profile = make_unit_square_face(&mut topo);
+
+        let result = helical_sweep(
+            &mut topo,
+            profile,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1.0,
+            f64::INFINITY,
+            8,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn helix_rejects_excessive_segment_count_before_allocation() {
+        let result = make_helix_curve(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1.0,
+            1_000_000_000.0,
+            8,
+        );
+
         assert!(result.is_err());
     }
 }

@@ -253,6 +253,13 @@ fn revolution_band_surface(
     let (r1, z1) = radial_axial(p1_start, axis_origin, axis);
     let dr = r1 - r0;
     let dz = z1 - z0;
+    let edge_dir = p1_start - p0_start;
+    let transverse = edge_dir - axis * edge_dir.dot(axis);
+    let radial0 = p0_start - (axis_origin + axis * z0);
+    let radial1 = p1_start - (axis_origin + axis * z1);
+    let same_meridian = radial0.length() < tol
+        || radial1.length() < tol
+        || radial0.cross(radial1).length() <= tol * radial0.length().max(radial1.length());
 
     // A profile edge on the axis (both endpoints at r ≈ 0) sweeps a degenerate
     // zero-area band; keep the NURBS form (and avoid evaluating its degenerate
@@ -277,6 +284,9 @@ fn revolution_band_surface(
 
     // Axis-parallel edge (Δr ≈ 0, radius > 0) → cylinder wall.
     if dr.abs() < tol {
+        if transverse.length() > tol {
+            return Ok((FaceSurface::Nurbs(nurbs), false));
+        }
         let surface = brepkit_math::surfaces::CylindricalSurface::new(axis_origin, axis, r0)?;
         return Ok((FaceSurface::Cylinder(surface), outward_reversed));
     }
@@ -286,6 +296,9 @@ fn revolution_band_surface(
     // (`planar_cap_signed_volume`), so the disc no longer suffers the chorded-
     // boundary under-count that previously kept these caps NURBS.
     if dz.abs() < tol {
+        if !same_meridian {
+            return Ok((FaceSurface::Nurbs(nurbs), false));
+        }
         let plane_d = dot_normal_point(axis, p0_start);
         // Stored normal is `+axis`; reverse when the consistent band normal
         // points along `−axis`.
@@ -302,7 +315,7 @@ fn revolution_band_surface(
     // r = 0, meets the axis at the apex; the half-angle is the angle from the
     // radial plane to the generator (matching `make_cone`).
     let half_angle = dz.abs().atan2(dr.abs());
-    if half_angle <= tol || half_angle >= FRAC_PI_2 - tol {
+    if !same_meridian || half_angle <= tol || half_angle >= FRAC_PI_2 - tol {
         // Numerically parallel/perpendicular despite the guards above — keep the
         // exact NURBS band rather than build an invalid cone.
         return Ok((FaceSurface::Nurbs(nurbs), false));
@@ -509,15 +522,22 @@ fn classify_profile_edge(
     }
     let dr = r1 - r0;
     let dz = z1 - z0;
+    let edge_dir = ep - sp;
+    let transverse = edge_dir - axis * edge_dir.dot(axis);
+    let radial0 = sp - (axis_origin + axis * z0);
+    let radial1 = ep - (axis_origin + axis * z1);
+    let same_meridian = radial0.length() < lin
+        || radial1.length() < lin
+        || radial0.cross(radial1).length() <= lin * radial0.length().max(radial1.length());
     if s_on_axis && e_on_axis {
         Some(RevEdge::OnAxis)
-    } else if dr.abs() < lin {
+    } else if dr.abs() < lin && transverse.length() <= lin {
         // Axis-parallel wall: both ends share radius r0 (> lin here).
         Some(RevEdge::Cylinder { r: r0 })
-    } else if dz.abs() < lin {
+    } else if dz.abs() < lin && same_meridian {
         // Perpendicular cap: a disc (one end on the axis) or an annulus.
         Some(RevEdge::Plane)
-    } else {
+    } else if same_meridian {
         // Oblique wall → cone. One endpoint may sit ON the axis (a pointed
         // apex); the wall then gets `make_cone`'s degenerate seam wire.
         let apex = revolution_cone_apex(axis_origin, axis, r0, z0, dr, dz);
@@ -526,6 +546,8 @@ fn classify_profile_edge(
             return None;
         }
         Some(RevEdge::Cone { apex, half_angle })
+    } else {
+        None
     }
 }
 
@@ -565,11 +587,13 @@ fn try_analytic_full_revolution(
     }
     // Planar profile with the axis lying in its plane (else not a clean
     // surface of revolution about this axis).
-    let normal = match face_data.surface() {
-        FaceSurface::Plane { normal, .. } => *normal,
+    let (normal, plane_d) = match face_data.surface() {
+        FaceSurface::Plane { normal, d } => (*normal, *d),
         _ => return Ok(None),
     };
-    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL {
+    if normal.dot(axis).abs() > AXIS_IN_PLANE_DOT_TOL
+        || (dot_normal_point(normal, axis_origin) - plane_d).abs() > Tolerance::new().linear * 100.0
+    {
         return Ok(None);
     }
 

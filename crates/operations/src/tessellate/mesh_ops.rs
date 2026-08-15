@@ -120,9 +120,22 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
     let mut edges: DetHashMap<(Q, Q), u32> = DetHashMap::default();
     let mut face_count: i64 = 0;
     for tri in mesh.indices.chunks_exact(3) {
-        let a = q(mesh.positions[tri[0] as usize]);
-        let b = q(mesh.positions[tri[1] as usize]);
-        let c = q(mesh.positions[tri[2] as usize]);
+        let Some((&pa, &pb, &pc)) = tri
+            .first()
+            .and_then(|&a| mesh.positions.get(a as usize))
+            .zip(tri.get(1).and_then(|&b| mesh.positions.get(b as usize)))
+            .zip(tri.get(2).and_then(|&c| mesh.positions.get(c as usize)))
+            .map(|((a, b), c)| (a, b, c))
+        else {
+            return WeldedMeshQuality {
+                boundary_edges: usize::MAX,
+                non_manifold_edges: usize::MAX,
+                euler_characteristic: 0,
+            };
+        };
+        let a = q(pa);
+        let b = q(pb);
+        let c = q(pc);
         if a == b || b == c || a == c {
             continue;
         }

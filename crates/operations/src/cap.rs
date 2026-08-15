@@ -62,7 +62,12 @@ fn ring_is_planar(cap_verts: &[Point3], outward: Vec3) -> bool {
 /// Its four boundary iso-curves are the straight segments between consecutive
 /// corners — exactly the ring's chord edges — so the cap shares its boundary
 /// with the side faces and tessellates/integrates clipped to the section.
-fn bilinear_cap_patch(corners: &[Point3]) -> Result<NurbsSurface, brepkit_math::MathError> {
+///
+/// # Errors
+///
+/// Returns an error if the four corners cannot define a valid bilinear NURBS
+/// patch.
+pub fn bilinear_cap_patch(corners: &[Point3]) -> Result<NurbsSurface, brepkit_math::MathError> {
     NurbsSurface::new(
         1,
         1,

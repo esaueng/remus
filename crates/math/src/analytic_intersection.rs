@@ -41,10 +41,29 @@ pub fn exact_plane_analytic(
     plane_normal: Vec3,
     plane_d: f64,
 ) -> Result<Vec<ExactIntersectionCurve>, MathError> {
+    exact_plane_analytic_bounded(surface, plane_normal, plane_d, None)
+}
+
+/// [`exact_plane_analytic`] with an optional trim-aware cone parameter bound.
+///
+/// Callers intersecting a finite conical face should supply the largest cone
+/// generator parameter that can reach the face bounds. This keeps unbounded
+/// parabola/hyperbola sampling finite without dropping a distant valid span.
+///
+/// # Errors
+///
+/// Returns an error when the supplied surface or plane cannot produce a
+/// numerically valid analytic or sampled intersection.
+pub fn exact_plane_analytic_bounded(
+    surface: AnalyticSurface<'_>,
+    plane_normal: Vec3,
+    plane_d: f64,
+    cone_v_max: Option<f64>,
+) -> Result<Vec<ExactIntersectionCurve>, MathError> {
     match surface {
         AnalyticSurface::Cylinder(cyl) => exact_plane_cylinder(cyl, plane_normal, plane_d),
         AnalyticSurface::Sphere(sphere) => exact_plane_sphere(sphere, plane_normal, plane_d),
-        AnalyticSurface::Cone(cone) => exact_plane_cone(cone, plane_normal, plane_d),
+        AnalyticSurface::Cone(cone) => exact_plane_cone(cone, plane_normal, plane_d, cone_v_max),
         AnalyticSurface::Torus(torus) => {
             // Torus intersections are degree-4 — fall back to sampling.
             let chains = sample_plane_torus(torus, plane_normal, plane_d)?;
@@ -163,6 +182,7 @@ fn exact_plane_cone(
     cone: &ConicalSurface,
     normal: Vec3,
     d: f64,
+    v_max_hint: Option<f64>,
 ) -> Result<Vec<ExactIntersectionCurve>, MathError> {
     let axis = cone.axis();
     let cos_theta = normal.dot(axis).abs();
@@ -227,7 +247,7 @@ fn exact_plane_cone(
     if m_len < 1e-12 {
         // Axis parallel to normal — handled by the perpendicular branch above;
         // fall back to sampling for safety.
-        let chains = sample_plane_cone(cone, normal, d)?;
+        let chains = sample_plane_cone(cone, normal, d, v_max_hint)?;
         return Ok(chains
             .into_iter()
             .map(ExactIntersectionCurve::Points)
@@ -274,7 +294,7 @@ fn exact_plane_cone(
 
     // Parabola / hyperbola (and the near-parabolic ellipse margin): the section
     // is unbounded, so emit bounded, branch-separated sample chains.
-    let chains = sample_plane_cone(cone, normal, d)?;
+    let chains = sample_plane_cone(cone, normal, d, v_max_hint)?;
     Ok(chains
         .into_iter()
         .map(ExactIntersectionCurve::Points)
@@ -336,7 +356,7 @@ pub fn sample_plane_analytic(
 ) -> Result<Vec<Vec<Point3>>, MathError> {
     match surface {
         AnalyticSurface::Cylinder(cyl) => sample_plane_cylinder(cyl, normal, d),
-        AnalyticSurface::Cone(cone) => sample_plane_cone(cone, normal, d),
+        AnalyticSurface::Cone(cone) => sample_plane_cone(cone, normal, d, None),
         AnalyticSurface::Sphere(sphere) => sample_plane_sphere(sphere, normal, d),
         AnalyticSurface::Torus(torus) => sample_plane_torus(torus, normal, d),
     }
@@ -430,6 +450,7 @@ fn sample_plane_cone(
     cone: &ConicalSurface,
     normal: Vec3,
     d: f64,
+    v_max_hint: Option<f64>,
 ) -> Result<Vec<Vec<Point3>>, MathError> {
     let apex = cone.apex();
     let n_dot_apex = dot_np(normal, apex);
@@ -438,26 +459,31 @@ fn sample_plane_cone(
     // Per-generator solve: along g(u) the plane is linear in v, v = e / (n·g(u)).
     // Sample u densely; keep only the real nappe (v >= 0) and skip near-asymptote
     // generators (n·g(u) ≈ 0 → v → ∞).
-    let n_samples = 512_usize;
-    let mut vs: Vec<Option<f64>> = Vec::with_capacity(n_samples);
-    let mut v_min = f64::INFINITY;
-    for i in 0..n_samples {
-        let u = TAU * (i as f64) / (n_samples as f64);
-        let g = cone.evaluate(u, 1.0) - apex;
-        let n_dot_g = normal.dot(Vec3::new(g.x(), g.y(), g.z()));
-        if n_dot_g.abs() < 1e-12 {
-            vs.push(None);
-            continue;
+    let sample_generators = |n_samples: usize| {
+        let mut vs: Vec<Option<f64>> = Vec::with_capacity(n_samples);
+        let mut v_min = f64::INFINITY;
+        for i in 0..n_samples {
+            let u = TAU * (i as f64) / (n_samples as f64);
+            let g = cone.evaluate(u, 1.0) - apex;
+            let n_dot_g = normal.dot(Vec3::new(g.x(), g.y(), g.z()));
+            if n_dot_g.abs() < 1e-12 {
+                vs.push(None);
+                continue;
+            }
+            let v = e / n_dot_g;
+            if v >= -1e-12 {
+                let v = v.max(0.0);
+                v_min = v_min.min(v);
+                vs.push(Some(v));
+            } else {
+                vs.push(None);
+            }
         }
-        let v = e / n_dot_g;
-        if v >= -1e-12 {
-            let v = v.max(0.0);
-            v_min = v_min.min(v);
-            vs.push(Some(v));
-        } else {
-            vs.push(None);
-        }
-    }
+        (vs, v_min)
+    };
+
+    let base_samples = 512_usize;
+    let (mut vs, v_min) = sample_generators(base_samples);
 
     if !v_min.is_finite() {
         return Ok(Vec::new());
@@ -469,7 +495,21 @@ fn sample_plane_cone(
     // scale-invariant and centred on where any finite cone face's overlap lies;
     // the downstream consumer trims the fitted curve to the actual face AABB, so
     // over-coverage is harmless. The floor handles a vertex at the apex (v_min≈0).
-    let v_max = (8.0 * v_min).max(v_min + 4.0);
+    let local_bound = (8.0 * v_min).max(v_min + 4.0);
+    let v_max = v_max_hint
+        .filter(|value| value.is_finite() && *value >= v_min)
+        .map_or(local_bound, |hint| hint.max(local_bound));
+
+    // Approaching an asymptote, v grows much faster than u. Extending a
+    // trim-aware bound while keeping the local 512-sample pitch can make the
+    // fitted tail too coarse at the face window. Preserve approximately the
+    // local angular resolution, with a hard availability cap.
+    let extension = (v_max / local_bound.max(f64::MIN_POSITIVE)).max(1.0);
+    #[allow(clippy::cast_possible_truncation)]
+    let n_samples = ((base_samples as f64 * extension).ceil() as usize).min(8192);
+    if n_samples > base_samples {
+        vs = sample_generators(n_samples).0;
+    }
 
     // Per-sample v within the cap; the raw values stay in `vs` for the
     // boundary solve below.
@@ -1981,7 +2021,11 @@ fn algebraic_parallel_cone_cylinder(
     v_range_cyl: Option<(f64, f64)>,
 ) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
     let axis = cone.axis();
-    if axis.dot(cyl.axis()).abs() < 1.0 - 1e-10 {
+    // A dot-product comparison loses the first-order angular error near 1.0:
+    // an axis tilted by 1e-5 radians still has a dot product within 1e-10 of
+    // one.  This construction requires the axes themselves to be parallel, so
+    // classify their angular separation directly.
+    if axis.cross(cyl.axis()).length() > Tolerance::new().angular {
         return Ok(None); // Skew/oblique — general marcher.
     }
 
@@ -2728,6 +2772,30 @@ mod tests {
     }
 
     #[test]
+    fn near_parallel_cone_cylinder_defers_to_other_paths() {
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let tilt = 1e-5_f64;
+        let cyl = CylindricalSurface::new(
+            Point3::new(1000.0, 0.0, 0.0),
+            Vec3::new(tilt.sin(), 0.0, tilt.cos()),
+            5.0,
+        )
+        .unwrap();
+
+        assert!(
+            algebraic_parallel_cone_cylinder(&cone, &cyl, None, None)
+                .unwrap()
+                .is_none(),
+            "a tilted cylinder must use the general intersection path"
+        );
+    }
+
+    #[test]
     fn plane_torus_lobe_closes_and_stays_on_surface() {
         use crate::traits::ParametricCurve;
         let (major, minor) = (10.0, 3.0);
@@ -3033,7 +3101,7 @@ mod tests {
         let n = Vec3::new(0.3, 0.0, 1.0).normalize().unwrap();
         // Plane through (0,0,5): d = n·(0,0,5).
         let d = n.z() * 5.0;
-        let curves = exact_plane_cone(&cone, n, d).unwrap();
+        let curves = exact_plane_cone(&cone, n, d, None).unwrap();
         assert!(
             curves
                 .iter()
@@ -3057,7 +3125,7 @@ mod tests {
         .unwrap();
         let n = Vec3::new(0.3, 0.0, 1.0).normalize().unwrap();
         let d = n.z() * -5.0;
-        let curves = exact_plane_cone(&cone, n, d).unwrap();
+        let curves = exact_plane_cone(&cone, n, d, None).unwrap();
         assert!(
             curves.is_empty(),
             "plane on the phantom-nappe side must yield no real curve, got {}",
@@ -3077,7 +3145,7 @@ mod tests {
         .unwrap();
         let n = Vec3::new(1.0, 0.0, 1.0).normalize().unwrap();
         let d = n.x() * 3.0 + n.z() * 3.0; // through (3,0,3)
-        let curves = exact_plane_cone(&cone, n, d).unwrap();
+        let curves = exact_plane_cone(&cone, n, d, None).unwrap();
         assert_eq!(
             curves.len(),
             1,
@@ -3107,7 +3175,7 @@ mod tests {
         let d = -58.360_56;
         let cos_theta = n.dot(cone.axis()).abs();
         assert!(cos_theta < 0.2, "expected a shallow (hyperbola) plane");
-        let curves = exact_plane_cone(&cone, n, d).unwrap();
+        let curves = exact_plane_cone(&cone, n, d, None).unwrap();
         // Real downward nappe only: never above the apex (z=15.85). The vertex is
         // ~1.2 mm from the apex, so the bounded arc stays within a few mm of it.
         assert_on_plane_and_cone(&curves, &cone, n, d, (5.0, 15.85));

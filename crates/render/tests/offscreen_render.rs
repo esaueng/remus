@@ -238,20 +238,37 @@ fn invalid_size_is_rejected() {
 
 #[test]
 fn oversized_render_is_rejected() {
-    // The texture-limit check runs after device creation, so it needs an adapter.
-    let Some(_adapter) = probe_adapter() else {
-        println!("SKIP oversized_render_is_rejected: no wgpu adapter available");
-        return;
-    };
+    // 1_000_000 px per side far exceeds the offscreen pixel budget and any
+    // real `max_texture_dimension_2d` (typically 8192-16384), so this must be
+    // a clean error rather than a wgpu panic or a giant allocation. The pixel
+    // budget fires before device creation, so no adapter is required.
     let mut topo = Topology::new();
     let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let cam = iso_camera(Point3::new(5.0, 5.0, 5.0), 9.0);
-    // 1_000_000 px far exceeds any real `max_texture_dimension_2d` (typically
-    // 8192-16384), so this must be a clean error rather than a wgpu panic.
     let opts = RenderOpts::new(1_000_000, 1_000_000);
     match render_solid_offscreen(&topo, cube, &cam, &opts) {
-        Err(brepkit_render::RenderError::SizeTooLarge { .. }) => {}
-        Err(other) => panic!("expected SizeTooLarge, got {other:?}"),
-        Ok(_) => panic!("expected SizeTooLarge, got Ok"),
+        Err(
+            brepkit_render::RenderError::SizeTooLarge { .. }
+            | brepkit_render::RenderError::PixelBudgetExceeded { .. },
+        ) => {}
+        Err(other) => panic!("expected SizeTooLarge or PixelBudgetExceeded, got {other:?}"),
+        Ok(_) => panic!("expected SizeTooLarge or PixelBudgetExceeded, got Ok"),
+    }
+}
+
+#[test]
+fn pixel_budget_render_is_rejected_without_adapter() {
+    // Just over the 4096x4096-pixel budget: rejected before any device work,
+    // so this runs identically on adapter-less machines.
+    let mut topo = Topology::new();
+    let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let cam = iso_camera(Point3::new(5.0, 5.0, 5.0), 9.0);
+    let opts = RenderOpts::new(4097, 4096);
+    match render_solid_offscreen(&topo, cube, &cam, &opts) {
+        Err(brepkit_render::RenderError::PixelBudgetExceeded { pixels, .. }) => {
+            assert_eq!(pixels, 4097 * 4096);
+        }
+        Err(other) => panic!("expected PixelBudgetExceeded, got {other:?}"),
+        Ok(_) => panic!("expected PixelBudgetExceeded, got Ok"),
     }
 }

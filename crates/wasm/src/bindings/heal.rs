@@ -478,9 +478,15 @@ impl BrepKernel {
         solid: u32,
         steps: Vec<String>,
     ) -> Result<crate::types::HealPipelineResult, crate::error::WasmError> {
+        const MAX_HEAL_PIPELINE_STEPS: usize = 32;
         if steps.is_empty() {
             return Err(crate::error::WasmError::InvalidInput {
                 reason: "heal pipeline needs at least one step".into(),
+            });
+        }
+        if steps.len() > MAX_HEAL_PIPELINE_STEPS {
+            return Err(crate::error::WasmError::InvalidInput {
+                reason: format!("heal pipeline accepts at most {MAX_HEAL_PIPELINE_STEPS} steps"),
             });
         }
         let solid_id =
@@ -490,14 +496,24 @@ impl BrepKernel {
                     index: solid as usize,
                 })?;
         let mut process = brepkit_heal::pipeline::process::HealProcess::new();
+        let valid_steps: std::collections::HashSet<&str> =
+            process.registry_mut().names().into_iter().collect();
+        if let Some(step) = steps
+            .iter()
+            .find(|step| !valid_steps.contains(step.as_str()))
+        {
+            return Err(crate::error::WasmError::InvalidInput {
+                reason: format!("heal pipeline: unknown operator: {step}"),
+            });
+        }
         for step in &steps {
             process.add_step(step);
         }
-        let (new_solid, results) = process.execute(self.topo_mut(), solid_id).map_err(|e| {
-            crate::error::WasmError::InvalidInput {
+        let (new_solid, results) = self
+            .with_topology_transaction(|topo| process.execute(topo, solid_id))
+            .map_err(|e| crate::error::WasmError::InvalidInput {
                 reason: format!("heal pipeline: {e}"),
-            }
-        })?;
+            })?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(crate::types::HealPipelineResult {
             solid: solid_id_to_u32(new_solid),
@@ -694,6 +710,10 @@ mod heal_config_tests {
                 .is_err()
         );
         assert!(k.run_heal_pipeline_impl(solid, vec![]).is_err());
+        assert!(
+            k.run_heal_pipeline_impl(solid, vec!["merge_vertices".into(); 33])
+                .is_err()
+        );
     }
 
     #[test]

@@ -311,6 +311,7 @@ fn build_inner_side_faces(
             let p0 = topo.vertex(iwd.ring_verts[seg][i])?.point();
             let p1 = topo.vertex(iwd.ring_verts[seg][next_i])?.point();
             let p_next = topo.vertex(iwd.ring_verts[seg + 1][i])?.point();
+            let p1_next = topo.vertex(iwd.ring_verts[seg + 1][next_i])?.point();
             let edge_dir = p1 - p0;
             let path_dir = p_next - p0;
             // Reversed normal (inward-facing).
@@ -318,7 +319,15 @@ fn build_inner_side_faces(
                 .cross(edge_dir)
                 .normalize()
                 .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-            let side_d = dot_normal_point(side_normal, p0);
+            let surface =
+                if (p1_next - p0).dot(side_normal).abs() <= Tolerance::new().linear * 100.0 {
+                    FaceSurface::Plane {
+                        normal: side_normal,
+                        d: dot_normal_point(side_normal, p0),
+                    }
+                } else {
+                    FaceSurface::Nurbs(crate::cap::bilinear_cap_patch(&[p0, p1, p1_next, p_next])?)
+                };
 
             // Reversed winding compared to outer side faces.
             let side_wire = Wire::new(
@@ -333,14 +342,7 @@ fn build_inner_side_faces(
             .map_err(crate::OperationsError::Topology)?;
 
             let side_wire_id = topo.add_wire(side_wire);
-            let fid = topo.add_face(Face::new(
-                side_wire_id,
-                vec![],
-                FaceSurface::Plane {
-                    normal: side_normal,
-                    d: side_d,
-                },
-            ));
+            let fid = topo.add_face(Face::new(side_wire_id, vec![], surface));
             faces.push(fid);
         }
     }
@@ -773,13 +775,21 @@ pub fn sweep(
             let p0 = topo.vertex(ring_verts[seg][i])?.point();
             let p1 = topo.vertex(ring_verts[seg][next_i])?.point();
             let p_next = topo.vertex(ring_verts[seg + 1][i])?.point();
+            let p1_next = topo.vertex(ring_verts[seg + 1][next_i])?.point();
             let edge_dir = p1 - p0;
             let path_dir = p_next - p0;
             let side_normal = edge_dir
                 .cross(path_dir)
                 .normalize()
                 .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-            let side_d = dot_normal_point(side_normal, p0);
+            let surface = if (p1_next - p0).dot(side_normal).abs() <= tol.linear * 100.0 {
+                FaceSurface::Plane {
+                    normal: side_normal,
+                    d: dot_normal_point(side_normal, p0),
+                }
+            } else {
+                FaceSurface::Nurbs(crate::cap::bilinear_cap_patch(&[p0, p_next, p1_next, p1])?)
+            };
 
             let side_wire = Wire::new(
                 vec![
@@ -793,14 +803,7 @@ pub fn sweep(
             .map_err(crate::OperationsError::Topology)?;
 
             let side_wire_id = topo.add_wire(side_wire);
-            let side_face = topo.add_face(Face::new(
-                side_wire_id,
-                vec![],
-                FaceSurface::Plane {
-                    normal: side_normal,
-                    d: side_d,
-                },
-            ));
+            let side_face = topo.add_face(Face::new(side_wire_id, vec![], surface));
             all_faces.push(side_face);
         }
     }
