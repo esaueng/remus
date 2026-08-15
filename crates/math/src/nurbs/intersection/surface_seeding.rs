@@ -17,7 +17,9 @@ use super::surface_marching::{
     constrain_param, constrain_state, march_with_branches, near_existing_segment,
     surface_newton_step,
 };
-use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER, MAX_QUEUE_SIZE, MAX_SEGMENTS};
+use crate::context::{OperationContext, WorkBudgets};
+
+use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER};
 
 /// Intersect two NURBS surfaces.
 ///
@@ -38,13 +40,40 @@ use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER, MAX_QUEUE_SIZ
 /// # Errors
 ///
 /// Returns an error if NURBS evaluation or curve fitting fails.
-#[allow(clippy::too_many_lines)]
 pub fn intersect_nurbs_nurbs(
     surface1: &NurbsSurface,
     surface2: &NurbsSurface,
     samples: usize,
     march_step: f64,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
+    intersect_nurbs_nurbs_with_context(
+        surface1,
+        surface2,
+        samples,
+        march_step,
+        &OperationContext::new(),
+    )
+}
+
+/// Intersect two NURBS surfaces under an explicit [`OperationContext`].
+///
+/// Identical to [`intersect_nurbs_nurbs`], but the marching work budgets
+/// (steps, queue, segments, branches) come from `context.budgets` instead of
+/// module constants. The default context reproduces
+/// [`intersect_nurbs_nurbs`] exactly.
+///
+/// # Errors
+///
+/// Returns an error if NURBS evaluation or curve fitting fails.
+#[allow(clippy::too_many_lines)]
+pub fn intersect_nurbs_nurbs_with_context(
+    surface1: &NurbsSurface,
+    surface2: &NurbsSurface,
+    samples: usize,
+    march_step: f64,
+    context: &OperationContext,
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let budgets: &WorkBudgets = &context.budgets;
     let n = samples.max(5);
     let tolerance = 1e-6;
 
@@ -91,7 +120,7 @@ pub fn intersect_nurbs_nurbs(
     let mut work_queue: VecDeque<IntersectionPoint> = seeds.into();
 
     while let Some(seed) = work_queue.pop_front() {
-        if traced_segments.len() >= MAX_SEGMENTS {
+        if traced_segments.len() >= budgets.segments {
             break;
         }
 
@@ -104,7 +133,7 @@ pub fn intersect_nurbs_nurbs(
         }
 
         let (traced, branch_seeds) =
-            march_with_branches(surface1, surface2, &seed, march_step, tolerance);
+            march_with_branches(surface1, surface2, &seed, march_step, tolerance, budgets);
 
         if !traced.is_empty() {
             traced_segments.push(traced);
@@ -112,7 +141,7 @@ pub fn intersect_nurbs_nurbs(
 
         // Add branch seeds to the work queue (capped).
         for bs in branch_seeds {
-            if work_queue.len() < MAX_QUEUE_SIZE {
+            if work_queue.len() < budgets.queue_size {
                 work_queue.push_back(bs);
             }
         }
