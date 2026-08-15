@@ -3,14 +3,16 @@
 //! [`Topology`] is the single owner of every arena. All operations that
 //! create or query topological entities take a reference to this struct.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
+use crate::coedge::{Coedge, CoedgeId};
 use crate::compound::{Compound, CompoundId};
 use crate::compsolid::{CompSolid, CompSolidId};
 use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
+use crate::face_loop::{Loop, LoopId};
 use crate::pcurve::PCurveRegistry;
 use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
@@ -43,6 +45,13 @@ pub struct Topology {
     compsolids: Arena<CompSolid>,
     /// `PCurves`: 2D parametric curves mapping edges to face surface parameters.
     pcurves: PCurveRegistry,
+    /// All face-boundary loops (RFC 0002, Stage 1: derived from wires on
+    /// request, never authoritative).
+    loops: Arena<Loop>,
+    /// All coedge uses (RFC 0002).
+    coedges: Arena<Coedge>,
+    /// Loops derived for each face by [`Self::build_face_loops`].
+    face_loops: HashMap<FaceId, Vec<LoopId>>,
 }
 
 #[derive(Default)]
@@ -153,6 +162,8 @@ impl Topology {
             self.solids.slot_len(),
             self.compounds.slot_len(),
             self.compsolids.slot_len(),
+            self.loops.slot_len(),
+            self.coedges.slot_len(),
         ]
         .into_iter()
         .fold(0usize, usize::saturating_add)
@@ -174,6 +185,9 @@ impl Topology {
         self.compounds.restore_preserving_slots(&snapshot.compounds);
         self.compsolids
             .restore_preserving_slots(&snapshot.compsolids);
+        self.loops.restore_preserving_slots(&snapshot.loops);
+        self.coedges.restore_preserving_slots(&snapshot.coedges);
+        self.face_loops.clone_from(&snapshot.face_loops);
         self.pcurves.clone_from(&snapshot.pcurves);
         let retired_edges = snapshot
             .edges
@@ -247,6 +261,8 @@ impl Topology {
         CompSolidId,
         CompSolidNotFound
     );
+    arena_get!(face_loop, loops, Loop, LoopId, LoopNotFound);
+    arena_get!(coedge, coedges, Coedge, CoedgeId, CoedgeNotFound);
     arena_get_mut!(
         compsolid_mut,
         compsolids,
@@ -335,6 +351,102 @@ impl Topology {
         Id = CompSolidId
     );
 
+    /// Derives (or re-derives) this face's boundary loops and coedges from
+    /// its current wires (RFC 0002, Stage 1).
+    ///
+    /// One loop is created per wire (outer first, then inner), with one
+    /// coedge per oriented-edge occurrence — a seam edge used twice by one
+    /// wire yields two coedges. A previous derivation for this face is
+    /// retired first; its loop and coedge handles become permanently
+    /// invalid (no slot reuse).
+    ///
+    /// Wires remain authoritative in Stage 1: this derivation is a view
+    /// with stable handles, checked against its source by
+    /// [`validate_face_loops`](crate::validation::validate_face_loops).
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error if the face, any of its wires, or any
+    /// referenced edge is invalid. Nothing is retired or allocated on
+    /// error.
+    pub fn build_face_loops(&mut self, face_id: FaceId) -> Result<Vec<LoopId>, TopologyError> {
+        // Snapshot phase: read and validate everything before mutating.
+        let face = self.face(face_id)?;
+        let mut wire_ids = vec![face.outer_wire()];
+        wire_ids.extend(face.inner_wires().iter().copied());
+        let mut wires = Vec::with_capacity(wire_ids.len());
+        for wire_id in wire_ids {
+            let wire = self.wire(wire_id)?;
+            for oriented in wire.edges() {
+                self.edge(oriented.edge())?;
+            }
+            wires.push((wire.edges().to_vec(), wire.is_closed()));
+        }
+
+        // Retire any previous derivation.
+        if let Some(old_loops) = self.face_loops.remove(&face_id) {
+            for loop_id in old_loops {
+                if let Some(old_loop) = self.loops.get(loop_id) {
+                    for coedge_id in old_loop.coedges().to_vec() {
+                        self.coedges.retire(coedge_id);
+                    }
+                }
+                self.loops.retire(loop_id);
+            }
+        }
+
+        // Allocation phase.
+        let mut new_loops = Vec::with_capacity(wires.len());
+        for (oriented_edges, closed) in wires {
+            let loop_id = self.loops.alloc(Loop::new(face_id, Vec::new(), closed));
+            let coedge_ids: Vec<CoedgeId> = oriented_edges
+                .iter()
+                .map(|oe| {
+                    self.coedges
+                        .alloc(Coedge::new(oe.edge(), oe.is_forward(), loop_id))
+                })
+                .collect();
+            if let Some(loop_entity) = self.loops.get_mut(loop_id) {
+                *loop_entity = Loop::new(face_id, coedge_ids, closed);
+            }
+            new_loops.push(loop_id);
+        }
+        self.face_loops.insert(face_id, new_loops.clone());
+        Ok(new_loops)
+    }
+
+    /// The loops previously derived for a face, in outer-then-inner order,
+    /// or `None` when [`Self::build_face_loops`] has not been called for it.
+    #[must_use]
+    pub fn loops_of_face(&self, face_id: FaceId) -> Option<&[LoopId]> {
+        self.face_loops.get(&face_id).map(Vec::as_slice)
+    }
+
+    /// Every live coedge use of the given edge, across all derived loops.
+    ///
+    /// A seam edge on a periodic face reports two uses; an edge shared by
+    /// two faces reports one use per face boundary that has been derived.
+    #[must_use]
+    pub fn coedges_of_edge(&self, edge: EdgeId) -> Vec<CoedgeId> {
+        self.coedges
+            .iter()
+            .filter(|(_, coedge)| coedge.edge() == edge)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Number of live loops.
+    #[must_use]
+    pub fn num_loops(&self) -> usize {
+        self.loops.len()
+    }
+
+    /// Number of live coedges.
+    #[must_use]
+    pub fn num_coedges(&self) -> usize {
+        self.coedges.len()
+    }
+
     /// Retires a solid and every entity in its topology tree that no other
     /// live solid references.
     ///
@@ -389,6 +501,18 @@ impl Topology {
         retiring.faces.retain(|id| !retained.faces.contains(id));
         retiring.shells.retain(|id| !retained.shells.contains(id));
 
+        for face_id in &retiring.faces {
+            if let Some(loop_ids) = self.face_loops.remove(face_id) {
+                for loop_id in loop_ids {
+                    if let Some(retired_loop) = self.loops.get(loop_id) {
+                        for coedge_id in retired_loop.coedges().to_vec() {
+                            self.coedges.retire(coedge_id);
+                        }
+                    }
+                    self.loops.retire(loop_id);
+                }
+            }
+        }
         self.pcurves
             .remove_for_retired_entities(&retiring.edges, &retiring.faces);
         self.solids.retire(solid);

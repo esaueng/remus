@@ -280,6 +280,12 @@ impl From<brepkit_topology::TopologyError> for StructuredWasmError {
             }
             brepkit_topology::TopologyError::WireNotClosed
             | brepkit_topology::TopologyError::NotPlanar => ("wire", None),
+            brepkit_topology::TopologyError::LoopNotFound(id) => ("loop", Some(id.index())),
+            brepkit_topology::TopologyError::CoedgeNotFound(id) => ("coedge", Some(id.index())),
+            brepkit_topology::TopologyError::LoopWireMismatch { face }
+            | brepkit_topology::TopologyError::LoopNotConnected { face } => {
+                ("face", Some(face.index()))
+            }
             brepkit_topology::TopologyError::Empty { entity } => (*entity, None),
             brepkit_topology::TopologyError::NonManifold { .. } => ("topology", None),
         };
