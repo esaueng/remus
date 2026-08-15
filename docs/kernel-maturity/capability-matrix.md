@@ -213,8 +213,10 @@ claim, and they are the first implementation targets of the program:
    lists (`crates/topology/src/wire.rs`); p-curves are keyed by
    `(EdgeId, FaceId)` (`crates/topology/src/pcurve.rs`), so a seam edge used
    twice on one periodic face cannot carry two p-curves — the registry's
-   second `set` silently overwrites the first. Every seam-crossing cell is at
-   best Partial until this lands.
+   second `set` silently overwrites the first (pinned by the
+   `seam_characterization` tests in that file). Every seam-crossing cell is
+   at best Partial until this lands. Design:
+   `docs/design/rfc-0002-coedge-architecture.md`.
 2. **No stored trim domains.** Edge domains are reconstructed from endpoint
    projections at evaluation time (`crates/topology/src/edge.rs`,
    `domain_with_endpoints`) with module-local match bands. SameParameter /
