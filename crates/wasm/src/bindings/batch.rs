@@ -19,7 +19,7 @@ use brepkit_operations::sweep::sweep;
 use brepkit_operations::transform::transform_solid;
 use brepkit_topology::edge::EdgeCurve;
 
-use crate::error::{StructuredWasmError, WasmError};
+use crate::error::{StructuredWasmError, WasmError, validate_work_count, validate_work_product};
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
@@ -634,12 +634,11 @@ impl BrepKernel {
             "makeSphere" => {
                 let r = get_f64(args, "radius")?;
                 let segments = get_u32(args, "segments").unwrap_or(16);
-                let solid = brepkit_operations::primitives::make_sphere(
-                    self.topo_mut(),
-                    r,
-                    segments as usize,
-                )
-                .map_err(StructuredWasmError::from)?;
+                let segments =
+                    validate_work_count(segments, "segments").map_err(StructuredWasmError::from)?;
+                let solid =
+                    brepkit_operations::primitives::make_sphere(self.topo_mut(), r, segments)
+                        .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
             "makeCone" => {
@@ -654,11 +653,13 @@ impl BrepKernel {
                 let major = get_f64(args, "majorRadius")?;
                 let minor = get_f64(args, "minorRadius")?;
                 let segments = get_u32(args, "segments").unwrap_or(16);
+                let segments =
+                    validate_work_count(segments, "segments").map_err(StructuredWasmError::from)?;
                 let solid = brepkit_operations::primitives::make_torus(
                     self.topo_mut(),
                     major,
                     minor,
-                    segments as usize,
+                    segments,
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
@@ -1597,13 +1598,15 @@ impl BrepKernel {
                 let ay = get_f64(args, "ay").unwrap_or(0.0);
                 let az = get_f64(args, "az").unwrap_or(1.0);
                 let count = get_u32(args, "count")?;
+                let count =
+                    validate_work_count(count, "count").map_err(StructuredWasmError::from)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let axis = Vec3::new(ax, ay, az);
                 let compound = brepkit_operations::pattern::circular_pattern(
                     self.topo_mut(),
                     solid_id,
                     axis,
-                    count as usize,
+                    count,
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(compound)))
@@ -1620,6 +1623,9 @@ impl BrepKernel {
                 let sy = get_f64(args, "spacingY")?;
                 let cx = get_u32(args, "countX")?;
                 let cy = get_u32(args, "countY")?;
+                validate_work_count(cx, "countX").map_err(StructuredWasmError::from)?;
+                validate_work_count(cy, "countY").map_err(StructuredWasmError::from)?;
+                validate_work_product(cx, cy, "grid copies").map_err(StructuredWasmError::from)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let compound = brepkit_operations::pattern::grid_pattern(
                     self.topo_mut(),
@@ -1736,12 +1742,16 @@ impl BrepKernel {
                 let f = get_u32(args, "face")?;
                 let dist = get_f64(args, "distance")?;
                 let samples = get_u32(args, "samples").unwrap_or(16);
+                validate_work_product(samples, samples, "sample grid")
+                    .map_err(StructuredWasmError::from)?;
+                let samples =
+                    validate_work_count(samples, "samples").map_err(StructuredWasmError::from)?;
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let result = brepkit_operations::offset_face::offset_face(
                     self.topo_mut(),
                     face_id,
                     dist,
-                    samples as usize,
+                    samples,
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(face_id_to_u32(result)))
@@ -1849,13 +1859,15 @@ impl BrepKernel {
                 let dz = get_f64(args, "dz").unwrap_or(0.0);
                 let spacing = get_f64(args, "spacing")?;
                 let count = get_u32(args, "count")?;
+                let count =
+                    validate_work_count(count, "count").map_err(StructuredWasmError::from)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let compound = brepkit_operations::pattern::linear_pattern(
                     self.topo_mut(),
                     solid_id,
                     Vec3::new(dx, dy, dz),
                     spacing,
-                    count as usize,
+                    count,
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(compound)))

@@ -6,6 +6,9 @@
 
 use serde_json::{Map, Value};
 
+/// Maximum JS-controlled work count accepted by scalar WASM parameters.
+pub const MAX_WASM_WORK_ITEMS: u32 = 10_000;
+
 /// Errors that can occur in WASM-exposed operations.
 #[derive(Debug, thiserror::Error)]
 pub enum WasmError {
@@ -367,4 +370,66 @@ pub fn validate_positive(value: f64, name: &str) -> Result<(), WasmError> {
         .ok_or_else(|| WasmError::InvalidInput {
             reason: format!("{name} must be positive, got {value}"),
         })
+}
+
+/// Validate a JS-controlled scalar before it reaches a loop or allocation.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] when `value` exceeds the public work
+/// budget.
+pub fn validate_work_count(value: u32, name: &str) -> Result<usize, WasmError> {
+    if value > MAX_WASM_WORK_ITEMS {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} must be at most {MAX_WASM_WORK_ITEMS}, got {value}"),
+        });
+    }
+    Ok(value as usize)
+}
+
+/// Validate the total work implied by two multiplicative JS counts.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] when the product exceeds the public
+/// work budget.
+pub fn validate_work_product(left: u32, right: u32, name: &str) -> Result<usize, WasmError> {
+    let work = u64::from(left) * u64::from(right);
+    if work > u64::from(MAX_WASM_WORK_ITEMS) {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} must be at most {MAX_WASM_WORK_ITEMS}, got {work}"),
+        });
+    }
+    Ok(work as usize)
+}
+
+#[cfg(test)]
+mod work_limit_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{MAX_WASM_WORK_ITEMS, validate_work_count, validate_work_product};
+
+    #[test]
+    fn scalar_work_count_accepts_limit_and_rejects_larger_values() {
+        assert_eq!(
+            validate_work_count(MAX_WASM_WORK_ITEMS, "segments").unwrap(),
+            MAX_WASM_WORK_ITEMS as usize
+        );
+        let error = validate_work_count(MAX_WASM_WORK_ITEMS + 1, "segments").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid input: segments must be at most 10000, got 10001"
+        );
+        assert!(validate_work_count(u32::MAX, "segments").is_err());
+    }
+
+    #[test]
+    fn multiplicative_work_count_is_limited_by_total() {
+        assert_eq!(
+            validate_work_product(100, 100, "grid copies").unwrap(),
+            10_000
+        );
+        assert!(validate_work_product(101, 100, "grid copies").is_err());
+        assert!(validate_work_product(u32::MAX, u32::MAX, "grid copies").is_err());
+    }
 }

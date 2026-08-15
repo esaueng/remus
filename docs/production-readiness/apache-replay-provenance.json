@@ -14,7 +14,7 @@
     "allowed_replay_authors": [
       {
         "name": "Peter",
-        "email": "171875562+petergstfsn@users.noreply.github.com"
+        "email": "171875562+petergustafson@users.noreply.github.com"
       },
       {
         "name": "Peter",
@@ -907,7 +907,7 @@
     {
       "sha": "7aeb36a802188de0e158326c15049ebaaa634ddc",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix(ci): keep generated WASM tied to its source commit"
     }
   ],
@@ -1605,7 +1605,7 @@
     {
       "sha": "1059267922433be804f4c10566626c5b2ea697b8",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix(algo): preserve meridian winding samples",
       "staging_pull_request": 250,
       "replay_commit": "d1521f60ba6db871970f6884854843d130be566f"
@@ -1613,7 +1613,7 @@
     {
       "sha": "e33c2b78380e30c4176dcd9fba512678e92aea5d",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix box-cylinder two-lobe fuse volume",
       "staging_pull_request": 250,
       "replay_commit": "23fa548ecffc151b9ec04cd6778025f286a9c1be"
@@ -1621,7 +1621,7 @@
     {
       "sha": "0c0b8893c9129b8ec4faad2462130c5cc8de517c",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix: repair BrepKit 3.0.1 geometry regressions",
       "staging_pull_request": 250,
       "replay_commit": "c4c9b36e6ce68b90dae0ee8a99572d59e8b42450"
@@ -1629,7 +1629,7 @@
     {
       "sha": "f8b0af5f8150cb9c4720d207b1e8df1808d11433",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "test: preserve fork chamfer fail-closed contract",
       "staging_pull_request": 250,
       "replay_commit": "b3571d887d74fcda5488aa7fa74aeab21e0ddde8"
@@ -1637,7 +1637,7 @@
     {
       "sha": "6490ca8e165071ae1bf22cd7aafb47522fa917fb",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix(operations): close 9 of 11 red-baseline tests across revolve, fuse, and split",
       "staging_pull_request": 250,
       "replay_commit": "b8e0a5fb94bcef121b5fd30fef3dc4fed45c041d"
@@ -1645,7 +1645,7 @@
     {
       "sha": "5c37c99a0cafdf1021e7b4f71f4f2a8bb37e02dd",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "test(operations): re-ignore the two concave-notch blend pins behind the fork's engine policy",
       "staging_pull_request": 250,
       "replay_commit": "24c2920a42a88c1734db7288c3ef0f3507c1ac83"
@@ -1653,7 +1653,7 @@
     {
       "sha": "7e3fdd99d734306028bd49c648d5dcf2ad6f082b",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix(operations): close concave blend baselines",
       "staging_pull_request": 250,
       "replay_commit": "6352de1435fbdf9db62223e356a846f214582268"
@@ -1661,7 +1661,7 @@
     {
       "sha": "1934d00ce292fb3aac9b737584e7f8b78a4e1cca",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix(heal): apply reshape actions across cavity shells",
       "staging_pull_request": 250,
       "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
@@ -1669,7 +1669,7 @@
     {
       "sha": "c7d52fdd8e73130bc8cfb0122237e79dfcb1ebf9",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "fix(heal): preserve reversed split traversal",
       "staging_pull_request": 250,
       "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
@@ -1677,7 +1677,7 @@
     {
       "sha": "6671d593fa1905863c9e8538756c8585de8b2859",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "style: apply rustfmt to reshape regression",
       "staging_pull_request": 250,
       "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"
@@ -1685,7 +1685,7 @@
     {
       "sha": "4bfc3edc8fe15c559b4b5afcab00f5867d6f50ca",
       "author_name": "Peter",
-      "author_email": "171875562+petergstfsn@users.noreply.github.com",
+      "author_email": "171875562+petergustafson@users.noreply.github.com",
       "subject": "test(heal): assert split edge orientation",
       "staging_pull_request": 250,
       "replay_commit": "aff630fd33aea5c778ddd58b9bf1f45f18fb767f"

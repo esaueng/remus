@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::*;
 
 use brepkit_operations::transform::transform_solid;
 
-use crate::error::{validate_finite, validate_positive};
+use crate::error::{validate_finite, validate_positive, validate_work_count};
 use crate::handles::solid_id_to_u32;
 use crate::kernel::BrepKernel;
 
@@ -54,11 +54,9 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makeSphere")]
     pub fn make_sphere_solid(&mut self, radius: f64, segments: u32) -> Result<u32, JsError> {
         validate_positive(radius, "radius")?;
-        let solid_id = brepkit_operations::primitives::make_sphere(
-            self.topo_mut(),
-            radius,
-            segments as usize,
-        )?;
+        let segments = validate_work_count(segments, "segments")?;
+        let solid_id =
+            brepkit_operations::primitives::make_sphere(self.topo_mut(), radius, segments)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -104,11 +102,12 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         validate_positive(major_radius, "major_radius")?;
         validate_positive(minor_radius, "minor_radius")?;
+        let segments = validate_work_count(segments, "segments")?;
         let solid_id = brepkit_operations::primitives::make_torus(
             self.topo_mut(),
             major_radius,
             minor_radius,
-            segments as usize,
+            segments,
         )?;
         Ok(solid_id_to_u32(solid_id))
     }

@@ -42,7 +42,7 @@ EXPECTED_REPLAY = {
     "last_commit": "7aeb36a802188de0e158326c15049ebaaa634ddc",
 }
 EXPECTED_ALLOWED_AUTHORS = {
-    ("Peter", "171875562+petergstfsn@users.noreply.github.com"),
+    ("Peter", "171875562+petergustafson@users.noreply.github.com"),
     ("Peter", "171875562+petergstfsn@users.noreply.github.com"),
 }
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
