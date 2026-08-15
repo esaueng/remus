@@ -1142,3 +1142,53 @@ fn dual_surface_validation_passes_for_known_intersection() {
         }
     }
 }
+
+#[test]
+fn with_context_default_matches_legacy_entry_point() {
+    use crate::context::OperationContext;
+
+    let s1 = flat_surface();
+    let s2 = tilted_surface();
+    let legacy = intersect_nurbs_nurbs(&s1, &s2, 15, 0.02).unwrap();
+    let ctx =
+        intersect_nurbs_nurbs_with_context(&s1, &s2, 15, 0.02, &OperationContext::new()).unwrap();
+
+    assert_eq!(legacy.len(), ctx.len(), "curve counts must match");
+    for (a, b) in legacy.iter().zip(&ctx) {
+        assert_eq!(a.points.len(), b.points.len(), "point counts must match");
+        for (pa, pb) in a.points.iter().zip(&b.points) {
+            assert!(
+                (pa.point - pb.point).length() == 0.0,
+                "default context must reproduce the legacy result bit-for-bit"
+            );
+        }
+    }
+}
+
+#[test]
+fn tiny_march_budget_bounds_the_trace_and_terminates() {
+    use crate::context::{OperationContext, WorkBudgets};
+
+    let s1 = flat_surface();
+    let s2 = tilted_surface();
+
+    let full = intersect_nurbs_nurbs(&s1, &s2, 15, 0.02).unwrap();
+    let full_points: usize = full.iter().map(|c| c.points.len()).sum();
+    assert!(full_points > 10, "fixture must trace a real curve");
+
+    let tiny = OperationContext::new().with_budgets(
+        WorkBudgets::new()
+            .with_march_steps(2)
+            .with_segments(1)
+            .with_queue_size(1),
+    );
+    let bounded = intersect_nurbs_nurbs_with_context(&s1, &s2, 15, 0.02, &tiny).unwrap();
+    let bounded_points: usize = bounded.iter().map(|c| c.points.len()).sum();
+
+    // The budget must actually bound the work: far fewer traced points than
+    // the unbudgeted run, and the call terminates (no hang) with Ok.
+    assert!(
+        bounded_points < full_points,
+        "tiny budget must trace fewer points ({bounded_points} vs {full_points})"
+    );
+}
