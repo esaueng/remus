@@ -10,6 +10,10 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  runOpenZcadAnalyticFlangeBooleanRegression,
+  runOpenZcadCylindricalFaceResizeRegression,
+} from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
@@ -73,6 +77,78 @@ console.log('ok - BrepKernel created');
 const boxId = kernel.makeBox(10, 20, 30);
 assert.equal(typeof boxId, 'number', 'makeBox should return a number handle');
 console.log(`ok - makeBox(10, 20, 30) -> handle ${boxId}`);
+
+// Batch deflection validation must reject every value rejected by the matching
+// direct binding. JSON.stringify serializes NaN and Infinity as null, which the
+// batch API must reject rather than silently replacing with its default.
+{
+  const deflectionOperations = [
+    {
+      name: 'volume',
+      direct: (deflection) => kernel.volume(boxId, deflection),
+      args: { solid: boxId },
+    },
+    {
+      name: 'surfaceArea',
+      direct: (deflection) => kernel.surfaceArea(boxId, deflection),
+      args: { solid: boxId },
+    },
+    {
+      name: 'centerOfMass',
+      direct: (deflection) => kernel.centerOfMass(boxId, deflection),
+      args: { solid: boxId },
+    },
+    {
+      name: 'meshQuality',
+      direct: (deflection) => kernel.meshQuality(boxId, deflection),
+      args: { solid: boxId },
+    },
+    {
+      name: 'projectEdges',
+      direct: (deflection) =>
+        kernel.projectEdges(boxId, 0, 0, 0, 0, 0, 1, 1, 0, 0, true, deflection),
+      args: {
+        solid: boxId,
+        originX: 0,
+        originY: 0,
+        originZ: 0,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        xAxisX: 1,
+        xAxisY: 0,
+        xAxisZ: 0,
+        hiddenLines: true,
+      },
+    },
+  ];
+
+  for (const deflection of [NaN, Infinity, 0, -0.1]) {
+    for (const operation of deflectionOperations) {
+      assert.throws(
+        () => operation.direct(deflection),
+        undefined,
+        `${operation.name} direct binding must reject deflection ${deflection}`,
+      );
+      const [batchResult] = JSON.parse(
+        kernel.executeBatch(
+          JSON.stringify([
+            {
+              op: operation.name,
+              args: { ...operation.args, deflection },
+            },
+          ]),
+        ),
+      );
+      assert.equal(
+        typeof batchResult.error,
+        'string',
+        `${operation.name} batch binding must reject deflection ${deflection}`,
+      );
+    }
+  }
+  console.log('ok - direct/batch deflection validation parity');
+}
 
 // 3. Volume check
 const vol = kernel.volume(boxId, DEFLECTION);
@@ -197,101 +273,8 @@ if (typeof kernel.importPly === 'function') {
   }
 }
 
-// 11. Analytic preservation through a boolean, checked on the SHIPPED package.
-//
-// Fusing two coaxial revolved annuli that share an exact cylindrical wall —
-// the OpenZCAD flange demo's "Union flange blank": a rim (r24..45, t10)
-// against a hub (r12..24, h26), both walls exactly r24 and overlapping in z.
-// The fuse must resolve that coincident cylindrical face pair and stay
-// analytic. It regressed to a ~1031-face all-plane mesh fallback, fixed in
-// #21 (canonical same-domain key for closed edges).
-//
-// #21 already carries the native regression test, which is the primary guard.
-// This is deliberately a SECOND, different guard: it runs the built, bundled
-// wasm package rather than the Rust library. That gap is not theoretical —
-// the committed `crates/wasm/pkg` is what OpenZCAD installs, and it shipped
-// as 2.129.0 built from a pre-fix commit, so consumers hit a ~2789-face
-// flange body with 873 boundary edges while `cargo test` was green. A
-// package-level assertion is what catches that class.
-//
-// Nothing else in this smoke test asserts a boolean keeps curved surfaces,
-// and face count is the only reliable signal: a mesh fallback is watertight,
-// valid, and close on volume, so none of those expose it.
-//
-// Narrowed by varying one thing at a time:
-//   shared r24 wall + in contact          -> fallback
-//   shared r24 wall, tops not coplanar    -> fallback  (coplanarity is not it)
-//   inner radius 23 instead of 24         -> analytic  (needs EXACT coincidence)
-//   shared r24 wall but z-disjoint        -> analytic  (needs real contact)
-//   primitive coaxial cylinders           -> analytic  (no coincident wall pair)
-//
-// Verified fail-before/pass-after by reverting only same_domain.rs and
-// rebuilding: 1031 faces without the fix, 7 with it. Do NOT relax this into
-// a pin — a suppressed assertion here is the green-looking blindfold that let
-// the stale package ship.
-{
-  /** Revolve an axial rectangle (x = radius, z = height) a full turn about +Z. */
-  const revolveAnnulus = (r0, r1, z0, z1) => {
-    const pts = [
-      [r0, 0, z0],
-      [r1, 0, z0],
-      [r1, 0, z1],
-      [r0, 0, z1],
-    ];
-    const edges = pts.map((p, i) => {
-      const n = pts[(i + 1) % pts.length];
-      return kernel.makeLineEdge(p[0], p[1], p[2], n[0], n[1], n[2]);
-    });
-    const wire = kernel.makeWire(Uint32Array.from(edges), true);
-    const face = kernel.makePlanarFaceFromWire(wire);
-    return kernel.revolve(face, 0, 0, 0, 0, 0, 1, 360);
-  };
-
-  const rim = revolveAnnulus(24, 45, -10, 0);
-  const hub = revolveAnnulus(12, 24, -26, 0);
-
-  // Both operands must be analytic going in, or the assertion below proves
-  // nothing about the boolean.
-  for (const [label, solid] of [
-    ['rim', rim],
-    ['hub', hub],
-  ]) {
-    const kinds = Array.from(kernel.getSolidFaces(solid)).map((f) => kernel.getSurfaceType(f));
-    assert.equal(
-      kinds.filter((t) => t === 'cylinder').length,
-      2,
-      `${label} operand should have 2 cylindrical walls, got ${JSON.stringify(kinds)}`,
-    );
-  }
-
-  const fused = kernel.fuse(rim, hub);
-  const faceKinds = Array.from(kernel.getSolidFaces(fused)).map((f) => kernel.getSurfaceType(f));
-  const cylinders = faceKinds.filter((t) => t === 'cylinder').length;
-
-  // Face count is the only reliable fallback signal: the mesh fallback is
-  // watertight and valid, and its volume is close, so neither exposes it.
-  assert.ok(
-    faceKinds.length <= 12,
-    `coaxial annulus fuse mesh-fell-back: ${faceKinds.length} faces ` +
-      `(expected <= 12; native gives 7)`,
-  );
-  assert.ok(
-    cylinders >= 3,
-    `coaxial annulus fuse lost its cylindrical walls: ${cylinders} cylinder ` +
-      `faces of ${faceKinds.length} (expected >= 3)`,
-  );
-
-  const fusedVol = kernel.volume(fused, DEFLECTION);
-  const expectedVol = Math.PI * ((45 * 45 - 24 * 24) * 10 + (24 * 24 - 12 * 12) * 26);
-  assert.ok(
-    Math.abs(fusedVol - expectedVol) < 50,
-    `coaxial annulus fuse volume=${fusedVol}, expected ~${expectedVol}`,
-  );
-  console.log(
-    `ok - coaxial annulus fuse stayed analytic: ${faceKinds.length} faces, ` +
-      `${cylinders} cylindrical`,
-  );
-}
+// 11. Analytic preservation through an OpenZCAD-shaped flange boolean.
+runOpenZcadAnalyticFlangeBooleanRegression({ BrepKernel });
 
 // 12. Versioned fillet/chamfer evolution contract on the shipped package.
 //
@@ -391,167 +374,7 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - evolution decoder and degenerate-operation rejection');
 }
 
-// 13. OpenZCAD mounting-bracket workflow across typed face evolution.
-//
-// The application stores the r3 mounting-bore face before rounding the four
-// outside bracket corners. Consume the transported/decoded evolution payload
-// to find that face on the filleted result, then exercise the two edits that
-// exposed the original regression: widen r3 -> r4.8 and shrink r4.8 -> r3.8.
-// This intentionally runs through the shipped WASM package and its STEP I/O;
-// the native operation and I/O tests retain the matching low-level guards.
-{
-  const W = 80;
-  const D = 40;
-  const PLATE_T = 8;
-  const MOUNT_X = 16;
-  const MOUNT_Y = 20;
-  const BRACKET_DEFLECTION = 0.05;
-  const FILLETED_VOLUME = 47_360.940_056_943_74;
-  const WIDE_VOLUME = 47_008.076_370_092_516;
-  const FINAL_VOLUME = WIDE_VOLUME + Math.PI * (4.8 ** 2 - 3.8 ** 2) * PLATE_T;
-  const EXPECTED_FINAL_RADII = [3, 3, 3, 3, 3, 3.8, 4, 10];
-
-  const bracketKernel = new BrepKernel();
-  const translated = (solid, x, y, z) =>
-    bracketKernel.copyAndTransformSolid(solid, [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1]);
-  const rotatedX90AndTranslated = (solid, x, y, z) =>
-    bracketKernel.copyAndTransformSolid(solid, [1, 0, 0, x, 0, 0, -1, y, 0, 1, 0, z, 0, 0, 0, 1]);
-  const fuseUniform = (...solids) => {
-    const result = bracketKernel.fuseAll(Uint32Array.from(solids));
-    bracketKernel.unifyFaces(result);
-    return result;
-  };
-  const cutUniform = (target, tools) => {
-    for (const tool of tools) target = bracketKernel.cut(target, tool);
-    bracketKernel.unifyFaces(target);
-    return target;
-  };
-  const analyticParams = (face) => JSON.parse(bracketKernel.getAnalyticSurfaceParams(face));
-  const mountingWall = (solid, radius) => {
-    const matches = Array.from(bracketKernel.getSolidFaces(solid)).filter((face) => {
-      const surface = analyticParams(face);
-      return (
-        surface.type === 'cylinder' &&
-        Math.abs(surface.radius - radius) < 1e-8 &&
-        Math.abs(surface.origin[0] - MOUNT_X) < 1e-8 &&
-        Math.abs(surface.origin[1] - MOUNT_Y) < 1e-8 &&
-        Math.abs(surface.axis[2]) > 1 - 1e-10
-      );
-    });
-    assert.equal(matches.length, 1, `expected one r${radius} mounting-bore wall`);
-    return matches[0];
-  };
-  const assertVolumeAndClosure = (solid, expected, label) => {
-    assert.equal(bracketKernel.validateSolid(solid), 0, `${label}: closed, valid shell`);
-    const actual = bracketKernel.volume(solid, BRACKET_DEFLECTION);
-    const tolerance = Math.max(Math.abs(expected), 1) * 1e-9;
-    assert.ok(
-      Math.abs(actual - expected) <= tolerance,
-      `${label}: volume=${actual}, expected=${expected}, tolerance=${tolerance}`,
-    );
-  };
-  const cylinderRadii = (activeKernel, solid) =>
-    Array.from(activeKernel.getSolidFaces(solid))
-      .map((face) => JSON.parse(activeKernel.getAnalyticSurfaceParams(face)))
-      .filter((surface) => surface.type === 'cylinder')
-      .map((surface) => surface.radius)
-      .sort((a, b) => a - b);
-  const assertExactCylinderRadii = (activeKernel, solid, label) => {
-    const actual = cylinderRadii(activeKernel, solid);
-    assert.equal(actual.length, EXPECTED_FINAL_RADII.length, `${label}: cylinder count`);
-    actual.forEach((radius, index) => {
-      assert.ok(
-        Math.abs(radius - EXPECTED_FINAL_RADII[index]) < 1e-8,
-        `${label}: analytic cylinder radii ${JSON.stringify(actual)}`,
-      );
-    });
-  };
-
-  const base = bracketKernel.makeBox(W, D, PLATE_T);
-  const wall = translated(bracketKernel.makeBox(W, PLATE_T, 32), 0, 32, 7.5);
-  const blank = fuseUniform(base, wall);
-
-  const boss = rotatedX90AndTranslated(bracketKernel.makeCylinder(10, 12), 40, 34, 24);
-  const bossed = fuseUniform(blank, boss);
-  const bossBore = rotatedX90AndTranslated(bracketKernel.makeCylinder(4, 48), 40, 48, 24);
-  const bored = cutUniform(bossed, [bossBore]);
-
-  const leftMount = translated(bracketKernel.makeCylinder(3, 12), MOUNT_X, MOUNT_Y, -2);
-  const rightMount = translated(bracketKernel.makeCylinder(3, 12), W - MOUNT_X, MOUNT_Y, -2);
-  const drilled = cutUniform(bored, [leftMount, rightMount]);
-  const sourceMountingWall = mountingWall(drilled, 3);
-
-  const cornerEdges = Array.from(bracketKernel.getSolidEdges(drilled)).filter((edge) => {
-    const [ax, ay, az, bx, by, bz] = bracketKernel.getEdgeVertices(edge);
-    const atCorner = (x, y, z) =>
-      (Math.abs(x) < 0.1 || Math.abs(x - W) < 0.1) &&
-      (Math.abs(y) < 0.1 || Math.abs(y - D) < 0.1) &&
-      z >= -0.1 &&
-      z <= 8.1;
-    return (
-      atCorner(ax, ay, az) &&
-      atCorner(bx, by, bz) &&
-      Math.abs(ax - bx) <= 1.5 &&
-      Math.abs(ay - by) <= 1.5 &&
-      Math.abs(az - bz) >= 4
-    );
-  });
-  assert.equal(cornerEdges.length, 4, 'mounting bracket: four outside corner edges');
-
-  const transported = JSON.stringify(
-    bracketKernel.filletWithEvolution(drilled, Uint32Array.from(cornerEdges), 3),
-  );
-  const evolution = decodeEvolutionPayload(transported);
-  assertCompleteEvolution(evolution, 'mounting bracket fillet');
-  assert.equal(evolution.evolution.provenance, 'construction');
-  const descendantClaims = evolution.evolution.modified.filter(
-    (claim) => claim.source === sourceMountingWall,
-  );
-  assert.equal(descendantClaims.length, 1, 'mounting-bore source must have one lineage claim');
-  assert.equal(
-    descendantClaims[0].results.length,
-    1,
-    'mounting-bore source must resolve to one descendant face',
-  );
-  const descendantMountingWall = descendantClaims[0].results[0];
-  assert.ok(
-    evolution.result.faces.includes(descendantMountingWall),
-    'mounting-bore descendant must belong to the filleted solid',
-  );
-  const descendantSurface = analyticParams(descendantMountingWall);
-  assert.equal(descendantSurface.type, 'cylinder', 'mounting-bore descendant stays analytic');
-  assert.ok(Math.abs(descendantSurface.radius - 3) < 1e-8, 'mounting-bore descendant stays r3');
-  assertVolumeAndClosure(evolution.result.solid, FILLETED_VOLUME, 'filleted bracket');
-
-  const widened = bracketKernel.resizeCylindricalFace(
-    evolution.result.solid,
-    descendantMountingWall,
-    4.8,
-  );
-  assertVolumeAndClosure(widened, WIDE_VOLUME, 'r3 -> r4.8 bracket');
-  const widenedMountingWall = mountingWall(widened, 4.8);
-  const narrowed = bracketKernel.resizeCylindricalFace(widened, widenedMountingWall, 3.8);
-  assertVolumeAndClosure(narrowed, FINAL_VOLUME, 'r4.8 -> r3.8 bracket');
-  assertExactCylinderRadii(bracketKernel, narrowed, 'resized bracket');
-
-  const step = bracketKernel.exportStep(narrowed);
-  const stepText = new TextDecoder().decode(step);
-  assert.equal(
-    stepText.match(/CYLINDRICAL_SURFACE/g)?.length,
-    EXPECTED_FINAL_RADII.length,
-    'STEP must encode every cylinder analytically',
-  );
-  const importedKernel = new BrepKernel();
-  const imported = Array.from(importedKernel.importStep(step));
-  assert.equal(imported.length, 1, 'STEP round trip must yield one bracket solid');
-  assert.equal(importedKernel.validateSolid(imported[0]), 0, 'STEP bracket: closed, valid shell');
-  const importedVolume = importedKernel.volume(imported[0], BRACKET_DEFLECTION);
-  assert.ok(
-    Math.abs(importedVolume - FINAL_VOLUME) <= Math.abs(FINAL_VOLUME) * 1e-9,
-    `STEP bracket: volume=${importedVolume}, expected=${FINAL_VOLUME}`,
-  );
-  assertExactCylinderRadii(importedKernel, imported[0], 'STEP bracket');
-  console.log('ok - OpenZCAD mounting bracket: decoded lineage, r3 -> r4.8 -> r3.8, exact STEP');
-}
+// 13. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
+runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload });
 
 console.log('\nAll smoke tests passed');

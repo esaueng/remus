@@ -911,6 +911,43 @@ fn jacobian_point_line_distance() {
     check_jacobian_fd(&Constraint::PointLineDistance(pt, l, 1.5), &snap, &params);
 }
 
+#[test]
+fn point_line_distance_rejects_nonzero_target_on_degenerate_line() {
+    use super::super::entity::GenArena;
+    use super::super::entity::{LineData, PointData};
+    let mut points = GenArena::new();
+    let point = points.insert(PointData {
+        x: 4.0,
+        y: 5.0,
+        fixed: false,
+    });
+    let line_point = points.insert(PointData {
+        x: 1.0,
+        y: 2.0,
+        fixed: false,
+    });
+    let mut lines = GenArena::new();
+    let line = lines.insert(LineData {
+        p1: line_point,
+        p2: line_point,
+    });
+    let snap = EntitySnapshot {
+        points: [(point, (4.0, 5.0)), (line_point, (1.0, 2.0))]
+            .into_iter()
+            .collect(),
+        lines: [(line, (line_point, line_point))].into_iter().collect(),
+        circles: HashMap::new(),
+        arcs: HashMap::new(),
+    };
+    let mut residuals = Vec::new();
+    eval_residuals(
+        &Constraint::PointLineDistance(point, line, 3.0),
+        &snap,
+        &mut residuals,
+    );
+    assert_eq!(residuals, vec![-3.0]);
+}
+
 // ── Constraints added for selection-first sketching ─────────────────
 //
 // circleRadius, equalRadiusCircleCircle, equalLength, midpoint, symmetric.

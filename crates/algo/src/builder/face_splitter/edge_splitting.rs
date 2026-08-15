@@ -65,7 +65,19 @@ pub(super) fn split_boundary_edges_at_3d_points(
         let closed_ring_dir = (matches!(edge.curve_3d, EdgeCurve::Circle(_))
             && matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
             && (edge.start_3d - edge.end_3d).length() < tol)
-            .then(|| if edge.forward { 1.0_f64 } else { -1.0_f64 });
+            .then(|| {
+                let stored_span = edge.end_uv.x() - edge.start_uv.x();
+                let natural_dir = if stored_span.abs() > tol {
+                    stored_span.signum()
+                } else {
+                    1.0
+                };
+                if edge.forward {
+                    natural_dir
+                } else {
+                    -natural_dir
+                }
+            });
         let mut prev_uv = edge.start_uv;
         let mut prev_3d = edge.start_3d;
         for &(t, pt) in &splits {

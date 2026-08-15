@@ -94,7 +94,7 @@ fn collect_face_boundary_edges(
 /// Surface crossings are found against infinite surfaces; this rejects
 /// crossing points that lie outside the trimmed face region.
 struct FaceContainment {
-    bbox: Aabb3,
+    bbox: Option<Aabb3>,
     planar: Option<PlanarContainment>,
 }
 
@@ -109,7 +109,11 @@ struct PlanarContainment {
 
 impl FaceContainment {
     fn accepts(&self, pt: Point3) -> bool {
-        if !self.bbox.contains_point(pt) {
+        if self
+            .bbox
+            .as_ref()
+            .is_some_and(|bbox| !bbox.contains_point(pt))
+        {
             return false;
         }
         let Some(planar) = &self.planar else {
@@ -222,10 +226,7 @@ fn build_face_containment(
 
     let Some(bbox) = Aabb3::try_from_points(all_points) else {
         return Ok(FaceContainment {
-            bbox: Aabb3 {
-                min: Point3::new(0.0, 0.0, 0.0),
-                max: Point3::new(0.0, 0.0, 0.0),
-            },
+            bbox: None,
             planar: None,
         });
     };
@@ -246,7 +247,7 @@ fn build_face_containment(
                 .map(|pts| pts.iter().map(|&p| frame.project(p)).collect())
                 .collect();
             return Ok(FaceContainment {
-                bbox: bbox.expanded(margin),
+                bbox: Some(bbox.expanded(margin)),
                 planar: Some(PlanarContainment {
                     frame,
                     polygon,
@@ -256,15 +257,14 @@ fn build_face_containment(
             });
         }
         return Ok(FaceContainment {
-            bbox: bbox.expanded((diag * 0.5).max(tol.linear * 10.0)),
+            bbox: Some(bbox.expanded((diag * 0.5).max(tol.linear * 10.0))),
             planar: None,
         });
     }
 
-    // Curved faces can bulge past their boundary AABB (e.g. a hemisphere
-    // bounded by its equator), so expand generously by half the diagonal.
+    // A sampled boundary box is not conservative for a curved surface patch.
     Ok(FaceContainment {
-        bbox: bbox.expanded((diag * 0.5).max(tol.linear * 10.0)),
+        bbox: None,
         planar: None,
     })
 }
@@ -292,9 +292,9 @@ fn check_edge_face_pairs(
     // Pre-expand each face's containment AABB by the linear tolerance so the
     // broad-phase reject below is conservative (never skips a real crossing,
     // which by definition lies inside the face's boundary region).
-    let face_aabbs: Vec<Aabb3> = containments
+    let face_aabbs: Vec<Option<Aabb3>> = containments
         .iter()
-        .map(|c| c.bbox.expanded(tol.linear))
+        .map(|c| c.bbox.map(|bbox| bbox.expanded(tol.linear)))
         .collect();
 
     // Inverting a point onto a NURBS surface starts with an 81-point coarse
@@ -329,14 +329,10 @@ fn check_edge_face_pairs(
         // disjoint faces collapses that quadratic to the pairs that actually
         // overlap. Sampled densely enough that the inter-sample sagitta is
         // negligible for the analytic edge curves used here.
-        let edge_aabb = {
-            let mut pts = Vec::with_capacity(N_SAMPLES + 1);
-            for i in 0..=N_SAMPLES {
-                let t = t0 + (t1 - t0) * (i as f64 / N_SAMPLES as f64);
-                pts.push(curve.evaluate_with_endpoints(t, start_pos, end_pos));
-            }
-            Aabb3::try_from_points(pts).map(|a| a.expanded(tol.linear))
-        };
+        let edge_aabb = matches!(curve, EdgeCurve::Line)
+            .then(|| Aabb3::try_from_points([start_pos, end_pos]))
+            .flatten()
+            .map(|a| a.expanded(tol.linear));
 
         for (face_idx, &fid) in faces.iter().enumerate() {
             if face_boundary_edges[face_idx].contains(&eid) {
@@ -344,8 +340,8 @@ fn check_edge_face_pairs(
             }
 
             // Broad-phase: skip faces whose region cannot reach this edge.
-            if let Some(ea) = &edge_aabb
-                && !ea.intersects(face_aabbs[face_idx])
+            if let (Some(ea), Some(fa)) = (&edge_aabb, &face_aabbs[face_idx])
+                && !ea.intersects(*fa)
             {
                 continue;
             }
@@ -443,14 +439,16 @@ fn check_edge_face_pairs(
                 .iter()
                 .zip(&endpoint_windows)
                 .map(|(&(t, pt), &(_, _, snap_window))| {
-                    if snap_window <= tol.linear
+                    // Only lines can use the exact parameter recomputation
+                    // below. Reject other curves before the spatial lookup.
+                    if !matches!(curve, brepkit_topology::edge::EdgeCurve::Line)
+                        || snap_window <= tol.linear
                         || find_nearby_vertex(topo, arena, pt, tol).is_some()
                     {
                         return None;
                     }
                     let _ = t;
                     super::helpers::find_nearby_pave_vertex_widened(
-                        topo,
                         arena,
                         pt,
                         snap_window,
@@ -466,9 +464,6 @@ fn check_edge_face_pairs(
                     )
                     .and_then(|vid| {
                         let vp = topo.vertex(vid).ok()?.point();
-                        let brepkit_topology::edge::EdgeCurve::Line = &curve else {
-                            return None;
-                        };
                         let d = end_pos - start_pos;
                         let len_sq = d.length_squared();
                         if len_sq < tol.linear * tol.linear {

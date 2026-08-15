@@ -178,8 +178,9 @@ pub fn wire_polygon_curve_sampled(
             // to positional chaining against the last emitted point; an
             // orientation-flag guess can bow-tie the polygon and flip
             // containment inside the mis-ordered region.
-            _ => match pts.last() {
-                Some(&last) => {
+            _ => match prev_end {
+                Some(previous_end) => {
+                    let last = topo.vertex(previous_end)?.point();
                     let sp = topo.vertex(start_vid)?.point();
                     let ep = topo.vertex(end_vid)?.point();
                     (sp - last).length_squared() <= (ep - last).length_squared()

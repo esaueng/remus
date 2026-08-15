@@ -227,22 +227,58 @@ impl OffsetData {
 /// Shared helper used by `inter2d` and `loops` to avoid duplicate vertices
 /// at the same 3D position. The `cache` accumulates all vertices created
 /// during the current phase.
+pub struct VertexCache {
+    cell: f64,
+    grid: HashMap<(i64, i64, i64), Vec<(Point3, VertexId)>>,
+}
+
+impl VertexCache {
+    #[must_use]
+    pub fn new(tol: f64) -> Self {
+        Self {
+            cell: tol.max(f64::MIN_POSITIVE),
+            grid: HashMap::new(),
+        }
+    }
+
+    fn key(&self, point: Point3) -> (i64, i64, i64) {
+        let inv = 1.0 / self.cell;
+        #[allow(clippy::cast_possible_truncation)]
+        (
+            (point.x() * inv).floor() as i64,
+            (point.y() * inv).floor() as i64,
+            (point.z() * inv).floor() as i64,
+        )
+    }
+}
+
 pub fn find_or_create_vertex(
     topo: &mut Topology,
-    cache: &mut Vec<(Point3, VertexId)>,
+    cache: &mut VertexCache,
     point: Point3,
     tol: f64,
 ) -> VertexId {
-    for &(cached_pt, vid) in cache.iter() {
-        let dx = point.x() - cached_pt.x();
-        let dy = point.y() - cached_pt.y();
-        let dz = point.z() - cached_pt.z();
-        if dx * dx + dy * dy + dz * dz <= tol * tol {
-            return vid;
+    let (cx, cy, cz) = cache.key(point);
+    for dx in -1..=1_i64 {
+        for dy in -1..=1_i64 {
+            for dz in -1..=1_i64 {
+                if let Some(entries) = cache.grid.get(&(cx + dx, cy + dy, cz + dz)) {
+                    for &(cached_pt, vid) in entries {
+                        let delta = point - cached_pt;
+                        if delta.dot(delta) <= tol * tol {
+                            return vid;
+                        }
+                    }
+                }
+            }
         }
     }
 
     let vid = topo.add_vertex(Vertex::new(point, tol));
-    cache.push((point, vid));
+    cache
+        .grid
+        .entry((cx, cy, cz))
+        .or_default()
+        .push((point, vid));
     vid
 }

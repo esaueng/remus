@@ -531,6 +531,15 @@ fn minkowski_sum_box10_box2_volume_1728() {
 }
 
 #[test]
+fn minkowski_sum_rejects_excessive_point_products() {
+    let error = minkowski_point_sum_count(MAX_MINKOWSKI_POINT_SUMS, 2).unwrap_err();
+    assert!(error.to_string().contains("point limit exceeded"));
+
+    let overflow = minkowski_point_sum_count(usize::MAX, 2).unwrap_err();
+    assert!(overflow.to_string().contains("point limit exceeded"));
+}
+
+#[test]
 fn convex_hull_with_interior_points_volume() {
     // 8 cube corners + interior points — volume should be 1.0.
     let mut points = vec![

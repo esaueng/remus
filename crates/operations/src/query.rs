@@ -2,12 +2,306 @@
 
 use std::collections::{HashMap, HashSet};
 
+use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::EdgeId;
 use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
 use crate::OperationsError;
+use crate::classify::{PointClassification, classify_point, classify_point_robust};
+
+/// Geometric relation between the two faces meeting at a manifold edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeConcavity {
+    /// The edge rounds off material: a probe opposite the outward-normal
+    /// bisector lands inside the solid.
+    Convex,
+    /// The edge is re-entrant: the same probe lands outside the solid.
+    Concave,
+    /// The faces meet with aligned outward normals along the sampled edge.
+    Tangent,
+    /// The edge is a self-seam, non-manifold, degenerate, or too ambiguous to
+    /// classify without guessing.
+    Unknown,
+}
+
+/// Effective outward normal of `face` at `point`.
+///
+/// Planar faces use the face orientation directly. Curved faces are projected
+/// into their own UV domain before evaluating the surface normal, and the
+/// `reversed` flag flips the result. Returns `None` when projection or
+/// normalization cannot produce a finite unit normal.
+#[must_use]
+pub fn effective_face_normal(topo: &Topology, face: FaceId, point: Point3) -> Option<Vec3> {
+    let face_data = topo.face(face).ok()?;
+    let normal = if let Some(normal) = face_data.effective_plane_normal() {
+        // `effective_plane_normal` has already applied the reversed flag.
+        normal
+    } else {
+        let (u, v) = face_data.surface().project_point(point)?;
+        let normal = face_data.surface().normal(u, v);
+        if face_data.is_reversed() {
+            -normal
+        } else {
+            normal
+        }
+    };
+    normal.normalize().ok()
+}
+
+fn edge_samples(topo: &Topology, edge: EdgeId) -> Result<Vec<Point3>, OperationsError> {
+    let edge_data = topo.edge(edge)?;
+    let start = topo.vertex(edge_data.start())?.point();
+    let end = topo.vertex(edge_data.end())?.point();
+    let (t0, t1) = edge_data.curve().domain_with_endpoints(start, end);
+    Ok([0.25, 0.5, 0.75]
+        .into_iter()
+        .map(|fraction| {
+            let t = (t1 - t0).mul_add(fraction, t0);
+            edge_data.curve().evaluate_with_endpoints(t, start, end)
+        })
+        .collect())
+}
+
+fn face_vertex_span(topo: &Topology, face: FaceId) -> Result<f64, OperationsError> {
+    let face_data = topo.face(face)?;
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for wire_id in
+        std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+    {
+        for oriented in topo.wire(wire_id)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            for vertex in [edge.start(), edge.end()] {
+                let point = topo.vertex(vertex)?.point();
+                bounds = Some(match bounds {
+                    None => (point, point),
+                    Some((lo, hi)) => (
+                        Point3::new(
+                            lo.x().min(point.x()),
+                            lo.y().min(point.y()),
+                            lo.z().min(point.z()),
+                        ),
+                        Point3::new(
+                            hi.x().max(point.x()),
+                            hi.y().max(point.y()),
+                            hi.z().max(point.z()),
+                        ),
+                    ),
+                });
+            }
+        }
+    }
+    Ok(bounds.map_or(0.0, |(lo, hi)| (hi - lo).length()))
+}
+
+fn edge_curve_span(topo: &Topology, edge: EdgeId) -> Result<f64, OperationsError> {
+    let edge_data = topo.edge(edge)?;
+    let start = topo.vertex(edge_data.start())?.point();
+    let end = topo.vertex(edge_data.end())?.point();
+    let (t0, t1) = edge_data.curve().domain_with_endpoints(start, end);
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for i in 0..=16 {
+        let t = t0 + (t1 - t0) * f64::from(i) / 16.0;
+        let point = edge_data.curve().evaluate_with_endpoints(t, start, end);
+        bounds = Some(match bounds {
+            None => (point, point),
+            Some((lo, hi)) => (
+                Point3::new(
+                    lo.x().min(point.x()),
+                    lo.y().min(point.y()),
+                    lo.z().min(point.z()),
+                ),
+                Point3::new(
+                    hi.x().max(point.x()),
+                    hi.y().max(point.y()),
+                    hi.z().max(point.z()),
+                ),
+            ),
+        });
+    }
+    Ok(bounds.map_or(0.0, |(lo, hi)| (hi - lo).length()))
+}
+
+fn sampled_normals(
+    topo: &Topology,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+) -> Result<Vec<(Point3, Vec3, Vec3)>, OperationsError> {
+    let mut samples = Vec::new();
+    for point in edge_samples(topo, edge)? {
+        if let (Some(na), Some(nb)) = (
+            effective_face_normal(topo, face_a, point),
+            effective_face_normal(topo, face_b, point),
+        ) {
+            samples.push((point, na, nb));
+        }
+    }
+    Ok(samples)
+}
+
+/// Whether two distinct faces meet with aligned effective outward normals
+/// throughout the edge's interior samples.
+///
+/// This is the G1 blend-contact convention: smooth contacts have a normal
+/// angle near zero, not near pi. A projection/normal failure is not tangent.
+///
+/// # Errors
+///
+/// Returns `OperationsError::Topology` if any referenced entity is invalid.
+pub fn edge_is_g1(
+    topo: &Topology,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+) -> Result<bool, OperationsError> {
+    if face_a == face_b {
+        return Ok(false);
+    }
+    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    Ok(samples.len() == 3 && samples.iter().all(|(_, a, b)| 1.0 - a.dot(*b) <= 1.0e-10))
+}
+
+/// Angle between the effective outward normals, sampled along the edge and
+/// reported in `[0, pi]`. This is deliberately not a signed 0..2pi dihedral.
+///
+/// # Errors
+///
+/// Returns `OperationsError::Topology` if any referenced entity is invalid.
+pub fn edge_normal_angle(
+    topo: &Topology,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+) -> Result<Option<f64>, OperationsError> {
+    if face_a == face_b {
+        return Ok(None);
+    }
+    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    if samples.len() != 3 {
+        return Ok(None);
+    }
+    let sum = samples
+        .iter()
+        .map(|(_, a, b)| a.cross(*b).length().atan2(a.dot(*b)))
+        .sum::<f64>();
+    Ok(Some(sum / samples.len() as f64))
+}
+
+/// Classify the geometric relation between the two distinct faces at `edge`.
+///
+/// Tangent edges are decided by sampled normals. Sharp edges use four
+/// material quadrant probes at the edge midpoint. The probe must be local:
+/// above 25% of the local edge/face scale the result is
+/// [`EdgeConcavity::Unknown`] rather than a confident answer from another
+/// feature's neighbourhood. Boundary samples, self-seams, degenerate normals,
+/// and non-manifold edges are also unknown rather than a guess.
+///
+/// # Errors
+///
+/// Returns `OperationsError::InvalidInput` for a non-positive/non-finite probe
+/// step, or propagates topology/classification errors.
+pub fn edge_concavity(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    probe: f64,
+) -> Result<EdgeConcavity, OperationsError> {
+    if !probe.is_finite() || probe <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
+    let adjacency = topo.build_adjacency(solid)?;
+    let faces = adjacency.faces_for_edge(edge);
+    if faces.len() != 2 || faces[0] == faces[1] {
+        return Ok(EdgeConcavity::Unknown);
+    }
+    let (face_a, face_b) = (faces[0], faces[1]);
+    edge_concavity_with_faces(topo, solid, edge, face_a, face_b, probe, true)
+}
+
+/// Bulk variant for callers that already built edge-to-face adjacency.
+///
+/// Feature recognition invokes this for every manifold edge, so it uses the
+/// analytic classifier rather than rebuilding a full-solid tessellation for
+/// each probe. The supplied faces must be the two incident faces of `edge`.
+pub(crate) fn edge_concavity_from_faces(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+    probe: f64,
+) -> Result<EdgeConcavity, OperationsError> {
+    if !probe.is_finite() || probe <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: "edge concavity probe must be positive and finite".into(),
+        });
+    }
+    if face_a == face_b {
+        return Ok(EdgeConcavity::Unknown);
+    }
+    edge_concavity_with_faces(topo, solid, edge, face_a, face_b, probe, false)
+}
+
+fn edge_concavity_with_faces(
+    topo: &Topology,
+    solid: SolidId,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+    probe: f64,
+    robust: bool,
+) -> Result<EdgeConcavity, OperationsError> {
+    if edge_is_g1(topo, edge, face_a, face_b)? {
+        return Ok(EdgeConcavity::Tangent);
+    }
+
+    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    let Some(&(point, normal_a, normal_b)) = samples.get(1).or_else(|| samples.first()) else {
+        return Ok(EdgeConcavity::Unknown);
+    };
+    let face_scale = face_vertex_span(topo, face_a)?.min(face_vertex_span(topo, face_b)?);
+    let local_scale = face_scale.max(edge_curve_span(topo, edge)?);
+    if probe > local_scale * 0.25 {
+        return Ok(EdgeConcavity::Unknown);
+    }
+
+    // The four normal-halfspace quadrants distinguish the two local shapes
+    // without depending on face orientation bookkeeping: a convex edge is an
+    // intersection of inward halfspaces (exactly one quadrant is material),
+    // while a concave edge is their union (exactly three quadrants are).
+    let classify = |offset: Vec3| {
+        if robust {
+            classify_point_robust(topo, solid, point + offset, 0.01, 1.0e-7)
+        } else {
+            classify_point(topo, solid, point + offset, 0.01, 1.0e-7)
+        }
+    };
+    let inward_a = -normal_a * probe;
+    let inward_b = -normal_b * probe;
+    let quadrants = [
+        inward_a + inward_b,
+        inward_a - inward_b,
+        -inward_a + inward_b,
+        -inward_a - inward_b,
+    ];
+    let mut inside = 0;
+    for offset in quadrants {
+        match classify(offset)? {
+            PointClassification::Inside => inside += 1,
+            PointClassification::Outside => {}
+            PointClassification::OnBoundary => return Ok(EdgeConcavity::Unknown),
+        }
+    }
+    Ok(match inside {
+        1 => EdgeConcavity::Convex,
+        3 => EdgeConcavity::Concave,
+        _ => EdgeConcavity::Unknown,
+    })
+}
 
 /// Filter edges to only those shared by two planar faces in a solid.
 ///
@@ -107,55 +401,32 @@ pub fn filter_filletable_edges(
 }
 
 /// Whether the two faces of `eid` meet tangentially (G1) — their effective
-/// outward normals are (anti)parallel at the edge midpoint, so there is no
-/// real dihedral to round. Returns `true` for the degenerate cases the fillet
-/// engine cannot blend.
-fn edge_is_tangent(
+/// outward normals stay aligned at every interior edge sample, so there is no
+/// real dihedral to round.
+pub(crate) fn edge_is_tangent(
     topo: &Topology,
     eid: EdgeId,
     faces: &HashSet<FaceId>,
 ) -> Result<bool, OperationsError> {
     let mut it = faces.iter().copied();
-    let (Some(f1), Some(f2)) = (it.next(), it.next()) else {
+    let (Some(face_a), Some(face_b)) = (it.next(), it.next()) else {
         return Ok(true);
     };
-    let edge = topo.edge(eid)?;
-    let a = topo.vertex(edge.start())?.point();
-    let b = topo.vertex(edge.end())?.point();
-    let mid = a + (b - a) * 0.5;
-
-    let normal = |fid: FaceId| -> Option<brepkit_math::vec::Vec3> {
-        let face = topo.face(fid).ok()?;
-        let n = match face.surface() {
-            FaceSurface::Plane { normal, .. } => *normal,
-            other => {
-                let (u, v) = other.project_point(mid)?;
-                other.normal(u, v)
-            }
-        };
-        let n = if face.is_reversed() { -n } else { n };
-        n.normalize().ok()
-    };
-
-    match (normal(f1), normal(f2)) {
-        (Some(n1), Some(n2)) => {
-            let cos = n1.dot(n2).clamp(-1.0, 1.0);
-            // Tangent within ~5°: |angle| < 5° (cos > 0.9962) or > 175°.
-            Ok(cos.abs() > 0.9962)
-        }
-        // Can't determine a normal — don't exclude; the engine + manifold guard
-        // will decide.
-        _ => Ok(false),
-    }
+    edge_is_g1(topo, eid, face_a, face_b)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, deprecated)]
 
-    use brepkit_topology::explorer::solid_edges;
+    use brepkit_math::mat::Mat4;
+    use brepkit_topology::edge::EdgeCurve;
+    use brepkit_topology::explorer::{solid_edges, solid_faces};
 
     use super::*;
+    use crate::boolean::{BooleanOp, boolean};
+    use crate::primitives::{make_box, make_cylinder};
+    use crate::transform::transform_solid;
 
     #[test]
     fn filletable_edges_all_planar_box() {
@@ -244,5 +515,197 @@ mod tests {
             saw_dropped_tangent,
             "expected an excluded tangent contact edge"
         );
+    }
+
+    #[test]
+    fn reversed_plane_effective_normal_flips_once() {
+        let mut topo = Topology::new();
+        let cube = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let face = solid_faces(&topo, cube).unwrap()[0];
+        let point = Point3::new(1.0, 1.0, 1.0);
+        let outward = effective_face_normal(&topo, face, point).unwrap();
+        topo.face_mut(face).unwrap().set_reversed(true);
+        let reversed = effective_face_normal(&topo, face, point).unwrap();
+        assert!((reversed + outward).length() < 1e-12);
+    }
+
+    #[test]
+    fn l_notch_reflex_edge_is_concave() {
+        let mut topo = Topology::new();
+        let base = make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+        let tool = make_box(&mut topo, 12.0, 12.0, 6.0).unwrap();
+        transform_solid(&mut topo, tool, &Mat4::translation(10.0, 10.0, 5.0)).unwrap();
+        let notched = boolean(&mut topo, BooleanOp::Cut, base, tool).unwrap();
+        let reflex = solid_edges(&topo, notched)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let data = topo.edge(edge).unwrap();
+                [data.start(), data.end()].iter().all(|vertex| {
+                    let point = topo.vertex(*vertex).unwrap().point();
+                    (point.x() - 10.0).abs() < 1e-9 && (point.y() - 10.0).abs() < 1e-9
+                })
+            })
+            .expect("inner vertical edge");
+
+        assert_eq!(
+            edge_concavity(&topo, notched, reflex, 0.01).unwrap(),
+            EdgeConcavity::Concave
+        );
+    }
+
+    #[test]
+    fn post_base_and_hole_rim_have_opposite_convexity() {
+        let mut post_topo = Topology::new();
+        let plate = make_box(&mut post_topo, 80.0, 40.0, 8.0).unwrap();
+        let post = make_cylinder(&mut post_topo, 10.0, 32.0).unwrap();
+        transform_solid(&mut post_topo, post, &Mat4::translation(40.0, 20.0, 8.0)).unwrap();
+        let posted = boolean(&mut post_topo, BooleanOp::Fuse, plate, post).unwrap();
+        let post_rim = solid_edges(&post_topo, posted)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let data = post_topo.edge(edge).unwrap();
+                matches!(data.curve(), EdgeCurve::Circle(_))
+                    && (post_topo.vertex(data.start()).unwrap().point().z() - 8.0).abs() < 1e-9
+            })
+            .expect("post-base rim");
+        assert_eq!(
+            edge_concavity(&post_topo, posted, post_rim, 0.05).unwrap(),
+            EdgeConcavity::Concave
+        );
+        assert_eq!(
+            edge_concavity(&post_topo, posted, post_rim, 100.0).unwrap(),
+            EdgeConcavity::Unknown,
+            "a probe far outside the local faces must not produce a verdict"
+        );
+
+        let mut bore_topo = Topology::new();
+        let plate = make_box(&mut bore_topo, 20.0, 20.0, 6.0).unwrap();
+        let drill = make_cylinder(&mut bore_topo, 3.0, 10.0).unwrap();
+        transform_solid(&mut bore_topo, drill, &Mat4::translation(10.0, 10.0, -2.0)).unwrap();
+        let bored = boolean(&mut bore_topo, BooleanOp::Cut, plate, drill).unwrap();
+        let bore_rim = solid_edges(&bore_topo, bored)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let data = bore_topo.edge(edge).unwrap();
+                matches!(data.curve(), EdgeCurve::Circle(_))
+                    && (bore_topo.vertex(data.start()).unwrap().point().z() - 6.0).abs() < 1e-9
+            })
+            .expect("top bore rim");
+        assert_eq!(
+            edge_concavity(&bore_topo, bored, bore_rim, 0.05).unwrap(),
+            EdgeConcavity::Convex
+        );
+    }
+
+    #[test]
+    fn cylinder_self_seam_is_unknown_not_an_adjacency() {
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
+        let adjacency = topo.build_adjacency(cylinder).unwrap();
+        let seam = solid_edges(&topo, cylinder)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let faces = adjacency.faces_for_edge(edge);
+                faces.len() == 2 && faces[0] == faces[1]
+            })
+            .expect("periodic wall seam");
+
+        assert_eq!(
+            edge_concavity(&topo, cylinder, seam, 0.01).unwrap(),
+            EdgeConcavity::Unknown
+        );
+        let face = adjacency.faces_for_edge(seam)[0];
+        assert!(!edge_is_g1(&topo, seam, face, face).unwrap());
+    }
+
+    #[test]
+    fn closed_disc_cap_rim_still_classifies_convex() {
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
+        let rim = solid_edges(&topo, cylinder)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                let data = topo.edge(edge).unwrap();
+                matches!(data.curve(), EdgeCurve::Circle(_))
+                    && topo.vertex(data.start()).unwrap().point().z().abs() < 1e-9
+            })
+            .expect("bottom cap rim");
+
+        assert_eq!(
+            edge_concavity(&topo, cylinder, rim, 0.05).unwrap(),
+            EdgeConcavity::Convex
+        );
+    }
+
+    #[test]
+    fn blend_spring_edges_are_tangent_by_aligned_normals() {
+        let mut topo = Topology::new();
+        let cube = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edge = solid_edges(&topo, cube).unwrap()[0];
+        let filleted = crate::fillet::fillet_rolling_ball(&mut topo, cube, &[edge], 1.0).unwrap();
+        let band = solid_faces(&topo, filleted)
+            .unwrap()
+            .into_iter()
+            .find(|&face| !topo.face(face).unwrap().surface().is_planar())
+            .expect("blend band");
+        let adjacency = topo.build_adjacency(filleted).unwrap();
+        let tangent = solid_edges(&topo, filleted)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                let faces = adjacency.faces_for_edge(edge);
+                faces.len() == 2
+                    && faces.contains(&band)
+                    && edge_concavity(&topo, filleted, edge, 0.01).unwrap()
+                        == EdgeConcavity::Tangent
+            })
+            .count();
+
+        assert_eq!(tangent, 2, "one spring contact on each side of the band");
+    }
+
+    #[test]
+    fn imported_step_springs_are_tangent_and_a_bore_is_negative() {
+        let fillet_step = include_str!("../../io/tests/data/openzcad_e_analytic_fillet_plate.step");
+        let mut fillet_topo = Topology::new();
+        let fillet_solid =
+            brepkit_io::step::reader::read_step(fillet_step, &mut fillet_topo).unwrap()[0];
+        let fillet_adjacency = fillet_topo.build_adjacency(fillet_solid).unwrap();
+        let tangent: Vec<EdgeId> = solid_edges(&fillet_topo, fillet_solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                edge_concavity(&fillet_topo, fillet_solid, edge, 0.01).unwrap()
+                    == EdgeConcavity::Tangent
+            })
+            .collect();
+        assert_eq!(tangent.len(), 8, "four bands with two spring contacts each");
+        assert!(tangent.iter().all(|&edge| {
+            fillet_adjacency.faces_for_edge(edge).iter().any(|&face| {
+                matches!(
+                    fillet_topo.face(face).unwrap().surface(),
+                    FaceSurface::Cylinder(cylinder)
+                        if (cylinder.radius() - 3.0).abs() < 1e-9
+                )
+            })
+        }));
+
+        let bore_step = include_str!("../../io/tests/data/openzcad_a_export_bored_plate.step");
+        let mut bore_topo = Topology::new();
+        let bore_solid = brepkit_io::step::reader::read_step(bore_step, &mut bore_topo).unwrap()[0];
+        let bore_tangent = solid_edges(&bore_topo, bore_solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                edge_concavity(&bore_topo, bore_solid, edge, 0.01).unwrap()
+                    == EdgeConcavity::Tangent
+            })
+            .count();
+        assert_eq!(bore_tangent, 0, "a plain bore has no G1 spring contacts");
     }
 }

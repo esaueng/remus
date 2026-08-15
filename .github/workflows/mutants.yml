@@ -12,7 +12,7 @@ env:
 jobs:
   mutants:
     name: Cargo Mutants
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     # The examined surface grew from ~48k lines (the math subset plus algo) to
     # ~122k when the blend, offset and operations crates were added, so the
     # budget is raised by rather more than the 2.5x line ratio: those crates

@@ -402,12 +402,12 @@ fn sweep_insufficient_control_points_error() {
     let mut topo = Topology::new();
     let face = make_unit_square_face(&mut topo);
 
-    // A path with only 1 control point is invalid.
+    // A zero-length path (both control points coincident) is invalid.
     let path = NurbsCurve::new(
-        0,
-        vec![0.0, 1.0],
-        vec![Point3::new(0.0, 0.0, 0.0)],
-        vec![1.0],
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.0)],
+        vec![1.0, 1.0],
     )
     .unwrap();
 

@@ -125,6 +125,12 @@ pub fn polygon_boolean(
     op: BooleanOp,
     tol: f64,
 ) -> PolygonBooleanResult {
+    if a.iter()
+        .chain(b)
+        .any(|point| !point.x().is_finite() || !point.y().is_finite())
+    {
+        return PolygonBooleanResult::default();
+    }
     let tol = if tol > 0.0 && tol.is_finite() {
         tol
     } else {

@@ -87,6 +87,28 @@ impl BrepKernel {
         &self.topo
     }
 
+    /// Runs `operation` so that a failure leaves topology exactly as it was.
+    ///
+    /// The snapshot is a deep copy taken up front, so `self.topo` stays
+    /// unshared and `operation` mutates it in place. Sharing the `Rc` instead
+    /// would defer the copy to `Rc::make_mut`, but every caller of this
+    /// helper mutates, so the copy would still happen — and `make_mut`
+    /// rebuilds the arenas at exact capacity, forcing an immediate
+    /// reallocation on the operation's first `push`. Deferral only pays off
+    /// where an operation may not mutate at all; see `is_read_only_op` in
+    /// `bindings::batch`.
+    pub(crate) fn with_topology_transaction<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut Topology) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let snapshot = self.topo().clone();
+        let result = operation(self.topo_mut());
+        if result.is_err() {
+            self.topo_mut().restore_preserving_handle_slots(&snapshot);
+        }
+        result
+    }
+
     /// Inner implementation for `make_tangent_arc_3d`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_tangent_arc_3d_impl(

@@ -69,7 +69,7 @@ pub fn fuse_all(
     for group in &groups {
         let group_solids: Vec<SolidId> = group.iter().map(|&i| solids[i]).collect();
         if group_solids.len() == 1 {
-            group_results.push(group_solids[0]);
+            group_results.push(crate::copy::copy_solid(topo, group_solids[0])?);
             continue;
         }
         if let Some(fused) = fuse_parallel_cylinder_cluster(topo, &group_solids)? {
@@ -533,6 +533,9 @@ fn polyhedral_bounds(topo: &Topology, sid: SolidId) -> Option<PolyhedralBounds> 
             let wire = topo.wire(wid).ok()?;
             for oe in wire.edges() {
                 let edge = topo.edge(oe.edge()).ok()?;
+                if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                    return None;
+                }
                 vert_ids.insert(edge.start());
                 vert_ids.insert(edge.end());
             }

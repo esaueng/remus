@@ -204,6 +204,22 @@ fn assert_removal(got: f64, want: f64, what: &str) {
     );
 }
 
+/// A plate with a cylindrical post fused onto its top face.
+fn post_on_plate(topo: &mut Topology) -> SolidId {
+    let plate = make_box(topo, 80.0, 40.0, 8.0).expect("plate");
+    let post = make_cylinder(topo, 10.0, 32.0).expect("post");
+    transform_solid(topo, post, &Mat4::translation(40.0, 20.0, 8.0)).expect("place post");
+    boolean(topo, BooleanOp::Fuse, plate, post).expect("fuse post")
+}
+
+/// Material a concave post-base fillet adds: the corner square less its
+/// quarter-disc, revolved about the post axis by Pappus.
+fn analytic_post_base_fill(post_r: f64, r: f64) -> f64 {
+    let square_moment = r * r * (post_r + r / 2.0);
+    let quarter_moment = PI * r * r / 4.0 * (post_r + r - 4.0 * r / (3.0 * PI));
+    2.0 * PI * (square_moment - quarter_moment)
+}
+
 /// The headline case: the top rim of a drilled hole rounds at each radius, and
 /// removes exactly the material the closed form says it should.
 #[test]
@@ -237,6 +253,53 @@ fn hole_rim_fillets_at_each_radius() {
             before - after,
             analytic_fillet_removal(HOLE_R, r),
             &format!("hole rim r={r}"),
+        );
+    }
+}
+
+/// A post standing on a plate is the remaining plane-cylinder rim case: the
+/// band fills the 270-degree re-entrant corner and its outward normal points
+/// INTO the torus tube. The rim assembler used to apply the convex-rim sign,
+/// producing a closed shell whose inside-out band made the volume gate refuse.
+#[test]
+fn post_base_fillet_adds_exact_material_and_reverses_band() {
+    let mut topo = Topology::new();
+    let body = post_on_plate(&mut topo);
+    let before = measure::solid_volume(&topo, body, 0.05).unwrap();
+    let rim = rims_at(&topo, body, 8.0);
+    assert_eq!(rim.len(), 1, "one post-base rim");
+
+    for r in [1.0_f64, 2.0, 5.0] {
+        let mut t = topo.clone();
+        let result = blend_ops::fillet_v2(&mut t, body, &rim, r)
+            .unwrap_or_else(|e| panic!("post-base fillet r={r}: {e}"));
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        assert_watertight(&t, result.solid, &format!("post-base fillet r={r}"));
+
+        let bands: Vec<_> = solid_faces(&t, result.solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| matches!(t.face(face).unwrap().surface(), FaceSurface::Torus(_)))
+            .collect();
+        assert_eq!(bands.len(), 1, "r={r}: one exact torus band");
+        let band_face = t.face(bands[0]).unwrap();
+        let FaceSurface::Torus(band) = band_face.surface() else {
+            unreachable!()
+        };
+        assert!(
+            band_face.is_reversed(),
+            "r={r}: a concave rim band must be reversed, not inside-out"
+        );
+        assert!((band.minor_radius() - r).abs() < 1e-9);
+        assert!((band.major_radius() - (10.0 + r)).abs() < 1e-9);
+        assert!((band.center().z() - (8.0 + r)).abs() < 1e-9);
+
+        let after = measure::solid_volume(&t, result.solid, 0.05).unwrap();
+        let added = after - before;
+        let expected = analytic_post_base_fill(10.0, r);
+        assert!(
+            (added - expected).abs() < 0.5,
+            "r={r}: added {added}, closed form says {expected}"
         );
     }
 }

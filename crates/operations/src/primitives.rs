@@ -20,6 +20,9 @@ use brepkit_topology::solid::{Solid, SolidId};
 use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
 
+/// Upper bound on materialized point sums (about 24 MiB of point data).
+const MAX_MINKOWSKI_POINT_SUMS: usize = 1_000_000;
+
 /// Create a box solid with one corner at the origin.
 ///
 /// The box extends from `(0, 0, 0)` to `(dx, dy, dz)`.
@@ -790,13 +793,15 @@ pub fn make_convex_hull(
 /// vertices under-sample the surface, and for non-convex inputs it is a convex
 /// over-approximation.
 ///
-/// The vertex sum is `O(|A|·|B|)` points — large meshes can be expensive.
+/// The vertex sum is `O(|A|·|B|)` points, capped at
+/// `MAX_MINKOWSKI_POINT_SUMS` to bound memory and hull-construction work.
 ///
 /// # Errors
 ///
 /// Returns [`crate::OperationsError::InvalidInput`] if either solid has no
-/// vertices, and propagates [`make_convex_hull`] errors (e.g. when the summed
-/// points are degenerate / coplanar and no hull can be built).
+/// vertices or their vertex-count product exceeds the work limit, and
+/// propagates [`make_convex_hull`] errors (e.g. when the summed points are
+/// degenerate / coplanar and no hull can be built).
 pub fn make_minkowski_sum(
     topo: &mut Topology,
     a: SolidId,
@@ -818,20 +823,30 @@ pub fn make_minkowski_sum(
         });
     }
 
-    // A genuinely overflowing vertex product is an impossibly large input —
-    // return a clean error rather than panicking in `Vec::with_capacity`.
-    let capacity = a_pts.len().checked_mul(b_pts.len()).ok_or_else(|| {
-        crate::OperationsError::InvalidInput {
-            reason: "minkowski sum input too large: vertex-count product overflows".into(),
-        }
-    })?;
-    let mut sums = Vec::with_capacity(capacity);
+    let capacity = minkowski_point_sum_count(a_pts.len(), b_pts.len())?;
+    let mut sums = Vec::new();
+    sums.try_reserve_exact(capacity)
+        .map_err(|_| crate::OperationsError::InvalidInput {
+            reason: format!("minkowski sum cannot allocate space for {capacity} point sums"),
+        })?;
     for &p in &a_pts {
         for &q in &b_pts {
             sums.push(Point3::new(p.x() + q.x(), p.y() + q.y(), p.z() + q.z()));
         }
     }
     make_convex_hull(topo, &sums)
+}
+
+fn minkowski_point_sum_count(a: usize, b: usize) -> Result<usize, crate::OperationsError> {
+    let count = a.saturating_mul(b);
+    if count > MAX_MINKOWSKI_POINT_SUMS {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "minkowski sum point limit exceeded: {count} > {MAX_MINKOWSKI_POINT_SUMS}"
+            ),
+        });
+    }
+    Ok(count)
 }
 
 #[cfg(test)]

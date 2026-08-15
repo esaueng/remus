@@ -27,6 +27,11 @@ rayon.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Path-only (no version) on purpose: brepkit-io depends on brepkit-operations,
+# so a versioned dev-requirement would create a same-version publish cycle and
+# cargo strips versionless dev-dependencies from the published manifest. The
+# STEP round-trip probes in tests/ resolve identically in-workspace either way.
+brepkit-io = {path = "../io"}
 brepkit-topology = {workspace = true, features = ["test-utils"]}
 criterion.workspace = true
 env_logger.workspace = true

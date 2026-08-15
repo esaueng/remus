@@ -47,6 +47,149 @@ struct ShellSnap {
     faces: Vec<FaceSnap>,
 }
 
+/// Copy one solid between independent topology arenas.
+///
+/// This is used by speculative operations that run in a cloned topology: only
+/// the accepted result is materialized back into the caller's arena.
+pub(crate) fn copy_solid_between(
+    source: &Topology,
+    destination: &mut Topology,
+    solid_id: SolidId,
+) -> Result<SolidId, crate::OperationsError> {
+    let solid = source.solid(solid_id)?;
+    let shell_ids: Vec<_> = std::iter::once(solid.outer_shell())
+        .chain(solid.inner_shells().iter().copied())
+        .collect();
+    let mut vertices = Vec::new();
+    let mut edges = Vec::new();
+    let mut wires = Vec::new();
+    let mut shells = Vec::new();
+    let mut seen_vertices = std::collections::HashSet::new();
+    let mut seen_edges = std::collections::HashSet::new();
+    let mut seen_wires = std::collections::HashSet::new();
+
+    for shell_id in shell_ids {
+        let shell = source.shell(shell_id)?;
+        let mut faces = Vec::new();
+        for &face_id in shell.faces() {
+            let face = source.face(face_id)?;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                if !seen_wires.insert(wire_id.index()) {
+                    continue;
+                }
+                let wire = source.wire(wire_id)?;
+                let mut edge_refs = Vec::new();
+                for oriented in wire.edges() {
+                    let edge_id = oriented.edge();
+                    edge_refs.push((edge_id.index(), oriented.is_forward()));
+                    if !seen_edges.insert(edge_id.index()) {
+                        continue;
+                    }
+                    let edge = source.edge(edge_id)?;
+                    for vertex_id in [edge.start(), edge.end()] {
+                        if seen_vertices.insert(vertex_id.index()) {
+                            let vertex = source.vertex(vertex_id)?;
+                            vertices.push(VertexSnap {
+                                old_index: vertex_id.index(),
+                                point: vertex.point(),
+                                tol: vertex.tolerance(),
+                            });
+                        }
+                    }
+                    edges.push(EdgeSnap {
+                        old_index: edge_id.index(),
+                        start_index: edge.start().index(),
+                        end_index: edge.end().index(),
+                        curve: edge.curve().clone(),
+                        tolerance: edge.tolerance(),
+                    });
+                }
+                wires.push(WireSnap {
+                    old_index: wire_id.index(),
+                    edges: edge_refs,
+                    closed: wire.is_closed(),
+                });
+            }
+            faces.push(FaceSnap {
+                old_index: face_id.index(),
+                outer_wire_index: face.outer_wire().index(),
+                inner_wire_indices: face.inner_wires().iter().map(|wire| wire.index()).collect(),
+                surface: face.surface().clone(),
+                reversed: face.is_reversed(),
+            });
+        }
+        shells.push(ShellSnap { faces });
+    }
+
+    destination.reserve(
+        vertices.len(),
+        edges.len(),
+        wires.len(),
+        shells.iter().map(|shell| shell.faces.len()).sum(),
+        shells.len(),
+        1,
+    );
+    let mut vertex_map = HashMap::new();
+    for vertex in vertices {
+        vertex_map.insert(
+            vertex.old_index,
+            destination.add_vertex(Vertex::new(vertex.point, vertex.tol)),
+        );
+    }
+    let mut edge_map = HashMap::new();
+    for edge in edges {
+        edge_map.insert(
+            edge.old_index,
+            destination.add_edge(Edge::with_tolerance(
+                vertex_map[&edge.start_index],
+                vertex_map[&edge.end_index],
+                edge.curve,
+                edge.tolerance,
+            )),
+        );
+    }
+    let mut wire_map = HashMap::new();
+    for wire in wires {
+        let oriented = wire
+            .edges
+            .into_iter()
+            .map(|(edge, forward)| OrientedEdge::new(edge_map[&edge], forward))
+            .collect();
+        wire_map.insert(
+            wire.old_index,
+            destination.add_wire(
+                Wire::new(oriented, wire.closed).map_err(crate::OperationsError::Topology)?,
+            ),
+        );
+    }
+    let mut new_shells = Vec::new();
+    for shell in shells {
+        let mut new_faces = Vec::new();
+        for face in shell.faces {
+            let outer = wire_map[&face.outer_wire_index];
+            let inner = face
+                .inner_wire_indices
+                .iter()
+                .map(|index| wire_map[index])
+                .collect();
+            let new_face = if face.reversed {
+                Face::new_reversed(outer, inner, face.surface)
+            } else {
+                Face::new(outer, inner, face.surface)
+            };
+            new_faces.push(destination.add_face(new_face));
+        }
+        new_shells.push(
+            destination.add_shell(Shell::new(new_faces).map_err(crate::OperationsError::Topology)?),
+        );
+    }
+    let outer = new_shells[0];
+    let inner = new_shells[1..].to_vec();
+    Ok(destination.add_solid(Solid::new(outer, inner)))
+}
+
 /// Create a deep copy of a solid and all its topology.
 ///
 /// Returns a new `SolidId` for the copy. The original solid is not modified.

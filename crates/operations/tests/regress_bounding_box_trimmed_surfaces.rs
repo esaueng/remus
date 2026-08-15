@@ -26,7 +26,7 @@
 use std::f64::consts::TAU;
 
 use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::CylindricalSurface;
+use brepkit_math::surfaces::{CylindricalSurface, ToroidalSurface};
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::measure;
 use brepkit_operations::primitives;
@@ -144,6 +144,78 @@ fn a_torus_face_that_wraps_its_surface_still_gets_the_whole_ring() {
     let mut topo = Topology::new();
     let primitive = primitives::make_torus(&mut topo, 30.0, 7.0, 32).unwrap();
     assert_box(&topo, primitive, [-37.0, -37.0, -7.0], [37.0, 37.0, 7.0]);
+}
+
+#[test]
+fn an_inner_trim_loop_cannot_shrink_a_wrapping_torus_face() {
+    let (major, minor) = (10.0, 3.0);
+    let mut topo = Topology::new();
+
+    // Model the primitive torus's degenerate outer seam, then add a small
+    // hole near u,v in [0.1, 0.3]. The occupied face is the complement of the
+    // hole and therefore still reaches the opposite side at x = -(R + r).
+    let seam_point = Point3::new(major + minor, 0.0, 0.0);
+    let seam_vertex = topo.add_vertex(Vertex::new(seam_point, TOL));
+    let seam_a = topo.add_edge(Edge::new(seam_vertex, seam_vertex, EdgeCurve::Line));
+    let seam_b = topo.add_edge(Edge::new(seam_vertex, seam_vertex, EdgeCurve::Line));
+    let outer = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(seam_a, true),
+                OrientedEdge::new(seam_b, true),
+                OrientedEdge::new(seam_a, false),
+                OrientedEdge::new(seam_b, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+
+    let torus_point = |u: f64, v: f64| {
+        let radial = major + minor * v.cos();
+        Point3::new(radial * u.cos(), radial * u.sin(), minor * v.sin())
+    };
+    let hole_points = [
+        torus_point(0.1, 0.1),
+        torus_point(0.3, 0.1),
+        torus_point(0.3, 0.3),
+        torus_point(0.1, 0.3),
+    ];
+    let hole_vertices: Vec<_> = hole_points
+        .iter()
+        .map(|point| topo.add_vertex(Vertex::new(*point, TOL)))
+        .collect();
+    let hole_edges: Vec<_> = (0..hole_vertices.len())
+        .map(|i| {
+            topo.add_edge(Edge::new(
+                hole_vertices[i],
+                hole_vertices[(i + 1) % hole_vertices.len()],
+                EdgeCurve::Line,
+            ))
+        })
+        .collect();
+    let hole = topo.add_wire(
+        Wire::new(
+            hole_edges
+                .iter()
+                .map(|&edge| OrientedEdge::new(edge, true))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+
+    let surface = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), major, minor).unwrap();
+    let face = topo.add_face(Face::new(outer, vec![hole], FaceSurface::Torus(surface)));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    assert_box(
+        &topo,
+        solid,
+        [-(major + minor), -(major + minor), -minor],
+        [major + minor, major + minor, minor],
+    );
 }
 
 #[test]

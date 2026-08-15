@@ -6,6 +6,23 @@ use brepkit_topology::test_utils::make_unit_cube_manifold;
 use super::*;
 
 #[test]
+fn high_fanout_edge_connectivity_uses_all_incident_faces() {
+    let mut topo = Topology::new();
+    let cube = make_unit_cube_manifold(&mut topo);
+    let faces = brepkit_topology::explorer::solid_faces(&topo, cube).unwrap();
+
+    // Model a malformed edge referenced by a large number of faces. Repeating
+    // the cube faces keeps the fixture small while exercising the high-fanout
+    // input that must be handled linearly before validation rejects it.
+    let incident_faces: Vec<_> = faces.iter().copied().cycle().take(10_000).collect();
+    let edge_map = std::collections::BTreeMap::from([(0_usize, incident_faces)]);
+
+    let components = face_connectivity_components(&faces, &edge_map);
+    assert_eq!(components.len(), 1);
+    assert_eq!(components[0].len(), faces.len());
+}
+
+#[test]
 fn valid_cube() {
     let mut topo = Topology::new();
     let cube = make_unit_cube_manifold(&mut topo);
@@ -999,6 +1016,68 @@ fn sealed_fragment_floating_inside_the_stock_is_reported_disconnected() {
 }
 
 #[test]
+fn partially_interpenetrating_components_are_reported_disconnected() {
+    let mut topo = Topology::new();
+    let a = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        b,
+        &brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+    )
+    .unwrap();
+
+    let a_shell = topo.solid(a).unwrap().outer_shell();
+    let b_shell = topo.solid(b).unwrap().outer_shell();
+    let mut faces = topo.shell(a_shell).unwrap().faces().to_vec();
+    faces.extend_from_slice(topo.shell(b_shell).unwrap().faces());
+    let shell = topo.add_shell(brepkit_topology::shell::Shell::new(faces).unwrap());
+    let malformed = topo.add_solid(brepkit_topology::solid::Solid::new(shell, vec![]));
+
+    let report = validate_solid(&topo, malformed).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.description.contains("disconnected")),
+        "partially interpenetrating components must not validate clean: {:?}",
+        report.issues
+    );
+}
+
+#[test]
+fn overlap_veto_bounds_component_pair_checks() {
+    let mut topo = Topology::new();
+    let mut faces = Vec::new();
+    let mut components = Vec::new();
+
+    // 92 components produce 4,186 pairs, just over the fixed validation
+    // budget. Keep them far apart so an unbounded scan would visit every pair.
+    for i in 0..92 {
+        let component = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            component,
+            &brepkit_math::mat::Mat4::translation(f64::from(i) * 2.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let shell = topo.solid(component).unwrap().outer_shell();
+        let component_faces = topo.shell(shell).unwrap().faces().to_vec();
+        faces.extend_from_slice(&component_faces);
+        components.push(component_faces);
+    }
+
+    let shell = topo.add_shell(brepkit_topology::shell::Shell::new(faces).unwrap());
+    let solid = topo.add_solid(brepkit_topology::solid::Solid::new(shell, vec![]));
+    let genus = vec![0; components.len()];
+
+    assert!(
+        outer_components_materially_overlap(&topo, solid, &components, &genus).unwrap(),
+        "exhausting the pair budget must fail closed"
+    );
+}
+
+#[test]
 fn ambiguous_same_order_circle_arcs_are_reported_as_a_warning() {
     use brepkit_math::curves::Circle3D;
     use brepkit_math::vec::{Point3, Vec3};
@@ -1084,6 +1163,50 @@ fn ambiguous_circle_arc_diagnostics_are_bounded_per_wire() {
 
     let warnings = ambiguous_circle_arc_warnings(&topo, face, wire, Tolerance::new()).unwrap();
     assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn ambiguous_circle_arc_comparisons_stop_at_the_budget() {
+    use brepkit_math::curves::Circle3D;
+    use brepkit_math::vec::{Point3, Vec3};
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    let mut edge_count = 2_usize;
+    while edge_count.saturating_mul(edge_count - 1) / 2 <= MAX_AMBIGUOUS_CIRCLE_ARC_COMPARISONS {
+        edge_count += 1;
+    }
+
+    let mut topo = Topology::new();
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let reference = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, 2.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(reference.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(reference.evaluate(std::f64::consts::PI), 1e-7));
+    let mut radius = 2.0;
+    let edges = (0..edge_count)
+        .map(|_| {
+            let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, radius).unwrap();
+            radius += 1.0;
+            let edge = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle)));
+            OrientedEdge::new(edge, true)
+        })
+        .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        Vec::new(),
+        FaceSurface::Plane { normal, d: 0.0 },
+    ));
+
+    let warnings = ambiguous_circle_arc_warnings(&topo, face, wire, Tolerance::new()).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .description
+            .contains("too many same-endpoint circle arcs to check individually")
+    );
 }
 
 #[test]
