@@ -1,16 +1,16 @@
 <div align="center">
 
-# brepkit
+# Remus
 
-Solid modeling kernel for Rust and WebAssembly.
+Exact B-Rep solid modeling kernel for Rust and WebAssembly.
 
-[![CI](https://github.com/esaueng/brepkit/actions/workflows/ci.yml/badge.svg)](https://github.com/esaueng/brepkit/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/brepkit-wasm)](https://www.npmjs.com/package/brepkit-wasm)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/esaueng/brepkit?label=commits%2Fmonth)](https://github.com/esaueng/brepkit/commits/apache-main)
+[![CI](https://github.com/esaueng/remus/actions/workflows/ci.yml/badge.svg)](https://github.com/esaueng/remus/actions/workflows/ci.yml)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/esaueng/remus?label=commits%2Fmonth)](https://github.com/esaueng/remus/commits/main)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](#license)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/) [![unsafe denied](https://img.shields.io/badge/unsafe-denied-success.svg)](#why-a-cad-kernel)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
+[![unsafe denied](https://img.shields.io/badge/unsafe-denied-success.svg)](#why-a-cad-kernel)
 
-**[Architecture](#architecture)** · **[Performance](#performance)** · **[Getting Started](#getting-started)** · **[Known Limitations](#known-limitations)** · **[Contributing](./CONTRIBUTING.md)**
+**[Kernel contract](#kernel-contract)** · **[Architecture](#architecture)** · **[Performance](#performance)** · **[Getting started](#getting-started)** · **[Known limitations](#known-limitations)** · **[Contributing](./CONTRIBUTING.md)**
 
 </div>
 
@@ -52,23 +52,81 @@ const vol = kernel.volume(notched, 0.1);
 const step = kernel.exportStep(notched); // Uint8Array
 ```
 
+> **Naming.** The project and repository are **Remus**. The crates still carry
+> the `brepkit-` prefix (`brepkit-math`, `brepkit-operations`, …) and the WASM
+> package is still named `brepkit-wasm`; a rename is in flight. Code samples
+> above show today's identifiers. Nothing in the kernel contract depends on the
+> name — see [kernel maturity target](docs/kernel-maturity/target.md).
+
 ## Why a CAD kernel?
 
-brepkit is a B-Rep solid modeling kernel written from scratch in Rust. It targets WebAssembly, so the same kernel runs in the browser and on the desktop. `unsafe` is denied by lint, as are `unwrap` and `panic`. Every public operation returns a `Result`.
+Remus is a B-Rep solid modeling kernel written from scratch in Rust. It targets
+WebAssembly, so the same kernel runs in the browser and on the desktop.
+`unsafe` is denied by lint, as are `unwrap` and `panic`. Every public operation
+returns a `Result`.
 
-It grew out of building [gridfinitylayouttool.com](https://gridfinitylayouttool.com), where the options for parametric CAD in the browser were proprietary or compiled from large C++ codebases.
+It grew out of building [gridfinitylayouttool.com](https://gridfinitylayouttool.com),
+where the options for parametric CAD in the browser were proprietary or
+compiled from large C++ codebases.
 
-The geometry is exact. Booleans run on analytic and NURBS surfaces and keep those surfaces through the operation, so a cylinder stays a cylinder instead of becoming a bag of triangles. That keeps face counts low and round-trips lossless.
+The geometry is exact. Booleans run on analytic and NURBS surfaces and keep
+those surfaces through the operation, so a cylinder stays a cylinder instead of
+becoming a bag of triangles. That keeps face counts low and round-trips
+lossless.
 
-brepkit's canonical modeling convention is **millimetres for length** and
+Remus's canonical modeling convention is **millimetres for length** and
 **radians for angle**. The kernel does not attach units to scalar values or
 silently convert them; applications using another length unit must scale all
 coordinates, dimensions, deflections, and linear tolerances consistently at
 their boundary. See the [tolerance and robustness guide](book/src/tolerances.md).
 
+## Kernel contract
+
+Remus is being driven from a broad-but-maturing kernel toward a
+professional-grade one, and the rules for that are written down rather than
+implied. This is the part of the repository worth reading before you trust a
+feature label.
+
+- **[Kernel maturity target](docs/kernel-maturity/target.md)** — what
+  "professional-grade" means here, the program invariants, and the
+  program-wide definition of done.
+- **[Capability matrix](docs/kernel-maturity/capability-matrix.md)** — the
+  qualification structure. Every cell of every operation family is Qualified,
+  Partial, Unqualified, Unsupported-typed, or Unsupported-untyped. It is the
+  promotion authority for the feature labels in [Status](#status): no feature
+  is promoted on a single successful fixture.
+- **[Operation contract](docs/kernel-maturity/operation-contract.md)** — the
+  result, quality, fallback, and postcondition contract every operation
+  converges on.
+- **[Failure taxonomy](docs/kernel-maturity/failure-taxonomy.md)** — stable
+  failure categories, and how they map onto the error-code registry.
+- **[Testing strategy](docs/kernel-maturity/testing-strategy.md)** — what kind
+  of evidence qualifies a capability cell, and what CI gates.
+- **[Stability matrix](docs/production-readiness/stability-matrix.md)** — the
+  audited disposition of each label shipping *today*, including the rows whose
+  advertised domain is not yet fully evidenced.
+
+Four mechanisms carry that contract in code:
+
+| Mechanism | Where | What it gives you |
+| --- | --- | --- |
+| **Operation context** | `brepkit_math::context::OperationContext` ([RFC 0001](docs/design/rfc-0001-operation-context.md)) | Tolerances and hard work budgets as an explicit, caller-visible argument instead of module-local constants. Defaults reproduce prior behavior exactly; budgets terminate bounded work rather than looping. |
+| **Structured diagnostics** | `brepkit_math::diagnostic` | Every failure carries a stable category plus a stable code, independent of the Rust error type. Codes are explicit literals, never derived from type or variant names, and the registry is additive only. |
+| **Coedges and per-use p-curves** | `brepkit_topology` ([RFC 0002](docs/design/rfc-0002-coedge-architecture.md)) | First-class edge *uses*, so seams, poles, and periodic surfaces are represented correctly. Seam p-curve access is fail-closed rather than silently picking one side. |
+| **Reproduction bundles** | `brepkit_wasm::repro` | Versioned JSON that replays an operation sequence and its expected results through the batch dispatch path — identically on native and WASM. Bundles are the canonical carrier for new regressions; expected *failures* are first-class. |
+
+Structural work lands through versioned RFCs in [`docs/design`](docs/design)
+and incremental vertical slices, not repository-wide rewrites. Tests are not
+weakened, tolerances are not widened, and a mesh fallback is not introduced to
+make a failing case pass.
+
 ## Status
 
-brepkit is in active development. Core modeling is solid. Each feature below is marked stable, beta, planned, or experimental, and [Known Limitations](#known-limitations) covers the gaps.
+Remus is in active development. Core modeling is solid. Each feature below is
+marked stable, beta, planned, or experimental;
+[Known Limitations](#known-limitations) covers the gaps, and the
+[stability matrix](docs/production-readiness/stability-matrix.md) records what
+evidence each label currently rests on.
 
 | Category                | Feature                                                                      | Status       |
 | ----------------------- | ---------------------------------------------------------------------------- | ------------ |
@@ -78,6 +136,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Booleans**            | Batch fuse-all (disjoint-aware union)                                        | Stable       |
 | **Booleans**            | Torus booleans (box ± torus, coaxial torus)                                  | Beta         |
 | **Modifiers**           | Validated planar fillet/chamfer and axisymmetric closed-rim fillet; other curved blend geometry (experimental assembly) | Stable / Experimental |
+| **Modifiers**           | Resize or remove an analytic blend band (`resize_blend`)                     | Experimental |
 | **Modifiers**           | Shell (hollow solid)                                                         | Stable       |
 | **Modifiers**           | Offset face, offset solid, thicken, mirror, pattern                          | Stable       |
 | **Modifiers**           | Draft (planar faces)                                                         | Beta         |
@@ -95,7 +154,6 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Geometry**            | Surface-surface intersection (analytic + marching)                           | Stable       |
 | **Geometry**            | Curve-curve intersection (Bezier clipping)                                   | Stable       |
 | **Tessellation**        | Adaptive deflection, CDT, analytic-surface optimization                      | Stable       |
-| **Rendering**           | wgpu offscreen rendering and face-ID picking                                 | Beta         |
 | **Repair**              | Shape healing (wire, face, shell fixes), sewing, validation                  | Stable       |
 | **I/O**                 | STEP import/export (analytic-preserving round-trip)                          | Stable       |
 | **I/O**                 | STL, 3MF, OBJ, PLY, glTF (`.glb`) import/export                              | Stable       |
@@ -103,7 +161,7 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 | **Sketching**           | 2D constraint solver (DogLeg)                                                | Stable       |
 | **Feature Recognition** | Holes, pockets, chamfers, fillets                                            | Beta         |
 | **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Beta         |
-| **Evolution**           | Face provenance through booleans                                             | Beta         |
+| **Evolution**           | Face provenance through booleans, blends, and patterns                       | Beta         |
 | **Defeaturing**         | Remove planar faces                                                          | Beta         |
 | **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`brepkit-render`)        | Experimental |
 
@@ -111,10 +169,11 @@ brepkit is in active development. Core modeling is solid. Each feature below is 
 
 A few areas are still maturing. Worth knowing before you build on them:
 
-- **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid.
-- **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities.
+- **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid. Exact tangency and sliver crossings are the two contact configurations that still fall over to that path rather than being answered analytically.
+- **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities. Radii the rolling ball cannot fit are refused as typed errors naming the edge and the limit, not delivered as a partial result.
 - **Torus booleans.** Box-with-torus and coaxial-torus cases work and give correct volumes. General torus-to-torus and torus-with-other-surface intersections have known gaps and may fall back to meshing.
 - **Non-planar profiles.** Loft, sweep, and pipe accept profiles with non-planar surfaces, and close non-planar section boundaries with bilinear caps for four-sided rings (boundaries with more than four edges, or holes on a non-planar section, are not yet supported). Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, but a partial revolution still requires a planar boundary for its caps. The smooth, scaled/guided, and multi-section sweep variants accept non-planar profiles too; only the miter-corner variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
+- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, and patterns. Offset, shell, draft, split, defeature, and direct edits produce none, and there is no edge or vertex provenance yet.
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
 - **Beta subsystems.** Feature recognition, assemblies, evolution tracking, and defeaturing work but are still maturing. Defeaturing handles planar faces only.
 
@@ -123,23 +182,24 @@ documented in [WASM face evolution](docs/wasm-face-evolution.md).
 
 ## Scope
 
-brepkit deliberately does not:
+Remus deliberately does not:
 
 - **Bundle a viewport into the kernel.** The core emits exact geometry and tessellated meshes; camera, lighting, and shading belong to the caller (Three.js and the like). The optional `brepkit-render` crate provides offscreen wgpu rendering with a face-id buffer, for tests and headless verification, and is not required by any core operation.
 - **Plan toolpaths or slice.** Export STEP, STL, or 3MF and pass the output to a CAM tool or slicer.
 - **Model with meshes.** The kernel operates on exact B-Rep geometry. Subdivision surfaces, polygon meshes, and voxels are out of scope.
-- **Provide a GUI.** brepkit is a library. Building a UI around it, like [gridfinitylayouttool.com](https://gridfinitylayouttool.com), is the application's job.
+- **Provide a GUI.** Remus is a library. Building a UI around it is the application's job.
 - **Simulate physics.** Measurement (volume, area, center of mass) is included. Stress analysis, collision detection, and dynamics are not.
 
 ## Architecture
 
-Layered Cargo workspace. Each crate depends only on the same or lower layers, and CI enforces the boundaries.
+Layered Cargo workspace. Each crate depends only on the same or lower layers,
+and CI enforces the boundaries with `scripts/check-boundaries.sh`.
 
 | Layer | Crate                | What it does                                                                                        |
 | ----- | -------------------- | --------------------------------------------------------------------------------------------------- |
-| L0    | `brepkit-math`       | Points, vectors, matrices, NURBS curves and surfaces, geometric predicates, CDT, convex hull        |
+| L0    | `brepkit-math`       | Points, vectors, matrices, NURBS curves and surfaces, geometric predicates, CDT, convex hull, operation context, diagnostics |
 | L1    | `brepkit-geometry`   | Curve sampling (uniform, deflection, arc-length, curvature), extrema, analytic-to-NURBS conversion  |
-| L1    | `brepkit-topology`   | Arena-allocated B-Rep: vertex, edge, wire, face, shell, solid, with an edge-to-face adjacency index |
+| L1    | `brepkit-topology`   | Arena-allocated B-Rep: vertex, edge, coedge, loop, wire, face, shell, solid, with an edge-to-face adjacency index |
 | L2    | `brepkit-algo`       | General Fuse boolean engine: pave filler, face classification, solid assembly                       |
 | L2    | `brepkit-blend`      | Walking-based fillet and chamfer with constant, variable, and custom radius laws                    |
 | L2    | `brepkit-heal`       | Shape healing: analysis, fixing, upgrading, sewing, tolerance management, configurable pipeline     |
@@ -148,14 +208,19 @@ Layered Cargo workspace. Each crate depends only on the same or lower layers, an
 | L2    | `brepkit-sketch`     | 2D parametric constraint solver (GCS) using a DogLeg trust-region method                            |
 | L3    | `brepkit-operations` | Booleans, fillet, chamfer, extrude, revolve, sweep, loft, shell, offset, measure, tessellation      |
 | L3    | `brepkit-io`         | Import and export: STEP, IGES, STL, 3MF, OBJ, PLY, glTF                                             |
-| L4    | `brepkit-wasm`       | JavaScript API via wasm-bindgen, with batch execution and checkpoint/restore                        |
+| L4    | `brepkit-wasm`       | JavaScript API via wasm-bindgen, with batch execution, checkpoint/restore, and reproduction bundles |
 | L4    | `brepkit-render`     | Offscreen wgpu rendering to a color image plus a face-id buffer. Optional, nothing depends on it    |
+
+The layer DAG is a program invariant: preserving it is a constraint on every
+change, and a violation fails both the pre-push hook and CI.
 
 ## Performance
 
-Median times from the [brepjs benchmark suite](https://github.com/andymai/brepjs/tree/main/benchmarks) (5 iterations, Node.js, Linux x86_64). WASM is single-threaded. Native benchmarks use criterion.
+Median times from the [brepjs benchmark suite](https://github.com/andymai/brepjs/tree/main/benchmarks)
+(5 iterations, Node.js, Linux x86_64). WASM is single-threaded. Native
+benchmarks use criterion.
 
-| Operation                | brepkit (WASM) | OCCT (WASM) | Speedup | brepkit (native) |
+| Operation                | Remus (WASM)   | OCCT (WASM) | Speedup | Remus (native)   |
 | ------------------------ | -------------- | ----------- | ------- | ---------------- |
 | fuse(box, box) (×10)     | 0.5 ms         | 43.7 ms     | 87x     | 122 µs           |
 | cut(box, cylinder) (×10) | 28.3 ms        | 64.3 ms     | 2.3x    | 9.3 ms           |
@@ -165,11 +230,21 @@ Median times from the [brepjs benchmark suite](https://github.com/andymai/brepjs
 | mesh sphere (tol=0.01)   | 7.1 ms         | 51.9 ms     | 7.3x    | 6.0 ms           |
 | exportSTEP (×10)         | 0.9 ms         | 14.3 ms     | 16x     | n/a              |
 
-Every quoted row is output-verified across both kernels before timing is compared: fuse, chamfer, and sphere volumes match exactly; cut, fillet, and multi-boolean volumes agree within 0.004%. The sphere mesh densities are comparable at equal tolerance (9,800 triangles vs 10,176). The `intersect(box, sphere)` row is excluded: brepkit currently keeps the wrong sphere region for that configuration (an open, pinned defect), so its ~200x timing would not be a like-for-like comparison.
+Every quoted row is output-verified across both kernels before timing is
+compared: fuse, chamfer, and sphere volumes match exactly; cut, fillet, and
+multi-boolean volumes agree within 0.004%. The sphere mesh densities are
+comparable at equal tolerance (9,800 triangles vs 10,176). The
+`intersect(box, sphere)` row is excluded: the kernel currently keeps the wrong
+sphere region for that configuration (an open, pinned defect), so its ~200x
+timing would not be a like-for-like comparison.
 
-Booleans preserve analytic surfaces, so face counts stay low across chained operations. A nine-step compound boolean settles at 72 faces while a mesh-based approach would reach roughly 7,000. The same holds for blends: a straight edge filleted between two planar faces keeps an exact cylindrical wall rather than a NURBS approximation of one.
+Booleans preserve analytic surfaces, so face counts stay low across chained
+operations. A nine-step compound boolean settles at 72 faces while a mesh-based
+approach would reach roughly 7,000. The same holds for blends: a straight edge
+filleted between two planar faces keeps an exact cylindrical wall rather than a
+NURBS approximation of one.
 
-> The OCCT comparison uses [occt-wasm](https://www.npmjs.com/package/occt-wasm), an OpenCASCADE build compiled to WebAssembly. Both kernels run single-threaded in Node.js. Boolean and `exportSTEP` rows are timed as batches of ten operations. WASM figures are medians of `kernel-comparison.bench.test.ts` (5 iterations) against a local `cargo xtask wasm-build` package, hash-verified at the require path. Native figures: `cargo bench -p brepkit-operations --bench cad_operations`, except the mesh-sphere row, which is measured at the same parameters as the WASM row (`tessellate_solid_with_tolerance`, deflection 0.01, angular 0.1 rad) via `crates/operations/examples/perf_probe.rs` — the criterion suite's sphere case meshes per-face and is not comparable. Full benchmark source: [brepjs/benchmarks](https://github.com/andymai/brepjs/tree/main/benchmarks). Measured 2026-08-06 on brepkit main (post-2.129.8, with the display-sphere tessellation fix).
+> The OCCT comparison uses [occt-wasm](https://www.npmjs.com/package/occt-wasm), an OpenCASCADE build compiled to WebAssembly. Both kernels run single-threaded in Node.js. Boolean and `exportSTEP` rows are timed as batches of ten operations. WASM figures are medians of `kernel-comparison.bench.test.ts` (5 iterations) against a local `cargo xtask wasm-build` package, hash-verified at the require path. Native figures: `cargo bench -p brepkit-operations --bench cad_operations`, except the mesh-sphere row, which is measured at the same parameters as the WASM row (`tessellate_solid_with_tolerance`, deflection 0.01, angular 0.1 rad) via `crates/operations/examples/perf_probe.rs` — the criterion suite's sphere case meshes per-face and is not comparable. Measured 2026-08-06, before the Apache-only line was established, and not re-measured since; treat the figures as indicative and re-run `scripts/bench-compare.sh` before quoting them.
 
 ## Data Exchange
 
@@ -183,9 +258,14 @@ Booleans preserve analytic surfaces, so face counts stay low across chained oper
 | glTF (`.glb`) | Mesh  | ✓       | ✓      |
 | IGES          | B-Rep | preview | lossy  |
 
-STEP preserves exact geometry on round-trip. Analytic surfaces (plane, cylinder, cone, sphere, torus) are written as native STEP surface entities rather than tessellated, and they read back to the same surface types. NURBS surfaces are preserved too, as are line, circle, ellipse, and NURBS edges.
+STEP preserves exact geometry on round-trip. Analytic surfaces (plane,
+cylinder, cone, sphere, torus) are written as native STEP surface entities
+rather than tessellated, and they read back to the same surface types. NURBS
+surfaces are preserved too, as are line, circle, ellipse, and NURBS edges.
 
-Mesh formats export tessellated triangles. glTF is binary `.glb`, with no materials or scene graph. IGES is experimental, as described in [Known Limitations](#known-limitations).
+Mesh formats export tessellated triangles. glTF is binary `.glb`, with no
+materials or scene graph. IGES is experimental, as described in
+[Known Limitations](#known-limitations).
 
 All Rust importer entry points apply production defaults through
 `ImportLimits`: 128 MiB encoded input, 256 MiB for the uncompressed 3MF model
@@ -198,36 +278,43 @@ avoidable large allocations. The WASM batch API separately limits JSON to
 
 ## Getting Started
 
-### As a WASM package
+### Packages
 
-```bash
-npm install brepkit-wasm
-```
+**Remus publishes nothing yet.** No crates.io releases, no npm packages, no
+GitHub releases. Release ownership — named maintainers, package identity,
+vulnerability intake, signing and provenance, rollback and yank authority —
+has to be established first; the gate is documented in
+[fork maintenance and release policy](docs/production-readiness/fork-maintenance.md).
 
-```js
-import { BrepKernel } from 'brepkit-wasm';
+Two consequences worth stating plainly:
 
-const kernel = new BrepKernel();
-const solid = kernel.makeBox(10, 20, 30);
-```
+- A `brepkit-wasm` package on npm does **not** come from this repository. It
+  belongs to the historical upstream line, which is no longer permissively
+  licensed. Installing it does not get you this kernel.
+- The checked-in `crates/wasm/pkg` directory is a frozen compatibility
+  snapshot for an existing consumer that installs it by git path. It is not a
+  release channel and it is not the way to adopt Remus.
 
-For a higher-level TypeScript API, see [brepjs](https://github.com/andymai/brepjs).
+Until packages exist, build from source.
 
 ### As a Rust dependency
 
-Not yet published to crates.io. Use git dependencies for now:
-
 ```toml
 [dependencies]
-brepkit-math = { git = "https://github.com/esaueng/brepkit" }
-brepkit-topology = { git = "https://github.com/esaueng/brepkit" }
-brepkit-operations = { git = "https://github.com/esaueng/brepkit" }
-brepkit-io = { git = "https://github.com/esaueng/brepkit" }        # optional
+brepkit-math = { git = "https://github.com/esaueng/remus" }
+brepkit-topology = { git = "https://github.com/esaueng/remus" }
+brepkit-operations = { git = "https://github.com/esaueng/remus" }
+brepkit-io = { git = "https://github.com/esaueng/remus" }        # optional
 ```
+
+Pin a revision (`rev = "..."`) for anything you intend to reproduce: the crate
+names change when the rename lands.
 
 ### Building from source
 
-Requires Rust 1.88 or newer.
+MSRV is Rust 1.88, and CI holds that floor. Day-to-day development uses the
+toolchain pinned in `rust-toolchain.toml`, which rustup picks up automatically
+along with the `wasm32-unknown-unknown` target.
 
 ```bash
 cargo build --workspace
@@ -235,40 +322,98 @@ cargo test --workspace
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 
-# WASM (with I/O)
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release
+# WASM package: dual-target build, merge, and validation
+cargo xtask wasm-build
 
-# WASM (smaller, no I/O)
+# Plain WASM builds (with and without I/O)
+cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release
 cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release --no-default-features
 
 # API docs
 cargo doc --workspace --no-deps --open
 ```
 
+Repository invariants have their own checks, all of which CI runs:
+
+```bash
+./scripts/check-boundaries.sh              # layer dependency DAG
+./scripts/check-doc-paths.sh               # documented file paths still resolve
+./scripts/check-apache-lineage.sh          # no prohibited upstream lineage
+python3 scripts/check-apache-replay-provenance.py   # provenance ledger integrity
+```
+
+### Documentation
+
+| Where | What |
+| --- | --- |
+| [`book/`](book/src) | Task-oriented guide: getting started, concepts, tolerances, data exchange, WASM, rendering, troubleshooting |
+| [`docs/kernel-maturity/`](docs/kernel-maturity) | The maturity contract: target, capability matrix, operation contract, failure taxonomy, testing strategy |
+| [`docs/design/`](docs/design) | RFCs and design research, including operation context (0001) and coedge architecture (0002) |
+| [`docs/production-readiness/`](docs/production-readiness) | Audit, stability matrix, coverage, release checklist, fork maintenance, Apache replay provenance |
+| [`AGENTS.md`](AGENTS.md) | Working guide: module map, ripple-effect checklists, common pitfalls |
+| [`CHANGELOG.md`](CHANGELOG.md) | Full history, including the pre-fork series |
+
 Maintainers should use the
 [production-readiness audit](docs/production-readiness/audit.md),
 [stability matrix](docs/production-readiness/stability-matrix.md), and
 [release checklist](docs/production-readiness/release-checklist.md) before
 cutting an artifact. The checklist is validation guidance and does not grant
-authority to publish from a fork.
+authority to publish.
 
 ## Roadmap
 
-Broad directions, no dates.
+Priorities, not dates. Planning is by dependency and acceptance gate; see the
+[kernel maturity target](docs/kernel-maturity/target.md) for the full program.
 
-- **Boolean robustness.** Harden torus and mixed-surface booleans, and shrink the set of inputs that fall back to meshing.
-- **Sweep generalization.** Extend non-planar profile support to the miter-corner sweep, to section boundaries with more than four edges, and to partial revolutions with non-planar boundaries.
-- **Parallel tessellation in WASM.** Native builds already parallelize per-face meshing. Bring it to the WASM target via threads.
-- **Assembly metadata.** Colors, layers, materials, and PMI for richer data exchange.
-- **Lossless IGES.** Real B-Rep import and analytic-surface export.
-- **Documentation.** Expand task-oriented tutorials and advanced algorithm guides.
+**P0 — foundations and correctness.** Capability and failure contracts across
+every operation family; the reproduction and regression corpus; first-class
+coedges and explicit curve/p-curve trimming; unified tolerance and operation
+context; intersection robustness; General Fuse and boolean robustness
+(shrinking the set of inputs that fall back to meshing, starting with torus and
+mixed-surface cases); transactional topology mutation; kernel-wide diagnostics.
 
-## Projects Using brepkit
+**P1 — professional modeling behavior.** Complete vertex, edge, and face
+evolution with persistent topological naming; general blends, offsets,
+shelling, sweeps, and lofts — including the miter-corner sweep, boundaries with
+more than four edges, and partial revolutions with non-planar boundaries;
+direct face editing; attribute propagation; broad STEP round-trip behavior with
+topology attributes; memory compaction and session lifecycle.
 
-- [brepjs](https://github.com/andymai/brepjs), CAD modeling for JavaScript.
-- [Gridfinity Layout Tool](https://github.com/andymai/gridfinity-layout-tool), a web-based Gridfinity storage layout generator.
+**P2 — extended scope.** General and non-manifold bodies; mixed B-rep and facet
+modeling; cellular topology; lattice representation; concurrent operations and
+large-model scaling — including parallel tessellation on the WASM target, which
+native builds already do per face.
 
-[Open a PR](https://github.com/esaueng/brepkit/pulls) to add your project.
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Contributions are inbound under
+Apache-2.0 and require a Developer Certificate of Origin sign-off. Commits are
+conventional commits, enforced by commitlint; `cargo fmt`, clippy, the test
+suite, and the boundary checks all gate the pre-push hook.
+
+New regressions should land as [reproduction bundles](crates/wasm/src/repro.rs)
+where the failure is expressible through the batch API — every discovered
+defect is meant to become a permanent, replayable regression.
+
+Security reports: see [SECURITY.md](./SECURITY.md).
+
+## Provenance
+
+Remus is the permanent Apache-2.0 continuation of a codebase whose upstream
+relicensed to AGPL at v3. That boundary is enforced, not merely stated:
+
+- The final permissive upstream release is `v2.129.15`; nothing from v3 or
+  later is merged. Behavior from those releases enters only under an explicit
+  Apache-2.0 grant, or is specified and independently implemented with a
+  regression proving the contract.
+- `scripts/check-apache-lineage.sh` runs in CI and before every push.
+- Every replayed contribution is recorded, PR by PR, in
+  [`apache-replay-provenance.json`](docs/production-readiness/apache-replay-provenance.json)
+  with a validator that checks the ledger offline. The narrative record is in
+  [Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
+
+The project's use of AI tooling is disclosed in
+[AI-DISCLOSURE.md](./AI-DISCLOSURE.md).
 
 ## License
 
@@ -276,3 +421,4 @@ Licensed under the [Apache License, Version 2.0](./LICENSE-APACHE).
 
 This Apache line is permanently based on the last permissive upstream series.
 It does not merge code from upstream releases published under the AGPL.
+</content>
