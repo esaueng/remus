@@ -975,3 +975,60 @@ pub(super) fn tessellate_nurbs(
         uvs,
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::cell::Cell;
+    use std::f64::consts::{PI, TAU};
+
+    use brepkit_math::curves::Circle3D;
+    use brepkit_topology::Topology;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::face::{Face, FaceSurface};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    use super::*;
+
+    #[test]
+    fn split_rim_anchor_collects_all_cycles_once() {
+        const CYCLE_COUNT: usize = 32;
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let seam_parameter = 0.7;
+        let mut topo = Topology::new();
+        let mut oriented = Vec::with_capacity(CYCLE_COUNT * 2);
+        let mut expected_anchor = None;
+        for _ in 0..CYCLE_COUNT {
+            let start = topo.add_vertex(Vertex::new(circle.evaluate(seam_parameter), 1e-7));
+            let split = topo.add_vertex(Vertex::new(circle.evaluate(seam_parameter + PI), 1e-7));
+            let first = topo.add_edge(Edge::new(start, split, EdgeCurve::Circle(circle.clone())));
+            let second = topo.add_edge(Edge::new(split, start, EdgeCurve::Circle(circle.clone())));
+            expected_anchor.get_or_insert(start);
+            oriented.push(OrientedEdge::new(first, true));
+            oriented.push(OrientedEdge::new(second, true));
+        }
+        let wire = topo.add_wire(Wire::new(oriented, true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let projections = Cell::new(0_usize);
+        let project = |point| {
+            projections.set(projections.get() + 1);
+            (circle.project(point), 0.0)
+        };
+        let anchor = full_turn_anchor(&topo, topo.face(face).unwrap(), &project).unwrap();
+        let expected = circle.project(topo.vertex(expected_anchor.unwrap()).unwrap().point());
+        let offset = (anchor - expected).rem_euclid(TAU);
+        assert!(offset.min(TAU - offset) < 1e-12);
+        assert_eq!(projections.get(), CYCLE_COUNT * 2 * 3 + 1);
+    }
+}

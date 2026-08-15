@@ -16,6 +16,8 @@ use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
 
 use brepkit_math::nurbs::intersection::IntersectionPoint;
 
+use std::collections::{HashMap, HashSet};
+
 use crate::boolean::face_polygon;
 use crate::dot_normal_point;
 
@@ -315,38 +317,111 @@ fn polygon_area_3d(polygon: &[Point3], normal: Vec3) -> f64 {
     (sum * 0.5).abs()
 }
 
-type EdgeKey = ((i64, i64, i64), (i64, i64, i64));
-
-/// Quantize a point onto an integer lattice for tolerant endpoint matching.
-fn quantize_point(p: Point3, tol: Tolerance) -> (i64, i64, i64) {
-    let scale = 1.0 / (tol.linear * 10.0);
-    (
-        (p.x() * scale).round() as i64,
-        (p.y() * scale).round() as i64,
-        (p.z() * scale).round() as i64,
-    )
+/// Return whether two points coincide within the endpoint-matching tolerance.
+fn coincident_points(a: Point3, b: Point3, endpoint_tol: f64) -> bool {
+    (a.x() - b.x()).abs() <= endpoint_tol
+        && (a.y() - b.y()).abs() <= endpoint_tol
+        && (a.z() - b.z()).abs() <= endpoint_tol
 }
 
-/// Build an orientation-insensitive key for a segment from its quantized
-/// endpoints, so `(a, b)` and `(b, a)` collide.
-fn make_edge_key(a: Point3, b: Point3, tol: Tolerance) -> EdgeKey {
-    let qa = quantize_point(a, tol);
-    let qb = quantize_point(b, tol);
-    if qa <= qb { (qa, qb) } else { (qb, qa) }
+type PointBucket = (u64, u64, u64);
+
+/// Spatial index that assigns tolerance-coincident endpoints a stable ID.
+///
+/// The bucket coordinates deliberately remain floating-point bit patterns
+/// rather than being cast to bounded integers. This keeps the index valid for
+/// coordinates whose quotient by the tolerance is outside the `i64` range.
+struct EndpointIndex {
+    tolerance: f64,
+    buckets: HashMap<PointBucket, Vec<(Point3, usize)>>,
+    next_id: usize,
+}
+
+impl EndpointIndex {
+    fn new(tolerance: f64) -> Self {
+        Self {
+            tolerance,
+            buckets: HashMap::new(),
+            next_id: 0,
+        }
+    }
+
+    fn axis_bucket(value: f64, tolerance: f64) -> u64 {
+        let scaled = (value / tolerance).floor();
+        if scaled.is_finite() {
+            scaled.to_bits()
+        } else {
+            // At this magnitude adjacent finite floats are much farther apart
+            // than the modeling tolerance, so exact bits are sufficient.
+            value.to_bits()
+        }
+    }
+
+    fn bucket(&self, point: Point3) -> PointBucket {
+        (
+            Self::axis_bucket(point.x(), self.tolerance),
+            Self::axis_bucket(point.y(), self.tolerance),
+            Self::axis_bucket(point.z(), self.tolerance),
+        )
+    }
+
+    fn id(&mut self, point: Point3) -> usize {
+        let offsets = [-self.tolerance, 0.0, self.tolerance];
+        for dx in offsets {
+            for dy in offsets {
+                for dz in offsets {
+                    let nearby = Point3::new(point.x() + dx, point.y() + dy, point.z() + dz);
+                    let bucket = self.bucket(nearby);
+                    if let Some(entries) = self.buckets.get(&bucket)
+                        && let Some((_, id)) = entries.iter().find(|(candidate, _)| {
+                            coincident_points(point, *candidate, self.tolerance)
+                        })
+                    {
+                        return *id;
+                    }
+                }
+            }
+        }
+
+        let id = self.next_id;
+        self.next_id += 1;
+        self.buckets
+            .entry(self.bucket(point))
+            .or_default()
+            .push((point, id));
+        id
+    }
+}
+
+fn endpoint_pair(index: &mut EndpointIndex, a: Point3, b: Point3) -> (usize, usize) {
+    let a_id = index.id(a);
+    let b_id = index.id(b);
+    if a_id <= b_id {
+        (a_id, b_id)
+    } else {
+        (b_id, a_id)
+    }
 }
 
 /// Collapse geometrically-coincident segments, ignoring orientation.
 ///
 /// A section curve shared by two oppositely-oriented faces is emitted once in
-/// each direction (see the sphere-hemisphere case at the call site). Keying
-/// each segment by its unordered quantized endpoints keeps a single copy.
+/// each direction (see the sphere-hemisphere case at the call site). Comparing
+/// unordered endpoints keeps a single copy without quantizing absolute world
+/// coordinates into a bounded integer type.
 /// Distinct polygon edges share at most one endpoint, so real edges of the
 /// section outline are never merged.
 fn dedup_coincident_segments(segments: &mut Vec<(Point3, Point3)>, tol: Tolerance) {
-    use std::collections::HashSet;
-
-    let mut seen: HashSet<EdgeKey> = HashSet::new();
-    segments.retain(|&(a, b)| seen.insert(make_edge_key(a, b, tol)));
+    let endpoint_tol = tol.linear * 10.0;
+    let mut endpoint_index = EndpointIndex::new(endpoint_tol);
+    let mut seen = HashSet::with_capacity(segments.len());
+    let mut unique = Vec::with_capacity(segments.len());
+    for &(a, b) in segments.iter() {
+        if seen.insert(endpoint_pair(&mut endpoint_index, a, b)) {
+            unique.push((a, b));
+        }
+    }
+    *segments = unique;
 }
 
 /// Extract boundary edges of faces coplanar with the cutting plane.
@@ -361,8 +436,6 @@ fn extract_coplanar_boundary(
     cut_d: f64,
     tol: Tolerance,
 ) -> Result<Vec<(Point3, Point3)>, crate::OperationsError> {
-    use std::collections::HashMap;
-
     // Use a relaxed tolerance for coplanar detection to handle
     // floating-point precision differences across platforms (e.g. WASM).
     let coplanar_tol = tol.linear * 100.0;
@@ -383,11 +456,13 @@ fn extract_coplanar_boundary(
         return Ok(Vec::new());
     }
 
-    // Collect all edges of coplanar faces. Each edge is represented by a pair
-    // of quantized endpoint coordinates (to handle floating-point matching).
+    // Collect all edges of coplanar faces, matching their endpoints within the
+    // modeling tolerance.
     // An edge shared by two coplanar faces appears twice and is internal.
     // An edge appearing once is a boundary edge.
-    let mut edge_counts: HashMap<EdgeKey, (Point3, Point3, usize)> = HashMap::new();
+    let endpoint_tol = tol.linear * 10.0;
+    let mut endpoint_index = EndpointIndex::new(endpoint_tol);
+    let mut edge_counts: HashMap<(usize, usize), (Point3, Point3, usize)> = HashMap::new();
 
     for &fid in &coplanar_faces {
         let verts = face_polygon(topo, fid)?;
@@ -395,19 +470,19 @@ fn extract_coplanar_boundary(
         for i in 0..n {
             let a = verts[i];
             let b = verts[(i + 1) % n];
-            let key = make_edge_key(a, b, tol);
+            let key = endpoint_pair(&mut endpoint_index, a, b);
             edge_counts
                 .entry(key)
-                .and_modify(|e| e.2 += 1)
+                .and_modify(|(_, _, count)| *count += 1)
                 .or_insert((a, b, 1));
         }
     }
 
     // Boundary edges appear exactly once.
     let boundary: Vec<(Point3, Point3)> = edge_counts
-        .into_values()
-        .filter(|(_, _, count)| *count == 1)
-        .map(|(a, b, _)| (a, b))
+        .into_iter()
+        .filter(|(_, (_, _, count))| *count == 1)
+        .map(|(_, (a, b, _))| (a, b))
         .collect();
 
     Ok(boundary)
@@ -625,6 +700,42 @@ mod tests {
             (area - 1.0).abs() < 1e-6,
             "cross-section area should be ~1.0, got {area}"
         );
+    }
+
+    #[test]
+    fn dedup_preserves_large_coordinate_outline() {
+        let x = 1.0e13;
+        let mut segments = vec![
+            (Point3::new(x, 0.0, 0.5), Point3::new(x + 1.0, 0.0, 0.5)),
+            (
+                Point3::new(x + 1.0, 0.0, 0.5),
+                Point3::new(x + 1.0, 1.0, 0.5),
+            ),
+            (Point3::new(x + 1.0, 1.0, 0.5), Point3::new(x, 1.0, 0.5)),
+            (Point3::new(x, 1.0, 0.5), Point3::new(x, 0.0, 0.5)),
+        ];
+
+        dedup_coincident_segments(&mut segments, Tolerance::new());
+
+        assert_eq!(segments.len(), 4, "all distinct outline edges must remain");
+    }
+
+    #[test]
+    fn dedup_scales_across_many_distinct_segments() {
+        let mut segments: Vec<_> = (0..10_000)
+            .map(|i| {
+                let x = f64::from(i);
+                (Point3::new(x, 0.0, 0.0), Point3::new(x, 0.5, 0.0))
+            })
+            .collect();
+        segments.push((
+            Point3::new(9_999.0, 0.5, 0.0),
+            Point3::new(9_999.0, 0.0, 0.0),
+        ));
+
+        dedup_coincident_segments(&mut segments, Tolerance::new());
+
+        assert_eq!(segments.len(), 10_000);
     }
 
     #[test]

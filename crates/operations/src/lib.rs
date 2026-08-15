@@ -11,7 +11,7 @@
 //! | **Core** | [`primitives`], [`extrude`], [`revolve`], [`sweep`], [`loft`], [`pipe`], [`helix`] | Shape creation |
 //! | **Transform** | [`transform`], [`copy`], [`mirror`], [`pattern`] | Spatial operations |
 //! | **Boolean** | [`boolean`], [`mesh_boolean`] | Set operations |
-//! | **Blend** | [`fillet`], [`chamfer`], [`blend_ops`] | Edge smoothing |
+//! | **Blend** | [`fillet`], [`chamfer`], [`blend_ops`], [`resize_blend`] | Edge smoothing and exact band editing |
 //! | **Offset** | [`offset_face`], [`offset_trim`], [`offset_v2`], [`offset_wire`] | Wall thickness |
 //! | **Direct edit** | [`push_pull`] | Move a face of an existing solid |
 //! | **Surface** | [`fill_face`], [`thicken`], [`shell_op`], [`draft`], [`section`], [`split`] | Surface/solid modification |
@@ -42,6 +42,7 @@ pub mod mesh_boolean;
 pub mod blend_ops;
 pub mod chamfer;
 pub mod fillet;
+pub mod resize_blend;
 
 pub mod offset_face;
 pub mod offset_trim;
@@ -150,6 +151,10 @@ pub enum OperationsError {
     /// A blend (fillet/chamfer v2) error occurred.
     #[error("blend: {0}")]
     Blend(#[from] brepkit_blend::BlendError),
+
+    /// An exact blend-band resize was refused.
+    #[error("resize blend: {0}")]
+    ResizeBlend(#[from] resize_blend::ResizeBlendError),
 
     /// A check (classification/validation/distance) error occurred.
     #[error("check: {0}")]

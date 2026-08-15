@@ -2629,11 +2629,12 @@ pub fn fillet_rolling_ball_with_origins(
         // corner patch's degenerate column subdivides far past what its
         // curvature warrants (up to 1490 triangles for a patch the size of a
         // sphere octant), so measuring every face that way cost more than
-        // building the whole fillet. A boundary wire that already encloses real
-        // area cannot bound a collapsed face, so clearing the floor on the
-        // cheap polygon is conclusive; anything it cannot clear still goes
-        // through the exact measurement below, leaving the guard's verdict
-        // unchanged.
+        // building the whole fillet. For an untrimmed face, a boundary wire
+        // that already encloses real area cannot bound a collapsed face, so
+        // clearing the floor on the cheap polygon is conclusive. Holed faces
+        // always return zero from `boundary_polygon_area`, because their inner
+        // wires can cancel nearly all of the outer area, and therefore go
+        // through the exact measurement below.
         if boundary_polygon_area(topo, fid)? > area_floor {
             continue;
         }
@@ -2977,9 +2978,14 @@ fn build_two_edge_corner_patch(
 
 /// Area of a face's outer boundary wire, via Newell's method.
 ///
-/// A lower bound on the face's true area for the blend patches this engine
-/// emits, used only as a fast "clearly not degenerate" test.
+/// A lower bound on the face's true area for untrimmed blend patches, used only
+/// as a fast "clearly not degenerate" test. Holed faces return zero so the
+/// caller measures their net area exactly instead of ignoring their inner
+/// wires.
 fn boundary_polygon_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::OperationsError> {
+    if !topo.face(face_id)?.inner_wires().is_empty() {
+        return Ok(0.0);
+    }
     let pts = crate::boolean::face_polygon(topo, face_id)?;
     if pts.len() < 3 {
         return Ok(0.0);

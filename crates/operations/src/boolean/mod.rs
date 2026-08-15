@@ -16,6 +16,10 @@ const COINCIDENT_BOUNDARY_FLOOR_MM: f64 = 1e-6;
 /// Strict margin used by the disjoint-component shortcut's AABB containment
 /// pre-filter, in mm.
 pub(crate) const COMPONENT_OVERLAP_MARGIN_MM: f64 = 1e-7;
+/// Deterministic work limits for the disjoint-component narrow phase.
+const MAX_COMPONENT_NARROW_PHASE_PAIRS: usize = 32;
+const MAX_COMPONENT_TRIANGLES: usize = 100_000;
+const MAX_COMPONENT_TRIANGLE_TESTS: usize = 200_000;
 /// Endpoint distance below which a sampled curve is treated as closed, in mm.
 const CLOSED_CURVE_ENDPOINT_TOL_MM: f64 = 1e-6;
 
@@ -44,6 +48,24 @@ use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
+thread_local! {
+    /// How often the flatten pre-pass's recursion guard has had to abandon the
+    /// analytic-recognition pass because the pass left its own gate satisfied.
+    /// Zero on every input the pass handles as designed, so tests assert on it
+    /// to catch a silent loss of the optimisation.
+    #[cfg(test)]
+    static THREAD_FLATTEN_GUARD_TRIPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn thread_flatten_guard_trips() -> u64 {
+    THREAD_FLATTEN_GUARD_TRIPS.with(std::cell::Cell::get)
+}
+
+fn note_flatten_guard_trip() {
+    #[cfg(test)]
+    THREAD_FLATTEN_GUARD_TRIPS.with(|count| count.set(count.get() + 1));
+}
 /// Perform a boolean operation on two solids.
 ///
 /// Uses the GFA pipeline as the primary engine, with mesh boolean
@@ -465,20 +487,60 @@ pub fn boolean(
     // correctness, not just speed: the engine's downstream ordering is keyed on
     // entity ids, so needlessly deep-copying an operand (which renumbers its
     // ids) can perturb volume-sensitive cut/fuse results.
-    let gfa_a = if solid_has_flattenable_nurbs(topo, a, tol.linear)? {
-        let copy_a = crate::copy::copy_solid(topo, a)?;
-        let _ = flatten_planar_nurbs_faces(topo, copy_a, tol.linear)?;
-        copy_a
-    } else {
-        a
-    };
-    let gfa_b = if solid_has_flattenable_nurbs(topo, b, tol.linear)? {
-        let copy_b = crate::copy::copy_solid(topo, b)?;
-        let _ = flatten_planar_nurbs_faces(topo, copy_b, tol.linear)?;
-        copy_b
-    } else {
-        b
-    };
+    let flatten_a = solid_has_flattenable_nurbs(topo, a, tol.linear)?;
+    let flatten_b = solid_has_flattenable_nurbs(topo, b, tol.linear)?;
+    if flatten_a || flatten_b {
+        let mut working = topo.clone();
+        // The recursion below re-enters this same gate. What bounds it is the
+        // fixpoint: `flatten_planar_nurbs_faces` is expected to clear
+        // `solid_has_flattenable_nurbs` for every operand it rewrites, so the
+        // recursive call finds nothing to flatten and drops through to the
+        // engine. That fixpoint holds only while the gate and the pass apply
+        // the identical recognizer at the identical tolerance over the identical
+        // face set — an unenforced invariant whose failure mode is unbounded
+        // recursion, deep-cloning the whole arena at every level, on
+        // attacker-supplied import geometry. So verify it per operand instead of
+        // trusting it, and recurse only once it is established: with both gates
+        // observed false, the recursive call cannot re-enter this block at all,
+        // which bounds the depth at one.
+        //
+        // The verification is the gate itself, not the pass's return value: that
+        // return counts flattened FACES only, so a solid whose only flattenable
+        // geometry is straight NURBS EDGES reports zero while the gate stays
+        // true, and a change-count test would wrongly abandon that case.
+        let mut flatten_settled = true;
+        let working_a = if flatten_a {
+            let copy = crate::copy::copy_solid(&mut working, a)?;
+            let _ = flatten_planar_nurbs_faces(&mut working, copy, tol.linear)?;
+            flatten_settled &= !solid_has_flattenable_nurbs(&working, copy, tol.linear)?;
+            copy
+        } else {
+            a
+        };
+        let working_b = if flatten_b {
+            let copy = crate::copy::copy_solid(&mut working, b)?;
+            let _ = flatten_planar_nurbs_faces(&mut working, copy, tol.linear)?;
+            flatten_settled &= !solid_has_flattenable_nurbs(&working, copy, tol.linear)?;
+            copy
+        } else {
+            b
+        };
+        if flatten_settled {
+            let working_result = boolean(&mut working, op, working_a, working_b)?;
+            return crate::copy::copy_solid_between(&working, topo, working_result);
+        }
+        // Recognising flat NURBS as analytic is an optimisation, not a
+        // correctness requirement, so degrade to the unflattened engine path
+        // below. Erroring here would convert a latent hang into a user-visible
+        // failure on geometry the engine can still process. The arena clone is
+        // released with this block, before the engine runs.
+        note_flatten_guard_trip();
+        log::warn!(
+            "flatten pre-pass left flattenable NURBS on an operand; \
+             running the boolean without the analytic-recognition pre-pass"
+        );
+    }
+    let (gfa_a, gfa_b) = (a, b);
     let gfa_start = timer_now();
     match brepkit_algo::gfa::boolean(topo, algo_op, gfa_a, gfa_b) {
         Ok(result) => {
@@ -732,19 +794,7 @@ pub fn boolean(
                 // valid result into the mesh fallback (the status quo), the
                 // same posture `cut_safe` already accepts.
                 let intersect_safe = op != BooleanOp::Intersect
-                    || components_vec.iter().all(|comp| {
-                        let Some(centre) = component_aabb_centre(topo, comp) else {
-                            return true;
-                        };
-                        [a, b].iter().all(|&operand| {
-                            !matches!(
-                                crate::classify::classify_point_robust(
-                                    topo, operand, centre, 0.1, tol.linear,
-                                ),
-                                Ok(crate::classify::PointClassification::Outside) | Err(_)
-                            )
-                        })
-                    });
+                    || intersect_multi_region_semantically_safe(topo, result, a, b, tol);
                 // Fuse shares this gate: fusing a tool into ONE piece of a
                 // multi-component operand (the lite base's 16 disjoint feet
                 // before their web joins them) legitimately leaves N disjoint
@@ -769,42 +819,6 @@ pub fn boolean(
                 {
                     log::info!(
                         "GFA multi-region succeeded in {:.1}ms ({result_faces} faces, {components} pieces)",
-                        timer_elapsed_ms(gfa_start)
-                    );
-                    return Ok(result);
-                }
-                // Tangent-pinch acceptance (Fuse only): operands touching
-                // along a line — a box fused to a box sharing one edge, or a
-                // cylinder whose wall is tangent to a box's corner edge —
-                // produce a result that is CORRECT (exact volume, every
-                // material probe Inside) but inherently non-manifold at the
-                // contact line: the pinch edge is used by exactly 4 faces, and
-                // no fallback can make it manifold (the mesh boolean's output
-                // pinches identically, so these cases used to hard-fail with
-                // NonManifoldResult). Accept the GFA result when the ONLY
-                // defects are genuine pinches:
-                // - no free edges, no unclosed wires, no inner-shell surplus;
-                // - every over-shared edge is used exactly 4 times and its
-                //   midpoint lies ON BOTH operands' boundaries (a true contact
-                //   line — a damaged shell's over-shared edges fail this);
-                // - Euler balances with one extra unit per pinch edge (each
-                //   pinch identifies a vertex pair and an edge across the two
-                //   wedges: χ = 2 + pinches for a single pinched component).
-                if op == BooleanOp::Fuse
-                    && inner_shell_surplus == 0
-                    && open_shell_ok
-                    && operands_are_represented(topo, op, result, a, b, tol)
-                    && let Some(pinches) = tangent_pinch_count(topo, result, a, b)
-                    && pinches > 0
-                    && euler_balanced(
-                        euler - i64::try_from(pinches).unwrap_or(i64::MAX),
-                        inner_wire_count,
-                        1,
-                    )
-                {
-                    log::info!(
-                        "GFA tangent-pinch fuse accepted in {:.1}ms ({result_faces} faces, \
-                         {pinches} pinch edge(s))",
                         timer_elapsed_ms(gfa_start)
                     );
                     return Ok(result);
@@ -881,7 +895,7 @@ pub fn boolean(
     // the outer shell only, so a hollow piece would silently lose its cavity.
     if op == BooleanOp::Fuse && topo.solid(b).is_ok_and(|s| s.inner_shells().is_empty()) {
         let tool_components = crate::boolean::assembly::face_components(topo, b);
-        if tool_components.len() >= 2
+        if (2..=64).contains(&tool_components.len())
             && components_are_disjoint_pieces(topo, &tool_components)
             && let Ok(result) = fuse_multi_component_tool(topo, a, tool_components)
         {
@@ -947,6 +961,9 @@ pub fn boolean_with_options(
     Ok(result)
 }
 
+/// Maximum number of tools accepted by [`compound_cut`].
+pub const MAX_COMPOUND_CUT_TOOLS: usize = 256;
+
 /// Sequential compound cut via GFA.
 ///
 /// Cuts the `target` solid by each tool in order using sequential
@@ -954,13 +971,22 @@ pub fn boolean_with_options(
 ///
 /// # Errors
 ///
-/// Returns an error if any individual cut fails.
+/// Returns an error if the tool count exceeds [`MAX_COMPOUND_CUT_TOOLS`] or
+/// any individual cut fails.
 pub fn compound_cut(
     topo: &mut Topology,
     target: SolidId,
     tools: &[SolidId],
     opts: BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
+    if tools.len() > MAX_COMPOUND_CUT_TOOLS {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "compound_cut accepts at most {MAX_COMPOUND_CUT_TOOLS} tools, got {}",
+                tools.len()
+            ),
+        });
+    }
     // Batched fast path: merge the tools into one multi-piece solid and cut
     // ONCE. Sequential cutting re-runs the full boolean pipeline against the
     // whole target per tool — O(target × tools); the lite magnet-drill pass
@@ -986,14 +1012,15 @@ pub fn compound_cut(
         && let Some(clusters) = cluster_tools_by_aabb(topo, tools)
         && !clusters.is_empty()
     {
-        let merged = clusters.iter().try_fold(None::<SolidId>, |acc, cluster| {
-            let fused = fuse_cluster(topo, cluster)?;
-            match acc {
-                None => Ok(Some(fused)),
-                Some(prev) => boolean(topo, BooleanOp::Fuse, prev, fused).map(Some),
-            }
-        });
-        if let Ok(Some(tool)) = merged
+        let merged = clusters
+            .iter()
+            .map(|cluster| {
+                let fused = fuse_cluster(topo, cluster)?;
+                crate::copy::copy_solid(topo, fused)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|solids| crate::compound_ops::merge_disjoint_solids(topo, &solids));
+        if let Ok(tool) = merged
             && let Ok(cut) = boolean(topo, BooleanOp::Cut, target, tool)
         {
             result = cut;
@@ -2230,9 +2257,12 @@ fn aabbs_clear_gap(
 /// a clear gap: every connected face component of `a` is separated from every
 /// connected face component of `b` by more than `margin` on some axis.
 ///
-/// Soundness: component AABBs come from [`crate::measure::face_set_bounding_box`],
-/// which is a conservative *outer* bound (vertices plus surface-curvature
-/// expansion). If two components' true geometry overlapped or touched, their
+/// Soundness: components containing NURBS faces are rejected because their
+/// sampled bounding boxes are not guaranteed to contain every surface
+/// extremum. The remaining component AABBs come from
+/// [`crate::measure::face_set_bounding_box`] and are conservative *outer*
+/// bounds (vertices plus analytic surface-curvature expansion). If two
+/// components' true geometry overlapped or touched, their
 /// boxes would touch or overlap and [`aabbs_clear_gap`] would (correctly)
 /// return `false`. So a `true` result guarantees a real positive gap between
 /// the two solids — never a false "disjoint" for touching/coincident inputs,
@@ -2255,7 +2285,17 @@ fn solids_provably_disjoint(topo: &Topology, a: SolidId, b: SolidId, margin: f64
     let boxes = |comps: &[Vec<FaceId>]| -> Option<Vec<brepkit_math::aabb::Aabb3>> {
         comps
             .iter()
-            .map(|faces| crate::measure::face_set_bounding_box(topo, faces).ok())
+            .map(|faces| {
+                let has_nurbs = faces.iter().try_fold(false, |has_nurbs, &face_id| {
+                    topo.face(face_id)
+                        .map(|face| has_nurbs || matches!(face.surface(), FaceSurface::Nurbs(_)))
+                        .ok()
+                })?;
+                if has_nurbs {
+                    return None;
+                }
+                crate::measure::face_set_bounding_box(topo, faces).ok()
+            })
             .collect()
     };
     let (Some(boxes_a), Some(boxes_b)) = (boxes(&comps_a), boxes(&comps_b)) else {
@@ -2693,6 +2733,191 @@ fn mesh_result_to_face_specs(result: &crate::mesh_boolean::MeshBooleanResult) ->
     specs
 }
 
+/// Prove a disconnected analytic Intersect result against both operands.
+///
+/// Structural manifold checks cannot establish set semantics. This verifier
+/// therefore checks the complete tessellated result boundary against both
+/// operands and independently reconstructs the intersection volume through
+/// both set-difference identities (`A - (A − B)` and `B - (B − A)`). Any
+/// classification/boolean/measurement uncertainty rejects the optimization
+/// and leaves the normal mesh fallback in charge.
+fn intersect_multi_region_semantically_safe(
+    topo: &Topology,
+    result: SolidId,
+    a: SolidId,
+    b: SolidId,
+    tol: brepkit_math::tolerance::Tolerance,
+) -> bool {
+    const MAX_BOUNDARY_SAMPLES: usize = 100_000;
+
+    let Ok(faces) = brepkit_topology::explorer::solid_faces(topo, result) else {
+        return false;
+    };
+    let mut samples = Vec::new();
+    for fid in faces {
+        let Ok(mesh) = crate::tessellate::tessellate(topo, fid, 0.05) else {
+            return false;
+        };
+        for tri in mesh.indices.chunks_exact(3) {
+            let (Some(&p0), Some(&p1), Some(&p2)) = (
+                mesh.positions.get(tri[0] as usize),
+                mesh.positions.get(tri[1] as usize),
+                mesh.positions.get(tri[2] as usize),
+            ) else {
+                return false;
+            };
+            // Tessellator vertices lie on the exact face surface. Triangle
+            // centroids generally lie on the inward chord of a curved face,
+            // so classifying them would test the approximation rather than
+            // the analytic result boundary.
+            samples.extend([p0, p1, p2]);
+            if samples.len() > MAX_BOUNDARY_SAMPLES {
+                return false;
+            }
+        }
+    }
+    let classify_tol = tol.linear * 100.0;
+    let Ok(a_faces) = brepkit_topology::explorer::solid_faces(topo, a) else {
+        return false;
+    };
+    let Ok(b_faces) = brepkit_topology::explorer::solid_faces(topo, b) else {
+        return false;
+    };
+    let mut distance_checks = 0_usize;
+    for &point in &samples {
+        for operand in [a, b] {
+            let classification =
+                crate::classify::classify_point_robust(topo, operand, point, 0.05, classify_tol);
+            if matches!(
+                classification,
+                Ok(crate::classify::PointClassification::Inside
+                    | crate::classify::PointClassification::OnBoundary)
+            ) {
+                continue;
+            }
+            let operand_faces = if operand == a { &a_faces } else { &b_faces };
+            let on_trimmed_boundary = matches!(
+                classification,
+                Ok(crate::classify::PointClassification::Outside)
+            ) && operand_faces.iter().any(|&fid| {
+                distance_checks += 1;
+                if distance_checks > 200_000 {
+                    return false;
+                }
+                let in_face_box = brepkit_check::util::face_aabb(topo, fid)
+                    .is_ok_and(|bbox| bbox.expanded(classify_tol).contains_point(point));
+                in_face_box
+                    && crate::distance::point_to_face_distance(topo, point, fid, tol)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|(distance, _)| distance <= classify_tol)
+            });
+            if !on_trimmed_boundary {
+                log::debug!(
+                    "multi-region Intersect boundary verification failed at {point:?} against {}: {classification:?}",
+                    operand.index()
+                );
+                return false;
+            }
+        }
+    }
+
+    let volume_audit = (|| -> Result<IntersectionVolumeAudit, crate::OperationsError> {
+        let result_volume = intersection_audit_mesh_volumes(topo, result)?;
+        let a_volume = intersection_audit_mesh_volumes(topo, a)?;
+        let b_volume = intersection_audit_mesh_volumes(topo, b)?;
+        let mut audit = topo.clone();
+        let a_minus_b = boolean(&mut audit, BooleanOp::Cut, a, b)?;
+        let a_cut_volume = intersection_audit_mesh_volumes(&audit, a_minus_b)?;
+        let b_minus_a = boolean(&mut audit, BooleanOp::Cut, b, a)?;
+        let b_cut_volume = intersection_audit_mesh_volumes(&audit, b_minus_a)?;
+        Ok((
+            result_volume,
+            (a_volume.0 - a_cut_volume.0, a_volume.1 - a_cut_volume.1),
+            (b_volume.0 - b_cut_volume.0, b_volume.1 - b_cut_volume.1),
+        ))
+    })();
+    let Ok((result_volume, from_a, from_b)) = volume_audit else {
+        log::debug!("multi-region Intersect volume verification could not be computed");
+        return false;
+    };
+    let result_convergence = (result_volume.0 - result_volume.1).abs();
+    let from_a_convergence = (from_a.0 - from_a.1).abs();
+    let from_b_convergence = (from_b.0 - from_b.1).abs();
+    let allowed_from_a = result_convergence + from_a_convergence + 1e-6;
+    let allowed_from_b = result_convergence + from_b_convergence + 1e-6;
+    log::debug!(
+        "multi-region Intersect volume verification: result={} from_a={} from_b={} tolerances=({allowed_from_a}, {allowed_from_b})",
+        result_volume.1,
+        from_a.1,
+        from_b.1
+    );
+    (result_volume.1 - from_a.1).abs() <= allowed_from_a
+        && (result_volume.1 - from_b.1).abs() <= allowed_from_b
+}
+
+type CoarseFineVolume = (f64, f64);
+type IntersectionVolumeAudit = (CoarseFineVolume, CoarseFineVolume, CoarseFineVolume);
+
+/// Measure a solid twice with the same watertight-mesh algorithm used for
+/// every term in the intersection identity. The coarse/fine delta supplies an
+/// observed discretization bound instead of mixing analytic and mesh volumes.
+fn intersection_audit_mesh_volumes(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<CoarseFineVolume, crate::OperationsError> {
+    const MAX_TRIANGLES: usize = 500_000;
+
+    let measure = |deflection| -> Result<f64, crate::OperationsError> {
+        let mesh = crate::tessellate::tessellate_solid(topo, solid, deflection)?;
+        if mesh.indices.is_empty()
+            || mesh.indices.len() % 3 != 0
+            || mesh.indices.len() / 3 > MAX_TRIANGLES
+            || !crate::tessellate::is_watertight(&mesh)
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "intersection volume audit requires a bounded watertight mesh".into(),
+            });
+        }
+        let origin =
+            *mesh
+                .positions
+                .first()
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "intersection volume audit produced no vertices".into(),
+                })?;
+        let mut signed_six_volume = 0.0;
+        for triangle in mesh.indices.chunks_exact(3) {
+            let a = *mesh.positions.get(triangle[0] as usize).ok_or_else(|| {
+                crate::OperationsError::InvalidInput {
+                    reason: "intersection volume audit produced an invalid mesh index".into(),
+                }
+            })? - origin;
+            let b = *mesh.positions.get(triangle[1] as usize).ok_or_else(|| {
+                crate::OperationsError::InvalidInput {
+                    reason: "intersection volume audit produced an invalid mesh index".into(),
+                }
+            })? - origin;
+            let c = *mesh.positions.get(triangle[2] as usize).ok_or_else(|| {
+                crate::OperationsError::InvalidInput {
+                    reason: "intersection volume audit produced an invalid mesh index".into(),
+                }
+            })? - origin;
+            signed_six_volume += a.dot(b.cross(c));
+        }
+        let volume = (signed_six_volume / 6.0_f64).abs();
+        if volume.is_finite() {
+            Ok(volume)
+        } else {
+            Err(crate::OperationsError::InvalidInput {
+                reason: "intersection volume audit produced a non-finite volume".into(),
+            })
+        }
+    };
+
+    Ok((measure(0.01)?, measure(0.005)?))
+}
+
 /// True when the outer-shell face components represent disjoint solid
 /// pieces (e.g., a previous cut split one solid into N parts), false
 /// when one component is concentric inside another (a hollow solid:
@@ -2753,31 +2978,6 @@ fn all_component_centers_outside(
     true
 }
 
-/// Centre of a face component's AABB, or `None` for an empty component.
-///
-/// Uses `check::util::face_aabb`, which expands for curved-edge extent and
-/// surface curvature. Vertex positions alone are NOT enough: a cylindrical
-/// chunk's only vertices are its two seam points, so a vertex-only box
-/// collapses in x and y onto the seam and the "centre" lands exactly ON the
-/// wall rather than inside the piece. Callers sample this point to ask whether
-/// the component is interior to an operand, and a surface point makes that
-/// question a coin flip.
-fn component_aabb_centre(topo: &Topology, comp: &[FaceId]) -> Option<Point3> {
-    let mut acc: Option<brepkit_math::aabb::Aabb3> = None;
-    for &fid in comp {
-        let Ok(aabb) = brepkit_check::util::face_aabb(topo, fid) else {
-            continue;
-        };
-        acc = Some(acc.map_or(aabb, |a| a.union(aabb)));
-    }
-    let aabb = acc?;
-    Some(Point3::new(
-        (aabb.min.x() + aabb.max.x()) * 0.5,
-        (aabb.min.y() + aabb.max.y()) * 0.5,
-        (aabb.min.z() + aabb.max.z()) * 0.5,
-    ))
-}
-
 /// Does the closed surface made of `faces` enclose `p`?
 ///
 /// Ray-parity against the component's own tessellation. Read-only by design:
@@ -2796,13 +2996,26 @@ pub(crate) fn component_encloses_point(
     p: Point3,
     deflection: f64,
 ) -> Option<bool> {
+    component_encloses_any_point(topo, faces, &[p], deflection)
+}
+
+/// Does the closed surface made of `faces` enclose any of `points`?
+///
+/// Tessellates the component only once, which keeps multi-probe validation from
+/// repeating the expensive face tessellation for every boundary vertex.
+pub(crate) fn component_encloses_any_point(
+    topo: &Topology,
+    faces: &[FaceId],
+    points: &[Point3],
+    deflection: f64,
+) -> Option<bool> {
     // A sqrt-prime direction: irrational in every component, so the ray cannot
     // lie in a face plane or run along an edge — the same generic-direction
     // escape the ray-cast classifier uses for degenerate probes.
     let dir = Vec3::new(2.0_f64.sqrt(), 3.0_f64.sqrt(), 5.0_f64.sqrt())
         .normalize()
         .ok()?;
-    let mut crossings = 0usize;
+    let mut crossings = vec![0usize; points.len()];
     let mut any_triangle = false;
     for &fid in faces {
         let mesh = crate::tessellate::tessellate_with_uvs(topo, fid, deflection).ok()?;
@@ -2814,15 +3027,17 @@ pub(crate) fn component_encloses_point(
                 pos[tri[2] as usize],
             );
             any_triangle = true;
-            if let Some(hit) =
-                brepkit_math::ray_triangle::watertight_ray_triangle_intersect(p, dir, a, b, c)
-                && hit.t > 1e-9
-            {
-                crossings += 1;
+            for (&point, count) in points.iter().zip(&mut crossings) {
+                if let Some(hit) = brepkit_math::ray_triangle::watertight_ray_triangle_intersect(
+                    point, dir, a, b, c,
+                ) && hit.t > 1e-9
+                {
+                    *count += 1;
+                }
             }
         }
     }
-    any_triangle.then_some(crossings % 2 == 1)
+    any_triangle.then_some(crossings.into_iter().any(|count| count % 2 == 1))
 }
 
 /// Any vertex position on `faces`, for use as a probe point.
@@ -2841,48 +3056,21 @@ pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3>
 }
 
 fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -> bool {
-    let aabbs: Vec<(Point3, Point3)> = components
+    let Some(aabbs): Option<Vec<(Point3, Point3)>> = components
         .iter()
-        .map(|comp| {
-            let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-            let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-            for &fid in comp {
-                let Ok(face) = topo.face(fid) else {
-                    continue;
-                };
-                for wid in
-                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-                {
-                    let Ok(wire) = topo.wire(wid) else {
-                        continue;
-                    };
-                    for oe in wire.edges() {
-                        let Ok(edge) = topo.edge(oe.edge()) else {
-                            continue;
-                        };
-                        for vid in [edge.start(), edge.end()] {
-                            if let Ok(v) = topo.vertex(vid) {
-                                let p = v.point();
-                                min = Point3::new(
-                                    min.x().min(p.x()),
-                                    min.y().min(p.y()),
-                                    min.z().min(p.z()),
-                                );
-                                max = Point3::new(
-                                    max.x().max(p.x()),
-                                    max.y().max(p.y()),
-                                    max.z().max(p.z()),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            (min, max)
+        .map(|component| {
+            crate::measure::face_set_bounding_box(topo, component)
+                .ok()
+                .map(|aabb| (aabb.min, aabb.max))
         })
-        .collect();
+        .collect()
+    else {
+        return false;
+    };
 
-    // Reject NESTING, not mere AABB overlap.
+    // AABB separation proves disjointness. Overlap requires a narrow-phase
+    // surface test: neither containment nor topological validation rules out
+    // partially intersecting closed components.
     //
     // Nesting is the hazard worth rejecting (a blob sitting inside another
     // piece's cavity is not a disjoint union); side-by-side pieces are exactly
@@ -2897,15 +3085,6 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
     // available here; the ray-parity confirmation below earns the answer
     // instead of inferring it.
     //
-    // Overlap is the wrong predicate for that, because an AABB is only tight on
-    // axis-aligned geometry. Two ROTATED bars a clear distance apart each span
-    // the whole diagonal envelope, so their boxes interpenetrate and an
-    // overlap test calls them touching — which is why a kumiko lattice cut,
-    // whose members are diagonal, could never be accepted and fell back to the
-    // mesh path on every band (see
-    // `tests::rotated_separate_pieces_are_recognised_as_disjoint`). Containment
-    // is tight in the direction that matters: nesting implies it, and rotation
-    // does not manufacture it.
     let eps = COMPONENT_OVERLAP_MARGIN_MM;
     let contains = |(o_min, o_max): (Point3, Point3), (i_min, i_max): (Point3, Point3)| {
         o_min.x() - eps <= i_min.x()
@@ -2915,6 +3094,10 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
             && o_max.y() + eps >= i_max.y()
             && o_max.z() + eps >= i_max.z()
     };
+    let mut cached_meshes: Vec<Option<Vec<[Point3; 3]>>> =
+        (0..components.len()).map(|_| None).collect();
+    let mut narrow_phase_pairs = 0usize;
+    let mut triangle_tests = 0usize;
     // AABB containment is only the PRE-FILTER. It is necessary for nesting but
     // far from sufficient: a ring's box contains the box of a separate piece
     // sitting in its HOLE, and a lattice is full of rings. So a suspect pair
@@ -2923,6 +3106,107 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
     // pair falls back to the conservative answer.
     for i in 0..aabbs.len() {
         for j in (i + 1)..aabbs.len() {
+            let (a_min, a_max) = aabbs[i];
+            let (b_min, b_max) = aabbs[j];
+            let overlaps = a_min.x() <= b_max.x() + eps
+                && a_max.x() + eps >= b_min.x()
+                && a_min.y() <= b_max.y() + eps
+                && a_max.y() + eps >= b_min.y()
+                && a_min.z() <= b_max.z() + eps
+                && a_max.z() + eps >= b_min.z();
+            if !overlaps {
+                continue;
+            }
+
+            // AABB contact with no positive interior overlap is a boundary
+            // touch, not overlapping material. Keeping separately closed
+            // shells is exact for that multi-region result and avoids asking
+            // the triangle test to distinguish tangency from penetration.
+            let positive_volume_overlap = a_min.x().max(b_min.x()) + eps < a_max.x().min(b_max.x())
+                && a_min.y().max(b_min.y()) + eps < a_max.y().min(b_max.y())
+                && a_min.z().max(b_min.z()) + eps < a_max.z().min(b_max.z());
+            if !positive_volume_overlap {
+                continue;
+            }
+
+            narrow_phase_pairs += 1;
+            if narrow_phase_pairs > MAX_COMPONENT_NARROW_PHASE_PAIRS {
+                return false;
+            }
+
+            for component_index in [i, j] {
+                if cached_meshes[component_index].is_some() {
+                    continue;
+                }
+                let (min, max) = aabbs[component_index];
+                let diagonal = ((max.x() - min.x()).powi(2)
+                    + (max.y() - min.y()).powi(2)
+                    + (max.z() - min.z()).powi(2))
+                .sqrt();
+                let deflection = (diagonal / 200.0).max(1e-4);
+                let mut triangles = Vec::new();
+                for &fid in &components[component_index] {
+                    let Ok(mesh) = crate::tessellate::tessellate_with_uvs(topo, fid, deflection)
+                    else {
+                        return false;
+                    };
+                    for tri in mesh.mesh.indices.chunks_exact(3) {
+                        if triangles.len() >= MAX_COMPONENT_TRIANGLES {
+                            return false;
+                        }
+                        triangles.push([
+                            mesh.mesh.positions[tri[0] as usize],
+                            mesh.mesh.positions[tri[1] as usize],
+                            mesh.mesh.positions[tri[2] as usize],
+                        ]);
+                    }
+                }
+                cached_meshes[component_index] = Some(triangles);
+            }
+
+            let Some(a_triangles) = cached_meshes[i].as_ref() else {
+                return false;
+            };
+            let Some(b_triangles) = cached_meshes[j].as_ref() else {
+                return false;
+            };
+            let triangle_bounds = |tri: [Point3; 3]| {
+                tri.into_iter().fold(
+                    (
+                        Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+                        Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                    ),
+                    |(min, max), p| {
+                        (
+                            Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z())),
+                            Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z())),
+                        )
+                    },
+                )
+            };
+            for &a in a_triangles {
+                let (a_min, a_max) = triangle_bounds(a);
+                for &b in b_triangles {
+                    let (b_min, b_max) = triangle_bounds(b);
+                    if a_min.x() > b_max.x() + eps
+                        || a_max.x() + eps < b_min.x()
+                        || a_min.y() > b_max.y() + eps
+                        || a_max.y() + eps < b_min.y()
+                        || a_min.z() > b_max.z() + eps
+                        || a_max.z() + eps < b_min.z()
+                    {
+                        continue;
+                    }
+                    if triangle_tests >= MAX_COMPONENT_TRIANGLE_TESTS {
+                        return false;
+                    }
+                    triangle_tests += 1;
+                    if crate::mesh_boolean::triangle_surfaces_intersect(a, b, eps) {
+                        return false;
+                    }
+                }
+            }
+
             let (outer, inner) = if contains(aabbs[i], aabbs[j]) {
                 (i, j)
             } else if contains(aabbs[j], aabbs[i]) {
@@ -3202,71 +3486,6 @@ fn shell_is_closed_manifold(
         return Ok(false);
     }
     Ok(counts.values().all(|&c| c == 2))
-}
-
-/// Count genuine tangent-pinch edges, or `None` when the result carries any
-/// other topological defect.
-///
-/// A tangent-contact fuse (operands touching along a line — box∪box sharing
-/// one edge, a cylinder wall tangent to a box's corner edge) is inherently
-/// non-manifold at the contact line: four faces meet there and no
-/// representation choice can avoid it. Such a result is acceptable when it is
-/// otherwise pristine. Returns `Some(count)` iff:
-/// - no free edges and no unclosed wires;
-/// - every over-shared edge is used EXACTLY 4 times (two wedges of material);
-/// - each such edge's midpoint classifies `OnBoundary` against BOTH input
-///   operands (a true contact line; a damaged shell's over-shared edges are
-///   interior artifacts of one operand and fail this).
-///
-/// Classification errors return `None` — this acceptance is purely an
-/// upgrade, so unclassifiable geometry keeps the fallback behaviour.
-fn tangent_pinch_count(topo: &Topology, result: SolidId, a: SolidId, b: SolidId) -> Option<usize> {
-    let mut edge_uses: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::default();
-    for fid in brepkit_topology::explorer::solid_faces(topo, result).ok()? {
-        let face = topo.face(fid).ok()?;
-        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let wire = topo.wire(wid).ok()?;
-            if brepkit_topology::validation::validate_wire_closed(wire, topo).is_err() {
-                return None;
-            }
-            for oe in wire.edges() {
-                *edge_uses.entry(oe.edge()).or_insert(0) += 1;
-            }
-        }
-    }
-    if edge_uses.values().any(|&c| c == 1) {
-        return None;
-    }
-    let over: Vec<_> = edge_uses
-        .iter()
-        .filter(|&(_, &c)| c > 2)
-        .map(|(&eid, &c)| (eid, c))
-        .collect();
-    if over.iter().any(|&(_, c)| c != 4) {
-        return None;
-    }
-    // A point exactly on a corner edge classifies unreliably (the box∪box
-    // edge-touch midpoint reads Outside), so test contact by DISTANCE to
-    // each operand's boundary instead: a true contact line is at distance
-    // ~0 from both; a damaged shell's over-shared edge is interior to one
-    // operand and reads a positive distance from the other's boundary.
-    let contact_band = brepkit_math::tolerance::Tolerance::new().linear * 100.0;
-    for &(eid, _) in &over {
-        let edge = topo.edge(eid).ok()?;
-        let sp = topo.vertex(edge.start()).ok()?.point();
-        let ep = topo.vertex(edge.end()).ok()?.point();
-        let (d0, d1) = edge.curve().domain_with_endpoints(sp, ep);
-        let mid = edge
-            .curve()
-            .evaluate_with_endpoints(0.5 * (d0 + d1), sp, ep);
-        for operand in [a, b] {
-            let d = brepkit_check::distance::point_to_solid(topo, mid, operand).ok()?;
-            if d.distance > contact_band {
-                return None;
-            }
-        }
-    }
-    Some(over.len())
 }
 
 /// Check whether a solid's boundary has free edges: edges used by only

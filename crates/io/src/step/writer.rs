@@ -438,7 +438,7 @@ impl StepWriteContext {
 
         let id = self.next_id();
         if nurbs.is_rational() {
-            let weights: Vec<String> = nurbs.weights().iter().map(|&w| fmt_f64(w)).collect();
+            let weights: Vec<String> = nurbs.weights().iter().map(|&w| fmt_weight(w)).collect();
             let _ = writeln!(
                 self.entities,
                 "#{id} = ( BOUNDED_CURVE() \
@@ -652,7 +652,8 @@ impl StepWriteContext {
                 .weights()
                 .iter()
                 .map(|row| {
-                    let values: Vec<String> = row.iter().map(|&weight| fmt_f64(weight)).collect();
+                    let values: Vec<String> =
+                        row.iter().map(|&weight| fmt_weight(weight)).collect();
                     format!("({})", values.join(", "))
                 })
                 .collect();
@@ -792,6 +793,12 @@ fn fmt_f64(v: f64) -> String {
     } else {
         format!("{v:.15E}")
     }
+}
+
+/// Format a positive projective weight without applying the coordinate-zero
+/// clamp: tiny finite weights remain meaningful in rational B-splines.
+fn fmt_weight(v: f64) -> String {
+    format!("{v:.15E}")
 }
 
 /// Compute a reference direction perpendicular to the given normal.

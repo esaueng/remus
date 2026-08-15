@@ -8,9 +8,8 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
 use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
 
-use crate::data::{OffsetData, find_or_create_vertex};
+use crate::data::{OffsetData, VertexCache, find_or_create_vertex};
 use crate::error::OffsetError;
 
 /// Create new edges from the intersection curves computed in Phase 3.
@@ -31,7 +30,7 @@ pub fn intersect_pcurves_2d(
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
     let tol = data.options.tolerance.linear;
-    let mut vertex_cache: Vec<(Point3, VertexId)> = Vec::new();
+    let mut vertex_cache = VertexCache::new(tol);
 
     for intersection in &mut data.intersections {
         if intersection.curve_points.len() < 2 {
@@ -57,7 +56,7 @@ pub fn intersect_pcurves_2d(
 /// Returns `None` if the edge would be degenerate.
 fn create_edge_from_curve_points(
     topo: &mut Topology,
-    vertex_cache: &mut Vec<(Point3, VertexId)>,
+    vertex_cache: &mut VertexCache,
     points: &[Point3],
     tol: f64,
 ) -> Option<EdgeId> {
@@ -250,8 +249,8 @@ mod tests {
     #[test]
     fn vertices_are_deduplicated_within_tolerance() {
         let mut topo = Topology::new();
-        let mut cache = Vec::new();
         let tol = 1e-7;
+        let mut cache = VertexCache::new(tol);
         let p = brepkit_math::vec::Point3::new(1.0, 2.0, 3.0);
         let v1 = find_or_create_vertex(&mut topo, &mut cache, p, tol);
         let p_near = brepkit_math::vec::Point3::new(1.0, 2.0, 3.0 + 1e-9);
@@ -279,8 +278,8 @@ mod tests {
     fn circle_points_produce_circle_edge() {
         use std::f64::consts::TAU;
         let mut topo = Topology::new();
-        let mut cache = Vec::new();
         let tol = 1e-7;
+        let mut cache = VertexCache::new(tol);
 
         let n = 32;
         let radius = 2.5;

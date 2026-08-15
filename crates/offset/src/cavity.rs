@@ -32,6 +32,13 @@ use brepkit_topology::solid::SolidId;
 
 use crate::error::OffsetError;
 
+/// Upper bound on cavity shells accepted by the pairwise disjointness check.
+///
+/// The check below intentionally compares every pair. Keeping this limit near
+/// one thousand bounds that work to roughly half a million comparisons even
+/// when a solid came from an untrusted importer.
+const MAX_CAVITY_SHELLS: usize = 1_024;
+
 /// Where a cavity check is being applied, for error wording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -57,8 +64,9 @@ impl Stage {
 /// # Errors
 ///
 /// Returns [`OffsetError::InvalidInput`] naming cavity shells when a cavity
-/// reaches or crosses the outer boundary, when two cavities meet, or when a
-/// shell has no geometry to bound.
+/// reaches or crosses the outer boundary, when two cavities meet, when the
+/// solid exceeds the cavity work budget, or when a shell has no geometry to
+/// bound.
 pub fn check_cavity_extents(
     topo: &Topology,
     solid: SolidId,
@@ -69,6 +77,16 @@ pub fn check_cavity_extents(
     let inner_shells = solid_data.inner_shells().to_vec();
     if inner_shells.is_empty() {
         return Ok(());
+    }
+    if inner_shells.len() > MAX_CAVITY_SHELLS {
+        return Err(OffsetError::InvalidInput {
+            reason: format!(
+                "offset of solids with cavity shells supports at most {MAX_CAVITY_SHELLS} \
+                 cavities; the {} has {}",
+                stage.as_str(),
+                inner_shells.len(),
+            ),
+        });
     }
     let outer = shell_extent(topo, solid_data.outer_shell(), stage)?;
 
@@ -113,6 +131,49 @@ pub fn check_cavity_extents(
         }
     }
 
+    Ok(())
+}
+
+/// Reject an outward offset that would collapse a cavity's spatial extent.
+///
+/// A positive offset moves both opposing cavity walls inward by `distance`,
+/// so every axis of the cavity's bounding extent must remain larger than the
+/// scale-aware clearance after losing `2 * distance`.
+///
+/// # Errors
+///
+/// Returns [`OffsetError::InvalidInput`] when a cavity would collapse along
+/// at least one axis.
+pub fn check_cavity_survival(
+    topo: &Topology,
+    solid: SolidId,
+    distance: f64,
+    clearance: f64,
+) -> Result<(), OffsetError> {
+    if distance <= 0.0 {
+        return Ok(());
+    }
+
+    let minimum_span = 2.0 * distance + clearance;
+    for &shell_id in topo.solid(solid)?.inner_shells() {
+        let cavity = shell_extent(topo, shell_id, Stage::Input)?;
+        let spans = [
+            cavity.max.x() - cavity.min.x(),
+            cavity.max.y() - cavity.min.y(),
+            cavity.max.z() - cavity.min.z(),
+        ];
+        if spans.into_iter().any(|span| span <= minimum_span) {
+            return Err(OffsetError::InvalidInput {
+                reason: format!(
+                    "offset of solids with cavity shells requires every cavity to survive: \
+                     cavity shell {} spans {} and an outward offset of {distance:.6e} needs \
+                     more than {minimum_span:.6e} on every axis",
+                    shell_id.index(),
+                    format_extent(cavity),
+                ),
+            });
+        }
+    }
     Ok(())
 }
 

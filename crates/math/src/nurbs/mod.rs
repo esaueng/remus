@@ -38,3 +38,37 @@ pub use projection::{
 };
 pub use surface::NurbsSurface;
 pub use surface_fitting::interpolate_surface;
+
+fn validate_knot_values(knots: &[f64]) -> Result<(), crate::MathError> {
+    let mut max_value = f64::NEG_INFINITY;
+    for (index, &value) in knots.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(crate::MathError::InvalidKnotValue { index, value });
+        }
+        // A wobble of a few ulps below the largest preceding knot is representation
+        // noise, not a malformed vector: `NurbsCurve::reversed` mirrors knots
+        // and clamps the endpoints back, which can leave the last interior
+        // knot one ulp above the clamped end. Comparing against the running
+        // maximum prevents individually small decreases from accumulating.
+        let wobble = 8.0 * f64::EPSILON * max_value.abs().max(value.abs()).max(1.0);
+        if index > 0 && value < max_value - wobble {
+            return Err(crate::MathError::InvalidKnotValue { index, value });
+        }
+        max_value = max_value.max(value);
+    }
+    Ok(())
+}
+
+fn validate_knot_domain(
+    knots: &[f64],
+    degree: usize,
+    control_points: usize,
+) -> Result<(), crate::MathError> {
+    if knots[degree] > knots[control_points] {
+        return Err(crate::MathError::InvalidKnotValue {
+            index: control_points,
+            value: knots[control_points],
+        });
+    }
+    Ok(())
+}

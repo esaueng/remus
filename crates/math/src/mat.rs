@@ -192,10 +192,15 @@ impl Mat4 {
     ///
     /// # Errors
     ///
-    /// Returns [`MathError::SingularMatrix`] if the determinant is approximately zero.
+    /// Returns [`MathError::SingularMatrix`] if any entry is non-finite or the
+    /// determinant is approximately zero.
     #[allow(clippy::similar_names)]
     pub fn inverse(self) -> Result<Self, MathError> {
         let m = &self.0;
+
+        if m.iter().flatten().any(|entry| !entry.is_finite()) {
+            return Err(MathError::SingularMatrix);
+        }
 
         // Reuse the 2x2 minor pattern from determinant().
         let s0 = m[0][0].mul_add(m[1][1], -(m[1][0] * m[0][1]));
@@ -220,28 +225,25 @@ impl Mat4 {
             ),
         );
 
-        // Scale-relative singularity check.  The determinant is computed as a
-        // sum of products s_i * c_j of 2x2 minors, so its magnitude scales as
-        // max_minor^2.  Comparing against that avoids the false-singular
-        // problem that a hardcoded threshold (1e-15) causes when matrix entries
-        // are very small or very large.
-        let max_minor = s0
+        // For an affine transform, conditioning depends only on the upper-left
+        // 3x3 linear block. Its determinant scales as an entry times a 2x2
+        // minor; the translation column does not affect invertibility.
+        let linear_minor_3 = m[1][0].mul_add(m[2][1], -(m[2][0] * m[1][1]));
+        let linear_minor_4 = m[1][0].mul_add(m[2][2], -(m[2][0] * m[1][2]));
+        let linear_minor_5 = m[1][1].mul_add(m[2][2], -(m[2][1] * m[1][2]));
+        let max_linear_entry = m[..3]
+            .iter()
+            .flat_map(|row| row[..3].iter())
+            .fold(0.0_f64, |max_entry, entry| max_entry.max(entry.abs()));
+        let max_linear_minor = s0
             .abs()
             .max(s1.abs())
-            .max(s2.abs())
             .max(s3.abs())
-            .max(s4.abs())
-            .max(s5.abs())
-            .max(c0.abs())
-            .max(c1.abs())
-            .max(c2.abs())
-            .max(c3.abs())
-            .max(c4.abs())
-            .max(c5.abs());
-        if max_minor == 0.0 {
-            return Err(MathError::SingularMatrix);
-        }
-        if det.abs() < f64::EPSILON * max_minor * max_minor {
+            .max(linear_minor_3.abs())
+            .max(linear_minor_4.abs())
+            .max(linear_minor_5.abs());
+        let conditioning_scale = max_linear_entry * max_linear_minor;
+        if !det.is_finite() || det.abs() <= f64::EPSILON * conditioning_scale {
             return Err(MathError::SingularMatrix);
         }
 
@@ -345,6 +347,36 @@ mod tests {
     fn singular_matrix() {
         let m = Mat4([[1.0, 0.0, 0.0, 0.0]; 4]);
         assert!(m.inverse().is_err());
+    }
+
+    #[test]
+    fn affine_inverse_conditioning_ignores_translation() {
+        for distance_mm in [1.0e3, 1.0e6, 1.0e9] {
+            let m = Mat4::translation(distance_mm, -distance_mm / 2.0, distance_mm / 4.0)
+                * Mat4::rotation_z(0.7);
+            let inverse = m.inverse().expect("rigid transform should be invertible");
+            let product = m * inverse;
+            assert!(
+                approx_eq_mat4(&product, &Mat4::identity(), 1e-6),
+                "inverse round-trip failed at {distance_mm} mm"
+            );
+        }
+
+        let singular = Mat4::translation(1.0e9, -5.0e8, 2.5e8) * Mat4::scale(1.0, 0.0, 1.0);
+        assert!(matches!(singular.inverse(), Err(MathError::SingularMatrix)));
+    }
+
+    #[test]
+    fn inverse_rejects_non_finite_entries() {
+        for non_finite in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for row in 0..4 {
+                for column in 0..4 {
+                    let mut m = Mat4::identity();
+                    m.0[row][column] = non_finite;
+                    assert!(matches!(m.inverse(), Err(MathError::SingularMatrix)));
+                }
+            }
+        }
     }
 
     #[test]

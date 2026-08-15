@@ -25,14 +25,13 @@ use super::planar::{
 };
 use super::{MERGE_GRID, point_merge_key};
 
-fn has_trimmed_same_sphere_neighbor<V, S>(
+fn has_trimmed_same_sphere_neighbor<V>(
     topo: &Topology,
     face_id: FaceId,
-    edge_face_map: &std::collections::HashMap<usize, V, S>,
+    edge_face_map: &std::collections::BTreeMap<usize, V>,
 ) -> Result<bool, crate::OperationsError>
 where
     V: std::ops::Deref<Target = [FaceId]>,
-    S: std::hash::BuildHasher,
 {
     let face = topo.face(face_id)?;
     let FaceSurface::Sphere(sphere) = face.surface() else {

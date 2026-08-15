@@ -2556,7 +2556,7 @@ fn section_on_existing_boundary(
 /// Whether `p` lies on the edge's true geometry within `tol` (perpendicular
 /// distance for a Line; in-plane + radial distance with an arc-span containment
 /// test for a Circle/Ellipse). NURBS edges are not boundary candidates here.
-fn point_on_edge(
+pub(super) fn point_on_edge(
     curve: &brepkit_topology::edge::EdgeCurve,
     start: Point3,
     end: Point3,
@@ -2936,8 +2936,13 @@ fn arc_segment_crossings(
             let _ = tol;
             let dir = line_end - line_start;
             let side = |p: Point3| (p - line_start).cross(dir).dot(n);
+            // Deriving a trimmed NURBS domain projects both edge endpoints
+            // onto the curve. Hoist that expensive work out of the sampling
+            // and bisection loops so each probe is only a curve evaluation.
+            let (t0, t1) = curve.domain_with_endpoints(edge_start, edge_end);
+            let span = t1 - t0;
             let eval =
-                |f: f64| super::pcurve_compute::evaluate_edge_at_t(curve, edge_start, edge_end, f);
+                |f: f64| curve.evaluate_with_endpoints(f.mul_add(span, t0), edge_start, edge_end);
             let mut hits = Vec::new();
             let mut prev_f = 0.0_f64;
             let mut prev_s = side(eval(0.0));
@@ -3809,11 +3814,15 @@ fn presplit_sections_at_registry(
     registry: &std::collections::HashMap<usize, Vec<brepkit_math::vec::Point3>>,
     tol: f64,
 ) -> Vec<crate::builder::split_types::SectionEdge> {
-    // Sections on curved faces arrive without pave-block ids, so match
-    // registered points GEOMETRICALLY: a point splits a section when it lies
-    // on the section's curve within the weld band (the two faces' copies of
-    // one FF curve agree to fit error). Dense sampling pre-locates; a local
-    // ternary refine certifies the distance.
+    // Match only points registered for the same pave block. A point splits a
+    // section when it lies on the section's curve within the weld band (the
+    // two faces' copies of one FF curve agree to fit error). Dense sampling
+    // pre-locates; a local ternary refine certifies the distance.
+    //
+    // Sections on curved faces arrive WITHOUT pave-block ids; those keep the
+    // historical geometric matching against every registered point — scoping
+    // them away drops real splits and un-pairs the emitted edges.
+    let all_points: Vec<brepkit_math::vec::Point3> = registry.values().flatten().copied().collect();
     let weld = tol * 100.0;
     let on_curve =
         |s: &crate::builder::split_types::SectionEdge, p: brepkit_math::vec::Point3| -> bool {
@@ -3851,9 +3860,12 @@ fn presplit_sections_at_registry(
             let tm = 0.5 * (lo + hi);
             (s.curve_3d.evaluate_with_endpoints(tm, s.start, s.end) - p).length() <= weld
         };
-    let all_points: Vec<brepkit_math::vec::Point3> = registry.values().flatten().copied().collect();
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
+        let points: &[brepkit_math::vec::Point3] = match s.pave_block_id {
+            Some(pb_id) => registry.get(&pb_id).map_or(&[], Vec::as_slice),
+            None => &all_points,
+        };
         let chord = s.end - s.start;
         let cl2 = chord.dot(chord);
         if cl2 <= tol * tol {
@@ -3861,7 +3873,7 @@ fn presplit_sections_at_registry(
             continue;
         }
         let guard = tol * 10.0;
-        let mut cuts: Vec<(f64, brepkit_math::vec::Point3)> = all_points
+        let mut cuts: Vec<(f64, brepkit_math::vec::Point3)> = points
             .iter()
             .filter(|p| ((**p) - s.start).length() > guard && ((**p) - s.end).length() > guard)
             .filter(|p| on_curve(s, **p))
@@ -4005,7 +4017,38 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::Vec3;
+    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use brepkit_math::nurbs::fitting::interpolate;
+    use brepkit_math::traits::ParametricCurve;
+    use brepkit_math::vec::{Point2, Vec2, Vec3};
+
+    #[test]
+    fn registry_presplit_ignores_other_pave_blocks() {
+        let pcurve =
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let section = crate::builder::split_types::SectionEdge {
+            curve_3d: EdgeCurve::Line,
+            pcurve_a: pcurve.clone(),
+            pcurve_b: pcurve,
+            start: Point3::new(0.0, 0.0, 0.0),
+            end: Point3::new(1.0, 0.0, 0.0),
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: Some(7),
+        };
+        let registry = std::collections::HashMap::from([
+            (7, vec![Point3::new(0.5, 0.0, 0.0)]),
+            (99, vec![Point3::new(0.25, 0.0, 0.0)]),
+        ]);
+
+        let pieces = presplit_sections_at_registry(&[section], &registry, 1e-7);
+
+        assert_eq!(pieces.len(), 2);
+        assert!((pieces[0].end - Point3::new(0.5, 0.0, 0.0)).length() < 1e-9);
+    }
 
     #[test]
     fn closed_rim_chord_crossing_keeps_seam_angle_hit() {
@@ -4033,5 +4076,33 @@ mod tests {
                 && xs.iter().any(|&x| (x - 7.0).abs() < 1e-6),
             "expected crossings at x=7 and x=13, got {xs:?}"
         );
+    }
+
+    #[test]
+    fn trimmed_nurbs_boundary_crossing_uses_true_curve_span() {
+        let points: Vec<Point3> = (0..=6)
+            .map(|k| {
+                let x = f64::from(k);
+                Point3::new(x, 0.1 * x * x, 0.0)
+            })
+            .collect();
+        let nurbs = interpolate(&points, 3).unwrap();
+        let edge_start = ParametricCurve::evaluate(&nurbs, 0.2);
+        let edge_end = ParametricCurve::evaluate(&nurbs, 0.8);
+        let expected = ParametricCurve::evaluate(&nurbs, 0.43);
+
+        let hits = arc_segment_crossings(
+            &EdgeCurve::NurbsCurve(nurbs),
+            edge_start,
+            edge_end,
+            false,
+            Point3::new(expected.x(), -10.0, 0.0),
+            Point3::new(expected.x(), 10.0, 0.0),
+            1e-7,
+            Some(Vec3::new(0.0, 0.0, 1.0)),
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert!((hits[0].0 - expected).length() < 1e-7);
     }
 }

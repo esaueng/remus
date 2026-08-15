@@ -37,9 +37,15 @@ impl BrepKernel {
     /// itself (and any earlier checkpoints) remain valid for future restores.
     /// Checkpoints created after this one are discarded.
     ///
+    /// Restoring never grows the model: every checkpoint is an ancestor of the
+    /// current state, so the restored topology is a subset of it. Undo is
+    /// therefore always available, no matter how large the model has grown or
+    /// how many operations the kernel instance has run.
+    ///
     /// # Errors
     ///
     /// Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
+    /// This is the only failure mode.
     #[wasm_bindgen(js_name = "restore")]
     pub fn restore(&mut self, checkpoint_id: u32) -> Result<(), JsError> {
         let idx = checkpoint_id as usize;
@@ -159,6 +165,54 @@ mod tests {
 
         let vol = volume(&k, box1);
         assert!((vol - 60.0).abs() < 0.5, "expected ~60, got {vol}");
+    }
+
+    // ── lifetime allocation churn ─────────────────────────────────
+
+    /// Undo must survive a long-lived kernel that has churned through a large
+    /// number of lifetime arena allocations.
+    ///
+    /// `Topology::allocated_slot_count` is a high-water mark that never
+    /// decreases: arenas only append, `retire` clears a liveness bit, and
+    /// restore re-extends each arena to its previous slot count. Gating
+    /// `restore` on it made undo fail *permanently*, with no reset path, once a
+    /// session had accumulated enough operations — and it triggered sooner the
+    /// larger the model, even though restore is what shrinks it.
+    #[test]
+    fn restore_survives_large_lifetime_slot_count() {
+        // The removed guard refused any restore above 500_000 slots.
+        const REMOVED_GUARD_LIMIT: usize = 500_000;
+
+        let mut k = BrepKernel::new();
+        let keep = make_box(&mut k, 2.0, 2.0, 2.0);
+        let cp = k.checkpoint();
+
+        // Churn through ordinary operations until the lifetime counter is past
+        // the old ceiling. Each box contributes ~34 slots and none of them are
+        // ever freed, exactly as in a real editing session.
+        while k.topo().allocated_slot_count() <= REMOVED_GUARD_LIMIT {
+            make_box(&mut k, 1.0, 1.0, 1.0);
+        }
+
+        let slots = k.topo().allocated_slot_count();
+        assert!(
+            slots > REMOVED_GUARD_LIMIT,
+            "test no longer exercises the counter: {slots} slots"
+        );
+
+        // Undo must still work, and must actually roll the model back.
+        k.restore(cp)
+            .expect("restore must not be disabled by lifetime allocation churn");
+        assert!((volume(&k, keep) - 8.0).abs() < 0.05);
+
+        // Restore does not shrink the counter — that is precisely why it is
+        // unusable as a size gate.
+        assert!(k.topo().allocated_slot_count() >= slots);
+
+        // And undo is still available afterwards, not a one-shot escape.
+        make_box(&mut k, 1.0, 1.0, 1.0);
+        k.restore(cp).expect("restore must stay available");
+        assert!((volume(&k, keep) - 8.0).abs() < 0.05);
     }
 
     // ── multiple checkpoints ──────────────────────────────────────

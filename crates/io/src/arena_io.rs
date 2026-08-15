@@ -724,6 +724,19 @@ fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Res
         total_entities,
         limits.max_model_entities,
     )?;
+
+    for &index in &document.solid_roots {
+        if index >= document.solids.len() {
+            return Err(index_err("solid", index));
+        }
+    }
+    for compound in &document.compounds {
+        for &index in &compound.solids {
+            if index >= document.solids.len() {
+                return Err(index_err("solid", index));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1214,5 +1227,45 @@ mod tests {
         let roundtrip =
             serialize_document(&destination, &restored.solids, &restored.compounds).unwrap();
         assert_eq!(roundtrip, bytes);
+    }
+
+    #[test]
+    fn invalid_v2_solid_root_does_not_mutate_topology() {
+        let bytes = br#"{"version":2,"vertices":[],"edges":[],"wires":[],"faces":[],"shells":[{"faces":[]}],"solids":[{"outer_shell":0,"inner_shells":[]}],"solid_roots":[1],"compounds":[],"pcurves":[]}"#;
+        let mut destination = Topology::new();
+        destination.add_empty_solid();
+        let counts_before = (destination.num_shells(), destination.num_solids());
+
+        let error = deserialize_solids(bytes, &mut destination).unwrap_err();
+
+        assert!(error.to_string().contains("out-of-range solid index 1"));
+        assert_eq!(
+            (destination.num_shells(), destination.num_solids()),
+            counts_before
+        );
+    }
+
+    #[test]
+    fn invalid_v2_compound_member_does_not_mutate_topology() {
+        let bytes = br#"{"version":2,"vertices":[],"edges":[],"wires":[],"faces":[],"shells":[{"faces":[]}],"solids":[{"outer_shell":0,"inner_shells":[]}],"solid_roots":[],"compounds":[{"solids":[1]}],"pcurves":[]}"#;
+        let mut destination = Topology::new();
+        destination.add_empty_solid();
+        let counts_before = (
+            destination.num_shells(),
+            destination.num_solids(),
+            destination.num_compounds(),
+        );
+
+        let error = deserialize_document(bytes, &mut destination).unwrap_err();
+
+        assert!(error.to_string().contains("out-of-range solid index 1"));
+        assert_eq!(
+            (
+                destination.num_shells(),
+                destination.num_solids(),
+                destination.num_compounds(),
+            ),
+            counts_before
+        );
     }
 }

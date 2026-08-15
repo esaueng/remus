@@ -261,6 +261,29 @@ fn an_inward_offset_that_would_eat_the_wall_is_refused() {
 }
 
 #[test]
+fn an_outward_offset_that_would_collapse_the_cavity_is_refused() {
+    // The cavity is 2 units across, so opposing walls meet at distance 1.
+    // Past that point the old pipeline assembled an inverted live shell and
+    // reported its negative-width volume as valid geometry.
+    for distance in [1.0_f64, 1.1, 3.0] {
+        let mut topo = Topology::new();
+        let hollow = hollow_cube(&mut topo, 1.0);
+        let cavity_shell = topo.solid(hollow).unwrap().inner_shells()[0];
+        let error = offset_solid(&mut topo, hollow, distance, opts()).unwrap_err();
+        assert!(
+            matches!(&error, OffsetError::InvalidInput { reason }
+                if reason.contains("cavity shells") && reason.contains("survive")),
+            "offset by {distance} must refuse, got {error}"
+        );
+        assert_eq!(
+            topo.solid(hollow).unwrap().inner_shells(),
+            &[cavity_shell],
+            "a refused offset must leave the caller's solid untouched"
+        );
+    }
+}
+
+#[test]
 fn hollowing_a_solid_that_already_has_a_cavity_is_refused() {
     // thick_solid's wall builder only knows the outer shell, so it would
     // silently leave the cavity's openings unwalled.
@@ -274,6 +297,24 @@ fn hollowing_a_solid_that_already_has_a_cavity_is_refused() {
         matches!(&error, OffsetError::InvalidInput { reason }
             if reason.contains("cavity shells")),
         "expected a typed refusal naming cavity shells, got {error}"
+    );
+}
+
+#[test]
+fn excessive_cavity_count_is_refused_before_pairwise_checks() {
+    let mut topo = Topology::new();
+    let outer = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    let inner = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let cavity_shell = topo.solid(inner).unwrap().outer_shell();
+    for _ in 0..1_025 {
+        topo.solid_mut(outer).unwrap().add_inner_shell(cavity_shell);
+    }
+
+    let error = offset_solid(&mut topo, outer, 0.5, opts()).unwrap_err();
+    assert!(
+        matches!(&error, OffsetError::InvalidInput { reason }
+            if reason.contains("supports at most 1024 cavities") && reason.contains("has 1025")),
+        "expected a typed cavity work-budget refusal, got {error}"
     );
 }
 

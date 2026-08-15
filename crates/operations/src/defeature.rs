@@ -3,7 +3,7 @@
 //! Removing a face leaves a gap in the shell. [`defeature`] closes that gap
 //! exactly, or refuses; it never returns a shell it could not close.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use brepkit_math::tolerance::Tolerance;
 use brepkit_math::vec::{Point3, Vec3};
@@ -14,7 +14,7 @@ use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
 
 use crate::OperationsError;
-use crate::boolean::{FaceSpec, assemble_solid_mixed};
+use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
@@ -83,6 +83,33 @@ pub fn defeature(
     solid: SolidId,
     faces_to_remove: &[FaceId],
 ) -> Result<SolidId, OperationsError> {
+    Ok(defeature_impl(topo, solid, faces_to_remove)?.solid)
+}
+
+/// Exact defeature result used by operations that must compose face history.
+pub(crate) struct DefeatureOutcome {
+    /// Healed solid.
+    pub(crate) solid: SolidId,
+    /// Original face index to healed face.
+    pub(crate) face_map: HashMap<usize, FaceId>,
+}
+
+/// Remove an analytic blend band while allowing curved edges that belong to
+/// the wound itself. Such edges disappear during the planar rebuild; unrelated
+/// curved edges remain a refusal so no retained geometry is faceted.
+pub(crate) fn defeature_blend_band(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces_to_remove: &[FaceId],
+) -> Result<DefeatureOutcome, OperationsError> {
+    defeature_impl(topo, solid, faces_to_remove)
+}
+
+fn defeature_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces_to_remove: &[FaceId],
+) -> Result<DefeatureOutcome, OperationsError> {
     if faces_to_remove.is_empty() {
         return Err(OperationsError::InvalidInput {
             reason: "must select at least one face to remove".into(),
@@ -131,12 +158,12 @@ pub fn defeature(
     let plan = classify_wound(topo, &all_faces, &kept_positions, &wound)?;
 
     let result = if plan.needs_extend {
-        heal_by_extending(topo, &all_faces, &kept_positions, &removed, &plan)?
+        heal_by_extending(topo, &all_faces, &kept_positions, &removed, &wound, &plan)?
     } else {
         heal_by_capping(topo, solid, &kept_positions, &plan)?
     };
 
-    let report = crate::validate::validate_solid(topo, result)?;
+    let report = crate::validate::validate_solid(topo, result.solid)?;
     if !report.is_valid() {
         let detail: Vec<&str> = report
             .issues
@@ -150,7 +177,7 @@ pub fn defeature(
         )));
     }
     // A shell can pass the structural checks and still be turned inside out.
-    if crate::measure::solid_volume(topo, result, 0.05)? <= 0.0 {
+    if crate::measure::solid_volume(topo, result.solid, 0.05)? <= 0.0 {
         return Err(unsupported(
             "healed shell encloses no volume; the faces do not close over the gap".to_string(),
         ));
@@ -284,8 +311,8 @@ fn heal_by_capping(
     solid: SolidId,
     kept_positions: &[usize],
     plan: &HealPlan,
-) -> Result<SolidId, OperationsError> {
-    let copy = crate::copy::copy_solid(topo, solid)?;
+) -> Result<DefeatureOutcome, OperationsError> {
+    let (copy, copied_faces) = crate::copy::copy_solid_with_face_map(topo, solid)?;
     // `copy_solid` preserves shell face order, so positions carry over.
     let copy_faces: Vec<FaceId> = topo
         .shell(topo.solid(copy)?.outer_shell())?
@@ -305,7 +332,24 @@ fn heal_by_capping(
     let kept: Vec<FaceId> = kept_positions.iter().map(|&p| copy_faces[p]).collect();
     let shell = Shell::new(kept).map_err(OperationsError::Topology)?;
     let shell_id = topo.add_shell(shell);
-    Ok(topo.add_solid(Solid::new(shell_id, Vec::new())))
+    let result = topo.add_solid(Solid::new(shell_id, Vec::new()));
+    let kept_indices: BTreeSet<usize> = kept_positions
+        .iter()
+        .map(|&position| copy_faces[position].index())
+        .collect();
+    let face_map = copied_faces
+        .into_iter()
+        .filter_map(|(source, copied)| {
+            if !kept_indices.contains(&copied) {
+                return None;
+            }
+            topo.face_id_from_index(copied).map(|face| (source, face))
+        })
+        .collect();
+    Ok(DefeatureOutcome {
+        solid: result,
+        face_map,
+    })
 }
 // ---------------------------------------------------------------------------
 // Extend heal
@@ -420,14 +464,16 @@ fn heal_by_extending(
     all_faces: &[FaceId],
     kept_positions: &[usize],
     removed: &[bool],
+    wound: &Wound,
     plan: &HealPlan,
-) -> Result<SolidId, OperationsError> {
+) -> Result<DefeatureOutcome, OperationsError> {
     let tol = Tolerance::new();
 
     // Extending a face means growing its boundary within its own surface.
-    // Only planes support that here, and only straight edges survive the
-    // rebuild without being resampled into chords, so refuse anything else
-    // rather than silently degrading curved geometry.
+    // Only planes support that here. Curved kept edges are checked after the
+    // healed corners are known: a wound arc may disappear exactly when both
+    // of its endpoints collapse to the same recovered corner, but every curve
+    // that would survive the rebuild is still refused rather than chorded.
     let mut planes: Vec<Option<Plane>> = vec![None; all_faces.len()];
     for &pos in kept_positions {
         let fid = all_faces[pos];
@@ -441,18 +487,6 @@ fn heal_by_extending(
             )));
         };
         let normal = normal.normalize()?;
-        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-        {
-            for oe in topo.wire(wire_id)?.edges() {
-                if !matches!(topo.edge(oe.edge())?.curve(), EdgeCurve::Line) {
-                    return Err(unsupported(format!(
-                        "kept face {} has a curved edge; extending the shell to \
-                         close the gap is only implemented for straight edges",
-                        fid.index()
-                    )));
-                }
-            }
-        }
         let anchor = first_wire_vertex(topo, fid)?;
         planes[pos] = Some(Plane::new(normal, dot_normal_point(normal, anchor)));
     }
@@ -488,8 +522,38 @@ fn heal_by_extending(
         moved.insert(vertex, corner);
     }
 
+    // `assemble_solid_mixed` rebuilds planar wires from vertices and therefore
+    // emits straight edges. That is exact for a curved wound edge only when
+    // the edge vanishes: both of its endpoints move to the same healed corner.
+    // This is how the circular end arcs of a removed plane-plane fillet
+    // disappear. Any unrelated or surviving curve remains a typed refusal.
+    for &pos in kept_positions {
+        let fid = all_faces[pos];
+        let face = topo.face(fid)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oe in topo.wire(wire_id)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                if matches!(edge.curve(), EdgeCurve::Line) {
+                    continue;
+                }
+                let collapsed_wound =
+                    wound_edge_collapses(topo, edge, oe.edge(), &moved, wound, tol.linear)?;
+                if !collapsed_wound {
+                    return Err(unsupported(format!(
+                        "kept face {} has a curved edge that survives the heal; \
+                         extending the shell is exact only when a curved wound \
+                         edge collapses to one recovered corner",
+                        fid.index()
+                    )));
+                }
+            }
+        }
+    }
+
     // Rebuild every kept face with its relocated corners substituted.
     let mut specs: Vec<FaceSpec> = Vec::with_capacity(kept_positions.len());
+    let mut sources: Vec<FaceId> = Vec::with_capacity(kept_positions.len());
     for &pos in kept_positions {
         let fid = all_faces[pos];
         let face = topo.face(fid)?;
@@ -551,6 +615,7 @@ fn heal_by_extending(
                 inner_wires,
             }
         });
+        sources.push(fid);
     }
 
     if specs.len() < 4 {
@@ -561,7 +626,42 @@ fn heal_by_extending(
         )));
     }
 
-    assemble_solid_mixed(topo, &specs, tol)
+    let assembly = assemble_solid_mixed_with_history(topo, &specs, tol)?;
+    let face_map = sources
+        .into_iter()
+        .zip(assembly.faces_by_spec)
+        .filter_map(|(source, result)| result.map(|face| (source.index(), face)))
+        .collect();
+    Ok(DefeatureOutcome {
+        solid: assembly.solid,
+        face_map,
+    })
+}
+
+fn wound_edge_collapses(
+    topo: &Topology,
+    edge: &brepkit_topology::edge::Edge,
+    edge_id: EdgeId,
+    moved: &BTreeMap<usize, Point3>,
+    wound: &Wound,
+    collapse_tolerance: f64,
+) -> Result<bool, OperationsError> {
+    // A closed curve has real extent even though both topological endpoints
+    // coincide. Reject both a shared vertex and distinct but coincident
+    // vertices; either can make a circle or ellipse represent its full domain.
+    if !wound.contains(edge_id)
+        || (topo.vertex(edge.start())?.point() - topo.vertex(edge.end())?.point()).length()
+            <= collapse_tolerance
+    {
+        return Ok(false);
+    }
+    let Some(start) = moved.get(&edge.start().index()) else {
+        return Ok(false);
+    };
+    let Some(end) = moved.get(&edge.end().index()) else {
+        return Ok(false);
+    };
+    Ok((*start - *end).length() <= collapse_tolerance)
 }
 
 /// Bounding-box diagonals of the removed patch and of the whole shell.
@@ -804,6 +904,9 @@ pub fn detect_small_features(
 mod tests {
     use super::*;
     use crate::primitives::make_box;
+    use brepkit_math::curves::Circle3D;
+    use brepkit_topology::edge::Edge;
+    use brepkit_topology::vertex::Vertex;
 
     #[test]
     fn defeature_refuses_to_leave_an_open_shell() {
@@ -821,6 +924,60 @@ mod tests {
         assert!(
             matches!(err, OperationsError::Unsupported { operation, .. } if operation == OP),
             "expected a typed refusal, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn curved_wound_collapse_uses_rebuild_tolerance() {
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let circle =
+            Circle3D::new(Point3::new(0.5, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
+        let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+        let wound = Wound {
+            kept_side: BTreeMap::from([(edge.index(), 0)]),
+        };
+        let moved = BTreeMap::from([
+            (start.index(), Point3::new(1.0e9, 0.0, 0.0)),
+            (end.index(), Point3::new(1.0e9 + 0.05, 0.0, 0.0)),
+        ]);
+
+        assert!(
+            !wound_edge_collapses(
+                &topo,
+                topo.edge(edge).unwrap(),
+                edge,
+                &moved,
+                &wound,
+                Tolerance::new().linear,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn closed_curved_wound_never_collapses_from_its_single_vertex() {
+        let mut topo = Topology::new();
+        let vertex = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Circle(circle)));
+        let wound = Wound {
+            kept_side: BTreeMap::from([(edge.index(), 0)]),
+        };
+        let moved = BTreeMap::from([(vertex.index(), Point3::new(0.0, 0.0, 0.0))]);
+
+        assert!(
+            !wound_edge_collapses(
+                &topo,
+                topo.edge(edge).unwrap(),
+                edge,
+                &moved,
+                &wound,
+                Tolerance::new().linear,
+            )
+            .unwrap()
         );
     }
 

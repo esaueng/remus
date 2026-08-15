@@ -44,8 +44,8 @@ pub fn read_ply_with_limits(
     let body = &data[header_end..];
 
     match header.format {
-        PlyFormat::Ascii => parse_ascii_body(&header, body),
-        PlyFormat::BinaryLittleEndian => parse_binary_body(&header, body),
+        PlyFormat::Ascii => parse_ascii_body(&header, body, limits),
+        PlyFormat::BinaryLittleEndian => parse_binary_body(&header, body, limits),
     }
 }
 
@@ -121,7 +121,11 @@ fn parse_count(line: &str) -> Result<usize, crate::IoError> {
         })
 }
 
-fn parse_ascii_body(header: &PlyHeader, body: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+fn parse_ascii_body(
+    header: &PlyHeader,
+    body: &[u8],
+    limits: ImportLimits,
+) -> Result<TriangleMesh, crate::IoError> {
     let text = std::str::from_utf8(body).map_err(|_| crate::IoError::ParseError {
         reason: "PLY body is not valid UTF-8".into(),
     })?;
@@ -130,6 +134,7 @@ fn parse_ascii_body(header: &PlyHeader, body: &[u8]) -> Result<TriangleMesh, cra
     let mut positions = Vec::with_capacity(header.vertex_count);
     let mut normals = Vec::with_capacity(header.vertex_count);
     let mut indices = Vec::new();
+    let mut triangle_count = 0_usize;
 
     for _ in 0..header.vertex_count {
         let line = lines.next().ok_or_else(|| crate::IoError::ParseError {
@@ -157,28 +162,36 @@ fn parse_ascii_body(header: &PlyHeader, body: &[u8]) -> Result<TriangleMesh, cra
         let line = lines.next().ok_or_else(|| crate::IoError::ParseError {
             reason: "unexpected end of PLY face data".into(),
         })?;
-        let vals: Vec<u32> = line
+        let mut vals = line
             .split_whitespace()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        if vals.is_empty() {
+            .filter_map(|s| s.parse::<u32>().ok());
+        let Some(n_verts) = vals.next().map(|count| count as usize) else {
             continue;
+        };
+        if n_verts == 0 {
+            return Err(crate::IoError::ParseError {
+                reason: format!("PLY face must contain at least one vertex: {line}"),
+            });
         }
 
-        let n_verts = vals[0] as usize;
-        if vals.len() < n_verts + 1 {
+        ensure_limit("PLY face vertices", n_verts, limits.max_model_entities)?;
+        triangle_count = triangle_count.saturating_add(n_verts.saturating_sub(2));
+        ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
+
+        let face_indices: Vec<u32> = vals.take(n_verts).collect();
+        if face_indices.len() < n_verts {
             return Err(crate::IoError::ParseError {
                 reason: format!("PLY face has fewer indices than declared: {line}"),
             });
         }
 
         // Fan triangulation for polygons: v0-v1-v2, v0-v2-v3, ...
-        let v0 = vals[1];
-        for i in 2..n_verts {
-            indices.push(v0);
-            indices.push(vals[i]);
-            indices.push(vals[i + 1]);
+        if let Some(&v0) = face_indices.first() {
+            for i in 1..n_verts.saturating_sub(1) {
+                indices.push(v0);
+                indices.push(face_indices[i]);
+                indices.push(face_indices[i + 1]);
+            }
         }
     }
 
@@ -194,7 +207,11 @@ fn parse_ascii_body(header: &PlyHeader, body: &[u8]) -> Result<TriangleMesh, cra
     })
 }
 
-fn parse_binary_body(header: &PlyHeader, body: &[u8]) -> Result<TriangleMesh, crate::IoError> {
+fn parse_binary_body(
+    header: &PlyHeader,
+    body: &[u8],
+    limits: ImportLimits,
+) -> Result<TriangleMesh, crate::IoError> {
     let floats_per_vertex = if header.has_normals { 6 } else { 3 };
     let vertex_bytes = header.vertex_count * floats_per_vertex * 4;
 
@@ -255,12 +272,17 @@ fn parse_binary_body(header: &PlyHeader, body: &[u8]) -> Result<TriangleMesh, cr
     }
 
     let mut indices = Vec::new();
+    let mut triangle_count = 0_usize;
     for _ in 0..header.face_count {
         if offset >= body.len() {
             break;
         }
         let n_verts = body[offset] as usize;
         offset += 1;
+
+        ensure_limit("PLY face vertices", n_verts, limits.max_model_entities)?;
+        triangle_count = triangle_count.saturating_add(n_verts.saturating_sub(2));
+        ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
 
         if offset + n_verts * 4 > body.len() {
             break;
@@ -365,6 +387,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ascii_face_with_zero_vertices() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n0\n";
+
+        let err = read_ply(ply).unwrap_err();
+        assert!(matches!(err, crate::IoError::ParseError { .. }));
+    }
+
+    #[test]
     fn rejects_declared_vertex_count_before_allocation() {
         let ply = b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 0\nend_header\n";
         let limits = ImportLimits {
@@ -378,6 +408,42 @@ mod tests {
                 resource: "PLY vertices",
                 limit: 3,
                 actual: 4
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_oversized_ascii_face_before_collecting_indices() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uint int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n1000000 0 1 2\n";
+        let limits = ImportLimits {
+            max_model_entities: 3,
+            ..ImportLimits::default()
+        };
+        let err = read_ply_with_limits(ply, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::IoError::LimitExceeded {
+                resource: "PLY face vertices",
+                limit: 3,
+                actual: 1_000_000
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_total_triangulated_output_over_limit() {
+        let ply = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 3\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n4 0 1 2 0\n4 0 1 2 0\n4 0 1 2 0\n";
+        let limits = ImportLimits {
+            max_model_entities: 4,
+            ..ImportLimits::default()
+        };
+        let err = read_ply_with_limits(ply, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::IoError::LimitExceeded {
+                resource: "PLY triangles",
+                limit: 4,
+                actual: 6
             }
         ));
     }

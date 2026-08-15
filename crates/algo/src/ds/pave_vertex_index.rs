@@ -28,6 +28,7 @@ struct Entry {
 /// Uniform-grid spatial hash over resolved pave-block endpoint vertices.
 #[derive(Debug, Clone)]
 pub struct PaveVertexIndex {
+    cell: f64,
     inv_cell: f64,
     grid: HashMap<(i64, i64, i64), Vec<Entry>>,
 }
@@ -43,7 +44,11 @@ impl PaveVertexIndex {
                 .or_default()
                 .push(Entry { rank, vertex, pos });
         }
-        Self { inv_cell, grid }
+        Self {
+            cell: cell.max(f64::MIN_POSITIVE),
+            inv_cell,
+            grid,
+        }
     }
 
     /// Resolved pave vertex within `tol` of `point`, matching the linear scan's
@@ -70,6 +75,49 @@ impl PaveVertexIndex {
             }
         }
         best.map(|(_, v)| v)
+    }
+
+    /// Nearest accepted vertex within `radius`, unless accepted vertices occur
+    /// at more than one distinct position.
+    pub(crate) fn find_unambiguous_within(
+        &self,
+        point: Point3,
+        radius: f64,
+        distinct_tol: f64,
+        accept: impl Fn(Point3) -> bool,
+    ) -> Option<VertexId> {
+        if radius > self.cell {
+            return None;
+        }
+        let (cx, cy, cz) = cell_of(point, self.inv_cell);
+        let mut best: Option<(f64, Point3, VertexId)> = None;
+        let mut ambiguous = false;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(entries) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) else {
+                        continue;
+                    };
+                    for entry in entries {
+                        crate::perf::bump_pave_vertex_probe();
+                        let distance = (entry.pos - point).length();
+                        if distance <= radius && accept(entry.pos) {
+                            if let Some((best_distance, best_pos, _)) = best {
+                                ambiguous |= (entry.pos - best_pos).length() > distinct_tol;
+                                if distance < best_distance {
+                                    best = Some((distance, entry.pos, entry.vertex));
+                                }
+                            } else {
+                                best = Some((distance, entry.pos, entry.vertex));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (!ambiguous)
+            .then(|| best.map(|(_, _, vertex)| vertex))
+            .flatten()
     }
 }
 
@@ -142,5 +190,37 @@ mod tests {
     fn empty_index_returns_none() {
         let idx = PaveVertexIndex::build(1e-7, std::iter::empty());
         assert_eq!(idx.find_within(Point3::new(0.0, 0.0, 0.0), 1e-7), None);
+    }
+
+    #[test]
+    fn widened_lookup_is_spatially_bounded_and_rejects_ambiguity() {
+        let mut topo = Topology::new();
+        let near = Point3::new(0.000_5, 0.0, 0.0);
+        let distinct = Point3::new(-0.000_5, 0.0, 0.0);
+        let far = Point3::new(100.0, 0.0, 0.0);
+        let v_near = topo.add_vertex(Vertex::new(near, 1e-7));
+        let v_distinct = topo.add_vertex(Vertex::new(distinct, 1e-7));
+        let v_far = topo.add_vertex(Vertex::new(far, 1e-7));
+        let idx = PaveVertexIndex::build(
+            1e-3,
+            vec![
+                (0, v_near, near),
+                (1, v_distinct, distinct),
+                (2, v_far, far),
+            ]
+            .into_iter(),
+        );
+
+        assert_eq!(
+            idx.find_unambiguous_within(Point3::new(0.0, 0.0, 0.0), 0.000_6, 1e-7, |p| {
+                p.x() > 0.0
+            }),
+            Some(v_near)
+        );
+        assert_eq!(
+            idx.find_unambiguous_within(Point3::new(0.0, 0.0, 0.0), 0.000_6, 1e-7, |_| true,),
+            None
+        );
+        assert_eq!(idx.find_unambiguous_within(far, 2e-3, 1e-7, |_| true), None);
     }
 }

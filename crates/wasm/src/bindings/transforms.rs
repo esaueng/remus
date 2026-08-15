@@ -47,7 +47,7 @@ impl BrepKernel {
         let rows = std::array::from_fn(|i| std::array::from_fn(|j| matrix[i * 4 + j]));
         let mat = Mat4(rows);
 
-        transform_solid(self.topo_mut(), solid_id, &mat)?;
+        self.with_topology_transaction(|topo| transform_solid(topo, solid_id, &mat))?;
         Ok(())
     }
 
@@ -160,7 +160,9 @@ impl BrepKernel {
         let wire_id = self.resolve_wire(wire)?;
         let rows = std::array::from_fn(|i| std::array::from_fn(|j| matrix[i * 4 + j]));
         let mat = Mat4(rows);
-        brepkit_operations::transform::transform_wire(self.topo_mut(), wire_id, &mat)?;
+        self.with_topology_transaction(|topo| {
+            brepkit_operations::transform::transform_wire(topo, wire_id, &mat)
+        })?;
         Ok(())
     }
 
@@ -196,7 +198,9 @@ impl BrepKernel {
         let face_id = self.resolve_face(face)?;
         let rows = std::array::from_fn(|i| std::array::from_fn(|j| matrix[i * 4 + j]));
         let mat = Mat4(rows);
-        brepkit_operations::transform::transform_face(self.topo_mut(), face_id, &mat)?;
+        self.with_topology_transaction(|topo| {
+            brepkit_operations::transform::transform_face(topo, face_id, &mat)
+        })?;
         Ok(())
     }
 

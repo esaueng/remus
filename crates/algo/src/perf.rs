@@ -53,6 +53,7 @@ pub(crate) fn bump_pave_vertex_probe() {
 /// Count one same-domain polygon-intersection clip (the expensive narrow-phase
 /// in `planar_faces_overlap`). Crate-internal, like `bump_pave_vertex_probe`.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn bump_sd_poly_clip() {
     #[cfg(feature = "perf-counters")]
     increment(&SD_POLY_CLIPS);

@@ -2,6 +2,8 @@
 
 #![allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 
+use std::rc::Rc;
+
 use wasm_bindgen::prelude::*;
 
 use brepkit_math::mat::Mat4;
@@ -31,6 +33,21 @@ use crate::kernel::BrepKernel;
 const MAX_BATCH_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum operations executed by one `executeBatch` call.
 const MAX_BATCH_OPERATIONS: usize = 10_000;
+/// Default tessellation deflection for batch operations when omitted.
+const DEFAULT_DEFLECTION: f64 = 0.1;
+
+fn validate_deflection(deflection: f64) -> Result<f64, StructuredWasmError> {
+    crate::error::validate_positive(deflection, "deflection").map_err(StructuredWasmError::from)?;
+    Ok(deflection)
+}
+
+fn get_deflection(args: &serde_json::Value) -> Result<f64, StructuredWasmError> {
+    let deflection = match args.get("deflection") {
+        None => DEFAULT_DEFLECTION,
+        Some(_) => get_f64(args, "deflection")?,
+    };
+    validate_deflection(deflection)
+}
 
 #[wasm_bindgen(typescript_custom_section)]
 const BATCH_V2_TYPES: &str = r#"
@@ -65,6 +82,120 @@ enum BatchContract {
 }
 
 type BatchItemResult = Result<serde_json::Value, StructuredWasmError>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BatchOpKind {
+    ReadOnly,
+    Mutating,
+}
+
+/// Classify operations before doing any work that scales with topology size.
+///
+/// Keeping unknown operations out of the mutating fallback is important: an
+/// attacker must not be able to trigger a full topology snapshot with an
+/// arbitrary operation name.
+///
+/// `ReadOnly` is a performance hint, never a correctness claim. Those ops take
+/// an `Rc` share of the topology instead of a deep copy; if one does mutate,
+/// `Rc::make_mut` still materialises the pre-op state, so rollback stays exact.
+fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
+    match op {
+        "boundingBox"
+        | "centerOfMass"
+        | "chamfer2d"
+        | "classifyPoint"
+        | "detectCoincidentFaces"
+        | "fillet2d"
+        | "getNurbsCurveData"
+        | "getNurbsSurfaceData"
+        | "getNurbsSurfaceDataParity"
+        | "massProperties"
+        | "meshQuality"
+        | "polygonBoolean2d"
+        | "polygonUnion2d"
+        | "projectEdges"
+        | "solidEdges"
+        | "solidToSolidDistance"
+        | "surfaceArea"
+        | "validateSolid"
+        | "volume" => Some(BatchOpKind::ReadOnly),
+        "makeBox"
+        | "makeCylinder"
+        | "makeSphere"
+        | "makeCone"
+        | "makeTorus"
+        | "makeEllipsoid"
+        | "fuse"
+        | "cut"
+        | "intersect"
+        | "fuseWithOptions"
+        | "cutWithOptions"
+        | "intersectWithOptions"
+        | "fuseWithEvolution"
+        | "cutWithEvolution"
+        | "intersectWithEvolution"
+        | "compoundCut"
+        | "fuseAll"
+        | "transform"
+        | "copySolid"
+        | "copyAndTransformSolid"
+        | "pushPullFace"
+        | "resizeCylindricalFace"
+        | "extrude"
+        | "revolve"
+        | "sweep"
+        | "sweepWithOptions"
+        | "helicalSweep"
+        | "multiSectionSweep"
+        | "guidedSweep"
+        | "minkowskiSum"
+        | "chamfer"
+        | "fillet"
+        | "filletVariable"
+        | "filletV2"
+        | "chamferV2"
+        | "chamferDistanceAngle"
+        | "shell"
+        | "mirror"
+        | "unifyFaces"
+        | "convertToBspline"
+        | "convertToElementary"
+        | "healSolid"
+        | "repairSolid"
+        | "loft"
+        | "loftWithOptions"
+        | "loftSmooth"
+        | "circularPattern"
+        | "gridPattern"
+        | "defeature"
+        | "copyWire"
+        | "copyFace"
+        | "transformWire"
+        | "transformFace"
+        | "offsetFace"
+        | "offsetSolid"
+        | "offsetSolidV2"
+        | "section"
+        | "split"
+        | "sewFaces"
+        | "thicken"
+        | "pipe"
+        | "linearPattern"
+        | "draft"
+        | "makeTangentArc3d"
+        | "liftCurve2dToPlane"
+        | "offsetWire"
+        | "offsetWireWithJoinType"
+        | "offsetWire2DWithJoin"
+        | "makeLineEdge"
+        | "makeNurbsEdge"
+        | "makeWire"
+        | "makePlanarFaceFromWire"
+        | "makeFaceFromWires"
+        | "addHolesToFace" => Some(BatchOpKind::Mutating),
+        _ => None,
+    }
+}
 
 #[wasm_bindgen]
 impl BrepKernel {
@@ -170,10 +301,49 @@ impl BrepKernel {
                     }
                 };
                 let args = &entry["args"];
-                self.dispatch_op(op, args)
+                let kind = match batch_op_kind(op) {
+                    Some(kind) => kind,
+                    None => {
+                        return Err(StructuredWasmError::unknown_operation(op)
+                            .with_operation_context(operation_index, op));
+                    }
+                };
+                self.dispatch_with_rollback(kind, op, args)
                     .map_err(|error| error.with_operation_context(operation_index, op))
             })
             .collect()
+    }
+
+    /// Runs one batch operation, undoing its topology changes if it fails.
+    ///
+    /// The two arms differ only in what taking the rollback snapshot costs;
+    /// both restore the exact pre-operation state. See [`batch_op_kind`].
+    fn dispatch_with_rollback(
+        &mut self,
+        kind: BatchOpKind,
+        op: &str,
+        args: &serde_json::Value,
+    ) -> BatchItemResult {
+        if kind == BatchOpKind::ReadOnly {
+            // O(1). Still correct if the op does mutate: `Rc::make_mut` in
+            // `topo_mut` sees the extra reference and copies the pre-op arenas
+            // aside before the first mutation lands.
+            let snapshot = Rc::clone(&self.topo);
+            let result = self.dispatch_op(op, args);
+            if result.is_err() {
+                self.topo_mut().restore_preserving_handle_slots(&snapshot);
+            }
+            result
+        } else {
+            // Copy aside so `self.topo` stays unshared and the operation
+            // mutates it in place, keeping its arena capacity.
+            let snapshot = self.topo().clone();
+            let result = self.dispatch_op(op, args);
+            if result.is_err() {
+                self.topo_mut().restore_preserving_handle_slots(&snapshot);
+            }
+            result
+        }
     }
 }
 
@@ -679,7 +849,7 @@ impl BrepKernel {
             }
             "volume" => {
                 let s = get_u32(args, "solid")?;
-                let deflection = get_f64(args, "deflection").unwrap_or(0.1);
+                let deflection = get_deflection(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let v = measure::solid_volume(&self.topo, solid_id, deflection)
                     .map_err(StructuredWasmError::from)?;
@@ -698,7 +868,7 @@ impl BrepKernel {
             }
             "surfaceArea" => {
                 let s = get_u32(args, "solid")?;
-                let deflection = get_f64(args, "deflection").unwrap_or(0.1);
+                let deflection = get_deflection(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let a = measure::solid_surface_area(&self.topo, solid_id, deflection)
                     .map_err(StructuredWasmError::from)?;
@@ -720,7 +890,7 @@ impl BrepKernel {
             }
             "centerOfMass" => {
                 let s = get_u32(args, "solid")?;
-                let deflection = get_f64(args, "deflection").unwrap_or(0.1);
+                let deflection = get_deflection(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let com = measure::solid_center_of_mass(&self.topo, solid_id, deflection)
                     .map_err(StructuredWasmError::from)?;
@@ -742,7 +912,7 @@ impl BrepKernel {
             }
             "meshQuality" => {
                 let s = get_u32(args, "solid")?;
-                let deflection = get_f64(args, "deflection").unwrap_or(0.1);
+                let deflection = get_deflection(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
                 let mesh = brepkit_operations::tessellate::tessellate_solid(
                     &self.topo, solid_id, deflection,
@@ -1045,7 +1215,7 @@ impl BrepKernel {
                     get_f64(args, "xAxisZ")?,
                 );
                 let hidden_lines = args["hiddenLines"].as_bool().unwrap_or(true);
-                let deflection = get_f64(args, "deflection").unwrap_or(0.1);
+                let deflection = get_deflection(args)?;
                 let result = brepkit_operations::projection::project_edges(
                     &self.topo,
                     solid,
@@ -1984,8 +2154,39 @@ mod batch_contract_tests {
         serde_json::from_str(response).expect("batch response must be valid JSON")
     }
 
+    #[test]
+    fn batch_deflection_validation_matches_direct_bindings() {
+        for deflection in [f64::NAN, f64::INFINITY, 0.0, -0.1] {
+            let direct_error = crate::error::validate_positive(deflection, "deflection")
+                .expect_err("direct binding validator must reject invalid deflection");
+            let batch_error = validate_deflection(deflection)
+                .expect_err("batch validator must reject invalid deflection");
+            assert_eq!(batch_error.message(), direct_error.to_string());
+        }
+    }
+
+    #[test]
+    fn batch_deflection_defaults_only_when_omitted() {
+        let default = get_deflection(&serde_json::json!({}))
+            .expect("omitted deflection must use the batch default");
+        assert_eq!(
+            default.to_bits(),
+            DEFAULT_DEFLECTION.to_bits(),
+            "omitted deflection must use the exact batch default"
+        );
+        assert!(get_deflection(&serde_json::json!({"deflection": null})).is_err());
+    }
+
     fn v2_error(kernel: &mut BrepKernel, input: &str) -> serde_json::Value {
         parse(&kernel.execute_batch_v2(input))[0]["error"].clone()
+    }
+
+    #[test]
+    fn classifies_operations_before_topology_snapshotting() {
+        assert_eq!(batch_op_kind("volume"), Some(BatchOpKind::ReadOnly));
+        assert_eq!(batch_op_kind("projectEdges"), Some(BatchOpKind::ReadOnly));
+        assert_eq!(batch_op_kind("makeBox"), Some(BatchOpKind::Mutating));
+        assert_eq!(batch_op_kind("notAnOperation"), None);
     }
 
     #[test]
@@ -2210,5 +2411,161 @@ mod batch_contract_tests {
         let v2 = parse(&kernel.execute_batch_v2(&json));
         assert_eq!(v2[0]["error"]["code"], "batch_limit_exceeded");
         assert_eq!(v2[0]["error"]["details"]["resource"], "json_bytes");
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use crate::kernel::BrepKernel;
+
+    /// Live entity counts across every arena a batch op can touch.
+    type Counts = (usize, usize, usize, usize, usize, usize);
+
+    fn counts(k: &BrepKernel) -> Counts {
+        let t = k.topo();
+        (
+            t.num_vertices(),
+            t.num_edges(),
+            t.num_wires(),
+            t.num_faces(),
+            t.num_shells(),
+            t.num_solids(),
+        )
+    }
+
+    fn kernel_with_box() -> BrepKernel {
+        let mut k = BrepKernel::new();
+        let out = k.execute_batch(r#"[{"op":"makeBox","args":{"width":2,"height":2,"depth":2}}]"#);
+        assert!(!out.contains("error"), "seed failed: {out}");
+        k
+    }
+
+    /// A `pushPullFace` far enough to consume the solid fails *after* building
+    /// geometry. Without rollback it leaves the arenas dirty.
+    const DIRTY_FAILING_OP: &str = r#"{"solid":0,"face":0,"distance":-50.0}"#;
+
+    /// Pins the premise of [`failed_batch_op_leaves_topology_untouched`]: the
+    /// operation it uses really does mutate before failing. If this ever stops
+    /// holding, that test is passing vacuously and needs a new operation.
+    #[test]
+    fn chosen_failing_op_really_dirties_topology_without_rollback() {
+        let mut k = kernel_with_box();
+        let before = counts(&k);
+        let args: serde_json::Value = serde_json::from_str(DIRTY_FAILING_OP).unwrap();
+
+        // `dispatch_op` is the raw path with no snapshot around it.
+        let result = k.dispatch_op("pushPullFace", &args);
+
+        assert!(result.is_err(), "expected the op to fail, got {result:?}");
+        assert_ne!(
+            before,
+            counts(&k),
+            "op no longer leaves partial mutation; pick another for the rollback test"
+        );
+    }
+
+    /// A mid-batch failure must leave topology exactly as it was, and the
+    /// operations after it must still see the correct pre-failure state.
+    #[test]
+    fn failed_batch_op_leaves_topology_untouched() {
+        let mut k = kernel_with_box();
+        let before = counts(&k);
+
+        let batch = format!(
+            r#"[
+                {{"op":"pushPullFace","args":{DIRTY_FAILING_OP}}},
+                {{"op":"volume","args":{{"solid":0,"deflection":0.05}}}}
+            ]"#
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&k.execute_batch(&batch)).unwrap();
+
+        // The failing op reports an error...
+        assert!(
+            parsed[0]["error"].is_string(),
+            "expected op 0 to fail, got {parsed}"
+        );
+        // ...and left no live entity behind.
+        assert_eq!(
+            before,
+            counts(&k),
+            "failed op mutated topology; rollback regressed"
+        );
+
+        // The untouched solid still resolves and measures correctly.
+        let vol = parsed[1]["ok"].as_f64().expect("volume should succeed");
+        assert!((vol - 8.0).abs() < 0.05, "expected ~8.0, got {vol}");
+
+        // A later mutating op still builds on the correct state.
+        let parsed: serde_json::Value = serde_json::from_str(
+            &k.execute_batch(r#"[{"op":"makeBox","args":{"width":1,"height":1,"depth":1}}]"#),
+        )
+        .unwrap();
+        let handle = parsed[0]["ok"].as_u64().expect("makeBox should succeed");
+        let parsed: serde_json::Value = serde_json::from_str(&k.execute_batch(&format!(
+            r#"[{{"op":"volume","args":{{"solid":{handle},"deflection":0.05}}}}]"#
+        )))
+        .unwrap();
+        let vol = parsed[0]["ok"].as_f64().expect("volume should succeed");
+        assert!((vol - 1.0).abs() < 0.05, "expected ~1.0, got {vol}");
+    }
+
+    /// Rollback must survive a *second* failure later in the same batch, since
+    /// the snapshot is taken per item rather than once per batch.
+    #[test]
+    fn repeated_failures_each_roll_back_independently() {
+        let mut k = kernel_with_box();
+
+        // A solid created between two failures keeps its handle; rollback
+        // retires the failed op's slots rather than reusing them, so the
+        // handle is read back from the result instead of assumed.
+        let batch = format!(
+            r#"[
+                {{"op":"pushPullFace","args":{DIRTY_FAILING_OP}}},
+                {{"op":"makeBox","args":{{"width":3,"height":3,"depth":3}}}},
+                {{"op":"pushPullFace","args":{DIRTY_FAILING_OP}}}
+            ]"#
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&k.execute_batch(&batch)).unwrap();
+
+        assert!(parsed[0]["error"].is_string(), "op 0 should fail: {parsed}");
+        assert!(parsed[2]["error"].is_string(), "op 2 should fail: {parsed}");
+        let handle = parsed[1]["ok"].as_u64().expect("makeBox should succeed");
+
+        // The box created between the two failures survived the second one.
+        let parsed: serde_json::Value = serde_json::from_str(&k.execute_batch(&format!(
+            r#"[{{"op":"volume","args":{{"solid":{handle},"deflection":0.05}}}}]"#
+        )))
+        .unwrap();
+        let vol = parsed[0]["ok"].as_f64().expect("volume should succeed");
+        assert!((vol - 27.0).abs() < 0.2, "expected ~27.0, got {vol}");
+    }
+
+    /// Guards the `is_read_only_op` allowlist: every listed op that is
+    /// exercisable here must leave topology byte-identical. A drifting entry is
+    /// only a lost optimisation, never a wrong rollback — but it should still
+    /// be caught.
+    #[test]
+    fn read_only_ops_do_not_mutate_topology() {
+        let ops = [
+            r#"{"op":"volume","args":{"solid":0,"deflection":0.1}}"#,
+            r#"{"op":"surfaceArea","args":{"solid":0,"deflection":0.1}}"#,
+            r#"{"op":"boundingBox","args":{"solid":0}}"#,
+            r#"{"op":"centerOfMass","args":{"solid":0,"deflection":0.1}}"#,
+            r#"{"op":"massProperties","args":{"solid":0,"deflection":0.1}}"#,
+            r#"{"op":"validateSolid","args":{"solid":0}}"#,
+            r#"{"op":"solidEdges","args":{"solid":0}}"#,
+            r#"{"op":"meshQuality","args":{"solid":0,"deflection":0.1}}"#,
+            r#"{"op":"classifyPoint","args":{"solid":0,"x":0.5,"y":0.5,"z":0.5}}"#,
+        ];
+
+        for op in ops {
+            let mut k = kernel_with_box();
+            let before = counts(&k);
+            let out = k.execute_batch(&format!("[{op}]"));
+            assert!(!out.contains("\"error\""), "{op} failed: {out}");
+            assert_eq!(before, counts(&k), "{op} mutated topology");
+        }
     }
 }

@@ -404,17 +404,7 @@ pub fn build_evolution_by_geometry_with_scale(
         // added here, and the mis-binding hazard the refusal exists to prevent
         // stays closed.
         if tied.len() > 1 && !all_cosurface(input_faces, &tied, plane_tol) {
-            let could_be_one_of_them = tied
-                .iter()
-                .any(|&in_idx| could_be_carried_forward(input_faces, in_idx, out_normal));
-            if could_be_one_of_them {
-                evo.add_unresolved(out_idx, tied);
-            } else {
-                for in_idx in tied {
-                    evo.add_generated(in_idx, out_idx);
-                    matched_inputs.insert(in_idx);
-                }
-            }
+            evo.add_unresolved(out_idx, tied);
             continue;
         }
 
@@ -453,10 +443,7 @@ pub fn build_evolution_by_geometry_with_scale(
             .map(|&(i, _)| i)
             .collect();
         if contenders.len() > 1 {
-            for in_idx in contenders {
-                evo.add_generated(in_idx, out_idx);
-                matched_inputs.insert(in_idx);
-            }
+            evo.add_unresolved(out_idx, contenders);
             continue;
         }
         evo.add_generated(nearest, out_idx);
@@ -484,28 +471,12 @@ fn dist_sq(a: Point3, b: Point3) -> f64 {
     dx.mul_add(dx, dy.mul_add(dy, dz * dz))
 }
 
-/// Whether an output face could be input face `want` carried forward.
-///
-/// The test is orientation alone: re-trimming a face changes its boundary, not
-/// which way it faces, so an output parallel to an input might be that input
-/// re-trimmed, moved, or offset — and the matcher has no way to rule it out.
-/// The centroid is deliberately *not* consulted. A face that slid off its
-/// original plane is still that face, and treating the offset as disqualifying
-/// would turn a real ambiguity into a confident answer.
-///
-/// It is the converse that carries information. A face parallel to none of its
-/// candidates does not lie on any of their surfaces and cannot be any of them
-/// carried forward, whatever its position: it is new geometry. A rolling-ball
-/// blend band is the case in point — its normal bisects the two faces its edge
-/// separated, 45° from each on a box corner, so it is parallel to neither.
-///
-/// A missing `want` reads as "could not be", so a caller cannot get an answer
-/// out of an index that is not in the input set.
+#[cfg(test)]
 fn could_be_carried_forward(input_faces: &[FaceSignature], want: usize, out_normal: Vec3) -> bool {
     input_faces
         .iter()
-        .find(|&&(i, _, _)| i == want)
-        .is_some_and(|&(_, n, _)| n.dot(out_normal) >= COSURFACE_MIN_DOT)
+        .find(|&&(index, _, _)| index == want)
+        .is_some_and(|&(_, normal, _)| normal.dot(out_normal) >= COSURFACE_MIN_DOT)
 }
 
 /// Whether every listed input face lies on one surface: parallel normals, and
@@ -614,16 +585,16 @@ mod tests {
         ]
     }
 
-    /// The blend-band signature, reduced to face signatures: an output that is
-    /// equidistant from two inputs and faces along their bisector is new
-    /// geometry built between them, not a re-trimmed copy of either. It ties
-    /// because of how it was built, and the tie names its two base faces.
+    /// The blend-band signature, reduced to face signatures. Geometry alone
+    /// cannot prove that a bisector-facing output was generated from both
+    /// equidistant inputs; operation-specific construction provenance can,
+    /// but this fallback matcher must report the ambiguity.
     ///
     /// These are the real numbers for a 10-cube with the edge between the top
     /// (+z) and the right (+x) face rounded at radius 1: the band's axis lies
     /// at x = z = 9, so its surface centroid sits at 9 + cos 45° on both axes.
     #[test]
-    fn a_band_facing_between_two_inputs_is_generated_from_both_not_refused() {
+    fn a_band_facing_between_two_inputs_is_refused_without_provenance() {
         let inputs = cube_face_signatures();
         let bisector = Vec3::new(1.0, 0.0, 1.0).normalize().unwrap();
         let c = 9.0 + std::f64::consts::FRAC_1_SQRT_2;
@@ -636,23 +607,11 @@ mod tests {
             "a band is not a modified copy of either base face: {:?}",
             evo.modified
         );
-        assert_eq!(
-            evo.generated.get(&0),
-            Some(&vec![100]),
-            "the top face is one of the two the rounded edge separated"
-        );
-        assert_eq!(
-            evo.generated.get(&2),
-            Some(&vec![100]),
-            "the right face is the other"
-        );
-        assert_eq!(
-            evo.generated.len(),
-            2,
-            "and only those two: {:?}",
-            evo.generated
-        );
-        assert!(evo.is_complete(), "the band is placed, not refused");
+        assert!(evo.generated.is_empty(), "{:?}", evo.generated);
+        assert_eq!(evo.unresolved.get(&100), Some(&vec![0, 2]));
+        assert!(!evo.is_complete());
+        assert!(!evo.deleted.contains(&0));
+        assert!(!evo.deleted.contains(&2));
     }
 
     /// The discriminator itself. Orientation decides: a face parallel to a

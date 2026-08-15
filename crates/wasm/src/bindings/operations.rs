@@ -27,6 +27,7 @@ use crate::types::FaceEvolutionPayloadV1;
 use brepkit_operations::extrude::extrude;
 use brepkit_operations::offset_wire::JoinType;
 use brepkit_operations::push_pull::{push_pull_face, resize_cylindrical_face};
+use brepkit_operations::resize_blend::{resize_blend, resize_blend_failure_code};
 use brepkit_operations::revolve::revolve;
 use brepkit_operations::sweep::sweep;
 
@@ -232,7 +233,8 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let solid_id = brepkit_operations::loft::loft(self.topo_mut(), &face_ids)?;
+        let solid_id =
+            self.with_topology_transaction(|topo| brepkit_operations::loft::loft(topo, &face_ids))?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -255,7 +257,9 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let solid_id = brepkit_operations::loft::loft_smooth(self.topo_mut(), &face_ids)?;
+        let solid_id = self.with_topology_transaction(|topo| {
+            brepkit_operations::loft::loft_smooth(topo, &face_ids)
+        })?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -521,7 +525,8 @@ impl BrepKernel {
         validate_finite(distance, "distance")?;
         let solid_id = self.resolve_solid(solid)?;
         let face_id = self.resolve_face(face)?;
-        let result = push_pull_face(self.topo_mut(), solid_id, face_id, distance)?;
+        let result = self
+            .with_topology_transaction(|topo| push_pull_face(topo, solid_id, face_id, distance))?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -544,8 +549,119 @@ impl BrepKernel {
         validate_positive(new_radius, "new_radius")?;
         let solid_id = self.resolve_solid(solid)?;
         let face_id = self.resolve_face(face)?;
-        let result = resize_cylindrical_face(self.topo_mut(), solid_id, face_id, new_radius)?;
+        let result = self.with_topology_transaction(|topo| {
+            resize_cylindrical_face(topo, solid_id, face_id, new_radius)
+        })?;
         Ok(solid_id_to_u32(result))
+    }
+
+    /// Resize or remove an exact constant-radius analytic blend band.
+    ///
+    /// `face` is only a seed: the kernel re-derives the complete band, its
+    /// supports, and its current radius. `expected_radius` must match that
+    /// exact measurement. `new_radius == 0` restores the sharp support
+    /// intersection; positive values rebuild the band. Returns a new solid
+    /// handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable-code-prefixed refusal if the band is ambiguous,
+    /// freeform, stale, unsupported, or cannot be rebuilt exactly. Failure is
+    /// transactional and leaves all pre-existing handles valid.
+    #[wasm_bindgen(js_name = "resizeBlend")]
+    pub fn resize_blend_binding(
+        &mut self,
+        solid: u32,
+        face: u32,
+        expected_radius: f64,
+        new_radius: f64,
+    ) -> Result<u32, JsError> {
+        validate_positive(expected_radius, "expected_radius")?;
+        validate_finite(new_radius, "new_radius")?;
+        if new_radius < 0.0 {
+            return Err(JsError::new("new_radius must be non-negative"));
+        }
+        let solid_id = self.resolve_solid(solid)?;
+        let face_id = self.resolve_face(face)?;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resize_blend(
+                self.topo_mut(),
+                solid_id,
+                face_id,
+                expected_radius,
+                new_radius,
+            )
+        }));
+        match result {
+            Ok(Ok(result)) => Ok(solid_id_to_u32(result.solid)),
+            Ok(Err(error)) => Err(JsError::new(&format!(
+                "{}: {error}",
+                resize_blend_failure_code(&error)
+            ))),
+            Err(panic_info) => Err(JsError::new(&panic_message(&panic_info, "Resize blend"))),
+        }
+    }
+
+    /// [`Self::resize_blend_binding`] with versioned face evolution.
+    ///
+    /// The payload uses the existing [`FaceEvolutionPayloadV1`] schema. New
+    /// band faces are `generated` from both recovered support faces; removed
+    /// input band faces are `deleted`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same stable-code-prefixed refusals as `resizeBlend`, or a
+    /// payload validation error if the construction record is incomplete.
+    #[wasm_bindgen(js_name = "resizeBlendWithEvolution")]
+    pub fn resize_blend_with_evolution_binding(
+        &mut self,
+        solid: u32,
+        face: u32,
+        expected_radius: f64,
+        new_radius: f64,
+    ) -> Result<FaceEvolutionPayloadV1, JsError> {
+        validate_positive(expected_radius, "expected_radius")?;
+        validate_finite(new_radius, "new_radius")?;
+        if new_radius < 0.0 {
+            return Err(JsError::new("new_radius must be non-negative"));
+        }
+        let solid_id = self.resolve_solid(solid)?;
+        let face_id = self.resolve_face(face)?;
+        let source_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> Result<FaceEvolutionPayloadV1, JsError> {
+                let result = resize_blend(
+                    self.topo_mut(),
+                    solid_id,
+                    face_id,
+                    expected_radius,
+                    new_radius,
+                )
+                .map_err(|error| {
+                    JsError::new(&format!("{}: {error}", resize_blend_failure_code(&error)))
+                })?;
+                let result_faces: Vec<u32> =
+                    brepkit_topology::explorer::solid_faces(&self.topo, result.solid)?
+                        .into_iter()
+                        .map(face_id_to_u32)
+                        .collect();
+                FaceEvolutionPayloadV1::from_map(
+                    solid,
+                    solid_id_to_u32(result.solid),
+                    source_faces.clone(),
+                    result_faces,
+                    &result.evolution,
+                )
+                .map_err(|error| JsError::new(&error))
+            },
+        ));
+        match result {
+            Ok(inner) => inner,
+            Err(panic_info) => Err(JsError::new(&panic_message(&panic_info, "Resize blend"))),
+        }
     }
 
     /// Extrude a planar face along a direction vector to create a solid.
@@ -862,8 +978,9 @@ impl BrepKernel {
             weights,
         )?;
 
-        let solid_id =
-            brepkit_operations::sweep::sweep_smooth(self.topo_mut(), face_id, &path_curve)?;
+        let solid_id = self.with_topology_transaction(|topo| {
+            brepkit_operations::sweep::sweep_smooth(topo, face_id, &path_curve)
+        })?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -999,6 +1116,16 @@ impl BrepKernel {
         angle_degrees: f64,
     ) -> Result<u32, JsError> {
         validate_finite(angle_degrees, "angle_degrees")?;
+        for (value, name) in [
+            (pull_x, "pull_x"),
+            (pull_y, "pull_y"),
+            (pull_z, "pull_z"),
+            (neutral_x, "neutral_x"),
+            (neutral_y, "neutral_y"),
+            (neutral_z, "neutral_z"),
+        ] {
+            validate_finite(value, name)?;
+        }
         let solid_id = self.resolve_solid(solid)?;
         let face_ids: Vec<brepkit_topology::face::FaceId> = face_handles
             .iter()
@@ -1057,7 +1184,9 @@ impl BrepKernel {
             path_weights,
         )?;
 
-        let solid_id = brepkit_operations::pipe::pipe(self.topo_mut(), face_id, &path_curve, None)?;
+        let solid_id = self.with_topology_transaction(|topo| {
+            brepkit_operations::pipe::pipe(topo, face_id, &path_curve, None)
+        })?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -1187,7 +1316,7 @@ impl BrepKernel {
         let path_curve = brepkit_math::nurbs::fitting::interpolate(&points, degree)?;
 
         let face_id = self.resolve_face(face)?;
-        let solid_id = sweep(self.topo_mut(), face_id, &path_curve)?;
+        let solid_id = self.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -1325,12 +1454,9 @@ impl BrepKernel {
         let options = parse_sweep_options(contact_mode, scale_values, segments, corner_mode)
             .map_err(|error| JsError::new(&error))?;
 
-        let result = brepkit_operations::sweep::sweep_with_options(
-            self.topo_mut(),
-            face_id,
-            &path_curve,
-            &options,
-        )?;
+        let result = self.with_topology_transaction(|topo| {
+            brepkit_operations::sweep::sweep_with_options(topo, face_id, &path_curve, &options)
+        })?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -1788,6 +1914,9 @@ impl BrepKernel {
         radius: f64,
     ) -> Result<u32, JsError> {
         validate_positive(radius, "radius")?;
+        // The bound on a selection is the solid's own edge count, enforced once
+        // in `blend_ops::fillet_v2` rather than duplicated as a constant here:
+        // "fillet every edge" of a real part is ordinary work.
         let solid_id = self.resolve_solid(solid)?;
         let edge_ids: Vec<_> = edge_handles
             .iter()
@@ -2040,6 +2169,72 @@ mod tests {
             assert_eq!(generated.len(), edge_slots.len());
             assert_complete_evolution(&payload);
         }
+    }
+
+    /// The binding must not impose a ceiling of its own on how many edge
+    /// handles a selection carries, and repeated handles — how face-adjacency
+    /// selections come out of JS — must be collapsed, not refused.
+    #[test]
+    fn fillet_v2_binding_takes_a_repeated_selection_past_the_old_handle_cap() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edges = kernel.get_solid_edges(solid).unwrap();
+        let selection: Vec<u32> = std::iter::repeat_n(edges[0], 300).collect();
+
+        let filleted = kernel.fillet_v2(solid, selection, 1.0).unwrap();
+
+        let solid_id = kernel.resolve_solid(filleted).unwrap();
+        let faces = brepkit_topology::explorer::solid_faces(&kernel.topo, solid_id)
+            .unwrap()
+            .len();
+        let volume =
+            brepkit_operations::measure::solid_volume(&kernel.topo, solid_id, 0.01).unwrap();
+        assert!(faces > 6, "fillet must add a face, got {faces}");
+        assert!(
+            volume < 1000.0,
+            "convex fillet must remove material, got {volume}"
+        );
+    }
+
+    #[test]
+    fn resize_blend_bindings_preserve_v1_evolution_contract() {
+        let mut kernel = BrepKernel::new();
+        let sharp = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(sharp).unwrap()[0];
+        let fillet = kernel
+            .fillet_with_evolution(sharp, vec![edge], 1.0)
+            .unwrap();
+        let bands: HashSet<u32> = fillet
+            .evolution
+            .generated
+            .iter()
+            .flat_map(|claim| claim.results.iter().copied())
+            .collect();
+        assert_eq!(bands.len(), 1);
+        let band = *bands.iter().next().unwrap();
+
+        let resized = kernel
+            .resize_blend_with_evolution_binding(fillet.result.solid, band, 1.0, 2.0)
+            .unwrap();
+        assert_eq!(resized.schema_version, 1);
+        assert_eq!(
+            resized.evolution.provenance,
+            crate::types::EvolutionProvenanceV1::Construction
+        );
+        assert!(resized.evolution.deleted.contains(&band));
+        assert_complete_evolution(&resized);
+
+        let mut direct_kernel = BrepKernel::new();
+        let sharp = direct_kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = direct_kernel.get_solid_edges(sharp).unwrap()[0];
+        let fillet = direct_kernel
+            .fillet_with_evolution(sharp, vec![edge], 1.0)
+            .unwrap();
+        let band = fillet.evolution.generated[0].results[0];
+        let result = direct_kernel
+            .resize_blend_binding(fillet.result.solid, band, 1.0, 0.0)
+            .unwrap();
+        assert_eq!(direct_kernel.get_solid_faces(result).unwrap().len(), 6);
     }
 
     #[test]

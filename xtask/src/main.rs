@@ -47,7 +47,8 @@ fn main() -> anyhow::Result<()> {
             wasm::merge_packages()?;
             wasm::validate_output()?;
             wasm::run_smoke_test()?;
-            println!("\n✅ WASM build and runtime smoke test complete.");
+            wasm::run_installed_tarball_test()?;
+            println!("\n✅ WASM build and package runtime tests complete.");
         }
         Command::WasmPublish { dry_run, no_simd } => {
             wasm::check_tools()?;
@@ -56,6 +57,7 @@ fn main() -> anyhow::Result<()> {
             wasm::merge_packages()?;
             wasm::validate_output()?;
             wasm::run_smoke_test()?;
+            wasm::run_installed_tarball_test()?;
             wasm::publish(dry_run)?;
         }
     }

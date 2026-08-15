@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
+use brepkit_topology::edge::{EdgeCurve, EdgeId};
 use brepkit_topology::face::{Face, FaceId, FaceSurface};
 use brepkit_topology::shell::Shell;
 use brepkit_topology::solid::{Solid, SolidId};
@@ -902,9 +902,18 @@ fn has_repeated_oriented_edge(oes: &[OrientedEdge]) -> bool {
     false
 }
 
+fn short_loop_is_degenerate(topo: &Topology, oes: &[OrientedEdge]) -> bool {
+    oes.is_empty()
+        || (oes.len() < 3
+            && oes.iter().all(|oe| {
+                topo.edge(oe.edge())
+                    .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Line))
+            }))
+}
+
 /// Remove cyclically-adjacent (edge, +dir)/(edge, -dir) pairs from every
-/// face wire; drop faces whose outer wire collapses below 3 edges and inner
-/// wires that collapse entirely.
+/// face wire; drop short all-line polygon remnants while preserving valid
+/// one- and two-edge curved loops.
 fn excise_out_and_back_spurs(
     topo: &mut Topology,
     face_ids: &mut Vec<FaceId>,
@@ -949,7 +958,7 @@ fn excise_out_and_back_spurs(
             Err(_) => continue,
         };
         if excise(&mut outer) {
-            if outer.len() < 3 {
+            if short_loop_is_degenerate(topo, &outer) {
                 drop.push(fi);
                 continue;
             }
@@ -970,7 +979,7 @@ fn excise_out_and_back_spurs(
             };
             let mut inner = inner_wire.edges().to_vec();
             if excise(&mut inner) {
-                if inner.len() < 3 {
+                if short_loop_is_degenerate(topo, &inner) {
                     // The hole WAS the excursion (a zero-width slit): dropping
                     // it entirely is the only consistent outcome — writing the
                     // shrunken (or original) wire back would leave the spur.
@@ -2260,6 +2269,39 @@ fn split_edges_at_collinear_vertices(
     Ok(())
 }
 
+/// Whether two analytic conics describe the same untrimmed carrier curve.
+/// Parameter direction and seam phase are irrelevant; only the geometric
+/// support is compared.
+fn conics_share_support(a: &EdgeCurve, b: &EdgeCurve, tol: f64) -> bool {
+    match (a, b) {
+        (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
+            (a.center() - b.center()).length() <= tol
+                && (a.radius() - b.radius()).abs() <= tol
+                && a.normal().cross(b.normal()).length() <= 1e-9
+        }
+        (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
+            if (a.center() - b.center()).length() > tol
+                || (a.semi_major() - b.semi_major()).abs() > tol
+                || (a.semi_minor() - b.semi_minor()).abs() > tol
+                || a.normal().cross(b.normal()).length() > 1e-9
+            {
+                return false;
+            }
+            if (a.semi_major() - a.semi_minor()).abs() <= tol {
+                return true;
+            }
+            let a_major = a.evaluate(0.0) - a.center();
+            let b_major = b.evaluate(0.0) - b.center();
+            a_major
+                .normalize()
+                .ok()
+                .zip(b_major.normalize().ok())
+                .is_some_and(|(ua, ub)| ua.cross(ub).length() <= 1e-9)
+        }
+        _ => false,
+    }
+}
+
 /// Split Circle/Ellipse arc edges at interior vertices that lie ON the arc.
 ///
 /// The arc analogue of [`split_edges_at_collinear_vertices`]. Two operands can
@@ -2288,6 +2330,11 @@ fn split_arc_edges_at_collinear_vertices(
 
     // Canonical vertex per quantized position, and unique arc edges.
     let mut vert_at: HashMap<QPos, (VertexId, Point3)> = HashMap::new();
+    // Curve supports incident at each vertex. An ambiguous open major arc may
+    // only be refined at vertices that already partition the same geometric
+    // conic; an arbitrary selected-face vertex on the carrier curve is not
+    // evidence that the edge follows the long endpoint span.
+    let mut curve_support_at: HashMap<QPos, Vec<EdgeCurve>> = HashMap::new();
     // (edge, start_v, end_v, start_p, end_p, curve)
     let mut arc_edges: Vec<(EdgeId, VertexId, VertexId, Point3, Point3, EdgeCurve)> = Vec::new();
     let mut seen_edges: HashSet<EdgeId> = HashSet::new();
@@ -2310,6 +2357,16 @@ fn split_arc_edges_at_collinear_vertices(
                     edge.curve(),
                     EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
                 );
+                if matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)) {
+                    curve_support_at
+                        .entry(quantize_point(sp, tol))
+                        .or_default()
+                        .push(edge.curve().clone());
+                    curve_support_at
+                        .entry(quantize_point(ep, tol))
+                        .or_default()
+                        .push(edge.curve().clone());
+                }
                 if is_refinable && seen_edges.insert(oe.edge()) {
                     arc_edges.push((oe.edge(), sv, ev, sp, ep, edge.curve().clone()));
                 }
@@ -2462,14 +2519,21 @@ fn split_arc_edges_at_collinear_vertices(
         // the span at the seam's angle instead, or cuts sort in the intrinsic
         // frame and the sub-arcs overlap past one revolution (seam at pi with
         // cuts at pi/2 and 3pi/2 would sweep 4pi total).
-        let (a0, a1) = if is_closed {
+        let (a0, a1, needs_mate_partition) = if is_closed {
             let seam = project_angle_on_curve(&curve, sp);
-            (seam, seam + std::f64::consts::TAU)
+            (seam, seam + std::f64::consts::TAU, false)
         } else {
-            curve.domain_with_endpoints(sp, ep)
+            let (start, end) = curve.domain_with_endpoints(sp, ep);
+            let raw = end - start;
+            // `evaluate_with_endpoints` represents open conics by their
+            // shorter endpoint arc, so a raw CCW span above PI is ambiguous.
+            // It is treated as a major arc only when matching conic edges
+            // already partition it; the candidate filter below refuses every
+            // unrelated global vertex on the same carrier curve.
+            (start, end, raw > std::f64::consts::PI)
         };
         let span = a1 - a0;
-        if span < angular_eps {
+        if span.abs() < angular_eps {
             continue;
         }
 
@@ -2515,14 +2579,31 @@ fn split_arc_edges_at_collinear_vertices(
             if (on - p).length() > snap {
                 continue;
             }
+            let has_mate_partition =
+                curve_support_at
+                    .get(&quantize_point(p, tol))
+                    .is_some_and(|supports| {
+                        supports
+                            .iter()
+                            .any(|support| conics_share_support(&curve, support, snap))
+                    });
+            if needs_mate_partition && !has_mate_partition {
+                continue;
+            }
             // Bring the angle strictly inside the trimmed span [a0, a1]. The
             // margin is angular (radians), so use `angular_eps`, not the linear
             // `snap`.
-            let a_branch = a0 + (a - a0).rem_euclid(std::f64::consts::TAU);
-            if !(a0 + angular_eps..=a1 - angular_eps).contains(&a_branch) {
+            let offset = if span >= 0.0 {
+                (a - a0).rem_euclid(std::f64::consts::TAU)
+            } else {
+                -((a0 - a).rem_euclid(std::f64::consts::TAU))
+            };
+            let fraction = offset / span;
+            let fraction_eps = angular_eps / span.abs();
+            if !(fraction_eps..=1.0 - fraction_eps).contains(&fraction) {
                 continue;
             }
-            cuts.push((a_branch, vid));
+            cuts.push((fraction, vid));
         }
         if cuts.is_empty() || (is_closed && cuts.len() < 2) {
             continue;
@@ -3286,11 +3367,14 @@ fn cap_partial_overlap_free_loops(
         let mut parents: HashMap<usize, usize> = HashMap::new();
         for &child in &indices {
             let child_point = cap_loops[child].2[0];
+            let child_area = planar_loop_area(&cap_loops[child].2, cap_planes[cap_index].normal);
             let parent = indices
                 .iter()
                 .copied()
                 .filter(|&candidate| {
                     candidate != child
+                        && planar_loop_area(&cap_loops[candidate].2, cap_planes[cap_index].normal)
+                            > child_area
                         && planar_loop_contains(
                             &cap_loops[candidate].2,
                             child_point,
@@ -3310,7 +3394,13 @@ fn cap_partial_overlap_free_loops(
         for &outer in &indices {
             let mut depth = 0;
             let mut ancestor = outer;
+            let mut visited = HashSet::new();
             while let Some(&parent) = parents.get(&ancestor) {
+                if !visited.insert(ancestor) {
+                    return Err(AlgoError::AssemblyFailed(
+                        "cyclic planar cap-loop nesting".into(),
+                    ));
+                }
                 depth += 1;
                 ancestor = parent;
             }

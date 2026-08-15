@@ -14,23 +14,16 @@ use brepkit_topology::vertex::VertexId;
 use crate::ds::{GfaArena, Interference, Pave};
 use crate::error::AlgoError;
 
-/// Samples used to bound a curved edge's AABB for the broad-phase reject.
-const N_AABB_SAMPLES: usize = 16;
-
 /// Compute a conservative AABB for an edge, expanded by `margin`.
 fn edge_aabb(topo: &Topology, eid: EdgeId, margin: f64) -> Result<Option<Aabb3>, AlgoError> {
     let edge = topo.edge(eid)?;
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
-    if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
-        return Ok(Aabb3::try_from_points([start_pos, end_pos]).map(|a| a.expanded(margin)));
-    }
-    let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
-    let pts = (0..=N_AABB_SAMPLES).map(|i| {
-        let t = t0 + (t1 - t0) * (i as f64 / N_AABB_SAMPLES as f64);
-        edge.curve().evaluate_with_endpoints(t, start_pos, end_pos)
-    });
-    Ok(Aabb3::try_from_points(pts).map(|a| a.expanded(margin)))
+    Ok(
+        matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line)
+            .then(|| Aabb3::try_from_points([start_pos, end_pos]).map(|a| a.expanded(margin)))
+            .flatten(),
+    )
 }
 
 /// Detect vertices lying on edges between the two solids.

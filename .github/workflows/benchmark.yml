@@ -29,7 +29,7 @@ concurrency:
 jobs:
   bench:
     name: Boolean perf
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
@@ -57,7 +57,7 @@ jobs:
   publish:
     name: Publish benchmark
     needs: bench
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write # push the baseline to gh-pages (apache-main only)

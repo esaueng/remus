@@ -40,6 +40,10 @@ use brepkit_topology::face::{FaceId, FaceSurface};
 use brepkit_topology::solid::SolidId;
 
 use crate::OperationsError;
+pub use crate::query::EdgeConcavity;
+
+/// Compatibility alias for the corrected edge-concavity classifier.
+pub type ConcavityType = EdgeConcavity;
 
 /// Surface classification for a face.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,17 +62,6 @@ pub enum SurfaceClass {
     FreeForm,
 }
 
-/// Concavity type of an edge between two faces.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConcavityType {
-    /// Convex edge (dihedral angle > pi).
-    Convex,
-    /// Concave edge (dihedral angle < pi).
-    Concave,
-    /// Tangent/smooth edge (dihedral angle approximately pi).
-    Tangent,
-}
-
 /// A node in the face adjacency graph.
 #[derive(Debug, Clone)]
 pub struct FagNode {
@@ -85,10 +78,11 @@ pub struct FagNode {
 pub struct FagEdge {
     /// The shared topology edge ID.
     pub edge: EdgeId,
-    /// Concavity type.
-    pub concavity: ConcavityType,
-    /// Dihedral angle in radians.
-    pub dihedral_angle: f64,
+    /// Geometric convexity, G1 contact, or an explicit unknown.
+    pub concavity: EdgeConcavity,
+    /// Mean angle between effective outward normals in `[0, pi]`, when it can
+    /// be evaluated at every interior sample.
+    pub normal_angle: Option<f64>,
 }
 
 /// Face adjacency graph with typed nodes and edges.
@@ -174,7 +168,7 @@ pub fn recognize_features(
 
     let mut features = Vec::new();
 
-    let fag = build_face_adjacency_graph(topo, &face_ids, deflection)?;
+    let fag = build_face_adjacency_graph(topo, solid, &face_ids, deflection)?;
 
     detect_chamfers_fag(topo, &fag, &mut features)?;
     detect_fillet_like_fag(&fag, &mut features);
@@ -188,6 +182,7 @@ pub fn recognize_features(
 /// Build a typed face adjacency graph from a set of face IDs.
 fn build_face_adjacency_graph(
     topo: &Topology,
+    solid: SolidId,
     face_ids: &[FaceId],
     deflection: f64,
 ) -> Result<FaceAdjacencyGraph, OperationsError> {
@@ -226,13 +221,18 @@ fn build_face_adjacency_graph(
     let mut adjacency: HashMap<usize, Vec<(usize, FagEdge)>> = HashMap::new();
     for (eid, faces) in edge_to_faces.values() {
         if faces.len() == 2 {
-            let angle = compute_dihedral_angle(topo, faces[0], faces[1], *eid)?;
-            let concavity = classify_concavity(angle);
+            let probe = local_concavity_probe(topo, *eid, faces[0], faces[1])?;
+            let normal_angle = crate::query::edge_normal_angle(topo, *eid, faces[0], faces[1])?;
+            // Reuse the adjacency assembled above and avoid the robust
+            // classifier's full-solid tessellation for every edge probe.
+            let concavity = crate::query::edge_concavity_from_faces(
+                topo, solid, *eid, faces[0], faces[1], probe,
+            )?;
 
             let edge_info = FagEdge {
                 edge: *eid,
                 concavity,
-                dihedral_angle: angle,
+                normal_angle,
             };
             adjacency
                 .entry(faces[0].index())
@@ -260,71 +260,63 @@ fn classify_surface(surface: &FaceSurface) -> SurfaceClass {
     }
 }
 
-/// Classify dihedral angle into a concavity type.
-fn classify_concavity(angle: f64) -> ConcavityType {
-    const TOLERANCE: f64 = 0.01;
-    if angle < std::f64::consts::PI - TOLERANCE {
-        ConcavityType::Concave
-    } else if angle > std::f64::consts::PI + TOLERANCE {
-        ConcavityType::Convex
-    } else {
-        ConcavityType::Tangent
-    }
-}
-
-/// Compute the dihedral angle between two faces at a shared edge.
-///
-/// The dihedral angle is the angle between the outward normals of the
-/// two faces, measured at the edge midpoint.
-fn compute_dihedral_angle(
+/// Probe distance for edge convexity, chosen from the local edge and its two
+/// incident faces rather than from the whole model's bounding box.
+fn local_concavity_probe(
     topo: &Topology,
+    edge_id: EdgeId,
     face_a: FaceId,
     face_b: FaceId,
-    edge_id: EdgeId,
 ) -> Result<f64, OperationsError> {
-    let edge = topo.edge(edge_id)?;
-    let v_start = topo.vertex(edge.start())?;
-    let v_end = topo.vertex(edge.end())?;
-    let midpoint = Point3::new(
-        (v_start.point().x() + v_end.point().x()) * 0.5,
-        (v_start.point().y() + v_end.point().y()) * 0.5,
-        (v_start.point().z() + v_end.point().z()) * 0.5,
-    );
-
-    let n_a = face_normal_at(topo, face_a, midpoint)?;
-    let n_b = face_normal_at(topo, face_b, midpoint)?;
-
-    // Dihedral angle via dot product, clamped for numerical safety.
-    let dot = n_a.dot(n_b).clamp(-1.0, 1.0);
-    Ok(dot.acos())
+    let edge_scale = geometric_edge_length(topo, edge_id)?;
+    let face_scale = face_vertex_span(topo, face_a)?.min(face_vertex_span(topo, face_b)?);
+    let scale = edge_scale.min(face_scale);
+    Ok((scale * 1.0e-3).max(Tolerance::new().linear * 10.0))
 }
 
-/// Get the outward normal of a face at a given point.
-///
-/// For planar faces this uses the effective face orientation. Curved faces are
-/// projected to their surface parameters before evaluating the local normal.
-fn face_normal_at(
-    topo: &Topology,
-    face_id: FaceId,
-    point: Point3,
-) -> Result<Vec3, OperationsError> {
-    let face = topo.face(face_id)?;
-    if let Some(normal) = face.effective_plane_normal() {
-        return Ok(normal);
+fn geometric_edge_length(topo: &Topology, edge_id: EdgeId) -> Result<f64, OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+    let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
+    let mut length = 0.0;
+    for i in 1..=16 {
+        let t = t0 + (t1 - t0) * f64::from(i) / 16.0;
+        let point = edge.curve().evaluate_with_endpoints(t, start, end);
+        length += (point - previous).length();
+        previous = point;
     }
+    Ok(length)
+}
 
-    let (u, v) =
-        face.surface()
-            .project_point(point)
-            .ok_or_else(|| OperationsError::InvalidInput {
-                reason: format!("could not project point onto face {}", face_id.index()),
-            })?;
-    let normal = face.surface().normal(u, v);
-    if face.is_reversed() {
-        Ok(-normal)
-    } else {
-        Ok(normal)
+fn face_vertex_span(topo: &Topology, face_id: FaceId) -> Result<f64, OperationsError> {
+    let face = topo.face(face_id)?;
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oe in topo.wire(wire_id)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            for vertex in [edge.start(), edge.end()] {
+                let point = topo.vertex(vertex)?.point();
+                bounds = Some(match bounds {
+                    None => (point, point),
+                    Some((lo, hi)) => (
+                        Point3::new(
+                            lo.x().min(point.x()),
+                            lo.y().min(point.y()),
+                            lo.z().min(point.z()),
+                        ),
+                        Point3::new(
+                            hi.x().max(point.x()),
+                            hi.y().max(point.y()),
+                            hi.z().max(point.z()),
+                        ),
+                    ),
+                });
+            }
+        }
     }
+    Ok(bounds.map_or(0.0, |(lo, hi)| (hi - lo).length()))
 }
 
 /// Detect chamfer faces using the face adjacency graph.
@@ -672,7 +664,7 @@ fn detect_pockets_fag(fag: &FaceAdjacencyGraph, features: &mut Vec<Feature>) {
 
             if let Some(adj) = fag.adjacency.get(&current) {
                 for (neighbor, edge) in adj {
-                    if edge.concavity == ConcavityType::Concave && !component.contains(neighbor) {
+                    if edge.concavity == EdgeConcavity::Concave && !component.contains(neighbor) {
                         stack.push(*neighbor);
                     }
                 }
@@ -874,26 +866,33 @@ fn fit_circular_pattern(group: &[HolePatternInfo]) -> Option<(Vec<usize>, f64)> 
         return None;
     }
     let tolerance = Tolerance::new();
-    let mut fitted = None;
-    'triples: for i in 0..group.len() {
-        for j in (i + 1)..group.len() {
-            for k in (j + 1)..group.len() {
-                let a = group[j].position - group[i].position;
-                let b = group[k].position - group[i].position;
-                let normal = a.cross(b);
-                let denominator = 2.0 * normal.length_squared();
-                if denominator <= tolerance.linear_sq() {
-                    continue;
-                }
-                let offset = (a.length_squared() * b.cross(normal)
-                    + b.length_squared() * normal.cross(a))
-                    * (1.0 / denominator);
-                fitted = Some((group[i].position + offset, offset.length()));
-                break 'triples;
-            }
-        }
+    // Use a well-separated pair and the point farthest from their line. This
+    // finds a non-collinear triple in linear time instead of exhaustively
+    // examining every triple for collinear, unevenly-spaced inputs.
+    let origin = group[0].position;
+    let (_, a) = group[1..]
+        .iter()
+        .map(|hole| {
+            let offset = hole.position - origin;
+            (offset.length_squared(), offset)
+        })
+        .max_by(|left, right| left.0.total_cmp(&right.0))?;
+    let (_, b, normal) = group[1..]
+        .iter()
+        .map(|hole| {
+            let offset = hole.position - origin;
+            let cross = a.cross(offset);
+            (cross.length_squared(), offset, cross)
+        })
+        .max_by(|left, right| left.0.total_cmp(&right.0))?;
+    let denominator = 2.0 * normal.length_squared();
+    if denominator <= tolerance.linear_sq() {
+        return None;
     }
-    let (center, radius) = fitted?;
+    let offset = (a.length_squared() * b.cross(normal) + b.length_squared() * normal.cross(a))
+        * (1.0 / denominator);
+    let center = origin + offset;
+    let radius = offset.length();
     let radial_tolerance = tolerance.linear.max(radius * 1e-6);
     if radius <= tolerance.linear
         || group
@@ -1092,7 +1091,7 @@ mod tests {
         let shell = topo.shell(solid_data.outer_shell()).unwrap();
         let face_ids: Vec<FaceId> = shell.faces().to_vec();
 
-        let fag = build_face_adjacency_graph(&topo, &face_ids, 0.1).unwrap();
+        let fag = build_face_adjacency_graph(&topo, solid, &face_ids, 0.1).unwrap();
         assert_eq!(fag.nodes.len(), 6, "box has 6 faces");
     }
 
@@ -1104,7 +1103,7 @@ mod tests {
         let shell = topo.shell(solid_data.outer_shell()).unwrap();
         let face_ids: Vec<FaceId> = shell.faces().to_vec();
 
-        let fag = build_face_adjacency_graph(&topo, &face_ids, 0.1).unwrap();
+        let fag = build_face_adjacency_graph(&topo, solid, &face_ids, 0.1).unwrap();
         for node in fag.nodes.values() {
             assert_eq!(node.surface_class, SurfaceClass::Planar);
         }
@@ -1118,7 +1117,7 @@ mod tests {
         let shell = topo.shell(solid_data.outer_shell()).unwrap();
         let face_ids: Vec<FaceId> = shell.faces().to_vec();
 
-        let fag = build_face_adjacency_graph(&topo, &face_ids, 0.1).unwrap();
+        let fag = build_face_adjacency_graph(&topo, solid, &face_ids, 0.1).unwrap();
         // Each face of a box shares edges with 4 other faces.
         for node in fag.nodes.values() {
             let adj = fag.adjacency.get(&node.face.index());
@@ -1170,11 +1169,22 @@ mod tests {
     }
 
     #[test]
-    fn concavity_classification() {
-        use std::f64::consts::PI;
-        assert_eq!(classify_concavity(PI * 0.5), ConcavityType::Concave);
-        assert_eq!(classify_concavity(PI), ConcavityType::Tangent);
-        assert_eq!(classify_concavity(PI * 1.5), ConcavityType::Convex);
+    fn box_edges_are_convex_with_measured_normal_angles() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let faces = solid_faces(&topo, solid).unwrap();
+        let fag = build_face_adjacency_graph(&topo, solid, &faces, 0.1).unwrap();
+
+        assert_eq!(fag.adjacency.values().map(Vec::len).sum::<usize>(), 24);
+        for neighbors in fag.adjacency.values() {
+            for (_, edge) in neighbors {
+                assert_eq!(edge.concavity, EdgeConcavity::Convex);
+                assert!(
+                    (edge.normal_angle.unwrap() - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+                    "box outward normals meet at a right angle"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1236,6 +1246,40 @@ mod tests {
         // Three arbitrary non-collinear points always define a circle, so
         // circular recognition deliberately requires at least four holes.
         assert!(group.len() < 4);
+    }
+
+    #[test]
+    fn circular_fitting_rejects_large_collinear_group() {
+        let group = (0..1_000)
+            .map(|feature_index| HolePatternInfo {
+                feature_index,
+                diameter: 5.0,
+                position: Point3::new((feature_index * feature_index) as f64, 0.0, 0.0),
+                axis: Vec3::new(0.0, 0.0, 1.0),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(fit_circular_pattern(&group).is_none());
+    }
+
+    #[test]
+    fn circular_fitting_preserves_evenly_spaced_patterns() -> Result<(), &'static str> {
+        let group = (0..8)
+            .map(|feature_index| {
+                let angle = std::f64::consts::TAU * feature_index as f64 / 8.0;
+                HolePatternInfo {
+                    feature_index,
+                    diameter: 5.0,
+                    position: Point3::new(10.0 * angle.cos(), 10.0 * angle.sin(), 0.0),
+                    axis: Vec3::new(0.0, 0.0, 1.0),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let (indices, spacing) = fit_circular_pattern(&group).ok_or("pattern should fit")?;
+        assert_eq!(indices.len(), group.len());
+        assert!((spacing - 10.0 * std::f64::consts::TAU / 8.0).abs() < 1e-10);
+        Ok(())
     }
 
     #[test]
@@ -1442,7 +1486,7 @@ mod tests {
         assert_verified_solid(&topo, result, expected);
 
         let faces = solid_faces(&topo, result).unwrap();
-        let fag = build_face_adjacency_graph(&topo, &faces, 0.05).unwrap();
+        let fag = build_face_adjacency_graph(&topo, result, &faces, 0.05).unwrap();
         let (cylinder_face, sphere_face, edge_id) = fag
             .nodes
             .values()
@@ -1463,13 +1507,14 @@ mod tests {
         let edge = topo.edge(edge_id).unwrap();
         let start = topo.vertex(edge.start()).unwrap().point();
         let end = topo.vertex(edge.end()).unwrap().point();
-        let midpoint = Point3::new(
-            (start.x() + end.x()) * 0.5,
-            (start.y() + end.y()) * 0.5,
-            (start.z() + end.z()) * 0.5,
-        );
-        let cylinder_normal = face_normal_at(&topo, cylinder_face, midpoint).unwrap();
-        let sphere_normal = face_normal_at(&topo, sphere_face, midpoint).unwrap();
+        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        let midpoint = edge
+            .curve()
+            .evaluate_with_endpoints(f64::midpoint(t0, t1), start, end);
+        let cylinder_normal =
+            crate::query::effective_face_normal(&topo, cylinder_face, midpoint).unwrap();
+        let sphere_normal =
+            crate::query::effective_face_normal(&topo, sphere_face, midpoint).unwrap();
         let FaceSurface::Cylinder(cylinder) = topo.face(cylinder_face).unwrap().surface() else {
             unreachable!();
         };

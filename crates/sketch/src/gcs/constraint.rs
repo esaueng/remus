@@ -285,7 +285,7 @@ pub fn eval_residuals(c: &Constraint, snap: &EntitySnapshot, out: &mut Vec<f64>)
             let ldy = y2 - y1;
             let len = ldx.hypot(ldy);
             if len < 1e-300 {
-                out.push(0.0);
+                out.push(-d);
                 return;
             }
             // Signed distance: cross(line_dir, pt - p1) / |line_dir| - d

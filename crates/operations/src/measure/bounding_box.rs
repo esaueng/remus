@@ -223,7 +223,7 @@ const TRIM_SAMPLES_PER_EDGE: usize = 16;
 /// parameter span well inside [`NURBS_DOMAIN_PAD`].
 const NURBS_TRIM_SAMPLES_PER_EDGE: usize = 8;
 
-/// Roughly how many boundary samples one NURBS face may spend on recovery.
+/// Maximum number of boundary samples one NURBS face may spend on recovery.
 ///
 /// Per-edge sampling alone makes the cost scale with edge count, and a face
 /// carved up by neighbouring features can carry dozens of edges — the same
@@ -232,6 +232,22 @@ const NURBS_TRIM_SAMPLES_PER_EDGE: usize = 8;
 /// bounded, and costs such a face nothing: its own edge endpoints already
 /// resolve the boundary finely.
 const NURBS_TRIM_SAMPLE_BUDGET: usize = 64;
+
+/// Evenly reduce boundary samples to the fixed NURBS inversion budget.
+///
+/// Sampling first and then reducing keeps coverage spread over the outer and
+/// inner wires while placing a hard bound on both the duplicate filtering and
+/// surface inversion performed by [`nurbs_patch_domain`].
+fn limit_nurbs_trim_samples(samples: Vec<Point3>) -> Vec<Point3> {
+    if samples.len() <= NURBS_TRIM_SAMPLE_BUDGET {
+        return samples;
+    }
+
+    let last = samples.len() - 1;
+    (0..NURBS_TRIM_SAMPLE_BUDGET)
+        .map(|i| samples[i * last / (NURBS_TRIM_SAMPLE_BUDGET - 1)])
+        .collect()
+}
 
 /// Newton tolerance for inverting a boundary sample onto its NURBS surface.
 ///
@@ -326,6 +342,20 @@ fn face_boundary_edge_count(topo: &Topology, face_id: FaceId) -> usize {
         .sum()
 }
 
+/// Choose a boundary sampling density without letting attacker-controlled
+/// topology exceed the fixed trim-recovery budget.
+fn nurbs_trim_samples_per_edge(edge_count: usize) -> Option<usize> {
+    if edge_count > NURBS_TRIM_SAMPLE_BUDGET {
+        return None;
+    }
+    Some(
+        NURBS_TRIM_SAMPLE_BUDGET
+            .checked_div(edge_count)
+            .unwrap_or(NURBS_TRIM_SAMPLES_PER_EDGE)
+            .clamp(1, NURBS_TRIM_SAMPLES_PER_EDGE),
+    )
+}
+
 /// Recover the `(u, v)` rectangle a toroidal face occupies.
 ///
 /// Both torus directions are periodic and free of degeneracies, so a face is
@@ -333,6 +363,19 @@ fn face_boundary_edge_count(topo: &Topology, face_id: FaceId) -> usize {
 /// which is what [`compute_angular_range`] tests, returning the full period
 /// when it finds none.
 fn torus_patch_domain(topo: &Topology, face_id: FaceId, t: &ToroidalSurface) -> PatchDomain {
+    // Inner wires bound holes, not the occupied patch. Their angular samples
+    // can therefore describe the complement of the face and must never be
+    // used to shrink a conservative box. Until domain recovery can classify
+    // periodic complements, retain the full analytic extent for holed faces.
+    if topo
+        .face(face_id)
+        .is_ok_and(|face| !face.inner_wires().is_empty())
+    {
+        return PatchDomain {
+            u: (0.0, TAU),
+            v: (0.0, TAU),
+        };
+    }
     let pts = face_boundary_samples(topo, face_id, TRIM_SAMPLES_PER_EDGE);
     let mut us = Vec::with_capacity(pts.len());
     let mut vs = Vec::with_capacity(pts.len());
@@ -357,6 +400,18 @@ fn torus_patch_domain(topo: &Topology, face_id: FaceId, t: &ToroidalSurface) -> 
 /// longitude keeps the full latitude span, exactly as before this was
 /// trim-aware.
 fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -> PatchDomain {
+    // As for a torus, an inner loop encloses excluded geometry. Falling back
+    // to the whole surface is conservative and prevents a hole near one side
+    // of the sphere from hiding the occupied face on the opposite side.
+    if topo
+        .face(face_id)
+        .is_ok_and(|face| !face.inner_wires().is_empty())
+    {
+        return PatchDomain {
+            u: (0.0, TAU),
+            v: (-FRAC_PI_2, FRAC_PI_2),
+        };
+    }
     let pts = face_boundary_samples(topo, face_id, TRIM_SAMPLES_PER_EDGE);
     let mut us = Vec::with_capacity(pts.len());
     let mut vs = Vec::with_capacity(pts.len());
@@ -423,11 +478,17 @@ fn nurbs_patch_domain(
         };
     }
 
-    let per_edge = NURBS_TRIM_SAMPLE_BUDGET
-        .checked_div(face_boundary_edge_count(topo, face_id))
-        .unwrap_or(NURBS_TRIM_SAMPLES_PER_EDGE)
-        .clamp(1, NURBS_TRIM_SAMPLES_PER_EDGE);
-    let pts = face_boundary_samples(topo, face_id, per_edge);
+    let Some(per_edge) = nurbs_trim_samples_per_edge(face_boundary_edge_count(topo, face_id))
+    else {
+        // Sampling every edge would make projection and de-duplication costs
+        // depend without bound on imported topology. The complete surface
+        // domain is conservative and keeps bounding-box work bounded.
+        return PatchDomain {
+            u: full_u,
+            v: full_v,
+        };
+    };
+    let pts = limit_nurbs_trim_samples(face_boundary_samples(topo, face_id, per_edge));
     if pts.is_empty() {
         return PatchDomain {
             u: full_u,
@@ -832,5 +893,42 @@ fn expand_cone_at_vertices(
                 Point3::new(coa.x() + r * sx, coa.y() + r * sy, coa.z() + r * sz),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nurbs_trim_sampling_is_bounded() {
+        for edge_count in 0..=NURBS_TRIM_SAMPLE_BUDGET {
+            let Some(per_edge) = nurbs_trim_samples_per_edge(edge_count) else {
+                unreachable!("edge count within budget must be sampled");
+            };
+            assert!(edge_count.saturating_mul(per_edge + 1) <= 2 * NURBS_TRIM_SAMPLE_BUDGET);
+        }
+        assert!(nurbs_trim_samples_per_edge(NURBS_TRIM_SAMPLE_BUDGET + 1).is_none());
+        assert!(nurbs_trim_samples_per_edge(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn nurbs_trim_samples_are_strictly_bounded_and_span_input() {
+        let samples: Vec<_> = (0..1_024)
+            .map(|i| Point3::new(f64::from(i), 0.0, 0.0))
+            .collect();
+
+        let limited = limit_nurbs_trim_samples(samples);
+
+        assert_eq!(limited.len(), NURBS_TRIM_SAMPLE_BUDGET);
+        assert_eq!(limited.first().map(|point| point.x()), Some(0.0));
+        assert_eq!(limited.last().map(|point| point.x()), Some(1_023.0));
+    }
+
+    #[test]
+    fn nurbs_trim_samples_below_budget_are_preserved() {
+        let samples = vec![Point3::new(1.0, 2.0, 3.0), Point3::new(4.0, 5.0, 6.0)];
+
+        assert_eq!(limit_nurbs_trim_samples(samples.clone()), samples);
     }
 }

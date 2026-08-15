@@ -13,17 +13,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: apache-package-refresh-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The committed package directory is a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
   #   "brepkit-wasm": "github:esaueng/brepkit#apache-main&path:/crates/wasm/pkg"
   # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on apache-main. Nothing
-  # rebuilt it after a merge, so that directory drifted far behind the source
-  # (2.126.20 committed vs 2.128.5 in Cargo.toml) and every consumer silently
-  # ran a months-old kernel while apache-main looked current.
-  sync-committed-package:
-    name: Refresh committed WASM package
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+  # A missed refresh would leave consumers running stale generated code while
+  # apache-main's Rust source appears current.
+  build-committed-package:
+    name: Build committed WASM package
+    runs-on: ubuntu-latest
     # Skip the bot's own commit so this cannot loop. `[skip ci]` in the commit
     # message already suppresses the re-run; this is the belt-and-braces half.
     #
@@ -36,27 +39,16 @@ jobs:
       ${{ (github.event_name == 'push'
            && !contains(github.event.head_commit.message, '[skip ci]'))
           || (github.event_name == 'workflow_dispatch'
-              && inputs.sync_package) }}
+              && inputs.sync_package
+              && github.ref == 'refs/heads/apache-main') }}
     permissions:
-      contents: write
-    env:
-      APP_ID: ${{ secrets.BREPKIT_BOT_APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.BREPKIT_BOT_PRIVATE_KEY }}
+      contents: read
     steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        if: ${{ env.APP_ID != '' && env.APP_PRIVATE_KEY != '' }}
-        with:
-          app-id: ${{ env.APP_ID }}
-          private-key: ${{ env.APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          token: ${{ steps.app-token.outputs.token || github.token }}
-          # The build below compiles third-party crates' build scripts; do not
-          # leave a write token in .git/config where they could read it. The
-          # commit step authenticates with a token-embedded URL instead (same
-          # pattern as benchmark.yml).
+          # A dispatch can select another ref in the UI; always build the
+          # Apache staging branch selected by the job guard above.
+          ref: apache-main
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -86,17 +78,65 @@ jobs:
             repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git \
             homepage=https://github.com/${GITHUB_REPOSITORY}
 
+      # Build scripts execute before this point. Pass only the generated
+      # package to a fresh runner that will receive the repository write token.
+      - name: Archive generated package
+        # Use the system binary by absolute path because build scripts can add
+        # a malicious replacement to GITHUB_PATH for later steps in this job.
+        run: /usr/bin/tar -czf committed-wasm-package.tar.gz crates/wasm/pkg
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: committed-wasm-package
+          path: committed-wasm-package.tar.gz
+          if-no-files-found: error
+
+  sync-committed-package:
+    name: Commit refreshed WASM package
+    needs: [build-committed-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      HAS_APP_CREDENTIALS: ${{ secrets.BREPKIT_BOT_APP_ID != '' && secrets.BREPKIT_BOT_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        if: ${{ env.HAS_APP_CREDENTIALS == 'true' }}
+        with:
+          app-id: ${{ secrets.BREPKIT_BOT_APP_ID }}
+          private-key: ${{ secrets.BREPKIT_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: apache-main
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: committed-wasm-package
+
+      - name: Install generated package
+        run: |
+          # Never extract an artifact produced by build-time code directly
+          # into the checkout. The installer accepts only regular files and
+          # directories beneath crates/wasm/pkg.
+          /usr/bin/python3 scripts/install-wasm-package-archive.py \
+            committed-wasm-package.tar.gz crates/wasm/pkg
+
       - name: Commit refreshed package
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # Disable every Git hook while a write token is present. The build
+          # runner never sees this token or this checkout.
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: core.hooksPath
+          GIT_CONFIG_VALUE_0: /dev/null
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # wasm-pack drops a `*` .gitignore into its output directory, so the
-          # published files are only tracked because they were force-added.
-          # Staging with --force keeps that true for anything the generator
-          # starts emitting — otherwise a new required file would be silently
-          # left out of the package consumers install.
+          # wasm-pack places a `*` .gitignore in its output directory, so force
+          # staging is required for newly generated package files.
           git add --force crates/wasm/pkg
           if git diff --cached --quiet -- crates/wasm/pkg; then
             echo "Committed package already matches this build — nothing to do."
@@ -104,10 +144,9 @@ jobs:
           fi
           VERSION=$(jq -r .version crates/wasm/pkg/package.json)
           git commit -m "chore(wasm): refresh committed package to v${VERSION} from ${GITHUB_SHA:0:7} [skip ci]"
-          # Land on top of anything that merged while the build was running.
-          # Authenticate with a token-embedded URL: checkout ran with
-          # persist-credentials: false, so origin carries no credentials.
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git pull --rebase --autostash "$remote" "${GITHUB_REF_NAME}"
-          git push "$remote" "HEAD:${GITHUB_REF_NAME}"
+          # Never rebase an artifact generated from an older source commit onto
+          # a newer branch head. A concurrent source push makes this push fail;
+          # that newer push starts its own refresh from the correct source.
+          git push "$remote" HEAD:apache-main
           echo "::notice::Committed brepkit-wasm ${VERSION}; consumers on #apache-main pick it up on the next install."

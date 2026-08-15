@@ -83,7 +83,13 @@ impl GfaArena {
                 }
             }
         }
-        self.pave_vertex_index = Some(super::PaveVertexIndex::build(cell, entries.into_iter()));
+        // The same index also serves the EF grazing-contact lookup, whose
+        // radius is capped at 1e-3. A larger cell keeps both lookups bounded to
+        // the same 3x3x3 stencil rather than scanning every pave endpoint.
+        self.pave_vertex_index = Some(super::PaveVertexIndex::build(
+            cell.max(1e-3),
+            entries.into_iter(),
+        ));
     }
 
     /// Resolves a vertex to its same-domain canonical vertex.

@@ -117,11 +117,39 @@ pub fn check_wire_redundant(
 ///
 /// Samples each edge at 8 points and checks for segment-segment crossings
 /// between non-adjacent edge pairs.
+///
+/// # Errors
+///
+/// Returns an error if the wire or one of its referenced topology entities
+/// cannot be read.
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 pub fn check_wire_self_intersection(
     topo: &Topology,
     wire_id: WireId,
     tolerance: f64,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    check_wire_self_intersection_impl(topo, wire_id, tolerance, false)
+}
+
+/// Check a periodic-surface wire while exempting only its duplicated seam.
+///
+/// # Errors
+///
+/// Returns an error if the wire or one of its referenced topology entities
+/// cannot be read.
+pub fn check_wire_self_intersection_on_periodic_surface(
+    topo: &Topology,
+    wire_id: WireId,
+    tolerance: f64,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    check_wire_self_intersection_impl(topo, wire_id, tolerance, true)
+}
+
+fn check_wire_self_intersection_impl(
+    topo: &Topology,
+    wire_id: WireId,
+    tolerance: f64,
+    periodic_surface: bool,
 ) -> Result<Vec<ValidationIssue>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let edges = wire.edges();
@@ -131,6 +159,10 @@ pub fn check_wire_self_intersection(
 
     let samples_per_edge = 8usize;
     let mut edge_segments: Vec<Vec<Point3>> = Vec::new();
+    let mut edge_use_count: HashMap<_, usize> = HashMap::new();
+    for oriented in edges {
+        *edge_use_count.entry(oriented.edge()).or_default() += 1;
+    }
 
     for oe in edges {
         let edge = topo.edge(oe.edge())?;
@@ -241,13 +273,25 @@ pub fn check_wire_self_intersection(
             if j == n_edges - 1 && i == 0 {
                 continue;
             }
-            // Periodic surface bands legitimately reuse one topological seam
-            // edge in opposite directions. That is a topological closure, not
-            // a geometric self-intersection; redundant-edge validation handles
-            // excessive reuse separately.
-            if edges[i].edge() == edges[j].edge() {
+            // A periodic band may reuse exactly one seam in opposite
+            // directions. No other duplicate-edge contact is exempt.
+            if periodic_surface
+                && edges[i].edge() == edges[j].edge()
+                && edge_use_count[&edges[i].edge()] == 2
+                && edges[i].is_forward() != edges[j].is_forward()
+            {
                 continue;
             }
+
+            let edge_i = topo.edge(edges[i].edge())?;
+            let edge_j = topo.edge(edges[j].edge())?;
+            let shared_periodic_vertex = if periodic_surface {
+                [edge_i.start(), edge_i.end()]
+                    .into_iter()
+                    .find(|vertex| *vertex == edge_j.start() || *vertex == edge_j.end())
+            } else {
+                None
+            };
 
             for si in 0..edge_segments[i].len().saturating_sub(1) {
                 let a0 = edge_segments[i][si];
@@ -256,9 +300,21 @@ pub fn check_wire_self_intersection(
                     let b0 = edge_segments[j][sj];
                     let b1 = edge_segments[j][sj + 1];
 
-                    let (dist, _, _) =
+                    let (dist, closest_i, closest_j) =
                         crate::distance::edge::segment_segment_distance(a0, a1, b0, b1);
                     if dist < tolerance {
+                        // Periodic parameterizations may split a boundary at
+                        // their declared seam vertex. Exempt only the exact
+                        // topological endpoint contact, never an interior
+                        // crossing or a coincident unshared edge.
+                        if let Some(vertex) = shared_periodic_vertex {
+                            let point = topo.vertex(vertex)?.point();
+                            if (closest_i - point).length() < tolerance
+                                && (closest_j - point).length() < tolerance
+                            {
+                                continue;
+                            }
+                        }
                         return Ok(vec![ValidationIssue {
                             check: CheckId::WireSelfIntersection,
                             severity: Severity::Error,

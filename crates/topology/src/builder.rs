@@ -183,7 +183,8 @@ pub fn make_ellipse_edge(
 /// # Errors
 ///
 /// Returns an error if either semi-axis is non-positive, `semi_minor` exceeds
-/// `semi_major`, or `normal`/`ref_dir` is degenerate.
+/// `semi_major`, `normal`/`ref_dir` is degenerate, or an endpoint does not lie
+/// on the ellipse within tolerance.
 #[allow(clippy::too_many_arguments)]
 pub fn make_ellipse_arc(
     topo: &mut Topology,
@@ -200,6 +201,21 @@ pub fn make_ellipse_arc(
         .map_err(|e| crate::TopologyError::NonManifold {
             reason: format!("invalid ellipse: {e}"),
         })?;
+    let endpoint_tolerance = Tolerance {
+        linear: tolerance,
+        ..Tolerance::new()
+    };
+    for (name, point) in [("start", start), ("end", end)] {
+        let point_on_ellipse = ellipse.evaluate(ellipse.project(point));
+        if !endpoint_tolerance.approx_eq(point.x(), point_on_ellipse.x())
+            || !endpoint_tolerance.approx_eq(point.y(), point_on_ellipse.y())
+            || !endpoint_tolerance.approx_eq(point.z(), point_on_ellipse.z())
+        {
+            return Err(crate::TopologyError::NonManifold {
+                reason: format!("ellipse arc {name} point does not lie on the ellipse"),
+            });
+        }
+    }
     let v_start = topo.add_vertex(Vertex::new(start, tolerance));
     let v_end = if (start - end).length() < tolerance * 100.0 {
         v_start
@@ -1101,6 +1117,47 @@ mod tests {
         assert!((mid.x() - 5.0 * s).abs() < 1e-9, "mid.x {}", mid.x());
         assert!((mid.y() - 2.0 * s).abs() < 1e-9, "mid.y {}", mid.y());
         assert!(mid.z().abs() < 1e-9, "mid.z {}", mid.z());
+    }
+
+    #[test]
+    fn make_ellipse_arc_rejects_off_ellipse_endpoint() {
+        let mut topo = Topology::new();
+        let result = make_ellipse_arc(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            5.0,
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+            Point3::new(5.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+            TOL,
+        );
+        assert!(result.is_err());
+        assert_eq!(topo.edges().len(), 0);
+    }
+
+    #[test]
+    fn make_ellipse_arc_rejects_off_ellipse_endpoints() {
+        for (start, end) in [
+            (Point3::new(100.0, 0.0, 0.0), Point3::new(0.0, 2.0, 0.0)),
+            (Point3::new(5.0, 0.0, 1.0), Point3::new(0.0, 2.0, 0.0)),
+        ] {
+            let mut topo = Topology::new();
+            let result = make_ellipse_arc(
+                &mut topo,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                5.0,
+                2.0,
+                Vec3::new(1.0, 0.0, 0.0),
+                start,
+                end,
+                TOL,
+            );
+
+            assert!(result.is_err(), "off-ellipse endpoint must be rejected");
+        }
     }
 
     #[test]

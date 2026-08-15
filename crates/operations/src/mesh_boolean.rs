@@ -402,6 +402,20 @@ fn intersect_triangles(
     }]
 }
 
+/// Returns whether two tessellated triangles have a non-empty intersection.
+pub(crate) fn triangles_intersect(a: [Point3; 3], b: [Point3; 3], tolerance: f64) -> bool {
+    !intersect_triangles(a[0], a[1], a[2], b[0], b[1], b[2], tolerance).is_empty()
+}
+
+/// Return whether two triangles share a segment with non-zero length.
+///
+/// This is exposed within the crate so boolean acceptance guards can use the
+/// same robust narrow-phase test as mesh co-refinement without duplicating its
+/// geometric predicates.
+pub(crate) fn triangle_surfaces_intersect(a: [Point3; 3], b: [Point3; 3], tolerance: f64) -> bool {
+    !intersect_triangles(a[0], a[1], a[2], b[0], b[1], b[2], tolerance).is_empty()
+}
+
 /// Imprint a grazing contact: `touching`'s edge that lies in `host`'s plane
 /// (both endpoint orientations within tolerance) is clipped to `host`'s
 /// triangle and emitted as a MUTUAL constraint — the host splits its
@@ -1421,7 +1435,7 @@ fn classify_split_triangles(
     // Must not exceed the contact/co-refinement tolerance: faces farther
     // apart than `tolerance` are never co-refined, so classifying them
     // OnSame/OnOpp would drop them in assembly and open the result.
-    let eps_on = tolerance.max(1e-9);
+    let eps_on = tolerance;
     split
         .triangles
         .iter()

@@ -3047,3 +3047,15 @@ fn cross_drilled_display_mesh_is_closed_and_matches_brep_volume() {
         );
     }
 }
+
+#[test]
+fn welded_mesh_quality_rejects_out_of_range_indices_without_panicking() {
+    let mesh = TriangleMesh {
+        positions: vec![Point3::new(0.0, 0.0, 0.0)],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0)],
+        indices: vec![0, 1, 2],
+    };
+    let quality = welded_mesh_quality(&mesh);
+    assert!(!quality.is_watertight());
+    assert_eq!(quality.boundary_edges, usize::MAX);
+}

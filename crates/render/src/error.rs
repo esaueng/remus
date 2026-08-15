@@ -43,6 +43,16 @@ pub enum RenderError {
         max: u32,
     },
 
+    /// The requested render dimensions exceed the renderer's total-pixel
+    /// budget, so the target buffers are never allocated.
+    #[error("render size {pixels} pixels exceeds the offscreen budget of {max} pixels")]
+    PixelBudgetExceeded {
+        /// Requested total pixel count (`width * height`).
+        pixels: u64,
+        /// The renderer's offscreen pixel budget.
+        max: u64,
+    },
+
     /// The tessellation produced a mesh that violates a renderer invariant
     /// (e.g. an index buffer length not divisible by 3, an out-of-range vertex
     /// index, or grouped face offsets that do not cover every triangle).

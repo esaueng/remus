@@ -17,7 +17,10 @@ thiserror.workspace = true
 
 [dev-dependencies]
 brepkit-check.workspace = true
-brepkit-operations.workspace = true
+# Path-only on purpose: brepkit-operations depends on brepkit-offset. Cargo
+# strips versionless dev-dependencies from published manifests, avoiding an
+# initial same-version registry cycle while preserving integration tests.
+brepkit-operations = {path = "../operations"}
 brepkit-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]

@@ -224,3 +224,23 @@ fn a_wall_bounded_by_closed_edges_is_not_zero() {
         );
     }
 }
+
+/// Trim sampling and quadrature both multiply the work represented by inner
+/// wires. Reject a face before sampling once its trim-point budget is exceeded
+/// so untrusted topology cannot drive unbounded property-measurement work.
+#[test]
+fn excessive_curved_trim_complexity_is_rejected() {
+    let s = cylinder();
+    let mut topo = Topology::new();
+    let outer = ring_wire(&mut topo, 0.0, true);
+    let holes = (1..=32)
+        .map(|v| ring_wire(&mut topo, f64::from(v), false))
+        .collect();
+    let face = topo.add_face(Face::new(outer, holes, FaceSurface::Cylinder(s)));
+
+    let error = integrate_face(&topo, face, 8).expect_err("trim budget must be enforced");
+    assert!(
+        error.to_string().contains("trim exceeds the 4096-point"),
+        "unexpected error: {error}"
+    );
+}

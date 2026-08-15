@@ -13,6 +13,7 @@ pub mod chamfer_builder;
 pub(crate) mod corner;
 pub mod fillet_builder;
 pub mod g1_chain;
+pub mod query;
 pub mod radius_law;
 pub(crate) mod section;
 pub(crate) mod spherical_triangle;
@@ -29,6 +30,13 @@ use brepkit_topology::vertex::VertexId;
 /// Error type for blend operations.
 #[derive(Debug, thiserror::Error)]
 pub enum BlendError {
+    /// A caller supplied malformed or geometrically inconsistent input.
+    #[error("invalid blend input: {reason}")]
+    InvalidInput {
+        /// Why the input cannot define the requested blend.
+        reason: String,
+    },
+
     /// No initial solution found at the spine start.
     #[error("no start solution at edge {edge:?}, t={t}")]
     StartSolutionFailure {
