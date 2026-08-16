@@ -49,6 +49,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     edge_images: &HashMap<EdgeId, Vec<EdgeId>, S>,
     face_ranks: &HashMap<FaceId, Rank, S2>,
     tol: Tolerance,
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Vec<SubFace> {
     let mut sub_faces = Vec::new();
 
@@ -575,6 +576,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         for split in &split_results {
             let rank_pool = Some(&shared_vertex_pool);
             let new_face_id = build_topology_face(
+                lineage,
                 topo,
                 split,
                 tol,
@@ -3667,6 +3669,7 @@ fn resolve_edge_vertices(
     clippy::too_many_arguments
 )]
 fn build_topology_face(
+    lineage: &mut super::split_types::EdgeLineageLog,
     topo: &mut Topology,
     split: &super::split_types::SplitSubFace,
     tol: Tolerance,
@@ -3740,6 +3743,12 @@ fn build_topology_face(
         // VertexId connections at wire junctions.
         // merge_duplicate_edges in BuilderSolid handles cross-face sharing.
         let (edge_id, forward) = instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge);
+        if let Some(pb) = pcurve_edge.pave_block_id {
+            lineage.to_pave_block.insert(edge_id.index(), pb);
+        }
+        if let Some(src) = pcurve_edge.source_topo_edge {
+            lineage.rewrites.insert(edge_id.index(), src);
+        }
         oriented_edges.push(OrientedEdge::new(edge_id, forward));
     }
 
@@ -3770,6 +3779,12 @@ fn build_topology_face(
                 tol,
             );
             let (edge_id, forward) = instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge);
+            if let Some(pb) = pcurve_edge.pave_block_id {
+                lineage.to_pave_block.insert(edge_id.index(), pb);
+            }
+            if let Some(src) = pcurve_edge.source_topo_edge {
+                lineage.rewrites.insert(edge_id.index(), src);
+            }
             inner_oriented.push(OrientedEdge::new(edge_id, forward));
         }
         if let Ok(inner_wire) = Wire::new(inner_oriented, true) {

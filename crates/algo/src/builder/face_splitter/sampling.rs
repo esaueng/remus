@@ -245,6 +245,7 @@ mod tests {
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
