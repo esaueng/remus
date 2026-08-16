@@ -113,6 +113,7 @@ pub mod det_hash;
 pub mod diagnostic;
 pub mod filtered;
 pub mod frame;
+pub mod intersect;
 pub mod mat;
 pub mod nurbs;
 pub mod obb;
