@@ -10,7 +10,7 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::edge::EdgeCurve;
 use brepkit_topology::face::FaceSurface;
 
-use crate::error::{WasmError, validate_finite};
+use crate::error::{WasmError, validate_finite, validate_work_count};
 use crate::handles::{
     edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, vertex_id_to_u32,
     wire_id_to_u32,
@@ -1130,6 +1130,7 @@ impl BrepKernel {
     /// Returns flattened `[x, y, z, x, y, z, ...]` array.
     #[wasm_bindgen(js_name = "tessellateEdge")]
     pub fn tessellate_edge(&self, edge: u32, num_points: u32) -> Result<Vec<f64>, JsError> {
+        let num_points = validate_work_count(num_points, "num_points")?;
         let edge_id = self.resolve_edge(edge)?;
         let edge_data = self.topo.edge(edge_id)?;
 
@@ -1148,7 +1149,7 @@ impl BrepKernel {
             }
             EdgeCurve::NurbsCurve(curve) => {
                 let (u0, u1) = curve.domain();
-                let n = std::cmp::max(2, num_points as usize);
+                let n = std::cmp::max(2, num_points);
                 let mut result = Vec::with_capacity(n * 3);
                 for i in 0..n {
                     #[allow(clippy::cast_precision_loss)]
@@ -1161,11 +1162,11 @@ impl BrepKernel {
                 Ok(result)
             }
             EdgeCurve::Circle(circle) => {
-                let n = std::cmp::max(2, num_points as usize);
+                let n = std::cmp::max(2, num_points);
                 Ok(sample_full_period_curve(n, |t| circle.evaluate(t)))
             }
             EdgeCurve::Ellipse(ellipse) => {
-                let n = std::cmp::max(2, num_points as usize);
+                let n = std::cmp::max(2, num_points);
                 Ok(sample_full_period_curve(n, |t| ellipse.evaluate(t)))
             }
             // Not periodic: sample the arc bounded by the edge's own
@@ -1173,7 +1174,7 @@ impl BrepKernel {
             EdgeCurve::Hyperbola(h) => {
                 let start = self.topo.vertex(edge_data.start())?.point();
                 let end = self.topo.vertex(edge_data.end())?.point();
-                let n = std::cmp::max(2, num_points as usize);
+                let n = std::cmp::max(2, num_points);
                 Ok(sample_open_span(n, h.project(start), h.project(end), |t| {
                     h.evaluate(t)
                 }))
@@ -1181,7 +1182,7 @@ impl BrepKernel {
             EdgeCurve::Parabola(pb) => {
                 let start = self.topo.vertex(edge_data.start())?.point();
                 let end = self.topo.vertex(edge_data.end())?.point();
-                let n = std::cmp::max(2, num_points as usize);
+                let n = std::cmp::max(2, num_points);
                 Ok(sample_open_span(
                     n,
                     pb.project(start),
