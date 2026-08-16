@@ -32,7 +32,7 @@
 //! both — an unanswerable question under the first claim, and a plain fact under
 //! the second.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use brepkit_math::vec::{Point3, Vec3};
 
@@ -728,7 +728,9 @@ pub struct AttributePropagation {
 /// - **modified** (an input face carried into one or more result faces):
 ///   name and color copy to every result face — a split's pieces are still
 ///   the same semantic surface. The kernel never synthesizes, suffixes, or
-///   concatenates names; uniqueness is application vocabulary.
+///   concatenates names; uniqueness is application vocabulary. If several
+///   modified inputs map to one result, each field survives only when every
+///   source agrees (including agreement that it is unset).
 /// - **generated** result faces receive nothing (they inherit the solid's
 ///   color at presentation time only).
 /// - **unresolved** result faces receive nothing and are counted — an
@@ -749,25 +751,66 @@ pub fn propagate_face_attributes(
         unresolved_outputs: map.unresolved.len(),
     };
 
-    // Snapshot phase: read every carried attribute before mutating.
-    let mut writes: Vec<(usize, brepkit_topology::attributes::EntityAttributes)> = Vec::new();
+    // Snapshot every source before mutating, grouped by result face. Including
+    // empty source values matters for merges: Some + None is a conflict, not
+    // permission to preserve the Some value.
+    let mut by_output: BTreeMap<
+        usize,
+        Vec<(usize, brepkit_topology::attributes::EntityAttributes)>,
+    > = BTreeMap::new();
     for (&input_idx, outputs) in &map.modified {
         let Some(input_face) = topo.face_id_from_index(input_idx) else {
             continue;
         };
-        let Some(attributes) = topo.attributes().face(input_face).cloned() else {
-            continue;
-        };
+        let attributes = topo
+            .attributes()
+            .face(input_face)
+            .cloned()
+            .unwrap_or_default();
         for &output_idx in outputs {
-            writes.push((output_idx, attributes.clone()));
+            let sources = by_output.entry(output_idx).or_default();
+            if !sources.iter().any(|(source, _)| *source == input_idx) {
+                sources.push((input_idx, attributes.clone()));
+            }
         }
     }
-    // Deterministic write order regardless of map iteration order.
-    writes.sort_by_key(|(idx, _)| *idx);
-    for (output_idx, attributes) in writes {
+
+    let modified_outputs: BTreeSet<_> = by_output.keys().copied().collect();
+    for (output_idx, mut sources) in by_output {
+        sources.sort_by_key(|(source, _)| *source);
+        let first = &sources[0].1;
+        let name = sources
+            .iter()
+            .all(|(_, attributes)| attributes.name == first.name)
+            .then(|| first.name.clone())
+            .flatten();
+        let color = sources
+            .iter()
+            .all(|(_, attributes)| attributes.color == first.color)
+            .then_some(first.color)
+            .flatten();
+        let attributes = brepkit_topology::attributes::EntityAttributes { name, color };
         if let Some(face) = topo.face_id_from_index(output_idx) {
-            topo.attributes_mut().set_face(face, attributes);
-            report.carried += 1;
+            let carried = !attributes.is_empty();
+            if topo.set_face_attributes(face, attributes).is_ok() && carried {
+                report.carried += 1;
+            }
+        }
+    }
+
+    // Generated and unresolved results are explicitly unattributed. Do not
+    // let a pre-populated working-copy face smuggle attributes past the map.
+    let mut clear_outputs = BTreeSet::new();
+    for outputs in map.generated.values() {
+        clear_outputs.extend(outputs.iter().copied());
+    }
+    clear_outputs.extend(map.unresolved.keys().copied());
+    for output_idx in clear_outputs.difference(&modified_outputs).copied() {
+        if let Some(face) = topo.face_id_from_index(output_idx) {
+            let _ = topo.set_face_attributes(
+                face,
+                brepkit_topology::attributes::EntityAttributes::default(),
+            );
         }
     }
     report
