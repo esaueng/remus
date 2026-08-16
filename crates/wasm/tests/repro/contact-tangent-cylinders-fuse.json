@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "name": "contact-tangent-cylinders-fuse",
+  "description": "Issue 11 contact corpus: fusing two exactly tangent cylinders (line contact). Pins that the engine answers exactly (union volume = 4*pi within measurement deflection) and the result validates clean.",
+  "revision": "d8fd83dd",
+  "operations": [
+    {"op": "makeCylinder", "args": {"radius": 1.0, "height": 2.0}},
+    {"op": "makeCylinder", "args": {"radius": 1.0, "height": 2.0}},
+    {"op": "transform", "args": {"solid": 1, "matrix": [1,0,0,2, 0,1,0,0, 0,0,1,0, 0,0,0,1]}},
+    {"op": "fuse", "args": {"solidA": 0, "solidB": 1}},
+    {"op": "volume", "args": {"solid": 2, "deflection": 0.05}},
+    {"op": "validateSolid", "args": {"solid": 2}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"ok": 1},
+    null,
+    {"ok": 2},
+    {"okNear": 12.566370614359172, "tol": 0.05},
+    {"ok": 0}
+  ]
+}
