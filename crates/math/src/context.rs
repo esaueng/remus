@@ -20,6 +20,44 @@
 
 use crate::tolerance::Tolerance;
 
+/// The historical mesh-fallback deflection, used as the default
+/// approximation budget so the default context reproduces legacy behavior.
+pub const DEFAULT_APPROXIMATION_BUDGET: f64 = 0.1;
+
+/// What an operation may do when its exact pipeline cannot produce the
+/// result (kernel operation contract; RFC 0001 migration queue item 5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FallbackPolicy {
+    /// Any representation-degrading path fails with a typed error instead
+    /// of running. Nothing approximate is ever returned.
+    ExactOnly,
+    /// Approximation is permitted within the given error budget (model
+    /// units; for the mesh boolean this is the tessellation deflection).
+    /// The result must disclose that a fallback ran.
+    AllowApproximate {
+        /// Maximum permitted approximation error, in model units.
+        budget: f64,
+    },
+    /// Skip exact attempts and go straight to the approximate path (bulk
+    /// and preview use). Results are still validated and still disclose
+    /// their quality.
+    ApproximateOnly {
+        /// Maximum permitted approximation error, in model units.
+        budget: f64,
+    },
+}
+
+impl FallbackPolicy {
+    /// The approximation budget, when the policy permits approximation.
+    #[must_use]
+    pub const fn budget(self) -> Option<f64> {
+        match self {
+            Self::ExactOnly => None,
+            Self::AllowApproximate { budget } | Self::ApproximateOnly { budget } => Some(budget),
+        }
+    }
+}
+
 /// Hard work budgets for iterative and exploratory algorithms.
 ///
 /// Every field is an upper bound the algorithm must respect; exhausting a
@@ -99,6 +137,11 @@ pub struct OperationContext {
     pub tolerance: Tolerance,
     /// Hard work budgets for iterative algorithms.
     pub budgets: WorkBudgets,
+    /// What the operation may do when its exact pipeline cannot produce
+    /// the result. The default reproduces legacy behavior:
+    /// [`FallbackPolicy::AllowApproximate`] with
+    /// [`DEFAULT_APPROXIMATION_BUDGET`].
+    pub fallback: FallbackPolicy,
 }
 
 impl OperationContext {
@@ -109,6 +152,9 @@ impl OperationContext {
         Self {
             tolerance: Tolerance::new(),
             budgets: WorkBudgets::new(),
+            fallback: FallbackPolicy::AllowApproximate {
+                budget: DEFAULT_APPROXIMATION_BUDGET,
+            },
         }
     }
 
@@ -123,6 +169,13 @@ impl OperationContext {
     #[must_use]
     pub const fn with_budgets(mut self, budgets: WorkBudgets) -> Self {
         self.budgets = budgets;
+        self
+    }
+
+    /// Returns the context with the given fallback policy.
+    #[must_use]
+    pub const fn with_fallback(mut self, fallback: FallbackPolicy) -> Self {
+        self.fallback = fallback;
         self
     }
 }

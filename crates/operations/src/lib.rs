@@ -92,6 +92,15 @@ fn dot_normal_point(n: Vec3, p: Point3) -> f64 {
 /// Errors from modeling operations.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationsError {
+    /// The exact pipeline could not produce this result and the caller's
+    /// fallback policy is `ExactOnly`, so the approximate path was declined
+    /// (kernel operation contract; taxonomy category `quality_refused`).
+    #[error(
+        "exact-only policy: the exact boolean pipeline could not produce \
+         this result and the approximate fallback was declined"
+    )]
+    ExactOnlyUnattainable,
+
     /// The input shape is invalid for this operation.
     #[error("invalid input: {reason}")]
     InvalidInput {
