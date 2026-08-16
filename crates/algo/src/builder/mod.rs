@@ -391,6 +391,9 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
+        if op == BooleanOp::Fuse {
+            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        }
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
@@ -412,6 +415,9 @@ impl Builder {
             &self.sd_pairs,
             &self.sd_within_rank_dups,
         );
+        if op == BooleanOp::Fuse {
+            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        }
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
@@ -879,8 +885,80 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
         }
     }
 
+    orient_selected_fuse_analytic_holes(&mut topo, &sub_faces, &selected);
     let solid_id = assemble::assemble_solid(&mut topo, &selected, &[])?;
     Ok((topo, solid_id))
+}
+
+/// Restore the stored-CW hole convention on selected analytic fuse remainders.
+///
+/// The face splitter reverses internal loops into a generic hole orientation
+/// before classification. That representation is required by cuts, but a
+/// selected analytic fuse remainder needs the historical stored-CW winding at
+/// assembly. Apply the correction only after selection so classification and
+/// non-fuse operations remain unchanged.
+fn orient_selected_fuse_analytic_holes(
+    topo: &mut Topology,
+    sub_faces: &[SubFace],
+    selected: &[bop::SelectedFace],
+) {
+    let mut processed = std::collections::HashSet::new();
+
+    for selected_face in selected {
+        if !processed.insert(selected_face.face_id) {
+            continue;
+        }
+        let Some(sub_face) = sub_faces
+            .iter()
+            .find(|sub_face| sub_face.face_id == selected_face.face_id)
+        else {
+            continue;
+        };
+        if sub_face.face_id == sub_face.source_face {
+            continue;
+        }
+
+        let Ok(face) = topo.face(selected_face.face_id) else {
+            continue;
+        };
+        if face.is_reversed()
+            || matches!(
+                face.surface(),
+                brepkit_topology::face::FaceSurface::Plane { .. }
+            )
+            || face.inner_wires().is_empty()
+        {
+            continue;
+        }
+        let inner_wires = face.inner_wires().to_vec();
+        let mut replacements = Vec::with_capacity(inner_wires.len());
+
+        for wire_id in inner_wires {
+            let Ok(wire) = topo.wire(wire_id) else {
+                replacements.clear();
+                break;
+            };
+            let edges: Vec<_> = wire
+                .edges()
+                .iter()
+                .rev()
+                .map(|edge| {
+                    brepkit_topology::wire::OrientedEdge::new(edge.edge(), !edge.is_forward())
+                })
+                .collect();
+            let Ok(wire) = brepkit_topology::wire::Wire::new(edges, wire.is_closed()) else {
+                replacements.clear();
+                break;
+            };
+            replacements.push(topo.add_wire(wire));
+        }
+
+        if !replacements.is_empty()
+            && let Ok(face) = topo.face_mut(selected_face.face_id)
+        {
+            *face.inner_wires_mut() = replacements;
+        }
+    }
 }
 
 /// Sample a point in the interior of a face.

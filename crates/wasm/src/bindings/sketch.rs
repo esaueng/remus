@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::error::WasmError;
+use crate::error::{WasmError, validate_work_count};
 use crate::helpers::{json_f64, json_usize, parse_sketch_constraint};
 use crate::kernel::BrepKernel;
 use crate::state::SketchState;
@@ -493,6 +493,7 @@ impl BrepKernel {
         max_iterations: u32,
         tolerance: f64,
     ) -> Result<String, JsError> {
+        let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let sk = self
             .sketches
             .get_mut(sketch as usize)
@@ -507,12 +508,12 @@ impl BrepKernel {
                 points: std::mem::take(&mut sk.points),
                 constraints: std::mem::take(&mut sk.constraints),
             };
-            let result = sketch_obj.solve(max_iterations as usize, tolerance);
+            let result = sketch_obj.solve(max_iterations, tolerance);
             sk.points = sketch_obj.points;
             sk.constraints = sketch_obj.constraints;
             let (converged, iterations, max_residual) = match &result {
                 Ok(r) => (r.converged, r.iterations, Some(r.max_residual)),
-                Err(_) => (false, max_iterations as usize, None),
+                Err(_) => (false, max_iterations, None),
             };
             let pts: Vec<serde_json::Value> = sk
                 .points
@@ -532,10 +533,10 @@ impl BrepKernel {
         // Full GcsSystem path (supports arcs + deferred constraints)
         let gcs = build_gcs_from_state(sk)?;
         let mut sys = gcs.sys;
-        let result = sys.solve(max_iterations as usize, tolerance);
+        let result = sys.solve(max_iterations, tolerance);
         let (converged, iterations, max_residual) = match &result {
             Ok(r) => (r.converged, r.iterations, Some(r.max_residual)),
-            Err(_) => (false, max_iterations as usize, None),
+            Err(_) => (false, max_iterations, None),
         };
 
         // Write solved positions back

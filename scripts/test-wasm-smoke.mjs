@@ -78,6 +78,31 @@ const boxId = kernel.makeBox(10, 20, 30);
 assert.equal(typeof boxId, 'number', 'makeBox should return a number handle');
 console.log(`ok - makeBox(10, 20, 30) -> handle ${boxId}`);
 
+// JS-controlled work counts must fail before they reach allocation or topology
+// construction. This input was previously accepted and created 10,001 edges.
+assert.throws(
+  () => kernel.makeCircle(1, 10_001),
+  /segments must be at most 10000/,
+  'makeCircle must reject oversized topology work',
+);
+assert.equal(typeof kernel.makeCircle(1, 64), 'number');
+assert.throws(
+  () => kernel.makeSphere(1, 10_001),
+  /segments must be at most 10000/,
+  'makeSphere must reject oversized topology work',
+);
+const workCountBatch = JSON.parse(
+  kernel.executeBatch(
+    JSON.stringify([
+      { op: 'makeSphere', args: { radius: 1, segments: 10_001 } },
+      { op: 'makeSphere', args: { radius: 1, segments: 64 } },
+    ]),
+  ),
+);
+assert.match(workCountBatch[0].error, /segments must be at most 10000/);
+assert.equal(typeof workCountBatch[1].ok, 'number');
+console.log('ok - oversized WASM work counts fail closed in direct and batch APIs');
+
 // Batch deflection validation must reject every value rejected by the matching
 // direct binding. JSON.stringify serializes NaN and Infinity as null, which the
 // batch API must reject rather than silently replacing with its default.

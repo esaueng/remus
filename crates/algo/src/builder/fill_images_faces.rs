@@ -3747,6 +3747,8 @@ fn build_topology_face(
         return None;
     }
 
+    orient_planar_outer_wire(topo, &split.surface, split.reversed, &mut oriented_edges);
+
     // Step 3: Build wire.
     let wire = Wire::new(oriented_edges, true).ok()?;
     let wire_id = topo.add_wire(wire);
@@ -3783,6 +3785,72 @@ fn build_topology_face(
     let face_id = topo.add_face(face);
 
     Some(face_id)
+}
+
+/// Orient a planar outer wire to agree with the face's effective normal.
+///
+/// The planar arrangement may emit a geometrically correct loop with the
+/// opposite 3D winding when its local frame has a reversed axis. Sampling the
+/// actual curves also handles a wire made from one closed analytic edge.
+fn orient_planar_outer_wire(
+    topo: &Topology,
+    surface: &FaceSurface,
+    reversed: bool,
+    oriented_edges: &mut [OrientedEdge],
+) {
+    let FaceSurface::Plane { normal, .. } = surface else {
+        return;
+    };
+    let effective_normal = if reversed { -*normal } else { *normal };
+    let mut points = Vec::with_capacity(oriented_edges.len() * 4);
+
+    for oriented in oriented_edges.iter() {
+        let Ok(edge) = topo.edge(oriented.edge()) else {
+            return;
+        };
+        let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            return;
+        };
+        let (start, end) = (start.point(), end.point());
+        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        let (from, to) = if oriented.is_forward() {
+            (t0, t1)
+        } else {
+            (t1, t0)
+        };
+        let samples = if matches!(edge.curve(), EdgeCurve::Line) {
+            1
+        } else {
+            4
+        };
+        for index in 0..samples {
+            #[allow(clippy::cast_precision_loss)]
+            let fraction = index as f64 / samples as f64;
+            points.push(edge.curve().evaluate_with_endpoints(
+                (to - from).mul_add(fraction, from),
+                start,
+                end,
+            ));
+        }
+    }
+
+    let mut winding = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        winding = brepkit_math::vec::Vec3::new(
+            winding.x() + (current.y() - next.y()) * (current.z() + next.z()),
+            winding.y() + (current.z() - next.z()) * (current.x() + next.x()),
+            winding.z() + (current.x() - next.x()) * (current.y() + next.y()),
+        );
+    }
+
+    if winding.dot(effective_normal) < 0.0 {
+        oriented_edges.reverse();
+        for oriented in oriented_edges.iter_mut() {
+            *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
+        }
+    }
 }
 
 /// Create a topology edge for a wire's pcurve edge, returning the edge id
