@@ -4035,6 +4035,38 @@ fn box_cylinder_fuse_returns_manifold_result() {
     );
 }
 
+#[test]
+fn translated_box_cylinder_fuses_return_valid_orientation() {
+    for (y, z) in [(4.0, -5.0), (8.0, -5.0), (10.0, 0.0)] {
+        for swapped in [false, true] {
+            let mut topo = Topology::default();
+            let box_solid = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+            let cylinder = crate::primitives::make_cylinder(&mut topo, 1.0, 20.0).unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                cylinder,
+                &brepkit_math::mat::Mat4::translation(0.0, y, z),
+            )
+            .unwrap();
+
+            let (a, b) = if swapped {
+                (cylinder, box_solid)
+            } else {
+                (box_solid, cylinder)
+            };
+            let solid = boolean(&mut topo, BooleanOp::Fuse, a, b)
+                .expect("box-cylinder fuse should return a valid solid");
+            let report = crate::validate::validate_solid(&topo, solid).unwrap();
+            assert_eq!(
+                report.error_count(),
+                0,
+                "box-cylinder fuse at y={y}, z={z}, swapped={swapped} must not publish invalid face orientation: {:?}",
+                report.issues,
+            );
+        }
+    }
+}
+
 /// This intersect used to be pinned as a refusal
 /// (`box_cone_invalid_mesh_fallback_fails_closed`): a point-tipped cone
 /// tessellated OPEN — its base circle was emitted twice, once by the lateral

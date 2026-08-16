@@ -11,7 +11,7 @@ use brepkit_topology::vertex::Vertex;
 use brepkit_topology::wire::{OrientedEdge, Wire};
 use wasm_bindgen::prelude::*;
 
-use crate::error::{WasmError, validate_finite, validate_positive};
+use crate::error::{WasmError, validate_finite, validate_positive, validate_work_count};
 use crate::handles::{
     edge_id_to_u32, face_id_to_u32, solid_id_to_u32, vertex_id_to_u32, wire_id_to_u32,
 };
@@ -113,7 +113,7 @@ impl BrepKernel {
             .into());
         }
 
-        let n = segments as usize;
+        let n = validate_work_count(segments, "segments")?;
         let mut points = Vec::with_capacity(n);
         for i in 0..n {
             #[allow(clippy::cast_precision_loss)]
@@ -830,10 +830,11 @@ impl BrepKernel {
             }
             .into());
         }
+        let n_sides = validate_work_count(n_sides, "n_sides")?;
         let wid = brepkit_topology::builder::make_regular_polygon_wire(
             self.topo_mut(),
             radius,
-            n_sides as usize,
+            n_sides,
             TOL,
         )?;
         Ok(wire_id_to_u32(wid))
@@ -851,12 +852,9 @@ impl BrepKernel {
             }
             .into());
         }
-        let fid = brepkit_topology::builder::make_circle_face(
-            self.topo_mut(),
-            radius,
-            segments as usize,
-            TOL,
-        )?;
+        let segments = validate_work_count(segments, "segments")?;
+        let fid =
+            brepkit_topology::builder::make_circle_face(self.topo_mut(), radius, segments, TOL)?;
         Ok(face_id_to_u32(fid))
     }
 }
