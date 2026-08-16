@@ -315,6 +315,7 @@ fn split_sections_at_t_junctions(
                 // (un-split) endpoints. Resolve by position instead;
                 // cross-face sharing is recovered by merge_duplicate_edges.
                 pave_block_id: None,
+                source_topo_edge: edge.source_topo_edge,
             });
         };
         if let Some(reg) = split_registry.as_deref_mut()
@@ -442,6 +443,7 @@ fn split_plane_boundary_arcs_at_points(
                 forward: edge.forward,
                 source_edge_idx: None,
                 pave_block_id: None,
+                source_topo_edge: edge.source_topo_edge,
             });
         };
         for &t in &splits {
@@ -639,6 +641,7 @@ fn integrate_holes_plane(
                 forward: fwd,
                 source_edge_idx: src,
                 pave_block_id: None,
+                source_topo_edge: None,
             })
         };
 
@@ -810,6 +813,7 @@ fn integrate_holes_plane(
             forward: true,
             source_edge_idx: Some(src),
             pave_block_id: s.pave_block_id,
+            source_topo_edge: None,
         });
         out.push(OrientedPCurveEdge {
             curve_3d: s.curve_3d.clone(),
@@ -821,6 +825,7 @@ fn integrate_holes_plane(
             forward: false,
             source_edge_idx: Some(src),
             pave_block_id: s.pave_block_id,
+            source_topo_edge: None,
         });
     }
 
@@ -1476,6 +1481,7 @@ fn split_periodic_face_by_winding_chain(
                     forward: fwd,
                     source_edge_idx: None,
                     pave_block_id: s.pave_block_id,
+                    source_topo_edge: None,
                 });
             }
             Some(out)
@@ -1538,6 +1544,7 @@ fn split_periodic_face_by_winding_chain(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         })
     };
 
@@ -2213,6 +2220,7 @@ fn split_plane_face_by_arrangement(
                 forward: true,
                 source_edge_idx: None,
                 pave_block_id: s.pave_block_id,
+                source_topo_edge: None,
             },
             is_arc,
             is_section: true,
@@ -3043,6 +3051,7 @@ fn arrangement_regions_from_inputs(
                     // pave_block_id — vertex resolution would snap both halves
                     // to the un-split PaveBlock endpoints.
                     pave_block_id: None,
+                    source_topo_edge: inp.edge.source_topo_edge,
                 });
             }
             if whole && inp.is_arc {
@@ -3072,6 +3081,7 @@ fn arrangement_regions_from_inputs(
                         // by the angular wire builder, which this path bypasses.
                         source_edge_idx: None,
                         pave_block_id: base.pave_block_id,
+                        source_topo_edge: base.source_topo_edge,
                     }
                 });
             }
@@ -3104,6 +3114,7 @@ fn arrangement_regions_from_inputs(
             forward: true,
             source_edge_idx: Some(seg_id),
             pave_block_id: None,
+            source_topo_edge: None,
         })
     };
 
@@ -3963,6 +3974,7 @@ fn split_cylinder_band_by_arrangement(
                 forward: true,
                 source_edge_idx: None,
                 pave_block_id: None,
+                source_topo_edge: None,
             })
         } else {
             // Cross-section circle at height v = fv, sharing the cylinder's frame
@@ -3982,6 +3994,7 @@ fn split_cylinder_band_by_arrangement(
                 forward: tu > fu,
                 source_edge_idx: None,
                 pave_block_id: None,
+                source_topo_edge: None,
             })
         }
     };
@@ -4831,6 +4844,7 @@ fn split_face_2d_impl(
                             forward: oe.is_forward(),
                             source_edge_idx: None,
                             pave_block_id: None,
+                            source_topo_edge: None,
                         });
                     }
                 }
@@ -5666,6 +5680,7 @@ fn split_face_2d_impl(
                             forward: fwd,
                             source_edge_idx: Some(WEAVE_SECTION_SRC_BASE + si),
                             pave_block_id: None,
+                            source_topo_edge: None,
                         })
                     };
                     if let Some(e1) = mk(s0, s1, sct.start, sct.end, true) {
@@ -5862,6 +5877,7 @@ fn split_face_2d_impl(
             forward: true,
             source_edge_idx: Some(section_idx),
             pave_block_id: pb_id,
+            source_topo_edge: None,
         });
         // Reverse direction (for the adjacent sub-face).
         all_edges.push(OrientedPCurveEdge {
@@ -5874,6 +5890,7 @@ fn split_face_2d_impl(
             forward: false,
             source_edge_idx: Some(section_idx),
             pave_block_id: pb_id,
+            source_topo_edge: None,
         });
     }
 
@@ -6170,6 +6187,7 @@ fn split_face_2d_impl(
                         forward: true,
                         source_edge_idx: None,
                         pave_block_id: None,
+                        source_topo_edge: None,
                     });
                 }
             }
@@ -6246,6 +6264,7 @@ fn split_face_2d_impl(
                 forward: true,
                 source_edge_idx: None,
                 pave_block_id: None,
+                source_topo_edge: None,
             });
         }
         if !bridges.is_empty() {
@@ -7880,6 +7899,7 @@ mod tests {
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
@@ -8114,6 +8134,7 @@ mod tests {
                     forward: true,
                     source_edge_idx: None,
                     pave_block_id: None,
+                    source_topo_edge: None,
                 }
             })
             .collect();
@@ -8197,6 +8218,7 @@ mod tests {
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
