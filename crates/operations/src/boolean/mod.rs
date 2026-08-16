@@ -66,6 +66,51 @@ fn note_flatten_guard_trip() {
     #[cfg(test)]
     THREAD_FLATTEN_GUARD_TRIPS.with(|count| count.set(count.get() + 1));
 }
+/// Perform a boolean operation through the kernel's transactional
+/// contract: *stage → validate → commit / roll back*
+/// (`brepkit_topology::transaction`; see
+/// `docs/kernel-maturity/operation-contract.md`).
+///
+/// Runs [`boolean`] under a topology transaction and L3-validates the
+/// result before committing. On any failure — the operation itself, or a
+/// result that fails validation — the topology is restored exactly to its
+/// pre-operation state: pre-existing handles stay valid, and handles
+/// allocated by the failed attempt can never alias later entities.
+///
+/// Costs one topology snapshot over [`boolean`]; callers in snapshot-
+/// managed contexts (the WASM batch dispatcher) keep calling [`boolean`]
+/// directly.
+///
+/// # Errors
+///
+/// Returns [`boolean`]'s error, or an invalid-result error naming the
+/// validation failure count, after rolling back.
+pub fn boolean_transacted(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, crate::OperationsError> {
+    brepkit_topology::transaction::run_validated(
+        topo,
+        |topo| boolean(topo, op, a, b),
+        |topo, &result| {
+            let report = crate::validate::validate_solid(topo, result)?;
+            if report.is_valid() {
+                Ok(())
+            } else {
+                Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "boolean result failed validation with {} error(s); \
+                         the operation was rolled back",
+                        report.error_count()
+                    ),
+                })
+            }
+        },
+    )
+}
+
 /// Perform a boolean operation on two solids.
 ///
 /// Uses the GFA pipeline as the primary engine, with mesh boolean
