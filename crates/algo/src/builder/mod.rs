@@ -314,6 +314,9 @@ pub struct Builder {
     tol: Tolerance,
     /// Sub-faces produced by splitting.
     sub_faces: Vec<SubFace>,
+    /// Construction lineage recorded while materializing and assembling
+    /// result edges (Issue 12).
+    edge_lineage: split_types::EdgeLineageLog,
     /// Map from face ID to its argument rank.
     face_ranks: HashMap<FaceId, Rank>,
     /// Same-domain face pairs detected by `same_domain`.
@@ -340,6 +343,7 @@ impl Builder {
             solid_b,
             tol,
             sub_faces: Vec::new(),
+            edge_lineage: split_types::EdgeLineageLog::default(),
             face_ranks: HashMap::new(),
             sd_pairs: Vec::new(),
             sd_within_rank_dups: Vec::new(),
@@ -351,6 +355,14 @@ impl Builder {
     /// # Errors
     ///
     /// Returns [`AlgoError`] if topology lookups or classification fails.
+    /// The construction lineage recorded so far (populated by
+    /// [`Self::perform`]); cloned by entity-evolution callers before the
+    /// builder is consumed.
+    #[must_use]
+    pub fn edge_lineage(&self) -> &split_types::EdgeLineageLog {
+        &self.edge_lineage
+    }
+
     pub fn perform(&mut self) -> Result<(), AlgoError> {
         self.build_face_ranks()?;
         self.fill_images();
@@ -506,6 +518,7 @@ impl Builder {
             &edge_images,
             &self.face_ranks,
             self.tol,
+            &mut self.edge_lineage,
         );
         log::debug!("Builder: {} sub-faces created", self.sub_faces.len());
 
@@ -799,8 +812,15 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     // is correct for all of them (see the doc comment).
     let edge_images = fill_images::fill_edge_images(&arena);
     let all_a_ranks: HashMap<FaceId, Rank> = face_source.keys().map(|&f| (f, Rank::A)).collect();
-    let sub_faces =
-        fill_images_faces::fill_images_faces(&mut topo, &arena, &edge_images, &all_a_ranks, tol);
+    let mut nway_lineage = split_types::EdgeLineageLog::default();
+    let sub_faces = fill_images_faces::fill_images_faces(
+        &mut topo,
+        &arena,
+        &edge_images,
+        &all_a_ranks,
+        tol,
+        &mut nway_lineage,
+    );
 
     // The global source of each sub-face is its parent input face's source.
     let sub_source: Vec<usize> = sub_faces

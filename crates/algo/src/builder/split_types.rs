@@ -44,6 +44,10 @@ pub struct OrientedPCurveEdge {
     /// section edges from the same FF intersection curve share this ID
     /// across different faces, enabling manifold edge topology.
     pub pave_block_id: Option<usize>,
+    /// Store-space index of the topology edge this pcurve edge was built
+    /// from, when known (Issue 12 construction lineage). Sub-segments
+    /// inherit their parent's value; synthesized edges carry `None`.
+    pub source_topo_edge: Option<usize>,
 }
 
 /// An intersection curve between two faces, with pcurves on each.
@@ -174,4 +178,15 @@ impl SurfaceInfo {
             } => (*u_periodic, *v_periodic),
         }
     }
+}
+
+/// Construction lineage recorded while materializing and assembling result
+/// edges (Issue 12). Store-space indices throughout.
+#[derive(Debug, Default, Clone)]
+pub struct EdgeLineageLog {
+    /// Materialized wire edge index → the pave block it instantiates.
+    pub to_pave_block: std::collections::BTreeMap<usize, usize>,
+    /// Rebuilt edge index → the edge it was rebuilt from (weld remaps,
+    /// canonicalization, arc chain splits).
+    pub rewrites: std::collections::BTreeMap<usize, usize>,
 }
