@@ -607,12 +607,17 @@ impl StepWriteContext {
 
         let bound_refs: Vec<String> = bound_ids.iter().map(|id| format!("#{id}")).collect();
         let face_orient = if step_face_reversed { ".F." } else { ".T." };
+        let face_name = topo
+            .attributes()
+            .face(face_id)
+            .and_then(|a| a.name.as_deref())
+            .map_or_else(|| "''".to_string(), step_string_literal);
         let advanced_face = self.next_id();
         self.write_entity(
             advanced_face,
             "ADVANCED_FACE",
             &format!(
-                "'', ({}), #{surface_id}, {face_orient})",
+                "{face_name}, ({}), #{surface_id}, {face_orient})",
                 bound_refs.join(", ")
             ),
         );
@@ -702,9 +707,18 @@ impl StepWriteContext {
         let inner_shell_ids = solid.inner_shells().to_vec();
         let shell = self.write_shell(topo, outer_shell_id, false)?;
 
+        let solid_name = topo
+            .attributes()
+            .solid(solid_id)
+            .and_then(|a| a.name.as_deref())
+            .map_or_else(|| "''".to_string(), step_string_literal);
         if inner_shell_ids.is_empty() {
             let brep = self.next_id();
-            self.write_entity(brep, "MANIFOLD_SOLID_BREP", &format!("'', #{shell})"));
+            self.write_entity(
+                brep,
+                "MANIFOLD_SOLID_BREP",
+                &format!("{solid_name}, #{shell})"),
+            );
             return Ok(brep);
         }
 
@@ -729,7 +743,7 @@ impl StepWriteContext {
         self.write_entity(
             brep,
             "BREP_WITH_VOIDS",
-            &format!("'', #{shell}, ({}))", void_refs.join(", ")),
+            &format!("{solid_name}, #{shell}, ({}))", void_refs.join(", ")),
         );
         Ok(brep)
     }
