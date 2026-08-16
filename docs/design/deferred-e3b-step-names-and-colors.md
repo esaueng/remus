@@ -2,14 +2,14 @@
 
 Status: partially implemented (Issue 14). The attribute store
 (`brepkit_topology::attributes` — solids + faces; name, sRGB color in
-`[0, 1]`, app id, source entity, layer), the explicit face-propagation rules
+`[0, 1]`), the explicit face-propagation rules
 (`brepkit_operations::evolution::propagate_face_attributes`), lifecycle
 integration (delete, restore, solid copy), and the STEP **name** round trip
 (entity name fields on `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS` /
 `ADVANCED_FACE`, escape-aware) are landed. Still deferred, per the design
 below: COLOUR_RGB / STYLED_ITEM presentation chains, edge/vertex/compound
-scope, WASM accessor methods, and the operation-coverage audit for the
-remaining modifiers.
+scope, additional application metadata, WASM accessor methods, and the
+operation-coverage audit for the remaining modifiers.
 
 ## Context
 
