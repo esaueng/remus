@@ -10,7 +10,7 @@ use brepkit_math::vec::Point3;
 use brepkit_topology::edge::{Edge, EdgeCurve};
 use brepkit_topology::vertex::Vertex;
 
-use crate::error::WasmError;
+use crate::error::{WasmError, validate_work_count, validate_work_product};
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
 use crate::helpers::{TOL, parse_point_grid, parse_points};
 use crate::kernel::BrepKernel;
@@ -234,9 +234,9 @@ impl BrepKernel {
             }
             .into());
         }
+        let num_control_points = validate_work_count(num_control_points, "num_control_points")?;
         let deg = std::cmp::min(degree as usize, points.len() - 1);
-        let curve =
-            brepkit_math::nurbs::fitting::approximate(&points, deg, num_control_points as usize)?;
+        let curve = brepkit_math::nurbs::fitting::approximate(&points, deg, num_control_points)?;
         Ok(edge_id_to_u32(self.nurbs_curve_to_edge(&points, curve)))
     }
 
@@ -260,13 +260,15 @@ impl BrepKernel {
             }
             .into());
         }
+        let num_control_points = validate_work_count(num_control_points, "num_control_points")?;
+        let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let deg = std::cmp::min(degree as usize, points.len() - 1);
         let curve = brepkit_math::nurbs::fitting::approximate_lspia(
             &points,
             deg,
-            num_control_points as usize,
+            num_control_points,
             tolerance,
-            max_iterations as usize,
+            max_iterations,
         )?;
         Ok(edge_id_to_u32(self.nurbs_curve_to_edge(&points, curve)))
     }
@@ -285,6 +287,9 @@ impl BrepKernel {
         degree_u: u32,
         degree_v: u32,
     ) -> Result<u32, JsError> {
+        validate_work_count(rows, "rows")?;
+        validate_work_count(cols, "cols")?;
+        let _ = validate_work_product(rows, cols, "surface grid points")?;
         let grid = parse_point_grid(&coords, rows as usize, cols as usize)?;
         let surface = brepkit_math::nurbs::surface_fitting::interpolate_surface(
             &grid,
@@ -311,6 +316,13 @@ impl BrepKernel {
         tolerance: f64,
         max_iterations: u32,
     ) -> Result<u32, JsError> {
+        validate_work_count(rows, "rows")?;
+        validate_work_count(cols, "cols")?;
+        let _ = validate_work_product(rows, cols, "surface grid points")?;
+        validate_work_count(num_cps_u, "num_cps_u")?;
+        validate_work_count(num_cps_v, "num_cps_v")?;
+        let _ = validate_work_product(num_cps_u, num_cps_v, "surface control points")?;
+        let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let grid = parse_point_grid(&coords, rows as usize, cols as usize)?;
         let surface = brepkit_math::nurbs::surface_fitting::approximate_surface_lspia(
             &grid,
@@ -319,7 +331,7 @@ impl BrepKernel {
             num_cps_u as usize,
             num_cps_v as usize,
             tolerance,
-            max_iterations as usize,
+            max_iterations,
         )?;
         Ok(face_id_to_u32(self.nurbs_surface_to_face(surface)?))
     }
@@ -330,8 +342,8 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "curveKnotInsert")]
     pub fn curve_knot_insert(&mut self, edge: u32, knot: f64, times: u32) -> Result<u32, JsError> {
         let curve = self.extract_nurbs_curve(edge)?;
-        let refined =
-            brepkit_math::nurbs::knot_ops::curve_knot_insert(&curve, knot, times as usize)?;
+        let times = validate_work_count(times, "times")?;
+        let refined = brepkit_math::nurbs::knot_ops::curve_knot_insert(&curve, knot, times)?;
         Ok(edge_id_to_u32(
             self.nurbs_curve_to_edge_from_curve(&refined),
         ))
@@ -372,8 +384,8 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "curveDegreeElevate")]
     pub fn curve_degree_elevate(&mut self, edge: u32, elevate_by: u32) -> Result<u32, JsError> {
         let curve = self.extract_nurbs_curve(edge)?;
-        let elevated =
-            brepkit_math::nurbs::decompose::curve_degree_elevate(&curve, elevate_by as usize)?;
+        let elevate_by = validate_work_count(elevate_by, "elevate_by")?;
+        let elevated = brepkit_math::nurbs::decompose::curve_degree_elevate(&curve, elevate_by)?;
         Ok(edge_id_to_u32(
             self.nurbs_curve_to_edge_from_curve(&elevated),
         ))
