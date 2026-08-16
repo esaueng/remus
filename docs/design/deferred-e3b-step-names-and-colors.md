@@ -1,9 +1,15 @@
 # E3b: STEP names and colors (deferred design)
 
-Status: deferred. Names and colors cannot be implemented faithfully until the
-kernel has a topology-attribute subsystem with explicit propagation rules.
-This document records the required design work; it adds no attributes or STEP
-presentation entities.
+Status: partially implemented (Issue 14). The attribute store
+(`brepkit_topology::attributes` — solids + faces; name, sRGB color in
+`[0, 1]`, app id, source entity, layer), the explicit face-propagation rules
+(`brepkit_operations::evolution::propagate_face_attributes`), lifecycle
+integration (delete, restore, solid copy), and the STEP **name** round trip
+(entity name fields on `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS` /
+`ADVANCED_FACE`, escape-aware) are landed. Still deferred, per the design
+below: COLOUR_RGB / STYLED_ITEM presentation chains, edge/vertex/compound
+scope, WASM accessor methods, and the operation-coverage audit for the
+remaining modifiers.
 
 ## Context
 
