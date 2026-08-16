@@ -87,6 +87,15 @@ The existing arena no-reuse invariant (stale handles never alias new
 entities — see `docs/design/deferred-e6b-arena-compaction-and-slot-reuse.md`)
 is part of this contract and is preserved by all rollback paths.
 
+Implementation: `brepkit_topology::transaction` (`run_transacted`,
+`run_validated`) is the standard implementation, promoted from the three
+ad-hoc snapshot/restore copies that preceded it. Running through it today:
+the v2 blend wrappers (fillet/chamfer), `resize_blend`, and the additive
+`boolean_transacted` entry (transacted + L3-validated commit). The WASM
+batch dispatcher implements the same contract with an `Rc`-sharing
+read-only fast path. Remaining public mutating operations migrate
+incrementally.
+
 ## Context
 
 Operations receive an explicit operation context (introduced incrementally,
