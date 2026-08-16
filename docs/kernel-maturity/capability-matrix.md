@@ -205,9 +205,15 @@ does not itself promote or demote anything.
 
 - Ledger row: "Face provenance" (Beta). Construction-derived face provenance
   covers booleans, walking/planar blend builders, and patterns; offset,
-  shell, draft, split, defeature, and direct edits produce none; **no edge or
-  vertex provenance exists**. Persistent naming does not exist; arena indices
-  are the only handles (and are explicitly not persistent names).
+  shell, draft, split, defeature, and direct edits produce none.
+  **Edge and vertex history** (Issue 12): `gfa::boolean_with_entity_evolution`
+  returns construction-derived edge events (Preserved / Modified via the
+  splitter's source-edge chain and pave blocks / Generated via FF
+  section-origin records / honest Unresolved for the assembly rebuild paths,
+  pinned as a minority) and vertex events (Preserved / Created via the copy
+  maps). Operations/WASM surfacing, the assembly rebuild records, and the
+  lineage graph remain queued. Persistent naming does not exist; arena
+  indices are the only handles (and are explicitly not persistent names).
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 

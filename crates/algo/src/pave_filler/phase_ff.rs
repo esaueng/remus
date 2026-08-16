@@ -795,6 +795,9 @@ pub fn perform(
 
                 let edge = Edge::new(start_vid, end_vid, raw.curve.clone());
                 let edge_id = topo.add_edge(edge);
+                arena
+                    .section_edge_origins
+                    .insert(edge_id.index(), (fa.index(), fb.index()));
 
                 let start_pave = Pave::new(start_vid, raw.t_range.0);
                 let end_pave = Pave::new(end_vid, raw.t_range.1);
@@ -892,6 +895,9 @@ fn emit_exact_arc(
 
     let edge = Edge::new(start_vid, end_vid, raw.curve.clone());
     let edge_id = topo.add_edge(edge);
+    arena
+        .section_edge_origins
+        .insert(edge_id.index(), (fa.index(), fb.index()));
 
     let start_pave = Pave::new(start_vid, raw.t_range.0);
     let end_pave = Pave::new(end_vid, raw.t_range.1);
@@ -4929,6 +4935,9 @@ fn emit_split_circle_arcs(
             };
             let edge = Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle.clone()));
             let edge_id = topo.add_edge(edge);
+            arena
+                .section_edge_origins
+                .insert(edge_id.index(), (face_a.index(), face_b.index()));
 
             let start_pave = Pave::new(start_vid, t_s);
             let end_pave = Pave::new(end_vid, t_e);

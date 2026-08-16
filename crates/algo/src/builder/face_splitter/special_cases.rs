@@ -85,6 +85,7 @@ pub(super) fn split_noseam_face_direct(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         };
 
         // Full-circle section edges (start approx end in 3D) are interior caps;
@@ -146,6 +147,7 @@ pub(super) fn split_noseam_face_direct(
         forward: !e.forward,
         source_edge_idx: e.source_edge_idx,
         pave_block_id: e.pave_block_id,
+        source_topo_edge: None,
     };
 
     if covered.iter().any(|&c| c) {
@@ -274,6 +276,7 @@ fn split_noseam_by_arrangement(
             forward: !e.forward,
             source_edge_idx: e.source_edge_idx,
             pave_block_id: e.pave_block_id,
+            source_topo_edge: None,
         };
         [e.clone(), rev]
     };
@@ -472,6 +475,7 @@ fn build_seam_arcs(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         });
     }
     if arcs.len() < 2 {
@@ -654,6 +658,7 @@ fn reverse_loop(loop_edges: &[OrientedPCurveEdge]) -> Vec<OrientedPCurveEdge> {
             forward: !e.forward,
             source_edge_idx: e.source_edge_idx,
             pave_block_id: e.pave_block_id,
+            source_topo_edge: None,
         })
         .collect()
 }
@@ -957,6 +962,7 @@ pub(super) fn split_periodic_face_into_bands(
             forward,
             source_edge_idx: None,
             pave_block_id: s.pave_block_id,
+            source_topo_edge: None,
         };
         mids.push(BandCircle {
             v,
@@ -990,6 +996,7 @@ pub(super) fn split_periodic_face_into_bands(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         })
     };
 
@@ -1174,6 +1181,7 @@ pub(super) fn split_periodic_face_into_sectors(
             forward: true,
             source_edge_idx: None,
             pave_block_id: pb_id,
+            source_topo_edge: None,
         })
     };
 
@@ -1219,6 +1227,7 @@ pub(super) fn split_periodic_face_into_sectors(
             forward,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         })
     };
 
@@ -1300,6 +1309,7 @@ fn torus_section_to_edge(
         forward: true,
         source_edge_idx: None,
         pave_block_id: section.pave_block_id,
+        source_topo_edge: None,
     }
 }
 
@@ -1540,6 +1550,7 @@ pub(super) fn split_face_with_internal_loops(
             // sharing (box face inner wire ↔ cylinder face outer wire)
             // works through `resolve_edge_vertices`'s PaveBlock path.
             pave_block_id: section.pave_block_id,
+            source_topo_edge: None,
         });
     }
 
@@ -1873,6 +1884,7 @@ pub(super) fn split_face_with_internal_loops(
                     forward: !e.forward,
                     source_edge_idx: None,
                     pave_block_id: None,
+                    source_topo_edge: None,
                 })
                 .collect()
         };
@@ -2188,6 +2200,7 @@ fn union_internal_loop_with_hole(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         })
     };
 
@@ -2769,6 +2782,7 @@ pub(super) fn try_split_crossing_plane_face(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     };
 
@@ -3335,6 +3349,7 @@ pub(super) fn try_split_disk_by_chords(
                     forward: true,
                     source_edge_idx: None,
                     pave_block_id: None,
+                    source_topo_edge: None,
                 })
             }
             HeKind::ArcCcw { lo, hi } | HeKind::ArcCw { lo, hi } => {
@@ -3361,6 +3376,7 @@ pub(super) fn try_split_disk_by_chords(
                     forward: true,
                     source_edge_idx: None,
                     pave_block_id: None,
+                    source_topo_edge: None,
                 })
             }
         }
@@ -3431,6 +3447,7 @@ mod tests {
             forward,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
@@ -3445,6 +3462,7 @@ mod tests {
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
