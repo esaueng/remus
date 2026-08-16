@@ -81,8 +81,12 @@ only policy values move into the context; mathematical constants stay put:
    coordinated with the intersection result model (Issue 10).
 4. Cancellation state and diagnostics sink — added when the first consumer
    (long-running boolean or corpus runner) lands, not before.
-5. Fallback policy (`ExactOnly` / `AllowApproximate` / `ApproximateOnly`) —
-   arrives with the exact-boolean fallback contract (backlog Issue 11).
+5. ~~Fallback policy~~ — **landed** (Issue 11): `FallbackPolicy` on the
+   context (`ExactOnly` / `AllowApproximate{budget}` /
+   `ApproximateOnly{budget}`, default reproducing the legacy mesh
+   deflection), consumed by `boolean_with_context`, which discloses the
+   result quality (`BooleanOutcome`) and refuses degradation under
+   `ExactOnly` with the typed `ExactOnlyUnattainable` error.
 
 Repro bundles reserve a `context` field for serializing this type; that
 field unlocks when the context becomes replayable policy (serde support and

@@ -8001,3 +8001,89 @@ fn fuse_cylinder_crossing_a_wall_at_its_rim_still_merges() {
         assert_eq!(got, want, "classify {p:?}");
     }
 }
+
+#[cfg(test)]
+mod fallback_policy_refusal {
+    #![allow(clippy::unwrap_used)]
+
+    use brepkit_math::context::FallbackPolicy;
+    use brepkit_topology::Topology;
+    use brepkit_topology::edge::{Edge, EdgeCurve};
+    use brepkit_topology::vertex::Vertex;
+    use brepkit_topology::wire::{OrientedEdge, Wire};
+
+    use crate::boolean::{BooleanOp, boolean_with_policy};
+    use crate::primitives::make_box;
+
+    /// Overlapping boxes with one operand's face wire replaced by an open
+    /// single-edge stub: the exact pipeline fails deterministically, which
+    /// is the configuration the fallback tail exists for.
+    fn corrupted_pair(
+        topo: &mut Topology,
+    ) -> (brepkit_topology::SolidId, brepkit_topology::SolidId) {
+        let a = make_box(topo, 2.0, 2.0, 2.0).unwrap();
+        let b = make_box(topo, 2.0, 2.0, 2.0).unwrap();
+        crate::transform::transform_solid(
+            topo,
+            b,
+            &brepkit_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        )
+        .unwrap();
+        let face = brepkit_topology::explorer::solid_faces(topo, b).unwrap()[0];
+        let v0 = topo.add_vertex(Vertex::new(
+            brepkit_math::vec::Point3::new(50.0, 50.0, 50.0),
+            1e-7,
+        ));
+        let v1 = topo.add_vertex(Vertex::new(
+            brepkit_math::vec::Point3::new(51.0, 50.0, 50.0),
+            1e-7,
+        ));
+        let e = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let stub = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], false).unwrap());
+        topo.face_mut(face).unwrap().set_outer_wire(stub);
+        (a, b)
+    }
+
+    #[test]
+    fn exact_only_refuses_at_the_fallback_tail() {
+        let mut topo = Topology::new();
+        let (a, b) = corrupted_pair(&mut topo);
+        let mut used_fallback = false;
+        let err = boolean_with_policy(
+            &mut topo,
+            BooleanOp::Fuse,
+            a,
+            b,
+            FallbackPolicy::ExactOnly,
+            &mut used_fallback,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::OperationsError::ExactOnlyUnattainable),
+            "expected the typed exact-only refusal, got {err}"
+        );
+        assert!(!used_fallback, "the refusal must precede any fallback work");
+    }
+
+    #[test]
+    fn allow_approximate_reaches_the_mesh_tail_on_the_same_input() {
+        // Same corrupted input under the permissive policy: whatever the
+        // mesh path does with it (succeed or fail on its own terms), the
+        // one thing it must NOT do is return the exact-only refusal.
+        let mut topo = Topology::new();
+        let (a, b) = corrupted_pair(&mut topo);
+        let mut used_fallback = false;
+        let result = boolean_with_policy(
+            &mut topo,
+            BooleanOp::Fuse,
+            a,
+            b,
+            FallbackPolicy::AllowApproximate { budget: 0.1 },
+            &mut used_fallback,
+        );
+        assert!(
+            !matches!(result, Err(crate::OperationsError::ExactOnlyUnattainable)),
+            "the permissive policy must not produce the exact-only refusal"
+        );
+    }
+}

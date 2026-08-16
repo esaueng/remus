@@ -120,14 +120,112 @@ pub fn boolean_transacted(
 ///
 /// Returns an error if either solid is invalid or the operation produces
 /// an empty or non-manifold result.
-#[allow(clippy::too_many_lines)]
 pub fn boolean(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
+    let mut used_fallback = false;
+    boolean_with_policy(
+        topo,
+        op,
+        a,
+        b,
+        default_fallback_policy(),
+        &mut used_fallback,
+    )
+}
+
+/// The result quality a context-carrying boolean discloses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BooleanQuality {
+    /// The exact pipeline (or an exact fast path) produced the result;
+    /// analytic surfaces are preserved.
+    Exact,
+    /// The mesh (co-refinement) fallback produced the result at the given
+    /// deflection; analytic surface types were lost.
+    Approximate {
+        /// Tessellation deflection the fallback ran at, in model units.
+        deflection: f64,
+    },
+}
+
+/// A boolean result with its disclosed quality.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BooleanOutcome {
+    /// The result solid.
+    pub solid: SolidId,
+    /// How the result was produced. Never silently approximate: a
+    /// fallback is visible here, and an `ExactOnly` policy makes it a
+    /// typed refusal instead.
+    pub quality: BooleanQuality,
+}
+
+/// Perform a boolean under an explicit operation context.
+///
+/// Enforces the context's
+/// [`FallbackPolicy`](brepkit_math::context::FallbackPolicy) and discloses
+/// the result quality — the kernel operation contract's rule that
+/// exact-to-mesh fallback is never silent.
+///
+/// - [`FallbackPolicy::ExactOnly`](brepkit_math::context::FallbackPolicy::ExactOnly): a configuration the exact pipeline
+///   cannot produce fails with
+///   [`OperationsError::ExactOnlyUnattainable`](crate::OperationsError::ExactOnlyUnattainable)
+///   instead of degrading.
+/// - [`FallbackPolicy::AllowApproximate`](brepkit_math::context::FallbackPolicy::AllowApproximate): legacy behavior — the mesh
+///   fallback may run, at the policy's budget as its deflection — but the
+///   outcome reports it.
+/// - [`FallbackPolicy::ApproximateOnly`](brepkit_math::context::FallbackPolicy::ApproximateOnly): skips the exact pipeline
+///   entirely and runs the mesh path directly.
+///
+/// # Errors
+///
+/// Returns [`boolean`]'s errors, or the typed exact-only refusal.
+pub fn boolean_with_context(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    context: &brepkit_math::context::OperationContext,
+) -> Result<BooleanOutcome, crate::OperationsError> {
+    let mut used_fallback = false;
+    let solid = boolean_with_policy(topo, op, a, b, context.fallback, &mut used_fallback)?;
+    let quality = if used_fallback {
+        BooleanQuality::Approximate {
+            deflection: context
+                .fallback
+                .budget()
+                .unwrap_or(brepkit_math::context::DEFAULT_APPROXIMATION_BUDGET),
+        }
+    } else {
+        BooleanQuality::Exact
+    };
+    Ok(BooleanOutcome { solid, quality })
+}
+
+/// The policy the legacy [`boolean`] entry runs under: approximation
+/// allowed at the historical mesh deflection.
+const fn default_fallback_policy() -> brepkit_math::context::FallbackPolicy {
+    brepkit_math::context::FallbackPolicy::AllowApproximate {
+        budget: brepkit_math::context::DEFAULT_APPROXIMATION_BUDGET,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn boolean_with_policy(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    policy: brepkit_math::context::FallbackPolicy,
+    used_fallback: &mut bool,
+) -> Result<SolidId, crate::OperationsError> {
     let tol = brepkit_math::tolerance::Tolerance::new();
+    if let brepkit_math::context::FallbackPolicy::ApproximateOnly { budget } = policy {
+        *used_fallback = true;
+        return run_mesh_fallback(topo, op, a, b, budget, tol);
+    }
 
     // Detect A⊂B or B⊂A (including A=B) and handle directly. A positive
     // containment result requires an analytic classifier for the containing
@@ -571,7 +669,14 @@ pub fn boolean(
             b
         };
         if flatten_settled {
-            let working_result = boolean(&mut working, op, working_a, working_b)?;
+            let working_result = boolean_with_policy(
+                &mut working,
+                op,
+                working_a,
+                working_b,
+                policy,
+                used_fallback,
+            )?;
             return crate::copy::copy_solid_between(&working, topo, working_result);
         }
         // Recognising flat NURBS as analytic is an optimisation, not a
@@ -948,13 +1053,31 @@ pub fn boolean(
         }
     }
 
-    // Mesh boolean fallback (no recursion).
+    // Mesh boolean fallback (no recursion). Under an exact-only policy
+    // this is the refusal point: degrading to a mesh is declined with a
+    // typed error rather than performed silently.
+    let brepkit_math::context::FallbackPolicy::AllowApproximate { budget } = policy else {
+        return Err(crate::OperationsError::ExactOnlyUnattainable);
+    };
+    *used_fallback = true;
+    run_mesh_fallback(topo, op, a, b, budget, tol)
+}
+
+/// The mesh (co-refinement) fallback path, at an explicit deflection.
+fn run_mesh_fallback(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    deflection: f64,
+    tol: brepkit_math::tolerance::Tolerance,
+) -> Result<SolidId, crate::OperationsError> {
     log::debug!(
         target: "brepkit_approx",
         "boolean {op:?}: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost"
     );
     let opts = BooleanOptions::default();
-    let raw = match mesh_boolean_fallback(topo, op, a, b, opts.deflection, tol, &opts) {
+    let raw = match mesh_boolean_fallback(topo, op, a, b, deflection, tol, &opts) {
         Ok(raw) => raw,
         // An empty mesh-boolean output for an intersect means the common
         // region is empty — return the empty-result sentinel rather than
