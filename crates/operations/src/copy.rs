@@ -391,7 +391,26 @@ pub fn copy_solid_with_face_map(
     let new_outer = new_shell_ids[0];
     let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
 
-    Ok((topo.add_solid(Solid::new(new_outer, new_inner)), face_map))
+    let new_solid = topo.add_solid(Solid::new(new_outer, new_inner));
+    // A copy is the identity outcome of the attribute propagation rules:
+    // names and colors carry to the copied solid and faces unchanged.
+    if let Some(attributes) = topo.attributes().solid(solid_id).cloned() {
+        topo.attributes_mut().set_solid(new_solid, attributes);
+    }
+    let carried: Vec<_> = face_map
+        .iter()
+        .filter_map(|(&src_idx, &dst_idx)| {
+            let src = topo.face_id_from_index(src_idx)?;
+            let attributes = topo.attributes().face(src).cloned()?;
+            Some((dst_idx, attributes))
+        })
+        .collect();
+    for (dst_idx, attributes) in carried {
+        if let Some(dst) = topo.face_id_from_index(dst_idx) {
+            topo.attributes_mut().set_face(dst, attributes);
+        }
+    }
+    Ok((new_solid, face_map))
 }
 
 /// Create a deep copy of a solid with a simultaneous affine transform.

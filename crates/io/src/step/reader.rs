@@ -765,6 +765,13 @@ impl<'a> StepBuilder<'a> {
         }
 
         let solid_id = self.topo.add_solid(Solid::new(shell_id, inner_shells));
+        if let Some(name) = leading_name(&self.get_entity(brep_id)?.attrs) {
+            let attributes = brepkit_topology::attributes::EntityAttributes {
+                name: Some(name),
+                ..Default::default()
+            };
+            self.topo.attributes_mut().set_solid(solid_id, attributes);
+        }
         Ok(solid_id)
     }
 
@@ -906,6 +913,13 @@ impl<'a> StepBuilder<'a> {
         } else {
             self.topo.add_face(Face::new(outer, inner_wires, surface))
         };
+        if let Some(name) = leading_name(&attrs) {
+            let attributes = brepkit_topology::attributes::EntityAttributes {
+                name: Some(name),
+                ..Default::default()
+            };
+            self.topo.attributes_mut().set_face(face_id, attributes);
+        }
         Ok(face_id)
     }
 
@@ -4156,6 +4170,28 @@ fn parse_ref_token(text: &str) -> Option<u64> {
 
 /// Strip a STEP string literal's delimiting quotes and collapse its `''`
 /// escape to a single apostrophe.
+/// Extracts an entity's leading name string (`'name', ...`), unescaped;
+/// `None` when absent or empty. Names are attributes (Issue 14), imported
+/// so a round trip preserves them.
+fn leading_name(attrs: &str) -> Option<String> {
+    let rest = attrs.trim_start().strip_prefix('\'')?;
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            // A doubled quote is an escaped apostrophe, not the terminator.
+            if bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            let name = unescape_step_string(&rest[..i]);
+            return (!name.is_empty()).then_some(name);
+        }
+        i += 1;
+    }
+    None
+}
+
 fn unescape_step_string(literal: &str) -> String {
     let inner = literal
         .strip_prefix('\'')

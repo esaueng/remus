@@ -708,3 +708,67 @@ mod tests {
         assert!(report.is_valid(), "{:#?}", report.issues);
     }
 }
+
+// ─── Attribute propagation (Issue 14) ───────────────────────────────────
+
+/// Report of one attribute-propagation pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttributePropagation {
+    /// Result faces that received attributes.
+    pub carried: usize,
+    /// Result faces left unattributed because their history is unresolved
+    /// (reported, never guessed).
+    pub unresolved_outputs: usize,
+}
+
+/// Copies face attributes forward across one operation using its evolution
+/// map, under the explicit rules from
+/// `docs/design/deferred-e3b-step-names-and-colors.md`:
+///
+/// - **modified** (an input face carried into one or more result faces):
+///   name and color copy to every result face — a split's pieces are still
+///   the same semantic surface. The kernel never synthesizes, suffixes, or
+///   concatenates names; uniqueness is application vocabulary.
+/// - **generated** result faces receive nothing (they inherit the solid's
+///   color at presentation time only).
+/// - **unresolved** result faces receive nothing and are counted — an
+///   attribute must never ride on a guessed binding.
+/// - Input entries are untouched: operands remain live entities with their
+///   own attributes (retirement paths clean up entries when entities are
+///   actually deleted).
+///
+/// Callers should branch on [`EvolutionMap::origin`]: propagating over a
+/// [`Geometry`](EvolutionOrigin::Geometry)-origin map rides on inference,
+/// which a consumer must opt into knowingly.
+pub fn propagate_face_attributes(
+    topo: &mut brepkit_topology::Topology,
+    map: &EvolutionMap,
+) -> AttributePropagation {
+    let mut report = AttributePropagation {
+        carried: 0,
+        unresolved_outputs: map.unresolved.len(),
+    };
+
+    // Snapshot phase: read every carried attribute before mutating.
+    let mut writes: Vec<(usize, brepkit_topology::attributes::EntityAttributes)> = Vec::new();
+    for (&input_idx, outputs) in &map.modified {
+        let Some(input_face) = topo.face_id_from_index(input_idx) else {
+            continue;
+        };
+        let Some(attributes) = topo.attributes().face(input_face).cloned() else {
+            continue;
+        };
+        for &output_idx in outputs {
+            writes.push((output_idx, attributes.clone()));
+        }
+    }
+    // Deterministic write order regardless of map iteration order.
+    writes.sort_by_key(|(idx, _)| *idx);
+    for (output_idx, attributes) in writes {
+        if let Some(face) = topo.face_id_from_index(output_idx) {
+            topo.attributes_mut().set_face(face, attributes);
+            report.carried += 1;
+        }
+    }
+    report
+}
