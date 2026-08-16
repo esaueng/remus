@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
+use crate::attributes::AttributeStore;
 use crate::coedge::{Coedge, CoedgeId};
 use crate::compound::{Compound, CompoundId};
 use crate::compsolid::{CompSolid, CompSolidId};
@@ -52,6 +53,8 @@ pub struct Topology {
     coedges: Arena<Coedge>,
     /// Loops derived for each face by [`Self::build_face_loops`].
     face_loops: HashMap<FaceId, Vec<LoopId>>,
+    /// Semantic names and display colors (Issue 14).
+    attributes: AttributeStore,
 }
 
 #[derive(Default)]
@@ -188,6 +191,7 @@ impl Topology {
         self.loops.restore_preserving_slots(&snapshot.loops);
         self.coedges.restore_preserving_slots(&snapshot.coedges);
         self.face_loops.clone_from(&snapshot.face_loops);
+        self.attributes.clone_from(&snapshot.attributes);
         self.pcurves.clone_from(&snapshot.pcurves);
         let retired_edges = snapshot
             .edges
@@ -263,6 +267,17 @@ impl Topology {
     );
     arena_get!(face_loop, loops, Loop, LoopId, LoopNotFound);
     arena_get!(coedge, coedges, Coedge, CoedgeId, CoedgeNotFound);
+
+    /// The attribute store (semantic names, display colors).
+    #[must_use]
+    pub fn attributes(&self) -> &AttributeStore {
+        &self.attributes
+    }
+
+    /// Exclusive access to the attribute store.
+    pub fn attributes_mut(&mut self) -> &mut AttributeStore {
+        &mut self.attributes
+    }
     arena_get_mut!(
         compsolid_mut,
         compsolids,
@@ -515,6 +530,8 @@ impl Topology {
         }
         self.pcurves
             .remove_for_retired_entities(&retiring.edges, &retiring.faces);
+        self.attributes
+            .remove_for_retired_entities(&std::iter::once(solid).collect(), &retiring.faces);
         self.solids.retire(solid);
         for id in retiring.shells {
             self.shells.retire(id);
