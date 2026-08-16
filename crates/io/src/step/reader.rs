@@ -770,7 +770,7 @@ impl<'a> StepBuilder<'a> {
                 name: Some(name),
                 ..Default::default()
             };
-            self.topo.attributes_mut().set_solid(solid_id, attributes);
+            self.topo.set_solid_attributes(solid_id, attributes)?;
         }
         Ok(solid_id)
     }
@@ -918,7 +918,7 @@ impl<'a> StepBuilder<'a> {
                 name: Some(name),
                 ..Default::default()
             };
-            self.topo.attributes_mut().set_face(face_id, attributes);
+            self.topo.set_face_attributes(face_id, attributes)?;
         }
         Ok(face_id)
     }
