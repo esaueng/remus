@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::adjacency::AdjacencyIndex;
 use crate::arena::Arena;
+use crate::attributes::AttributeStore;
 use crate::coedge::{Coedge, CoedgeId};
 use crate::compound::{Compound, CompoundId};
 use crate::compsolid::{CompSolid, CompSolidId};
@@ -52,6 +53,8 @@ pub struct Topology {
     coedges: Arena<Coedge>,
     /// Loops derived for each face by [`Self::build_face_loops`].
     face_loops: HashMap<FaceId, Vec<LoopId>>,
+    /// Semantic names and display colors (Issue 14).
+    attributes: AttributeStore,
 }
 
 #[derive(Default)]
@@ -188,6 +191,7 @@ impl Topology {
         self.loops.restore_preserving_slots(&snapshot.loops);
         self.coedges.restore_preserving_slots(&snapshot.coedges);
         self.face_loops.clone_from(&snapshot.face_loops);
+        self.attributes.clone_from(&snapshot.attributes);
         self.pcurves.clone_from(&snapshot.pcurves);
         let retired_edges = snapshot
             .edges
@@ -199,8 +203,15 @@ impl Topology {
             .iter()
             .filter_map(|(id, _)| self.faces.get(id).is_none().then_some(id))
             .collect();
+        let retired_solids = snapshot
+            .solids
+            .iter()
+            .filter_map(|(id, _)| self.solids.get(id).is_none().then_some(id))
+            .collect();
         self.pcurves
             .remove_for_retired_entities(&retired_edges, &retired_faces);
+        self.attributes
+            .remove_for_retired_entities(&retired_solids, &retired_faces);
     }
 
     /// Reserves capacity for the given number of additional entities in the
@@ -263,6 +274,46 @@ impl Topology {
     );
     arena_get!(face_loop, loops, Loop, LoopId, LoopNotFound);
     arena_get!(coedge, coedges, Coedge, CoedgeId, CoedgeNotFound);
+
+    /// The attribute store (semantic names, display colors).
+    #[must_use]
+    pub fn attributes(&self) -> &AttributeStore {
+        &self.attributes
+    }
+
+    /// Sets or clears a solid's attributes after validating that it is live.
+    ///
+    /// An empty value clears the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::SolidNotFound`] for a stale or non-live handle.
+    pub fn set_solid_attributes(
+        &mut self,
+        solid: SolidId,
+        attributes: crate::attributes::EntityAttributes,
+    ) -> Result<(), TopologyError> {
+        let _ = self.solid(solid)?;
+        self.attributes.set_solid(solid, attributes);
+        Ok(())
+    }
+
+    /// Sets or clears a face's attributes after validating that it is live.
+    ///
+    /// An empty value clears the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::FaceNotFound`] for a stale or non-live handle.
+    pub fn set_face_attributes(
+        &mut self,
+        face: FaceId,
+        attributes: crate::attributes::EntityAttributes,
+    ) -> Result<(), TopologyError> {
+        let _ = self.face(face)?;
+        self.attributes.set_face(face, attributes);
+        Ok(())
+    }
     arena_get_mut!(
         compsolid_mut,
         compsolids,
@@ -515,6 +566,8 @@ impl Topology {
         }
         self.pcurves
             .remove_for_retired_entities(&retiring.edges, &retiring.faces);
+        self.attributes
+            .remove_for_retired_entities(&std::iter::once(solid).collect(), &retiring.faces);
         self.solids.retire(solid);
         for id in retiring.shells {
             self.shells.retire(id);

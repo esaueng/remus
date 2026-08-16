@@ -32,7 +32,7 @@
 //! both — an unanswerable question under the first claim, and a plain fact under
 //! the second.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use brepkit_math::vec::{Point3, Vec3};
 
@@ -707,4 +707,111 @@ mod tests {
         .unwrap();
         assert!(report.is_valid(), "{:#?}", report.issues);
     }
+}
+
+// ─── Attribute propagation (Issue 14) ───────────────────────────────────
+
+/// Report of one attribute-propagation pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttributePropagation {
+    /// Result faces that received attributes.
+    pub carried: usize,
+    /// Result faces left unattributed because their history is unresolved
+    /// (reported, never guessed).
+    pub unresolved_outputs: usize,
+}
+
+/// Copies face attributes forward across one operation using its evolution
+/// map, under the explicit rules from
+/// `docs/design/deferred-e3b-step-names-and-colors.md`:
+///
+/// - **modified** (an input face carried into one or more result faces):
+///   name and color copy to every result face — a split's pieces are still
+///   the same semantic surface. The kernel never synthesizes, suffixes, or
+///   concatenates names; uniqueness is application vocabulary. If several
+///   modified inputs map to one result, each field survives only when every
+///   source agrees (including agreement that it is unset).
+/// - **generated** result faces receive nothing (they inherit the solid's
+///   color at presentation time only).
+/// - **unresolved** result faces receive nothing and are counted — an
+///   attribute must never ride on a guessed binding.
+/// - Input entries are untouched: operands remain live entities with their
+///   own attributes (retirement paths clean up entries when entities are
+///   actually deleted).
+///
+/// Callers should branch on [`EvolutionMap::origin`]: propagating over a
+/// [`Geometry`](EvolutionOrigin::Geometry)-origin map rides on inference,
+/// which a consumer must opt into knowingly.
+pub fn propagate_face_attributes(
+    topo: &mut brepkit_topology::Topology,
+    map: &EvolutionMap,
+) -> AttributePropagation {
+    let mut report = AttributePropagation {
+        carried: 0,
+        unresolved_outputs: map.unresolved.len(),
+    };
+
+    // Snapshot every source before mutating, grouped by result face. Including
+    // empty source values matters for merges: Some + None is a conflict, not
+    // permission to preserve the Some value.
+    let mut by_output: BTreeMap<
+        usize,
+        Vec<(usize, brepkit_topology::attributes::EntityAttributes)>,
+    > = BTreeMap::new();
+    for (&input_idx, outputs) in &map.modified {
+        let Some(input_face) = topo.face_id_from_index(input_idx) else {
+            continue;
+        };
+        let attributes = topo
+            .attributes()
+            .face(input_face)
+            .cloned()
+            .unwrap_or_default();
+        for &output_idx in outputs {
+            let sources = by_output.entry(output_idx).or_default();
+            if !sources.iter().any(|(source, _)| *source == input_idx) {
+                sources.push((input_idx, attributes.clone()));
+            }
+        }
+    }
+
+    let modified_outputs: BTreeSet<_> = by_output.keys().copied().collect();
+    for (output_idx, mut sources) in by_output {
+        sources.sort_by_key(|(source, _)| *source);
+        let first = &sources[0].1;
+        let name = sources
+            .iter()
+            .all(|(_, attributes)| attributes.name == first.name)
+            .then(|| first.name.clone())
+            .flatten();
+        let color = sources
+            .iter()
+            .all(|(_, attributes)| attributes.color == first.color)
+            .then_some(first.color)
+            .flatten();
+        let attributes = brepkit_topology::attributes::EntityAttributes { name, color };
+        if let Some(face) = topo.face_id_from_index(output_idx) {
+            let carried = !attributes.is_empty();
+            if topo.set_face_attributes(face, attributes).is_ok() && carried {
+                report.carried += 1;
+            }
+        }
+    }
+
+    // Generated and unresolved results are explicitly unattributed. Do not
+    // let a pre-populated working-copy face smuggle attributes past the map.
+    let mut clear_outputs = BTreeSet::new();
+    for outputs in map.generated.values() {
+        clear_outputs.extend(outputs.iter().copied());
+    }
+    clear_outputs.extend(map.unresolved.keys().copied());
+    for output_idx in clear_outputs.difference(&modified_outputs).copied() {
+        if let Some(face) = topo.face_id_from_index(output_idx) {
+            let _ = topo.set_face_attributes(
+                face,
+                brepkit_topology::attributes::EntityAttributes::default(),
+            );
+        }
+    }
+    report
 }

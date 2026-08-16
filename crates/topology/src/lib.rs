@@ -12,6 +12,7 @@
 
 pub mod adjacency;
 pub mod arena;
+pub mod attributes;
 pub mod builder;
 pub mod coedge;
 pub mod compound;
@@ -142,6 +143,15 @@ pub enum TopologyError {
         face: face::FaceId,
     },
 
+    /// A color channel is non-finite or outside `[0, 1]`.
+    #[error("invalid color channel {channel}: {value} (expected finite in [0, 1])")]
+    InvalidColorChannel {
+        /// Which channel (`r`, `g`, or `b`).
+        channel: &'static str,
+        /// The offending value.
+        value: f64,
+    },
+
     /// A pcurve's surface image deviates from the 3D edge beyond tolerance
     /// under the shared parameterization (`SameParameter`).
     #[error(
@@ -251,6 +261,13 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
             )
             .with_detail("edge", edge.index())
             .with_detail("face", face.index()),
+            Self::InvalidColorChannel { channel, value } => Diagnostic::new(
+                FailureCategory::InvalidInput,
+                "invalid_color_channel",
+                message,
+            )
+            .with_detail("channel", *channel)
+            .with_detail("value", *value),
             Self::SameParameterExceeded {
                 edge,
                 face,
