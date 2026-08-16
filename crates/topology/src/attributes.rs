@@ -24,11 +24,11 @@ use crate::solid::SolidId;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorRgb {
     /// Red channel, `0..=1`.
-    pub r: f64,
+    r: f64,
     /// Green channel, `0..=1`.
-    pub g: f64,
+    g: f64,
     /// Blue channel, `0..=1`.
-    pub b: f64,
+    b: f64,
 }
 
 impl ColorRgb {
@@ -46,6 +46,24 @@ impl ColorRgb {
         }
         Ok(Self { r, g, b })
     }
+
+    /// Red channel, in `0..=1`.
+    #[must_use]
+    pub fn r(self) -> f64 {
+        self.r
+    }
+
+    /// Green channel, in `0..=1`.
+    #[must_use]
+    pub fn g(self) -> f64 {
+        self.g
+    }
+
+    /// Blue channel, in `0..=1`.
+    #[must_use]
+    pub fn b(self) -> f64 {
+        self.b
+    }
 }
 
 /// The attributes one entity can carry (all optional; unset means absent,
@@ -57,24 +75,13 @@ pub struct EntityAttributes {
     pub name: Option<String>,
     /// Display color (sRGB, `[0, 1]` channels).
     pub color: Option<ColorRgb>,
-    /// Application/user identifier, opaque to the kernel.
-    pub app_id: Option<String>,
-    /// Source import entity reference (e.g. a STEP entity number), opaque
-    /// to the kernel.
-    pub source_entity: Option<String>,
-    /// Optional layer or group identifier, opaque to the kernel.
-    pub layer: Option<String>,
 }
 
 impl EntityAttributes {
     /// True when no attribute is set (such entries are not stored).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.name.is_none()
-            && self.color.is_none()
-            && self.app_id.is_none()
-            && self.source_entity.is_none()
-            && self.layer.is_none()
+        self.name.is_none() && self.color.is_none()
     }
 }
 
