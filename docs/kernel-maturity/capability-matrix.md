@@ -212,8 +212,10 @@ does not itself promote or demote anything.
   section-origin records / honest Unresolved for the assembly rebuild paths,
   pinned as a minority) and vertex events (Preserved / Created via the copy
   maps). Operations/WASM surfacing, the assembly rebuild records, and the
-  lineage graph remain queued. Persistent naming does not exist; arena
+  lineage graph remain queued. Persistent naming does not exist yet; arena
   indices are the only handles (and are explicitly not persistent names).
+  Design: `docs/design/rfc-0003-persistent-naming.md` (journal + resolver
+  over the evolution events, staged; Issue 13).
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
