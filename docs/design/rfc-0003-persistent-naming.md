@@ -178,12 +178,15 @@ per policy whether inferred rebinding is acceptable.
 - **Checkpoint restore**: entries after the checkpoint are truncated with
   the restore (journal and topology stay consistent because both roll back
   together under the transaction/restore machinery).
-- **STEP round trip**: STEP has no native persistent identity. Outbound,
-  the writer emits each entity's reference key as its STEP name attribute
-  (mechanism shared with Issue 14's attribute store); inbound, those names
-  re-seed the journal index. A file without names imports with an empty
-  journal — signature anchors are then the only (inferred) recovery, which
-  is exactly what the provenance marking is for.
+- **STEP round trip**: STEP has no native persistent identity. Issue 14 uses
+  representation-item name fields for user-visible semantic names, so a
+  reference key must never overwrite or masquerade as that name. Persistent
+  references require a separately namespaced property or external-identification
+  encoding whose entity references target the same representation items.
+  Defining and implementing that encoding is part of stage 5. Until then, STEP
+  round trips preserve semantic names but import with an empty journal;
+  signature anchors are the only (inferred) recovery, which is exactly what
+  the provenance marking is for.
 - **Direct face edits**: direct-modeling operations must emit construction
   evolution (their capability gate includes it); until an operation does,
   it journals a barrier and references across it fail closed.
@@ -207,12 +210,11 @@ per policy whether inferred rebinding is acceptable.
 3. **Signature tier** — `EntitySignature` v1 with `Inferred` provenance
    and ambiguity semantics.
 4. **Attribute store integration** (Issue 14) — attributes keyed by
-   references, with per-event propagation driven by the journal, plus the
-   STEP name emission path (`deferred-e3b` carries the STEP presentation
-   design).
+   references, with per-event propagation driven by the journal. Semantic
+   names continue to use STEP representation-item name fields.
 5. **Serialization** — journal + refs in the native format (versioned,
-   additive), and repro-bundle support so a naming regression is a
-   replayable fixture.
+   additive), a separately namespaced STEP persistent-reference encoding,
+   and repro-bundle support so a naming regression is a replayable fixture.
 
 Each stage lands with the standard gates; stage 1's exit is that every
 operation either journals real evolution or an explicit barrier — no
