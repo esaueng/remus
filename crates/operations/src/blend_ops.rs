@@ -146,12 +146,11 @@ pub(crate) fn edge_is_convex(
     }
 
     let mid = e.curve().evaluate_with_endpoints(
-        match e.curve() {
-            EdgeCurve::Line => 0.5,
-            other => {
-                let (t0, t1) = other.domain_with_endpoints(start, end);
-                f64::midpoint(t0, t1)
-            }
+        if matches!(e.curve(), EdgeCurve::Line) {
+            0.5
+        } else {
+            let (t0, t1) = e.domain_with_endpoints(start, end);
+            f64::midpoint(t0, t1)
         },
         start,
         end,
@@ -205,7 +204,7 @@ fn validate_blend_volume(
         let end = topo.vertex(e.end())?.point();
         let length = if e.start() == e.end() {
             // Closed edge: use the curve's own extent.
-            let (t0, t1) = e.curve().domain_with_endpoints(start, end);
+            let (t0, t1) = e.domain_with_endpoints(start, end);
             let mut len = 0.0;
             let mut prev = e.curve().evaluate_with_endpoints(t0, start, end);
             for i in 1..=32 {
@@ -369,7 +368,7 @@ fn sample_edge(
     let e = topo.edge(edge)?;
     let start = topo.vertex(e.start())?.point();
     let end = topo.vertex(e.end())?.point();
-    let (t0, t1) = e.curve().domain_with_endpoints(start, end);
+    let (t0, t1) = e.domain_with_endpoints(start, end);
     Ok((0..=samples)
         .map(|i| {
             let t = t0

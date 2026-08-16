@@ -1543,7 +1543,7 @@ impl<'a> StepBuilder<'a> {
             return Ok(vec![start, end]);
         }
 
-        let (t_start, t_end) = match edge.curve() {
+        let (t_start, t_end) = edge.trim().unwrap_or_else(|| match edge.curve() {
             EdgeCurve::Circle(circle) if edge.is_closed() => {
                 let start_parameter = circle.project(start);
                 (start_parameter, start_parameter + std::f64::consts::TAU)
@@ -1552,8 +1552,8 @@ impl<'a> StepBuilder<'a> {
                 let start_parameter = ellipse.project(start);
                 (start_parameter, start_parameter + std::f64::consts::TAU)
             }
-            curve => curve.domain_with_endpoints(start, end),
-        };
+            _ => edge.domain_with_endpoints(start, end),
+        });
         let parameter_scale = t_start.abs().max(t_end.abs()).max(1.0);
         if !(t_start.is_finite() && t_end.is_finite())
             || (t_end - t_start).abs() <= 16.0 * f64::EPSILON * parameter_scale

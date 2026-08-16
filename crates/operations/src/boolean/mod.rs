@@ -334,8 +334,10 @@ fn boolean_with_policy(
                 // Translate B's z-range into A's axis frame.
                 let za = (*za_min, *za_max);
                 let zb = (*zb_min + along_axis, *zb_max + along_axis);
+                let rim_trim =
+                    exact_circle_trim_on_solid(topo, a)?.or(exact_circle_trim_on_solid(topo, b)?);
                 if let Some(result) =
-                    coaxial_cylinder_shortcut(topo, op, *oa, *aa, *ra, za, zb, tol)?
+                    coaxial_cylinder_shortcut(topo, op, *oa, *aa, *ra, za, zb, rim_trim, tol)?
                 {
                     return Ok(result);
                 }
@@ -1644,6 +1646,7 @@ fn coaxial_cylinder_shortcut(
     radius: f64,
     a_range: (f64, f64),
     b_range: (f64, f64),
+    rim_trim: Option<(f64, f64)>,
     tol: brepkit_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let (za_min, za_max) = a_range;
@@ -1684,7 +1687,29 @@ fn coaxial_cylinder_shortcut(
     );
     let xform = xform_from_canonical_z(world_origin, axis, tol);
     crate::transform::transform_solid(topo, cyl, &xform)?;
+    if rim_trim.is_some() {
+        for edge_id in brepkit_topology::explorer::solid_edges(topo, cyl)? {
+            if matches!(topo.edge(edge_id)?.curve(), EdgeCurve::Circle(_)) {
+                topo.edge_mut(edge_id)?.set_trim(rim_trim);
+            }
+        }
+    }
     Ok(Some(cyl))
+}
+
+fn exact_circle_trim_on_solid(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Option<(f64, f64)>, crate::OperationsError> {
+    for edge_id in brepkit_topology::explorer::solid_edges(topo, solid)? {
+        let edge = topo.edge(edge_id)?;
+        if matches!(edge.curve(), EdgeCurve::Circle(_))
+            && let Some(trim) = edge.trim()
+        {
+            return Ok(Some(trim));
+        }
+    }
+    Ok(None)
 }
 
 /// Compute the coaxial-cone boolean for two frustums on the same conical
@@ -4107,8 +4132,16 @@ fn unify_coincident_boundary_edges(
         }
     }
 
-    // 2. Snapshot each face's wires (edge id, fwd, curve, endpoints, tol).
-    type OeSnap = (EdgeId, bool, EdgeCurve, VertexId, VertexId, Option<f64>);
+    // 2. Snapshot each face's wires (edge id, fwd, curve, endpoints, tol, trim).
+    type OeSnap = (
+        EdgeId,
+        bool,
+        EdgeCurve,
+        VertexId,
+        VertexId,
+        Option<f64>,
+        Option<(f64, f64)>,
+    );
     struct FaceSnap {
         surface: FaceSurface,
         reversed: bool,
@@ -4132,6 +4165,7 @@ fn unify_coincident_boundary_edges(
                         e.start(),
                         e.end(),
                         e.tolerance(),
+                        e.trim(),
                     ))
                 })
                 .collect::<Result<_, _>>()?;
@@ -4177,7 +4211,7 @@ fn unify_coincident_boundary_edges(
                    changed: &mut bool|
      -> Result<Vec<OrientedEdge>, crate::OperationsError> {
         let mut out = Vec::with_capacity(oes.len());
-        for (eid, fwd, curve, start, end, etol) in oes {
+        for (eid, fwd, curve, start, end, etol, trim) in oes {
             let cs = canon_vid(topo, *start)?;
             let ce = canon_vid(topo, *end)?;
             if cs == ce {
@@ -4187,6 +4221,10 @@ fn unify_coincident_boundary_edges(
             }
             let sp = topo.vertex(*start)?.point();
             let ep = topo.vertex(*end)?.point();
+            // This key intentionally follows the historical endpoint-derived
+            // support arc: it groups weld candidates, not a consumer of the
+            // edge's exact result interval. The rebuilt edge below still
+            // preserves that interval.
             let (t0, t1) = curve.domain_with_endpoints(sp, ep);
             let mid = curve.evaluate_with_endpoints((t0 + t1) * 0.5, sp, ep);
             let (cs_q, ce_q) = (q(topo.vertex(cs)?.point()), q(topo.vertex(ce)?.point()));
@@ -4211,10 +4249,9 @@ fn unify_coincident_boundary_edges(
                     (*eid, *start)
                 } else {
                     *changed = true;
-                    (
-                        topo.add_edge(Edge::with_tolerance(cs, ce, curve.clone(), *etol)),
-                        cs,
-                    )
+                    let mut rebuilt = Edge::with_tolerance(cs, ce, curve.clone(), *etol);
+                    rebuilt.set_trim(*trim);
+                    (topo.add_edge(rebuilt), cs)
                 };
                 ecanon.insert(key, (eid_use, e_start, ce));
                 out.push(OrientedEdge::new(eid_use, e_start == trav_start));

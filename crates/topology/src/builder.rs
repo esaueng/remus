@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(edge.curve().type_tag(), "circle");
 
         let seam = topo.vertex(edge.start()).unwrap().point();
-        let (t_min, t_max) = edge.curve().domain_with_endpoints(seam, seam);
+        let (t_min, t_max) = edge.domain_with_endpoints(seam, seam);
         assert!((t_min - 0.0).abs() < 1e-12);
         assert!((t_max - std::f64::consts::TAU).abs() < 1e-12);
     }
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(edge.curve().type_tag(), "ellipse");
 
         let seam = topo.vertex(edge.start()).unwrap().point();
-        let (t_min, t_max) = edge.curve().domain_with_endpoints(seam, seam);
+        let (t_min, t_max) = edge.domain_with_endpoints(seam, seam);
         assert!((t_min - 0.0).abs() < 1e-12);
         assert!((t_max - std::f64::consts::TAU).abs() < 1e-12);
     }
@@ -1107,7 +1107,7 @@ mod tests {
 
         // The trimmed domain is the CCW angular range [0, π/2]; its midpoint
         // angle π/4 maps to (5·cos45, 2·sin45, 0) ≈ (3.5355, 1.4142, 0).
-        let (a0, a1) = edge.curve().domain_with_endpoints(start, end);
+        let (a0, a1) = edge.domain_with_endpoints(start, end);
         assert!(a0.abs() < 1e-9, "a0 {a0}");
         assert!((a1 - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "a1 {a1}");
         let mid = edge

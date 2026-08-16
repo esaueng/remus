@@ -160,7 +160,7 @@ pub fn check_edge_same_parameter(
 
     let start_pt = topo.vertex(edge.start())?.point();
     let end_pt = topo.vertex(edge.end())?.point();
-    let (t_start, t_end) = edge.curve().domain_with_endpoints(start_pt, end_pt);
+    let (t_start, t_end) = edge.domain_with_endpoints(start_pt, end_pt);
 
     for i in 0..=n_samples {
         let t_norm = i as f64 / n_samples as f64;

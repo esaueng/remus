@@ -278,6 +278,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
 
         result.push(OrientedPCurveEdge {
             curve_3d: edge.curve().clone(),
+            trim: edge.trim(),
             pcurve,
             start_uv,
             end_uv,
@@ -391,12 +392,7 @@ pub(super) fn is_point_on_boundary_uv(
         // `domain_with_endpoints` returns the CCW span between its arguments;
         // a reversed-traversal edge covers the CCW span END→START, so orient
         // by the flag or the complement arc is tested instead.
-        let (a3, b3) = if edge.forward {
-            (edge.start_3d, edge.end_3d)
-        } else {
-            (edge.end_3d, edge.start_3d)
-        };
-        let (d0, d1) = edge.curve_3d.domain_with_endpoints(a3, b3);
+        let (d0, d1) = edge.native_domain();
         let span = (d1 - d0).rem_euclid(std::f64::consts::TAU);
         let span = if span < 1e-12 {
             std::f64::consts::TAU
