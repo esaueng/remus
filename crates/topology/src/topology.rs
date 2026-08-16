@@ -14,6 +14,7 @@ use crate::compsolid::{CompSolid, CompSolidId};
 use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
 use crate::face_loop::{Loop, LoopId};
+use crate::journal::{EntityKey, EvolutionDraft, Journal, OpId, PendingOp};
 use crate::pcurve::{PCurve, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
 use crate::solid::{Solid, SolidId};
@@ -55,6 +56,16 @@ pub struct Topology {
     face_loops: HashMap<FaceId, Vec<LoopId>>,
     /// Semantic names and display colors (Issue 14).
     attributes: AttributeStore,
+    /// Append-only evolution journal (RFC 0003, Stage 1).
+    journal: Journal,
+    /// Counts every model mutation (allocation, exclusive access, retire,
+    /// pcurve change). The journal compares this against its last entry to
+    /// detect mutations no entry accounts for — see
+    /// [`Self::journal_begin`]. Deliberately conservative: taking an
+    /// exclusive reference counts even if nothing is written, because a
+    /// false gap fails closed while a missed mutation would fake
+    /// continuity.
+    mutation_ticks: u64,
 }
 
 #[derive(Default)]
@@ -89,10 +100,14 @@ macro_rules! arena_get_mut {
     ($method:ident, $field:ident, $T:ty, $Id:ty, $err:ident) => {
         /// Returns an exclusive reference to the entity with the given ID.
         ///
+        /// Counts as a model mutation for journal gap detection (see
+        /// [`Topology::journal_begin`]), even if nothing is written.
+        ///
         /// # Errors
         ///
         /// Returns a not-found error if the ID is invalid.
         pub fn $method(&mut self, id: $Id) -> Result<&mut $T, TopologyError> {
+            self.mutation_ticks = self.mutation_ticks.saturating_add(1);
             self.$field.get_mut(id).ok_or(TopologyError::$err(id))
         }
     };
@@ -112,6 +127,7 @@ macro_rules! arena_api {
     ) => {
         /// Allocates a new entity in the arena and returns its typed handle.
         pub fn $add(&mut self, value: $T) -> $Id {
+            self.mutation_ticks = self.mutation_ticks.saturating_add(1);
             self.$arena.alloc(value)
         }
 
@@ -193,6 +209,15 @@ impl Topology {
         self.face_loops.clone_from(&snapshot.face_loops);
         self.attributes.clone_from(&snapshot.attributes);
         self.pcurves.clone_from(&snapshot.pcurves);
+        // Journal entries recorded after the snapshot are truncated with the
+        // restore — the journal and the model roll back together, so the
+        // history matches the state again — while `OpId`s and ordinals
+        // issued by rolled-back operations are high-water preserved and
+        // never reissued (the journal analogue of arena slot preservation).
+        // The tick count rolls back with the state: the restored model is
+        // exactly the one the restored journal describes.
+        self.journal.restore_preserving_ids(&snapshot.journal);
+        self.mutation_ticks = snapshot.mutation_ticks;
         let retired_edges = snapshot
             .edges
             .iter()
@@ -285,6 +310,10 @@ impl Topology {
     ///
     /// An empty value clears the entry.
     ///
+    /// Attribute changes are not model mutations for journal purposes:
+    /// they never change which entity an entity *is*, so they cannot break
+    /// a lineage claim.
+    ///
     /// # Errors
     ///
     /// Returns [`TopologyError::SolidNotFound`] for a stale or non-live handle.
@@ -302,6 +331,10 @@ impl Topology {
     ///
     /// An empty value clears the entry.
     ///
+    /// Attribute changes are not model mutations for journal purposes:
+    /// they never change which entity an entity *is*, so they cannot break
+    /// a lineage claim.
+    ///
     /// # Errors
     ///
     /// Returns [`TopologyError::FaceNotFound`] for a stale or non-live handle.
@@ -313,6 +346,67 @@ impl Topology {
         let _ = self.face(face)?;
         self.attributes.set_face(face, attributes);
         Ok(())
+    }
+
+    /// The evolution journal (RFC 0003, Stage 1). Read-only; record through
+    /// [`Self::journal_begin`] and the `journal_record_*` methods.
+    #[must_use]
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    /// Opens a journaled operation, detecting unjournaled history first.
+    ///
+    /// If any mutation has happened since the journal's newest entry — an
+    /// unjournaled operation, a failed operation's partial work before its
+    /// rollback pattern was skipped, a direct edit — a synthetic
+    /// **global barrier** entry
+    /// ([`UNJOURNALED_MUTATIONS`](crate::journal::UNJOURNALED_MUTATIONS))
+    /// is recorded before the returned token is issued, so no gap can
+    /// impersonate continuity. An empty journal records no barrier:
+    /// pre-journal history is absent by definition, not severed.
+    ///
+    /// The returned token is consumed by
+    /// [`Self::journal_record_evolution`] or
+    /// [`Self::journal_record_barrier`]. Dropping it without recording is
+    /// safe — the operation's mutations surface as a gap at the next
+    /// `journal_begin`.
+    pub fn journal_begin(&mut self, kind: impl Into<String>) -> PendingOp {
+        if let Some(last) = self.journal.last_ticks()
+            && last != self.mutation_ticks
+        {
+            self.journal.record_global_barrier(self.mutation_ticks);
+        }
+        PendingOp { kind: kind.into() }
+    }
+
+    /// Records the evolution entry for a journaled operation.
+    ///
+    /// Call after the operation completed, with the events it recorded
+    /// while building its result. Entities the draft does not mention have
+    /// no continuity across this operation — absent claims are gaps, not
+    /// implicit preservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::JournalDuplicateEvent`] if the draft makes
+    /// two claims about one entity; nothing is recorded.
+    pub fn journal_record_evolution(
+        &mut self,
+        pending: PendingOp,
+        draft: EvolutionDraft,
+    ) -> Result<OpId, TopologyError> {
+        self.journal
+            .record_evolution(pending.kind, draft, self.mutation_ticks)
+    }
+
+    /// Records an explicit barrier entry for an operation that produces no
+    /// evolution records: every entity in `affected` (the result's
+    /// entities) is unresolved across it, and a resolver chasing a
+    /// reference through this entry fails closed naming the operation.
+    pub fn journal_record_barrier(&mut self, pending: PendingOp, affected: Vec<EntityKey>) -> OpId {
+        self.journal
+            .record_barrier(pending.kind, affected, self.mutation_ticks)
     }
     arena_get_mut!(
         compsolid_mut,
@@ -513,6 +607,7 @@ impl Topology {
     /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         let mut retiring = self.collect_solid_entities(solid)?;
         if let Some((compound_id, _)) = self
             .compounds
@@ -681,6 +776,7 @@ impl Topology {
         forward: bool,
         pcurve: PCurve,
     ) {
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         self.pcurves.set_use(edge, face, forward, pcurve);
     }
 
@@ -691,6 +787,7 @@ impl Topology {
         face: FaceId,
         forward: bool,
     ) -> Option<PCurve> {
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         self.pcurves.remove_use(edge, face, forward)
     }
 
@@ -759,6 +856,7 @@ impl Topology {
             },
             _ => return Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
         };
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         self.pcurves.remove_use(edge, face, !forward);
         self.pcurves.set_use(edge, face, forward, pcurve);
         Ok(())
@@ -784,7 +882,10 @@ impl Topology {
             .collect();
         match stored.as_slice() {
             [] => Ok(None),
-            [forward] => Ok(self.pcurves.remove_use(edge, face, *forward)),
+            [forward] => {
+                self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+                Ok(self.pcurves.remove_use(edge, face, *forward))
+            }
             _ => Err(TopologyError::SeamPcurveAmbiguous { edge, face }),
         }
     }

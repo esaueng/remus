@@ -216,6 +216,20 @@ does not itself promote or demote anything.
   indices are the only handles (and are explicitly not persistent names).
   Design: `docs/design/rfc-0003-persistent-naming.md` (journal + resolver
   over the evolution events, staged; Issue 13).
+  **Evolution journal** (RFC 0003 Stage 1): `brepkit_topology::journal` is
+  the append-only per-topology history — journal-local ordinals with a
+  live index (entries never hold arena indices), `OpId`s and ordinals
+  high-water preserved across restores (never reused), entries truncated
+  with checkpoint rollback. Ingestion: `operations::journal_ops`
+  (`boolean_journaled` journals full Issue-12 construction history;
+  `record_face_evolution` journals any `EvolutionMap` producer, e.g. v2
+  blends; `record_barrier_over_solid` journals the explicit barrier for
+  operations without evolution records). Gap coverage is structural:
+  `Topology` counts mutations, and any mutation no entry accounts for
+  triggers a synthetic global barrier at the next `journal_begin` — no
+  operation can be silently absent from history. The resolver
+  (`PersistentRef`, Stage 2), signatures (Stage 3), and journal
+  serialization (Stage 5) remain queued.
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 

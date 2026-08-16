@@ -21,6 +21,7 @@ pub mod edge;
 pub mod explorer;
 pub mod face;
 pub mod face_loop;
+pub mod journal;
 
 pub mod pcurve;
 pub mod shell;
@@ -171,6 +172,15 @@ pub enum TopologyError {
         tolerance: f64,
     },
 
+    /// One journal entry makes two claims about one entity (RFC 0003): a
+    /// resolver must never have to pick between conflicting events, so the
+    /// entry is refused whole.
+    #[error("journal entry records entity ordinal {ordinal} twice")]
+    JournalDuplicateEvent {
+        /// The journal-local ordinal recorded twice.
+        ordinal: u64,
+    },
+
     /// A pcurve's endpoints do not map to the edge's bounding vertices
     /// within tolerance (`SameRange`).
     #[error(
@@ -268,6 +278,12 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
             )
             .with_detail("channel", *channel)
             .with_detail("value", *value),
+            Self::JournalDuplicateEvent { ordinal } => Diagnostic::new(
+                FailureCategory::InvalidInput,
+                "journal_duplicate_event",
+                message,
+            )
+            .with_detail("ordinal", usize::try_from(*ordinal).unwrap_or(usize::MAX)),
             Self::SameParameterExceeded {
                 edge,
                 face,
@@ -342,5 +358,10 @@ mod diagnostic_registry_tests {
 
         let d = TopologyError::NotPlanar.diagnostic();
         assert_eq!(d.code(), "wire_not_planar");
+
+        let d = TopologyError::JournalDuplicateEvent { ordinal: 7 }.diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "journal_duplicate_event");
+        assert_eq!(d.details()[0], ("ordinal", DetailValue::Int(7)));
     }
 }
