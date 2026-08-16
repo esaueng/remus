@@ -18,7 +18,7 @@ use wasm_bindgen::prelude::*;
 
 use brepkit_sketch::{ArcId, CircleId, Constraint, LineId, PointId};
 
-use crate::error::WasmError;
+use crate::error::{WasmError, validate_work_count};
 use crate::kernel::BrepKernel;
 use crate::state::GcsSketchState;
 
@@ -393,13 +393,14 @@ impl BrepKernel {
                 reason: format!("tolerance must be positive and finite, got {tolerance}"),
             });
         }
+        let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let sk = self.gcs_sketch_mut(sketch)?;
-        let result = sk
-            .sys
-            .solve(max_iterations as usize, tolerance)
-            .map_err(|e| WasmError::InvalidInput {
-                reason: format!("solve: {e}"),
-            })?;
+        let result =
+            sk.sys
+                .solve(max_iterations, tolerance)
+                .map_err(|e| WasmError::InvalidInput {
+                    reason: format!("solve: {e}"),
+                })?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(crate::types::GcsSolveResult {
             converged: result.converged,
@@ -419,6 +420,7 @@ impl BrepKernel {
                 reason: format!("tolerance must be positive and finite, got {tolerance}"),
             });
         }
+        let max_iterations = validate_work_count(max_iterations, "max_iterations")?;
         let sk = self.gcs_sketch_mut(sketch)?;
 
         // Reverse the handle table so residuals can be keyed by the same
@@ -436,7 +438,7 @@ impl BrepKernel {
 
         let diag = sk
             .sys
-            .solve_detailed(max_iterations as usize, tolerance)
+            .solve_detailed(max_iterations, tolerance)
             .map_err(|e| WasmError::InvalidInput {
                 reason: format!("solveDetailed: {e}"),
             })?;

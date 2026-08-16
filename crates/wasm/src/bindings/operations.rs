@@ -13,7 +13,9 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::edge::{Edge, EdgeCurve};
 use brepkit_topology::face::{Face, FaceSurface};
 
-use crate::error::{WasmError, validate_finite, validate_positive};
+use crate::error::{
+    WasmError, validate_finite, validate_positive, validate_work_count, validate_work_product,
+};
 use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use brepkit_geometry::extrema::point_to_nurbs_surface;
 
@@ -166,11 +168,12 @@ pub(super) fn parse_sweep_options(
         SweepCornerMode::Smooth
     };
 
+    let segments = validate_work_count(segments, "segments").map_err(|error| error.to_string())?;
     Ok(SweepOptions {
         contact_mode,
         corner_mode,
         scale_law,
-        segments: segments as usize,
+        segments,
         aux_spine: None,
     })
 }
@@ -996,12 +999,14 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "offsetFace")]
     pub fn offset_face(&mut self, face: u32, distance: f64, samples: u32) -> Result<u32, JsError> {
         validate_finite(distance, "distance")?;
+        let _ = validate_work_product(samples, samples, "sample grid")?;
+        let samples = validate_work_count(samples, "samples")?;
         let face_id = self.resolve_face(face)?;
         let result = brepkit_operations::offset_face::offset_face(
             self.topo_mut(),
             face_id,
             distance,
-            samples as usize,
+            samples,
         )?;
         Ok(face_id_to_u32(result))
     }
@@ -1728,6 +1733,10 @@ impl BrepKernel {
         samples_per_curve: u32,
         interior_samples: u32,
     ) -> Result<u32, JsError> {
+        let samples_per_curve = validate_work_count(samples_per_curve, "samples_per_curve")?;
+        validate_work_count(interior_samples, "interior_samples")?;
+        let _ = validate_work_product(interior_samples, interior_samples, "interior sample grid")?;
+        let interior_samples = interior_samples as usize;
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
         let surface = match face_data.surface() {
@@ -1759,8 +1768,8 @@ impl BrepKernel {
         let new_surface = brepkit_operations::untrim::untrim_face(
             &surface,
             &trim_curves,
-            samples_per_curve as usize,
-            interior_samples as usize,
+            samples_per_curve,
+            interior_samples,
         )?;
         Ok(face_id_to_u32(self.nurbs_surface_to_face(new_surface)?))
     }
