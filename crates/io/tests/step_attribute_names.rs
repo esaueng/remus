@@ -20,11 +20,11 @@ fn solid_and_face_names_survive_a_round_trip() {
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
     let face = solid_faces(&topo, solid).unwrap()[0];
-    topo.attributes_mut()
-        .set_solid(solid, with_name("bracket body"));
+    topo.set_solid_attributes(solid, with_name("bracket body"))
+        .unwrap();
     // STEP escapes apostrophes by doubling; exercise it.
-    topo.attributes_mut()
-        .set_face(face, with_name("mounting 'datum' face"));
+    topo.set_face_attributes(face, with_name("mounting 'datum' face"))
+        .unwrap();
 
     let step = write_step(&topo, &[solid]).unwrap();
     assert!(step.contains("bracket body"));

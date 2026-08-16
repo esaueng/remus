@@ -42,6 +42,7 @@ struct FaceSnap {
     inner_wire_indices: Vec<usize>,
     surface: FaceSurface,
     reversed: bool,
+    attributes: Option<brepkit_topology::attributes::EntityAttributes>,
 }
 
 struct ShellSnap {
@@ -58,6 +59,7 @@ pub(crate) fn copy_solid_between(
     solid_id: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
     let solid = source.solid(solid_id)?;
+    let solid_attributes = source.attributes().solid(solid_id).cloned();
     let shell_ids: Vec<_> = std::iter::once(solid.outer_shell())
         .chain(solid.inner_shells().iter().copied())
         .collect();
@@ -120,6 +122,7 @@ pub(crate) fn copy_solid_between(
                 inner_wire_indices: face.inner_wires().iter().map(|wire| wire.index()).collect(),
                 surface: face.surface().clone(),
                 reversed: face.is_reversed(),
+                attributes: source.attributes().face(face_id).cloned(),
             });
         }
         shells.push(ShellSnap { faces });
@@ -185,7 +188,11 @@ pub(crate) fn copy_solid_between(
             } else {
                 Face::new(outer, inner, face.surface)
             };
-            new_faces.push(destination.add_face(new_face));
+            let new_face_id = destination.add_face(new_face);
+            if let Some(attributes) = face.attributes {
+                destination.set_face_attributes(new_face_id, attributes)?;
+            }
+            new_faces.push(new_face_id);
         }
         new_shells.push(
             destination.add_shell(Shell::new(new_faces).map_err(crate::OperationsError::Topology)?),
@@ -193,7 +200,11 @@ pub(crate) fn copy_solid_between(
     }
     let outer = new_shells[0];
     let inner = new_shells[1..].to_vec();
-    Ok(destination.add_solid(Solid::new(outer, inner)))
+    let copied = destination.add_solid(Solid::new(outer, inner));
+    if let Some(attributes) = solid_attributes {
+        destination.set_solid_attributes(copied, attributes)?;
+    }
+    Ok(copied)
 }
 
 /// Create a deep copy of a solid and all its topology.
@@ -229,6 +240,7 @@ pub fn copy_solid_with_face_map(
     solid_id: SolidId,
 ) -> Result<(SolidId, HashMap<usize, usize>), crate::OperationsError> {
     let solid = topo.solid(solid_id)?;
+    let solid_attributes = topo.attributes().solid(solid_id).cloned();
     let outer_shell_id = solid.outer_shell();
     let inner_shell_ids: Vec<_> = solid.inner_shells().to_vec();
 
@@ -315,6 +327,7 @@ pub fn copy_solid_with_face_map(
                 inner_wire_indices,
                 surface,
                 reversed: face.is_reversed(),
+                attributes: topo.attributes().face(face_id).cloned(),
             });
         }
 
@@ -381,6 +394,9 @@ pub fn copy_solid_with_face_map(
                 Face::new(new_outer, new_inner, fsnap.surface.clone())
             };
             let new_fid = topo.add_face(new_face);
+            if let Some(attributes) = fsnap.attributes.clone() {
+                topo.set_face_attributes(new_fid, attributes)?;
+            }
             face_map.insert(fsnap.old_index, new_fid.index());
             new_face_ids.push(new_fid);
         }
@@ -392,23 +408,8 @@ pub fn copy_solid_with_face_map(
     let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
 
     let new_solid = topo.add_solid(Solid::new(new_outer, new_inner));
-    // A copy is the identity outcome of the attribute propagation rules:
-    // names and colors carry to the copied solid and faces unchanged.
-    if let Some(attributes) = topo.attributes().solid(solid_id).cloned() {
-        topo.attributes_mut().set_solid(new_solid, attributes);
-    }
-    let carried: Vec<_> = face_map
-        .iter()
-        .filter_map(|(&src_idx, &dst_idx)| {
-            let src = topo.face_id_from_index(src_idx)?;
-            let attributes = topo.attributes().face(src).cloned()?;
-            Some((dst_idx, attributes))
-        })
-        .collect();
-    for (dst_idx, attributes) in carried {
-        if let Some(dst) = topo.face_id_from_index(dst_idx) {
-            topo.attributes_mut().set_face(dst, attributes);
-        }
+    if let Some(attributes) = solid_attributes {
+        topo.set_solid_attributes(new_solid, attributes)?;
     }
     Ok((new_solid, face_map))
 }
@@ -459,6 +460,7 @@ pub fn copy_and_transform_solid(
 
     // Read phase mirrors copy_solid.
     let solid = topo.solid(solid_id)?;
+    let solid_attributes = topo.attributes().solid(solid_id).cloned();
     let outer_shell_id = solid.outer_shell();
     let inner_shell_ids: Vec<_> = solid.inner_shells().to_vec();
 
@@ -545,6 +547,7 @@ pub fn copy_and_transform_solid(
                 inner_wire_indices,
                 surface,
                 reversed: face.is_reversed(),
+                attributes: topo.attributes().face(face_id).cloned(),
             });
         }
 
@@ -771,6 +774,9 @@ pub fn copy_and_transform_solid(
                 Face::new(new_outer, new_inner, new_surface)
             };
             let new_fid = topo.add_face(new_face);
+            if let Some(attributes) = fsnap.attributes.clone() {
+                topo.set_face_attributes(new_fid, attributes)?;
+            }
             new_face_ids.push(new_fid);
         }
         let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
@@ -780,7 +786,11 @@ pub fn copy_and_transform_solid(
     let new_outer = new_shell_ids[0];
     let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
 
-    Ok(topo.add_solid(Solid::new(new_outer, new_inner)))
+    let copied = topo.add_solid(Solid::new(new_outer, new_inner));
+    if let Some(attributes) = solid_attributes {
+        topo.set_solid_attributes(copied, attributes)?;
+    }
+    Ok(copied)
 }
 
 /// Create a deep copy of a wire and all its sub-entities.
@@ -1030,6 +1040,49 @@ mod tests {
             .len();
 
         assert_eq!(orig_faces, copy_faces);
+    }
+
+    #[test]
+    fn copy_between_topologies_carries_attributes() {
+        let mut source = Topology::new();
+        let solid = make_unit_cube_manifold(&mut source);
+        let face = brepkit_topology::explorer::solid_faces(&source, solid).unwrap()[0];
+        source
+            .set_solid_attributes(
+                solid,
+                brepkit_topology::attributes::EntityAttributes {
+                    name: Some("source solid".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        source
+            .set_face_attributes(
+                face,
+                brepkit_topology::attributes::EntityAttributes {
+                    name: Some("source face".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let mut destination = Topology::new();
+        let copied = copy_solid_between(&source, &mut destination, solid).unwrap();
+
+        assert_eq!(
+            destination
+                .attributes()
+                .solid(copied)
+                .and_then(|attributes| attributes.name.as_deref()),
+            Some("source solid")
+        );
+        let face_names: Vec<_> = brepkit_topology::explorer::solid_faces(&destination, copied)
+            .unwrap()
+            .into_iter()
+            .filter_map(|copied_face| destination.attributes().face(copied_face))
+            .filter_map(|attributes| attributes.name.as_deref())
+            .collect();
+        assert_eq!(face_names, vec!["source face"]);
     }
 
     #[test]
