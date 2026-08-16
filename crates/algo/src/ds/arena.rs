@@ -21,6 +21,12 @@ use super::pave::{CommonBlock, CommonBlockId, Pave, PaveBlock, PaveBlockId};
 pub struct GfaArena {
     /// Arena for pave block allocation.
     pub pave_blocks: Arena<PaveBlock>,
+    /// Construction lineage for FF section edges: the store-space edge index
+    /// of an intersection-curve edge, mapped to the store-space indices of
+    /// the two faces whose intersection generated it (Issue 12; the split
+    /// lineage needs no table — pave blocks record `original_edge` →
+    /// `split_edge` already).
+    pub section_edge_origins: std::collections::BTreeMap<usize, (usize, usize)>,
     /// Intersection curves from face-face intersection.
     pub curves: Vec<IntersectionCurveDS>,
     /// Per-face intersection state.
@@ -48,6 +54,7 @@ impl GfaArena {
     pub fn new() -> Self {
         Self {
             pave_blocks: Arena::new(),
+            section_edge_origins: std::collections::BTreeMap::new(),
             curves: Vec::new(),
             face_info: BTreeMap::new(),
             interference: InterferenceTable::default(),

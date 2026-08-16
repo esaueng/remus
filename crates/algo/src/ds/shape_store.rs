@@ -32,6 +32,10 @@ pub struct GfaShapeStore {
     /// Maps a store-local input face index back to the caller's original face
     /// index, for both operands — shape-evolution provenance across the copy.
     pub input_face_to_caller: HashMap<usize, usize>,
+    /// Store-local input edge index → caller edge index (Issue 12).
+    pub input_edge_to_caller: HashMap<usize, usize>,
+    /// Store-local input vertex index → caller vertex index (Issue 12).
+    pub input_vertex_to_caller: HashMap<usize, usize>,
 }
 
 impl GfaShapeStore {
@@ -43,14 +47,24 @@ impl GfaShapeStore {
     pub fn new(source: &Topology, orig_a: SolidId, orig_b: SolidId) -> Result<Self, AlgoError> {
         let mut topo = Topology::default();
 
-        let (solid_a, map_a) = deep_copy_solid(source, &mut topo, orig_a)?;
-        let (solid_b, map_b) = deep_copy_solid(source, &mut topo, orig_b)?;
+        let (solid_a, maps_a) = deep_copy_solid_with_maps(source, &mut topo, orig_a)?;
+        let (solid_b, maps_b) = deep_copy_solid_with_maps(source, &mut topo, orig_b)?;
 
-        // Invert the caller-index -> store-face maps into store-face-index ->
-        // caller-face-index so a store input face resolves to its caller origin.
+        // Invert the caller-index -> store-entity maps into store-index ->
+        // caller-index so a store input entity resolves to its caller origin.
         let mut input_face_to_caller = HashMap::new();
-        for (caller_idx, store_face) in map_a.into_iter().chain(map_b) {
-            input_face_to_caller.insert(store_face.index(), caller_idx);
+        let mut input_edge_to_caller = HashMap::new();
+        let mut input_vertex_to_caller = HashMap::new();
+        for maps in [maps_a, maps_b] {
+            for (caller_idx, store_face) in maps.faces {
+                input_face_to_caller.insert(store_face.index(), caller_idx);
+            }
+            for (caller_idx, store_edge) in maps.edges {
+                input_edge_to_caller.insert(store_edge.index(), caller_idx);
+            }
+            for (caller_idx, store_vertex) in maps.vertices {
+                input_vertex_to_caller.insert(store_vertex.index(), caller_idx);
+            }
         }
 
         Ok(Self {
@@ -58,6 +72,8 @@ impl GfaShapeStore {
             solid_a,
             solid_b,
             input_face_to_caller,
+            input_edge_to_caller,
+            input_vertex_to_caller,
         })
     }
 
@@ -90,6 +106,21 @@ impl GfaShapeStore {
         solid_id: SolidId,
     ) -> Result<(SolidId, HashMap<usize, FaceId>), AlgoError> {
         deep_copy_solid(&self.topo, target, solid_id)
+    }
+
+    /// Like [`Self::export_solid`], but returns the full store-index → new
+    /// caller-entity maps for faces, edges, and vertices (Issue 12 entity
+    /// evolution).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if any topology lookup fails.
+    pub fn export_solid_with_entity_maps(
+        &self,
+        target: &mut Topology,
+        solid_id: SolidId,
+    ) -> Result<(SolidId, DeepCopyMaps), AlgoError> {
+        deep_copy_solid_with_maps(&self.topo, target, solid_id)
     }
 }
 
@@ -162,11 +193,31 @@ impl GfaShapeStoreN {
 ///
 /// Uses the snapshot-then-allocate pattern to satisfy the borrow checker.
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
+/// Entity maps produced by a deep copy: source index → new id, per kind.
+pub struct DeepCopyMaps {
+    /// Source face index → copied face.
+    pub faces: HashMap<usize, FaceId>,
+    /// Source edge index → copied edge.
+    pub edges: HashMap<usize, brepkit_topology::EdgeId>,
+    /// Source vertex index → copied vertex.
+    pub vertices: HashMap<usize, brepkit_topology::VertexId>,
+}
+
 fn deep_copy_solid(
     source: &Topology,
     target: &mut Topology,
     solid_id: SolidId,
 ) -> Result<(SolidId, HashMap<usize, FaceId>), AlgoError> {
+    let (solid, maps) = deep_copy_solid_with_maps(source, target, solid_id)?;
+    Ok((solid, maps.faces))
+}
+
+#[allow(clippy::items_after_statements)]
+fn deep_copy_solid_with_maps(
+    source: &Topology,
+    target: &mut Topology,
+    solid_id: SolidId,
+) -> Result<(SolidId, DeepCopyMaps), AlgoError> {
     // ── Snapshot phase ──────────────────────────────────────────────
 
     let solid = source.solid(solid_id)?;
@@ -346,7 +397,20 @@ fn deep_copy_solid(
         .ok_or_else(|| AlgoError::AssemblyFailed("solid has no shells to copy".into()))?;
     let new_inner: Vec<_> = new_shell_ids[1..].to_vec();
 
-    Ok((target.add_solid(Solid::new(new_outer, new_inner)), face_map))
+    Ok((
+        target.add_solid(Solid::new(new_outer, new_inner)),
+        DeepCopyMaps {
+            faces: face_map,
+            edges: edge_map
+                .iter()
+                .map(|(&old_idx, &new_id)| (old_idx, new_id))
+                .collect(),
+            vertices: vertex_map
+                .iter()
+                .map(|(&old_idx, &new_id)| (old_idx, new_id))
+                .collect(),
+        },
+    ))
 }
 
 #[cfg(test)]
