@@ -108,10 +108,20 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Analytic intersections", "Surface-surface intersection",
   "Curve-curve intersection" (all Stable, evidence pending).
-- Known gaps: no common qualified result model distinguishing crossing /
-  tangency / overlap / coincidence / unresolved; hard iteration budgets
-  incomplete; conic curve cells (hyperbola, parabola) Unqualified; periodic
-  seam and pole cells Unqualified.
+- Qualified result model: `brepkit_math::intersect` (contact kind ×
+  quality × source method; `complete` marks certified coverage). The
+  matrix harness (`crates/math/tests/intersection_matrix.rs`) generates
+  configuration × scale cells with on-surface invariants and
+  scale-invariant classification.
+- **Qualified cells** (closed-form classification incl. tangency and
+  coincidence, scale-invariant): plane–plane, plane–sphere,
+  plane–cylinder, sphere–sphere, parallel-axis cylinder–cylinder, coaxial
+  sphere–cylinder.
+- Known gaps: remaining surface pairs delegate to the legacy path and are
+  wrapped as Unclassified/incomplete (declared, not silent); curve-curve
+  and curve-surface qualification pending; hard iteration budgets
+  incomplete; conic curve cells (hyperbola, parabola) Unqualified;
+  periodic seam parameter reporting and pole cells Unqualified.
 
 ### Blends (fillet, chamfer, blend resize/removal)
 
