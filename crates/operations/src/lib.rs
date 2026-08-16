@@ -75,6 +75,7 @@ pub mod assembly;
 pub(crate) mod cap;
 pub mod compound_ops;
 pub mod evolution;
+pub mod journal_ops;
 pub mod sketch;
 pub(crate) mod winding;
 
