@@ -8,7 +8,9 @@ use brepkit_math::mat::Mat4;
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_operations::transform::transform_solid;
 
-use crate::error::{WasmError, validate_finite, validate_positive};
+use crate::error::{
+    WasmError, validate_finite, validate_positive, validate_work_count, validate_work_product,
+};
 use crate::handles::{compound_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use crate::kernel::BrepKernel;
 
@@ -304,13 +306,14 @@ impl BrepKernel {
         validate_finite(dy, "dy")?;
         validate_finite(dz, "dz")?;
         validate_positive(spacing, "spacing")?;
+        let count = validate_work_count(count, "count")?;
         let solid_id = self.resolve_solid(solid)?;
         let compound = brepkit_operations::pattern::linear_pattern(
             self.topo_mut(),
             solid_id,
             Vec3::new(dx, dy, dz),
             spacing,
-            count as usize,
+            count,
         )?;
         Ok(compound_id_to_u32(compound))
     }
@@ -344,6 +347,9 @@ impl BrepKernel {
         validate_finite(dir_y_z, "dir_y_z")?;
         validate_positive(spacing_x, "spacing_x")?;
         validate_positive(spacing_y, "spacing_y")?;
+        validate_work_count(count_x, "count_x")?;
+        validate_work_count(count_y, "count_y")?;
+        let _ = validate_work_product(count_x, count_y, "grid copies")?;
         let solid_id = self.resolve_solid(solid)?;
         let compound = brepkit_operations::pattern::grid_pattern(
             self.topo_mut(),
@@ -372,12 +378,9 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
         let axis = Vec3::new(ax, ay, az);
-        let compound = brepkit_operations::pattern::circular_pattern(
-            self.topo_mut(),
-            solid_id,
-            axis,
-            count as usize,
-        )?;
+        let count = validate_work_count(count, "count")?;
+        let compound =
+            brepkit_operations::pattern::circular_pattern(self.topo_mut(), solid_id, axis, count)?;
         Ok(compound_id_to_u32(compound))
     }
 

@@ -14,9 +14,22 @@ export type BatchErrorCodeV2 =
 | "resource_limit_exceeded"
 | "internal_error";
 
+/** Kernel-wide failure categories carried by `executeBatchV2` errors. */
+export type BatchFailureCategoryV2 =
+| "invalid_input"
+| "invalid_topology"
+| "unsupported"
+| "nonconvergence"
+| "resource_limit"
+| "tolerance_violation"
+| "quality_refused"
+| "cancelled"
+| "internal";
+
 /** Machine-readable error returned by `executeBatchV2`. */
 export interface BatchErrorV2 {
     code: BatchErrorCodeV2;
+    category: BatchFailureCategoryV2;
     message: string;
     details: Record<string, string | number | boolean | null>;
 }
