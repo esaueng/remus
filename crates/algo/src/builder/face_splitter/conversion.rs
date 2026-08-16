@@ -286,6 +286,7 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
             forward,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: Some(eid.index()),
         });
     }
     if frame.is_none() {

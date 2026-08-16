@@ -126,6 +126,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
                 forward: edge.forward,
                 source_edge_idx: None,
                 pave_block_id: None,
+                source_topo_edge: edge.source_topo_edge,
             });
             prev_uv = split_uv;
             prev_3d = split_3d;
@@ -152,6 +153,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
             forward: edge.forward,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: edge.source_topo_edge,
         });
     }
     result
@@ -660,6 +662,7 @@ mod tests {
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
@@ -695,6 +698,7 @@ mod tests {
             forward,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         }
     }
 
@@ -787,6 +791,7 @@ mod tests {
             forward,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         };
         // Two splits straddling the seam, plus the seam-antipodal one the
         // periodic path always contributes.
@@ -922,6 +927,7 @@ mod tests {
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
+            source_topo_edge: None,
         };
         let probe = Point3::new(4.0, 5.0 * tol, 0.0);
         let splits = find_splits_on_line(&edge, &[probe], tol);
