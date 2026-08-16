@@ -30,14 +30,7 @@ fn transactional<T>(
     topo: &mut Topology,
     attempt: impl FnOnce(&mut Topology) -> Result<T, OperationsError>,
 ) -> Result<T, OperationsError> {
-    let snapshot = topo.clone();
-    match attempt(topo) {
-        Ok(value) => Ok(value),
-        Err(e) => {
-            topo.restore_preserving_handle_slots(&snapshot);
-            Err(e)
-        }
-    }
+    brepkit_topology::transaction::run_transacted(topo, attempt)
 }
 
 /// Collapse repeated seed edges, keeping the caller's order.

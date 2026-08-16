@@ -27,6 +27,7 @@ pub mod solid;
 #[cfg(feature = "test-utils")]
 pub mod test_utils;
 pub mod topology;
+pub mod transaction;
 pub mod validation;
 pub mod vertex;
 pub mod wire;

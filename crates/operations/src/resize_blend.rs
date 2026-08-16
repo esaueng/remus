@@ -138,12 +138,9 @@ pub fn resize_blend(
     expected_radius: f64,
     new_radius: f64,
 ) -> Result<ResizeBlendResult, OperationsError> {
-    let snapshot = topo.clone();
-    let result = resize_blend_impl(topo, solid, face, expected_radius, new_radius);
-    if result.is_err() {
-        topo.restore_preserving_handle_slots(&snapshot);
-    }
-    result
+    brepkit_topology::transaction::run_transacted(topo, |topo| {
+        resize_blend_impl(topo, solid, face, expected_radius, new_radius)
+    })
 }
 
 fn resize_blend_impl(
