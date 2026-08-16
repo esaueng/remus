@@ -203,8 +203,15 @@ impl Topology {
             .iter()
             .filter_map(|(id, _)| self.faces.get(id).is_none().then_some(id))
             .collect();
+        let retired_solids = snapshot
+            .solids
+            .iter()
+            .filter_map(|(id, _)| self.solids.get(id).is_none().then_some(id))
+            .collect();
         self.pcurves
             .remove_for_retired_entities(&retired_edges, &retired_faces);
+        self.attributes
+            .remove_for_retired_entities(&retired_solids, &retired_faces);
     }
 
     /// Reserves capacity for the given number of additional entities in the
@@ -274,9 +281,38 @@ impl Topology {
         &self.attributes
     }
 
-    /// Exclusive access to the attribute store.
-    pub fn attributes_mut(&mut self) -> &mut AttributeStore {
-        &mut self.attributes
+    /// Sets or clears a solid's attributes after validating that it is live.
+    ///
+    /// An empty value clears the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::SolidNotFound`] for a stale or non-live handle.
+    pub fn set_solid_attributes(
+        &mut self,
+        solid: SolidId,
+        attributes: crate::attributes::EntityAttributes,
+    ) -> Result<(), TopologyError> {
+        let _ = self.solid(solid)?;
+        self.attributes.set_solid(solid, attributes);
+        Ok(())
+    }
+
+    /// Sets or clears a face's attributes after validating that it is live.
+    ///
+    /// An empty value clears the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::FaceNotFound`] for a stale or non-live handle.
+    pub fn set_face_attributes(
+        &mut self,
+        face: FaceId,
+        attributes: crate::attributes::EntityAttributes,
+    ) -> Result<(), TopologyError> {
+        let _ = self.face(face)?;
+        self.attributes.set_face(face, attributes);
+        Ok(())
     }
     arena_get_mut!(
         compsolid_mut,
