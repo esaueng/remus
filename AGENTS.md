@@ -1,8 +1,13 @@
-# brepkit — Project Guidelines
+# Remus — Project Guidelines
 
-brepkit is the B-Rep modeling engine behind brepjs. It provides the computational
-backend (geometry, booleans, tessellation, I/O) while brepjs provides the
-developer-facing TypeScript API.
+Remus is an exact B-Rep solid modeling kernel: geometry, booleans, blends,
+tessellation, and I/O, with a Rust API and a WASM/JavaScript API over the same
+engine.
+
+The crates still carry the `brepkit-` prefix (`brepkit-math`,
+`brepkit-operations`, …) and the WASM package is still `brepkit-wasm`; a rename
+is in flight. Every crate name, module path, and `BREPKIT_*` environment
+variable in this document is today's identifier — use them verbatim.
 
 ## Architecture
 
