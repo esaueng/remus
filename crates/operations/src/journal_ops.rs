@@ -302,6 +302,91 @@ pub fn record_face_evolution(
     Ok(topo.journal_record_evolution(pending, draft)?)
 }
 
+/// A journaled blend's result: the blend outcome, its journal entry,
+/// and the face-evolution map the entry recorded.
+pub struct JournaledBlend {
+    /// The blend outcome (result solid, per-edge failures, partiality).
+    pub result: remus_blend::BlendResult,
+    /// The journal entry recording the blend's face evolution.
+    pub op: OpId,
+    /// The recorded face-evolution map.
+    pub map: EvolutionMap,
+}
+
+/// Runs a v2 fillet and journals its face evolution as one entry
+/// (kind `fillet`).
+///
+/// The entry scope is the solid's full pre- and post-operation entity
+/// set, so edge and vertex references across the fillet sever honestly
+/// while face claims carry.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the fillet or the recording fails.
+pub fn fillet_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[remus_topology::EdgeId],
+    radius: f64,
+) -> Result<JournaledBlend, OperationsError> {
+    let pending = begin_scoped(topo, "fillet", &[solid])?;
+    let (result, map) = crate::blend_ops::fillet_with_evolution(topo, solid, edges, radius)?;
+    let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
+    Ok(JournaledBlend { result, op, map })
+}
+
+/// Runs a v2 chamfer and journals its face evolution as one entry
+/// (kind `chamfer`); see [`fillet_journaled`].
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the chamfer or the recording fails.
+pub fn chamfer_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[remus_topology::EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<JournaledBlend, OperationsError> {
+    let pending = begin_scoped(topo, "chamfer", &[solid])?;
+    let (result, map) = crate::blend_ops::chamfer_with_evolution(topo, solid, edges, d1, d2)?;
+    let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
+    Ok(JournaledBlend { result, op, map })
+}
+
+/// A journaled pattern's result.
+#[derive(Debug)]
+pub struct JournaledPattern {
+    /// The compound of pattern instances.
+    pub compound: remus_topology::CompoundId,
+    /// The journal entry recording per-instance face provenance.
+    pub op: OpId,
+    /// The recorded face-evolution map.
+    pub map: EvolutionMap,
+}
+
+/// Runs a linear pattern and journals its construction-derived
+/// per-instance face provenance as one entry (kind `linear_pattern`),
+/// scoped over the original solid and every instance.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the pattern or the recording fails.
+pub fn linear_pattern_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    direction: remus_math::vec::Vec3,
+    spacing: f64,
+    count: usize,
+) -> Result<JournaledPattern, OperationsError> {
+    let pending = begin_scoped(topo, "linear_pattern", &[solid])?;
+    let (compound, map) =
+        crate::pattern::linear_pattern_with_evolution(topo, solid, direction, spacing, count)?;
+    let members = topo.compound(compound)?.solids().to_vec();
+    let op = record_face_evolution(topo, pending, &map, &members)?;
+    Ok(JournaledPattern { compound, op, map })
+}
+
 /// Journals an explicit barrier over every entity of `solid`.
 ///
 /// This is the honest entry for an operation that produces no evolution
