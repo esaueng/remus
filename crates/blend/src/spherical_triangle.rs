@@ -7,10 +7,10 @@
 //! NURBS patches bounded by great-circle arcs on the rolling-ball sphere,
 //! producing watertight corners with no overlap by construction.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::vertex::VertexId;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::face::FaceSurface;
+use remus_topology::vertex::VertexId;
 
 use crate::BlendError;
 
@@ -257,10 +257,10 @@ fn build_triangle_on_sphere(
     let mean_dir = mean_raw
         .normalize()
         .map_err(|_| BlendError::CornerFailure { vertex: vertex_id })?;
-    let polar = brepkit_math::frame::Frame3::from_normal(center, mean_dir)
+    let polar = remus_math::frame::Frame3::from_normal(center, mean_dir)
         .map_err(|_| BlendError::CornerFailure { vertex: vertex_id })?
         .x;
-    let sphere = brepkit_math::surfaces::SphericalSurface::with_frame(center, r, polar, -mean_dir)
+    let sphere = remus_math::surfaces::SphericalSurface::with_frame(center, r, polar, -mean_dir)
         .map_err(|_| BlendError::CornerFailure { vertex: vertex_id })?;
 
     let arc_q1q2 = build_great_circle_arc(center, r, q1, q2, vertex_id)?;
@@ -278,8 +278,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use brepkit_topology::topology::Topology;
-    use brepkit_topology::vertex::Vertex;
+    use remus_topology::topology::Topology;
+    use remus_topology::vertex::Vertex;
 
     /// Helper: create a dummy `VertexId` via a real topology arena.
     fn make_vertex_id() -> (Topology, VertexId) {

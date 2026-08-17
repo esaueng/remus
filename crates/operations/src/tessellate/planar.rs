@@ -1,8 +1,8 @@
 //! Planar and simple analytic face tessellation.
 
-use brepkit_math::det_hash::{DetHashMap, DetHashSet};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
 
 use super::edge_sampling::{
     circle_param_range, measure_max_chord_deviation, sample_wire_positions,
@@ -63,8 +63,8 @@ fn cylinder_grid_rows(
 /// dedicated hole-aware path below.
 pub(super) fn tessellate_analytic_with_boundary(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    face_data: &remus_topology::face::Face,
+    cyl: &remus_math::surfaces::CylindricalSurface,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
@@ -77,7 +77,7 @@ pub(super) fn tessellate_analytic_with_boundary(
 
     // Joint tolerance: the polylines of two consecutive edges repeat the vertex
     // between them, and a closed edge repeats its seam vertex at both ends.
-    let tol_dup = brepkit_math::tolerance::Tolerance::default().linear;
+    let tol_dup = remus_math::tolerance::Tolerance::default().linear;
 
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
@@ -135,18 +135,18 @@ pub(super) fn tessellate_analytic_with_boundary(
         }
     }
 
-    let uv_p2: Vec<brepkit_math::vec::Point2> = uv_pts
+    let uv_p2: Vec<remus_math::vec::Point2> = uv_pts
         .iter()
-        .map(|&(u, v)| brepkit_math::vec::Point2::new(u, v))
+        .map(|&(u, v)| remus_math::vec::Point2::new(u, v))
         .collect();
     let u_min = uv_pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min) - 1.0;
     let u_max = uv_pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max) + 1.0;
     let v_min = uv_pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min) - 1.0;
     let v_max = uv_pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max) + 1.0;
-    let mut cdt = brepkit_math::cdt::Cdt::with_capacity(
+    let mut cdt = remus_math::cdt::Cdt::with_capacity(
         (
-            brepkit_math::vec::Point2::new(u_min, v_min),
-            brepkit_math::vec::Point2::new(u_max, v_max),
+            remus_math::vec::Point2::new(u_min, v_min),
+            remus_math::vec::Point2::new(u_max, v_max),
         ),
         uv_p2.len() + 4,
     );
@@ -214,12 +214,12 @@ pub(super) fn tessellate_analytic_with_boundary(
 /// continuous UV loop.
 fn sample_cylinder_wire(
     topo: &Topology,
-    wire: &brepkit_topology::wire::Wire,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    wire: &remus_topology::wire::Wire,
+    cyl: &remus_math::surfaces::CylindricalSurface,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<CylinderLoop, crate::OperationsError> {
-    let tol_dup = brepkit_math::tolerance::Tolerance::default().linear;
+    let tol_dup = remus_math::tolerance::Tolerance::default().linear;
     let mut positions = Vec::new();
     let mut uvs: Vec<CylinderUv> = Vec::new();
 
@@ -266,7 +266,7 @@ fn clip_cylinder_pocket(
     samples: &[CylinderSample],
     boundary_u: f64,
     keep_greater: bool,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    cyl: &remus_math::surfaces::CylindricalSurface,
 ) -> Vec<CylinderSample> {
     let Some(&last) = samples.last() else {
         return Vec::new();
@@ -297,7 +297,7 @@ fn clip_cylinder_pocket(
         previous_inside = current_inside;
     }
 
-    let tol_dup = brepkit_math::tolerance::Tolerance::default().linear;
+    let tol_dup = remus_math::tolerance::Tolerance::default().linear;
     clipped.dedup_by(|a, b| (a.0 - b.0).length() < tol_dup);
     if clipped.len() > 2
         && let (Some(first), Some(last)) = (clipped.first(), clipped.last())
@@ -315,7 +315,7 @@ fn cylinder_pocket_pieces(
     positions: &[Point3],
     uvs: &[CylinderUv],
     outer_u: (f64, f64),
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    cyl: &remus_math::surfaces::CylindricalSurface,
 ) -> Vec<CylinderLoop> {
     if uvs.len() < 3 {
         return Vec::new();
@@ -413,13 +413,13 @@ fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64
 /// then removed before the vertices are mapped back to the analytic surface.
 pub(super) fn tessellate_cylinder_with_holes(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    face_data: &remus_topology::face::Face,
+    cyl: &remus_math::surfaces::CylindricalSurface,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
-    use brepkit_math::cdt::Cdt;
-    use brepkit_math::vec::Point2;
+    use remus_math::cdt::Cdt;
+    use remus_math::vec::Point2;
 
     let outer_wire = topo.wire(face_data.outer_wire())?;
     let (mut all_positions, outer_uvs) =
@@ -608,7 +608,7 @@ pub(super) fn tessellate_cylinder_with_holes(
             let pocket_depth = pocket_ranges
                 .iter()
                 .filter(|&&(start, end)| {
-                    brepkit_math::predicates::point_in_polygon(centroid, &pts2d[start..end])
+                    remus_math::predicates::point_in_polygon(centroid, &pts2d[start..end])
                 })
                 .count();
             pocket_depth.is_multiple_of(2)
@@ -677,7 +677,7 @@ pub(super) fn tessellate_analytic(
     // For partial arcs (e.g. quarter-cylinder), the last grid column is a
     // distinct point that must NOT wrap back to the first column.
     let u_periodic = (u_range.1 - u_range.0 - std::f64::consts::TAU).abs()
-        < brepkit_math::tolerance::Tolerance::new().linear;
+        < remus_math::tolerance::Tolerance::new().linear;
 
     let mut grid = vec![0u32; (nu + 1) * (nv + 1)];
     for iv in 0..=nv {
@@ -750,12 +750,12 @@ pub(super) fn tessellate_analytic(
 /// projecting to 2D and using CDT with fan-triangulation fallback for degenerate cases.
 pub(super) fn tessellate_planar(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     normal: Vec3,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMesh, crate::OperationsError> {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     let wire = topo.wire(face_data.outer_wire())?;
     let mut positions = Vec::new();
@@ -986,24 +986,24 @@ pub(super) fn tessellate_planar(
 }
 
 /// Project a 3D point to 2D by dropping the dominant normal axis.
-pub(super) fn project_by_normal(p: Point3, normal: Vec3) -> brepkit_math::vec::Point2 {
+pub(super) fn project_by_normal(p: Point3, normal: Vec3) -> remus_math::vec::Point2 {
     let ax = normal.x().abs();
     let ay = normal.y().abs();
     let az = normal.z().abs();
     if az >= ax && az >= ay {
-        brepkit_math::vec::Point2::new(p.x(), p.y())
+        remus_math::vec::Point2::new(p.x(), p.y())
     } else if ay >= ax {
-        brepkit_math::vec::Point2::new(p.x(), p.z())
+        remus_math::vec::Point2::new(p.x(), p.z())
     } else {
-        brepkit_math::vec::Point2::new(p.y(), p.z())
+        remus_math::vec::Point2::new(p.y(), p.z())
     }
 }
 
 /// Compute an axis-aligned bounding box with margin for a set of 2D points.
 pub(super) fn compute_cdt_bounds(
-    pts2d: &[brepkit_math::vec::Point2],
-) -> (brepkit_math::vec::Point2, brepkit_math::vec::Point2) {
-    use brepkit_math::vec::Point2;
+    pts2d: &[remus_math::vec::Point2],
+) -> (remus_math::vec::Point2, remus_math::vec::Point2) {
+    use remus_math::vec::Point2;
 
     let mut min_x = f64::MAX;
     let mut min_y = f64::MAX;
@@ -1026,14 +1026,14 @@ pub(super) fn compute_cdt_bounds(
 #[allow(clippy::too_many_lines)]
 fn tessellate_planar_with_holes(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     outer_positions: &[Point3],
     normal: Vec3,
     deflection: f64,
     angular_tol: f64,
 ) -> Result<TriangleMesh, crate::OperationsError> {
-    use brepkit_math::cdt::Cdt;
-    use brepkit_math::vec::Point2;
+    use remus_math::cdt::Cdt;
+    use remus_math::vec::Point2;
 
     let mut all_positions: Vec<Point3> = outer_positions.to_vec();
     let outer_count = all_positions.len();
@@ -1176,9 +1176,9 @@ fn tessellate_planar_with_holes(
 }
 
 /// Find a point guaranteed to be inside a simple polygon in 2D.
-fn find_interior_seed(polygon: &[brepkit_math::vec::Point2]) -> brepkit_math::vec::Point2 {
-    use brepkit_math::predicates::point_in_polygon;
-    use brepkit_math::vec::Point2;
+fn find_interior_seed(polygon: &[remus_math::vec::Point2]) -> remus_math::vec::Point2 {
+    use remus_math::predicates::point_in_polygon;
+    use remus_math::vec::Point2;
 
     let n = polygon.len();
     if n == 0 {
@@ -1253,11 +1253,11 @@ fn find_interior_seed(polygon: &[brepkit_math::vec::Point2]) -> brepkit_math::ve
 /// Each seed sits just inside its own wire (never at its centroid, which
 /// concentric wires share) so the flood starts in that wire's own cell.
 pub(super) fn hole_removal_seeds(
-    pts2d: &[brepkit_math::vec::Point2],
+    pts2d: &[remus_math::vec::Point2],
     inner_wire_ranges: &[(usize, usize)],
-) -> Result<Vec<brepkit_math::vec::Point2>, crate::OperationsError> {
-    use brepkit_math::predicates::point_in_polygon;
-    use brepkit_math::vec::Point2;
+) -> Result<Vec<remus_math::vec::Point2>, crate::OperationsError> {
+    use remus_math::predicates::point_in_polygon;
+    use remus_math::vec::Point2;
 
     const PARENT_SEARCH_BUDGET_PER_WIRE: usize = 64;
 
@@ -1361,7 +1361,7 @@ pub(super) fn hole_removal_seeds(
 
 /// Reconstruct a 3D point from a 2D projection, using the face plane.
 pub(super) fn unproject_point(
-    p2d: brepkit_math::vec::Point2,
+    p2d: remus_math::vec::Point2,
     normal: Vec3,
     reference: &Point3,
 ) -> Point3 {
@@ -1384,8 +1384,8 @@ pub(super) fn unproject_point(
 
 /// Triangulate a simple polygon (no holes) in 3D using CDT.
 pub(super) fn cdt_triangulate_simple(positions: &[Point3], normal: Vec3) -> Vec<u32> {
-    use brepkit_math::cdt::Cdt;
-    use brepkit_math::vec::Point2;
+    use remus_math::cdt::Cdt;
+    use remus_math::vec::Point2;
 
     let n = positions.len();
     if n < 3 {
@@ -1481,7 +1481,7 @@ pub(super) fn fan_triangulate(n: usize) -> Vec<u32> {
 
 /// Collect global vertex IDs from a wire, deduplicating consecutive vertices.
 pub(super) fn collect_wire_global_vertices(
-    wire: &brepkit_topology::wire::Wire,
+    wire: &remus_topology::wire::Wire,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     positions: &[Point3],
     tol: f64,
@@ -1558,7 +1558,7 @@ pub(super) fn remove_closing_duplicate_ids(ids: &mut Vec<u32>, positions: &[Poin
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn tessellate_planar_shared_with_holes(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
     boundary_global_ids: &[u32],
     outer_positions: &[Point3],
     normal: Vec3,
@@ -1566,8 +1566,8 @@ pub(super) fn tessellate_planar_shared_with_holes(
     merged: &mut TriangleMesh,
     point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
 ) -> Result<(), crate::OperationsError> {
-    use brepkit_math::cdt::Cdt;
-    use brepkit_math::vec::Point2;
+    use remus_math::cdt::Cdt;
+    use remus_math::vec::Point2;
 
     let mut all_positions: Vec<Point3> = outer_positions.to_vec();
     let mut all_global_ids: Vec<Option<u32>> =
@@ -1726,14 +1726,14 @@ pub(super) fn tessellate_planar_shared_with_holes(
 #[allow(clippy::too_many_lines)]
 /// Triangles (indices into the input points, then into the Steiner list)
 /// plus the Steiner points constraint recovery inserted.
-pub(super) type PlanarCdtOutput = (Vec<(usize, usize, usize)>, Vec<brepkit_math::vec::Point2>);
+pub(super) type PlanarCdtOutput = (Vec<(usize, usize, usize)>, Vec<remus_math::vec::Point2>);
 
 pub(super) fn run_planar_cdt(
-    pts2d: &[brepkit_math::vec::Point2],
+    pts2d: &[remus_math::vec::Point2],
     outer_count: usize,
     inner_wire_ranges: &[(usize, usize)],
 ) -> Result<PlanarCdtOutput, crate::OperationsError> {
-    use brepkit_math::cdt::Cdt;
+    use remus_math::cdt::Cdt;
 
     let bounds = compute_cdt_bounds(pts2d);
 
@@ -1802,7 +1802,7 @@ pub(super) fn run_planar_cdt(
     // must NOT be dropped — that leaves a fan-shaped hole in the face — so
     // Steiner vertices are appended after the input points and returned to
     // the caller for 3D lifting.
-    let mut steiner: Vec<brepkit_math::vec::Point2> = Vec::new();
+    let mut steiner: Vec<remus_math::vec::Point2> = Vec::new();
     let mut result = Vec::with_capacity(cdt_triangles.len());
     for &(v0, v1, v2) in &cdt_triangles {
         let mut ids = [0usize; 3];
@@ -1846,7 +1846,7 @@ mod tests {
 #[cfg(test)]
 mod hole_seed_tests {
     use super::hole_removal_seeds;
-    use brepkit_math::vec::Point2;
+    use remus_math::vec::Point2;
 
     #[test]
     fn concentric_wires_keep_even_odd_parity_at_scale() {

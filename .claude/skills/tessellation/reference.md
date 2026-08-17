@@ -49,7 +49,7 @@ pub fn tessellate_solid_grouped_with_tolerance(...)  // per-face groups, for ren
 
 ## Watertightness API
 
-`crates/operations/src/tessellate/mesh_ops.rs`, re-exported at `brepkit_operations::tessellate`:
+`crates/operations/src/tessellate/mesh_ops.rs`, re-exported at `remus_operations::tessellate`:
 
 ```rust
 pub fn is_watertight(mesh: &TriangleMesh) -> bool
@@ -111,7 +111,7 @@ Do not confuse with `crates/heal/src/upgrade/split_self_intersecting_wires.rs`: 
 
 Practical stance: the analytic B-Rep and exact volume for such shapes can be correct while render meshing stays deferred (see git history around PR #1008). If asked to "just make it render", scope the ask to one of the two bounded fixes or decline.
 
-## GPU compute mesher (brepkit-render)
+## GPU compute mesher (remus-render)
 
 `crates/render/src/compute_mesh.rs`. Cylinder only at time of writing; verify current coverage:
 
@@ -128,7 +128,7 @@ Key symbols:
 Doctrine consequence: the GPU path consumes analytic surface PARAMETERS, not triangles. A face degraded to NURBS or mesh by an upstream operation is invisible to this path forever. When choosing between an analytic-preserving and an approximating implementation of an operation, the GPU mesher is a second consumer arguing for analytic (see the **analytic-preservation** skill). Audit current degradation points:
 
 ```bash
-cargo run --release --example approx_census -p brepkit-operations
+cargo run --release --example approx_census -p remus-operations
 ```
 
 For verifying rendered output on the live display, see the **render-verify** skill.
@@ -140,5 +140,5 @@ For verifying rendered output on the live display, see the **render-verify** ski
 - **Shared edge pool**: `edge_global_indices`, the once-per-edge sampled vertex ids that all faces must reference on their boundaries.
 - **Snap path**: legacy fallback that meshes a face independently and welds by proximity; crack-prone.
 - **bd=0**: `boundary_edge_count(mesh) == 0`, the primary watertightness regression signal.
-- **Deflection**: max chord deviation (sag) driving sampling density, paired with an angular tolerance (`DEFAULT_ANGULAR_TOL` in `brepkit_math::chord`).
+- **Deflection**: max chord deviation (sag) driving sampling density, paired with an angular tolerance (`DEFAULT_ANGULAR_TOL` in `remus_math::chord`).
 - **Mesh fallback**: when a boolean's analytic result fails its gates, the operation re-runs as a tessellate-then-co-refine mesh boolean; output is hundreds of planar faces. Face count is the tell (a handful analytic vs hundreds planar). See **boolean-debugging**.

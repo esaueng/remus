@@ -1,12 +1,12 @@
 //! Recognize NURBS surfaces as elementary analytic forms.
 //!
-//! Ported from `brepkit-heal/analysis/canonical.rs` but expressed entirely
-//! in terms of `brepkit-math` types (no topology dependency). The result is
+//! Ported from `remus-heal/analysis/canonical.rs` but expressed entirely
+//! in terms of `remus-math` types (no topology dependency). The result is
 //! a [`RecognizedSurface`] enum describing the best-fit analytic surface, or
 //! [`RecognizedSurface::NotRecognized`] when no match is found.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::{Point3, Vec3};
 
 /// The analytic surface form recognized from a NURBS surface.
 #[derive(Debug, Clone, PartialEq)]
@@ -543,7 +543,7 @@ fn try_recognize_cone(surface: &NurbsSurface, tolerance: f64) -> Option<(Point3,
     // cos(half_angle) / sin(half_angle) = cot(half_angle), so
     // half_angle = atan(1 / |slope|).
     //
-    // brepkit's half_angle convention is the angle from the RADIAL
+    // remus's half_angle convention is the angle from the RADIAL
     // plane to the generator, so half_angle ∈ (0, π/2).
     let half_angle = (1.0 / slope.abs()).atan();
     if !(0.0 < half_angle && half_angle < std::f64::consts::FRAC_PI_2) {
@@ -926,10 +926,10 @@ fn estimate_cylinder_axis(points: &[Point3], center: Point3) -> Option<Vec3> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use brepkit_math::surfaces::{
+    use remus_math::surfaces::{
         ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
     };
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
     use crate::convert::surface_to_nurbs::{

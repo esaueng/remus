@@ -4,26 +4,26 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_io::arena_io::{deserialize_document, serialize_document};
-use brepkit_io::naming_io::{deserialize_persistent_ref, serialize_persistent_ref};
-use brepkit_operations::journal_ops::boolean_journaled;
-use brepkit_operations::primitives::make_box;
-use brepkit_topology::Topology;
-use brepkit_topology::attributes::EntityAttributes;
-use brepkit_topology::journal::{EntityKind, OpId};
-use brepkit_topology::naming::{
+use remus_algo::bop::BooleanOp;
+use remus_io::arena_io::{deserialize_document, serialize_document};
+use remus_io::naming_io::{deserialize_persistent_ref, serialize_persistent_ref};
+use remus_operations::journal_ops::boolean_journaled;
+use remus_operations::primitives::make_box;
+use remus_topology::Topology;
+use remus_topology::attributes::EntityAttributes;
+use remus_topology::journal::{EntityKind, OpId};
+use remus_topology::naming::{
     Discriminator, EntitySignature, PersistentRef, Provenance, Resolution, resolve,
     resolve_face_attributes,
 };
 
 /// A journaled fuse of two named-face boxes, with attributes propagated.
-fn journaled_named_fuse(topo: &mut Topology) -> (brepkit_topology::SolidId, OpId) {
+fn journaled_named_fuse(topo: &mut Topology) -> (remus_topology::SolidId, OpId) {
     let a = make_box(topo, 10.0, 10.0, 10.0).unwrap();
     let b = make_box(topo, 10.0, 10.0, 10.0).unwrap();
-    let shift = brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0);
-    brepkit_operations::transform::transform_solid(topo, b, &shift).unwrap();
-    for (i, face) in brepkit_topology::explorer::solid_faces(topo, a)
+    let shift = remus_math::mat::Mat4::translation(5.0, 5.0, 5.0);
+    remus_operations::transform::transform_solid(topo, b, &shift).unwrap();
+    for (i, face) in remus_topology::explorer::solid_faces(topo, a)
         .unwrap()
         .into_iter()
         .enumerate()
@@ -124,8 +124,8 @@ fn journal_survives_further_editing_after_a_reload() {
 
     // The restored journal and counter are consistent: an unjournaled
     // mutation after the load severs exactly as it would have before it.
-    let shift = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
-    brepkit_operations::transform::transform_solid(&mut restored, roots.solids[0], &shift).unwrap();
+    let shift = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    remus_operations::transform::transform_solid(&mut restored, roots.solids[0], &shift).unwrap();
     let pending = restored.journal_begin("post_load_probe");
     restored.journal_record_barrier(pending, Vec::new());
     let r = resolve(&restored, &reference);
@@ -133,7 +133,7 @@ fn journal_survives_further_editing_after_a_reload() {
         matches!(
             r,
             Resolution::UnresolvedAcrossOperation { ref kind, .. }
-                if kind == brepkit_topology::journal::UNJOURNALED_MUTATIONS
+                if kind == remus_topology::journal::UNJOURNALED_MUTATIONS
         ),
         "gap detection must keep working across a reload: {r:?}"
     );
@@ -165,7 +165,7 @@ fn entities_outside_the_document_report_not_present_after_reload() {
 fn signature_references_recover_across_sessions() {
     let mut topo = Topology::new();
     let solid = make_box(&mut topo, 10.0, 20.0, 30.0).unwrap();
-    let face = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap()[2];
+    let face = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[2];
     let signature = EntitySignature::capture_face(&topo, face, 1e-7).unwrap();
     let reference = PersistentRef::signature(signature);
     let encoded = serialize_persistent_ref(&reference).unwrap();

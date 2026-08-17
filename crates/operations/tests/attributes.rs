@@ -2,15 +2,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean_with_evolution};
-use brepkit_operations::copy::{copy_and_transform_solid, copy_solid_with_face_map};
-use brepkit_operations::evolution::{EvolutionMap, propagate_face_attributes};
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::attributes::{ColorRgb, EntityAttributes};
-use brepkit_topology::explorer::solid_faces;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean_with_evolution};
+use remus_operations::copy::{copy_and_transform_solid, copy_solid_with_face_map};
+use remus_operations::evolution::{EvolutionMap, propagate_face_attributes};
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::attributes::{ColorRgb, EntityAttributes};
+use remus_topology::explorer::solid_faces;
 
 fn named(name: &str, color: Option<ColorRgb>) -> EntityAttributes {
     EntityAttributes {
@@ -233,7 +233,7 @@ fn restore_drops_attributes_for_entities_retired_after_the_snapshot() {
 
 #[test]
 fn color_channels_are_validated_with_a_typed_error() {
-    use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+    use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
     let err = ColorRgb::new(1.5, 0.0, 0.0).unwrap_err();
     let d = err.diagnostic();
     assert_eq!(d.category(), FailureCategory::InvalidInput);

@@ -3,7 +3,7 @@
 //!
 //! Attributes are public model data, not rendering hints: a face's color and
 //! a solid's name survive modeling operations under the explicit propagation
-//! rules implemented in `brepkit_operations::evolution` (driven by
+//! rules implemented in `remus_operations::evolution` (driven by
 //! construction-derived evolution events — attributes are never rebound by
 //! geometric guessing).
 //!

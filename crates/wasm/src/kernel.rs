@@ -15,19 +15,17 @@
 
 use std::rc::Rc;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D};
-use brepkit_math::curves2d::Line2D;
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::curves2d::Line2D;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{WasmError, validate_finite};
@@ -42,7 +40,7 @@ use crate::state::{Checkpoint, GcsSketchState, SketchState};
 #[wasm_bindgen]
 pub struct BrepKernel {
     pub(crate) topo: Rc<Topology>,
-    pub(crate) assemblies: Vec<brepkit_operations::assembly::Assembly>,
+    pub(crate) assemblies: Vec<remus_operations::assembly::Assembly>,
     pub(crate) sketches: Vec<SketchState>,
     pub(crate) gcs_sketches: Vec<GcsSketchState>,
     pub(crate) checkpoints: Vec<Checkpoint>,
@@ -431,8 +429,8 @@ impl BrepKernel {
     pub(crate) fn make_planar_face(
         &mut self,
         points: &[Point3],
-    ) -> Result<brepkit_topology::face::FaceId, WasmError> {
-        Ok(brepkit_topology::builder::make_planar_face(
+    ) -> Result<remus_topology::face::FaceId, WasmError> {
+        Ok(remus_topology::builder::make_planar_face(
             self.topo_mut(),
             points,
             TOL,
@@ -445,7 +443,7 @@ impl BrepKernel {
     /// edges to derive a plane normal and signed distance `d`.
     fn compute_plane_from_wire(
         &self,
-        wire_id: brepkit_topology::wire::WireId,
+        wire_id: remus_topology::wire::WireId,
     ) -> Result<FaceSurface, WasmError> {
         let wire = self.topo.wire(wire_id)?;
         let mut points = Vec::new();
@@ -513,7 +511,7 @@ impl BrepKernel {
             .ok_or_else(|| WasmError::InvalidInput {
                 reason: "missing vertices array".into(),
             })?;
-        let mut vertex_map: std::collections::HashMap<u32, brepkit_topology::vertex::VertexId> =
+        let mut vertex_map: std::collections::HashMap<u32, remus_topology::vertex::VertexId> =
             std::collections::HashMap::new();
 
         for v in vertices {
@@ -555,7 +553,7 @@ impl BrepKernel {
             .ok_or_else(|| WasmError::InvalidInput {
                 reason: "missing edges array".into(),
             })?;
-        let mut edge_map: std::collections::HashMap<u32, brepkit_topology::edge::EdgeId> =
+        let mut edge_map: std::collections::HashMap<u32, remus_topology::edge::EdgeId> =
             std::collections::HashMap::new();
 
         for e in edges {
@@ -739,7 +737,7 @@ impl BrepKernel {
             .ok_or_else(|| WasmError::InvalidInput {
                 reason: "missing faces array".into(),
             })?;
-        let mut face_ids: Vec<brepkit_topology::face::FaceId> = Vec::new();
+        let mut face_ids: Vec<remus_topology::face::FaceId> = Vec::new();
 
         for f in faces {
             let outer_edge_ids =
@@ -1083,9 +1081,9 @@ impl BrepKernel {
             });
         }
 
-        let shell = brepkit_topology::shell::Shell::new(face_ids)?;
+        let shell = remus_topology::shell::Shell::new(face_ids)?;
         let shell_id = self.topo_mut().add_shell(shell);
-        let solid = brepkit_topology::solid::Solid::new(shell_id, vec![]);
+        let solid = remus_topology::solid::Solid::new(shell_id, vec![]);
         let solid_id = self.topo_mut().add_solid(solid);
 
         Ok(solid_id_to_u32(solid_id))
@@ -1101,22 +1099,22 @@ pub(crate) mod test_fixtures {
 
     pub fn kernel_with_box() -> (BrepKernel, u32) {
         let mut k = BrepKernel::new();
-        let id = brepkit_operations::primitives::make_box(k.topo_mut(), 1.0, 1.0, 1.0).unwrap();
+        let id = remus_operations::primitives::make_box(k.topo_mut(), 1.0, 1.0, 1.0).unwrap();
         #[allow(clippy::cast_possible_truncation)]
         (k, id.index() as u32)
     }
 
     pub fn kernel_with_two_boxes() -> (BrepKernel, u32, u32) {
         let mut k = BrepKernel::new();
-        let a = brepkit_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
-        let b = brepkit_operations::primitives::make_box(k.topo_mut(), 1.0, 1.0, 1.0).unwrap();
+        let a = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
+        let b = remus_operations::primitives::make_box(k.topo_mut(), 1.0, 1.0, 1.0).unwrap();
         #[allow(clippy::cast_possible_truncation)]
         (k, a.index() as u32, b.index() as u32)
     }
 
     pub fn kernel_with_cylinder() -> (BrepKernel, u32) {
         let mut k = BrepKernel::new();
-        let id = brepkit_operations::primitives::make_cylinder(k.topo_mut(), 1.0, 2.0).unwrap();
+        let id = remus_operations::primitives::make_cylinder(k.topo_mut(), 1.0, 2.0).unwrap();
         #[allow(clippy::cast_possible_truncation)]
         (k, id.index() as u32)
     }

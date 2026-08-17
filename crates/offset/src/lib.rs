@@ -1,9 +1,9 @@
-//! # brepkit-offset
+//! # remus-offset
 //!
-//! Solid offset engine for brepkit.
+//! Solid offset engine for remus.
 //!
-//! This is layer L2, depending on `brepkit-math`, `brepkit-topology`,
-//! and `brepkit-geometry`.
+//! This is layer L2, depending on `remus-math`, `remus-topology`,
+//! and `remus-geometry`.
 //!
 //! # Pipeline
 //!
@@ -68,9 +68,9 @@ pub(crate) mod self_int;
 pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
 
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::data::OffsetData;
 
@@ -180,7 +180,7 @@ fn validate_offset_result(topo: &Topology, solid: SolidId) -> Result<(), OffsetE
     for shell in
         std::iter::once(solid_data.outer_shell()).chain(solid_data.inner_shells().iter().copied())
     {
-        brepkit_topology::validation::validate_shell_closed(topo.shell(shell)?, topo)?;
+        remus_topology::validation::validate_shell_closed(topo.shell(shell)?, topo)?;
     }
     Ok(())
 }

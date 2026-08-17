@@ -35,7 +35,7 @@ Config template (`$BREPJS/vitest.bench.config.ts`, verified):
 resolve: {
   alias: {
     '@': resolve(__dirname, 'src'),
-    'brepkit-wasm': resolve(__dirname, 'node_modules/brepkit-wasm/brepkit_wasm_node.cjs'),
+    'remus-wasm': resolve(__dirname, 'node_modules/remus-wasm/remus_wasm_node.cjs'),
   },
 },
 test: {
@@ -48,7 +48,7 @@ test: {
 },
 ```
 
-For the fast recipe, copy this and repoint only the `brepkit-wasm` alias at your local `pkg-node-bench` `.cjs`. That is the entire integration: no install, no lockfile change, no type-sync, which avoids two documented brepjs traps (a lockfile-churn dependency problem and knip false-flagging exports on push).
+For the fast recipe, copy this and repoint only the `remus-wasm` alias at your local `pkg-node-bench` `.cjs`. That is the entire integration: no install, no lockfile change, no type-sync, which avoids two documented brepjs traps (a lockfile-churn dependency problem and knip false-flagging exports on push).
 
 The report baselines its "vs" column to the native reference-kernel id and warns when the subset omits it. That 3-kernel table is for the README-style overview; for parity work the wasm-vs-wasm pair is the fair fight.
 
@@ -59,22 +59,22 @@ Sanity anchors for quoted numbers: `cut(box, cylinder)` makes both kernels do co
 Package file set (copy all 6):
 
 ```
-brepkit_wasm_bg.js  brepkit_wasm_bg.wasm  brepkit_wasm.d.ts
-brepkit_wasm.js     brepkit_wasm_node.cjs package.json
+remus_wasm_bg.js  remus_wasm_bg.wasm  remus_wasm.d.ts
+remus_wasm.js     remus_wasm_node.cjs package.json
 ```
 
 Both destinations in `$GRIDFINITY_TOOL`:
 
 ```
-node_modules/brepkit-wasm/
-node_modules/.pnpm/brepkit-wasm@<ver>/node_modules/brepkit-wasm/
+node_modules/remus-wasm/
+node_modules/.pnpm/remus-wasm@<ver>/node_modules/remus-wasm/
 ```
 
-Find the exact `.pnpm` dir with `ls node_modules/.pnpm | grep brepkit-wasm`. There may also be a combined `brepjs@...` entry in `.pnpm`; the one to overlay is the standalone `brepkit-wasm@<ver>` dir, but check where the probe's import actually resolves if in doubt.
+Find the exact `.pnpm` dir with `ls node_modules/.pnpm | grep remus-wasm`. There may also be a combined `brepjs@...` entry in `.pnpm`; the one to overlay is the standalone `remus-wasm@<ver>` dir, but check where the probe's import actually resolves if in doubt.
 
 Sources:
 
-- Published: `npm pack brepkit-wasm@<ver> --pack-destination <tmp>`, then copy `<tmp>/package/*`.
+- Published: `npm pack remus-wasm@<ver> --pack-destination <tmp>`, then copy `<tmp>/package/*`.
 - Local: `cargo xtask wasm-build` (flags: `--no-simd`, `--skip-opt`; builds both targets, runs wasm-opt unless skipped, merges into `crates/wasm/pkg/`).
 
 `scripts/parity-loop.sh` = xtask release build with wasm-opt skipped (`--skip-opt` skips only the wasm-opt post-pass; the compile is still `--release`, so timings are near-representative), copy to the DIRECT location only, then a `vitest run ... topologyParity` step. That probe file has been removed from the tool, so the filter matches nothing and the script today only builds and overlays; write your own probe vitest (consistent with "do not expect ready-made probe files" below). The script also echoes the name of a JSON cache of the reference kernel's topology results at the tool root; delete that cache to re-measure the reference side.
@@ -82,9 +82,9 @@ Sources:
 Overlay verification (do this before every probe batch):
 
 ```bash
-md5sum crates/wasm/pkg/brepkit_wasm_bg.wasm \
-  $GRIDFINITY_TOOL/node_modules/brepkit-wasm/brepkit_wasm_bg.wasm \
-  $GRIDFINITY_TOOL/node_modules/.pnpm/brepkit-wasm@*/node_modules/brepkit-wasm/brepkit_wasm_bg.wasm
+md5sum crates/wasm/pkg/remus_wasm_bg.wasm \
+  $GRIDFINITY_TOOL/node_modules/remus-wasm/remus_wasm_bg.wasm \
+  $GRIDFINITY_TOOL/node_modules/.pnpm/remus-wasm@*/node_modules/remus-wasm/remus_wasm_bg.wasm
 ```
 
 All three hashes must match. The documented failure mode is several probes wasted on a half-applied overlay.
@@ -104,7 +104,7 @@ Binding (`crates/wasm/src/bindings/query.rs`, `rg -n 'getEntityCounts'`):
 pub fn get_entity_counts(&self, solid: u32) -> Result<Vec<u32>, JsError>
 ```
 
-Returns `[faces, edges, vertices]` via `brepkit_topology::explorer::solid_entity_counts`. Tool-side JS shape: `getRawBrepkitKernel().getEntityCounts(getSolidId(solid))[0]` (helpers in the tool's `__kernel-tests__/dualKernelInit.ts`). For the surface-type mix, the same raw kernel exposes `getSolidFaces(solidId)` and `getSurfaceType(faceId)`; count planar vs curved.
+Returns `[faces, edges, vertices]` via `remus_topology::explorer::solid_entity_counts`. Tool-side JS shape: `getRawRemusKernel().getEntityCounts(getSolidId(solid))[0]` (helpers in the tool's `__kernel-tests__/dualKernelInit.ts`). For the surface-type mix, the same raw kernel exposes `getSolidFaces(solidId)` and `getSurfaceType(faceId)`; count planar vs curved.
 
 Reading the number:
 
@@ -128,7 +128,7 @@ Repro fidelity: before grinding on any repro, diff its dimensions against the re
 
 `scripts/bench-compare.sh <path-to-brepjs>`, five steps:
 
-1. `cargo bench -p brepkit-operations` (criterion) into `bench-results/criterion.log`.
+1. `cargo bench -p remus-operations` (criterion) into `bench-results/criterion.log`.
 2. `wasm-pack build crates/wasm --target nodejs --release --out-dir crates/wasm/pkg`.
 3. `npm install` of the built package into brepjs with `--no-save` (this is why it is the slow path; it also touches node_modules state).
 4. `BENCH_OUTPUT_JSON=1 npx vitest run benchmarks/kernel-comparison.bench.test.ts --config vitest.bench.config.ts --reporter=verbose`, JSON extracted between `--- BENCHMARK RESULTS JSON ---` sentinels.
@@ -139,9 +139,9 @@ Criterion benches in `crates/operations/benches/`:
 - `cad_operations.rs`: primitives x100, fuse/cut/intersect x10, sphere meshing, chamfer, fillet, multi-boolean model, gridfinity 1x1 bin, 3x3 baseplate, 64-cut 8x8 grid, tessellation cases. The names inside the file are the `--bench` filter strings for flamegraphs.
 - `boolean_perf.rs`, `boolean_tracking.rs`, `compound_cut_perf.rs`, `fuse_perf.rs`: targeted boolean perf suites.
 
-Census: `crates/operations/examples/approx_census.rs` (`boolean_matrix()` plus per-op sections). Run `cargo run --release --example approx_census -p brepkit-operations`. Output rows show, per operation, whether it stayed exact-analytic or which approximation fallback fired, with wall-clock and face count. This is the standing scoreboard for the analytic-preservation goal (see the analytic-preservation skill).
+Census: `crates/operations/examples/approx_census.rs` (`boolean_matrix()` plus per-op sections). Run `cargo run --release --example approx_census -p remus-operations`. Output rows show, per operation, whether it stayed exact-analytic or which approximation fallback fired, with wall-clock and face count. This is the standing scoreboard for the analytic-preservation goal (see the analytic-preservation skill).
 
-Flamegraphs: `cargo flamegraph --profile profiling --bench cad_operations -p brepkit-operations -o /tmp/flamegraph.svg -- --bench "<filter>"` (see the profiling skill).
+Flamegraphs: `cargo flamegraph --profile profiling --bench cad_operations -p remus-operations -o /tmp/flamegraph.svg -- --bench "<filter>"` (see the profiling skill).
 
 ## Glossary
 
@@ -152,12 +152,12 @@ Flamegraphs: `cargo flamegraph --profile profiling --bench cad_operations -p bre
 - **Mesh fallback**: rerun of a failed analytic boolean as triangle-mesh co-refinement. Correct and watertight, but slow and it destroys analytic surfaces.
 - **Analytic face**: exact surface (Plane/Cylinder/Cone/Sphere/Torus) rather than NURBS or mesh facets.
 - **Entity counts**: `getEntityCounts(solid)` returning `[faces, edges, vertices]`; faces is the fallback tell.
-- **Overlay**: in-place replacement of the tool's installed `brepkit-wasm` files (both pnpm locations) to test an unpublished kernel.
+- **Overlay**: in-place replacement of the tool's installed `remus-wasm` files (both pnpm locations) to test an unpublished kernel.
 - **Faithful fixture**: captured actual tool operands (STEP or arena `.bin`) replayed in a Rust test, as opposed to a hand-built repro.
 - **Arena serialization**: binary dump of the exact in-memory topology arena, preserving failing states that STEP normalizes away.
-- **Scorecard**: per-scenario brepkit-vs-reference table (time, faces, triangles, validity). Stale the moment any GFA PR merges; never cite one without re-measuring.
+- **Scorecard**: per-scenario remus-vs-reference table (time, faces, triangles, validity). Stale the moment any GFA PR merges; never cite one without re-measuring.
 - **Census**: the `approx_census` example output, exact-analytic vs approximation per operation.
 
 ## Sibling skills
 
-boolean-debugging (GFA failure triage), solid-verification (validity checks), analytic-preservation (keeping surfaces exact), tessellation (triangle counts), profiling (flamegraphs), release-flow (publishing brepkit-wasm and the brepjs sync), wasm-bindings (adding probe bindings), testing, debugging-doctrine.
+boolean-debugging (GFA failure triage), solid-verification (validity checks), analytic-preservation (keeping surfaces exact), tessellation (triangle counts), profiling (flamegraphs), release-flow (publishing remus-wasm and the brepjs sync), wasm-bindings (adding probe bindings), testing, debugging-doctrine.

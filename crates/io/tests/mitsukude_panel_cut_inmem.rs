@@ -23,10 +23,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -34,11 +34,11 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
-fn health(topo: &Topology, sid: brepkit_topology::solid::SolidId) -> (usize, usize, usize) {
+fn health(topo: &Topology, sid: remus_topology::solid::SolidId) -> (usize, usize, usize) {
     let faces = solid_faces(topo, sid).unwrap();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     let mut curved = 0;
@@ -78,9 +78,8 @@ fn mitsukude_panel_cut_is_analytic_watertight() {
     let body = load("mitsukude_bin_body.bin", &mut topo);
     let panel = load("mitsukude_panel_tool.bin", &mut topo);
 
-    let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, body, panel)
-            .expect("cut should not abort");
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, body, panel)
+        .expect("cut should not abort");
 
     let (free, over, curved) = health(&topo, result);
     assert!(
@@ -89,8 +88,8 @@ fn mitsukude_panel_cut_is_analytic_watertight() {
     );
     assert_eq!(over, 0, "cut must stay manifold, got {over} over-shared");
     assert_eq!(free, 0, "cut must be closed, got {free} free edges");
-    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
-    let routed_volume = brepkit_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
+    let vol = remus_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
+    let routed_volume = remus_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
     // The fork's shared-edge tessellator triangulates this same analytic B-rep
     // differently from upstream's coarse face mesh. Pin both measurements: the
     // routed volume guards the underlying cut, while the signed mesh pin guards

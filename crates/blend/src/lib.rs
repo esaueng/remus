@@ -22,10 +22,10 @@ pub(crate) mod stripe;
 pub(crate) mod trimmer;
 pub(crate) mod walker;
 
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
 
 /// Error type for blend operations.
 #[derive(Debug, thiserror::Error)]
@@ -127,11 +127,11 @@ pub enum BlendError {
 
     /// Topology error from underlying operations.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// Math error from underlying computations.
     #[error(transparent)]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 }
 
 /// Exact face provenance, recorded by the builder while it assembled the

@@ -10,7 +10,7 @@ enum LifecycleError {
     #[error(transparent)]
     Wasm(#[from] WasmError),
     #[error(transparent)]
-    DeleteSolid(#[from] brepkit_topology::DeleteSolidError),
+    DeleteSolid(#[from] remus_topology::DeleteSolidError),
 }
 
 impl BrepKernel {
@@ -24,7 +24,7 @@ impl BrepKernel {
                     .any(|entry| entry.solid_index == solid_id.index())
             })
         {
-            return Err(brepkit_topology::DeleteSolidError::Referenced {
+            return Err(remus_topology::DeleteSolidError::Referenced {
                 solid: solid_id,
                 dependent: "assembly",
                 dependent_index: assembly_index,

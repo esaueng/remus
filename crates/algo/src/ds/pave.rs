@@ -1,8 +1,8 @@
 //! Pave, `PaveBlock`, and `CommonBlock` — the core GFA edge-splitting types.
 
-use brepkit_topology::arena::Id;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::vertex::VertexId;
+use remus_topology::arena::Id;
+use remus_topology::edge::EdgeId;
+use remus_topology::vertex::VertexId;
 
 /// A point on an edge, identified by its vertex and curve parameter.
 #[derive(Debug, Clone, Copy)]

@@ -10,8 +10,8 @@
 //! - [`recognize_surface()`] — identify a NURBS surface as a plane, cylinder, or
 //!   sphere.
 //!
-//! [`Circle3D`]: brepkit_math::curves::Circle3D
-//! [`Ellipse3D`]: brepkit_math::curves::Ellipse3D
+//! [`Circle3D`]: remus_math::curves::Circle3D
+//! [`Ellipse3D`]: remus_math::curves::Ellipse3D
 
 pub mod curve_to_nurbs;
 pub mod recognize_curve;

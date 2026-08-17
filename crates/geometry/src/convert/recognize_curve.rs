@@ -5,8 +5,8 @@
 //! ellipse, hyperbola, or parabola within the given tolerance.
 //! Returns a [`RecognizedCurve`] describing the best match.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::{Point3, Vec3};
 
 /// The analytic curve form recognized from a NURBS curve.
 #[derive(Debug, Clone, PartialEq)]
@@ -1008,9 +1008,9 @@ mod tests {
 
     use std::f64::consts::TAU;
 
-    use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
-    use brepkit_math::nurbs::curve::NurbsCurve;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
     use crate::convert::curve_to_nurbs::{circle_to_nurbs, ellipse_to_nurbs, line_to_nurbs};

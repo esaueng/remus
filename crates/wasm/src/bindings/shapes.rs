@@ -4,11 +4,11 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 use wasm_bindgen::prelude::*;
 
 use crate::error::{WasmError, validate_finite, validate_positive, validate_work_count};
@@ -156,7 +156,7 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         let start = Point3::new(x1, y1, z1);
         let end = Point3::new(x2, y2, z2);
-        let eid = brepkit_topology::builder::make_line_edge(self.topo_mut(), start, end, TOL)?;
+        let eid = remus_topology::builder::make_line_edge(self.topo_mut(), start, end, TOL)?;
         Ok(edge_id_to_u32(eid))
     }
 
@@ -197,7 +197,7 @@ impl BrepKernel {
         normal.normalize().map_err(|e| WasmError::InvalidInput {
             reason: format!("invalid normal: {e}"),
         })?;
-        let eid = brepkit_topology::builder::make_circle_edge(
+        let eid = remus_topology::builder::make_circle_edge(
             self.topo_mut(),
             center,
             normal,
@@ -254,7 +254,7 @@ impl BrepKernel {
         normal.normalize().map_err(|e| WasmError::InvalidInput {
             reason: format!("invalid normal: {e}"),
         })?;
-        let eid = brepkit_topology::builder::make_ellipse_edge(
+        let eid = remus_topology::builder::make_ellipse_edge(
             self.topo_mut(),
             center,
             normal,
@@ -318,7 +318,7 @@ impl BrepKernel {
         ref_dir.normalize().map_err(|e| WasmError::InvalidInput {
             reason: format!("invalid ref_dir: {e}"),
         })?;
-        let eid = brepkit_topology::builder::make_circle_edge_with_ref(
+        let eid = remus_topology::builder::make_circle_edge_with_ref(
             self.topo_mut(),
             center,
             normal,
@@ -395,7 +395,7 @@ impl BrepKernel {
         ref_dir.normalize().map_err(|e| WasmError::InvalidInput {
             reason: format!("invalid ref_dir: {e}"),
         })?;
-        let eid = brepkit_topology::builder::make_ellipse_edge_with_ref(
+        let eid = remus_topology::builder::make_ellipse_edge_with_ref(
             self.topo_mut(),
             center,
             normal,
@@ -455,10 +455,10 @@ impl BrepKernel {
         );
         let v_axis = n.cross(u_axis);
 
-        let circle = brepkit_math::curves::Circle3D::with_axes(center, n, radius, u_axis, v_axis)
+        let circle = remus_math::curves::Circle3D::with_axes(center, n, radius, u_axis, v_axis)
             .map_err(|e| WasmError::InvalidInput {
-            reason: format!("invalid circle: {e}"),
-        })?;
+                reason: format!("invalid circle: {e}"),
+            })?;
 
         let v_start = self.topo_mut().add_vertex(Vertex::new(start_pt, TOL));
         let v_end = if (start_pt - end_pt).length() < TOL * 100.0 {
@@ -537,7 +537,7 @@ impl BrepKernel {
         let start_pt = Point3::new(start_x, start_y, start_z);
         let end_pt = Point3::new(end_x, end_y, end_z);
 
-        let eid = brepkit_topology::builder::make_ellipse_arc(
+        let eid = remus_topology::builder::make_ellipse_arc(
             self.topo_mut(),
             center,
             axis,
@@ -674,7 +674,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makeFaceFromWire")]
     pub fn make_face_from_wire(&mut self, wire: u32) -> Result<u32, JsError> {
         let wid = self.resolve_wire(wire)?;
-        let fid = brepkit_topology::builder::make_face_from_wire(self.topo_mut(), wid)?;
+        let fid = remus_topology::builder::make_face_from_wire(self.topo_mut(), wid)?;
         Ok(face_id_to_u32(fid))
     }
 
@@ -688,7 +688,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makePlanarFaceFromWire")]
     pub fn make_planar_face_from_wire(&mut self, wire: u32) -> Result<u32, JsError> {
         let wid = self.resolve_wire(wire)?;
-        let fid = brepkit_topology::builder::make_planar_face_from_wire(self.topo_mut(), wid)?;
+        let fid = remus_topology::builder::make_planar_face_from_wire(self.topo_mut(), wid)?;
         Ok(face_id_to_u32(fid))
     }
 
@@ -725,7 +725,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "solidFromShell")]
     pub fn solid_from_shell(&mut self, shell: u32) -> Result<u32, JsError> {
         let shell_id = self.resolve_shell(shell)?;
-        let solid = brepkit_topology::solid::Solid::new(shell_id, vec![]);
+        let solid = remus_topology::solid::Solid::new(shell_id, vec![]);
         let sid = self.topo_mut().add_solid(solid);
         Ok(solid_id_to_u32(sid))
     }
@@ -736,11 +736,11 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makeCompound")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn make_compound(&mut self, solid_handles: Vec<u32>) -> Result<u32, JsError> {
-        let solid_ids: Vec<brepkit_topology::solid::SolidId> = solid_handles
+        let solid_ids: Vec<remus_topology::solid::SolidId> = solid_handles
             .iter()
             .map(|&h| self.resolve_solid(h))
             .collect::<Result<_, _>>()?;
-        let compound = brepkit_topology::compound::Compound::new(solid_ids);
+        let compound = remus_topology::compound::Compound::new(solid_ids);
         #[allow(clippy::cast_possible_truncation)]
         let cid = self.topo_mut().add_compound(compound);
         Ok(cid.index() as u32)
@@ -781,7 +781,7 @@ impl BrepKernel {
             .into());
         }
 
-        let solid_id = brepkit_operations::primitives::make_convex_hull(self.topo_mut(), &points)?;
+        let solid_id = remus_operations::primitives::make_convex_hull(self.topo_mut(), &points)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -831,7 +831,7 @@ impl BrepKernel {
             .into());
         }
         let n_sides = validate_work_count(n_sides, "n_sides")?;
-        let wid = brepkit_topology::builder::make_regular_polygon_wire(
+        let wid = remus_topology::builder::make_regular_polygon_wire(
             self.topo_mut(),
             radius,
             n_sides,
@@ -854,7 +854,7 @@ impl BrepKernel {
         }
         let segments = validate_work_count(segments, "segments")?;
         let fid =
-            brepkit_topology::builder::make_circle_face(self.topo_mut(), radius, segments, TOL)?;
+            remus_topology::builder::make_circle_face(self.topo_mut(), radius, segments, TOL)?;
         Ok(face_id_to_u32(fid))
     }
 }
@@ -918,9 +918,9 @@ impl BrepKernel {
     ///
     /// See [`make_wire`](Self::make_wire).
     pub fn make_wire_impl(&mut self, edge_handles: &[u32], closed: bool) -> Result<u32, WasmError> {
-        let tol = brepkit_math::tolerance::Tolerance::new();
+        let tol = remus_math::tolerance::Tolerance::new();
 
-        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, WasmError>>()?;
@@ -979,18 +979,18 @@ impl BrepKernel {
         inner_wire_handles: &[u32],
     ) -> Result<u32, WasmError> {
         let outer = self.resolve_wire(outer_wire)?;
-        let holes: Vec<brepkit_topology::wire::WireId> = inner_wire_handles
+        let holes: Vec<remus_topology::wire::WireId> = inner_wire_handles
             .iter()
             .map(|&h| self.resolve_wire(h))
             .collect::<Result<_, _>>()?;
 
         // Derive the plane before allocating anything, so a non-planar outer
         // wire fails without leaving a half-built face in the arena.
-        let (normal, d) = brepkit_topology::builder::wire_plane(&self.topo, outer)?;
+        let (normal, d) = remus_topology::builder::wire_plane(&self.topo, outer)?;
 
         let fid = crate::holed_face::build_holed_face(
             self.topo_mut(),
-            brepkit_topology::face::FaceSurface::Plane { normal, d },
+            remus_topology::face::FaceSurface::Plane { normal, d },
             outer,
             &[],
             &holes,
@@ -1004,7 +1004,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::face::FaceSurface;
 
     // ── make_rectangle ────────────────────────────────────────────
 

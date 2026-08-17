@@ -1,13 +1,13 @@
 //! Replays every committed reproduction bundle under `tests/repro/`.
 //!
-//! Each `.json` file is a versioned repro bundle (see `brepkit_wasm::repro`).
+//! Each `.json` file is a versioned repro bundle (see `remus_wasm::repro`).
 //! Adding a regression means adding a bundle file; this suite picks it up
 //! with no code change.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_wasm::repro::ReproBundle;
+use remus_wasm::repro::ReproBundle;
 
 #[test]
 fn all_committed_bundles_replay() {

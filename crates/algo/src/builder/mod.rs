@@ -31,12 +31,12 @@ pub use face_class::FaceClass;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use brepkit_math::tolerance::Tolerance;
+use remus_math::tolerance::Tolerance;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::bop::{self, BooleanOp};
 use crate::classifier;
@@ -166,7 +166,7 @@ fn face_area_estimate(topo: &Topology, fid: FaceId) -> f64 {
     };
     let ring = |wid| -> f64 {
         let Ok(w) = topo.wire(wid) else { return 0.0 };
-        let mut pts: Vec<brepkit_math::vec::Point3> = Vec::new();
+        let mut pts: Vec<remus_math::vec::Point3> = Vec::new();
         for oe in w.edges() {
             let Ok(e) = topo.edge(oe.edge()) else {
                 continue;
@@ -179,7 +179,7 @@ fn face_area_estimate(topo: &Topology, fid: FaceId) -> f64 {
         if pts.len() < 3 {
             return 0.0;
         }
-        let mut acc = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+        let mut acc = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
         for i in 1..pts.len() - 1 {
             let u = pts[i] - pts[0];
             let v = pts[i + 1] - pts[0];
@@ -271,7 +271,7 @@ fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::Selec
                         let (p, q) = (a.point(), b.point());
                         let (d0, d1) = e.curve().domain_with_endpoints(p, q);
                         let span =
-                            if matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+                            if matches!(e.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                                 format!("{:.1}deg", (d1 - d0).to_degrees())
                             } else {
                                 String::new()
@@ -450,7 +450,7 @@ impl Builder {
         &self,
         selected: &[bop::SelectedFace],
     ) -> Vec<assemble::CapPlane> {
-        use brepkit_topology::face::FaceSurface;
+        use remus_topology::face::FaceSurface;
         let kept: std::collections::HashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
         let mut planes = Vec::new();
         for pair in &self.sd_pairs {
@@ -491,12 +491,12 @@ impl Builder {
 
     /// Build the face-to-rank mapping from both solids.
     fn build_face_ranks(&mut self) -> Result<(), AlgoError> {
-        let faces_a = brepkit_topology::explorer::solid_faces(&self.topo, self.solid_a)?;
+        let faces_a = remus_topology::explorer::solid_faces(&self.topo, self.solid_a)?;
         for fid in faces_a {
             self.face_ranks.insert(fid, Rank::A);
         }
 
-        let faces_b = brepkit_topology::explorer::solid_faces(&self.topo, self.solid_b)?;
+        let faces_b = remus_topology::explorer::solid_faces(&self.topo, self.solid_b)?;
         for fid in faces_b {
             self.face_ranks.insert(fid, Rank::B);
         }
@@ -658,23 +658,22 @@ impl Builder {
                     // opposing plane and cardinal rays graze the coincident cap
                     // (voting wrongly Inside). Classify by 2D containment in the
                     // opposing face's region instead.
-                    let coincident =
-                        if let brepkit_topology::face::FaceSurface::Plane { normal, d } =
-                            self.topo.face(sf.face_id)?.surface()
-                        {
-                            classifier::classify_coincident_coplanar(
-                                &self.topo,
-                                opposing_solid,
-                                opposing_geoms,
-                                sf.face_id,
-                                *normal,
-                                *d,
-                                Some(point),
-                                self.tol,
-                            )?
-                        } else {
-                            None
-                        };
+                    let coincident = if let remus_topology::face::FaceSurface::Plane { normal, d } =
+                        self.topo.face(sf.face_id)?.surface()
+                    {
+                        classifier::classify_coincident_coplanar(
+                            &self.topo,
+                            opposing_solid,
+                            opposing_geoms,
+                            sf.face_id,
+                            *normal,
+                            *d,
+                            Some(point),
+                            self.tol,
+                        )?
+                    } else {
+                        None
+                    };
                     sf.classification = match coincident {
                         Some(class) => class,
                         None => classifier::classify_point_cached(
@@ -944,7 +943,7 @@ fn orient_selected_fuse_analytic_holes(
         if face.is_reversed()
             || matches!(
                 face.surface(),
-                brepkit_topology::face::FaceSurface::Plane { .. }
+                remus_topology::face::FaceSurface::Plane { .. }
             )
             || face.inner_wires().is_empty()
         {
@@ -963,10 +962,10 @@ fn orient_selected_fuse_analytic_holes(
                 .iter()
                 .rev()
                 .map(|edge| {
-                    brepkit_topology::wire::OrientedEdge::new(edge.edge(), !edge.is_forward())
+                    remus_topology::wire::OrientedEdge::new(edge.edge(), !edge.is_forward())
                 })
                 .collect();
-            let Ok(wire) = brepkit_topology::wire::Wire::new(edges, wire.is_closed()) else {
+            let Ok(wire) = remus_topology::wire::Wire::new(edges, wire.is_closed()) else {
                 replacements.clear();
                 break;
             };
@@ -1016,7 +1015,7 @@ fn orient_selected_fuse_analytic_holes(
 fn sample_closed_boundary_interior(
     topo: &Topology,
     face_id: FaceId,
-    normal: brepkit_math::vec::Vec3,
+    normal: remus_math::vec::Vec3,
 ) -> Result<Option<Point3>, AlgoError> {
     /// Samples per boundary edge. A closed circle spans the whole ring, so
     /// this is the ring's resolution; the sampler only needs enough points for
@@ -1055,12 +1054,12 @@ fn sample_closed_boundary_interior(
 fn sample_holed_face_interior(
     topo: &Topology,
     face_id: FaceId,
-    normal: brepkit_math::vec::Vec3,
+    normal: remus_math::vec::Vec3,
 ) -> Result<Option<Point3>, AlgoError> {
     const CURVE_SAMPLES: u32 = 16;
 
     let face = topo.face(face_id)?;
-    let sample_wire = |wid: brepkit_topology::wire::WireId| -> Result<Vec<Point3>, AlgoError> {
+    let sample_wire = |wid: remus_topology::wire::WireId| -> Result<Vec<Point3>, AlgoError> {
         let wire = topo.wire(wid)?;
         let mut pts = Vec::new();
         for oe in wire.edges() {
@@ -1068,7 +1067,7 @@ fn sample_holed_face_interior(
             let sp = topo.vertex(e.start())?.point();
             let ep = topo.vertex(e.end())?.point();
             pts.push(sp);
-            if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
                 let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
                 for k in 1..CURVE_SAMPLES {
                     let t = f64::from(k).mul_add((t1 - t0) / f64::from(CURVE_SAMPLES), t0);
@@ -1098,7 +1097,7 @@ fn sample_holed_face_interior(
         .map(|h| h.iter().map(|p| frame.project(*p)).collect::<Vec<_>>())
         .collect();
 
-    let mut candidates: Vec<brepkit_math::vec::Point2> = Vec::new();
+    let mut candidates: Vec<remus_math::vec::Point2> = Vec::new();
     for &o in &outer2d {
         if let Some(nearest) = holes2d
             .iter()
@@ -1111,7 +1110,7 @@ fn sample_holed_face_interior(
             })
             .copied()
         {
-            candidates.push(brepkit_math::vec::Point2::new(
+            candidates.push(remus_math::vec::Point2::new(
                 f64::midpoint(o.x(), nearest.x()),
                 f64::midpoint(o.y(), nearest.y()),
             ));
@@ -1119,12 +1118,12 @@ fn sample_holed_face_interior(
     }
     #[allow(clippy::cast_precision_loss)]
     let inv = 1.0 / outer2d.len() as f64;
-    candidates.push(brepkit_math::vec::Point2::new(
+    candidates.push(remus_math::vec::Point2::new(
         outer2d.iter().map(|p| p.x()).sum::<f64>() * inv,
         outer2d.iter().map(|p| p.y()).sum::<f64>() * inv,
     ));
 
-    let mut best: Option<(f64, brepkit_math::vec::Point2)> = None;
+    let mut best: Option<(f64, remus_math::vec::Point2)> = None;
     for c in candidates {
         if !classify_2d::point_in_polygon_2d(c, &outer2d)
             || holes2d
@@ -1150,7 +1149,7 @@ fn sample_face_interior(
     face_id: FaceId,
     tol: Tolerance,
 ) -> Result<Point3, AlgoError> {
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
 
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
@@ -1182,7 +1181,7 @@ fn sample_face_interior(
                 .curve()
                 .evaluate_with_endpoints(0.5_f64.mul_add(t1 - t0, t0), sp, ep);
             if e.start() == e.end()
-                && !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line)
+                && !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line)
                 && closed_mid.is_none()
             {
                 closed_mid = Some(mid);
@@ -1217,7 +1216,7 @@ fn sample_face_interior(
         // the sample ~1e-7 off its own boundary, right on top of any
         // coincident wall, where the ray cast is a coin flip.
         let mut pts = vec![sp, ep];
-        if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+        if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
             let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
             for k in 1..4 {
                 let t = f64::from(k).mul_add((t1 - t0) / 4.0, t0);
@@ -1281,7 +1280,7 @@ fn sample_face_interior(
     } else {
         // Plane: normal is constant
         match surface {
-            brepkit_topology::face::FaceSurface::Plane { normal, .. } => *normal,
+            remus_topology::face::FaceSurface::Plane { normal, .. } => *normal,
             _ => Vec3::new(0.0, 0.0, 1.0),
         }
     };
@@ -1306,7 +1305,7 @@ fn sample_face_interior(
     // sample OUTSIDE the face and into the opposing solid, misclassifying a
     // thin sliver. Project the boundary, then pick the offset sign (shrinking
     // the magnitude for strips thinner than the offset) that lands inside.
-    if let brepkit_topology::face::FaceSurface::Plane { normal, .. } = surface {
+    if let remus_topology::face::FaceSurface::Plane { normal, .. } = surface {
         // A face with holes needs a sample in the MATERIAL, well clear of both
         // rims. Offsetting inward from the outer boundary is not enough: on an
         // annular cap it lands a hair inside its own rim, and the opposing
@@ -1421,7 +1420,7 @@ fn sample_face_interior(
     // planar face only when its boundary has < 3 vertices (a single closed
     // circle/ellipse edge); the centroid above is the disc center, so the
     // flipped offset points into the disc.
-    if matches!(surface, brepkit_topology::face::FaceSurface::Plane { .. }) && inward_len > 1e-12 {
+    if matches!(surface, remus_topology::face::FaceSurface::Plane { .. }) && inward_len > 1e-12 {
         return Ok(interior_pt);
     }
 
@@ -1434,8 +1433,8 @@ fn sample_face_interior(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::builder::{make_face_from_wire, make_polygon_wire};
+    use remus_math::vec::Vec3;
+    use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
 
     #[test]
     fn sample_face_interior_thin_l_frame_lands_in_strip() {
@@ -1476,8 +1475,8 @@ mod tests {
     /// A planar disc bounded by a single closed circle edge, radius `r`,
     /// centred on the origin in the z=0 plane.
     fn unit_disc(topo: &mut Topology, radius: f64) -> FaceId {
-        use brepkit_topology::builder::make_circle_edge;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_topology::builder::make_circle_edge;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let edge = make_circle_edge(
             topo,

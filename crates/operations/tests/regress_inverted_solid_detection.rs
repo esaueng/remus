@@ -2,7 +2,7 @@
 //!
 //! `measure::solid_volume` returns the MAGNITUDE of its integral. That is a
 //! reasonable contract for a volume — every caller reads one as a positive
-//! quantity — but it made a real corruption invisible. brepkit#59's segmented
+//! quantity — but it made a real corruption invisible. remus#59's segmented
 //! revolve built solids whose every face pointed inward: closed, 2-manifold,
 //! consistently wound, `validate_solid`-clean, and reported at exactly the
 //! right positive volume. The winding sign is what an STL facet normal is
@@ -35,15 +35,15 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{solid_is_inverted, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cylinder, make_sphere};
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::validate;
-use brepkit_topology::Topology;
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{solid_is_inverted, solid_volume};
+use remus_operations::primitives::{make_box, make_cylinder, make_sphere};
+use remus_operations::transform::transform_solid;
+use remus_operations::validate;
+use remus_topology::Topology;
+use remus_topology::shell::ShellId;
+use remus_topology::solid::SolidId;
 
 /// Coarsest first, so nothing passes by being swept first. The verdict is a
 /// SIGN, so it must not move with the units — and the threshold that separates
@@ -214,7 +214,7 @@ fn an_inside_out_body_is_reported_and_still_measures_its_volume() {
 /// merely untested.
 #[test]
 fn a_coarse_order_reaches_the_same_verdict_and_skip_reaches_none() {
-    use brepkit_operations::validate::{OrientationCheck, ValidationOptions};
+    use remus_operations::validate::{OrientationCheck, ValidationOptions};
 
     fn orientation_errors(topo: &Topology, solid: SolidId, check: OrientationCheck) -> usize {
         let opts = ValidationOptions {

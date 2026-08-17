@@ -24,21 +24,21 @@
 
 use std::collections::HashMap;
 
-use brepkit_blend::BlendError;
-use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::OperationsError;
-use brepkit_operations::blend_ops;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure;
-use brepkit_operations::primitives;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_blend::BlendError;
+use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::OperationsError;
+use remus_operations::blend_ops;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure;
+use remus_operations::primitives;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const R: f64 = 45.0;
 const H: f64 = 10.0;
@@ -264,13 +264,13 @@ fn closed_rim_chamfer_removes_material_on_the_right_side() {
 /// them.
 #[test]
 fn rim_chamfer_preserves_cap_holes() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_math::vec::Vec3;
-    use brepkit_operations::boolean::{BooleanOp, boolean};
-    use brepkit_operations::heal::unify_faces;
-    use brepkit_operations::revolve::revolve;
-    use brepkit_operations::transform::transform_solid;
-    use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+    use remus_math::mat::Mat4;
+    use remus_math::vec::Vec3;
+    use remus_operations::boolean::{BooleanOp, boolean};
+    use remus_operations::heal::unify_faces;
+    use remus_operations::revolve::revolve;
+    use remus_operations::transform::transform_solid;
+    use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
 
     let revolved = |t: &mut Topology, ri: f64, ro: f64, z0: f64, z1: f64| {
         let pts = [

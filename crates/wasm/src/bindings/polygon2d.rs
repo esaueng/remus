@@ -8,8 +8,8 @@ use crate::error::{WasmError, validate_positive};
 use crate::helpers::{parse_polygon_2d, parse_polygon_2d_checked, polygons_overlap_2d};
 use crate::kernel::BrepKernel;
 use crate::types::PolygonBoolean2dResult;
-use brepkit_math::polygon_boolean::{BooleanOp as PolyBooleanOp, polygon_boolean};
-use brepkit_math::polygon2d::{
+use remus_math::polygon_boolean::{BooleanOp as PolyBooleanOp, polygon_boolean};
+use remus_math::polygon2d::{
     chamfer_polygon_2d, fillet_polygon_2d, find_common_segments, sutherland_hodgman_clip,
 };
 
@@ -42,7 +42,7 @@ pub fn parse_polygon_boolean_op(name: &str) -> Result<PolyBooleanOp, WasmError> 
 /// caller would read that as "the polygons do not overlap".
 fn resolve_polygon_tolerance(tolerance: Option<f64>) -> Result<f64, WasmError> {
     match tolerance {
-        None => Ok(brepkit_math::tolerance::Tolerance::new().linear),
+        None => Ok(remus_math::tolerance::Tolerance::new().linear),
         Some(t) => {
             validate_positive(t, "tolerance")?;
             Ok(t)
@@ -71,7 +71,7 @@ pub fn polygon_boolean_2d_impl(
     let tol = resolve_polygon_tolerance(tolerance)?;
 
     let result = polygon_boolean(&poly_a, &poly_b, op, tol);
-    let flatten = |loops: &[Vec<brepkit_math::vec::Point2>]| -> Vec<Vec<f64>> {
+    let flatten = |loops: &[Vec<remus_math::vec::Point2>]| -> Vec<Vec<f64>> {
         loops
             .iter()
             .map(|l| l.iter().flat_map(|p| [p.x(), p.y()]).collect())
@@ -108,11 +108,11 @@ impl BrepKernel {
             }
             .into());
         }
-        let points: Vec<brepkit_math::vec::Point2> = coords
+        let points: Vec<remus_math::vec::Point2> = coords
             .chunks_exact(2)
-            .map(|c| brepkit_math::vec::Point2::new(c[0], c[1]))
+            .map(|c| remus_math::vec::Point2::new(c[0], c[1]))
             .collect();
-        let result = brepkit_math::polygon_offset::offset_polygon_2d(&points, distance, tolerance)?;
+        let result = remus_math::polygon_offset::offset_polygon_2d(&points, distance, tolerance)?;
         Ok(result.iter().flat_map(|p| [p.x(), p.y()]).collect())
     }
 
@@ -136,12 +136,12 @@ impl BrepKernel {
             }
             .into());
         }
-        let polygon: Vec<brepkit_math::vec::Point2> = polygon_coords
+        let polygon: Vec<remus_math::vec::Point2> = polygon_coords
             .chunks_exact(2)
-            .map(|c| brepkit_math::vec::Point2::new(c[0], c[1]))
+            .map(|c| remus_math::vec::Point2::new(c[0], c[1]))
             .collect();
-        let point = brepkit_math::vec::Point2::new(px, py);
-        Ok(brepkit_math::predicates::point_in_polygon(point, &polygon))
+        let point = remus_math::vec::Point2::new(px, py);
+        Ok(remus_math::predicates::point_in_polygon(point, &polygon))
     }
 
     /// Test if two 2D polygons intersect (overlap).
@@ -602,7 +602,7 @@ mod polygon_boolean_tests {
             serde_json::json!({
                 "coordsA": sq(0.0, 0.0, 10.0),
                 "coordsB": sq(5.0, 5.0, 10.0),
-                "tolerance": brepkit_math::tolerance::Tolerance::new().linear,
+                "tolerance": remus_math::tolerance::Tolerance::new().linear,
             }),
         );
         assert_eq!(with_default, explicit);

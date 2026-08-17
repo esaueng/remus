@@ -58,18 +58,18 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::blend_ops;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::blend_ops;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const W: f64 = 80.0;
 const D: f64 = 60.0;
@@ -502,8 +502,8 @@ fn mixed_selection_never_returns_the_perimeter_only_result() {
 /// reach must now be an error, not a quieter success.
 #[test]
 fn rolling_ball_refuses_to_blend_a_subset() {
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::vertex::Vertex;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
 
     let mut topo = Topology::new();
     let body = make_box(&mut topo, W, D, H).expect("box");
@@ -518,8 +518,7 @@ fn rolling_ball_refuses_to_blend_a_subset() {
     let before = measure::solid_volume(&topo, body, 0.001).unwrap();
 
     #[allow(deprecated)]
-    let outcome =
-        brepkit_operations::fillet::fillet_rolling_ball(&mut topo, body, &[real, stray], R);
+    let outcome = remus_operations::fillet::fillet_rolling_ball(&mut topo, body, &[real, stray], R);
     let err =
         outcome.expect_err("naming an edge the engine cannot blend must not succeed on the rest");
     let msg = format!("{err}");
@@ -538,7 +537,7 @@ fn rolling_ball_refuses_to_blend_a_subset() {
     // The same edge on its own still rounds, so the refusal is about the stray
     // edge and not about the selection being unsupported.
     #[allow(deprecated)]
-    let ok = brepkit_operations::fillet::fillet_rolling_ball(&mut topo, body, &[real], R)
+    let ok = remus_operations::fillet::fillet_rolling_ball(&mut topo, body, &[real], R)
         .expect("the real edge still blends on its own");
     let removed = before - measure::solid_volume(&topo, ok, 0.001).unwrap();
     let want = closed_form_removal(R, &[W], 0, 0);

@@ -6,14 +6,14 @@
 //! edges by projecting one face's boundary edges into the other face's
 //! interior.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
+use remus_math::aabb::Aabb3;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
 
 use crate::ds::{GfaArena, Interference, IntersectionCurveDS, Pave, PaveBlock, PaveBlockId};
 use crate::error::AlgoError;
@@ -34,8 +34,8 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
-    let faces_a = brepkit_topology::explorer::solid_faces(topo, solid_a)?;
-    let faces_b = brepkit_topology::explorer::solid_faces(topo, solid_b)?;
+    let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
+    let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
     let planes_a = collect_plane_faces(topo, &faces_a)?;
     let planes_b = collect_plane_faces(topo, &faces_b)?;
@@ -118,7 +118,7 @@ fn compute_face_bboxes(
 
 /// Compute AABB for a face by sampling its boundary edges.
 fn compute_face_bbox(topo: &Topology, face_id: FaceId) -> Result<Aabb3, AlgoError> {
-    let edges = brepkit_topology::explorer::face_edges(topo, face_id)?;
+    let edges = remus_topology::explorer::face_edges(topo, face_id)?;
     let mut points = Vec::new();
 
     for eid in edges {
@@ -332,13 +332,7 @@ fn face_boundary_polygon_2d(
 }
 
 /// Boundary edge info: `(EdgeId, 2D start, 2D end, 3D start, 3D end)`.
-type BoundaryEdge = (
-    brepkit_topology::edge::EdgeId,
-    Point2,
-    Point2,
-    Point3,
-    Point3,
-);
+type BoundaryEdge = (remus_topology::edge::EdgeId, Point2, Point2, Point3, Point3);
 
 /// Collect boundary edges with 2D and 3D endpoint positions.
 ///
@@ -388,7 +382,7 @@ fn matching_arc_section_exists(
     arena: &GfaArena,
     face_a: FaceId,
     face_b: FaceId,
-    eid: brepkit_topology::edge::EdgeId,
+    eid: remus_topology::edge::EdgeId,
     tol: Tolerance,
 ) -> bool {
     let Ok(edge) = topo.edge(eid) else {
@@ -543,10 +537,10 @@ fn clip_section_to_polygon(
 /// `merge_duplicate_edges` to recognize them as the same geometric edge.
 fn create_coplanar_common_block(
     arena: &mut GfaArena,
-    a_edge: brepkit_topology::edge::EdgeId,
-    b_edge: brepkit_topology::edge::EdgeId,
+    a_edge: remus_topology::edge::EdgeId,
+    b_edge: remus_topology::edge::EdgeId,
 ) {
-    let get_leaves = |edge: brepkit_topology::edge::EdgeId| -> Vec<PaveBlockId> {
+    let get_leaves = |edge: remus_topology::edge::EdgeId| -> Vec<PaveBlockId> {
         arena
             .edge_pave_blocks
             .get(&edge)
@@ -669,7 +663,7 @@ fn find_or_create_vertex(
     arena: &GfaArena,
     point: Point3,
     tol: Tolerance,
-) -> brepkit_topology::vertex::VertexId {
+) -> remus_topology::vertex::VertexId {
     if let Some(vid) = find_nearby_pave_vertex(topo, arena, point, tol) {
         return vid;
     }

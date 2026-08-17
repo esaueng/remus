@@ -1,8 +1,8 @@
 //! Special topology handlers for face splitting edge cases.
 
-use brepkit_math::vec::{Point2, Point3, Vec2};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::vec::{Point2, Point3, Vec2};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use super::super::plane_frame::PlaneFrame;
 use super::super::split_types::{OrientedPCurveEdge, SectionEdge, SplitSubFace};
@@ -387,8 +387,8 @@ fn build_seam_arcs(
     open_sections: &[OrientedPCurveEdge],
     tol: f64,
 ) -> Option<Vec<OrientedPCurveEdge>> {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::Vec3;
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
 
     let FaceSurface::Sphere(sphere) = surface else {
         return None;
@@ -507,7 +507,7 @@ fn trace_region_loops(soup: &[OrientedPCurveEdge], tol: f64) -> Vec<Vec<Oriented
         r
     };
     // u wraps; quantize u modulo 2π so seam-opposite endpoints share a key.
-    let key = |p: brepkit_math::vec::Point2| -> (i64, i64) { (q(p.x().rem_euclid(TAU)), q(p.y())) };
+    let key = |p: remus_math::vec::Point2| -> (i64, i64) { (q(p.x().rem_euclid(TAU)), q(p.y())) };
 
     // Direction of a half-edge at one endpoint, from the pcurve's analytic
     // tangent (it already encodes the correct arc and bulge — avoiding the
@@ -517,7 +517,7 @@ fn trace_region_loops(soup: &[OrientedPCurveEdge], tol: f64) -> Vec<Vec<Oriented
     // returns the OUTGOING direction at the logical start; `false` the INCOMING
     // direction at the logical end (pointing back toward the start).
     let edge_dir = |e: &OrientedPCurveEdge, from_start: bool| -> f64 {
-        use brepkit_math::curves2d::Curve2D;
+        use remus_math::curves2d::Curve2D;
         let (mut dx, dy) = if let Curve2D::Nurbs(nurbs) = &e.pcurve {
             let (t0, t1) = nurbs.domain();
             let (t_at, sign) = match (from_start, e.forward) {
@@ -608,9 +608,9 @@ fn trace_region_loops(soup: &[OrientedPCurveEdge], tol: f64) -> Vec<Vec<Oriented
 /// start→end. A reversed half-edge reuses the forward pcurve, so its start is
 /// the pcurve's domain end; curved (NURBS) pcurves are sampled over their own
 /// domain (which is not generally [0,1]).
-fn sample_half_edge_uv(e: &OrientedPCurveEdge, f: f64) -> brepkit_math::vec::Point2 {
-    use brepkit_math::curves2d::Curve2D;
-    use brepkit_math::vec::Point2;
+fn sample_half_edge_uv(e: &OrientedPCurveEdge, f: f64) -> remus_math::vec::Point2 {
+    use remus_math::curves2d::Curve2D;
+    use remus_math::vec::Point2;
     match &e.pcurve {
         Curve2D::Nurbs(nurbs) => {
             let (t0, t1) = nurbs.domain();
@@ -629,7 +629,7 @@ fn sample_half_edge_uv(e: &OrientedPCurveEdge, f: f64) -> brepkit_math::vec::Poi
 }
 
 /// Polyline (UV) approximation of a loop, sampling curved edges.
-fn loop_polyline(loop_edges: &[OrientedPCurveEdge]) -> Vec<brepkit_math::vec::Point2> {
+fn loop_polyline(loop_edges: &[OrientedPCurveEdge]) -> Vec<remus_math::vec::Point2> {
     let mut poly = Vec::new();
     for e in loop_edges {
         let n = if matches!(e.curve_3d, EdgeCurve::Line) {
@@ -679,7 +679,7 @@ fn patch_interior_point(
     hole_loops: &[Vec<OrientedPCurveEdge>],
     open_sections: &[OrientedPCurveEdge],
 ) -> Point3 {
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
     let FaceSurface::Sphere(sphere) = surface else {
         return Point3::new(0.0, 0.0, 0.0);
     };
@@ -747,7 +747,7 @@ fn chain_closed_loop(
 /// Whether a straight boundary segment lies along (is a chord of) the
 /// arc: both endpoints on the arc's circle, within the arc's angular span.
 fn arc_covers_segment(arc: &OrientedPCurveEdge, segment: &OrientedPCurveEdge, tol: f64) -> bool {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
     let EdgeCurve::Circle(c) = &arc.curve_3d else {
         return false;
     };
@@ -797,7 +797,7 @@ fn arc_covers_segment(arc: &OrientedPCurveEdge, segment: &OrientedPCurveEdge, to
 /// the loop edges' midpoints, projected back onto the sphere. `None` for
 /// non-sphere surfaces (callers fall back to UV-based interior sampling).
 fn sphere_loop_interior(surface: &FaceSurface, edges: &[OrientedPCurveEdge]) -> Option<Point3> {
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
     let FaceSurface::Sphere(s) = surface else {
         return None;
     };
@@ -858,8 +858,8 @@ pub(super) fn split_periodic_face_into_bands(
     face_id: FaceId,
     tol: f64,
 ) -> Option<Vec<SplitSubFace>> {
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::{Point2, Vec2};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
     use std::f64::consts::{PI, TAU};
 
     if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
@@ -915,7 +915,7 @@ pub(super) fn split_periodic_face_into_bands(
     // Reference traversal tangent: how the original bottom circle is
     // traversed at the seam. Section circles in the lower role must
     // traverse the same way; in the upper role, the opposite way.
-    let traversal_tangent = |e: &OrientedPCurveEdge| -> Option<brepkit_math::vec::Vec3> {
+    let traversal_tangent = |e: &OrientedPCurveEdge| -> Option<remus_math::vec::Vec3> {
         let EdgeCurve::Circle(c) = &e.curve_3d else {
             return None;
         };
@@ -1068,8 +1068,8 @@ pub(super) fn split_periodic_face_into_sectors(
     face_id: FaceId,
     tol: f64,
 ) -> Option<Vec<SplitSubFace>> {
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::{Point2, Vec2};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
     use std::f64::consts::{PI, TAU};
 
     if !matches!(surface, FaceSurface::Cylinder(_)) {
@@ -1196,7 +1196,7 @@ pub(super) fn split_periodic_face_into_sectors(
     // Rim arc between two relative angles at height `v`, traversed CCW when
     // `ccw` (bottom rim of an outward cylinder) and CW otherwise. UV runs on
     // the unwrapped angle so each sector's pcurve segment stays monotone.
-    let rim_circle = |e: &OrientedPCurveEdge| -> Option<brepkit_math::curves::Circle3D> {
+    let rim_circle = |e: &OrientedPCurveEdge| -> Option<remus_math::curves::Circle3D> {
         match &e.curve_3d {
             EdgeCurve::Circle(c) => Some(c.clone()),
             _ => None,
@@ -1204,7 +1204,7 @@ pub(super) fn split_periodic_face_into_sectors(
     };
     let bot_circle = rim_circle(bot_edge)?;
     let top_circle = rim_circle(top_edge)?;
-    let mk_arc = |circle: &brepkit_math::curves::Circle3D,
+    let mk_arc = |circle: &remus_math::curves::Circle3D,
                   v: f64,
                   a_rel: f64,
                   b_rel: f64,
@@ -1527,7 +1527,7 @@ pub(super) fn split_face_with_internal_loops(
     face_id: FaceId,
     wire_pts: &[Point3],
 ) -> Vec<SplitSubFace> {
-    let tol_3d = brepkit_math::tolerance::Tolerance::new().linear;
+    let tol_3d = remus_math::tolerance::Tolerance::new().linear;
 
     // Convert each section edge to an OrientedPCurveEdge, preserving the
     // original EdgeCurve (NURBS, Circle, etc.) without polyline approximation.
@@ -1803,7 +1803,7 @@ pub(super) fn split_face_with_internal_loops(
             // centroid (the circle center for single-circle loops, the
             // polygon centroid for multi-Line footprint loops).
             let n_samples = 16;
-            let mut sum = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+            let mut sum = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
             let mut count = 0_usize;
             for edge in loop_edges.iter() {
                 let (t0, t1) = edge.domain();
@@ -1813,7 +1813,7 @@ pub(super) fn split_face_with_internal_loops(
                     let pt = edge
                         .curve_3d
                         .evaluate_with_endpoints(t, edge.start_3d, edge.end_3d);
-                    sum += brepkit_math::vec::Vec3::new(pt.x(), pt.y(), pt.z());
+                    sum += remus_math::vec::Vec3::new(pt.x(), pt.y(), pt.z());
                     count += 1;
                 }
             }
@@ -1833,9 +1833,9 @@ pub(super) fn split_face_with_internal_loops(
                 FaceSurface::Plane { normal, .. } => {
                     let n = if reversed { -*normal } else { *normal };
                     // Offset INTO the solid (opposite to the face normal).
-                    brepkit_math::vec::Vec3::new(-n.x(), -n.y(), -n.z()) * 1e-6
+                    remus_math::vec::Vec3::new(-n.x(), -n.y(), -n.z()) * 1e-6
                 }
-                _ => brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0),
+                _ => remus_math::vec::Vec3::new(0.0, 0.0, 0.0),
             };
             Point3::new(
                 centroid.x() + normal_offset.x(),
@@ -2166,8 +2166,8 @@ fn union_internal_loop_with_hole(
     frame: &PlaneFrame,
     tol: f64,
 ) -> Option<(Vec<OrientedPCurveEdge>, Vec<OrientedPCurveEdge>)> {
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::Vec2;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::Vec2;
     #[derive(PartialEq, Clone, Copy)]
     enum Verdict {
         In,
@@ -2600,7 +2600,7 @@ pub(super) fn try_split_crossing_plane_face(
     reversed: bool,
     face_id: FaceId,
     frame: &PlaneFrame,
-    tol: &brepkit_math::tolerance::Tolerance,
+    tol: &remus_math::tolerance::Tolerance,
 ) -> Option<Vec<SplitSubFace>> {
     let cross_3d;
     let section_endpoints: Vec<Point3>;
@@ -2765,8 +2765,8 @@ pub(super) fn try_split_crossing_plane_face(
 
     let n = split_boundary.len();
     let make_edge = |start: Point3, end: Point3| -> OrientedPCurveEdge {
-        use brepkit_math::curves2d::{Curve2D, Line2D};
-        use brepkit_math::vec::Vec2;
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::vec::Vec2;
         let su = frame.project(start);
         let eu = frame.project(end);
         let dir = eu - su;
@@ -2861,8 +2861,8 @@ pub(super) fn try_split_disk_by_chords(
     frame: &PlaneFrame,
     tol: f64,
 ) -> Option<Vec<SplitSubFace>> {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
     use std::collections::{HashMap, HashSet};
     use std::f64::consts::{PI, TAU};
 
@@ -3432,12 +3432,12 @@ mod tests {
         FaceId, OrientedPCurveEdge, PlaneFrame, SectionEdge, arc_covers_segment,
         point_in_hole_loops_uv,
     };
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::face::FaceSurface;
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
     use std::f64::consts::{PI, TAU};
 
     fn dummy_pcurve() -> Curve2D {
@@ -3635,12 +3635,12 @@ mod tests {
         // wall face at classification).
         use super::super::super::split_types::SplitSubFace;
         use crate::ds::Rank;
-        use brepkit_topology::topology::Topology;
+        use remus_topology::topology::Topology;
 
         // A real FaceId for the `parent` field (never read by the function under
         // test, but the struct requires a valid handle).
         let mut dummy_topo = Topology::new();
-        let parent = brepkit_topology::test_utils::make_unit_square_face(&mut dummy_topo);
+        let parent = remus_topology::test_utils::make_unit_square_face(&mut dummy_topo);
 
         let cyl =
             CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0)
@@ -3697,10 +3697,10 @@ mod tests {
         // robustness of the contained-interior search on a thin remainder.
         use super::super::super::split_types::SplitSubFace;
         use crate::ds::Rank;
-        use brepkit_topology::topology::Topology;
+        use remus_topology::topology::Topology;
 
         let mut dummy_topo = Topology::new();
-        let parent = brepkit_topology::test_utils::make_unit_square_face(&mut dummy_topo);
+        let parent = remus_topology::test_utils::make_unit_square_face(&mut dummy_topo);
 
         let cyl =
             CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0)
@@ -3751,8 +3751,8 @@ mod tests {
     }
 
     fn dummy_face_id() -> FaceId {
-        let mut topo = brepkit_topology::topology::Topology::new();
-        brepkit_topology::test_utils::make_unit_square_face(&mut topo)
+        let mut topo = remus_topology::topology::Topology::new();
+        remus_topology::test_utils::make_unit_square_face(&mut topo)
     }
 
     fn section_chord(start: Point3, end: Point3) -> SectionEdge {

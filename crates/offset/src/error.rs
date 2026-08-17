@@ -1,18 +1,18 @@
 //! Error types for the offset engine.
 
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
 
 /// Errors from solid offset operations.
 #[derive(Debug, thiserror::Error)]
 pub enum OffsetError {
     /// A topology operation failed.
     #[error("topology error: {0}")]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math operation failed.
     #[error("math error: {0}")]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// The input parameters are invalid.
     #[error("invalid input: {reason}")]

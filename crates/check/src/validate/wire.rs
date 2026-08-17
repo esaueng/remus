@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::wire::WireId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::wire::WireId;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;
@@ -170,10 +170,10 @@ fn check_wire_self_intersection_impl(
         let p1 = topo.vertex(edge.end())?.point();
 
         match edge.curve() {
-            brepkit_topology::edge::EdgeCurve::Line => {
+            remus_topology::edge::EdgeCurve::Line => {
                 edge_segments.push(vec![p0, p1]);
             }
-            brepkit_topology::edge::EdgeCurve::Circle(c) => {
+            remus_topology::edge::EdgeCurve::Circle(c) => {
                 let is_closed = edge.start() == edge.end();
                 let (t0, t1) = if is_closed {
                     (0.0, std::f64::consts::TAU)
@@ -198,7 +198,7 @@ fn check_wire_self_intersection_impl(
                 }
                 edge_segments.push(pts);
             }
-            brepkit_topology::edge::EdgeCurve::Ellipse(e) => {
+            remus_topology::edge::EdgeCurve::Ellipse(e) => {
                 let is_closed = edge.start() == edge.end();
                 let (t0, t1) = if is_closed {
                     (0.0, std::f64::consts::TAU)
@@ -223,7 +223,7 @@ fn check_wire_self_intersection_impl(
                 }
                 edge_segments.push(pts);
             }
-            brepkit_topology::edge::EdgeCurve::Hyperbola(h) => {
+            remus_topology::edge::EdgeCurve::Hyperbola(h) => {
                 // Unbounded branch: the vertices are the only trim, and
                 // `project` inverts the parameterization exactly, so the
                 // sub-arc is the straight parameter interval — no
@@ -239,7 +239,7 @@ fn check_wire_self_intersection_impl(
                 }
                 edge_segments.push(pts);
             }
-            brepkit_topology::edge::EdgeCurve::Parabola(p) => {
+            remus_topology::edge::EdgeCurve::Parabola(p) => {
                 let (ta, tb) = (p.project(p0), p.project(p1));
                 let mut pts = Vec::with_capacity(samples_per_edge + 1);
                 for k in 0..=samples_per_edge {
@@ -251,7 +251,7 @@ fn check_wire_self_intersection_impl(
                 }
                 edge_segments.push(pts);
             }
-            brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
+            remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
                 let (t0, t1) = nc.domain();
                 let mut pts = Vec::with_capacity(samples_per_edge + 1);
                 for k in 0..=samples_per_edge {

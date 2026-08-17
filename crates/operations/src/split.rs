@@ -25,15 +25,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::curves::Circle3D;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed};
@@ -1064,10 +1064,10 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)], eps: f64) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
 

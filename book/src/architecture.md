@@ -10,15 +10,15 @@ invariant, not a convention: preserving it is a constraint on every change.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  L4: brepkit-wasm          brepkit-render            │  JS API / offscreen GPU
+│  L4: remus-wasm          remus-render            │  JS API / offscreen GPU
 ├──────────────────────────────────────────────────────┤
-│  L3: brepkit-operations    brepkit-io                │  Modeling ops / exchange
+│  L3: remus-operations    remus-io                │  Modeling ops / exchange
 ├──────────────────────────────────────────────────────┤
 │  L2: algo  blend  check  heal  offset  sketch        │  Engines
 ├──────────────────────────────────────────────────────┤
-│  L1: brepkit-topology      brepkit-geometry          │  B-Rep structures
+│  L1: remus-topology      remus-geometry          │  B-Rep structures
 ├──────────────────────────────────────────────────────┤
-│  L0: brepkit-math                                    │  Vectors, NURBS, predicates
+│  L0: remus-math                                    │  Vectors, NURBS, predicates
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -26,22 +26,22 @@ invariant, not a convention: preserving it is a constraint on every change.
 
 | Crate | Layer | Allowed Dependencies |
 |-------|-------|---------------------|
-| `brepkit-math` | L0 | External crates only |
-| `brepkit-geometry` | L1 | `brepkit-math` |
-| `brepkit-topology` | L1 | `brepkit-math` |
-| `brepkit-algo` | L2 | `math`, `topology` |
-| `brepkit-blend` | L2 | `math`, `topology` |
-| `brepkit-check` | L2 | `math`, `topology`, `geometry` |
-| `brepkit-heal` | L2 | `math`, `topology`, `geometry` |
-| `brepkit-offset` | L2 | `math`, `topology`, `geometry` |
-| `brepkit-sketch` | L2 | External crates only |
-| `brepkit-operations` | L3 | All L0 to L2 crates |
-| `brepkit-io` | L3 | `math`, `topology`, `operations` |
-| `brepkit-wasm` | L4 | All workspace crates |
-| `brepkit-render` | L4 | `math`, `topology`, `operations` |
+| `remus-math` | L0 | External crates only |
+| `remus-geometry` | L1 | `remus-math` |
+| `remus-topology` | L1 | `remus-math` |
+| `remus-algo` | L2 | `math`, `topology` |
+| `remus-blend` | L2 | `math`, `topology` |
+| `remus-check` | L2 | `math`, `topology`, `geometry` |
+| `remus-heal` | L2 | `math`, `topology`, `geometry` |
+| `remus-offset` | L2 | `math`, `topology`, `geometry` |
+| `remus-sketch` | L2 | External crates only |
+| `remus-operations` | L3 | All L0 to L2 crates |
+| `remus-io` | L3 | `math`, `topology`, `operations` |
+| `remus-wasm` | L4 | All workspace crates |
+| `remus-render` | L4 | `math`, `topology`, `operations` |
 
 These rules are enforced by `scripts/check-boundaries.sh`, which runs in CI.
-`brepkit-render` is a leaf: nothing may depend on it.
+`remus-render` is a leaf: nothing may depend on it.
 
 ## Arena-Based Topology
 

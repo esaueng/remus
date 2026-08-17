@@ -29,13 +29,13 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::offset_v2::offset_solid_v2;
-use brepkit_operations::primitives::{make_box, make_cylinder, make_sphere, make_torus};
-use brepkit_operations::tessellate::{TriangleMesh, tessellate_solid};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::measure::solid_volume;
+use remus_operations::offset_v2::offset_solid_v2;
+use remus_operations::primitives::{make_box, make_cylinder, make_sphere, make_torus};
+use remus_operations::tessellate::{TriangleMesh, tessellate_solid};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// Model scales, ordered as a rotation of the natural small-to-large sweep so
 /// a result that only holds at whichever scale runs first cannot pass.
