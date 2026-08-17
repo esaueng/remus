@@ -202,10 +202,88 @@ struct SerializedSolidV1 {
     pcurves: Vec<SerPCurve>,
 }
 
+/// One live-index entry of a serialized journal: the ordinal, the entity
+/// kind, and the entity's dense local index in this document (`None` when
+/// the entity is not part of the document — retired, or outside the
+/// selected roots; the kind is kept so anchor output ordering stays
+/// replay-stable).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerJournalIndexEntry {
+    ordinal: u64,
+    kind: String,
+    local: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event")]
+enum SerJournalEvent {
+    Preserved { from: u64 },
+    Modified { from: u64 },
+    Generated { sources: Vec<u64> },
+    Merged { from: Vec<u64> },
+    Deleted,
+    Unresolved { candidates: Vec<u64> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "payload")]
+enum SerJournalPayload {
+    Evolution {
+        construction: bool,
+        scope: Vec<u64>,
+        events: Vec<(u64, SerJournalEvent)>,
+    },
+    Barrier {
+        affected: Vec<u64>,
+    },
+    GlobalBarrier,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerJournalEntry {
+    op: u64,
+    kind: String,
+    #[serde(flatten)]
+    payload: SerJournalPayload,
+}
+
+/// The evolution journal (RFC 0003, Stage 5). Additive: absent in
+/// journal-less documents and in documents written before this field
+/// existed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerJournal {
+    next_op: u64,
+    next_ordinal: u64,
+    index: Vec<SerJournalIndexEntry>,
+    entries: Vec<SerJournalEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerEntityAttributes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// sRGB channels, each in `[0, 1]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<(f64, f64, f64)>,
+}
+
+/// Attributes of exported entities, by dense local index. Additive:
+/// absent when nothing in the document is attributed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerAttributes {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    solids: Vec<(usize, SerEntityAttributes)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    faces: Vec<(usize, SerEntityAttributes)>,
+}
+
 /// Version 2 is additive: it retains v1 entity encodings and adds solid and
 /// compound root tables. Released versions are read forever. Existing fields
 /// and enum encodings must not change in place; incompatible additions require
 /// a new version and a dedicated read path, while the v1 schema stays frozen.
+/// The optional `journal` and `attributes` fields (RFC 0003, Stage 5) are
+/// additive within v2: absent in older documents and skipped when empty, so
+/// journal-less output stays byte-identical.
 const FORMAT_VERSION: u32 = 2;
 const LEGACY_SINGLE_SOLID_VERSION: u32 = 1;
 
@@ -224,6 +302,10 @@ struct SerializedDocumentV2 {
     /// Explicitly selected compound roots, referencing the dense solid table.
     compounds: Vec<SerCompound>,
     pcurves: Vec<SerPCurve>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    journal: Option<SerJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attributes: Option<SerAttributes>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,6 +323,8 @@ struct ParsedDocument {
     solid_roots: Vec<usize>,
     compounds: Vec<SerCompound>,
     pcurves: Vec<SerPCurve>,
+    journal: Option<SerJournal>,
+    attributes: Option<SerAttributes>,
 }
 
 /// Fresh topology roots reconstructed from an arena document.
@@ -491,6 +575,8 @@ pub fn serialize_document(
     }
 
     let pcurves = builder.collect_pcurves();
+    let journal = serialize_journal(topo, &builder);
+    let attributes = serialize_attributes(topo, &builder);
     let dump = SerializedDocumentV2 {
         version: FORMAT_VERSION,
         vertices: builder.vertices,
@@ -502,6 +588,8 @@ pub fn serialize_document(
         solid_roots,
         compounds,
         pcurves,
+        journal,
+        attributes,
     };
 
     serde_json::to_vec(&dump).map_err(|e| IoError::ParseError {
@@ -656,6 +744,8 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solid_roots: vec![0],
                 compounds: Vec::new(),
                 pcurves: dump.pcurves,
+                journal: None,
+                attributes: None,
             }
         }
         FORMAT_VERSION => {
@@ -673,6 +763,8 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
                 solid_roots: dump.solid_roots,
                 compounds: dump.compounds,
                 pcurves: dump.pcurves,
+                journal: dump.journal,
+                attributes: dump.attributes,
             }
         }
         version => {
@@ -765,6 +857,115 @@ fn checked_reference_count(
     })
 }
 
+/// Serializes the topology's evolution journal (RFC 0003, Stage 5),
+/// remapping live-index arena keys to this document's dense local
+/// indices. Entities outside the document keep their kind with no local
+/// index, so anchor output ordering stays replay-stable.
+fn serialize_journal(topo: &Topology, builder: &Builder<'_>) -> Option<SerJournal> {
+    use brepkit_topology::journal::{EntityKind, EventSnapshot, PayloadSnapshot};
+
+    if topo.journal().is_empty() {
+        return None;
+    }
+    let snapshot = topo.journal().snapshot();
+    let index = snapshot
+        .index
+        .into_iter()
+        .map(|(ordinal, key)| {
+            let local = match key.kind {
+                EntityKind::Vertex => builder.vertex_map.get(&key.index).copied(),
+                EntityKind::Edge => builder.edge_map.get(&key.index).copied(),
+                EntityKind::Face => builder.face_map.get(&key.index).copied(),
+            };
+            SerJournalIndexEntry {
+                ordinal,
+                kind: key.kind.as_str().to_owned(),
+                local,
+            }
+        })
+        .collect();
+    let entries = snapshot
+        .entries
+        .into_iter()
+        .map(|entry| SerJournalEntry {
+            op: entry.op,
+            kind: entry.kind,
+            payload: match entry.payload {
+                PayloadSnapshot::Evolution {
+                    construction,
+                    scope,
+                    events,
+                } => SerJournalPayload::Evolution {
+                    construction,
+                    scope,
+                    events: events
+                        .into_iter()
+                        .map(|(subject, event)| {
+                            let event = match event {
+                                EventSnapshot::Preserved { from } => {
+                                    SerJournalEvent::Preserved { from }
+                                }
+                                EventSnapshot::Modified { from } => {
+                                    SerJournalEvent::Modified { from }
+                                }
+                                EventSnapshot::Generated { sources } => {
+                                    SerJournalEvent::Generated { sources }
+                                }
+                                EventSnapshot::Merged { from } => SerJournalEvent::Merged { from },
+                                EventSnapshot::Deleted => SerJournalEvent::Deleted,
+                                EventSnapshot::Unresolved { candidates } => {
+                                    SerJournalEvent::Unresolved { candidates }
+                                }
+                            };
+                            (subject, event)
+                        })
+                        .collect(),
+                },
+                PayloadSnapshot::Barrier { affected } => SerJournalPayload::Barrier { affected },
+                PayloadSnapshot::GlobalBarrier => SerJournalPayload::GlobalBarrier,
+            },
+        })
+        .collect();
+    Some(SerJournal {
+        next_op: snapshot.next_op,
+        next_ordinal: snapshot.next_ordinal,
+        index,
+        entries,
+    })
+}
+
+/// Serializes attributes of the document's solids and faces, by dense
+/// local index in deterministic order.
+fn serialize_attributes(topo: &Topology, builder: &Builder<'_>) -> Option<SerAttributes> {
+    let encode =
+        |attributes: &brepkit_topology::attributes::EntityAttributes| SerEntityAttributes {
+            name: attributes.name.clone(),
+            color: attributes.color.map(|c| (c.r(), c.g(), c.b())),
+        };
+    let mut faces: Vec<(usize, SerEntityAttributes)> = builder
+        .face_map
+        .iter()
+        .filter_map(|(&arena, &local)| {
+            let id = topo.face_id_from_index(arena)?;
+            topo.attributes().face(id).map(|a| (local, encode(a)))
+        })
+        .collect();
+    faces.sort_by_key(|(local, _)| *local);
+    let mut solids: Vec<(usize, SerEntityAttributes)> = builder
+        .solid_map
+        .iter()
+        .filter_map(|(&arena, &local)| {
+            let id = topo.solid_id_from_index(arena)?;
+            topo.attributes().solid(id).map(|a| (local, encode(a)))
+        })
+        .collect();
+    solids.sort_by_key(|(local, _)| *local);
+    if faces.is_empty() && solids.is_empty() {
+        return None;
+    }
+    Some(SerAttributes { solids, faces })
+}
+
 fn replay_document(
     document: ParsedDocument,
     topo: &mut Topology,
@@ -792,6 +993,8 @@ fn replay_document_into(
         solid_roots,
         compounds,
         pcurves,
+        journal,
+        attributes,
     } = document;
 
     let mut vertex_ids = Vec::with_capacity(vertices.len());
@@ -929,9 +1132,146 @@ fn replay_document_into(
         restored_compounds.push(topo.add_compound(Compound::new(members)));
     }
 
+    if let Some(attributes) = attributes {
+        for (local, encoded) in attributes.faces {
+            let face = *face_ids
+                .get(local)
+                .ok_or_else(|| index_err("face", local))?;
+            topo.set_face_attributes(face, decode_attributes(encoded)?)
+                .map_err(IoError::from)?;
+        }
+        for (local, encoded) in attributes.solids {
+            let solid = *solid_ids
+                .get(local)
+                .ok_or_else(|| index_err("solid", local))?;
+            topo.set_solid_attributes(solid, decode_attributes(encoded)?)
+                .map_err(IoError::from)?;
+        }
+    }
+
+    if let Some(journal) = journal {
+        let restored = restore_journal(journal, &vertex_ids, &edge_ids, &face_ids)?;
+        topo.load_journal(restored);
+    }
+
     Ok(DeserializedDocument {
         solids: restored_solids,
         compounds: restored_compounds,
+    })
+}
+
+fn decode_attributes(
+    encoded: SerEntityAttributes,
+) -> Result<brepkit_topology::attributes::EntityAttributes, IoError> {
+    let color = encoded
+        .color
+        .map(|(r, g, b)| brepkit_topology::attributes::ColorRgb::new(r, g, b))
+        .transpose()
+        .map_err(IoError::from)?;
+    Ok(brepkit_topology::attributes::EntityAttributes {
+        name: encoded.name,
+        color,
+    })
+}
+
+/// Rebuilds the journal from its serialized form, remapping document-local
+/// entity indices to the freshly allocated arena ids. Entities the
+/// document does not contain keep their kind with the
+/// [`EntityKey::UNMAPPED`](brepkit_topology::journal::EntityKey::UNMAPPED)
+/// placeholder, so references to them report not-present instead of
+/// binding a stale index.
+fn restore_journal(
+    encoded: SerJournal,
+    vertex_ids: &[brepkit_topology::VertexId],
+    edge_ids: &[EdgeId],
+    face_ids: &[brepkit_topology::FaceId],
+) -> Result<brepkit_topology::journal::Journal, IoError> {
+    use brepkit_topology::journal::{
+        EntityKey, EntrySnapshot, EventSnapshot, Journal, JournalSnapshot, PayloadSnapshot,
+    };
+
+    let mut index = Vec::with_capacity(encoded.index.len());
+    for entry in encoded.index {
+        let key = match (entry.kind.as_str(), entry.local) {
+            ("vertex", Some(local)) => EntityKey::vertex(
+                vertex_ids
+                    .get(local)
+                    .ok_or_else(|| index_err("vertex", local))?
+                    .index(),
+            ),
+            ("edge", Some(local)) => EntityKey::edge(
+                edge_ids
+                    .get(local)
+                    .ok_or_else(|| index_err("edge", local))?
+                    .index(),
+            ),
+            ("face", Some(local)) => EntityKey::face(
+                face_ids
+                    .get(local)
+                    .ok_or_else(|| index_err("face", local))?
+                    .index(),
+            ),
+            ("vertex", None) => EntityKey::vertex(EntityKey::UNMAPPED),
+            ("edge", None) => EntityKey::edge(EntityKey::UNMAPPED),
+            ("face", None) => EntityKey::face(EntityKey::UNMAPPED),
+            (kind, _) => {
+                return Err(IoError::ParseError {
+                    reason: format!("journal index entry has unknown entity kind {kind:?}"),
+                });
+            }
+        };
+        index.push((entry.ordinal, key));
+    }
+    let entries = encoded
+        .entries
+        .into_iter()
+        .map(|entry| EntrySnapshot {
+            op: entry.op,
+            kind: entry.kind,
+            payload: match entry.payload {
+                SerJournalPayload::Evolution {
+                    construction,
+                    scope,
+                    events,
+                } => PayloadSnapshot::Evolution {
+                    construction,
+                    scope,
+                    events: events
+                        .into_iter()
+                        .map(|(subject, event)| {
+                            let event = match event {
+                                SerJournalEvent::Preserved { from } => {
+                                    EventSnapshot::Preserved { from }
+                                }
+                                SerJournalEvent::Modified { from } => {
+                                    EventSnapshot::Modified { from }
+                                }
+                                SerJournalEvent::Generated { sources } => {
+                                    EventSnapshot::Generated { sources }
+                                }
+                                SerJournalEvent::Merged { from } => EventSnapshot::Merged { from },
+                                SerJournalEvent::Deleted => EventSnapshot::Deleted,
+                                SerJournalEvent::Unresolved { candidates } => {
+                                    EventSnapshot::Unresolved { candidates }
+                                }
+                            };
+                            (subject, event)
+                        })
+                        .collect(),
+                },
+                SerJournalPayload::Barrier { affected } => PayloadSnapshot::Barrier { affected },
+                SerJournalPayload::GlobalBarrier => PayloadSnapshot::GlobalBarrier,
+            },
+        })
+        .collect();
+    Journal::from_snapshot(JournalSnapshot {
+        next_op: encoded.next_op,
+        next_ordinal: encoded.next_ordinal,
+        index,
+        entries,
+    })
+    .map_err(|error| IoError::ParseError {
+        reason: format!("journal restore failed: {error}"),
     })
 }
 

@@ -1,8 +1,9 @@
 # RFC 0003: Persistent topological naming
 
-Status: accepted design; Stages 1–4 (journal, resolver, signature tier,
-attribute integration) implemented — see "Staging" and the
-implementation-notes sections. Stage 5 (serialization) remains design.
+Status: implemented — all five stages (journal, resolver, signature
+tier, attribute integration, serialization); see "Staging" and the
+implementation-notes sections. The WASM reference API remains queued
+with the operations/WASM evolution-surfacing work.
 
 ## Problem
 
@@ -227,6 +228,44 @@ above:
 - The map-driven `operations::evolution::propagate_face_attributes`
   (Issue 14) remains for callers holding an `EvolutionMap` without a
   journal; the journal path is the general one.
+
+## Stage 5 implementation notes
+
+Refinements the serialization implementation added to the design above:
+
+- **The journal rides the arena document, additively.** The v2 arena
+  format gains optional `journal` and `attributes` fields, absent when
+  empty — journal-less output stays byte-identical to historical output.
+  Version stays 2 (the format's documented additive policy). Attributes
+  travel with the document because a naming round trip that drops names
+  would be hollow; both solids' and faces' entries ride by dense local
+  index.
+- **Ordinals are the persistent identity; arena indices never touch the
+  file.** The writer remaps live-index keys to the document's dense local
+  indices; the reader remaps them to the freshly allocated ids. An entity
+  in journal history but outside the document keeps its *kind* with the
+  `EntityKey::UNMAPPED` placeholder — anchor output ordering stays
+  replay-stable, and a reference to such an entity resolves `NoMatch`
+  ("not present"), never a stale index.
+- **Snapshots exclude mutation ticks.** Ticks are session-local
+  gap-detection state; `Journal::from_snapshot` re-derives a consistent
+  sequence and `Topology::load_journal` syncs the topology's counter, so
+  a clean load is not an unjournaled gap while any real post-load
+  mutation still severs (pinned by test).
+- **Snapshots are validated whole.** Duplicate or out-of-range ordinals,
+  duplicate keys, non-increasing `OpId`s, events referencing unknown
+  ordinals, or double claims refuse with the typed
+  `journal_snapshot_invalid` diagnostic (`invalid_input`) — corrupt
+  history is never installed for a resolver to mis-follow.
+- **References serialize context-free** (`io::naming_io`, versioned JSON,
+  version 1 read forever): they hold no arena ids, so a reference written
+  in one session resolves in any session holding the model's journal —
+  and signature references resolve in sessions holding no journal at all
+  (pinned by a cross-session recovery test).
+- **The replayable-fixture property is native-first.** The round-trip
+  test pins that every reference resolves identically across save/load;
+  WASM repro-bundle reference expectations land with the queued WASM
+  reference API.
 
 ## Explicit non-goals (v1)
 

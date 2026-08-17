@@ -289,7 +289,8 @@ impl From<brepkit_topology::TopologyError> for StructuredWasmError {
             | brepkit_topology::TopologyError::RefDangling { .. }
             | brepkit_topology::TopologyError::RefUnresolvedAcrossOperation { .. }
             | brepkit_topology::TopologyError::RefUnknownOperation { .. }
-            | brepkit_topology::TopologyError::RefNoMatch { .. } => ("journal", None),
+            | brepkit_topology::TopologyError::RefNoMatch { .. }
+            | brepkit_topology::TopologyError::JournalSnapshotInvalid { .. } => ("journal", None),
             brepkit_topology::TopologyError::LoopNotFound(id) => ("loop", Some(id.index())),
             brepkit_topology::TopologyError::CoedgeNotFound(id) => ("coedge", Some(id.index())),
             brepkit_topology::TopologyError::LoopWireMismatch { face }
