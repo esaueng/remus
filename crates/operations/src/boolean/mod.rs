@@ -9,7 +9,37 @@ mod classify;
 mod types;
 use assembly::validate_boolean_result;
 pub(crate) use assembly::{assemble_solid_mixed, assemble_solid_mixed_with_history};
+pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
+
+/// Runs an exact GFA boolean, returning construction-derived vertex,
+/// edge, and face history (Issue 12) alongside the result — the L3
+/// surface of [`remus_algo::gfa::boolean_with_entity_evolution`].
+///
+/// Exact path only: there is no approximate fallback, because a mesh
+/// fallback has no construction records. Like the underlying entry
+/// point, identical operands are not special-cased. For journaled
+/// history use [`crate::journal_ops::boolean_journaled`], which records
+/// the same events into the evolution journal.
+///
+/// # Errors
+///
+/// Returns [`crate::OperationsError`] if any GFA stage fails.
+pub fn boolean_with_entity_evolution(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<(SolidId, EntityEvolution), crate::OperationsError> {
+    let algo_op = match op {
+        BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+        BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+        BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+    };
+    Ok(remus_algo::gfa::boolean_with_entity_evolution(
+        topo, algo_op, solid_a, solid_b,
+    )?)
+}
 
 /// Minimum distance used when healing coincident result boundaries, in mm.
 const COINCIDENT_BOUNDARY_FLOOR_MM: f64 = 1e-6;
