@@ -7,7 +7,7 @@ description: Use when investigating or fixing performance in Remus: a benchmark 
 
 ## The bar
 
-Remus must beat the reference kernel on performance, not merely pass tests. Perf regressions are release blockers. CI runs `boolean_tracking` on a shared runner and only comments on regressions over 200% (`.github/workflows/benchmark.yml`, `fail-on-alert: false`), so the automated gate is looser than the real bar. You are the gate: any PR touching a hot path pastes before/after criterion numbers in its body. Cross-kernel claims require `./scripts/bench-compare.sh ~/Git/brepjs` output, not native-only numbers (see the parity-benchmarking skill).
+Remus must beat the reference kernel on performance, not merely pass tests. Perf regressions are release blockers. CI runs `boolean_tracking` on a shared runner and only comments on regressions over 200% (`.github/workflows/benchmark.yml`, `fail-on-alert: false`), so the automated gate is looser than the real bar. You are the gate: any PR touching a hot path pastes before/after criterion numbers in its body. Cross-kernel claims require `./scripts/bench-compare.sh $BREPJS` output, not native-only numbers (see the parity-benchmarking skill).
 
 ## Quick reference
 
@@ -19,7 +19,7 @@ cargo flamegraph --profile profiling --bench cad_operations -p brepkit-operation
   -o /tmp/flamegraph.svg -- --bench "<filter>"            # flamegraph a specific criterion bench
 cargo run --profile profiling --example profile_boolean -- honeycomb   # per-phase boolean timing
 cargo run --profile profiling --example tess_profile      # tessellation drill-down (64-hole plate)
-./scripts/bench-compare.sh ~/Git/brepjs                   # native + wasm vs the reference kernel
+./scripts/bench-compare.sh $BREPJS                   # native + wasm vs the reference kernel
 ```
 
 The `[profile.profiling]` block in the workspace `Cargo.toml` is release optimization plus debug symbols with `lto = false`: fast rebuilds, full symbol names in flamegraphs. Always profile with it, never with plain `release` (LTO mangles frames) or `dev` (measures nothing real).

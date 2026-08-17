@@ -53,7 +53,7 @@ Batch semantics to assert against: errors do not stop later ops in the array; in
 
 ## Testing a local kernel in a JS consumer
 
-Cheap path first: brepjs already aliases `'brepkit-wasm'` in `~/Git/brepjs/vitest.config.ts` (also `vitest.bench.config.ts`, `vitest.stress.config.ts`). Build `wasm-pack build crates/wasm --target nodejs --release`, then temporarily point that alias at `~/Git/remus/crates/wasm/pkg/brepkit_wasm.js`. No npm install, no lockfile churn. Full overlay recipe for pnpm+Vite apps: [reference.md](reference.md) section 2.
+Cheap path first: brepjs already aliases `'brepkit-wasm'` in `$BREPJS/vitest.config.ts` (also `vitest.bench.config.ts`, `vitest.stress.config.ts`). Build `wasm-pack build crates/wasm --target nodejs --release`, then temporarily point that alias at `$REMUS/crates/wasm/pkg/brepkit_wasm.js`. No npm install, no lockfile churn. Full overlay recipe for pnpm+Vite apps: [reference.md](reference.md) section 2.
 
 ## Anti-patterns
 

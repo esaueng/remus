@@ -32,10 +32,10 @@ Key commands:
 npm view brepkit-wasm versions --json
 git fetch --tags   # in this repo
 git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
-cd <brepjs> && npm install && npm run sync:brepkit-types
+cd $BREPJS && npm install && npm run sync:brepkit-types
 ```
 
-`<brepjs>` is your checkout of `andymai/brepjs` (that slug is current). There
+`$BREPJS` is your checkout of `andymai/brepjs` (that slug is current). There
 is no brepjs checkout on this machine, so clone it before hop 4. The kernel
 side is this repo, `esaueng/remus`; run its commands from the repo root rather
 than an absolute path, since it has several checkouts and worktrees.
@@ -74,7 +74,7 @@ manual escape hatch.
 
 ### Hop 4: brepjs dependency bump and type sync
 
-In `<brepjs>` (use a worktree if the checkout is busy):
+In `$BREPJS` (use a worktree if the checkout is busy):
 
 1. Edit `package.json`: set the **devDependencies** entry
    `"brepkit-wasm": "X.Y.Z"` (exact pin). Leave the **peerDependencies**
