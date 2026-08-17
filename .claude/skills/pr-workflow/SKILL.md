@@ -1,11 +1,13 @@
 ---
 name: pr-workflow
-description: Use when committing, pushing, opening, reviewing, or merging a pull request in Remus, or when a git hook fails, a push hangs, commitlint flags a message, a PR sits waiting on AI review, or parallel work needs a worktree. Covers hooks, conventional commits, the AI-review merge gate, the sandbox HTTPS push, and release-please.
+description: Use when committing, pushing, opening, reviewing, or merging a pull request in this repo (esaueng/remus, the Remus B-Rep kernel), or when a git hook fails, a push fails, commitlint flags a message, or parallel work needs a worktree. Covers hooks, conventional commits, the self-imposed merge gate, and release-please.
 ---
 
 # PR Workflow
 
-End-to-end change flow for this repo: branch, commit, push, PR, AI review gate, squash-merge, release. Main is protected; every change lands as a squash-merged PR. There is no human approval gate: the AI review check is the gate.
+End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squash-merge, release. Every change lands as a squash-merged PR.
+
+**Nothing mechanically blocks a merge here.** `main` has no branch protection at all: no required checks, no required approvals. No code-review app is installed, and no PR in this repo's history has ever received a review from any account. The gate described below is entirely self-imposed — if you skip it, GitHub will happily merge a red PR straight into `main`.
 
 ## Quick reference
 
@@ -14,12 +16,12 @@ End-to-end change flow for this repo: branch, commit, push, PR, AI review gate, 
 | Branch | `git checkout -b <type>/<kebab-description>` (e.g. `feat/render-lod`, `fix/ci-crates-io-flake`) |
 | Local gate before push | `cargo nextest run -p <touched-crate>` and, if any `Cargo.toml` changed, `./scripts/check-boundaries.sh` |
 | Compliance grep | See "Banned-name compliance" below |
-| Push (sandbox) | `git push "https://x-access-token:$(gh auth token)@github.com/esaueng/remus.git" <branch>` |
-| Verify remote head | `gh pr view <N> --json headRefOid` (never `git rev-parse origin/<branch>`) |
-| Review-gate poll | `gh pr checks <N>` until the `cubic · AI code reviewer` check is completed |
-| Read findings | `gh api repos/esaueng/remus/pulls/<N>/comments` and `gh pr view <N> --comments` |
-| Merge | `gh pr merge <N> --squash --auto` (only after findings are addressed) |
-| Post-merge | `git checkout main && git pull --ff-only` |
+| Push | `git push -u origin <branch>` (plain push works; `origin` is HTTPS) |
+| Verify remote head | `gh pr view <N> --json headRefOid --jq .headRefOid` vs `git rev-parse HEAD` |
+| Gate poll | `gh pr view <N> --json statusCheckRollup` until every check completes and `CI Pass` is SUCCESS |
+| Check for findings | `gh api repos/esaueng/remus/pulls/<N>/comments` and `gh pr view <N> --comments` (expect none; see gate section) |
+| Merge | `gh pr merge <N> --squash` (auto-merge is disabled repo-wide; `--auto` is unavailable) |
+| Post-merge | `git fetch origin main` and delete the branch yourself (`delete_branch_on_merge` is off) |
 | Worktree | `git worktree add .worktrees/<branch-name> <branch>` |
 
 ## Hooks: what actually runs
@@ -32,7 +34,7 @@ Hooks live in `.husky/`. Read the hook files themselves when in doubt; the "Git 
 
 Hard rules:
 - Never `--no-verify`, never `HUSKY=0`, never edit a hook to get past it. If a hook fails on pre-existing breakage you did not cause, stop and report; do not bypass.
-- CI is the real gate: fmt, clippy, test (nextest workspace + doc tests), coverage, MSRV, wasm, boundaries, deny, audit, docs, machete, taplo, all fanned into one required check named `CI Pass`. Job catalog: see [reference.md](reference.md), "CI jobs".
+- CI is the real signal: fmt, clippy, test (nextest workspace + doc tests), platform tests, coverage, MSRV, wasm, fuzz-check, render, boundaries, deny, audit, docs, machete, secrets-scan, taplo, all fanned into one aggregate check named `CI Pass`. It is an aggregate, not a *required* check — nothing enforces it (see the gate section). `Apache Lineage`, `Doc Paths`, and `WASM Size Report` run on PRs but are NOT in the `CI Pass` fan-in, so read them separately. Job catalog: see [reference.md](reference.md), "CI jobs".
 
 ## Procedure: land a change
 
@@ -40,30 +42,40 @@ Hard rules:
 2. **Develop and test locally.** `cargo nextest run -p <crate>` for touched crates; `./scripts/check-boundaries.sh` if you touched any `Cargo.toml` (this check only runs in CI, catch it early).
 3. **Commit.** Conventional message. Never commit plan/spec working documents: if `git status` shows untracked planning docs (ad-hoc `*-plan.md` or `*-spec.md` working documents), leave them untracked.
 4. **Compliance grep** (below). Expect zero output.
-5. **Push.** Plain `git push` hangs: `origin` is SSH and SSH is blocked in this sandbox, and a global `insteadOf` rewrite converts bare `https://github.com/...` URLs back to SSH. Use the token-embedded URL from the quick reference. Checkpoint: `gh pr view <N> --json headRefOid` matches `git rev-parse HEAD`. Local `origin/<branch>` refs do not update after explicit-URL pushes, so never trust them.
-6. **Create the PR** with `gh pr create`. Do NOT set auto-merge yet.
-7. **Review gate** (next section).
-8. **After merge:** `git checkout main && git pull --ff-only`. The remote branch is deleted automatically.
+5. **Push.** `git push -u origin <branch>` works normally: `origin` is `https://github.com/esaueng/remus.git`, credentials come from the osxkeychain helper, and there is no `insteadOf` rewrite in this checkout. Checkpoint: `gh pr view <N> --json headRefOid --jq .headRefOid` matches `git rev-parse HEAD`. (If you ever push via an explicit token URL instead, local `origin/<branch>` refs do not update — verify against the remote, not the tracking ref.)
+6. **Create the PR** with `gh pr create`. Never `--draft`; if one slips through, `gh pr ready <N>`.
+7. **Merge gate** (next section).
+8. **After merge:** `git fetch origin main`. The remote branch is NOT deleted automatically (`delete_branch_on_merge` is false) — delete it yourself with `git push origin --delete <branch>`. If `main` is checked out in another worktree, fetch rather than trying to switch this one.
 
-## The review gate
+## The merge gate
 
-Branch protection requires only `CI Pass`. The AI review check (`cubic · AI code reviewer`; Greptile no longer runs on this repo) is NOT required by branch protection, so the PR can show mergeable while unread findings sit on it. Policy, not GitHub, enforces the gate:
+There is no automated reviewer on this repo and no branch protection. Verified state, not assumption:
 
-1. After `gh pr create`, work on the next independent task. Reviewers (cubic, Copilot) comment within roughly 5 to 7 minutes.
-2. Poll until the review check completes:
+- `gh api repos/esaueng/remus/branches/main/protection` returns **404 Branch not protected**. No required checks, no required approvals.
+- The only check-run apps that post here are `github-actions` and `blacksmith-sh` (the CI runner provider — its `[code]smith` entry reports SKIPPED and is not a reviewer).
+- Every PR in the repo's history has zero reviews and zero inline comments.
+
+So `CI Pass` is an *aggregate* check, not a *required* one, and nothing stops a merge — not a red CI, not an unread diff. The gate is what you do, in this order:
+
+1. **Wait for every check to complete.** List the rollup unfiltered; do not filter by a name you have not confirmed exists:
    ```bash
    gh pr view <N> --json statusCheckRollup \
-     --jq '.statusCheckRollup[] | select(.name=="cubic · AI code reviewer") | .status'
+     --jq '.statusCheckRollup[] | "\(.name // .context)\t\(.status)\t\(.conclusion // "-")"'
    ```
-   Expect `COMPLETED` (its conclusion is `NEUTRAL` even with no findings — that is a pass, not a failure). Verify the reviewer ran against your CURRENT head before trusting a clean result: a stale review from an earlier push reports on files your latest commit did not touch. `CI Pass` does not appear in the rollup at all until every job it gates on finishes, so its absence is not a failure either. Any poll keyed to a check name that does not exist stays silent forever and reads exactly like "no findings" — list the rollup unfiltered once before trusting a filter. A background watcher may poll for this, but it must hand control back for the next step, never merge on its own.
-3. Read every inline finding: `gh api repos/esaueng/remus/pulls/<N>/comments`. Fix P0/P1 findings (push a follow-up commit, which restarts CI). Reply to lower-severity findings with a reasoned response.
-4. Only then: `gh pr merge <N> --squash --auto`. Auto-merge fires once `CI Pass` is green.
-5. This applies to every PR including high-risk core changes (GFA boolean engine, public WASM API). No human review step exists; review-check completion plus addressed findings is the whole gate.
+   `CI Pass` does not appear at all until every job in its fan-in finishes, so its absence early on is not a failure. Coverage is the usual straggler (~40 min); budget for it.
+2. **Confirm `CI Pass` is SUCCESS**, and separately read the three checks outside its fan-in: `Apache Lineage`, `Doc Paths`, `WASM Size Report`.
+3. **Check both comment surfaces anyway** — `gh api repos/esaueng/remus/pulls/<N>/comments` (inline) and `gh pr view <N> --comments` (issue-level). Expect zero from reviewers; the WASM size bot posts here. Cheap insurance in case an app is installed later.
+4. **Confirm the head you tested is the head being merged**: `gh pr view <N> --json headRefOid` vs `git rev-parse HEAD`.
+5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly or release-please will not parse the title.
+
+Because no second pair of eyes exists, the diff you push is the diff that lands. On high-risk changes (GFA boolean engine, public WASM API), self-review the full diff before merging and say plainly in the PR body what you verified and what you did not.
 
 Anti-patterns:
-- Do NOT merge because CI is green or `mergeStateStatus` is `CLEAN`. That state says nothing about review findings (see PRs #828/#830 in history, fixed in #832).
-- Do NOT set `--auto` at PR-creation time.
-- Do NOT conclude "no findings" from an empty `gh pr view --comments`; inline review comments live on the pulls comments API, check both.
+- Do NOT poll for `cubic · AI code reviewer`, Greptile, or Copilot. None are installed. A poll keyed to a check name that does not exist stays silent forever and reads exactly like "no findings" — this is the single most dangerous failure mode in this workflow, because the false pass is indistinguishable from a real one.
+- Do NOT report "review came back clean" when the truth is "no reviewer ran". Say which gate actually passed.
+- Do NOT pass `--auto`. `allow_auto_merge` is false repo-wide; auto-merge is unavailable.
+- Do NOT conclude "no findings" from an empty `gh pr view --comments`; inline comments live on the pulls comments API. Check both.
+- Do NOT treat `mergeStateStatus: CLEAN` as a quality signal. With no protection and no reviewer, it means only that the branch merges without conflict.
 
 ## Banned-name compliance
 
