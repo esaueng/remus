@@ -5,7 +5,8 @@
 - Historical upstream: `https://github.com/andymai/remus`.
 - Production fork remote: `https://github.com/esaueng/remus`
   (renamed from `esaueng/remus`; GitHub redirects the old path).
-- Permanent Apache branch: `apache-main`.
+- Permanent Apache branch: `main` (the former `apache-main`, since deleted;
+  workflows and the consumer pin follow `main`).
 - Final permissive upstream release: `v2.129.15` (`a878e2b9`).
 - Last fork commit before the AGPL upstream merge: `1886e873`.
 - Fork-only changes must be conventional commits with an audit or issue
@@ -13,7 +14,7 @@
 
 ## Upstream intake policy
 
-Do not merge upstream v3 or later into `apache-main`. Code from those releases
+Do not merge upstream v3 or later into `main`. Code from those releases
 can enter this project only when its copyright holder provides an explicit
 Apache-2.0 grant. Otherwise specify and implement the behavior independently,
 with a regression that proves the fork contract. Run
@@ -35,7 +36,7 @@ The manual `Build OpenZCAD WASM Candidate` workflow is validation-only: it
 builds and uploads a short-lived workflow artifact, but cannot push commits or
 create releases. The checked-in `crates/wasm/pkg` directory remains a frozen
 compatibility snapshot while OpenZCAD consumes
-`github:esaueng/remus#apache-main&path:/crates/wasm/pkg`. Remove that snapshot only
+`github:esaueng/remus#main&path:/crates/wasm/pkg`. Remove that snapshot only
 after the consumer has migrated to an independently versioned artifact.
 
 Before any independent release:
