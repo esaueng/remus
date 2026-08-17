@@ -145,4 +145,4 @@ Lesson: a perf cliff can hide entirely inside error-handling plumbing. The flame
 - **Deflection**: max chord deviation for tessellation, the third argument to `tessellate_solid`. Smaller means superlinearly more triangles on curved faces.
 - **Arena / Topology**: the arena allocator owning all B-Rep entities (`crates/topology`). Booleans against a growing accumulator solid slow down as its face count grows.
 - **Criterion baseline**: history in `target/criterion/` that makes re-runs print change-%; the before/after mechanism.
-- **The reference kernel**: the incumbent C++ CAD kernel brepkit replaces. The perf bar is beating it, measured through `bench-compare.sh`.
+- **The reference kernel**: the incumbent C++ CAD kernel Remus replaces. The perf bar is beating it, measured through `bench-compare.sh`.

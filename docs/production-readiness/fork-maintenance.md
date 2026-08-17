@@ -3,7 +3,8 @@
 ## Upstream relationship
 
 - Historical upstream: `https://github.com/andymai/brepkit`.
-- Production fork remote: `https://github.com/esaueng/brepkit`.
+- Production fork remote: `https://github.com/esaueng/remus`
+  (renamed from `esaueng/brepkit`; GitHub redirects the old path).
 - Permanent Apache branch: `apache-main`.
 - Final permissive upstream release: `v2.129.15` (`a878e2b9`).
 - Last fork commit before the AGPL upstream merge: `1886e873`.
@@ -34,7 +35,7 @@ The manual `Build OpenZCAD WASM Candidate` workflow is validation-only: it
 builds and uploads a short-lived workflow artifact, but cannot push commits or
 create releases. The checked-in `crates/wasm/pkg` directory remains a frozen
 compatibility snapshot while OpenZCAD consumes
-`github:esaueng/brepkit#apache-main&path:/crates/wasm/pkg`. Remove that snapshot only
+`github:esaueng/remus#apache-main&path:/crates/wasm/pkg`. Remove that snapshot only
 after the consumer has migrated to an independently versioned artifact.
 
 Before any independent release:

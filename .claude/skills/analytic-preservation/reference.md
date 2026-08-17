@@ -229,6 +229,6 @@ Reconstruct the exact boundary curve and intersect analytically.
   means zero free edges. The cheap correctness proxy fixtures assert.
 - **Splitter-side split**: giving an emitted section arc its own midpoint vertex so
   the endpoint-keyed duplicate-edge merge cannot collapse co-endpoint arcs.
-- **The reference kernel**: the incumbent C++ CAD kernel brepkit benchmarks against.
+- **The reference kernel**: the incumbent C++ CAD kernel Remus benchmarks against.
   Head-to-head harness lives in the sibling repo `~/Git/brepjs` (see the
   parity-benchmarking skill).
