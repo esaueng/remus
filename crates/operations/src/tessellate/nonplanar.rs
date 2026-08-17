@@ -838,7 +838,7 @@ pub(super) fn tessellate_torus_two_rim_band(
     let seam_edge = topo.edge(seam_eid)?;
     let sp = topo.vertex(seam_edge.start())?.point();
     let ep = topo.vertex(seam_edge.end())?.point();
-    let (d0, d1) = seam_edge.curve().domain_with_endpoints(sp, ep);
+    let (d0, d1) = seam_edge.domain_with_endpoints(sp, ep);
     let seam_mid = seam_edge
         .curve()
         .evaluate_with_endpoints(f64::midpoint(d0, d1), sp, ep);

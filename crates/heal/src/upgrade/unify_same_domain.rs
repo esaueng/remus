@@ -499,7 +499,7 @@ fn merge_group_with_holes(
         // neighbour leaves the bore rim used once (free) — so defer the whole
         // group rather than merge it wrongly.
         if start == end {
-            let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             let mid = edge
                 .curve()
                 .evaluate_with_endpoints(0.5 * (t0 + t1), sp, ep);

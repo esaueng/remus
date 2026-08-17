@@ -328,12 +328,18 @@ fn tessellate_solid_core(
                         && pts.len() < expected_count
                     {
                         let (t_start, t_end) = circle_param_range(topo, edge_data, circle)?;
-                        let new_pts = brepkit_geometry::sampling::sample_uniform(
+                        let mut new_pts = brepkit_geometry::sampling::sample_uniform(
                             circle,
                             t_start,
                             t_end,
                             expected_count,
                         );
+                        if let Some(first) = new_pts.first_mut() {
+                            *first = topo.vertex(edge_data.start())?.point();
+                        }
+                        if let Some(last) = new_pts.last_mut() {
+                            *last = topo.vertex(edge_data.end())?.point();
+                        }
                         edge_points.insert(edge_idx, new_pts);
                     }
                 }
@@ -385,7 +391,7 @@ fn tessellate_solid_core(
             let start_pos = start_vtx.point();
             let end_pos = end_vtx.point();
 
-            let (t_min, t_max) = edge_data.curve().domain_with_endpoints(start_pos, end_pos);
+            let (t_min, t_max) = edge_data.domain_with_endpoints(start_pos, end_pos);
             let is_closed = edge_data.start() == edge_data.end();
 
             let existing_gids_vec: Vec<u32> = edge_global_indices

@@ -5,9 +5,9 @@ use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 
 use super::edge_sampling::{
-    measure_max_chord_deviation, sample_wire_positions, segments_for_chord_deviation_a,
+    circle_param_range, measure_max_chord_deviation, sample_wire_positions,
+    segments_for_chord_deviation_a,
 };
-use super::shorter_arc_range;
 use super::{AnalyticKind, MERGE_GRID, TriangleMesh, TriangleMeshUV, point_merge_key};
 
 type CylinderUv = (f64, f64);
@@ -806,11 +806,7 @@ pub(super) fn tessellate_planar(
         let edge = topo.edge(oe.edge())?;
         match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                let (t_start, t_end) = if edge.is_closed() {
-                    (0.0, std::f64::consts::TAU)
-                } else {
-                    shorter_arc_range(circle, topo, edge)?
-                };
+                let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
                 let arc_range = (t_end - t_start).abs();
                 let n_samples = segments_for_chord_deviation_a(
                     circle.radius(),
@@ -829,18 +825,9 @@ pub(super) fn tessellate_planar(
                 );
             }
             EdgeCurve::Ellipse(ellipse) => {
-                let (t_start, t_end) = if edge.is_closed() {
-                    (0.0, std::f64::consts::TAU)
-                } else {
-                    let sp = topo.vertex(edge.start())?.point();
-                    let ep = topo.vertex(edge.end())?.point();
-                    let ts = ellipse.project(sp);
-                    let mut te = ellipse.project(ep);
-                    if te <= ts {
-                        te += std::f64::consts::TAU;
-                    }
-                    (ts, te)
-                };
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (t_start, t_end) = edge.domain_with_endpoints(sp, ep);
                 let arc_range = t_end - t_start;
                 // Largest radius of curvature (a^2/b) governs uniform-parameter
                 // sampling density; matches the wall edge sampling so the cap
@@ -870,7 +857,7 @@ pub(super) fn tessellate_planar(
             EdgeCurve::Hyperbola(h) => {
                 let sp = topo.vertex(edge.start())?.point();
                 let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = (h.project(sp), h.project(ep));
+                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
                 let n_samples = super::edge_sampling::open_conic_segments(
                     h.min_curvature_radius(t0, t1),
                     h.arc_length(t0, t1),
@@ -889,7 +876,7 @@ pub(super) fn tessellate_planar(
             EdgeCurve::Parabola(p) => {
                 let sp = topo.vertex(edge.start())?.point();
                 let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = (p.project(sp), p.project(ep));
+                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
                 let n_samples = super::edge_sampling::open_conic_segments(
                     p.min_curvature_radius(t0, t1),
                     p.arc_length(t0, t1),
@@ -906,7 +893,9 @@ pub(super) fn tessellate_planar(
                 );
             }
             EdgeCurve::NurbsCurve(nurbs) => {
-                let (u0, u1) = nurbs.domain();
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (u0, u1) = edge.domain_with_endpoints(sp, ep);
                 let n_spans = nurbs
                     .control_points()
                     .len()

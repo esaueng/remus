@@ -45,7 +45,7 @@ pub(super) fn sample_wire_loop_uv_via_frame(
         } else {
             (e.end_3d, e.start_3d)
         };
-        let (t0, t1) = e.curve_3d.domain_with_endpoints(s3, e3);
+        let (t0, t1) = e.native_domain();
         #[allow(clippy::cast_precision_loss)]
         let mut samples: Vec<Point2> = (1..CURVE_SAMPLES)
             .map(|k| {
@@ -234,6 +234,7 @@ mod tests {
         let dir = Vec2::new(eu - su, ev - sv);
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve: Curve2D::Line(
                 Line2D::new(start_uv, dir)
                     .unwrap_or_else(|_| Line2D::new(start_uv, Vec2::new(1.0, 0.0)).unwrap()),

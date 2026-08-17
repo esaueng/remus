@@ -669,12 +669,13 @@ fn transform_edges(
     };
     for &eid in edge_ids {
         let edge = topo.edge(eid)?;
-        let new_curve = match edge.curve() {
-            EdgeCurve::Line => None,
+        let trim = edge.trim();
+        let (new_curve, new_trim) = match edge.curve() {
+            EdgeCurve::Line => (None, trim),
             // Exact under a similarity, typed refusal otherwise — see
             // `transform_open_conic`.
             c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
-                Some(transform_open_conic(c, matrix)?)
+                (Some(transform_open_conic(c, matrix)?), trim)
             }
             EdgeCurve::NurbsCurve(c) => {
                 let new_control_points: Vec<_> = c
@@ -682,12 +683,15 @@ fn transform_edges(
                     .iter()
                     .map(|pt| matrix.mul_point(*pt))
                     .collect();
-                Some(EdgeCurve::NurbsCurve(NurbsCurve::new(
-                    c.degree(),
-                    c.knots().to_vec(),
-                    new_control_points,
-                    c.weights().to_vec(),
-                )?))
+                (
+                    Some(EdgeCurve::NurbsCurve(NurbsCurve::new(
+                        c.degree(),
+                        c.knots().to_vec(),
+                        new_control_points,
+                        c.weights().to_vec(),
+                    )?)),
+                    trim,
+                )
             }
             EdgeCurve::Circle(c) => {
                 let new_center = matrix.mul_point(c.center());
@@ -697,22 +701,26 @@ fn transform_edges(
                 let sv = new_v.length();
                 let new_normal = new_u.cross(new_v).normalize()?;
                 if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
-                    Some(EdgeCurve::Circle(
-                        brepkit_math::curves::Circle3D::with_axes(
-                            new_center,
-                            new_normal,
-                            c.radius() * su,
-                            new_u.normalize()?,
-                            new_v.normalize()?,
-                        )?,
-                    ))
+                    (
+                        Some(EdgeCurve::Circle(
+                            brepkit_math::curves::Circle3D::with_axes(
+                                new_center,
+                                new_normal,
+                                c.radius() * su,
+                                new_u.normalize()?,
+                                new_v.normalize()?,
+                            )?,
+                        )),
+                        trim,
+                    )
                 } else {
-                    let (semi_major, semi_minor, u_dir, v_dir) = if su >= sv {
+                    let (semi_major, semi_minor, u_dir, v_dir, mapped_trim) = if su >= sv {
                         (
                             c.radius() * su,
                             c.radius() * sv,
                             new_u.normalize()?,
                             new_v.normalize()?,
+                            trim,
                         )
                     } else {
                         (
@@ -720,13 +728,22 @@ fn transform_edges(
                             c.radius() * su,
                             new_v.normalize()?,
                             new_u.normalize()?,
+                            trim.map(|(a, b)| {
+                                (
+                                    std::f64::consts::FRAC_PI_2 - a,
+                                    std::f64::consts::FRAC_PI_2 - b,
+                                )
+                            }),
                         )
                     };
-                    Some(EdgeCurve::Ellipse(
-                        brepkit_math::curves::Ellipse3D::with_axes(
-                            new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
-                        )?,
-                    ))
+                    (
+                        Some(EdgeCurve::Ellipse(
+                            brepkit_math::curves::Ellipse3D::with_axes(
+                                new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
+                            )?,
+                        )),
+                        mapped_trim,
+                    )
                 }
             }
             EdgeCurve::Ellipse(e) => {
@@ -734,20 +751,25 @@ fn transform_edges(
                 let new_u = transform_dir(e.u_axis());
                 let new_v = transform_dir(e.v_axis());
                 let new_normal = new_u.cross(new_v).normalize()?;
-                Some(EdgeCurve::Ellipse(
-                    brepkit_math::curves::Ellipse3D::with_axes(
-                        new_center,
-                        new_normal,
-                        e.semi_major() * new_u.length(),
-                        e.semi_minor() * new_v.length(),
-                        new_u.normalize()?,
-                        new_v.normalize()?,
-                    )?,
-                ))
+                (
+                    Some(EdgeCurve::Ellipse(
+                        brepkit_math::curves::Ellipse3D::with_axes(
+                            new_center,
+                            new_normal,
+                            e.semi_major() * new_u.length(),
+                            e.semi_minor() * new_v.length(),
+                            new_u.normalize()?,
+                            new_v.normalize()?,
+                        )?,
+                    )),
+                    trim,
+                )
             }
         };
         if let Some(curve) = new_curve {
-            topo.edge_mut(eid)?.set_curve(curve);
+            let edge = topo.edge_mut(eid)?;
+            edge.set_curve(curve);
+            edge.set_trim(new_trim);
         }
     }
     Ok(())

@@ -803,6 +803,7 @@ fn rebuild_face_with_fresh_vertices(
             Some((
                 oe.is_forward(),
                 edge.curve().clone(),
+                edge.trim(),
                 sv.point(),
                 ev.point(),
             ))
@@ -810,7 +811,7 @@ fn rebuild_face_with_fresh_vertices(
         .collect::<Option<Vec<_>>>()?;
 
     let mut new_edges: Vec<(bool, brepkit_topology::edge::EdgeId)> = Vec::new();
-    for (is_fwd, curve, sp, ep) in &orig_edges {
+    for (is_fwd, curve, trim, sp, ep) in &orig_edges {
         let start_vid = {
             let key = qpos(*sp);
             rank_pool
@@ -831,7 +832,9 @@ fn rebuild_face_with_fresh_vertices(
                         .or_insert_with(|| topo.add_vertex(Vertex::new(*ep, tol.linear)))
                 })
         };
-        let eid = topo.add_edge(Edge::new(start_vid, end_vid, curve.clone()));
+        let mut edge = Edge::new(start_vid, end_vid, curve.clone());
+        edge.set_trim(*trim);
+        let eid = topo.add_edge(edge);
         new_edges.push((*is_fwd, eid));
     }
 
@@ -1691,6 +1694,7 @@ fn presplit_closed_winding_loops(
             );
             let mut piece = s.clone();
             piece.curve_3d = curve_3d;
+            piece.trim = Some((a0, a1));
             piece.start = start;
             piece.end = end;
             match rank {
@@ -2032,7 +2036,7 @@ fn build_section_edges(
                 // Seam-anchored closed circles: re-parameterize so the
                 // circle starts at the periodic face's seam point. Both
                 // faces of the pair receive the same anchored geometry.
-                let (curve_3d, start, end) = match seam_anchors.get(curve_idx) {
+                let (curve_3d, start, end, trim) = match seam_anchors.get(curve_idx) {
                     Some(&anchor) => {
                         let reanchored = if let EdgeCurve::Circle(c) = &curve_ds.curve {
                             brepkit_math::curves::Circle3D::new_with_ref(
@@ -2047,13 +2051,23 @@ fn build_section_edges(
                             None
                         };
                         match reanchored {
-                            Some(c) => (c, anchor, anchor),
-                            None => (curve_ds.curve.clone(), start, end),
+                            Some(c) => (c, anchor, anchor, Some((0.0, std::f64::consts::TAU))),
+                            None => (
+                                curve_ds.curve.clone(),
+                                start,
+                                end,
+                                (!matches!(curve_ds.curve, EdgeCurve::Line))
+                                    .then_some(curve_ds.t_range),
+                            ),
                         }
                     }
-                    None => (curve_ds.curve.clone(), start, end),
+                    None => (
+                        curve_ds.curve.clone(),
+                        start,
+                        end,
+                        (!matches!(curve_ds.curve, EdgeCurve::Line)).then_some(curve_ds.t_range),
+                    ),
                 };
-
                 let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
                     &curve_3d,
                     start,
@@ -2114,6 +2128,7 @@ fn build_section_edges(
 
                 sections.push(SectionEdge {
                     curve_3d,
+                    trim,
                     pcurve_a: pcurve.clone(),
                     pcurve_b: pcurve,
                     start,
@@ -2302,6 +2317,7 @@ fn build_section_edges(
 
                     sections.push(SectionEdge {
                         curve_3d: edge.curve().clone(),
+                        trim: edge.trim(),
                         pcurve_a: pcurve.clone(),
                         pcurve_b: pcurve,
                         start,
@@ -2804,6 +2820,7 @@ fn push_plain_line_section(
     let pcurve = Curve2D::Line(line);
     sections.push(SectionEdge {
         curve_3d: brepkit_topology::edge::EdgeCurve::Line,
+        trim: None,
         pcurve_a: pcurve.clone(),
         pcurve_b: pcurve,
         start,
@@ -2929,6 +2946,7 @@ fn arc_segment_crossings(
     edge_start: Point3,
     edge_end: Point3,
     closed: bool,
+    _trim: Option<(f64, f64)>,
     line_start: Point3,
     line_end: Point3,
     tol: f64,
@@ -3070,6 +3088,8 @@ fn clip_line_to_face_boundary(
     line_end: Point3,
     tol: f64,
 ) -> Option<Vec<(Point3, Point3)>> {
+    type BoundaryArc = (EdgeCurve, Point3, Point3, bool, Option<(f64, f64)>);
+
     let face = topo.face(face_id).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
 
@@ -3078,9 +3098,8 @@ fn clip_line_to_face_boundary(
     // clipped to the TRUE arc rather than its chord.
     let edges = wire.edges();
     let mut boundary_segments: Vec<(Point3, Point3)> = Vec::with_capacity(edges.len());
-    // (curve, oriented start/end points, closed-by-vertex-identity)
-    let mut boundary_arcs: Vec<Option<(EdgeCurve, Point3, Point3, bool)>> =
-        Vec::with_capacity(edges.len());
+    // (curve, oriented start/end points, closed-by-vertex-identity, trim)
+    let mut boundary_arcs: Vec<Option<BoundaryArc>> = Vec::with_capacity(edges.len());
     for oe in edges {
         let edge = topo.edge(oe.edge()).ok()?;
         let sp = topo.vertex(oe.oriented_start(edge)).ok()?.point();
@@ -3089,11 +3108,17 @@ fn clip_line_to_face_boundary(
         match edge.curve() {
             EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
                 let closed = oe.oriented_start(edge) == oe.oriented_end(edge);
-                boundary_arcs.push(Some((edge.curve().clone(), sp, ep, closed)));
+                let trim = edge
+                    .trim()
+                    .map(|(t0, t1)| if oe.is_forward() { (t0, t1) } else { (t1, t0) });
+                boundary_arcs.push(Some((edge.curve().clone(), sp, ep, closed, trim)));
             }
             EdgeCurve::NurbsCurve(_) => {
                 let closed = oe.oriented_start(edge) == oe.oriented_end(edge);
-                boundary_arcs.push(Some((edge.curve().clone(), sp, ep, closed)));
+                let trim = edge
+                    .trim()
+                    .map(|(t0, t1)| if oe.is_forward() { (t0, t1) } else { (t1, t0) });
+                boundary_arcs.push(Some((edge.curve().clone(), sp, ep, closed, trim)));
             }
             // A straight edge already equals its chord and contributes no
             // beyond-the-chord crossing; the chord segment in
@@ -3130,7 +3155,7 @@ fn clip_line_to_face_boundary(
         // chord crossing the existing cases rely on — it only reaches farther
         // out when the arc genuinely does. Arcs the line misses contribute
         // nothing (the lip-cut sections that graze a corner chord keep working).
-        if let Some((curve, asp, aep, closed)) = &boundary_arcs[seg_idx] {
+        if let Some((curve, asp, aep, closed, trim)) = &boundary_arcs[seg_idx] {
             // Intersect the arc with the EXTENDED line, not just the segment: a
             // section whose FF-clipped endpoint lies in the sliver between a
             // convex arc and its chord (the slot walls crossing a socket-edge
@@ -3150,6 +3175,7 @@ fn clip_line_to_face_boundary(
                 *asp,
                 *aep,
                 *closed,
+                *trim,
                 ext_start,
                 ext_end,
                 tol,
@@ -3280,7 +3306,7 @@ fn clip_line_to_face_boundary(
         let mut poly = Vec::new();
         for (seg_idx, (sp, ep)) in boundary_segments.iter().enumerate() {
             poly.push(frame.project(*sp));
-            if let Some((curve, asp, aep, closed)) = &boundary_arcs[seg_idx] {
+            if let Some((curve, asp, aep, closed, _trim)) = &boundary_arcs[seg_idx] {
                 // Dense sampling: at 12 samples an r=4 quarter-arc's chord
                 // sagitta is ~0.14 — larger than the ~0.1 mm groove-mouth
                 // slivers this polygon must classify. 96 samples keep the
@@ -3889,12 +3915,33 @@ fn instantiate_wire_edge(
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
     );
     if is_arc && start_vid != end_vid && !pcurve_edge.forward {
-        let edge_id = topo.add_edge(Edge::new(end_vid, start_vid, pcurve_edge.curve_3d.clone()));
+        let mut edge = Edge::new(end_vid, start_vid, pcurve_edge.curve_3d.clone());
+        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim));
+        let edge_id = topo.add_edge(edge);
         (edge_id, false)
     } else {
-        let edge_id = topo.add_edge(Edge::new(start_vid, end_vid, pcurve_edge.curve_3d.clone()));
+        let mut edge = Edge::new(start_vid, end_vid, pcurve_edge.curve_3d.clone());
+        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim));
+        let edge_id = topo.add_edge(edge);
         (edge_id, start_vid != end_vid || pcurve_edge.forward)
     }
+}
+
+fn validated_trim(topo: &Topology, edge: &Edge, trim: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    let trim = trim?;
+    let (start_vertex, end_vertex) = (
+        topo.vertex(edge.start()).ok()?,
+        topo.vertex(edge.end()).ok()?,
+    );
+    let (start, end) = (start_vertex.point(), end_vertex.point());
+    let guard = start_vertex
+        .tolerance()
+        .max(end_vertex.tolerance())
+        .max(brepkit_math::tolerance::Tolerance::new().linear)
+        * 100.0;
+    let curve_start = edge.curve().evaluate_with_endpoints(trim.0, start, end);
+    let curve_end = edge.curve().evaluate_with_endpoints(trim.1, start, end);
+    ((curve_start - start).length() <= guard && (curve_end - end).length() <= guard).then_some(trim)
 }
 
 /// Pre-split sections at registered split points that lie on their curves.
@@ -3926,7 +3973,7 @@ fn presplit_sections_at_registry(
     let on_curve =
         |s: &crate::builder::split_types::SectionEdge, p: brepkit_math::vec::Point3| -> bool {
             const N: usize = 64;
-            let (d0, d1) = s.curve_3d.domain_with_endpoints(s.start, s.end);
+            let (d0, d1) = s.domain();
             let mut best_k = 0;
             let mut best = f64::MAX;
             for k in 0..=N {
@@ -3988,6 +4035,7 @@ fn presplit_sections_at_registry(
         let mut prev = s.start;
         for (_, p) in &cuts {
             let mut piece = s.clone();
+            piece.trim = super::split_types::sub_trim(&s.curve_3d, s.domain(), prev, *p);
             piece.start = prev;
             piece.end = *p;
             piece.start_uv_a = None;
@@ -3999,6 +4047,7 @@ fn presplit_sections_at_registry(
             prev = *p;
         }
         let mut last = s.clone();
+        last.trim = super::split_types::sub_trim(&s.curve_3d, s.domain(), prev, s.end);
         last.start = prev;
         last.start_uv_a = None;
         last.end_uv_a = None;
@@ -4122,11 +4171,33 @@ mod tests {
     use brepkit_math::vec::{Point2, Vec2, Vec3};
 
     #[test]
+    fn final_edge_writer_keeps_valid_trim_and_drops_mismatched_metadata() {
+        let points: Vec<Point3> = (0..=6)
+            .map(|k| {
+                let x = f64::from(k);
+                Point3::new(x, 0.1 * x * x, 0.0)
+            })
+            .collect();
+        let nurbs = interpolate(&points, 3).unwrap();
+        let valid = (0.2, 0.8);
+        let start = ParametricCurve::evaluate(&nurbs, valid.0);
+        let end = ParametricCurve::evaluate(&nurbs, valid.1);
+        let mut topo = Topology::new();
+        let start_id = topo.add_vertex(Vertex::new(start, 1e-7));
+        let end_id = topo.add_vertex(Vertex::new(end, 1e-7));
+        let edge = Edge::new(start_id, end_id, EdgeCurve::NurbsCurve(nurbs));
+
+        assert_eq!(validated_trim(&topo, &edge, Some(valid)), Some(valid));
+        assert_eq!(validated_trim(&topo, &edge, Some((0.0, 0.1))), None);
+    }
+
+    #[test]
     fn registry_presplit_ignores_other_pave_blocks() {
         let pcurve =
             Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
         let section = crate::builder::split_types::SectionEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve_a: pcurve.clone(),
             pcurve_b: pcurve,
             start: Point3::new(0.0, 0.0, 0.0),
@@ -4163,6 +4234,7 @@ mod tests {
             seam,
             seam,
             true,
+            None,
             Point3::new(20.0, 10.0, 0.0),
             Point3::new(0.0, 10.0, 0.0),
             1e-7,
@@ -4195,6 +4267,7 @@ mod tests {
             edge_start,
             edge_end,
             false,
+            None,
             Point3::new(expected.x(), -10.0, 0.0),
             Point3::new(expected.x(), 10.0, 0.0),
             1e-7,

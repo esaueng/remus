@@ -75,7 +75,7 @@ pub fn merge_split_rim_arcs(
         };
         let start = topo.vertex(edge.start())?.point();
         let end = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        let (t0, t1) = edge.domain_with_endpoints(start, end);
         arcs.insert(
             edge_id,
             ArcInfo {

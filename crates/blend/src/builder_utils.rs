@@ -499,7 +499,7 @@ pub fn wire_axial_range(
             // endpoints already bound it.
             continue;
         }
-        let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = e.domain_with_endpoints(sp, ep);
         let mut prev: Option<Point3> = None;
         let mut spacing: f64 = 0.0;
         let (mut c_lo, mut c_hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -592,7 +592,7 @@ pub fn wire_radial_extremum(
                 );
             }
             curve => {
-                let (t0, t1) = curve.domain_with_endpoints(sp, ep);
+                let (t0, t1) = e.domain_with_endpoints(sp, ep);
                 let mut prev: Option<Point3> = None;
                 let mut spacing: f64 = 0.0;
                 for k in 0..=SAMPLES {

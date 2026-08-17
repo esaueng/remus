@@ -106,7 +106,7 @@ pub(super) fn find_point_outside_holes(
                     } else {
                         (e.end_3d, e.start_3d)
                     };
-                    let (t0, t1) = e.curve_3d.domain_with_endpoints(s3, e3);
+                    let (t0, t1) = e.native_domain();
                     // Dense enough for a SINGLE-edge closed hole (a full bore
                     // circle): 3 interior samples inscribe a square whose
                     // 0.29r sagitta gap accepts seeds well inside the hole.

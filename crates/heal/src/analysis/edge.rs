@@ -108,7 +108,7 @@ pub fn vertex_curve_deviation(topo: &Topology, edge_id: EdgeId) -> Result<(f64, 
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
 
-    let (t_min, t_max) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+    let (t_min, t_max) = edge.domain_with_endpoints(start_pos, end_pos);
     let curve_start = edge
         .curve()
         .evaluate_with_endpoints(t_min, start_pos, end_pos);
@@ -127,7 +127,7 @@ fn approx_arc_length(topo: &Topology, edge_id: EdgeId) -> Result<f64, HealError>
     let edge = topo.edge(edge_id)?;
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
-    let (t_min, t_max) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+    let (t_min, t_max) = edge.domain_with_endpoints(start_pos, end_pos);
 
     let mut length = 0.0;
     let mut prev = edge
