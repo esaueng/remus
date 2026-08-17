@@ -275,10 +275,16 @@ does not itself promote or demote anything.
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
   `chamferJournaled` / `linearPatternJournaled`, and the read-only
   `journalSummary`, all with executeBatch companions and contract
-  tests. Remaining evolution queue: assembly-rebuild lineage records
-  (the Unresolved minority in GFA edge events) and evolution for the
+  tests.
+  **Assembly-rebuild lineage records**: every GFA result-assembly path
+  that rebuilds edges records construction lineage — the perform-phase
+  vertex-merge wire rebuild, welds, and the collinear line/arc splits —
+  and `build_result_with_origins` returns the complete log. A cube
+  fuse's edge history is total construction fact (pinned: zero
+  unresolved). Remaining evolution queue: real evolution for the
   declared-gap operations (offset, shell, draft, split, defeature —
-  journaled as barriers until each grows real records).
+  journaled as barriers until each grows records) and cap-synthesis
+  edges (absent from planar boolean fixtures).
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
