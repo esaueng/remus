@@ -45,7 +45,14 @@ Hard rules:
 5. **Push.** `git push -u origin <branch>` works normally: `origin` is `https://github.com/esaueng/remus.git`, credentials come from the osxkeychain helper, and there is no `insteadOf` rewrite in this checkout. Checkpoint: `gh pr view <N> --json headRefOid --jq .headRefOid` matches `git rev-parse HEAD`. (If you ever push via an explicit token URL instead, local `origin/<branch>` refs do not update — verify against the remote, not the tracking ref.)
 6. **Create the PR** with `gh pr create`. Never `--draft`; if one slips through, `gh pr ready <N>`.
 7. **Merge gate** (next section).
-8. **After merge:** `git fetch origin main`. The remote branch is NOT deleted automatically (`delete_branch_on_merge` is false) — delete it yourself with `git push origin --delete <branch>`. If `main` is checked out in another worktree, fetch rather than trying to switch this one.
+8. **After merge:** `git fetch origin main`. The remote branch is NOT deleted automatically (`delete_branch_on_merge` is false) — delete it yourself with `git push origin --delete <branch>`. **Before deleting, check whether another PR is based on it:**
+
+   ```bash
+   gh pr list --repo esaueng/remus --state open --json number,baseRefName \
+     --jq '.[] | select(.baseRefName == "<branch>") | .number'
+   ```
+
+   Deleting the base of an open PR makes GitHub auto-close it, and that is not reversible: a closed PR's base cannot be retargeted and it cannot be reopened while its base is missing (`Cannot change the base branch of a closed pull request`). Recovery means rebasing onto `main` and opening a NEW PR, losing the old thread. Retarget the stacked PR to `main` first, then delete. If `main` is checked out in another worktree, fetch rather than trying to switch this one.
 
 ## The merge gate
 

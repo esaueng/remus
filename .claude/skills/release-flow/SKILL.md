@@ -112,7 +112,7 @@ In `$BREPJS` (use a worktree if the checkout is busy):
 | `gh pr view` says CONFLICTING right after force-push | GitHub computes mergeability async; the value is stale | Re-query after a few seconds before acting |
 | knip flags a src export as unused, blocks push | knip cannot trace usage from `tests/` | `@testOnly` JSDoc tag on the export; `knip.config.ts` already has `tags: ['-testOnly']` |
 | CI `npm ci` fails: `Missing: @emnapi/core ... from lock file` | Old npm (< 11.11) dropped the three `@emnapi` lock entries | reference.md, "@emnapi lockfile" |
-| `git push` hangs or times out | SSH port 22 blocked, and a global insteadOf rewrite converts even explicit https URLs back to SSH | reference.md, "Pushing over HTTPS": token-embedded URL |
+| `git push` hangs or times out | NOT the historical SSH cause on the kernel side: this repo's `origin` is HTTPS with no `insteadOf` rewrite, so suspect credentials or the network. On brepjs the cause is unverified (no checkout to inspect) | `git ls-remote origin` to isolate auth from the push; for brepjs see reference.md, "Pushing over HTTPS" |
 | `git rev-parse origin/<branch>` disagrees with GitHub | Explicit-URL pushes do not update remote-tracking refs | Confirm head via `gh pr view <n> --json headRefOid` |
 
 ## Anti-patterns: what NOT to conclude
