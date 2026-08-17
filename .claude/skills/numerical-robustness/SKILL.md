@@ -1,6 +1,6 @@
 ---
 name: numerical-robustness
-description: Use when debugging floating-point failures in brepkit: a boolean or heal result flips pass/fail across runs or under tiny (1e-13) input nudges, closed/periodic geometry (circles, tori, seams) produces collapsed AABBs or wrong arcs, intersection points miss chord-discretized seams, near-duplicate vertices fail to merge, or when writing any code that compares floats, hashes coordinates, or iterates edges of closed curves.
+description: Use when debugging floating-point failures in Remus: a boolean or heal result flips pass/fail across runs or under tiny (1e-13) input nudges, closed/periodic geometry (circles, tori, seams) produces collapsed AABBs or wrong arcs, intersection points miss chord-discretized seams, near-duplicate vertices fail to merge, or when writing any code that compares floats, hashes coordinates, or iterates edges of closed curves.
 ---
 
 # Numerical Robustness in a CAD Kernel

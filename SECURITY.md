@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-To report a security vulnerability, use [GitHub Security Advisories](https://github.com/andymai/brepkit/security/advisories/new) for private disclosure.
+To report a security vulnerability, use [GitHub Security Advisories](https://github.com/esaueng/remus/security/advisories/new) for private disclosure.
 
 Include:
 

@@ -78,7 +78,7 @@ Every call site that goes through a delegate is done once the delegate impl has 
 ## Glossary for newcomers
 
 - B-Rep: boundary representation. Solids as faces/edges/vertices with exact analytic or NURBS geometry, not triangles.
-- GFA: brepkit's general fuse algorithm, the boolean engine (`crates/algo/src/gfa.rs`).
+- GFA: Remus's general fuse algorithm, the boolean engine (`crates/algo/src/gfa.rs`).
 - PCurve: a 2D curve in a face's UV parameter space representing an edge on that surface.
 - Analytic geometry: exact closed-form types (plane, cylinder, cone, sphere, torus; line, circle, ellipse), as opposed to NURBS approximation.
 - Arena / `Id<T>`: topology entities live in a central arena (`topology/src/arena.rs`) and are referenced by typed handles.

@@ -24,7 +24,7 @@ All jobs except `wasm-size` fan into `ci-pass` (display name `CI Pass`), the onl
 
 Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only when the binaries are installed (the hook skips them silently otherwise). Everything else (tests, boundaries, deny, docs) first runs in CI unless you run it yourself. Before pushing, run at minimum the tests for touched crates and, on any `Cargo.toml` change, `./scripts/check-boundaries.sh`.
 
-## Repo merge settings (verified via `gh api repos/andymai/brepkit`)
+## Repo merge settings (verified via `gh api repos/esaueng/remus`)
 
 - `allow_squash_merge: true`; merge commits and rebase merges disabled.
 - `allow_auto_merge: true`; `delete_branch_on_merge: true`.
@@ -42,7 +42,7 @@ Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only 
 Reading findings:
 
 ```bash
-gh api repos/andymai/brepkit/pulls/<N>/comments   # inline (diff-anchored) comments
+gh api repos/esaueng/remus/pulls/<N>/comments   # inline (diff-anchored) comments
 gh pr view <N> --comments                          # issue-level comments
 ```
 
@@ -50,11 +50,11 @@ Triage: P0/P1 findings get a fix commit before auto-merge is set. P2 and style f
 
 ## Sandbox push details
 
-- `origin` is `git@github.com:andymai/brepkit.git`; SSH to github.com:22 is blocked, so plain `git push` hangs until timeout.
+- `origin` is `git@github.com:esaueng/remus.git`; SSH to github.com:22 is blocked, so plain `git push` hangs until timeout.
 - Global rewrite trap: `git config --get-regexp 'url\..*insteadof'` shows `url.git@github.com:.insteadof https://github.com/`. This silently converts even an explicit `git push https://github.com/...` back to SSH. The token-embedded URL avoids the rewrite because it does not match the prefix:
 
 ```bash
-git push "https://x-access-token:$(gh auth token)@github.com/andymai/brepkit.git" <branch> \
+git push "https://x-access-token:$(gh auth token)@github.com/esaueng/remus.git" <branch> \
   2>&1 | sed 's/x-access-token:[^@]*@/x-access-token:***@/g'
 ```
 
@@ -62,7 +62,7 @@ git push "https://x-access-token:$(gh auth token)@github.com/andymai/brepkit.git
 
 ```bash
 gh pr view <N> --json headRefOid --jq .headRefOid
-gh api repos/andymai/brepkit/commits/<branch> --jq .sha
+gh api repos/esaueng/remus/commits/<branch> --jq .sha
 ```
 
 Do not conclude "push failed" or "remote is behind" from `git rev-parse origin/<branch>`; that ref is stale by construction here.

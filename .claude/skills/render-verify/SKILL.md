@@ -44,7 +44,7 @@ Crate map, full API signatures, LOD math, and the environment fact sheet: [refer
 
 ## Procedure B: live viewer verification (proven sandbox recipe)
 
-This sandbox has a real GPU and a live display `:0`. These steps are environment facts proven here, not brepkit code behavior.
+This sandbox has a real GPU and a live display `:0`. These steps are environment facts proven here, not Remus code behavior.
 
 1. Launch, forcing X11. winit 0.30 prefers Wayland when `WAYLAND_DISPLAY` is set and a native Wayland window is not capturable here (`grim` is absent, `WINIT_UNIX_BACKEND` is ignored by winit 0.30). Run via the Bash tool with `run_in_background: true` (foreground `sleep` is blocked in the agent shell, so never `sleep && capture` in one command):
    ```bash
@@ -68,7 +68,7 @@ Viewer controls: left-drag orbit, right-drag or shift+left-drag pan, scroll zoom
 
 ## The architectural bet
 
-brepkit preserves exact analytic surfaces (plane, cylinder, cone, sphere, torus) through operations. The render bet: ship the surface parameters to the GPU and evaluate the mesh there in a compute pass at a view-dependent LOD, instead of CPU-tessellating and uploading triangles. WebGPU has no tessellation or mesh shaders, hence the compute pass. This is why analytic preservation matters to rendering: a face degraded to NURBS cannot take this path. Currently shipped for cylinder faces only; module doc of `crates/render/src/compute_mesh.rs` is the source of truth.
+Remus preserves exact analytic surfaces (plane, cylinder, cone, sphere, torus) through operations. The render bet: ship the surface parameters to the GPU and evaluate the mesh there in a compute pass at a view-dependent LOD, instead of CPU-tessellating and uploading triangles. WebGPU has no tessellation or mesh shaders, hence the compute pass. This is why analytic preservation matters to rendering: a face degraded to NURBS cannot take this path. Currently shipped for cylinder faces only; module doc of `crates/render/src/compute_mesh.rs` is the source of truth.
 
 ## Anti-patterns: what NOT to conclude
 

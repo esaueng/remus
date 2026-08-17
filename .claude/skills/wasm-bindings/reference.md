@@ -38,7 +38,7 @@ brepjs maps `'brepkit-wasm'` to `resolve(__dirname, 'node_modules/brepkit-wasm/b
 wasm-pack build crates/wasm --target nodejs --release
 ```
 
-Then temporarily change the alias target to `~/Git/brepkit/crates/wasm/pkg/brepkit_wasm.js` (plain nodejs build; only the xtask merge renames the entry to `.cjs`). Run the tests or bench, then revert the alias. This sidesteps npm install and the lockfile and lint-config churn that comes with it.
+Then temporarily change the alias target to `~/Git/remus/crates/wasm/pkg/brepkit_wasm.js` (plain nodejs build; only the xtask merge renames the entry to `.cjs`). Run the tests or bench, then revert the alias. This sidesteps npm install and the lockfile and lint-config churn that comes with it.
 
 ### Full overlay: pnpm + Vite consumers (e.g. gridfinity-layout-tool)
 
