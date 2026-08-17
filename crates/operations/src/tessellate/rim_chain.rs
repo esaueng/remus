@@ -101,7 +101,7 @@ pub fn collect_full_turn_rim_cycles_any(
             }
             let stored_start = topo.vertex(start)?.point();
             let stored_end = topo.vertex(end)?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(stored_start, stored_end);
+            let (t0, t1) = edge.domain_with_endpoints(stored_start, stored_end);
             let midpoint =
                 edge.curve()
                     .evaluate_with_endpoints((t0 + t1) * 0.5, stored_start, stored_end);

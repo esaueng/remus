@@ -23,6 +23,8 @@ use crate::ds::Rank;
 pub struct OrientedPCurveEdge {
     /// 3D edge curve (Line, Circle, Ellipse, NurbsCurve).
     pub curve_3d: EdgeCurve,
+    /// Exact parameter interval in `curve_3d`'s native direction.
+    pub trim: Option<(f64, f64)>,
     /// 2D curve in this face's (u,v) parameter space.
     pub pcurve: Curve2D,
     /// Start point in (u,v) space.
@@ -50,6 +52,136 @@ pub struct OrientedPCurveEdge {
     pub source_topo_edge: Option<usize>,
 }
 
+impl OrientedPCurveEdge {
+    /// Endpoint-derived support domain in this wire use's traversal direction.
+    ///
+    /// Face partitioning uses this as a structural support-arc heuristic. The
+    /// exact trim remains carried separately and is written to result edges.
+    #[must_use]
+    pub fn domain(&self) -> (f64, f64) {
+        self.curve_3d
+            .domain_with_endpoints(self.start_3d, self.end_3d)
+    }
+
+    /// Parameter domain in this wire use's traversal direction.
+    ///
+    /// This intentionally retains the endpoint-derived complement-arc
+    /// convention used by the partitioner's structural tests.
+    #[must_use]
+    pub fn native_domain(&self) -> (f64, f64) {
+        if self.forward {
+            self.curve_3d
+                .domain_with_endpoints(self.start_3d, self.end_3d)
+        } else {
+            self.curve_3d
+                .domain_with_endpoints(self.end_3d, self.start_3d)
+        }
+    }
+
+    /// Exact child trim for endpoints expressed in wire traversal order.
+    #[must_use]
+    pub fn sub_trim(&self, start: Point3, end: Point3) -> Option<(f64, f64)> {
+        let parent = self.trim.unwrap_or_else(|| self.domain());
+        let traversal_parent = if self.forward {
+            Some(parent)
+        } else {
+            reverse_trim(Some(parent))
+        }?;
+        let trim = sub_trim(&self.curve_3d, traversal_parent, start, end);
+        if self.forward {
+            trim
+        } else {
+            reverse_trim(trim)
+        }
+    }
+
+    /// Exact child trim for a normalized sub-span in wire traversal order.
+    #[must_use]
+    pub fn sub_trim_fraction(&self, start: f64, end: f64) -> Option<(f64, f64)> {
+        self.trim.map(|(t0, t1)| {
+            if self.forward {
+                ((t1 - t0).mul_add(start, t0), (t1 - t0).mul_add(end, t0))
+            } else {
+                (
+                    (t1 - t0).mul_add(1.0 - end, t0),
+                    (t1 - t0).mul_add(1.0 - start, t0),
+                )
+            }
+        })
+    }
+}
+
+/// Reverse an interval so it traces the opposite endpoint order.
+#[must_use]
+pub const fn reverse_trim(trim: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    match trim {
+        Some((t0, t1)) => Some((t1, t0)),
+        None => None,
+    }
+}
+
+/// Narrow a parent interval to exact child endpoints on the same carrier.
+#[must_use]
+pub fn sub_trim(
+    curve: &EdgeCurve,
+    parent: (f64, f64),
+    start: Point3,
+    end: Point3,
+) -> Option<(f64, f64)> {
+    let angular = |start_parameter: f64, end_parameter: f64| {
+        angular_sub_trim(parent, start_parameter, end_parameter)
+    };
+    match curve {
+        EdgeCurve::Line => None,
+        EdgeCurve::Circle(circle) => angular(circle.project(start), circle.project(end)),
+        EdgeCurve::Ellipse(ellipse) => angular(ellipse.project(start), ellipse.project(end)),
+        EdgeCurve::Hyperbola(hyperbola) => Some((hyperbola.project(start), hyperbola.project(end))),
+        EdgeCurve::Parabola(parabola) => Some((parabola.project(start), parabola.project(end))),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let project = |point| {
+                brepkit_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
+                    .ok()
+                    .map(|result| result.parameter)
+            };
+            Some((project(start)?, project(end)?))
+        }
+    }
+}
+
+fn angular_sub_trim(
+    parent: (f64, f64),
+    start_parameter: f64,
+    end_parameter: f64,
+) -> Option<(f64, f64)> {
+    const EPS: f64 = 1e-12;
+    const TAU: f64 = std::f64::consts::TAU;
+    let (lo, hi) = (parent.0.min(parent.1), parent.0.max(parent.1));
+    let lift = |parameter: f64, preferred: f64| {
+        let mut lifted = TAU.mul_add(((preferred - parameter) / TAU).round(), parameter);
+        if lifted < lo - EPS {
+            lifted += TAU;
+        }
+        if lifted > hi + EPS {
+            lifted -= TAU;
+        }
+        (lifted >= lo - EPS && lifted <= hi + EPS).then_some(lifted)
+    };
+
+    let start = lift(start_parameter, parent.0)?;
+    let mut end = lift(end_parameter, start)?;
+    if parent.1 >= parent.0 {
+        if end < start - EPS {
+            end += TAU;
+        }
+        (end <= hi + EPS).then_some((start, end))
+    } else {
+        if end > start + EPS {
+            end -= TAU;
+        }
+        (end >= lo - EPS).then_some((start, end))
+    }
+}
+
 /// An intersection curve between two faces, with pcurves on each.
 ///
 /// Produced by face-face intersection. Consumed by the face splitter.
@@ -57,6 +189,8 @@ pub struct OrientedPCurveEdge {
 pub struct SectionEdge {
     /// 3D intersection curve.
     pub curve_3d: EdgeCurve,
+    /// Exact parameter interval tracing `start` to `end` on `curve_3d`.
+    pub trim: Option<(f64, f64)>,
     /// pcurve on face A's surface.
     pub pcurve_a: Curve2D,
     /// pcurve on face B's surface.
@@ -85,6 +219,14 @@ pub struct SectionEdge {
     /// Used by `build_topology_face` to share the topology edge entity
     /// across faces (shared edge identity for cross-face edges).
     pub pave_block_id: Option<usize>,
+}
+
+impl SectionEdge {
+    /// Endpoint-derived structural support domain of this section edge.
+    #[must_use]
+    pub fn domain(&self) -> (f64, f64) {
+        self.curve_3d.domain_with_endpoints(self.start, self.end)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -189,4 +331,19 @@ pub struct EdgeLineageLog {
     /// Rebuilt edge index → the edge it was rebuilt from (weld remaps,
     /// canonicalization, arc chain splits).
     pub rewrites: std::collections::BTreeMap<usize, usize>,
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use std::f64::consts::{PI, TAU};
+
+    use super::angular_sub_trim;
+
+    #[test]
+    fn angular_sub_trim_keeps_full_circle_boundary_on_parent_winding() {
+        assert_eq!(angular_sub_trim((0.0, TAU), 0.0, PI), Some((0.0, PI)));
+        assert_eq!(angular_sub_trim((0.0, TAU), PI, 0.0), Some((PI, TAU)));
+        assert_eq!(angular_sub_trim((TAU, 0.0), 0.0, PI), Some((TAU, PI)));
+        assert_eq!(angular_sub_trim((TAU, 0.0), PI, 0.0), Some((PI, 0.0)));
+    }
 }

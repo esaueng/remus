@@ -334,8 +334,10 @@ fn boolean_with_policy(
                 // Translate B's z-range into A's axis frame.
                 let za = (*za_min, *za_max);
                 let zb = (*zb_min + along_axis, *zb_max + along_axis);
+                let rim_turn =
+                    exact_circle_turn_on_solid(topo, a)?.or(exact_circle_turn_on_solid(topo, b)?);
                 if let Some(result) =
-                    coaxial_cylinder_shortcut(topo, op, *oa, *aa, *ra, za, zb, tol)?
+                    coaxial_cylinder_shortcut(topo, op, *oa, *aa, *ra, za, zb, rim_turn, tol)?
                 {
                     return Ok(result);
                 }
@@ -1644,6 +1646,7 @@ fn coaxial_cylinder_shortcut(
     radius: f64,
     a_range: (f64, f64),
     b_range: (f64, f64),
+    rim_turn: Option<f64>,
     tol: brepkit_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let (za_min, za_max) = a_range;
@@ -1684,7 +1687,46 @@ fn coaxial_cylinder_shortcut(
     );
     let xform = xform_from_canonical_z(world_origin, axis, tol);
     crate::transform::transform_solid(topo, cyl, &xform)?;
+    // The rebuilt rims are FULL circles; only the parent's winding direction
+    // is transferable. Anchoring each rim at its own start vertex keeps the
+    // interval in phase with that rim's topology — a single harvested
+    // interval would put one rim's stored domain out of phase with its
+    // vertex, and a partial parent arc would claim a sub-span of a full rim.
+    if let Some(turn) = rim_turn {
+        for edge_id in brepkit_topology::explorer::solid_edges(topo, cyl)? {
+            let edge = topo.edge(edge_id)?;
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                continue;
+            };
+            let start = circle.project(topo.vertex(edge.start())?.point());
+            topo.edge_mut(edge_id)?
+                .set_trim(Some((start, start + turn)));
+        }
+    }
     Ok(Some(cyl))
+}
+
+/// Signed full turn (`±TAU`) of an exact full-circle rim trim on `solid`.
+///
+/// Only closed rims carrying a whole-turn interval qualify: a partial arc is
+/// a sub-span of some *other* edge and says nothing about how a rebuilt full
+/// rim should be parameterized.
+fn exact_circle_turn_on_solid(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Option<f64>, crate::OperationsError> {
+    for edge_id in brepkit_topology::explorer::solid_edges(topo, solid)? {
+        let edge = topo.edge(edge_id)?;
+        if !matches!(edge.curve(), EdgeCurve::Circle(_)) || !edge.is_closed() {
+            continue;
+        }
+        if let Some((t0, t1)) = edge.trim()
+            && (t1 - t0).abs().mul_add(-1.0, std::f64::consts::TAU).abs() < 1e-9
+        {
+            return Ok(Some(t1 - t0));
+        }
+    }
+    Ok(None)
 }
 
 /// Compute the coaxial-cone boolean for two frustums on the same conical
@@ -4107,8 +4149,16 @@ fn unify_coincident_boundary_edges(
         }
     }
 
-    // 2. Snapshot each face's wires (edge id, fwd, curve, endpoints, tol).
-    type OeSnap = (EdgeId, bool, EdgeCurve, VertexId, VertexId, Option<f64>);
+    // 2. Snapshot each face's wires (edge id, fwd, curve, endpoints, tol, trim).
+    type OeSnap = (
+        EdgeId,
+        bool,
+        EdgeCurve,
+        VertexId,
+        VertexId,
+        Option<f64>,
+        Option<(f64, f64)>,
+    );
     struct FaceSnap {
         surface: FaceSurface,
         reversed: bool,
@@ -4132,6 +4182,7 @@ fn unify_coincident_boundary_edges(
                         e.start(),
                         e.end(),
                         e.tolerance(),
+                        e.trim(),
                     ))
                 })
                 .collect::<Result<_, _>>()?;
@@ -4177,7 +4228,7 @@ fn unify_coincident_boundary_edges(
                    changed: &mut bool|
      -> Result<Vec<OrientedEdge>, crate::OperationsError> {
         let mut out = Vec::with_capacity(oes.len());
-        for (eid, fwd, curve, start, end, etol) in oes {
+        for (eid, fwd, curve, start, end, etol, trim) in oes {
             let cs = canon_vid(topo, *start)?;
             let ce = canon_vid(topo, *end)?;
             if cs == ce {
@@ -4187,6 +4238,10 @@ fn unify_coincident_boundary_edges(
             }
             let sp = topo.vertex(*start)?.point();
             let ep = topo.vertex(*end)?.point();
+            // This key intentionally follows the historical endpoint-derived
+            // support arc: it groups weld candidates, not a consumer of the
+            // edge's exact result interval. The rebuilt edge below still
+            // preserves that interval.
             let (t0, t1) = curve.domain_with_endpoints(sp, ep);
             let mid = curve.evaluate_with_endpoints((t0 + t1) * 0.5, sp, ep);
             let (cs_q, ce_q) = (q(topo.vertex(cs)?.point()), q(topo.vertex(ce)?.point()));
@@ -4211,10 +4266,9 @@ fn unify_coincident_boundary_edges(
                     (*eid, *start)
                 } else {
                     *changed = true;
-                    (
-                        topo.add_edge(Edge::with_tolerance(cs, ce, curve.clone(), *etol)),
-                        cs,
-                    )
+                    let mut rebuilt = Edge::with_tolerance(cs, ce, curve.clone(), *etol);
+                    rebuilt.set_trim(*trim);
+                    (topo.add_edge(rebuilt), cs)
                 };
                 ecanon.insert(key, (eid_use, e_start, ce));
                 out.push(OrientedEdge::new(eid_use, e_start == trav_start));

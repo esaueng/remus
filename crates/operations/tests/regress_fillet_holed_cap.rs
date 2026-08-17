@@ -473,7 +473,7 @@ fn off_axis_cap_hole_crossing_is_refused_without_losing_supported_fillet() {
         .expect("the cap keeps the off-axis circular hole");
     let start = topo.vertex(hole_edge.start()).unwrap().point();
     let end = topo.vertex(hole_edge.end()).unwrap().point();
-    let (t0, t1) = hole_edge.curve().domain_with_endpoints(start, end);
+    let (t0, t1) = hole_edge.domain_with_endpoints(start, end);
     let mut legacy_max: f64 = 0.0;
     for k in 0..=8 {
         let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
