@@ -358,3 +358,80 @@ fn signatures_recover_after_journal_severing() {
         other => panic!("recovery must answer or refuse loudly: {other:?}"),
     }
 }
+
+// ── Journal-driven attribute integration (RFC 0003, Stage 4) ────────────
+
+#[test]
+fn names_ride_construction_lineage_through_a_real_boolean() {
+    use brepkit_topology::attributes::EntityAttributes;
+    use brepkit_topology::naming::resolve_face_attributes;
+
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let b = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let shift = brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0);
+    brepkit_operations::transform::transform_solid(&mut topo, b, &shift).unwrap();
+
+    // Name every face of operand A before the operation.
+    for (i, face) in brepkit_topology::explorer::solid_faces(&topo, a)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+    {
+        topo.set_face_attributes(
+            face,
+            EntityAttributes {
+                name: Some(format!("a-face-{i}")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let fused = boolean_journaled(&mut topo, BooleanOp::Fuse, a, b).unwrap();
+    let report = topo.propagate_attributes_for_op(fused.op, false).unwrap();
+    assert!(
+        !report.refused_inferred,
+        "GFA history is construction-derived"
+    );
+    assert!(
+        report.carried > 0,
+        "operand A's names must ride onto the result's carried faces"
+    );
+
+    // Every attributed result face carries an unmodified operand-A name;
+    // section-generated faces stay bare.
+    let mut named = 0;
+    for face in brepkit_topology::explorer::solid_faces(&topo, fused.solid).unwrap() {
+        if let Some(attributes) = topo.attributes().face(face) {
+            named += 1;
+            assert!(
+                attributes
+                    .name
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("a-face-"),
+                "carried names are never synthesized or suffixed"
+            );
+        }
+    }
+    assert_eq!(named, report.carried);
+
+    // The reference-keyed read: an operation-output reference whose bound
+    // face is attributed yields the name through resolution.
+    let mut read_through_ref = 0;
+    for index in 0..12 {
+        let reference = PersistentRef::operation_output(fused.op, EntityKind::Face, index);
+        if let Ok(bound) = resolve_face_attributes(&topo, &reference) {
+            for (_, attributes) in bound {
+                if attributes.is_some() {
+                    read_through_ref += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        read_through_ref > 0,
+        "attributes must be readable through persistent references"
+    );
+}
