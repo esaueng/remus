@@ -51,6 +51,62 @@ pub fn boolean_kind(op: BooleanOp) -> &'static str {
     }
 }
 
+/// Every face, edge, and vertex of a solid as journal entity keys.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the solid's topology tree contains an
+/// invalid handle.
+pub fn solid_entity_keys(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Vec<EntityKey>, OperationsError> {
+    let mut keys = Vec::new();
+    keys.extend(
+        solid_faces(topo, solid)?
+            .into_iter()
+            .map(|id| EntityKey::face(id.index())),
+    );
+    keys.extend(
+        solid_edges(topo, solid)?
+            .into_iter()
+            .map(|id| EntityKey::edge(id.index())),
+    );
+    keys.extend(
+        solid_vertices(topo, solid)?
+            .into_iter()
+            .map(|id| EntityKey::vertex(id.index())),
+    );
+    Ok(keys)
+}
+
+/// Opens a journaled operation, capturing the pre-operation half of its
+/// scope.
+///
+/// The scope half captured here is every entity of the listed solids,
+/// walked **before** the operation runs (they may be retired by the time
+/// the entry is recorded). Pre-operation entities the entry then makes no
+/// claim about are severed — an operand entity the operation consumed
+/// without a record fails closed instead of resolving to a retired
+/// handle.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if a solid's topology tree contains an
+/// invalid handle; nothing is journaled (the begin gap-check has already
+/// run, which is harmless).
+pub fn begin_scoped(
+    topo: &mut Topology,
+    kind: &str,
+    solids: &[SolidId],
+) -> Result<PendingOp, OperationsError> {
+    let mut pending = topo.journal_begin(kind);
+    for &solid in solids {
+        pending.add_scope(solid_entity_keys(topo, solid)?);
+    }
+    Ok(pending)
+}
+
 /// Runs a GFA boolean and journals its construction-derived vertex, edge,
 /// and face history as one evolution entry.
 ///
@@ -72,7 +128,10 @@ pub fn boolean_journaled(
     solid_a: SolidId,
     solid_b: SolidId,
 ) -> Result<JournaledBoolean, OperationsError> {
-    let pending = topo.journal_begin(boolean_kind(op));
+    // Pre-operation scope: both operands' entities, so an operand entity
+    // the boolean consumed without a record (the GFA does not record face
+    // deletions) severs instead of resolving to a retired handle.
+    let pending = begin_scoped(topo, boolean_kind(op), &[solid_a, solid_b])?;
     let (solid, evolution) = gfa::boolean_with_entity_evolution(topo, op, solid_a, solid_b)?;
     let draft = draft_from_entity_evolution(&evolution);
     let op = topo.journal_record_evolution(pending, draft)?;
@@ -159,15 +218,23 @@ pub fn draft_from_entity_evolution(evolution: &EntityEvolution) -> EvolutionDraf
 /// The entry's origin mirrors [`EvolutionMap::origin`]: a geometry-derived
 /// map journals as inference, and a resolver must surface that to callers.
 ///
+/// `result_solids` declares the post-operation half of the entry's scope:
+/// every entity of those solids. With the pre-operation half captured by
+/// [`begin_scoped`], the entry's scope covers everything the operation may
+/// have touched, so its edges and vertices sever honestly while other
+/// solids' entities carry through.
+///
 /// # Errors
 ///
 /// Returns [`OperationsError`] if the map makes conflicting claims about
-/// one face (e.g. an output listed as both modified and generated);
-/// nothing is recorded.
+/// one face (e.g. an output listed as both modified and generated), or if
+/// a result solid's topology tree contains an invalid handle; nothing is
+/// recorded.
 pub fn record_face_evolution(
     topo: &mut Topology,
     pending: PendingOp,
     map: &EvolutionMap,
+    result_solids: &[SolidId],
 ) -> Result<OpId, OperationsError> {
     use std::collections::BTreeMap;
 
@@ -176,6 +243,9 @@ pub fn record_face_evolution(
     } else {
         EvolutionDraft::geometry()
     };
+    for &solid in result_solids {
+        draft.add_scope(solid_entity_keys(topo, solid)?);
+    }
 
     // Group by output so a same-domain merge (one output claimed by several
     // inputs) becomes one `Merged` event rather than duplicate claims.
