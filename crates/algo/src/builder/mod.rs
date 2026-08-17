@@ -355,14 +355,6 @@ impl Builder {
     /// # Errors
     ///
     /// Returns [`AlgoError`] if topology lookups or classification fails.
-    /// The construction lineage recorded so far (populated by
-    /// [`Self::perform`]); cloned by entity-evolution callers before the
-    /// builder is consumed.
-    #[must_use]
-    pub fn edge_lineage(&self) -> &split_types::EdgeLineageLog {
-        &self.edge_lineage
-    }
-
     pub fn perform(&mut self) -> Result<(), AlgoError> {
         self.build_face_ranks()?;
         self.fill_images();
@@ -409,7 +401,12 @@ impl Builder {
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
-        let solid_id = assemble::assemble_solid(&mut self.topo, &selected, &cap_planes)?;
+        let solid_id = assemble::assemble_solid(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
         Ok((self.topo, solid_id))
     }
 
@@ -420,7 +417,15 @@ impl Builder {
     pub fn build_result_with_origins(
         mut self,
         op: BooleanOp,
-    ) -> Result<(Topology, SolidId, FaceProvenance), AlgoError> {
+    ) -> Result<
+        (
+            Topology,
+            SolidId,
+            FaceProvenance,
+            split_types::EdgeLineageLog,
+        ),
+        AlgoError,
+    > {
         let selected = bop::select_faces(
             &self.sub_faces,
             op,
@@ -433,9 +438,13 @@ impl Builder {
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
-        let (solid_id, origins) =
-            assemble::assemble_solid_with_origins(&mut self.topo, &selected, &cap_planes)?;
-        Ok((self.topo, solid_id, origins))
+        let (solid_id, origins) = assemble::assemble_solid_with_origins(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, solid_id, origins, self.edge_lineage))
     }
 
     /// Candidate cap planes for partial coplanar same-domain overlaps.
@@ -905,7 +914,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     }
 
     orient_selected_fuse_analytic_holes(&mut topo, &sub_faces, &selected);
-    let solid_id = assemble::assemble_solid(&mut topo, &selected, &[])?;
+    let solid_id = assemble::assemble_solid(&mut topo, &selected, &[], &mut nway_lineage)?;
     Ok((topo, solid_id))
 }
 

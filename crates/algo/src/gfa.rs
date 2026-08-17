@@ -231,7 +231,8 @@ pub fn boolean_with_face_origins(
     );
     builder.perform()?;
 
-    let (store_topo, store_result, store_origins) = builder.build_result_with_origins(op)?;
+    let (store_topo, store_result, store_origins, _lineage) =
+        builder.build_result_with_origins(op)?;
     store.topo = store_topo;
 
     let (result, export_map) = store.export_solid_with_face_map(topo, store_result)?;
@@ -493,9 +494,12 @@ pub fn boolean_with_entity_evolution(
         tol,
     );
     builder.perform()?;
-    let lineage = builder.edge_lineage().clone();
 
-    let (store_topo, store_result, store_origins) = builder.build_result_with_origins(op)?;
+    // The returned log includes both the perform-phase records and the
+    // assembly-rebuild records (weld and collinear splits), so result
+    // edges rebuilt during assembly chase back to their parents.
+    let (store_topo, store_result, store_origins, lineage) =
+        builder.build_result_with_origins(op)?;
     store.topo = store_topo;
 
     let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
@@ -672,12 +676,14 @@ mod entity_evolution_tests {
                 );
             }
         }
-        // Builder rebuild paths are not recorded yet; pin the honest gap so
-        // improvements (or regressions) are visible.
-        let total = evolution.edges.len();
-        assert!(
-            unresolved * 2 < total,
-            "unresolved ({unresolved}) must stay a minority of {total} edges"
+        // Every assembly-rebuild path records lineage (perform-phase wire
+        // images, vertex-merge rebuilds, welds, collinear splits), so a cube
+        // fuse's edge history is total construction fact: any regression
+        // that reintroduces an unrecorded rebuild fails here.
+        assert_eq!(
+            unresolved, 0,
+            "every result edge must chase to a construction record \
+             (preserved={preserved} modified={modified} generated={generated})"
         );
 
         // Vertices: both preserved corners and created intersections exist.
