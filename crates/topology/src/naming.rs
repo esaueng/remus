@@ -268,6 +268,44 @@ impl Resolution {
     }
 }
 
+/// Resolves a reference and reads the bound faces' attributes (RFC 0003,
+/// Stage 4).
+///
+/// This is the composition that makes the attribute store
+/// reference-keyed: the durable key is the reference; resolution turns
+/// it into current entities, and the attribute lookup follows the
+/// binding.
+///
+/// Each bound entity is returned with its attributes (`None` when unset,
+/// or for non-face entities — the attribute store's v1 scope). Non-binding
+/// resolutions convert to their typed `ref_*` errors, so an attribute can
+/// never be read through a dangling, severed, or ambiguous reference.
+///
+/// # Errors
+///
+/// The [`Resolution::into_entities`] errors: `RefAmbiguous`,
+/// `RefDangling`, `RefUnresolvedAcrossOperation`, `RefUnknownOperation`,
+/// `RefNoMatch`.
+pub fn resolve_face_attributes<'t>(
+    topo: &'t Topology,
+    reference: &PersistentRef,
+) -> Result<Vec<(EntityKey, Option<&'t crate::attributes::EntityAttributes>)>, crate::TopologyError>
+{
+    let (entities, _provenance) = resolve(topo, reference).into_entities()?;
+    Ok(entities
+        .into_iter()
+        .map(|key| {
+            let attributes = (key.kind == EntityKind::Face)
+                .then(|| {
+                    topo.face_id_from_index(key.index)
+                        .and_then(|id| topo.attributes().face(id))
+                })
+                .flatten();
+            (key, attributes)
+        })
+        .collect())
+}
+
 /// Resolves a reference against the current model.
 ///
 /// The anchor establishes a starting ordinal set; the chase applies every
