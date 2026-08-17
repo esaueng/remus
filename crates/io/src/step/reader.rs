@@ -5562,9 +5562,9 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         );
     }
 
-    /// An OCCT-style surface + pcurve tail, referenced by the wrapper's
+    /// A planar surface + pcurve tail, referenced by the wrapper's
     /// `pcurve_or_surface` list. Entity ids 90+.
-    const OCCT_PCURVE_TAIL: &str = "\
+    const PLANE_PCURVE_TAIL: &str = "\
 #90 = CARTESIAN_POINT('',(0.,0.,0.));\n\
 #91 = DIRECTION('',(0.,0.,1.));\n\
 #92 = DIRECTION('',(1.,0.,0.));\n\
@@ -5578,7 +5578,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
              #2 = DIRECTION('',(1.,0.,0.));\n\
              #3 = VECTOR('',#2,1.);\n\
              #4 = LINE('',#1,#3);\n\
-             #5 = SURFACE_CURVE('',#4,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+             #5 = SURFACE_CURVE('',#4,(#94),.PCURVE_S1.);\n{PLANE_PCURVE_TAIL}"
         );
         let curve = curve_geometry(&body, 5).unwrap();
         assert!(matches!(curve, EdgeCurve::Line), "got {curve:?}");
@@ -5592,7 +5592,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
              #3 = DIRECTION('',(1.,0.,0.));\n\
              #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
              #5 = CIRCLE('',#4,2.5);\n\
-             #6 = SURFACE_CURVE('',#5,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+             #6 = SURFACE_CURVE('',#5,(#94),.PCURVE_S1.);\n{PLANE_PCURVE_TAIL}"
         );
         let curve = curve_geometry(&body, 6).unwrap();
         let EdgeCurve::Circle(circle) = curve else {
@@ -5610,7 +5610,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
              #4 = CARTESIAN_POINT('',(3.,0.,0.));\n\
              #5 = B_SPLINE_CURVE_WITH_KNOTS('',3,(#1,#2,#3,#4),\
              .UNSPECIFIED.,.F.,.F.,(4,4),(0.,1.),.UNSPECIFIED.);\n\
-             #6 = SURFACE_CURVE('',#5,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+             #6 = SURFACE_CURVE('',#5,(#94),.PCURVE_S1.);\n{PLANE_PCURVE_TAIL}"
         );
         let curve = curve_geometry(&body, 6).unwrap();
         let EdgeCurve::NurbsCurve(nurbs) = curve else {
@@ -5629,7 +5629,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
                  #3 = DIRECTION('',(1.,0.,0.));\n\
                  #4 = AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
                  #5 = CIRCLE('',#4,4.);\n\
-                 #6 = {wrapper}('',#5,(#94),.PCURVE_S1.);\n{OCCT_PCURVE_TAIL}"
+                 #6 = {wrapper}('',#5,(#94),.PCURVE_S1.);\n{PLANE_PCURVE_TAIL}"
             );
             let curve = curve_geometry(&body, 6).unwrap();
             assert!(
@@ -7343,7 +7343,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     }
 
     /// Rewrite every `EDGE_CURVE` so its curve reference goes through a
-    /// `SURFACE_CURVE` wrapper, the way OpenCascade writes edges on curved
+    /// `SURFACE_CURVE` wrapper, as exporters commonly do for edges on curved
     /// faces. The resulting file must still import identically.
     fn wrap_edge_curves_in_surface_curves(step: &str) -> String {
         let mut next_id = step
