@@ -25,7 +25,7 @@ should be treated as a debug/replay format, not long-term interchange.
 
 ## Edge orientation on STEP import
 
-brepkit's topology has no edge "sense" flag. An `Edge` owns its curve outright,
+Remus's topology has no edge "sense" flag. An `Edge` owns its curve outright,
 and every consumer assumes the stored parameterization runs start → end; the
 STEP writer relies on the same invariant, which is why it always emits
 `same_sense = .T.`.
@@ -56,7 +56,7 @@ Reversing a circle or ellipse negates its `v_axis` and normal but leaves
 `u_axis` alone, so `evaluate(0.0)` — the seam of a closed edge — does not move.
 A closed `.F.` edge therefore changes its winding without changing its phase.
 
-Files written by brepkit are unaffected, since the writer never emits `.F.`.
+Files written by Remus are unaffected, since the writer never emits `.F.`.
 Files from other CAD systems that contain `.F.` conic edges import differently
 than they did before this behaviour existed: previously such arcs were built as
 the complement sweep, which left face, edge and vertex counts correct while

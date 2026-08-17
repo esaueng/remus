@@ -14,7 +14,7 @@ because it preserves exact geometry and supports precise operations.
 
 ## Topology vs Geometry
 
-brepkit separates **topology** (how things are connected) from
+Remus separates **topology** (how things are connected) from
 **geometry** (where things are in space):
 
 - **Topology**: Vertex → Edge → Wire → Face → Shell → Solid
@@ -27,7 +27,7 @@ robust boolean operations.
 
 ## Tolerance Model
 
-Floating-point arithmetic introduces rounding errors. brepkit uses a
+Floating-point arithmetic introduces rounding errors. Remus uses a
 tolerance model to handle this:
 
 - **Linear tolerance**: distance below which two points are "the same"
@@ -38,14 +38,14 @@ tolerance model to handle this:
 Tolerances can be configured globally or per-operation.
 
 All lengths are conventionally millimetres and all angles are radians. Values
-remain unitless at the type level: brepkit never guesses or converts units.
+remain unitless at the type level: Remus never guesses or converts units.
 Scale models and every associated linear tolerance together when integrating
 with a metre- or inch-based system. See [Tolerances and Robustness](./tolerances.md).
 
 ## NURBS
 
 Non-Uniform Rational B-Splines (NURBS) are the mathematical foundation
-for curves and surfaces in brepkit. A NURBS curve is defined by:
+for curves and surfaces in Remus. A NURBS curve is defined by:
 
 - **Degree**: polynomial degree (typically 1–5)
 - **Control points**: points that influence the curve shape

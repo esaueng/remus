@@ -10,8 +10,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/esaueng/brepkit.git
-cd brepkit
+git clone https://github.com/esaueng/remus.git
+cd remus
 
 # Build all Rust crates
 cargo build --workspace
@@ -23,14 +23,28 @@ cargo test --workspace
 cargo build -p brepkit-wasm --target wasm32-unknown-unknown
 ```
 
+The MSRV is Rust 1.88. Day-to-day development uses the toolchain pinned in
+`rust-toolchain.toml`, which rustup picks up automatically along with the
+`wasm32-unknown-unknown` target.
+
 ## Using from JavaScript and TypeScript
 
-The maintained JS surface is the `brepkit-wasm` package, built from
-`crates/wasm`. It ships its own TypeScript declarations.
+The JS surface is the WASM package built from `crates/wasm`. It ships its own
+TypeScript declarations.
+
+**This repository publishes no packages.** There is no npm release and no
+crates.io release; a `brepkit-wasm` package on npm belongs to the historical
+upstream line, not to this repository. See
+`docs/production-readiness/fork-maintenance.md` for the release-ownership gate.
+Build the package from a checkout instead:
 
 ```bash
-npm install brepkit-wasm
+cargo xtask wasm-build          # dual-target build, merge, and validation
+node scripts/test-wasm-smoke.mjs
 ```
+
+That writes `crates/wasm/pkg`, which you can consume with `npm install
+./crates/wasm/pkg` or a workspace link.
 
 ```typescript
 import init, { BrepKernel } from 'brepkit-wasm';
@@ -38,13 +52,6 @@ import init, { BrepKernel } from 'brepkit-wasm';
 await init();
 const kernel = new BrepKernel();
 const solid = kernel.makeBox(10, 20, 30);
-```
-
-To build it from a checkout instead of installing the release:
-
-```bash
-cargo xtask wasm-build
-node scripts/test-wasm-smoke.mjs
 ```
 
 ## Development

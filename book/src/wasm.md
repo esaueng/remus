@@ -1,10 +1,9 @@
 # WebAssembly
 
-Install the generated package and construct one kernel per independent model:
-
-```bash
-npm install brepkit-wasm
-```
+Build the package from a checkout with `cargo xtask wasm-build` (this
+repository publishes nothing to npm — see
+[Getting Started](./getting-started.md)), then construct one kernel per
+independent model:
 
 ```javascript
 import { BrepKernel } from 'brepkit-wasm';
