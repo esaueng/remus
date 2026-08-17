@@ -1,6 +1,6 @@
 # Tolerances and Robustness
 
-brepkit conventionally interprets lengths as millimetres and angles as
+Remus conventionally interprets lengths as millimetres and angles as
 radians. Scalars are unitless in the Rust and JavaScript type systems, so the
 kernel performs no automatic conversion. A model supplied in metres also
 requires metre-scaled deflections and linear tolerances.

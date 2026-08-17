@@ -8,7 +8,7 @@ before changing tolerances. For a cut, verify target/tool order.
 
 ## Imported geometry is huge or tiny
 
-brepkit does not infer file or application units. Normalize coordinates at the
+Remus does not infer file or application units. Normalize coordinates at the
 integration boundary and scale linear tolerances and mesh deflection by the
 same factor.
 
