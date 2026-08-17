@@ -51,9 +51,18 @@ for path in "${ALLOWED_HISTORY[@]}"; do
   search_args+=(--glob "!${path}")
 done
 
+# References that name OTHER repositories, not this project's own identity.
+# The release-flow skill deliberately warns readers not to confuse this repo
+# with `esaueng/brepkit`, a separate fork of `andymai/brepkit` checked out
+# alongside it. Rewriting those would erase the very distinction the warning
+# exists to draw. Matched as whole repo/path references, so ordinary stale
+# prose in the same file is still caught.
+readonly OTHER_REPOS='esaueng/brepkit|andymai/brepkit|/claude/brepkit'
+
 status=0
 
-if stale_content=$(rg -n -i --hidden --glob '!.git' 'brepkit|brep-kit' "${search_args[@]}" 2>/dev/null); then
+if stale_content=$(rg -n -i --hidden --glob '!.git' 'brepkit|brep-kit' "${search_args[@]}" 2>/dev/null \
+  | rg -v "$OTHER_REPOS"); then
   echo "Remus rename violation: stale product identity found in content"
   echo "$stale_content"
   status=1
