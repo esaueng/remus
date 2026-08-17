@@ -22,14 +22,14 @@
 
 use std::time::Instant;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOptions, compound_cut};
-use brepkit_operations::compound_ops::fuse_all;
-use brepkit_operations::primitives;
-use brepkit_operations::tessellate::tessellate_solid;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::compound::Compound;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOptions, compound_cut};
+use remus_operations::compound_ops::fuse_all;
+use remus_operations::primitives;
+use remus_operations::tessellate::tessellate_solid;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::compound::Compound;
 
 // ---------------------------------------------------------------------------
 // Grid builders (shared with benchmarks)
@@ -39,8 +39,8 @@ fn build_cylinder_grid(
     n: usize,
 ) -> (
     Topology,
-    brepkit_topology::solid::SolidId,
-    Vec<brepkit_topology::solid::SolidId>,
+    remus_topology::solid::SolidId,
+    Vec<remus_topology::solid::SolidId>,
 ) {
     let mut topo = Topology::new();
     let target = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
@@ -72,7 +72,7 @@ fn make_hex_prism(
     circumradius: f64,
     height: f64,
     z_offset: f64,
-) -> brepkit_topology::solid::SolidId {
+) -> remus_topology::solid::SolidId {
     let side = circumradius * 1.732;
     let bx = primitives::make_box(topo, side, side, height).unwrap();
     let mat = Mat4::translation(cx - side / 2.0, cy - side / 2.0, z_offset);
@@ -84,8 +84,8 @@ fn build_honeycomb_grid(
     rings: usize,
 ) -> (
     Topology,
-    brepkit_topology::solid::SolidId,
-    Vec<brepkit_topology::solid::SolidId>,
+    remus_topology::solid::SolidId,
+    Vec<remus_topology::solid::SolidId>,
 ) {
     let mut topo = Topology::new();
     let target = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
@@ -125,7 +125,7 @@ fn build_honeycomb_grid(
     (topo, target, tools)
 }
 
-fn build_overlapping_box_grid(side: usize) -> (Topology, Vec<brepkit_topology::solid::SolidId>) {
+fn build_overlapping_box_grid(side: usize) -> (Topology, Vec<remus_topology::solid::SolidId>) {
     let mut topo = Topology::new();
     let size = 1.01;
     let mut solids = Vec::with_capacity(side * side);
@@ -140,7 +140,7 @@ fn build_overlapping_box_grid(side: usize) -> (Topology, Vec<brepkit_topology::s
     (topo, solids)
 }
 
-fn build_touching_box_grid(side: usize) -> (Topology, Vec<brepkit_topology::solid::SolidId>) {
+fn build_touching_box_grid(side: usize) -> (Topology, Vec<remus_topology::solid::SolidId>) {
     let mut topo = Topology::new();
     let mut solids = Vec::with_capacity(side * side);
     for row in 0..side {
@@ -166,7 +166,7 @@ fn print_tess_result(
     bool_ms: f64,
     face_count: usize,
     topo: &Topology,
-    result: brepkit_topology::solid::SolidId,
+    result: remus_topology::solid::SolidId,
 ) {
     let t1 = Instant::now();
     let mesh =
@@ -228,7 +228,7 @@ fn run_fuse(side: usize) {
 
     let shell_id = topo.solid(result).unwrap().outer_shell();
     let face_count = topo.shell(shell_id).unwrap().faces().len();
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
     println!(
         "  Done in {:.1}ms — {} faces, volume={:.2}",
         elapsed.as_secs_f64() * 1000.0,
@@ -248,7 +248,7 @@ fn run_fuse_touching(side: usize) {
 
     let shell_id = topo.solid(result).unwrap().outer_shell();
     let face_count = topo.shell(shell_id).unwrap().faces().len();
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
     println!(
         "  Done in {:.1}ms — {} faces, volume={:.2}",
         elapsed.as_secs_f64() * 1000.0,

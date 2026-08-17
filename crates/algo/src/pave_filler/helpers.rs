@@ -3,11 +3,11 @@
 //! Extracted from phase_ee, phase_ef, and phase_ve to eliminate
 //! duplicated vertex-lookup and pave-insertion logic.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::vertex::VertexId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Pave};
 

@@ -5,16 +5,16 @@
 
 #![allow(clippy::too_many_lines, clippy::doc_markdown)]
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
-use brepkit_math::nurbs::intersection::IntersectionPoint;
+use remus_math::nurbs::intersection::IntersectionPoint;
 
 use std::collections::{HashMap, HashSet};
 
@@ -107,35 +107,35 @@ pub fn section(
             }
             FaceSurface::Nurbs(nurbs) => {
                 let intersection_curves =
-                    brepkit_math::nurbs::intersection::intersect_plane_nurbs(nurbs, normal, d, 50)?;
+                    remus_math::nurbs::intersection::intersect_plane_nurbs(nurbs, normal, d, 50)?;
                 for curve in &intersection_curves {
                     chain_curve_points(&curve.points, &mut segments);
                 }
             }
             FaceSurface::Cylinder(cyl) => {
                 let curves =
-                    brepkit_math::analytic_intersection::intersect_plane_cylinder(cyl, normal, d)?;
+                    remus_math::analytic_intersection::intersect_plane_cylinder(cyl, normal, d)?;
                 for curve in &curves {
                     chain_curve_points(&curve.points, &mut segments);
                 }
             }
             FaceSurface::Cone(cone) => {
                 let curves =
-                    brepkit_math::analytic_intersection::intersect_plane_cone(cone, normal, d)?;
+                    remus_math::analytic_intersection::intersect_plane_cone(cone, normal, d)?;
                 for curve in &curves {
                     chain_curve_points(&curve.points, &mut segments);
                 }
             }
             FaceSurface::Sphere(sphere) => {
                 let curves =
-                    brepkit_math::analytic_intersection::intersect_plane_sphere(sphere, normal, d)?;
+                    remus_math::analytic_intersection::intersect_plane_sphere(sphere, normal, d)?;
                 for curve in &curves {
                     chain_curve_points(&curve.points, &mut segments);
                 }
             }
             FaceSurface::Torus(torus) => {
                 let curves =
-                    brepkit_math::analytic_intersection::intersect_plane_torus(torus, normal, d)?;
+                    remus_math::analytic_intersection::intersect_plane_torus(torus, normal, d)?;
                 for curve in &curves {
                     chain_curve_points(&curve.points, &mut segments);
                 }
@@ -668,9 +668,9 @@ fn assemble_wires(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
 

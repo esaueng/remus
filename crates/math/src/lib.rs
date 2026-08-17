@@ -1,7 +1,7 @@
-//! # brepkit-math
+//! # remus-math
 //!
 //! Vector math, matrix transforms, NURBS geometry, and exact geometric
-//! predicates for the brepkit CAD kernel.
+//! predicates for the remus CAD kernel.
 //!
 //! This is the foundation layer (L0) with no workspace dependencies.
 

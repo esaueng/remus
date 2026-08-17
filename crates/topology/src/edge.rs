@@ -1,9 +1,9 @@
 //! Edge — a curve bounded by two vertices.
 
-use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point3, Vec3};
 
 use crate::arena;
 use crate::vertex::VertexId;
@@ -140,7 +140,7 @@ impl EdgeCurve {
                 {
                     return (d0, d1);
                 }
-                let proj = |p| brepkit_math::nurbs::projection::project_point_to_curve(n, p, 1e-9);
+                let proj = |p| remus_math::nurbs::projection::project_point_to_curve(n, p, 1e-9);
                 if let (Ok(pa), Ok(pb)) = (proj(start), proj(end)) {
                     // Accept a non-degenerate on-curve span. A reversed pair
                     // (`t₀ > t₁`, interpolation still traces start→end) is
@@ -343,7 +343,7 @@ mod tests {
     use super::*;
     use crate::arena::Arena;
     use crate::vertex::Vertex;
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     fn make_test_vertices() -> (VertexId, VertexId) {
         let mut arena: Arena<Vertex> = Arena::new();
@@ -407,7 +407,7 @@ mod tests {
             Point3::new(3.0, 1.0, 0.0),
             Point3::new(4.0, 0.0, 0.0),
         ];
-        EdgeCurve::NurbsCurve(brepkit_math::nurbs::fitting::interpolate(&pts, 3).unwrap())
+        EdgeCurve::NurbsCurve(remus_math::nurbs::fitting::interpolate(&pts, 3).unwrap())
     }
 
     fn assert_full_domain(got: (f64, f64), d0: f64, d1: f64) {
@@ -429,9 +429,9 @@ mod tests {
         let EdgeCurve::NurbsCurve(n) = &curve else {
             unreachable!()
         };
-        let (d0, d1) = brepkit_math::traits::ParametricCurve::domain(n);
-        let p0 = brepkit_math::traits::ParametricCurve::evaluate(n, d0);
-        let p1 = brepkit_math::traits::ParametricCurve::evaluate(n, d1);
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(n);
+        let p0 = remus_math::traits::ParametricCurve::evaluate(n, d0);
+        let p1 = remus_math::traits::ParametricCurve::evaluate(n, d1);
         assert_full_domain(curve.domain_with_endpoints(p0, p1), d0, d1);
         assert_full_domain(curve.domain_with_endpoints(p1, p0), d0, d1);
     }
@@ -442,11 +442,11 @@ mod tests {
         let EdgeCurve::NurbsCurve(n) = &curve else {
             unreachable!()
         };
-        let (d0, d1) = brepkit_math::traits::ParametricCurve::domain(n);
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(n);
         let ta = d0 + 0.25 * (d1 - d0);
         let tb = d0 + 0.7 * (d1 - d0);
-        let pa = brepkit_math::traits::ParametricCurve::evaluate(n, ta);
-        let pb = brepkit_math::traits::ParametricCurve::evaluate(n, tb);
+        let pa = remus_math::traits::ParametricCurve::evaluate(n, ta);
+        let pb = remus_math::traits::ParametricCurve::evaluate(n, tb);
         let (t0, t1) = curve.domain_with_endpoints(pa, pb);
         assert!((t0 - ta).abs() < 1e-6, "t0={t0} expected {ta}");
         assert!((t1 - tb).abs() < 1e-6, "t1={t1} expected {tb}");
@@ -464,11 +464,11 @@ mod tests {
         let EdgeCurve::NurbsCurve(n) = &curve else {
             unreachable!()
         };
-        let (d0, d1) = brepkit_math::traits::ParametricCurve::domain(n);
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(n);
         let ta = d0 + 0.25 * (d1 - d0);
         let tb = d0 + 0.7 * (d1 - d0);
-        let pa = brepkit_math::traits::ParametricCurve::evaluate(n, ta);
-        let pb = brepkit_math::traits::ParametricCurve::evaluate(n, tb);
+        let pa = remus_math::traits::ParametricCurve::evaluate(n, ta);
+        let pb = remus_math::traits::ParametricCurve::evaluate(n, tb);
         // Edge runs pb -> pa (reversed relative to curve parameterization):
         // the trimmed domain keeps t0 > t1 so t0->t1 interpolation still
         // traces start -> end.
@@ -488,12 +488,12 @@ mod tests {
                 Point3::new(a.cos(), a.sin(), 0.0)
             })
             .collect();
-        let n = brepkit_math::nurbs::fitting::interpolate(&pts, 3).unwrap();
-        let (d0, d1) = brepkit_math::traits::ParametricCurve::domain(&n);
+        let n = remus_math::nurbs::fitting::interpolate(&pts, 3).unwrap();
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(&n);
         let ta = d0 + 0.6 * (d1 - d0);
         let tb = d0 + 0.2 * (d1 - d0);
-        let pa = brepkit_math::traits::ParametricCurve::evaluate(&n, ta);
-        let pb = brepkit_math::traits::ParametricCurve::evaluate(&n, tb);
+        let pa = remus_math::traits::ParametricCurve::evaluate(&n, ta);
+        let pb = remus_math::traits::ParametricCurve::evaluate(&n, tb);
         let curve = EdgeCurve::NurbsCurve(n);
         assert_full_domain(curve.domain_with_endpoints(pa, pb), d0, d1);
     }
@@ -504,12 +504,12 @@ mod tests {
         let EdgeCurve::NurbsCurve(n) = &curve else {
             unreachable!()
         };
-        let (d0, d1) = brepkit_math::traits::ParametricCurve::domain(n);
+        let (d0, d1) = remus_math::traits::ParametricCurve::domain(n);
         let ta = d0 + 0.25 * (d1 - d0);
         let tb = d0 + 0.7 * (d1 - d0);
         let off = Vec3::new(0.0, 0.0, 1.0) * 0.5;
-        let pa = brepkit_math::traits::ParametricCurve::evaluate(n, ta) + off;
-        let pb = brepkit_math::traits::ParametricCurve::evaluate(n, tb) + off;
+        let pa = remus_math::traits::ParametricCurve::evaluate(n, ta) + off;
+        let pb = remus_math::traits::ParametricCurve::evaluate(n, tb) + off;
         assert_full_domain(curve.domain_with_endpoints(pa, pb), d0, d1);
     }
 }
@@ -518,7 +518,7 @@ mod tests {
 #[allow(clippy::unwrap_used)]
 mod conic_domain_tests {
     use super::*;
-    use brepkit_math::curves::{Hyperbola3D, Parabola3D};
+    use remus_math::curves::{Hyperbola3D, Parabola3D};
 
     #[test]
     fn hyperbola_domain_comes_from_the_vertices_and_is_exact() {
@@ -616,8 +616,8 @@ mod conic_domain_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod trim_tests {
-    use brepkit_math::traits::ParametricCurve;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::traits::ParametricCurve;
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
     use crate::arena::Arena;
@@ -639,7 +639,7 @@ mod trim_tests {
             Point3::new(3.0, 1.0, 0.0),
             Point3::new(4.0, 0.0, 0.0),
         ];
-        brepkit_math::nurbs::fitting::interpolate(&pts, 3).unwrap()
+        remus_math::nurbs::fitting::interpolate(&pts, 3).unwrap()
     }
 
     #[test]

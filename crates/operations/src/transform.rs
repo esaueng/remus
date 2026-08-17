@@ -2,16 +2,16 @@
 
 use std::collections::HashSet;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::WireId;
+use remus_math::mat::Mat4;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::WireId;
 
 /// Dimensionless floor below which a transform is treated as collapsing the
 /// model rather than moving it.
@@ -151,10 +151,10 @@ pub fn transform_solid(
                 // a direction, so we use mul_point on a point at (nx, ny, nz)
                 // and subtract the translation component).
                 let transformed =
-                    normal_matrix.mul_point(brepkit_math::vec::Point3::new(n.x(), n.y(), n.z()));
+                    normal_matrix.mul_point(remus_math::vec::Point3::new(n.x(), n.y(), n.z()));
                 // Extract direction only (ignore any translation component from
                 // the inverse transpose by subtracting the origin transform).
-                let origin = normal_matrix.mul_point(brepkit_math::vec::Point3::new(0.0, 0.0, 0.0));
+                let origin = normal_matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
                 let raw = Vec3::new(
                     transformed.x() - origin.x(),
                     transformed.y() - origin.y(),
@@ -203,7 +203,7 @@ pub fn transform_solid(
                 let new_axis = transform_direction(matrix, cyl.axis())?;
                 // Scale radius: measure how the matrix scales a direction perpendicular to axis
                 let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
-                let new_cyl = brepkit_math::surfaces::CylindricalSurface::new(
+                let new_cyl = remus_math::surfaces::CylindricalSurface::new(
                     new_origin, new_axis, new_radius,
                 )?;
                 topo.face_mut(fid)?
@@ -213,7 +213,7 @@ pub fn transform_solid(
                 if is_uniform_scale(matrix) {
                     let new_apex = matrix.mul_point(cone.apex());
                     let new_axis = transform_direction(matrix, cone.axis())?;
-                    let new_cone = brepkit_math::surfaces::ConicalSurface::new(
+                    let new_cone = remus_math::surfaces::ConicalSurface::new(
                         new_apex,
                         new_axis,
                         cone.half_angle(),
@@ -226,13 +226,11 @@ pub fn transform_solid(
                     // delegates to math's sampled approximation; heal's is
                     // geometrically exact). v_range is the cone-generator
                     // distance from apex.
-                    let nurbs = brepkit_heal::construct::convert_surface::cone_to_nurbs(
-                        &cone_clone,
-                        v_range,
-                    )
-                    .map_err(|e| crate::OperationsError::InvalidInput {
-                        reason: format!("cone_to_nurbs failed: {e}"),
-                    })?;
+                    let nurbs =
+                        remus_heal::construct::convert_surface::cone_to_nurbs(&cone_clone, v_range)
+                            .map_err(|e| crate::OperationsError::InvalidInput {
+                                reason: format!("cone_to_nurbs failed: {e}"),
+                            })?;
                     let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
@@ -244,10 +242,8 @@ pub fn transform_solid(
                     // Extract uniform scale factor from column magnitudes
                     let m = &matrix.0;
                     let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    let new_sph = brepkit_math::surfaces::SphericalSurface::new(
-                        new_center,
-                        sph.radius() * sx,
-                    )?;
+                    let new_sph =
+                        remus_math::surfaces::SphericalSurface::new(new_center, sph.radius() * sx)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Sphere(new_sph));
                 } else {
@@ -264,7 +260,7 @@ pub fn transform_solid(
                     let new_center = matrix.mul_point(tor.center());
                     let m = &matrix.0;
                     let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                    let new_tor = brepkit_math::surfaces::ToroidalSurface::new(
+                    let new_tor = remus_math::surfaces::ToroidalSurface::new(
                         new_center,
                         tor.major_radius() * sx,
                         tor.minor_radius() * sx,
@@ -275,11 +271,10 @@ pub fn transform_solid(
                     // Use heal's exact rational torus converter (geometry's
                     // delegates to math's sampled approximation; heal's is
                     // geometrically exact 9×9 tensor product).
-                    let nurbs =
-                        brepkit_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
-                            .map_err(|e| crate::OperationsError::InvalidInput {
-                                reason: format!("torus_to_nurbs failed: {e}"),
-                            })?;
+                    let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
+                        .map_err(|e| crate::OperationsError::InvalidInput {
+                            reason: format!("torus_to_nurbs failed: {e}"),
+                        })?;
                     let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
@@ -299,7 +294,7 @@ pub fn transform_solid(
 fn sphere_face_v_range(
     topo: &Topology,
     face_id: FaceId,
-    sph: &brepkit_math::surfaces::SphericalSurface,
+    sph: &remus_math::surfaces::SphericalSurface,
 ) -> Result<(f64, f64), crate::OperationsError> {
     use std::f64::consts::FRAC_PI_2;
 
@@ -327,7 +322,7 @@ fn sphere_face_v_range(
     // if any inner wire exists, check it. Otherwise, examine the face's
     // Newell normal direction relative to the sphere center.
     //
-    // For brepkit's make_sphere: south hemisphere has normals pointing
+    // For remus's make_sphere: south hemisphere has normals pointing
     // away from center with v ∈ [-π/2, boundary_v], north hemisphere
     // v ∈ [boundary_v, π/2].
     //
@@ -410,9 +405,8 @@ fn scaled_radius(matrix: &Mat4, axis: Vec3, radius: f64) -> f64 {
             .unwrap_or(Vec3::new(0.0, 1.0, 0.0))
     };
     // Transform the perpendicular direction and measure its length
-    let origin = brepkit_math::vec::Point3::new(0.0, 0.0, 0.0);
-    let end =
-        brepkit_math::vec::Point3::new(perp.x() * radius, perp.y() * radius, perp.z() * radius);
+    let origin = remus_math::vec::Point3::new(0.0, 0.0, 0.0);
+    let end = remus_math::vec::Point3::new(perp.x() * radius, perp.y() * radius, perp.z() * radius);
     let t_origin = matrix.mul_point(origin);
     let t_end = matrix.mul_point(end);
     let diff = t_end - t_origin;
@@ -434,8 +428,8 @@ fn transform_face_surface(
         FaceSurface::Plane { normal, .. } => {
             let n = *normal;
             let transformed =
-                normal_matrix.mul_point(brepkit_math::vec::Point3::new(n.x(), n.y(), n.z()));
-            let origin = normal_matrix.mul_point(brepkit_math::vec::Point3::new(0.0, 0.0, 0.0));
+                normal_matrix.mul_point(remus_math::vec::Point3::new(n.x(), n.y(), n.z()));
+            let origin = normal_matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
             let raw = Vec3::new(
                 transformed.x() - origin.x(),
                 transformed.y() - origin.y(),
@@ -484,7 +478,7 @@ fn transform_face_surface(
             let new_axis = transform_direction(matrix, cyl.axis())?;
             let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
             let new_cyl =
-                brepkit_math::surfaces::CylindricalSurface::new(new_origin, new_axis, new_radius)?;
+                remus_math::surfaces::CylindricalSurface::new(new_origin, new_axis, new_radius)?;
             topo.face_mut(fid)?
                 .set_surface(FaceSurface::Cylinder(new_cyl));
         }
@@ -492,7 +486,7 @@ fn transform_face_surface(
             if is_uniform_scale(matrix) {
                 let new_apex = matrix.mul_point(cone.apex());
                 let new_axis = transform_direction(matrix, cone.axis())?;
-                let new_cone = brepkit_math::surfaces::ConicalSurface::new(
+                let new_cone = remus_math::surfaces::ConicalSurface::new(
                     new_apex,
                     new_axis,
                     cone.half_angle(),
@@ -502,10 +496,10 @@ fn transform_face_surface(
                 let v_range = analytic_face_v_range(topo, fid, |pt| cone.project_point(pt).1)?;
                 let cone_clone = cone.clone();
                 let nurbs =
-                    brepkit_heal::construct::convert_surface::cone_to_nurbs(&cone_clone, v_range)
+                    remus_heal::construct::convert_surface::cone_to_nurbs(&cone_clone, v_range)
                         .map_err(|e| crate::OperationsError::InvalidInput {
-                        reason: format!("cone_to_nurbs failed: {e}"),
-                    })?;
+                            reason: format!("cone_to_nurbs failed: {e}"),
+                        })?;
                 let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(transformed));
@@ -517,7 +511,7 @@ fn transform_face_surface(
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
                 let new_sph =
-                    brepkit_math::surfaces::SphericalSurface::new(new_center, sph.radius() * sx)?;
+                    remus_math::surfaces::SphericalSurface::new(new_center, sph.radius() * sx)?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
             } else {
@@ -532,7 +526,7 @@ fn transform_face_surface(
                 let new_center = matrix.mul_point(tor.center());
                 let m = &matrix.0;
                 let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-                let new_tor = brepkit_math::surfaces::ToroidalSurface::new(
+                let new_tor = remus_math::surfaces::ToroidalSurface::new(
                     new_center,
                     tor.major_radius() * sx,
                     tor.minor_radius() * sx,
@@ -540,7 +534,7 @@ fn transform_face_surface(
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
             } else {
                 let tor_clone = tor.clone();
-                let nurbs = brepkit_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
+                let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
                     .map_err(|e| crate::OperationsError::InvalidInput {
                         reason: format!("torus_to_nurbs failed: {e}"),
                     })?;
@@ -559,7 +553,7 @@ fn transform_face_surface(
 fn analytic_face_v_range(
     topo: &Topology,
     face_id: FaceId,
-    project_v: impl Fn(brepkit_math::vec::Point3) -> f64,
+    project_v: impl Fn(remus_math::vec::Point3) -> f64,
 ) -> Result<(f64, f64), crate::OperationsError> {
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
@@ -615,7 +609,7 @@ fn is_uniform_scale(matrix: &Mat4) -> bool {
 /// geometry when a non-uniform scale is applied (sphere → ellipsoid).
 #[allow(clippy::cast_precision_loss)]
 fn sphere_to_transformed_nurbs(
-    sph: &brepkit_math::surfaces::SphericalSurface,
+    sph: &remus_math::surfaces::SphericalSurface,
     matrix: &Mat4,
     v_min: f64,
     v_max: f64,
@@ -625,7 +619,7 @@ fn sphere_to_transformed_nurbs(
     let n_u = 33; // Longitude samples (0 to 2π)
     let n_v = 17; // Latitude samples
 
-    let mut rows: Vec<Vec<brepkit_math::vec::Point3>> = Vec::with_capacity(n_v);
+    let mut rows: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(n_v);
     for iv in 0..n_v {
         let v = v_min + (v_max - v_min) * (iv as f64) / ((n_v - 1) as f64);
         let mut row = Vec::with_capacity(n_u);
@@ -637,15 +631,15 @@ fn sphere_to_transformed_nurbs(
         rows.push(row);
     }
 
-    let nurbs = brepkit_math::nurbs::surface_fitting::interpolate_surface(&rows, 3, 3)?;
+    let nurbs = remus_math::nurbs::surface_fitting::interpolate_surface(&rows, 3, 3)?;
     Ok(nurbs)
 }
 
 /// Transforms a direction vector by applying the matrix and subtracting the
 /// translation component, then normalizing.
 fn transform_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::OperationsError> {
-    let origin = matrix.mul_point(brepkit_math::vec::Point3::new(0.0, 0.0, 0.0));
-    let tip = matrix.mul_point(brepkit_math::vec::Point3::new(dir.x(), dir.y(), dir.z()));
+    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
+    let tip = matrix.mul_point(remus_math::vec::Point3::new(dir.x(), dir.y(), dir.z()));
     let raw = Vec3::new(
         tip.x() - origin.x(),
         tip.y() - origin.y(),
@@ -663,9 +657,9 @@ fn transform_edges(
     edge_ids: &HashSet<EdgeId>,
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
-    let origin = matrix.mul_point(brepkit_math::vec::Point3::new(0.0, 0.0, 0.0));
+    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
     let transform_dir = |d: Vec3| -> Vec3 {
-        matrix.mul_point(brepkit_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
+        matrix.mul_point(remus_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
     };
     for &eid in edge_ids {
         let edge = topo.edge(eid)?;
@@ -702,15 +696,13 @@ fn transform_edges(
                 let new_normal = new_u.cross(new_v).normalize()?;
                 if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
                     (
-                        Some(EdgeCurve::Circle(
-                            brepkit_math::curves::Circle3D::with_axes(
-                                new_center,
-                                new_normal,
-                                c.radius() * su,
-                                new_u.normalize()?,
-                                new_v.normalize()?,
-                            )?,
-                        )),
+                        Some(EdgeCurve::Circle(remus_math::curves::Circle3D::with_axes(
+                            new_center,
+                            new_normal,
+                            c.radius() * su,
+                            new_u.normalize()?,
+                            new_v.normalize()?,
+                        )?)),
                         trim,
                     )
                 } else {
@@ -738,7 +730,7 @@ fn transform_edges(
                     };
                     (
                         Some(EdgeCurve::Ellipse(
-                            brepkit_math::curves::Ellipse3D::with_axes(
+                            remus_math::curves::Ellipse3D::with_axes(
                                 new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
                             )?,
                         )),
@@ -753,7 +745,7 @@ fn transform_edges(
                 let new_normal = new_u.cross(new_v).normalize()?;
                 (
                     Some(EdgeCurve::Ellipse(
-                        brepkit_math::curves::Ellipse3D::with_axes(
+                        remus_math::curves::Ellipse3D::with_axes(
                             new_center,
                             new_normal,
                             e.semi_major() * new_u.length(),
@@ -933,7 +925,7 @@ mod tests;
 /// Transform an unbounded conic edge curve (`Hyperbola` / `Parabola`).
 ///
 /// An affine map sends a parabola to a parabola and a hyperbola to a
-/// hyperbola, but the image is only expressible in brepkit's canonical
+/// hyperbola, but the image is only expressible in remus's canonical
 /// `(centre/vertex, orthonormal axes, semi-axes/focal length)` form when
 /// the map restricted to the conic's own plane is a *similarity* — a
 /// uniform scale with a rotation and/or reflection. Under a shear or a
@@ -953,8 +945,8 @@ pub(crate) fn transform_open_conic(
     curve: &EdgeCurve,
     matrix: &Mat4,
 ) -> Result<EdgeCurve, crate::OperationsError> {
-    use brepkit_math::curves::{Hyperbola3D, Parabola3D};
-    use brepkit_math::vec::Point3;
+    use remus_math::curves::{Hyperbola3D, Parabola3D};
+    use remus_math::vec::Point3;
 
     /// Relative band for "same length" and "still orthogonal". Dimensionless:
     /// both quantities are normalized by the scale factor before comparison.

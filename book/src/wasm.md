@@ -6,7 +6,7 @@ repository publishes nothing to npm — see
 independent model:
 
 ```javascript
-import { BrepKernel } from 'brepkit-wasm';
+import { BrepKernel } from 'remus-wasm';
 
 const kernel = new BrepKernel();
 const box = kernel.makeBox(20, 10, 5);
@@ -22,7 +22,7 @@ The default build includes STEP, IGES, STL, 3MF, OBJ, PLY, and GLB I/O. Build
 with `--no-default-features` for a smaller package without file exchange:
 
 ```bash
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown \
+cargo build -p remus-wasm --target wasm32-unknown-unknown \
   --release --no-default-features
 ```
 
@@ -94,7 +94,7 @@ specific cases.
 When the failure originated in a typed native error with a kernel registry
 entry, `details.kernelCode` carries that fine-grained stable code (e.g.
 `wire_not_closed`, `newton_nonconvergence`, `unsupported_edge_curve`) from
-the native registry in `brepkit_math::diagnostic`. It is additive and
+the native registry in `remus_math::diagnostic`. It is additive and
 per-code optional: consumers must not require it.
 
 Codes are lowercase ASCII snake case. New codes may be added, but an existing

@@ -13,7 +13,7 @@
 //! Four more paths down the ladder summed per-face contributions over the outer
 //! shell only, so they would have dropped the same cavity had routing reached
 //! them; they enumerate `explorer::solid_faces` now, matching what
-//! `brepkit_check::properties` has always done.
+//! `remus_check::properties` has always done.
 //!
 //! Every expected value here is a hand closed form — outer primitive minus void
 //! — composed from the dimension constants the model is built from. Nothing is
@@ -29,13 +29,13 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{mass_properties, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cylinder, make_sphere};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{mass_properties, solid_volume};
+use remus_operations::primitives::{make_box, make_cylinder, make_sphere};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// One model: the solid, its hand closed form, how many shells it must have,
 /// and the relative tolerance its route can hold.

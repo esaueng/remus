@@ -20,14 +20,14 @@
 
 use std::collections::HashMap;
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_algo::bop::BooleanOp;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn boxed(topo: &mut Topology, lo: [f64; 3], hi: [f64; 3]) -> SolidId {
     let s = make_box(topo, hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]).unwrap();
@@ -69,13 +69,13 @@ fn deepened_wall_opening_merges_overlapping_hole() {
 
     // First cut: tunnel through the x=10 wall, floor at z=4.
     let a = boxed(&mut topo, [5.0, 3.0, 4.0], [11.0, 7.0, 6.0]);
-    let s1 = brepkit_algo::gfa::boolean(&mut topo, BooleanOp::Cut, base, a).unwrap();
+    let s1 = remus_algo::gfa::boolean(&mut topo, BooleanOp::Cut, base, a).unwrap();
     assert_eq!(pos_bad_edges(&topo, s1), 0, "first cut must be watertight");
 
     // Second cut: deeper opening through the same wall whose top floats 0.01
     // above the first tunnel's floor (the snap-slot ledge margin).
     let b = boxed(&mut topo, [5.0, 3.0, 1.0], [11.0, 7.0, 4.01]);
-    let s2 = brepkit_algo::gfa::boolean(&mut topo, BooleanOp::Cut, s1, b).unwrap();
+    let s2 = remus_algo::gfa::boolean(&mut topo, BooleanOp::Cut, s1, b).unwrap();
 
     assert_eq!(
         pos_bad_edges(&topo, s2),
@@ -89,7 +89,7 @@ fn deepened_wall_opening_merges_overlapping_hole() {
         .iter()
         .filter_map(|&fid| {
             let face = topo.face(fid).ok()?;
-            let wall_eps = brepkit_math::tolerance::Tolerance::new().linear * 100.0;
+            let wall_eps = remus_math::tolerance::Tolerance::new().linear * 100.0;
             let on_wall = std::iter::once(face.outer_wire())
                 .chain(face.inner_wires().iter().copied())
                 .flat_map(|wid| topo.wire(wid).unwrap().edges().to_vec())
@@ -104,7 +104,7 @@ fn deepened_wall_opening_merges_overlapping_hole() {
     assert_eq!(wall_holes, vec![1], "wall must have exactly one union hole");
 
     // Volume: 1000 - 40 (tunnel) - 60.2 (deep cut) + 0.2 (their overlap).
-    let vol = brepkit_operations::measure::solid_volume(&topo, s2, 0.01).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, s2, 0.01).unwrap();
     assert!(
         (vol - 900.0).abs() < 0.05,
         "volume {vol} deviates from expected 900"

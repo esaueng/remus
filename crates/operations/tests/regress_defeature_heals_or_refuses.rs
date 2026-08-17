@@ -13,17 +13,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::OperationsError;
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::boolean::{BooleanOp, boolean, face_polygon};
-use brepkit_operations::defeature::defeature;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::validate::validate_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::OperationsError;
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::boolean::{BooleanOp, boolean, face_polygon};
+use remus_operations::defeature::defeature;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::validate::validate_solid;
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 /// Assert the solid is structurally sound and has the expected volume.
 fn assert_healed(topo: &Topology, solid: SolidId, expected_volume: f64) {
@@ -38,7 +38,7 @@ fn assert_healed(topo: &Topology, solid: SolidId, expected_volume: f64) {
             .map(|i| i.description.clone())
             .collect::<Vec<_>>()
     );
-    let volume = brepkit_operations::measure::solid_volume(topo, solid, 0.02).unwrap();
+    let volume = remus_operations::measure::solid_volume(topo, solid, 0.02).unwrap();
     let error = (volume - expected_volume).abs() / expected_volume.abs();
     assert!(
         error < 1e-9,
@@ -74,7 +74,7 @@ fn face_centroid(topo: &Topology, face: FaceId) -> Point3 {
 }
 
 fn faces_of(topo: &Topology, solid: SolidId) -> Vec<FaceId> {
-    brepkit_topology::explorer::solid_faces(topo, solid).unwrap()
+    remus_topology::explorer::solid_faces(topo, solid).unwrap()
 }
 
 /// Faces whose stored plane is neither of the six axis-aligned directions —
@@ -92,8 +92,7 @@ fn oblique_faces(topo: &Topology, solid: SolidId) -> Vec<FaceId> {
 }
 
 fn translate(topo: &mut Topology, solid: SolidId, x: f64, y: f64, z: f64) {
-    brepkit_operations::transform::transform_solid(topo, solid, &Mat4::translation(x, y, z))
-        .unwrap();
+    remus_operations::transform::transform_solid(topo, solid, &Mat4::translation(x, y, z)).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +103,7 @@ fn translate(topo: &mut Topology, solid: SolidId, x: f64, y: f64, z: f64) {
 fn chamfer_removal_restores_the_sharp_edge() {
     let mut topo = Topology::new();
     let box_solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let top_edge = brepkit_topology::explorer::solid_edges(&topo, box_solid)
+    let top_edge = remus_topology::explorer::solid_edges(&topo, box_solid)
         .unwrap()
         .into_iter()
         .find(|e| {
@@ -115,7 +114,7 @@ fn chamfer_removal_restores_the_sharp_edge() {
         })
         .unwrap();
     let chamfered =
-        brepkit_operations::chamfer::chamfer(&mut topo, box_solid, &[top_edge], 2.0).unwrap();
+        remus_operations::chamfer::chamfer(&mut topo, box_solid, &[top_edge], 2.0).unwrap();
 
     let bevel = oblique_faces(&topo, chamfered);
     assert_eq!(bevel.len(), 1, "one edge chamfered => one bevel face");
@@ -130,7 +129,7 @@ fn chamfer_removal_restores_the_sharp_edge() {
 fn plane_plane_fillet_removal_restores_the_sharp_edge() {
     let mut topo = Topology::new();
     let box_solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let edge = brepkit_topology::explorer::solid_edges(&topo, box_solid)
+    let edge = remus_topology::explorer::solid_edges(&topo, box_solid)
         .unwrap()
         .into_iter()
         .find(|edge_id| {
@@ -165,7 +164,7 @@ fn corner_cut_removal_restores_the_corner() {
     // determined after widening the search across the patch.
     let mut topo = Topology::new();
     let box_solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    let top_edges: Vec<_> = brepkit_topology::explorer::solid_edges(&topo, box_solid)
+    let top_edges: Vec<_> = remus_topology::explorer::solid_edges(&topo, box_solid)
         .unwrap()
         .into_iter()
         .filter(|e| {
@@ -177,7 +176,7 @@ fn corner_cut_removal_restores_the_corner() {
         .collect();
     assert_eq!(top_edges.len(), 4);
     let chamfered =
-        brepkit_operations::chamfer::chamfer(&mut topo, box_solid, &top_edges, 2.0).unwrap();
+        remus_operations::chamfer::chamfer(&mut topo, box_solid, &top_edges, 2.0).unwrap();
 
     let bevels = oblique_faces(&topo, chamfered);
     assert_eq!(bevels.len(), 4);
@@ -298,7 +297,7 @@ fn filling_one_hole_leaves_the_other_hole_alone() {
     translate(&mut topo, second, 22.0, 15.0, -10.0);
     let two_holes = boolean(&mut topo, BooleanOp::Cut, one_hole, second).unwrap();
 
-    let before = brepkit_operations::measure::solid_volume(&topo, two_holes, 0.02).unwrap();
+    let before = remus_operations::measure::solid_volume(&topo, two_holes, 0.02).unwrap();
 
     let near_wall: Vec<FaceId> = faces_of(&topo, two_holes)
         .into_iter()
@@ -331,7 +330,7 @@ fn filling_one_hole_leaves_the_other_hole_alone() {
     // Volume grows by exactly the filled bore and nothing else. The bound is
     // the tessellation error of the *surviving* bore, which is measured the
     // same way on both sides of the operation.
-    let after = brepkit_operations::measure::solid_volume(&topo, healed, 0.02).unwrap();
+    let after = remus_operations::measure::solid_volume(&topo, healed, 0.02).unwrap();
     let filled = std::f64::consts::PI * 9.0 * 10.0;
     assert!(
         (after - before - filled).abs() < 0.5,
@@ -450,7 +449,7 @@ fn the_input_solid_survives_a_successful_heal() {
     assert!(validate_solid(&topo, pocketed).unwrap().is_valid());
     assert!(
         // 20*20*10 block less a 6*6*2 pocket (the tool overhangs the top face).
-        (brepkit_operations::measure::solid_volume(&topo, pocketed, 0.02).unwrap() - 3928.0).abs()
+        (remus_operations::measure::solid_volume(&topo, pocketed, 0.02).unwrap() - 3928.0).abs()
             < 1e-9,
         "the pocketed input must keep its own volume"
     );

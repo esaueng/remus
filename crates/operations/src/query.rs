@@ -2,11 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::classify::{PointClassification, classify_point, classify_point_robust};
@@ -419,9 +419,9 @@ pub(crate) fn edge_is_tangent(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, deprecated)]
 
-    use brepkit_math::mat::Mat4;
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::explorer::{solid_edges, solid_faces};
+    use remus_math::mat::Mat4;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::{solid_edges, solid_faces};
 
     use super::*;
     use crate::boolean::{BooleanOp, boolean};
@@ -674,7 +674,7 @@ mod tests {
         let fillet_step = include_str!("../../io/tests/data/openzcad_e_analytic_fillet_plate.step");
         let mut fillet_topo = Topology::new();
         let fillet_solid =
-            brepkit_io::step::reader::read_step(fillet_step, &mut fillet_topo).unwrap()[0];
+            remus_io::step::reader::read_step(fillet_step, &mut fillet_topo).unwrap()[0];
         let fillet_adjacency = fillet_topo.build_adjacency(fillet_solid).unwrap();
         let tangent: Vec<EdgeId> = solid_edges(&fillet_topo, fillet_solid)
             .unwrap()
@@ -697,7 +697,7 @@ mod tests {
 
         let bore_step = include_str!("../../io/tests/data/openzcad_a_export_bored_plate.step");
         let mut bore_topo = Topology::new();
-        let bore_solid = brepkit_io::step::reader::read_step(bore_step, &mut bore_topo).unwrap()[0];
+        let bore_solid = remus_io::step::reader::read_step(bore_step, &mut bore_topo).unwrap()[0];
         let bore_tangent = solid_edges(&bore_topo, bore_solid)
             .unwrap()
             .into_iter()

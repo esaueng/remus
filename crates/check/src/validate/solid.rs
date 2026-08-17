@@ -2,9 +2,9 @@
 
 use std::collections::HashSet;
 
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::explorer;
+use remus_topology::solid::SolidId;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;

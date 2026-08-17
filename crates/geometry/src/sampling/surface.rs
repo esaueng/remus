@@ -1,7 +1,7 @@
 //! Regular grid sampling of parametric surfaces.
 
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::Point3;
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::Point3;
 
 /// Sample a regular N×M grid of surface points.
 ///
@@ -57,8 +57,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3, Vec3};
     use std::f64::consts::TAU;
 
     fn unit_cylinder() -> CylindricalSurface {

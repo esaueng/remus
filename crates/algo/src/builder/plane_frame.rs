@@ -4,7 +4,7 @@
 //! `PlaneFrame` computes a local orthonormal frame so plane faces can
 //! participate in the 2D parameter-space boolean pipeline.
 
-use brepkit_math::vec::{Point2, Point3, Vec3};
+use remus_math::vec::{Point2, Point3, Vec3};
 
 /// A local 2D coordinate frame on a plane.
 ///

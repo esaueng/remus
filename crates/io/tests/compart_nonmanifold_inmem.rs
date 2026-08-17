@@ -1,6 +1,6 @@
 //! Faithful repro: the 2×1 compartmented-bin EXPORT goes non-manifold (#1753).
 //!
-//! Captured the live brepkit boolean operands (JS monkey-patch over
+//! Captured the live remus boolean operands (JS monkey-patch over
 //! `BrepKernel.fuseWithEvolution` + `serializeSolid`, #915) at the FIRST
 //! over-shared result while running the tool's `compartmentBuilder.scenario.
 //! manifold` 2×1 case. The over-share is NOT the compartment-cavity cut (that
@@ -34,12 +34,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp, boolean as ops_boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp, boolean as ops_boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -54,7 +54,7 @@ fn load(name: &str, topo: &mut Topology) -> SolidId {
 fn free_and_over(topo: &Topology, solid: SolidId) -> (usize, usize) {
     type QPoint = (i64, i64, i64);
     let scale = 1.0e6;
-    let q = |p: brepkit_math::vec::Point3| -> QPoint {
+    let q = |p: remus_math::vec::Point3| -> QPoint {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,

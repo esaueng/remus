@@ -1,7 +1,7 @@
 //! Convert analytic surfaces to NURBS representation.
 //!
 //! These are thin wrappers around the `to_nurbs()` methods on each
-//! analytic surface type from `brepkit-math`, propagating errors as
+//! analytic surface type from `remus-math`, propagating errors as
 //! [`GeomError`].
 //!
 //! # Exact vs sampled
@@ -18,12 +18,10 @@
 //! For exact rational NURBS conversions of cone/sphere/torus suitable
 //! for downstream NURBS pipelines (e.g. transform under non-uniform
 //! scale), use the corresponding functions in
-//! `brepkit_heal::construct::convert_surface`.
+//! `remus_heal::construct::convert_surface`.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 
 use crate::GeomError;
 
@@ -47,7 +45,7 @@ pub fn cylinder_to_nurbs(
 /// approximation, ~5% chord deviation in v).
 ///
 /// For an exact rational form, use
-/// `brepkit_heal::construct::convert_surface::sphere_to_nurbs`.
+/// `remus_heal::construct::convert_surface::sphere_to_nurbs`.
 ///
 /// # Errors
 ///
@@ -65,7 +63,7 @@ pub fn sphere_to_nurbs(sphere: &SphericalSurface) -> Result<NurbsSurface, GeomEr
 /// the apex.
 ///
 /// For an exact rational form, use
-/// `brepkit_heal::construct::convert_surface::cone_to_nurbs`.
+/// `remus_heal::construct::convert_surface::cone_to_nurbs`.
 ///
 /// # Errors
 ///
@@ -81,7 +79,7 @@ pub fn cone_to_nurbs(
 /// approximation, ~7% chord deviation of minor radius).
 ///
 /// For an exact rational form, use
-/// `brepkit_heal::construct::convert_surface::torus_to_nurbs`.
+/// `remus_heal::construct::convert_surface::torus_to_nurbs`.
 ///
 /// # Errors
 ///
@@ -96,10 +94,10 @@ pub fn torus_to_nurbs(torus: &ToroidalSurface) -> Result<NurbsSurface, GeomError
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_math::surfaces::{
+    use remus_math::surfaces::{
         ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
     };
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
 

@@ -16,8 +16,8 @@ pub mod split_vertex;
 pub mod wire;
 pub mod wireframe;
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 pub use config::{FixConfig, FixMode};
 

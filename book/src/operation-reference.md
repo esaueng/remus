@@ -1,6 +1,6 @@
 # Operation Reference
 
-Most modeling functions take a mutable `brepkit_topology::Topology` and return
+Most modeling functions take a mutable `remus_topology::Topology` and return
 a typed handle. Handles belong to the topology that created them; passing one
 to another topology is an error.
 
@@ -20,7 +20,7 @@ Use a transform when a centered or differently oriented primitive is needed.
 ## Boolean and modification
 
 ```rust
-use brepkit_operations::boolean::{boolean, BooleanOp};
+use remus_operations::boolean::{boolean, BooleanOp};
 
 let result = boolean(&mut topo, BooleanOp::Cut, target, tool)?;
 ```
@@ -40,9 +40,9 @@ from invalid input.
 
 ## Measure and validate
 
-`brepkit-operations::measure` provides tessellation-backed volume, surface
+`remus-operations::measure` provides tessellation-backed volume, surface
 area, center of mass, bounding box, edge length, and face perimeter. The
-`brepkit-check::properties::solid_properties` path additionally returns the
+`remus-check::properties::solid_properties` path additionally returns the
 uniform-density inertia tensor about the center of mass.
 
 Validate imported or heavily modified geometry before export. Strict

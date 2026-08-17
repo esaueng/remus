@@ -4,15 +4,15 @@
 //! and builds topology entities: one planar face per triangle, assembled
 //! into a shell and solid.
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::tessellate::TriangleMesh;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::tessellate::TriangleMesh;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::IoError;
 
@@ -162,9 +162,9 @@ fn build_vertex_map(
     topo: &mut Topology,
     positions: &[Point3],
     tolerance: f64,
-) -> Vec<brepkit_topology::vertex::VertexId> {
+) -> Vec<remus_topology::vertex::VertexId> {
     let tol_sq = tolerance * tolerance;
-    let mut unique_verts: Vec<(Point3, brepkit_topology::vertex::VertexId)> = Vec::new();
+    let mut unique_verts: Vec<(Point3, remus_topology::vertex::VertexId)> = Vec::new();
     let mut map = Vec::with_capacity(positions.len());
 
     for &pos in positions {
@@ -190,10 +190,10 @@ fn build_vertex_map(
 /// Build a single triangular planar face from three vertex IDs.
 fn build_triangle_face(
     topo: &mut Topology,
-    v0: brepkit_topology::vertex::VertexId,
-    v1: brepkit_topology::vertex::VertexId,
-    v2: brepkit_topology::vertex::VertexId,
-) -> Result<brepkit_topology::face::FaceId, IoError> {
+    v0: remus_topology::vertex::VertexId,
+    v1: remus_topology::vertex::VertexId,
+    v2: remus_topology::vertex::VertexId,
+) -> Result<remus_topology::face::FaceId, IoError> {
     let e01 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
     let e12 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
     let e20 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
@@ -227,16 +227,16 @@ fn build_triangle_face(
 }
 
 /// Convert a [`TopologyError`] into an [`IoError`].
-fn topo_err(e: brepkit_topology::TopologyError) -> IoError {
-    IoError::Operations(brepkit_operations::OperationsError::from(e))
+fn topo_err(e: remus_topology::TopologyError) -> IoError {
+    IoError::Operations(remus_operations::OperationsError::from(e))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
     use crate::stl::reader::read_stl;
@@ -244,8 +244,8 @@ mod tests {
 
     #[test]
     fn vol_from_faces_8_vertex_box() {
-        use brepkit_math::vec::Vec3;
-        use brepkit_operations::tessellate::TriangleMesh;
+        use remus_math::vec::Vec3;
+        use remus_operations::tessellate::TriangleMesh;
 
         let positions = vec![
             Point3::new(0.0, 0.0, 0.0),
@@ -275,7 +275,7 @@ mod tests {
         let mut topo = Topology::new();
         let solid = import_mesh(&mut topo, &mesh, 1e-7).unwrap();
 
-        let vol = brepkit_operations::measure::solid_volume_from_faces(&topo, solid, 0.01).unwrap();
+        let vol = remus_operations::measure::solid_volume_from_faces(&topo, solid, 0.01).unwrap();
         assert!(
             (vol - 1000.0).abs() < 10.0,
             "expected ~1000 from vol_from_faces, got {vol}"
@@ -287,7 +287,7 @@ mod tests {
         // This simulates the actual path: tessellate box → flat mesh → import_mesh
         let mut write_topo = Topology::new();
         let solid =
-            brepkit_operations::primitives::make_box(&mut write_topo, 10.0, 10.0, 10.0).unwrap();
+            remus_operations::primitives::make_box(&mut write_topo, 10.0, 10.0, 10.0).unwrap();
 
         let stl_bytes = writer::write_stl(&write_topo, &[solid], 0.1, StlFormat::Binary).unwrap();
         let mesh = read_stl(&stl_bytes).unwrap();
@@ -296,7 +296,7 @@ mod tests {
         let imported = import_mesh(&mut topo, &mesh, 1e-4).unwrap();
 
         let vol =
-            brepkit_operations::measure::solid_volume_from_faces(&topo, imported, 0.01).unwrap();
+            remus_operations::measure::solid_volume_from_faces(&topo, imported, 0.01).unwrap();
         assert!(
             (vol - 1000.0).abs() < 10.0,
             "expected ~1000 from vol_from_faces, got {vol}"
@@ -307,10 +307,10 @@ mod tests {
     fn vol_from_faces_per_face_tessellation() {
         // Simulates the JS 3MF path: per-face tessellate → flat mesh → import_mesh
         // This is the path that produces 333.33 instead of 1000.
-        use brepkit_operations::tessellate;
+        use remus_operations::tessellate;
 
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
 
         // Per-face tessellation (same as JS meshSolid/tessellateFace)
         let solid_data = topo.solid(solid).unwrap();
@@ -333,7 +333,7 @@ mod tests {
             vert_offset += n_verts as u32;
         }
 
-        let mesh = brepkit_operations::tessellate::TriangleMesh {
+        let mesh = remus_operations::tessellate::TriangleMesh {
             positions,
             normals,
             indices,
@@ -343,10 +343,10 @@ mod tests {
         let imported = import_mesh(&mut import_topo, &mesh, 1e-4).unwrap();
 
         let vol_from_faces =
-            brepkit_operations::measure::solid_volume_from_faces(&import_topo, imported, 0.01)
+            remus_operations::measure::solid_volume_from_faces(&import_topo, imported, 0.01)
                 .unwrap();
         let vol_standard =
-            brepkit_operations::measure::solid_volume(&import_topo, imported, 0.01).unwrap();
+            remus_operations::measure::solid_volume(&import_topo, imported, 0.01).unwrap();
 
         eprintln!("vol_from_faces = {vol_from_faces}");
         eprintln!("vol_standard   = {vol_standard}");

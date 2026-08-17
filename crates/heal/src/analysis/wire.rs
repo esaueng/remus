@@ -1,9 +1,9 @@
 //! Wire analysis — edge ordering, closure, gaps, self-intersection.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::wire::WireId;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::wire::WireId;
 
 use crate::HealError;
 use crate::status::Status;
@@ -187,7 +187,7 @@ pub fn analyze_wire(
 /// Detect self-intersections by sampling edges and checking proximity.
 fn detect_self_intersections(
     topo: &Topology,
-    oe_list: &[brepkit_topology::wire::OrientedEdge],
+    oe_list: &[remus_topology::wire::OrientedEdge],
     edge_count: usize,
     tolerance: &Tolerance,
 ) -> Result<Vec<(usize, usize)>, HealError> {
@@ -195,7 +195,7 @@ fn detect_self_intersections(
         return Ok(Vec::new());
     }
 
-    let mut edge_samples: Vec<Vec<brepkit_math::vec::Point3>> = Vec::with_capacity(edge_count);
+    let mut edge_samples: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(edge_count);
     for oe in oe_list {
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(edge.start())?.point();
@@ -232,8 +232,8 @@ fn detect_self_intersections(
 /// Check if any sample point from edge A is within `tol_sq` of any sample
 /// point from edge B (excluding shared endpoint proximity).
 fn samples_overlap(
-    a: &[brepkit_math::vec::Point3],
-    b: &[brepkit_math::vec::Point3],
+    a: &[remus_math::vec::Point3],
+    b: &[remus_math::vec::Point3],
     tol_sq: f64,
 ) -> bool {
     // Skip first and last samples (they are at the edge endpoints, which

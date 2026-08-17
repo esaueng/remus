@@ -12,15 +12,15 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::extrude::extrude;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::make_polygon_wire;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::{solid_edges, solid_faces};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::extrude::extrude;
+use remus_topology::Topology;
+use remus_topology::builder::make_polygon_wire;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::{solid_edges, solid_faces};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::solid::SolidId;
 
 fn edge_use_counts(topo: &Topology, solid: SolidId) -> HashMap<EdgeId, usize> {
     let mut counts: HashMap<EdgeId, usize> = HashMap::new();
@@ -79,13 +79,13 @@ fn fillet_v2_concave_notch_adds_only_the_fillet_sliver() {
         })
         .expect("ridge edge");
 
-    let before = brepkit_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    let before = remus_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
     let result = fillet_v2(&mut topo, solid, &[ridge], 0.02).unwrap();
     assert_eq!(result.succeeded, vec![ridge]);
 
     // A 0.2 chamfer on this ridge removes a sliver; a wrong tangent branch
     // cuts a macroscopic wedge or adds material.
-    let after = brepkit_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
+    let after = remus_operations::measure::solid_volume(&topo, result.solid, 0.05).unwrap();
     // Chamfering a CONCAVE edge fills the notch corner: volume grows by a
     // small sliver. The external tangent branch instead cuts outward or
     // collapses the notch walls.

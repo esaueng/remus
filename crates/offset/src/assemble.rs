@@ -1,13 +1,13 @@
 //! Final shell and solid assembly from offset faces and wire loops.
 
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::data::{OffsetData, OffsetStatus};
 use crate::error::OffsetError;
@@ -132,7 +132,7 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
 /// Make adjacent faces traverse every shared edge in opposite directions.
 fn orient_shell_faces(
     topo: &mut Topology,
-    shell_id: brepkit_topology::shell::ShellId,
+    shell_id: remus_topology::shell::ShellId,
 ) -> Result<(), OffsetError> {
     use std::collections::{HashMap, VecDeque};
 
@@ -324,10 +324,10 @@ fn build_wall_faces(topo: &mut Topology, data: &OffsetData) -> Result<Vec<FaceId
 fn make_wall_quad(
     topo: &mut Topology,
     wall_edges: Vec<OrientedEdge>,
-    p0: brepkit_math::vec::Point3,
-    p1: brepkit_math::vec::Point3,
-    _p2: brepkit_math::vec::Point3,
-    p3: brepkit_math::vec::Point3,
+    p0: remus_math::vec::Point3,
+    p1: remus_math::vec::Point3,
+    _p2: remus_math::vec::Point3,
+    p3: remus_math::vec::Point3,
 ) -> Result<Option<FaceId>, OffsetError> {
     let edge_a = p1 - p0;
     let edge_b = p3 - p0;
@@ -346,7 +346,7 @@ fn make_wall_quad(
     Ok(Some(topo.add_face(face)))
 }
 
-fn point_distance_sq(a: brepkit_math::vec::Point3, b: brepkit_math::vec::Point3) -> f64 {
+fn point_distance_sq(a: remus_math::vec::Point3, b: remus_math::vec::Point3) -> f64 {
     let delta = a - b;
     delta.dot(delta)
 }
@@ -398,7 +398,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::data::{OffsetData, OffsetOptions};
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     fn run_full_pipeline(topo: &mut Topology, solid: SolidId, distance: f64) -> SolidId {
         let mut data = OffsetData::new(distance, OffsetOptions::default(), vec![]);
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn box_offset_produces_valid_solid() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let result = run_full_pipeline(&mut topo, solid, 0.5);
 
         let shell_id = topo.solid(result).unwrap().outer_shell();
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn box_offset_faces_have_wires() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let result = run_full_pipeline(&mut topo, solid, 0.5);
 
         let shell_id = topo.solid(result).unwrap().outer_shell();
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn box_offset_end_to_end() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let result = crate::offset_solid(
             &mut topo,
             solid,
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn thick_solid_with_excluded_face() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let shell_id = topo.solid(solid).unwrap().outer_shell();
         let faces: Vec<_> = topo.shell(shell_id).unwrap().faces().to_vec();
 

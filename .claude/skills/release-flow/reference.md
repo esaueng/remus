@@ -2,7 +2,7 @@
 
 Deep detail for the hops in SKILL.md.
 
-**Repos and paths.** The kernel side is this repo, `esaueng/remus` (the brepkit
+**Repos and paths.** The kernel side is this repo, `esaueng/remus` (the remus
 kernel); paths below are relative to its root, because it is checked out in
 several places (`~/claude/remus`, `~/codex/remus`, plus `.worktrees/*`) and no
 single absolute path is correct. Do not confuse it with `esaueng/brepkit`, a
@@ -14,7 +14,7 @@ There is currently **no brepjs checkout on this machine**, and the home-level
 either. Clone brepjs before starting hop 4 and substitute its path for
 `$BREPJS` below.
 
-## Publish workflow anatomy (brepkit)
+## Publish workflow anatomy (remus)
 
 File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
 
@@ -37,7 +37,7 @@ File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
   tag, and runs `npm publish --provenance`. Publish is idempotent: it skips
   if the version is already on npm, so a re-run is safe.
 - Versioning config: `release-please-config.json` sets
-  `"component": "brepkit-wasm"` but `"include-component-in-tag": false`, so
+  `"component": "remus-wasm"` but `"include-component-in-tag": false`, so
   tags are plain `vX.Y.Z`. It also bumps `crates/wasm/Cargo.toml` via
   `extra-files`.
 
@@ -49,11 +49,11 @@ Script: `$BREPJS/scripts/sync-brepkit-types.ts`, run via
 What it does:
 
 1. Parses the `BrepKernel` class body out of
-   `node_modules/brepkit-wasm/brepkit_wasm.d.ts` with a regex (the regex
+   `node_modules/remus-wasm/remus_wasm.d.ts` with a regex (the regex
    cannot handle nested-paren parameter types; a method like that will parse
    wrong, check the output).
 2. Emits `src/kernel/brepkit/brepkitWasmTypes.ts`. The header records
-   `Synced against brepkit-wasm@<version>`. The file is AUTO-GENERATED;
+   `Synced against remus-wasm@<version>`. The file is AUTO-GENERATED;
    hand edits are clobbered on the next sync.
 3. Only methods listed in `const METHOD_SECTIONS: Section[]` appear in the
    output, grouped by category label. Find it:
@@ -65,19 +65,19 @@ What it does:
 ### The new-return-type trap
 
 `function mapReturnType(rt, methodName)` maps known wasm return types to
-local interface names: `JsMesh` to `BrepkitMesh`, `JsEdgeLines` to
-`BrepkitEdgeLines`, `JsGroupedMesh` to `BrepkitGroupedMesh`. A return type of
+local interface names: `JsMesh` to `RemusMesh`, `JsEdgeLines` to
+`RemusEdgeLines`, `JsGroupedMesh` to `RemusGroupedMesh`. A return type of
 `any` maps to `ANY_RETURN_OVERRIDES[methodName] ?? 'string'` (example
 override: `getEdgeNurbsData: 'string | null'`).
 
 An unmapped `JsFoo` passes through verbatim into the generated file, where no
-`BrepkitFoo` interface exists, so tsc fails. Adding the method to
+`RemusFoo` interface exists, so tsc fails. Adding the method to
 `METHOD_SECTIONS` alone is NOT enough. A new `Js*` return type requires BOTH:
 
-1. A case in `mapReturnType` returning `'BrepkitFoo'`.
+1. A case in `mapReturnType` returning `'RemusFoo'`.
 2. A hardcoded interface block emitted by the script. The existing ones are
-   pushed as lines, e.g. `lines.push('export interface BrepkitMesh {')`.
-   Find them: `rg -n "export interface Brepkit" scripts/sync-brepkit-types.ts`.
+   pushed as lines, e.g. `lines.push('export interface RemusMesh {')`.
+   Find them: `rg -n "export interface Remus" scripts/sync-brepkit-types.ts`.
    Add a matching block for the new type, mirroring the fields of the Rust
    struct in `crates/wasm/src/shapes.rs` or `types.rs`.
 
@@ -167,7 +167,7 @@ test to appease knip; tag it.
 
 ### @emnapi lockfile entries
 
-`brepkit-wasm` has three transitive optional deps whose top-level lockfile
+`remus-wasm` has three transitive optional deps whose top-level lockfile
 entries npm older than 11.11 silently dropped on `npm install`, making CI's
 `npm ci` fail with `Missing: @emnapi/core@... from lock file`. Current local
 npm is past 11.11, so plain `npm install` is safe. Keep the verification
@@ -203,9 +203,9 @@ redundant; leave it.
 
 ## Reference-kernel hygiene
 
-The name of the C++ kernel brepkit replaces is banned from commits, PR
+The name of the C++ kernel remus replaces is banned from commits, PR
 titles and bodies, and code in both repos. Call it "the reference kernel".
-The brepkit-side compliance grep and the grandfathered file list (README,
+The remus-side compliance grep and the grandfathered file list (README,
 the two changelogs, three bench scripts) live in the pr-workflow skill.
 In brepjs, package and adapter identifiers that contain the name are
 legitimate code; the ban targets prose, commit messages, and PR text.
@@ -223,7 +223,7 @@ gh pr view <n> --json title,body -q '.title + .body' | rg -in "$pat"
 Run all three before every push and before merging, in BOTH repos. Expected
 output: nothing (rg exits nonzero on no match, which is the pass state).
 Any hit in prose must be rewritten before pushing. A hit that is a literal
-package identifier in brepjs code, or inside a brepkit grandfathered file,
+package identifier in brepjs code, or inside a remus grandfathered file,
 is acceptable.
 
 ## Pushing over HTTPS

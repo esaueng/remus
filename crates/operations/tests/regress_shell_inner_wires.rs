@@ -42,18 +42,18 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::{make_box, make_cylinder, make_sphere};
-use brepkit_operations::shell_op::shell;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::{OperationsError, measure};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::{edge_to_face_map, solid_faces};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder, make_sphere};
+use remus_operations::shell_op::shell;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_operations::transform::transform_solid;
+use remus_operations::{OperationsError, measure};
+use remus_topology::Topology;
+use remus_topology::explorer::{edge_to_face_map, solid_faces};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const W: f64 = 80.0;
 const D: f64 = 60.0;

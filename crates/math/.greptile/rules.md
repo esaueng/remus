@@ -2,7 +2,7 @@
 
 ## No Workspace Dependencies
 
-Flag any `use brepkit_*` import or workspace dependency. `brepkit-math` is L0 and
+Flag any `use remus_*` import or workspace dependency. `remus-math` is L0 and
 must have zero workspace deps.
 
 ## NURBS Invariants

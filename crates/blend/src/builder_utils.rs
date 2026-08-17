@@ -4,14 +4,14 @@
 //! and [`ChamferBuilder`](crate::chamfer_builder::ChamferBuilder) for creating
 //! blend faces and sampling contact curves.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::BlendError;
 use crate::stripe::Stripe;
@@ -72,8 +72,8 @@ fn contact_geometry_matches(
 pub fn create_blend_face_with_contacts(
     topo: &mut Topology,
     stripe: &Stripe,
-    contact1_edge: Option<brepkit_topology::edge::EdgeId>,
-    contact2_edge: Option<brepkit_topology::edge::EdgeId>,
+    contact1_edge: Option<remus_topology::edge::EdgeId>,
+    contact2_edge: Option<remus_topology::edge::EdgeId>,
 ) -> Result<BlendFaceInfo, BlendError> {
     const WELD: f64 = 1e-5;
     let (t0_1, t1_1) = stripe.contact1.domain();
@@ -88,11 +88,11 @@ pub fn create_blend_face_with_contacts(
     // in either orientation: returns (edge, forward, start_vid, end_vid) in
     // the WIRE traversal direction.
     let adopt = |topo: &Topology,
-                 eid: Option<brepkit_topology::edge::EdgeId>,
+                 eid: Option<remus_topology::edge::EdgeId>,
                  want_s: Point3,
                  want_e: Point3,
                  want_curve: &NurbsCurve|
-     -> Option<(brepkit_topology::edge::EdgeId, bool, VertexId, VertexId)> {
+     -> Option<(remus_topology::edge::EdgeId, bool, VertexId, VertexId)> {
         let eid = eid?;
         let e = topo.edge(eid).ok()?;
         let (sv, ev) = (e.start(), e.end());
@@ -161,7 +161,7 @@ pub fn create_blend_face_with_contacts(
             let v = b - sec.center;
             let n = u.cross(v);
             let n = n.normalize().ok()?;
-            let circle = brepkit_math::curves::Circle3D::new(sec.center, n, sec.radius).ok()?;
+            let circle = remus_math::curves::Circle3D::new(sec.center, n, sec.radius).ok()?;
             Some(EdgeCurve::Circle(circle))
         };
     let end_curve = stripe
@@ -219,9 +219,9 @@ pub struct BlendFaceInfo {
     /// The blend face.
     pub face: FaceId,
     /// Cross edge at the spine end: `(edge, from, to)`.
-    pub cross_end: (brepkit_topology::edge::EdgeId, VertexId, VertexId),
+    pub cross_end: (remus_topology::edge::EdgeId, VertexId, VertexId),
     /// Cross edge at the spine start: `(edge, from, to)`.
-    pub cross_start: (brepkit_topology::edge::EdgeId, VertexId, VertexId),
+    pub cross_start: (remus_topology::edge::EdgeId, VertexId, VertexId),
 }
 
 /// Replace a face's two-edge corner path `from -> corner -> to` with the
@@ -232,7 +232,7 @@ pub struct BlendFaceInfo {
 pub fn notch_face_corner_with_arc(
     topo: &mut Topology,
     face_id: FaceId,
-    arc: (brepkit_topology::edge::EdgeId, VertexId, VertexId),
+    arc: (remus_topology::edge::EdgeId, VertexId, VertexId),
 ) -> Result<Option<FaceId>, BlendError> {
     let (arc_eid, va, vb) = arc;
     let wire_id = topo.face(face_id)?.outer_wire();

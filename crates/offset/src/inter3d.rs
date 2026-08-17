@@ -1,12 +1,12 @@
 //! 3D intersection of adjacent offset faces.
 
-use brepkit_math::analytic_intersection::{
+use remus_math::analytic_intersection::{
     AnalyticSurface, intersect_analytic_analytic, intersect_plane_analytic,
 };
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::data::{FaceIntersection, OffsetData};
 use crate::error::OffsetError;
@@ -26,7 +26,7 @@ pub fn intersect_faces_3d(
     solid: SolidId,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
-    let edge_face_map = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+    let edge_face_map = remus_topology::explorer::edge_to_face_map(topo, solid)?;
 
     for (&edge_idx, face_ids) in &edge_face_map {
         // Only process manifold edges (shared by exactly 2 faces).
@@ -112,12 +112,12 @@ const ANALYTIC_GRID_RES: usize = 32;
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn intersect_surface_pair(
     topo: &Topology,
-    edge_id: brepkit_topology::edge::EdgeId,
+    edge_id: remus_topology::edge::EdgeId,
     face_a: FaceId,
     face_b: FaceId,
     surf_a: &FaceSurface,
     surf_b: &FaceSurface,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
     offset_distance: f64,
 ) -> Result<Vec<Point3>, OffsetError> {
     // Same-domain surfaces (e.g., sphere hemispheres with same center/radius):
@@ -197,7 +197,7 @@ fn to_analytic(surf: &FaceSurface) -> Option<AnalyticSurface<'_>> {
 }
 
 /// Extract 3D points from intersection curve results.
-fn extract_points(curves: &[brepkit_math::nurbs::intersection::IntersectionCurve]) -> Vec<Point3> {
+fn extract_points(curves: &[remus_math::nurbs::intersection::IntersectionCurve]) -> Vec<Point3> {
     curves
         .iter()
         .flat_map(|c| c.points.iter().map(|p| p.point))
@@ -349,7 +349,7 @@ fn project_onto_line(origin: &Point3, dir: &Vec3, point: &Point3) -> f64 {
 fn surfaces_same_domain(
     a: &FaceSurface,
     b: &FaceSurface,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> bool {
     match (a, b) {
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
@@ -378,7 +378,7 @@ fn surfaces_same_domain(
 /// Project a specific edge's endpoints onto the offset surface.
 fn project_edge_onto_surface(
     topo: &Topology,
-    edge_id: brepkit_topology::edge::EdgeId,
+    edge_id: remus_topology::edge::EdgeId,
     surface: &FaceSurface,
 ) -> Result<Vec<Point3>, OffsetError> {
     let edge = topo.edge(edge_id)?;
@@ -443,7 +443,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::data::{OffsetData, OffsetOptions};
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     fn run_phases_1_2_3(topo: &Topology, solid: SolidId, distance: f64) -> OffsetData {
         let mut data = OffsetData::new(distance, OffsetOptions::default(), vec![]);
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn box_offset_produces_12_intersections() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_2_3(&topo, solid, 0.5);
         assert_eq!(
             data.intersections.len(),
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn box_intersection_curves_are_nonempty() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_2_3(&topo, solid, 0.5);
         for fi in &data.intersections {
             assert!(
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn sphere_same_surface_produces_projected_points() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_sphere(&mut topo, 3.0, 16).unwrap();
+        let solid = remus_operations::primitives::make_sphere(&mut topo, 3.0, 16).unwrap();
         let data = run_phases_1_2_3(&topo, solid, 0.5);
         assert!(
             !data.intersections.is_empty(),

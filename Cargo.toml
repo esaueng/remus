@@ -53,17 +53,17 @@ zip = {version = "8", default-features = false, features = ["deflate"]}
 # A caret requirement lets that resolve to a newer crates.io release of the same
 # crate name, which drops this workspace's own API and fails the verify build.
 # Keep the `=`; scripts/pin-sibling-versions.sh restores it after version bumps.
-brepkit-algo = {path = "crates/algo", version = "=0.1.0"}
-brepkit-blend = {path = "crates/blend", version = "=0.1.0"}
-brepkit-check = {path = "crates/check", version = "=0.1.0"}
-brepkit-geometry = {path = "crates/geometry", version = "=0.1.0"}
-brepkit-heal = {path = "crates/heal", version = "=0.1.0"}
-brepkit-io = {path = "crates/io", version = "=0.1.0"}
-brepkit-math = {path = "crates/math", version = "=0.1.0"}
-brepkit-offset = {path = "crates/offset", version = "=0.1.0"}
-brepkit-operations = {path = "crates/operations", version = "=0.1.0"}
-brepkit-sketch = {path = "crates/sketch", version = "=0.1.0"}
-brepkit-topology = {path = "crates/topology", version = "=0.1.0"}
+remus-algo = {path = "crates/algo", version = "=0.1.0"}
+remus-blend = {path = "crates/blend", version = "=0.1.0"}
+remus-check = {path = "crates/check", version = "=0.1.0"}
+remus-geometry = {path = "crates/geometry", version = "=0.1.0"}
+remus-heal = {path = "crates/heal", version = "=0.1.0"}
+remus-io = {path = "crates/io", version = "=0.1.0"}
+remus-math = {path = "crates/math", version = "=0.1.0"}
+remus-offset = {path = "crates/offset", version = "=0.1.0"}
+remus-operations = {path = "crates/operations", version = "=0.1.0"}
+remus-sketch = {path = "crates/sketch", version = "=0.1.0"}
+remus-topology = {path = "crates/topology", version = "=0.1.0"}
 
 [workspace.lints.rust]
 missing_docs = "warn"

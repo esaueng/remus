@@ -1,9 +1,9 @@
-//! V2 offset operations delegating to brepkit-offset.
+//! V2 offset operations delegating to remus-offset.
 
-use brepkit_offset::{JointType, OffsetError, OffsetOptions};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_offset::{JointType, OffsetError, OffsetOptions};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 
@@ -25,16 +25,16 @@ fn validate_offset_postcondition(
     operation: &'static str,
     solid: SolidId,
 ) -> Result<SolidId, OperationsError> {
-    let report = brepkit_check::validate::validate_solid(
+    let report = remus_check::validate::validate_solid(
         topo,
         solid,
-        &brepkit_check::validate::ValidateOptions::default(),
+        &remus_check::validate::ValidateOptions::default(),
     )?;
     if !report.is_valid() {
         let summary = report
             .issues
             .iter()
-            .filter(|issue| issue.severity == brepkit_check::validate::Severity::Error)
+            .filter(|issue| issue.severity == remus_check::validate::Severity::Error)
             .take(3)
             .map(|issue| issue.description.as_str())
             .collect::<Vec<_>>()
@@ -59,7 +59,7 @@ pub fn offset_solid_v2(
     solid: SolidId,
     distance: f64,
 ) -> Result<SolidId, OperationsError> {
-    let result = brepkit_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
+    let result = remus_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
         .map_err(map_offset_error)?;
     validate_offset_postcondition(topo, "offset", result)
 }
@@ -76,7 +76,7 @@ pub fn shell_v2(
     exclude: &[FaceId],
 ) -> Result<SolidId, OperationsError> {
     let result =
-        brepkit_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
+        remus_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
             .map_err(map_offset_error)?;
     validate_offset_postcondition(topo, "shell", result)
 }
@@ -96,7 +96,7 @@ pub fn offset_solid_arc_v2(
         ..Default::default()
     };
     let result =
-        brepkit_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
+        remus_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
     validate_offset_postcondition(topo, "arc offset", result)
 }
 
@@ -104,7 +104,7 @@ pub fn offset_solid_arc_v2(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     #[test]
     fn offset_v2_box() {

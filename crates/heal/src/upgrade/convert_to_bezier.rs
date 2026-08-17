@@ -1,10 +1,10 @@
 //! Convert B-spline geometry to Bezier segments.
 //!
-//! Delegates to [`brepkit_math::nurbs::decompose::curve_to_bezier_segments`]
+//! Delegates to [`remus_math::nurbs::decompose::curve_to_bezier_segments`]
 //! for the actual decomposition, wrapping the result in the heal error type.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::decompose::curve_to_bezier_segments;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::decompose::curve_to_bezier_segments;
 
 use crate::HealError;
 
@@ -31,7 +31,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     #[test]
     fn decompose_single_span_returns_one() {

@@ -8,10 +8,10 @@ pub(crate) mod boundary;
 pub(crate) mod ray_surface;
 pub(crate) mod winding;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::CheckError;
 
@@ -61,7 +61,7 @@ pub fn classify_point(
     point: Point3,
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     if is_on_boundary(topo, &faces, point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
@@ -175,7 +175,7 @@ fn is_on_boundary(
                 (point - on_surface).length()
             }
             FaceSurface::Nurbs(nurbs) => {
-                match brepkit_math::nurbs::projection::project_point_to_surface(
+                match remus_math::nurbs::projection::project_point_to_surface(
                     nurbs, point, tolerance,
                 ) {
                     Ok(proj) => proj.distance,
@@ -210,7 +210,7 @@ fn is_on_boundary(
 ///
 /// Exposed so higher layers can reuse the same boundary test [`classify_point`]
 /// applies, instead of duplicating the per-surface distance logic. In
-/// particular `brepkit-operations` needs it for its tessellation-based winding
+/// particular `remus-operations` needs it for its tessellation-based winding
 /// classifier, which cannot live in this crate (tessellation is L3).
 ///
 /// # Errors
@@ -222,7 +222,7 @@ pub fn is_point_on_boundary(
     point: Point3,
     tolerance: f64,
 ) -> Result<bool, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
     is_on_boundary(topo, &faces, point, tolerance)
 }
 
@@ -242,7 +242,7 @@ pub fn is_point_on_boundary(
 ///
 /// For curved solids use [`classify_point`] (analytic ray casting, exact for
 /// every supported surface type), or
-/// `brepkit_operations::classify::classify_point_winding`, which sums solid
+/// `remus_operations::classify::classify_point_winding`, which sums solid
 /// angles over a real watertight tessellation.
 ///
 /// # Errors
@@ -254,7 +254,7 @@ pub fn classify_point_winding(
     point: Point3,
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
     if is_on_boundary(topo, &faces, point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
@@ -288,7 +288,7 @@ pub fn classify_point_robust(
     point: Point3,
     options: &ClassifyOptions,
 ) -> Result<PointClassification, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
     if is_on_boundary(topo, &faces, point, options.tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
@@ -313,9 +313,9 @@ fn count_ray_crossings(
     origin: Point3,
     direction: Vec3,
 ) -> Result<u32, CheckError> {
-    use brepkit_math::bvh::Bvh;
+    use remus_math::bvh::Bvh;
 
-    let face_aabbs: Vec<(usize, brepkit_math::aabb::Aabb3)> = faces
+    let face_aabbs: Vec<(usize, remus_math::aabb::Aabb3)> = faces
         .iter()
         .enumerate()
         .filter_map(|(i, &fid)| crate::util::face_aabb(topo, fid).ok().map(|aabb| (i, aabb)))
@@ -342,16 +342,16 @@ fn count_ray_crossings(
 mod tests {
     use super::winding;
     use super::*;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::solid::{Solid, SolidId};
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::solid::{Solid, SolidId};
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     fn make_hollow_unit_cube(topo: &mut Topology) -> SolidId {
         let outer = make_unit_cube_manifold(topo);
         let inner = make_unit_cube_manifold(topo);
         let inner_shell = topo.solid(inner).unwrap().outer_shell();
 
-        for vertex_id in brepkit_topology::explorer::solid_vertices(topo, inner).unwrap() {
+        for vertex_id in remus_topology::explorer::solid_vertices(topo, inner).unwrap() {
             let point = topo.vertex(vertex_id).unwrap().point();
             topo.vertex_mut(vertex_id).unwrap().set_point(Point3::new(
                 0.25 + 0.5 * point.x(),
@@ -532,9 +532,9 @@ mod tests {
         outer: &[Point3],
         holes: &[Vec<Point3>],
         tol: f64,
-    ) -> brepkit_topology::face::FaceId {
-        use brepkit_topology::builder::make_polygon_wire;
-        use brepkit_topology::face::Face;
+    ) -> remus_topology::face::FaceId {
+        use remus_topology::builder::make_polygon_wire;
+        use remus_topology::face::Face;
 
         let normal = crate::util::polygon_normal(outer);
         let p0 = outer[0];
@@ -560,7 +560,7 @@ mod tests {
     /// classifier's fixed ray directions actually travel up it instead of
     /// leaving through a side wall first.
     fn make_slab_with_square_hole(topo: &mut Topology) -> SolidId {
-        use brepkit_topology::shell::Shell;
+        use remus_topology::shell::Shell;
 
         const TOL: f64 = 1e-7;
         const Z0: f64 = 0.0;
@@ -729,14 +729,14 @@ mod tests {
     /// closed rim circles + a doubled seam arc, only 2 distinct vertices)
     /// plus two planar disc caps each bounded by a single closed circle.
     fn make_partial_torus_band(topo: &mut Topology, big_r: f64, rho: f64, angle: f64) -> SolidId {
-        use brepkit_math::curves::Circle3D;
-        use brepkit_math::surfaces::ToroidalSurface;
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::{Face, FaceSurface};
-        use brepkit_topology::shell::Shell;
-        use brepkit_topology::solid::Solid;
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::ToroidalSurface;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::shell::Shell;
+        use remus_topology::solid::Solid;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let (sin_a, cos_a) = angle.sin_cos();
         let v1 = topo.add_vertex(Vertex::new(Point3::new(big_r, 0.0, -rho), 1e-7));

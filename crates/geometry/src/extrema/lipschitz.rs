@@ -5,8 +5,8 @@
 //! This guarantees finding the global minimum, unlike Newton-based methods
 //! that can get trapped in local minima.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::Point3;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::Point3;
 
 // ── LipschitzOptimizer ───────────────────────────────────────────────────────
 

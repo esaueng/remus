@@ -2,12 +2,12 @@
 //!
 //! Creates multiple copies of a solid arranged in a pattern.
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::compound::{Compound, CompoundId};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::compound::{Compound, CompoundId};
+use remus_topology::solid::SolidId;
 
 use crate::copy::copy_solid_with_face_map;
 use crate::evolution::EvolutionMap;
@@ -29,7 +29,7 @@ struct PatternTracker {
 impl PatternTracker {
     fn new(topo: &Topology, solid: SolidId) -> Result<Self, crate::OperationsError> {
         let mut evo = EvolutionMap::exact();
-        for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
+        for fid in remus_topology::explorer::solid_faces(topo, solid)? {
             evo.add_modified(fid.index(), fid.index());
         }
         Ok(Self { evo })
@@ -312,9 +312,9 @@ fn rotation_matrix(axis: Vec3, angle: f64) -> Mat4 {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::Topology;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::Vec3;
+    use remus_topology::Topology;
 
     use super::*;
 

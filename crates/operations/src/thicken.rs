@@ -3,10 +3,10 @@
 //! A convenience operation that extrudes a face along its own normal
 //! direction. Supports planar, NURBS, and analytic surface faces.
 
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::extrude::extrude;
 
@@ -27,7 +27,7 @@ pub fn thicken(
     face: FaceId,
     thickness: f64,
 ) -> Result<SolidId, crate::OperationsError> {
-    let tol = brepkit_math::tolerance::Tolerance::new();
+    let tol = remus_math::tolerance::Tolerance::new();
 
     if tol.approx_eq(thickness, 0.0) {
         return Err(crate::OperationsError::InvalidInput {
@@ -69,9 +69,9 @@ fn face_normal(surface: &FaceSurface) -> Result<Vec3, crate::OperationsError> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_square_face;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_square_face;
 
     use super::*;
 
@@ -114,12 +114,12 @@ mod tests {
 
     #[test]
     fn thicken_nurbs_face() {
-        use brepkit_math::nurbs::surface::NurbsSurface;
-        use brepkit_math::vec::Point3;
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::{Face, FaceSurface};
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::nurbs::surface::NurbsSurface;
+        use remus_math::vec::Point3;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let mut topo = Topology::new();
 

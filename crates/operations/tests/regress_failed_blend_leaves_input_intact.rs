@@ -12,15 +12,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_check::validate::{ValidateOptions, validate_solid};
-use brepkit_operations::blend_ops::{chamfer_distance_angle, chamfer_v2, fillet_v2};
-use brepkit_operations::chamfer::chamfer;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::{solid_edges, solid_faces};
-use brepkit_topology::solid::SolidId;
+use remus_check::validate::{ValidateOptions, validate_solid};
+use remus_operations::blend_ops::{chamfer_distance_angle, chamfer_v2, fillet_v2};
+use remus_operations::chamfer::chamfer;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::{solid_edges, solid_faces};
+use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
 

@@ -1,15 +1,15 @@
 //! Convert NURBS geometry to analytic (elementary) surfaces and curves
 //! where possible.
 
-use brepkit_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
-use brepkit_geometry::convert::{
+use remus_geometry::convert::{
     RecognizedCurve, RecognizedSurface, recognize_curve, recognize_surface,
 };
 
@@ -55,7 +55,7 @@ pub fn convert_to_elementary(
                     radius,
                 } => {
                     if let Ok(cyl) =
-                        brepkit_math::surfaces::CylindricalSurface::new(origin, axis, radius)
+                        remus_math::surfaces::CylindricalSurface::new(origin, axis, radius)
                     {
                         let face = topo.face_mut(*fid)?;
                         face.set_surface(FaceSurface::Cylinder(cyl));
@@ -63,7 +63,7 @@ pub fn convert_to_elementary(
                     }
                 }
                 RecognizedSurface::Sphere { center, radius } => {
-                    if let Ok(sph) = brepkit_math::surfaces::SphericalSurface::new(center, radius) {
+                    if let Ok(sph) = remus_math::surfaces::SphericalSurface::new(center, radius) {
                         let face = topo.face_mut(*fid)?;
                         face.set_surface(FaceSurface::Sphere(sph));
                         converted += 1;
@@ -75,7 +75,7 @@ pub fn convert_to_elementary(
                     half_angle,
                 } => {
                     if let Ok(cone) =
-                        brepkit_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
+                        remus_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
                     {
                         let face = topo.face_mut(*fid)?;
                         face.set_surface(FaceSurface::Cone(cone));
@@ -88,7 +88,7 @@ pub fn convert_to_elementary(
                     major_radius,
                     minor_radius,
                 } => {
-                    if let Ok(torus) = brepkit_math::surfaces::ToroidalSurface::with_axis(
+                    if let Ok(torus) = remus_math::surfaces::ToroidalSurface::with_axis(
                         center,
                         major_radius,
                         minor_radius,
@@ -276,10 +276,10 @@ pub fn convert_edges_to_elementary(
 /// projection, and `|(P − center)·u| ≥ semi_major > 0` there, so the test
 /// never sits near zero and needs no tolerance.
 fn orient_hyperbola_axis(
-    nurbs: &brepkit_math::nurbs::curve::NurbsCurve,
-    center: brepkit_math::vec::Point3,
-    u_axis: brepkit_math::vec::Vec3,
-) -> brepkit_math::vec::Vec3 {
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
+    center: remus_math::vec::Point3,
+    u_axis: remus_math::vec::Vec3,
+) -> remus_math::vec::Vec3 {
     let (t0, t1) = nurbs.domain();
     let sample = nurbs.evaluate(f64::midpoint(t0, t1));
     if (sample - center).dot(u_axis) < 0.0 {
@@ -293,14 +293,14 @@ fn orient_hyperbola_axis(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use brepkit_geometry::convert::curve_to_nurbs::circle_to_nurbs;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::face::Face;
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_geometry::convert::curve_to_nurbs::circle_to_nurbs;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     #[test]
     fn convert_edges_to_elementary_recovers_circle() {
@@ -384,7 +384,7 @@ mod tests {
         // the prior outer-shell-only behavior, which silently left
         // cavity faces unconverted in hollow solids.
         use crate::construct::convert_surface::sphere_to_nurbs;
-        use brepkit_math::surfaces::SphericalSurface;
+        use remus_math::surfaces::SphericalSurface;
 
         let mut topo = Topology::new();
 
@@ -460,7 +460,7 @@ mod tests {
         //
         // Swept at 1x/1000x/0.001x because the recognizer's conic residual
         // is compared against a LINEAR tolerance.
-        use brepkit_geometry::convert::curve_to_nurbs::ellipse_to_nurbs;
+        use remus_geometry::convert::curve_to_nurbs::ellipse_to_nurbs;
 
         for k in [1.0_f64, 1000.0, 0.001] {
             // Closed form, written out here rather than taken from the
@@ -544,7 +544,7 @@ mod tests {
     // known-exact input rather than against another kernel routine.
 
     use crate::construct::convert_curve::{hyperbola_to_nurbs, parabola_to_nurbs};
-    use brepkit_math::curves::{Hyperbola3D, Parabola3D};
+    use remus_math::curves::{Hyperbola3D, Parabola3D};
 
     /// Wrap a single edge in the minimum face/shell/solid scaffold the
     /// converter's iterator needs.

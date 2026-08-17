@@ -7,24 +7,24 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_operations::journal_ops::{
+use remus_algo::bop::BooleanOp;
+use remus_operations::journal_ops::{
     begin_scoped, boolean_journaled, record_barrier_over_solid, record_face_evolution,
 };
-use brepkit_operations::primitives::make_box;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::{solid_edges, solid_faces, solid_vertices};
-use brepkit_topology::journal::{
+use remus_operations::primitives::make_box;
+use remus_topology::Topology;
+use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+use remus_topology::journal::{
     EntityEvent, EntityKey, EntryPayload, RecordedOrigin, UNJOURNALED_MUTATIONS,
 };
 
 fn two_overlapping_boxes(
     topo: &mut Topology,
-) -> (brepkit_topology::SolidId, brepkit_topology::SolidId) {
+) -> (remus_topology::SolidId, remus_topology::SolidId) {
     let a = make_box(topo, 10.0, 10.0, 10.0).unwrap();
     let b = make_box(topo, 10.0, 10.0, 10.0).unwrap();
-    let shift = brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0);
-    brepkit_operations::transform::transform_solid(topo, b, &shift).unwrap();
+    let shift = remus_math::mat::Mat4::translation(5.0, 5.0, 5.0);
+    remus_operations::transform::transform_solid(topo, b, &shift).unwrap();
     (a, b)
 }
 
@@ -124,8 +124,8 @@ fn unjournaled_operation_surfaces_as_a_global_barrier() {
     let fused = boolean_journaled(&mut topo, BooleanOp::Fuse, a, b).unwrap();
 
     // An operation that bypasses the journal entirely.
-    let shift = brepkit_math::mat::Mat4::translation(1.0, 0.0, 0.0);
-    brepkit_operations::transform::transform_solid(&mut topo, fused.solid, &shift).unwrap();
+    let shift = remus_math::mat::Mat4::translation(1.0, 0.0, 0.0);
+    remus_operations::transform::transform_solid(&mut topo, fused.solid, &shift).unwrap();
 
     // The next journaled operation must not read as continuous history.
     let c = make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
@@ -137,7 +137,7 @@ fn unjournaled_operation_surfaces_as_a_global_barrier() {
         .entries()
         .iter()
         .filter(|entry| entry.is_barrier())
-        .map(brepkit_topology::journal::JournalEntry::kind)
+        .map(remus_topology::journal::JournalEntry::kind)
         .collect();
     assert!(
         barrier_kinds.contains(&UNJOURNALED_MUTATIONS),
@@ -185,7 +185,7 @@ fn explicit_barrier_covers_every_entity_of_the_solid() {
 
 #[test]
 fn blend_face_evolution_journals_with_unresolved_claims_intact() {
-    use brepkit_operations::blend_ops::fillet_with_evolution;
+    use remus_operations::blend_ops::fillet_with_evolution;
 
     let mut topo = Topology::new();
     let cube = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
@@ -247,7 +247,7 @@ fn blend_face_evolution_journals_with_unresolved_claims_intact() {
 
 #[test]
 fn merged_outputs_journal_as_one_merged_event() {
-    use brepkit_operations::evolution::EvolutionMap;
+    use remus_operations::evolution::EvolutionMap;
 
     let mut topo = Topology::new();
     let mut map = EvolutionMap::exact();

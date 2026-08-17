@@ -5,9 +5,9 @@
     clippy::cast_possible_wrap
 )]
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::test_utils::make_unit_cube_manifold;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::test_utils::make_unit_cube_manifold;
 
 use super::*;
 
@@ -196,11 +196,11 @@ fn shell_rounded_rect_extrude_diagnostics() {
 /// Gridfinity exact parameters (r=4mm corner radius) diagnostic.
 #[test]
 fn shell_gridfinity_exact_params() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -294,7 +294,7 @@ fn shell_gridfinity_exact_params() {
     let fc_after = sh2.faces().len();
     eprintln!("[gf-exact] Faces after shell: {fc_after}");
 
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     let chi = v as i64 - e as i64 + f as i64;
     eprintln!("[gf-exact] F={f}, E={e}, V={v}, χ={chi}");
 
@@ -311,7 +311,7 @@ fn shell_gridfinity_exact_params() {
     let fc_unified = sh3.faces().len();
     eprintln!("[gf-exact] After unify_faces (removed {removed}): {fc_unified} faces");
 
-    let (f2, e2, v2) = brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+    let (f2, e2, v2) = remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     let chi2 = v2 as i64 - e2 as i64 + f2 as i64;
     eprintln!("[gf-exact] After unify: F={f2}, E={e2}, V={v2}, χ={chi2}");
 }
@@ -320,11 +320,11 @@ fn shell_gridfinity_exact_params() {
 /// This test creates a face with lines + circle arcs, extrudes, then shells.
 #[test]
 fn shell_rounded_rect_with_arcs() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -486,8 +486,8 @@ fn shell_rounded_rect_with_arcs() {
             let sv = topo.vertex(e.start()).unwrap().point();
             let ev = topo.vertex(e.end()).unwrap().point();
             let kind = match e.curve() {
-                brepkit_topology::edge::EdgeCurve::Line => "Line",
-                brepkit_topology::edge::EdgeCurve::Circle(_) => "Circle",
+                remus_topology::edge::EdgeCurve::Line => "Line",
+                remus_topology::edge::EdgeCurve::Circle(_) => "Circle",
                 _ => "Other",
             };
             eprintln!(
@@ -509,8 +509,8 @@ fn shell_rounded_rect_with_arcs() {
                 let sv = topo.vertex(e.start()).unwrap().point();
                 let ev = topo.vertex(e.end()).unwrap().point();
                 let kind = match e.curve() {
-                    brepkit_topology::edge::EdgeCurve::Line => "Line",
-                    brepkit_topology::edge::EdgeCurve::Circle(_) => "Circle",
+                    remus_topology::edge::EdgeCurve::Line => "Line",
+                    remus_topology::edge::EdgeCurve::Circle(_) => "Circle",
                     _ => "Other",
                 };
                 eprintln!(
@@ -550,11 +550,11 @@ fn shell_rounded_rect_with_arcs() {
 /// This is the exact scenario where the shell bbox was expanding outward.
 #[test]
 fn shell_cw_rounded_rect_bounds_preserved() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -674,11 +674,11 @@ fn shell_cw_rounded_rect_bounds_preserved() {
 fn shell_rounded_rect_watertight() {
     use std::collections::HashMap;
 
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -768,7 +768,7 @@ fn shell_rounded_rect_watertight() {
     let floor_area = inner_section; // 1523.23
     let expected_volume = outer_section * h - inner_section * h_in; // 5753.8
 
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap();
+    let face_ids = remus_topology::explorer::solid_faces(&topo, shelled).unwrap();
 
     let mut outer_corners = 0;
     let mut inner_corners = 0;
@@ -865,11 +865,11 @@ fn shell_rounded_rect_watertight() {
 /// CW-wound rounded-rect prism (the brepjs bin profile): half-extents `w/2` and
 /// `d/2`, corner radius `r`, extruded `h` in +Z.
 fn rounded_rect_prism(topo: &mut Topology, w: f64, d: f64, h: f64, r: f64) -> SolidId {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let tol = Tolerance::new();
     let hw = w / 2.0;
@@ -936,7 +936,7 @@ fn rounded_rect_prism(topo: &mut Topology, w: f64, d: f64, h: f64, r: f64) -> So
 /// neighbouring offset walls — `half - thickness` — not on the fillet's own
 /// tangent extent `half - radius`.
 ///
-/// Upstream (andymai/brepkit#1243) reached this only after handling the
+/// Upstream (andymai/remus#1243) reached this only after handling the
 /// swallowed fillet; this fork's miter already places it, which is what makes
 /// the collapse case below the only one still open here. Pinned so a future
 /// change to the collapse handling cannot regress the working range.
@@ -960,7 +960,7 @@ fn shell_cavity_corner_is_mitered_below_the_corner_radius() {
         );
 
         let mut worst = 0.0_f64;
-        for fid in brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+        for fid in remus_topology::explorer::solid_faces(&topo, shelled).unwrap() {
             let face = topo.face(fid).unwrap();
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
@@ -1012,7 +1012,7 @@ fn shell_thickness_past_corner_radius_gives_a_sharp_corner() {
     assert!(tangent > sharp, "the test geometry must actually collapse");
 
     let mut worst = 0.0_f64;
-    for fid in brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(&topo, shelled).unwrap() {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oe in topo.wire(wid).unwrap().edges() {
@@ -1038,9 +1038,9 @@ fn shell_thickness_past_corner_radius_gives_a_sharp_corner() {
     // threading another face's wire through it (edge-paired but degenerate,
     // which aborts the next boolean's hole-shell grouping).
     let mut diagonal_planes = 0;
-    for fid in brepkit_topology::explorer::solid_faces(&topo, shelled).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(&topo, shelled).unwrap() {
         let face = topo.face(fid).unwrap();
-        if let brepkit_topology::face::FaceSurface::Plane { normal, .. } = face.surface()
+        if let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface()
             && normal.z().abs() < 0.01
             && (normal.x().abs() - normal.y().abs()).abs() < 0.01
             && normal.x().abs() > 0.5

@@ -24,11 +24,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -37,7 +37,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn load(name: &str, topo: &mut Topology) -> SolidId {
-    brepkit_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
+    remus_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 fn mesh_health(topo: &Topology, solid: SolidId) -> (usize, usize) {

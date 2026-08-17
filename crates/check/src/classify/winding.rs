@@ -6,10 +6,10 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::CheckError;
 
@@ -27,7 +27,7 @@ use crate::CheckError;
 /// Returns an error if the solid or its faces contain invalid topology
 /// references.
 pub fn winding_number(topo: &Topology, solid: SolidId, point: Point3) -> Result<f64, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total = 0.0;
     for fid in &faces {

@@ -7,11 +7,11 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 
@@ -230,9 +230,9 @@ fn build_local_frame(axis: Vec3) -> (Vec3, Vec3) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_square_face;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_square_face;
 
     use super::*;
 
@@ -308,8 +308,8 @@ mod tests {
     fn helical_sweep_is_watertight_across_turns_and_segments() {
         use std::collections::HashMap;
 
-        use brepkit_topology::edge::EdgeId;
-        use brepkit_topology::explorer::solid_faces;
+        use remus_topology::edge::EdgeId;
+        use remus_topology::explorer::solid_faces;
 
         for turns in [0.25_f64, 0.3, 0.5, 0.75, 1.0, 2.0] {
             for segs in [4_usize, 8, 16] {

@@ -27,17 +27,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::chamfer::{chamfer, chamfer_asymmetric};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::{OperationsError, measure, validate};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::chamfer::{chamfer, chamfer_asymmetric};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_operations::{OperationsError, measure, validate};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const W: f64 = 80.0;
 const D: f64 = 60.0;
@@ -133,7 +133,7 @@ fn perimeter_edges(topo: &Topology, solid: SolidId, n: Vec3) -> Vec<EdgeId> {
         .unwrap()
         .edges()
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .collect()
 }
 
@@ -386,7 +386,7 @@ fn a_bevel_that_reaches_a_hole_is_refused() {
             .unwrap()
             .edges()
             .iter()
-            .map(brepkit_topology::wire::OrientedEdge::edge)
+            .map(remus_topology::wire::OrientedEdge::edge)
             .find(|&e| {
                 let edge = topo.edge(e).unwrap();
                 let a = topo.vertex(edge.start()).unwrap().point();
@@ -462,7 +462,7 @@ fn a_corner_on_a_curved_face_is_refused() {
         .unwrap()
         .edges()
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .find(|&e| {
             let edge = topo.edge(e).unwrap();
             matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line)

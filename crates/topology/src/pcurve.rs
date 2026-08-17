@@ -24,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::curves2d::Curve2D;
+use remus_math::curves2d::Curve2D;
 
 use crate::edge::EdgeId;
 use crate::face::FaceId;
@@ -100,7 +100,7 @@ impl PCurve {
 
     /// Evaluates the pcurve at parameter `t`.
     #[must_use]
-    pub fn evaluate(&self, t: f64) -> brepkit_math::vec::Point2 {
+    pub fn evaluate(&self, t: f64) -> remus_math::vec::Point2 {
         self.curve.evaluate(t)
     }
 }
@@ -200,8 +200,8 @@ impl PCurveRegistry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use brepkit_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
-    use brepkit_math::vec::{Point2, Point3, Vec2};
+    use remus_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
+    use remus_math::vec::{Point2, Point3, Vec2};
 
     use crate::edge::{Edge, EdgeCurve, EdgeId};
     use crate::face::{Face, FaceId, FaceSurface};
@@ -237,7 +237,7 @@ mod tests {
             wire_id,
             vec![],
             FaceSurface::Plane {
-                normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             },
         );
@@ -317,10 +317,10 @@ mod tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod seam_characterization {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 
     use crate::TopologyError;
     use crate::edge::{Edge, EdgeCurve, EdgeId};
@@ -474,7 +474,7 @@ mod seam_characterization {
 
     #[test]
     fn seam_ambiguity_diagnostic_is_pinned() {
-        use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+        use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
         let (topo, seam, face_id) = make_cylinder_side_face_with_seam();
         drop(topo);
         let d = TopologyError::SeamPcurveAmbiguous {

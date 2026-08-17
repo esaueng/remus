@@ -15,15 +15,15 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::OperationsError;
-use brepkit_operations::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with_options};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::validation::validate_shell_manifold;
+use remus_math::mat::Mat4;
+use remus_operations::OperationsError;
+use remus_operations::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with_options};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
+use remus_topology::validation::validate_shell_manifold;
 
 const DEFLECTION: f64 = 0.1;
 
@@ -232,7 +232,7 @@ fn test_intersect_disjoint() {
 
     let result = boolean(&mut topo, BooleanOp::Intersect, a, b).unwrap();
     assert_eq!(
-        brepkit_topology::explorer::solid_faces(&topo, result)
+        remus_topology::explorer::solid_faces(&topo, result)
             .unwrap()
             .len(),
         0,

@@ -11,7 +11,7 @@
 //! r24..45 and never reaches r=12). The B-Rep stays closed, but the cylinder
 //! band mesher mis-stitches the split seam into 8 unmatched mesh edges.
 //!
-//! Run: `cargo run --release --example debug_multicut -p brepkit-operations`
+//! Run: `cargo run --release --example debug_multicut -p remus-operations`
 
 #![allow(
     clippy::unwrap_used,
@@ -23,18 +23,18 @@
 
 use std::collections::BTreeMap;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::heal::unify_faces;
-use brepkit_operations::primitives;
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::heal::unify_faces;
+use remus_operations::primitives;
+use remus_operations::revolve::revolve;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const TOL: f64 = 1e-7;
 

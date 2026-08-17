@@ -10,15 +10,15 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// Upper bound on materialized point sums (about 24 MiB of point data).
 const MAX_MINKOWSKI_POINT_SUMS: usize = 1_000_000;
@@ -73,10 +73,10 @@ pub fn make_box(
     let ev3 = topo.add_edge(Edge::new(v[3], v[7], EdgeCurve::Line));
 
     let mk_face = |topo: &mut Topology,
-                   edges: [(brepkit_topology::edge::EdgeId, bool); 4],
+                   edges: [(remus_topology::edge::EdgeId, bool); 4],
                    normal: Vec3,
                    d: f64|
-     -> Result<brepkit_topology::face::FaceId, crate::OperationsError> {
+     -> Result<remus_topology::face::FaceId, crate::OperationsError> {
         let wire = Wire::new(
             edges
                 .iter()
@@ -162,7 +162,7 @@ pub fn make_cylinder(
     // Cylinder base at z=0, top at z=height.
     // (brepjs drill and placement code assumes this convention.)
 
-    let cyl_surface = brepkit_math::surfaces::CylindricalSurface::new(
+    let cyl_surface = remus_math::surfaces::CylindricalSurface::new(
         Point3::new(0.0, 0.0, 0.0),
         Vec3::new(0.0, 0.0, 1.0),
         radius,
@@ -173,13 +173,13 @@ pub fn make_cylinder(
     let v_bot = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, 0.0), tol.linear));
     let v_top = topo.add_vertex(Vertex::new(Point3::new(radius, 0.0, height), tol.linear));
 
-    let bot_circle = brepkit_math::curves::Circle3D::new(
+    let bot_circle = remus_math::curves::Circle3D::new(
         Point3::new(0.0, 0.0, 0.0),
         Vec3::new(0.0, 0.0, 1.0),
         radius,
     )
     .map_err(crate::OperationsError::Math)?;
-    let top_circle = brepkit_math::curves::Circle3D::new(
+    let top_circle = remus_math::curves::Circle3D::new(
         Point3::new(0.0, 0.0, height),
         Vec3::new(0.0, 0.0, 1.0),
         radius,
@@ -327,7 +327,7 @@ pub fn make_cone(
     // Axis points from apex toward the base (big end), so that the
     // surface generator v>0 sweeps from apex outward to the base.
     let axis_dir = Vec3::new(0.0, 0.0, axis_sign);
-    let cone_surface = brepkit_math::surfaces::ConicalSurface::new(apex_pos, axis_dir, half_angle)
+    let cone_surface = remus_math::surfaces::ConicalSurface::new(apex_pos, axis_dir, half_angle)
         .map_err(crate::OperationsError::Math)?;
 
     let mut faces = Vec::new();
@@ -338,7 +338,7 @@ pub fn make_cone(
         let v_apex = topo.add_vertex(Vertex::new(apex_pos, tol.linear));
         let v_base = topo.add_vertex(Vertex::new(Point3::new(r_big, 0.0, big_z), tol.linear));
 
-        let base_circle = brepkit_math::curves::Circle3D::new(
+        let base_circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, big_z),
             Vec3::new(0.0, 0.0, 1.0),
             r_big,
@@ -390,13 +390,13 @@ pub fn make_cone(
             tol.linear,
         ));
 
-        let bot_circle = brepkit_math::curves::Circle3D::new(
+        let bot_circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             bottom_radius,
         )
         .map_err(crate::OperationsError::Math)?;
-        let top_circle = brepkit_math::curves::Circle3D::new(
+        let top_circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, height),
             Vec3::new(0.0, 0.0, 1.0),
             top_radius,
@@ -489,12 +489,10 @@ pub fn make_sphere(
         });
     }
 
-    let surface_n =
-        brepkit_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), radius)
-            .map_err(crate::OperationsError::Math)?;
-    let surface_s =
-        brepkit_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), radius)
-            .map_err(crate::OperationsError::Math)?;
+    let surface_n = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), radius)
+        .map_err(crate::OperationsError::Math)?;
+    let surface_s = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), radius)
+        .map_err(crate::OperationsError::Math)?;
 
     // Equatorial polygon: `segments` vertices evenly spaced on the circle
     // at z = 0, forming the shared boundary between north and south hemispheres.
@@ -590,7 +588,7 @@ pub fn make_torus(
         });
     }
 
-    let surface = brepkit_math::surfaces::ToroidalSurface::new(
+    let surface = remus_math::surfaces::ToroidalSurface::new(
         Point3::new(0.0, 0.0, 0.0),
         major_radius,
         minor_radius,
@@ -638,7 +636,7 @@ fn make_trapezoid_xz_face(
     top_radius: f64,
     z_bottom: f64,
     z_top: f64,
-) -> Result<brepkit_topology::face::FaceId, crate::OperationsError> {
+) -> Result<remus_topology::face::FaceId, crate::OperationsError> {
     let tol = Tolerance::new();
 
     let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, z_bottom), tol.linear));
@@ -682,7 +680,7 @@ fn make_rect_xz_face(
     z0: f64,
     x1: f64,
     z1: f64,
-) -> Result<brepkit_topology::face::FaceId, crate::OperationsError> {
+) -> Result<remus_topology::face::FaceId, crate::OperationsError> {
     let tol = Tolerance::new();
 
     let v0 = topo.add_vertex(Vertex::new(Point3::new(x0, 0.0, z0), tol.linear));
@@ -725,7 +723,7 @@ pub fn make_convex_hull(
     topo: &mut Topology,
     points: &[Point3],
 ) -> Result<SolidId, crate::OperationsError> {
-    let hull = brepkit_math::convex_hull::convex_hull_3d(points).ok_or_else(|| {
+    let hull = remus_math::convex_hull::convex_hull_3d(points).ok_or_else(|| {
         crate::OperationsError::InvalidInput {
             reason: "points are coplanar or degenerate — cannot form a 3D convex hull".into(),
         }
@@ -741,7 +739,7 @@ pub fn make_convex_hull(
 
     // Each undirected edge (min_vertex, max_vertex) is created once; the second
     // face that references it uses reverse orientation.
-    let mut edge_map: HashMap<(usize, usize), brepkit_topology::edge::EdgeId> = HashMap::new();
+    let mut edge_map: HashMap<(usize, usize), remus_topology::edge::EdgeId> = HashMap::new();
     let mut face_ids = Vec::with_capacity(hull.faces.len());
     for &[a, b, c] in &hull.faces {
         let va = vertex_ids[a];
@@ -807,11 +805,11 @@ pub fn make_minkowski_sum(
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    use brepkit_topology::explorer::solid_vertices;
+    use remus_topology::explorer::solid_vertices;
 
-    let point_of = |topo: &Topology, ids: &[brepkit_topology::vertex::VertexId]| {
+    let point_of = |topo: &Topology, ids: &[remus_topology::vertex::VertexId]| {
         ids.iter()
-            .map(|&v| topo.vertex(v).map(brepkit_topology::vertex::Vertex::point))
+            .map(|&v| topo.vertex(v).map(remus_topology::vertex::Vertex::point))
             .collect::<Result<Vec<Point3>, _>>()
     };
     let a_pts = point_of(topo, &solid_vertices(topo, a)?)?;

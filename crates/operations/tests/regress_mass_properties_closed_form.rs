@@ -1,6 +1,6 @@
 //! `mass_properties` must report the body, not the decomposition.
 //!
-//! It sums `brepkit_check::properties::face_integrator::integrate_face` over a
+//! It sums `remus_check::properties::face_integrator::integrate_face` over a
 //! solid's faces. That integrator measures a line-and-arc-bounded planar face
 //! in closed form (Green's theorem on the boundary) and falls back to a chord
 //! polygon otherwise — but it decided which by sampling the boundary's plane
@@ -25,15 +25,15 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{mass_properties, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{mass_properties, solid_volume};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::solid::SolidId;
 
 // ---------------------------------------------------------------------------
 // Closed forms: signed raw moments about the global origin
@@ -43,7 +43,7 @@ use brepkit_topology::solid::SolidId;
 ///
 /// Composing a body is then addition, and removing a feature is adding it with
 /// `sign = -1`. `finish` converts to the same `(volume, centre, inertia)`
-/// convention [`brepkit_check::properties::GProps`] uses, including its habit
+/// convention [`remus_check::properties::GProps`] uses, including its habit
 /// of storing the products of inertia as `∫xy dV` (positive) and letting
 /// `matrix_of_inertia` negate them.
 #[derive(Clone, Copy, Default)]
@@ -262,11 +262,11 @@ fn assert_measurement_is_not_a_setting(topo: &Topology, solid: SolidId, what: &s
     let reference = mass_properties(topo, solid).unwrap().mass;
 
     for order in [4_usize, 5, 6, 8, 10, 12, 16] {
-        let options = brepkit_check::properties::PropertiesOptions {
+        let options = remus_check::properties::PropertiesOptions {
             gauss_order: order,
             ..Default::default()
         };
-        let v = brepkit_check::properties::solid_volume(topo, solid, &options).unwrap();
+        let v = remus_check::properties::solid_volume(topo, solid, &options).unwrap();
         assert!(
             (v - reference).abs() <= 1e-9 * reference.abs(),
             "{what}: mass_properties' volume depends on Gauss order — \
@@ -319,7 +319,7 @@ enum Unify {
 fn build_bracket_rev_b_with(topo: &mut Topology, unify_faces: Unify) -> SolidId {
     let unify = |topo: &mut Topology, s: SolidId| {
         if unify_faces == Unify::Yes {
-            brepkit_operations::heal::unify_faces(topo, s).unwrap();
+            remus_operations::heal::unify_faces(topo, s).unwrap();
         }
         s
     };
@@ -463,7 +463,7 @@ fn bracket_rev_c_moments() -> Vec<Moments> {
 /// The demo's Rev C pick: the four vertical corner edges of the base plate.
 fn pick_corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     let near = |a: f64, b: f64| (a - b).abs() < 0.1;
-    brepkit_topology::explorer::solid_edges(topo, solid)
+    remus_topology::explorer::solid_edges(topo, solid)
         .unwrap()
         .into_iter()
         .filter(|&eid| {
@@ -504,11 +504,11 @@ fn demo_bracket_rev_c_mass_properties_match_closed_form() {
         "the demo picks four base-plate corner edges"
     );
 
-    let filleted = brepkit_operations::blend_ops::fillet_v2(&mut topo, body, &edges, FILLET_R)
+    let filleted = remus_operations::blend_ops::fillet_v2(&mut topo, body, &edges, FILLET_R)
         .expect("bracket corner fillet")
         .solid;
     let shell = topo.solid(filleted).unwrap().outer_shell();
-    brepkit_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+    remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
         .expect("filleted bracket must be watertight");
 
     let expected = Moments::sum(&bracket_rev_c_moments());
@@ -589,7 +589,7 @@ fn demo_bracket_centre_of_mass_respects_the_body_symmetry() {
         let mut body = build_bracket_rev_b(&mut topo);
         if build_rev_c {
             let edges = pick_corner_edges(&topo, body);
-            body = brepkit_operations::blend_ops::fillet_v2(&mut topo, body, &edges, FILLET_R)
+            body = remus_operations::blend_ops::fillet_v2(&mut topo, body, &edges, FILLET_R)
                 .expect("bracket corner fillet")
                 .solid;
         }
@@ -654,7 +654,7 @@ fn box_with_concentric_bore_mass_properties_match_closed_form() {
     )
     .unwrap();
     let bored = boolean(&mut topo, BooleanOp::Cut, block, drill).unwrap();
-    brepkit_operations::heal::unify_faces(&mut topo, bored).unwrap();
+    remus_operations::heal::unify_faces(&mut topo, bored).unwrap();
 
     let expected = Moments::sum(&[
         cuboid(dx, dy, dz, centre, 1.0),
@@ -684,7 +684,7 @@ fn box_with_offset_bore_mass_properties_match_closed_form() {
     let drill = make_cylinder(&mut topo, r, dz + 20.0).unwrap();
     transform_solid(&mut topo, drill, &Mat4::translation(bx, by, -10.0)).unwrap();
     let bored = boolean(&mut topo, BooleanOp::Cut, block, drill).unwrap();
-    brepkit_operations::heal::unify_faces(&mut topo, bored).unwrap();
+    remus_operations::heal::unify_faces(&mut topo, bored).unwrap();
 
     let expected = Moments::sum(&[
         cuboid(dx, dy, dz, Point3::new(dx / 2.0, dy / 2.0, dz / 2.0), 1.0),

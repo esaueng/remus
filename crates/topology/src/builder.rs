@@ -4,12 +4,12 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D};
-use brepkit_math::frame::Frame3;
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::frame::Frame3;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
 
 use crate::Topology;
 use crate::edge::{Edge, EdgeCurve, EdgeId};
@@ -848,8 +848,8 @@ pub fn make_nurbs_face(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::Point3;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::Point3;
 
     use super::*;
     use crate::Topology;

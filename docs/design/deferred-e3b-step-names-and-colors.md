@@ -1,9 +1,9 @@
 # E3b: STEP names and colors (deferred design)
 
 Status: partially implemented (Issue 14). The attribute store
-(`brepkit_topology::attributes` — solids + faces; name, sRGB color in
+(`remus_topology::attributes` — solids + faces; name, sRGB color in
 `[0, 1]`), the explicit face-propagation rules
-(`brepkit_operations::evolution::propagate_face_attributes`), lifecycle
+(`remus_operations::evolution::propagate_face_attributes`), lifecycle
 integration (delete, restore, solid copy), and the STEP **name** round trip
 (entity name fields on `MANIFOLD_SOLID_BREP` / `BREP_WITH_VOIDS` /
 `ADVANCED_FACE`, escape-aware) are landed. Still deferred, per the design
@@ -14,7 +14,7 @@ operation-coverage audit for the remaining modifiers.
 ## Context
 
 The STEP reader and writer currently exchange geometry and topology. E3a adds
-writer-level product/file metadata, but brepkit has nowhere to retain a name or
+writer-level product/file metadata, but remus has nowhere to retain a name or
 color attached to a solid, shell, face, edge, or compound. Importing STEP
 presentation data directly into a WASM-only side table would lose it during
 native operations, copies, serialization, and round trips.

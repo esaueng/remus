@@ -10,8 +10,8 @@
 
 use std::collections::HashSet;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 
 use crate::ds::{CommonBlockId, GfaArena, PaveBlockId};
 use crate::error::AlgoError;
@@ -153,11 +153,11 @@ fn create_split_edge(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod trim_tests {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
 
     use crate::ds::{GfaArena, Pave, PaveBlock};
 
@@ -178,7 +178,7 @@ mod trim_tests {
         )
     }
 
-    fn split(topo: &mut Topology, t_start: f64, t_end: f64) -> brepkit_topology::EdgeId {
+    fn split(topo: &mut Topology, t_start: f64, t_end: f64) -> remus_topology::EdgeId {
         let edge_id = topo.edge_id_from_index(0).unwrap();
         let v0 = topo.vertex_id_from_index(0).unwrap();
         let v1 = topo.vertex_id_from_index(1).unwrap();

@@ -11,25 +11,25 @@
 //! over=0 — a clean result. The goma export failure is somewhere else in that
 //! scenario's chain, so do not replay this capture expecting a repro.
 //!
-//! Capture: `~/.cache/brepkit-parity-captures/2026-07-23/kumiko-goma/`
-//! Usage: `cargo run --release --example replay_kumiko_goma -p brepkit-io -- [N]`
+//! Capture: `~/.cache/remus-parity-captures/2026-07-23/kumiko-goma/`
+//! Usage: `cargo run --release --example replay_kumiko_goma -p remus-io -- [N]`
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::compound_cut;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::compound_cut;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn main() {
     let dir = std::env::var_os("CAPTURE_DIR").map_or_else(
         || {
             let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
             p.push(".cache");
-            p.push("brepkit-parity-captures");
+            p.push("remus-parity-captures");
             p.push("2026-07-23");
             p.push("kumiko-goma");
             p
@@ -78,7 +78,7 @@ fn main() {
                 &mut topo,
                 acc,
                 batch,
-                brepkit_operations::boolean::BooleanOptions::default(),
+                remus_operations::boolean::BooleanOptions::default(),
             ) {
                 Ok(next) => {
                     // Never report F=0 on an enumeration error — a silent zero
@@ -111,7 +111,7 @@ fn main() {
         &mut topo,
         region,
         &tools,
-        brepkit_operations::boolean::BooleanOptions::default(),
+        remus_operations::boolean::BooleanOptions::default(),
     );
     let ms = t0.elapsed().as_millis();
 

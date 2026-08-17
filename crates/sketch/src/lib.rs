@@ -1,4 +1,4 @@
-//! # brepkit-sketch
+//! # remus-sketch
 //!
 //! 2D parametric geometric constraint solver for sketch-mode design.
 //!
@@ -12,7 +12,7 @@
 //!
 //! # Example
 //! ```
-//! use brepkit_sketch::{GcsSystem, PointData, Constraint};
+//! use remus_sketch::{GcsSystem, PointData, Constraint};
 //!
 //! let mut sys = GcsSystem::new();
 //! let p0 = sys.add_point(PointData { x: 0.0, y: 0.0, fixed: true });

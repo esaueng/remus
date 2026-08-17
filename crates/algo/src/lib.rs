@@ -1,9 +1,9 @@
-//! # brepkit-algo
+//! # remus-algo
 //!
 //! General Fuse Algorithm (GFA) engine for boolean operations.
 //!
-//! This is layer L2, depending on `brepkit-math` and `brepkit-topology`.
-//! The `brepkit-operations` crate delegates boolean, section, and split
+//! This is layer L2, depending on `remus-math` and `remus-topology`.
+//! The `remus-operations` crate delegates boolean, section, and split
 //! operations to this crate.
 //!
 //! # Architecture

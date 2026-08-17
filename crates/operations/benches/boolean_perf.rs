@@ -4,7 +4,7 @@
 //! 1. Number of sequential operations (N = 4, 16, 64 cylinder cuts)
 //! 2. Face count of the target solid at the time of a single cut
 //!
-//! Run with: `cargo bench -p brepkit-operations --bench boolean_perf`
+//! Run with: `cargo bench -p remus-operations --bench boolean_perf`
 
 #![allow(
     clippy::unwrap_used,
@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,7 +29,7 @@ use brepkit_topology::Topology;
 
 /// Build a box and cut `n` cylinder holes in a grid pattern, evenly spaced.
 /// Returns the resulting solid.
-fn box_with_cylinder_cuts(topo: &mut Topology, n: usize) -> brepkit_topology::solid::SolidId {
+fn box_with_cylinder_cuts(topo: &mut Topology, n: usize) -> remus_topology::solid::SolidId {
     let mut result = primitives::make_box(topo, 100.0, 100.0, 10.0).unwrap();
 
     if n == 0 {

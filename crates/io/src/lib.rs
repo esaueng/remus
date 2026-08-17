@@ -1,9 +1,9 @@
-//! # brepkit-io
+//! # remus-io
 //!
-//! Data exchange for brepkit: STEP, IGES, 3MF, STL, OBJ, PLY, and glTF import/export.
+//! Data exchange for remus: STEP, IGES, 3MF, STL, OBJ, PLY, and glTF import/export.
 //!
-//! This is layer L3, depending on `brepkit-math`, `brepkit-topology`,
-//! and `brepkit-operations`.
+//! This is layer L3, depending on `remus-math`, `remus-topology`,
+//! and `remus-operations`.
 
 pub mod arena_io;
 pub mod gltf;
@@ -55,7 +55,7 @@ pub enum IoError {
 
     /// A topology lookup failed.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// An I/O error occurred.
     #[error(transparent)]
@@ -63,7 +63,7 @@ pub enum IoError {
 
     /// An error from a modeling operation (e.g. tessellation).
     #[error(transparent)]
-    Operations(#[from] brepkit_operations::OperationsError),
+    Operations(#[from] remus_operations::OperationsError),
 
     /// An error writing the ZIP archive.
     #[error(transparent)]

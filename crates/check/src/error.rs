@@ -5,11 +5,11 @@
 pub enum CheckError {
     /// A referenced topology entity was not found.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math error occurred.
     #[error(transparent)]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// Classification could not determine a result.
     #[error("classification failed: {0}")]

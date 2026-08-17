@@ -3,17 +3,17 @@
 //! The loft connects two or more planar profiles by creating ruled (linear)
 //! surfaces between corresponding profile edges.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::nurbs::surface_fitting::interpolate_surface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::nurbs::surface_fitting::interpolate_surface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::boolean::face_polygon;
 use crate::dot_normal_point;
@@ -155,7 +155,7 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
     let num_profiles = profile_verts.len();
     let num_sections = num_profiles - 1;
 
-    let ring_verts: Vec<Vec<brepkit_topology::vertex::VertexId>> = profile_verts
+    let ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> = profile_verts
         .iter()
         .map(|verts| {
             verts
@@ -165,7 +165,7 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
         })
         .collect();
 
-    let ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> = ring_verts
+    let ring_edges: Vec<Vec<remus_topology::edge::EdgeId>> = ring_verts
         .iter()
         .map(|ring| {
             (0..n)
@@ -177,7 +177,7 @@ pub fn loft(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate::
         })
         .collect();
 
-    let connect_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> = (0..num_sections)
+    let connect_edges: Vec<Vec<remus_topology::edge::EdgeId>> = (0..num_sections)
         .map(|s| {
             (0..n)
                 .map(|i| {
@@ -329,7 +329,7 @@ fn try_loft_coaxial_circle_stack(
         let rot_axis = z_axis.cross(axis_unit);
         let rot_axis_len = rot_axis.length();
         let mat = if rot_axis_len < tol.linear {
-            brepkit_math::mat::Mat4::rotation_x(std::f64::consts::PI)
+            remus_math::mat::Mat4::rotation_x(std::f64::consts::PI)
         } else {
             let angle = z_axis.dot(axis_unit).clamp(-1.0, 1.0).acos();
             rodrigues_rotation(rot_axis * (1.0 / rot_axis_len), angle)
@@ -340,7 +340,7 @@ fn try_loft_coaxial_circle_stack(
         || center_0.y().abs() > tol.linear
         || center_0.z().abs() > tol.linear
     {
-        let xform = brepkit_math::mat::Mat4::translation(center_0.x(), center_0.y(), center_0.z());
+        let xform = remus_math::mat::Mat4::translation(center_0.x(), center_0.y(), center_0.z());
         crate::transform::transform_solid(topo, solid, &xform)?;
     }
     Ok(Some(solid))
@@ -364,7 +364,7 @@ struct ProfileEdgeGeom {
 /// profile to canonical one-arc-per-corner lets split- and single-arc corners
 /// align so multi-section lips/sockets keep analytic corners.
 fn merge_cocircular_arcs(edges: Vec<ProfileEdgeGeom>) -> Vec<ProfileEdgeGeom> {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
     let tol = Tolerance::new();
     let same_circle = |c0: &Circle3D, c1: &Circle3D| -> bool {
         let (Ok(n0), Ok(n1)) = (c0.normal().normalize(), c1.normal().normalize()) else {
@@ -435,14 +435,14 @@ fn profile_oriented_edges(topo: &Topology, fid: FaceId) -> Option<Vec<ProfileEdg
         let (start, end) = if oe.is_forward() { (s, e) } else { (e, s) };
         let curve = match edge.curve() {
             EdgeCurve::NurbsCurve(nc) => {
-                match brepkit_geometry::convert::recognize_curve(nc, recog_tol) {
-                    brepkit_geometry::convert::RecognizedCurve::Circle {
+                match remus_geometry::convert::recognize_curve(nc, recog_tol) {
+                    remus_geometry::convert::RecognizedCurve::Circle {
                         center,
                         normal,
                         radius,
-                    } => brepkit_math::curves::Circle3D::new(center, normal, radius)
+                    } => remus_math::curves::Circle3D::new(center, normal, radius)
                         .map_or_else(|_| edge.curve().clone(), EdgeCurve::Circle),
-                    brepkit_geometry::convert::RecognizedCurve::Line { .. } => EdgeCurve::Line,
+                    remus_geometry::convert::RecognizedCurve::Line { .. } => EdgeCurve::Line,
                     _ => edge.curve().clone(),
                 }
             }
@@ -460,8 +460,8 @@ fn profile_oriented_edges(topo: &Topology, fid: FaceId) -> Option<Vec<ProfileEdg
 /// reference `BRepFill_Generator`. Returns `None` for non-coaxial arcs (caller
 /// falls back to a ruled NURBS).
 fn coaxial_corner_surface(
-    c0: &brepkit_math::curves::Circle3D,
-    c1: &brepkit_math::curves::Circle3D,
+    c0: &remus_math::curves::Circle3D,
+    c1: &remus_math::curves::Circle3D,
     tol: Tolerance,
 ) -> Option<FaceSurface> {
     let n = c0.normal().normalize().ok()?;
@@ -478,7 +478,7 @@ fn coaxial_corner_surface(
         return None;
     }
     if (r0 - r1).abs() < tol.linear {
-        let cyl = brepkit_math::surfaces::CylindricalSurface::new(o0, n, r0).ok()?;
+        let cyl = remus_math::surfaces::CylindricalSurface::new(o0, n, r0).ok()?;
         return Some(FaceSurface::Cylinder(cyl));
     }
     // Cone: apex on the axis through the corner center where the generator
@@ -492,7 +492,7 @@ fn coaxial_corner_surface(
         (-1.0_f64, r0, s_apex)
     };
     let half_angle = axial_to_ref.abs().atan2(r_ref);
-    let cone = brepkit_math::surfaces::ConicalSurface::new(apex, n * axis_sign, half_angle).ok()?;
+    let cone = remus_math::surfaces::ConicalSurface::new(apex, n * axis_sign, half_angle).ok()?;
     Some(FaceSurface::Cone(cone))
 }
 
@@ -502,17 +502,17 @@ fn coaxial_corner_surface(
 /// the two arcs convert to incompatible NURBS (different degree or
 /// control-point count) — the caller then falls back to the polygon loft.
 fn ruled_arc_surface(
-    c0: &brepkit_math::curves::Circle3D,
+    c0: &remus_math::curves::Circle3D,
     p0s: Point3,
     p0e: Point3,
-    c1: &brepkit_math::curves::Circle3D,
+    c1: &remus_math::curves::Circle3D,
     p1s: Point3,
     p1e: Point3,
 ) -> Option<NurbsSurface> {
     let (a0, a0e) = EdgeCurve::Circle(c0.clone()).domain_with_endpoints(p0s, p0e);
     let (a1, a1e) = EdgeCurve::Circle(c1.clone()).domain_with_endpoints(p1s, p1e);
-    let mut nc0 = brepkit_geometry::convert::circle_to_nurbs(c0, a0, a0e).ok()?;
-    let mut nc1 = brepkit_geometry::convert::circle_to_nurbs(c1, a1, a1e).ok()?;
+    let mut nc0 = remus_geometry::convert::circle_to_nurbs(c0, a0, a0e).ok()?;
+    let mut nc1 = remus_geometry::convert::circle_to_nurbs(c1, a1, a1e).ok()?;
     if nc0.control_points().len() != nc1.control_points().len() {
         // Same-shape arcs can still segment differently when their spans sit
         // on opposite sides of the π/2-multiple ceil boundary (float jitter);
@@ -521,8 +521,8 @@ fn ruled_arc_surface(
         // per-segment invariant; the conversion itself rejects a count too
         // small for either span.
         let segs = ((nc0.control_points().len() - 1) / 2).max((nc1.control_points().len() - 1) / 2);
-        nc0 = brepkit_geometry::convert::circle_to_nurbs_with_segments(c0, a0, a0e, segs).ok()?;
-        nc1 = brepkit_geometry::convert::circle_to_nurbs_with_segments(c1, a1, a1e, segs).ok()?;
+        nc0 = remus_geometry::convert::circle_to_nurbs_with_segments(c0, a0, a0e, segs).ok()?;
+        nc1 = remus_geometry::convert::circle_to_nurbs_with_segments(c1, a1, a1e, segs).ok()?;
     }
     if nc0.degree() != nc1.degree() || nc0.control_points().len() != nc1.control_points().len() {
         return None;
@@ -652,7 +652,7 @@ fn try_loft_matching_curved_profiles(
                 // around); flip the circle normal so the same minor arc is
                 // traced in the opposite direction.
                 if let EdgeCurve::Circle(c) = &e.curve {
-                    match brepkit_math::curves::Circle3D::new(
+                    match remus_math::curves::Circle3D::new(
                         c.center(),
                         c.normal() * -1.0,
                         c.radius(),
@@ -879,12 +879,12 @@ fn try_loft_matching_curved_profiles(
 /// Rotation matrix around an arbitrary unit axis by `angle` radians
 /// (Rodrigues' formula). Duplicates `pattern::rotation_matrix` so loft
 /// stays self-contained.
-fn rodrigues_rotation(axis: Vec3, angle: f64) -> brepkit_math::mat::Mat4 {
+fn rodrigues_rotation(axis: Vec3, angle: f64) -> remus_math::mat::Mat4 {
     let cos_a = angle.cos();
     let sin_a = angle.sin();
     let omc = 1.0 - cos_a;
     let (ax, ay, az) = (axis.x(), axis.y(), axis.z());
-    brepkit_math::mat::Mat4([
+    remus_math::mat::Mat4([
         [
             omc.mul_add(ax * ax, cos_a),
             ax.mul_add(ay * omc, -(sin_a * az)),
@@ -926,7 +926,7 @@ fn build_coaxial_band_stack(
     let mut ring_edges = Vec::with_capacity(axial.len());
     let mut ring_seam_verts = Vec::with_capacity(axial.len());
     for (&z, &r) in axial.iter().zip(radii.iter()) {
-        let circle = brepkit_math::curves::Circle3D::new(Point3::new(0.0, 0.0, z), z_axis, r)
+        let circle = remus_math::curves::Circle3D::new(Point3::new(0.0, 0.0, z), z_axis, r)
             .map_err(crate::OperationsError::Math)?;
         let seam_v = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, z), tol.linear));
         let e = topo.add_edge(Edge::new(seam_v, seam_v, EdgeCurve::Circle(circle)));
@@ -948,7 +948,7 @@ fn build_coaxial_band_stack(
         ));
 
         let surface = if (r0 - r1).abs() < tol.linear {
-            let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+            let cyl = remus_math::surfaces::CylindricalSurface::new(
                 Point3::new(0.0, 0.0, z0),
                 z_axis,
                 r0,
@@ -966,7 +966,7 @@ fn build_coaxial_band_stack(
                 (z_apex, -1.0_f64, r0, z_apex - z0)
             };
             let half_angle = axial_to_ref.abs().atan2(r_ref);
-            let cone = brepkit_math::surfaces::ConicalSurface::new(
+            let cone = remus_math::surfaces::ConicalSurface::new(
                 Point3::new(0.0, 0.0, apex_z),
                 Vec3::new(0.0, 0.0, axis_sign),
                 half_angle,
@@ -1044,11 +1044,11 @@ fn face_recognized_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, V
         return None; // not a closed-loop circle
     }
     match edge.curve() {
-        brepkit_topology::edge::EdgeCurve::Circle(c) => Some((c.center(), normal, c.radius())),
-        brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => {
+        remus_topology::edge::EdgeCurve::Circle(c) => Some((c.center(), normal, c.radius())),
+        remus_topology::edge::EdgeCurve::NurbsCurve(nc) => {
             let tol = Tolerance::new().linear;
-            match brepkit_geometry::convert::recognize_curve(nc, tol * 100.0) {
-                brepkit_geometry::convert::RecognizedCurve::Circle { center, radius, .. } => {
+            match remus_geometry::convert::recognize_curve(nc, tol * 100.0) {
+                remus_geometry::convert::RecognizedCurve::Circle { center, radius, .. } => {
                     Some((center, normal, radius))
                 }
                 _ => None,
@@ -1118,7 +1118,7 @@ pub fn loft_smooth(
 
     let num_profiles = profile_verts.len();
 
-    let ring_verts: Vec<Vec<brepkit_topology::vertex::VertexId>> = profile_verts
+    let ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> = profile_verts
         .iter()
         .map(|verts| {
             verts
@@ -1128,7 +1128,7 @@ pub fn loft_smooth(
         })
         .collect();
 
-    let ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> = ring_verts
+    let ring_edges: Vec<Vec<remus_topology::edge::EdgeId>> = ring_verts
         .iter()
         .map(|ring| {
             (0..n)
@@ -1236,11 +1236,11 @@ mod tests;
 mod rounded_l_loft_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceId, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     fn rounded_l_face(topo: &mut Topology, inset: f64, r: f64, z: f64) -> FaceId {
         let i = inset;
@@ -1325,7 +1325,7 @@ mod rounded_l_loft_tests {
         let f1 = rounded_l_face(&mut topo, 1.6, 3.75 - 1.6, 0.7);
         let f2 = rounded_l_face(&mut topo, 1.0, 3.75 - 1.0, 4.4);
         let solid = loft(&mut topo, &[f0, f1, f2]).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
         let curved = faces
             .iter()
             .filter(|&&f| topo.face(f).unwrap().surface().type_tag() != "plane")

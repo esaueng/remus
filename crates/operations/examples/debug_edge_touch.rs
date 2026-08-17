@@ -1,7 +1,7 @@
 //! Probe: census cluster 3 — tangency ERR cases (box∪box edge-touch,
 //! box∪cyl axis-tangent-to-corner-edge).
 //!
-//! `CASE=<name> cargo run --release --example debug_edge_touch -p brepkit-operations`
+//! `CASE=<name> cargo run --release --example debug_edge_touch -p remus-operations`
 #![allow(
     clippy::unwrap_used,
     clippy::print_stdout,
@@ -10,11 +10,11 @@
     missing_docs
 )]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::{measure, primitives};
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::transform::transform_solid;
+use remus_operations::{measure, primitives};
+use remus_topology::Topology;
 
 fn main() {
     env_logger::init();
@@ -54,14 +54,14 @@ fn main() {
     transform_solid(&mut topo, b, &mat).unwrap();
 
     let result = if raw {
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, a, b)
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, a, b)
             .map_err(|e| format!("{e}"))
     } else {
         boolean(&mut topo, BooleanOp::Fuse, a, b).map_err(|e| format!("{e}"))
     };
     match result {
         Ok(r) => {
-            let faces = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+            let faces = remus_topology::explorer::solid_faces(&topo, r).unwrap();
             let vol = measure::solid_volume(&topo, r, 0.05).unwrap_or(-1.0);
             println!("{case}: ok F={} vol={vol:.3}", faces.len());
         }

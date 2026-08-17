@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 //! Phase 4: Classification — point-in-solid tests for boolean fragment labeling.
 //!
-//! Delegates analytic classifier construction to `brepkit_algo::classifier`
+//! Delegates analytic classifier construction to `remus_algo::classifier`
 //! (canonical implementation) via `try_build_analytic_classifier`. This module
 //! implements the ray-casting point-in-solid tests, coplanar guards, BVH
 //! acceleration, and fragment-level classification as operations-specific
@@ -9,12 +9,12 @@
 
 use super::types::{FaceData, FaceFragment};
 
-use brepkit_algo::FaceClass;
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::bvh::Bvh;
-use brepkit_math::predicates::point_in_polygon;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point2, Point3, Vec3};
+use remus_algo::FaceClass;
+use remus_math::aabb::Aabb3;
+use remus_math::bvh::Bvh;
+use remus_math::predicates::point_in_polygon;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3, Vec3};
 
 use crate::dot_normal_point;
 

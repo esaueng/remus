@@ -5,26 +5,26 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Vec3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::extrude::extrude;
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::{make_planar_face_from_wire, make_regular_polygon_wire};
+use remus_math::mat::Mat4;
+use remus_math::vec::Vec3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::extrude::extrude;
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::builder::{make_planar_face_from_wire, make_regular_polygon_wire};
 
 const HEX_R: f64 = 1.8;
 const WEB: f64 = 0.8;
 const WALL_T: f64 = 1.2;
 
-fn make_hex_prism(topo: &mut Topology, r: f64, depth: f64) -> brepkit_topology::solid::SolidId {
+fn make_hex_prism(topo: &mut Topology, r: f64, depth: f64) -> remus_topology::solid::SolidId {
     let wire = make_regular_polygon_wire(topo, r, 6, 1e-7).expect("hex wire");
     let face = make_planar_face_from_wire(topo, wire).expect("hex face");
     extrude(topo, face, Vec3::new(0.0, 0.0, 1.0), depth).expect("hex prism")
 }
 
-fn make_hollow_bin(topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn make_hollow_bin(topo: &mut Topology) -> remus_topology::solid::SolidId {
     let outer = primitives::make_box(topo, 84.0, 84.0, 30.0).expect("outer");
     let cavity =
         primitives::make_box(topo, 84.0 - 2.0 * WALL_T, 84.0 - 2.0 * WALL_T, 30.0).expect("cavity");
@@ -70,7 +70,7 @@ fn run_sequential_hex_cuts(n: usize) {
     let mut topo = Topology::new();
     let mut result = make_hollow_bin(&mut topo);
     let mut prev_vol =
-        brepkit_operations::measure::solid_volume(&topo, result, 0.1).expect("shell volume");
+        remus_operations::measure::solid_volume(&topo, result, 0.1).expect("shell volume");
 
     let mut failures = Vec::new();
     for (i, (x, z)) in hex_centers(n).iter().enumerate() {
@@ -80,8 +80,7 @@ fn run_sequential_hex_cuts(n: usize) {
         transform_solid(&mut topo, prism, &mat).expect("mv prism");
         result = boolean(&mut topo, BooleanOp::Cut, result, prism)
             .unwrap_or_else(|e| panic!("cut {} failed: {e}", i + 1));
-        let vol =
-            brepkit_operations::measure::solid_volume(&topo, result, 0.1).expect("cut volume");
+        let vol = remus_operations::measure::solid_volume(&topo, result, 0.1).expect("cut volume");
         let delta = prev_vol - vol;
         if (delta - expected_delta).abs() > 0.05 {
             failures.push(format!(

@@ -1,7 +1,7 @@
 //! Curvature-adaptive curve sampling for NURBS curves.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::Point3;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::Point3;
 
 /// Maximum recursion depth to prevent infinite subdivision on degenerate curves.
 const MAX_DEPTH: u32 = 20;
@@ -111,7 +111,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     /// Cubic Bezier with varying curvature: tightly curved near t=0, flatter near t=1.
     /// Control polygon: (0,0,0) → (0.1, 1, 0) → (0.9, 1, 0) → (4, 0, 0)

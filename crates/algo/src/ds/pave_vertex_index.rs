@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::vertex::VertexId;
+use remus_math::vec::Point3;
+use remus_topology::vertex::VertexId;
 
 /// One indexed pave vertex: its scan-order rank, resolved id, and position.
 #[derive(Debug, Clone)]
@@ -133,8 +133,8 @@ fn cell_of(p: Point3, inv_cell: f64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use brepkit_topology::Topology;
-    use brepkit_topology::vertex::Vertex;
+    use remus_topology::Topology;
+    use remus_topology::vertex::Vertex;
 
     use super::*;
 

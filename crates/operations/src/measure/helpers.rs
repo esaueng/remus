@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 /// Collect deduplicated vertex positions from a solid.
 pub(super) fn collect_solid_vertex_points(
@@ -61,9 +61,9 @@ pub(super) fn collect_solid_face_ids(
 /// Collect ordered vertex positions from a wire.
 pub(super) fn collect_wire_positions(
     topo: &Topology,
-    wire: &brepkit_topology::wire::Wire,
+    wire: &remus_topology::wire::Wire,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     let mut positions = Vec::new();
     let n_samples = 256_usize;
@@ -222,7 +222,7 @@ fn sample_edge_curve(
 /// `(0, 2*pi)`.
 pub(super) fn compute_angular_range(u_vals: &mut Vec<f64>) -> (f64, f64) {
     use std::f64::consts::TAU;
-    let tol_lin = brepkit_math::tolerance::Tolerance::default().linear;
+    let tol_lin = remus_math::tolerance::Tolerance::default().linear;
 
     u_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     u_vals.dedup_by(|a, b| (*a - *b).abs() < tol_lin);

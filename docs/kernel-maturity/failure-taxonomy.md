@@ -21,7 +21,7 @@ one:
   additive detailed APIs, per the resolved decisions in E5b.
 
 Implementation: the categories and the native code registry live in
-`brepkit_math::diagnostic` (`FailureCategory`, `Diagnostic`, `ToDiagnostic`),
+`remus_math::diagnostic` (`FailureCategory`, `Diagnostic`, `ToDiagnostic`),
 currently implemented for `MathError`, `TopologyError`, and `AlgoError` with
 pinned registry tests. `executeBatchV2` errors carry `category` and, when the
 failure originated in a typed native error, `details.kernelCode` — see the

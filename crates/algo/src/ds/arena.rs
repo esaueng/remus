@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use brepkit_topology::arena::Arena;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::vertex::VertexId;
+use remus_topology::arena::Arena;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::vertex::VertexId;
 
 use super::curve::IntersectionCurveDS;
 use super::face_info::FaceInfo;
@@ -74,8 +74,8 @@ impl GfaArena {
     /// the blocks in `edge_pave_blocks` ascending-`EdgeId` order, start-before-
     /// end within each block, recording each vertex's position as `rank` so the
     /// index reproduces the linear scan's first-match tie-break exactly.
-    pub fn build_pave_vertex_index(&mut self, topo: &brepkit_topology::Topology, cell: f64) {
-        let mut entries: Vec<(u32, VertexId, brepkit_math::vec::Point3)> = Vec::new();
+    pub fn build_pave_vertex_index(&mut self, topo: &remus_topology::Topology, cell: f64) {
+        let mut entries: Vec<(u32, VertexId, remus_math::vec::Point3)> = Vec::new();
         let mut rank: u32 = 0;
         for pbs in self.edge_pave_blocks.values() {
             for &pb_id in pbs {

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use brepkit_topology::Topology;
-use brepkit_topology::test_utils::make_unit_cube_manifold;
+use remus_topology::Topology;
+use remus_topology::test_utils::make_unit_cube_manifold;
 
 use super::*;
 
@@ -9,7 +9,7 @@ use super::*;
 fn high_fanout_edge_connectivity_uses_all_incident_faces() {
     let mut topo = Topology::new();
     let cube = make_unit_cube_manifold(&mut topo);
-    let faces = brepkit_topology::explorer::solid_faces(&topo, cube).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, cube).unwrap();
 
     // Model a malformed edge referenced by a large number of faces. Repeating
     // the cube faces keeps the fixture small while exercising the high-fanout
@@ -52,11 +52,11 @@ fn valid_box_primitive() {
 #[test]
 fn extruded_solid_is_valid() {
     let mut topo = Topology::new();
-    let face = brepkit_topology::test_utils::make_unit_square_face(&mut topo);
+    let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
     let solid = crate::extrude::extrude(
         &mut topo,
         face,
-        brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+        remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
         1.0,
     )
     .unwrap();
@@ -92,7 +92,7 @@ fn open_shell_has_boundary_edges() {
     let mut faces: Vec<_> = shell.faces().to_vec();
     faces.pop();
 
-    let open_shell = brepkit_topology::shell::Shell::new(faces).unwrap();
+    let open_shell = remus_topology::shell::Shell::new(faces).unwrap();
     *topo.shell_mut(shell_id).unwrap() = open_shell;
 
     let report = validate_solid(&topo, solid).unwrap();
@@ -195,8 +195,8 @@ fn torus_solid_validates() {
 
 #[test]
 fn hollow_revolve_is_valid() {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::face::{Face, FaceSurface};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::face::{Face, FaceSurface};
 
     let mut topo = Topology::new();
 
@@ -208,7 +208,7 @@ fn hollow_revolve_is_valid() {
         Point3::new(1.0, 1.0, 0.0),
     ];
     let outer_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
 
     // Inner: 0.5×0.5 hole.
     let inner_pts = vec![
@@ -218,7 +218,7 @@ fn hollow_revolve_is_valid() {
         Point3::new(2.5, 0.25, 0.0),
     ];
     let inner_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &inner_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &inner_pts, 1e-7).unwrap();
 
     let normal = Vec3::new(0.0, 0.0, 1.0);
     let face = Face::new(
@@ -249,8 +249,8 @@ fn hollow_revolve_is_valid() {
 
 #[test]
 fn extruded_hollow_box_is_valid() {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::face::{Face, FaceSurface};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::face::{Face, FaceSurface};
 
     let mut topo = Topology::new();
 
@@ -262,7 +262,7 @@ fn extruded_hollow_box_is_valid() {
         Point3::new(-1.0, 1.0, 0.0),
     ];
     let outer_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
 
     // Inner: 0.5×0.5 hole.
     let inner_pts = vec![
@@ -272,7 +272,7 @@ fn extruded_hollow_box_is_valid() {
         Point3::new(0.25, -0.25, 0.0),
     ];
     let inner_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &inner_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &inner_pts, 1e-7).unwrap();
 
     let normal = Vec3::new(0.0, 0.0, 1.0);
     let face = Face::new(
@@ -314,7 +314,7 @@ fn wire_closure_check_on_valid_box() {
 
 #[test]
 fn polygon_area_unit_square() {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
     let pts = vec![
         Point3::new(0.0, 0.0, 0.0),
         Point3::new(1.0, 0.0, 0.0),
@@ -330,7 +330,7 @@ fn polygon_area_unit_square() {
 
 #[test]
 fn polygon_area_triangle() {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
     let pts = vec![
         Point3::new(0.0, 0.0, 0.0),
         Point3::new(2.0, 0.0, 0.0),
@@ -345,7 +345,7 @@ fn polygon_area_triangle() {
 
 #[test]
 fn polygon_area_degenerate() {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
     // Collinear points → area 0.
     let pts = vec![
         Point3::new(0.0, 0.0, 0.0),
@@ -372,7 +372,7 @@ fn validate_detects_non_manifold_edge() {
     let extra_face = faces[0];
     faces.push(extra_face);
 
-    let new_shell = brepkit_topology::shell::Shell::new(faces).unwrap();
+    let new_shell = remus_topology::shell::Shell::new(faces).unwrap();
     *topo.shell_mut(shell_id).unwrap() = new_shell;
 
     let report = validate_solid(&topo, solid).unwrap();
@@ -394,11 +394,11 @@ fn validate_detects_zero_length_normal() {
     let shell_id = topo.solid(solid).unwrap().outer_shell();
     let face_id = topo.shell(shell_id).unwrap().faces()[0];
     let face = topo.face_mut(face_id).unwrap();
-    *face = brepkit_topology::face::Face::new(
+    *face = remus_topology::face::Face::new(
         face.outer_wire(),
         face.inner_wires().to_vec(),
-        brepkit_topology::face::FaceSurface::Plane {
-            normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0),
+        remus_topology::face::FaceSurface::Plane {
+            normal: remus_math::vec::Vec3::new(0.0, 0.0, 0.0),
             d: 0.0,
         },
     );
@@ -443,7 +443,7 @@ fn validate_detects_open_wire() {
 
     // Create an open wire (not closed) with same edges
     if edges.len() > 1 {
-        use brepkit_topology::wire::Wire;
+        use remus_topology::wire::Wire;
         let open_wire = Wire::new(edges[..edges.len() - 1].to_vec(), false);
         if let Ok(w) = open_wire {
             *topo.wire_mut(wire_id).unwrap() = w;
@@ -512,7 +512,7 @@ fn validate_detects_redundant_face() {
     let dup = faces[0];
     faces.push(dup);
 
-    let new_shell = brepkit_topology::shell::Shell::new(faces).unwrap();
+    let new_shell = remus_topology::shell::Shell::new(faces).unwrap();
     *topo.shell_mut(shell_id).unwrap() = new_shell;
 
     let report = validate_solid(&topo, solid).unwrap();
@@ -530,8 +530,8 @@ fn validate_detects_redundant_face() {
 #[test]
 fn boolean_fuse_result_validates() {
     let mut topo = Topology::new();
-    let a = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
-    let b = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
+    let a = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
 
     let result = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, a, b).unwrap();
 
@@ -546,8 +546,8 @@ fn boolean_fuse_result_validates() {
 #[test]
 fn boolean_cut_result_validates() {
     let mut topo = Topology::new();
-    let a = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
-    let b = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
+    let a = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
 
     let result = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, a, b).unwrap();
 
@@ -562,8 +562,8 @@ fn boolean_cut_result_validates() {
 #[test]
 fn boolean_intersect_result_validates() {
     let mut topo = Topology::new();
-    let a = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
-    let b = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
+    let a = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
 
     let result =
         crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Intersect, a, b).unwrap();
@@ -610,11 +610,11 @@ fn fillet_result_validates() {
 #[test]
 fn extrude_result_validates() {
     let mut topo = Topology::new();
-    let face = brepkit_topology::test_utils::make_unit_square_face(&mut topo);
+    let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
     let solid = crate::extrude::extrude(
         &mut topo,
         face,
-        brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+        remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
         2.0,
     )
     .unwrap();
@@ -629,10 +629,10 @@ fn extrude_result_validates() {
 
 #[test]
 fn revolve_result_validates() {
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     let mut topo = Topology::new();
-    let face = brepkit_topology::test_utils::make_unit_square_face(&mut topo);
+    let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
 
     // Move face away from axis to avoid degenerate geometry
     for vid in explorer::face_vertices(&topo, face).unwrap() {
@@ -783,7 +783,7 @@ fn relaxed_boolean_cut_passes() {
     let a = crate::primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
     let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
 
-    let mat = brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0);
+    let mat = remus_math::mat::Mat4::translation(5.0, 5.0, 5.0);
     crate::transform::transform_solid(&mut topo, b, &mat).unwrap();
 
     let result = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, a, b).unwrap();
@@ -798,7 +798,7 @@ fn relaxed_boolean_cut_passes() {
 
 #[test]
 fn relaxed_detects_open_wire_as_warning() {
-    use brepkit_topology::wire::Wire;
+    use remus_topology::wire::Wire;
 
     // Open wire is demoted to Warning in relaxed validation — it doesn't
     // prevent downstream use (tessellation, export) for boolean results.
@@ -861,12 +861,12 @@ fn scaled_tolerance_reduces_normal_warnings() {
     let shell_id = topo.solid(solid).unwrap().outer_shell();
     let face_id = topo.shell(shell_id).unwrap().faces()[0];
     let face = topo.face_mut(face_id).unwrap();
-    *face = brepkit_topology::face::Face::new(
+    *face = remus_topology::face::Face::new(
         face.outer_wire(),
         face.inner_wires().to_vec(),
-        brepkit_topology::face::FaceSurface::Plane {
+        remus_topology::face::FaceSurface::Plane {
             // Normal length ~0.99999 — off by ~1e-5 which exceeds default 1e-7
-            normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 0.99999),
+            normal: remus_math::vec::Vec3::new(0.0, 0.0, 0.99999),
             d: 0.0,
         },
     );
@@ -950,7 +950,7 @@ fn corner_diagonal_disjoint_fuse_is_not_reported_disconnected() {
     crate::transform::transform_solid(
         &mut topo,
         cyl,
-        &brepkit_math::mat::Mat4::translation(-g, -g, -5.0),
+        &remus_math::mat::Mat4::translation(-g, -g, -5.0),
     )
     .unwrap();
 
@@ -981,7 +981,7 @@ fn sealed_fragment_floating_inside_the_stock_is_reported_disconnected() {
     crate::transform::transform_solid(
         &mut topo,
         debris,
-        &brepkit_math::mat::Mat4::translation(17.0, 17.0, 17.0),
+        &remus_math::mat::Mat4::translation(17.0, 17.0, 17.0),
     )
     .unwrap();
 
@@ -991,8 +991,8 @@ fn sealed_fragment_floating_inside_the_stock_is_reported_disconnected() {
     let mut faces = topo.shell(stock_shell).unwrap().faces().to_vec();
     faces.extend_from_slice(topo.shell(debris_shell).unwrap().faces());
 
-    let shell_id = topo.add_shell(brepkit_topology::shell::Shell::new(faces).unwrap());
-    let merged = topo.add_solid(brepkit_topology::solid::Solid::new(shell_id, vec![]));
+    let shell_id = topo.add_shell(remus_topology::shell::Shell::new(faces).unwrap());
+    let merged = topo.add_solid(remus_topology::solid::Solid::new(shell_id, vec![]));
 
     let report = validate_solid(&topo, merged).unwrap();
     assert!(
@@ -1023,7 +1023,7 @@ fn partially_interpenetrating_components_are_reported_disconnected() {
     crate::transform::transform_solid(
         &mut topo,
         b,
-        &brepkit_math::mat::Mat4::translation(5.0, 5.0, 5.0),
+        &remus_math::mat::Mat4::translation(5.0, 5.0, 5.0),
     )
     .unwrap();
 
@@ -1031,8 +1031,8 @@ fn partially_interpenetrating_components_are_reported_disconnected() {
     let b_shell = topo.solid(b).unwrap().outer_shell();
     let mut faces = topo.shell(a_shell).unwrap().faces().to_vec();
     faces.extend_from_slice(topo.shell(b_shell).unwrap().faces());
-    let shell = topo.add_shell(brepkit_topology::shell::Shell::new(faces).unwrap());
-    let malformed = topo.add_solid(brepkit_topology::solid::Solid::new(shell, vec![]));
+    let shell = topo.add_shell(remus_topology::shell::Shell::new(faces).unwrap());
+    let malformed = topo.add_solid(remus_topology::solid::Solid::new(shell, vec![]));
 
     let report = validate_solid(&topo, malformed).unwrap();
     assert!(
@@ -1058,7 +1058,7 @@ fn overlap_veto_bounds_component_pair_checks() {
         crate::transform::transform_solid(
             &mut topo,
             component,
-            &brepkit_math::mat::Mat4::translation(f64::from(i) * 2.0, 0.0, 0.0),
+            &remus_math::mat::Mat4::translation(f64::from(i) * 2.0, 0.0, 0.0),
         )
         .unwrap();
         let shell = topo.solid(component).unwrap().outer_shell();
@@ -1067,8 +1067,8 @@ fn overlap_veto_bounds_component_pair_checks() {
         components.push(component_faces);
     }
 
-    let shell = topo.add_shell(brepkit_topology::shell::Shell::new(faces).unwrap());
-    let solid = topo.add_solid(brepkit_topology::solid::Solid::new(shell, vec![]));
+    let shell = topo.add_shell(remus_topology::shell::Shell::new(faces).unwrap());
+    let solid = topo.add_solid(remus_topology::solid::Solid::new(shell, vec![]));
     let genus = vec![0; components.len()];
 
     assert!(
@@ -1079,14 +1079,14 @@ fn overlap_veto_bounds_component_pair_checks() {
 
 #[test]
 fn ambiguous_same_order_circle_arcs_are_reported_as_a_warning() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
@@ -1134,12 +1134,12 @@ fn ambiguous_same_order_circle_arcs_are_reported_as_a_warning() {
 
 #[test]
 fn ambiguous_circle_arc_diagnostics_are_bounded_per_wire() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
@@ -1167,12 +1167,12 @@ fn ambiguous_circle_arc_diagnostics_are_bounded_per_wire() {
 
 #[test]
 fn ambiguous_circle_arc_comparisons_stop_at_the_budget() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut edge_count = 2_usize;
     while edge_count.saturating_mul(edge_count - 1) / 2 <= MAX_AMBIGUOUS_CIRCLE_ARC_COMPARISONS {
@@ -1211,15 +1211,15 @@ fn ambiguous_circle_arc_comparisons_stop_at_the_budget() {
 
 #[test]
 fn incomplete_periodic_rim_chain_is_reported_as_a_warning() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let axis = Vec3::new(0.0, 0.0, 1.0);

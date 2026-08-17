@@ -3,7 +3,7 @@
 //! Empty results are a notorious robustness cliff: a kernel must recognize that
 //! a subtraction cancels, a tool misses, or two solids meet only on a shared
 //! boundary (zero volume), and return a clean empty shape rather than a sliver,
-//! a panic, or a malformed solid. The harness accepts either convention brepkit
+//! a panic, or a malformed solid. The harness accepts either convention remus
 //! uses (an `EmptyResult` error or an `Ok` empty solid).
 //!
 //! Cases tagged `Pass` are asserted; `Gap` documents a known miss. See

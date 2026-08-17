@@ -11,21 +11,21 @@
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::tessellate::{
+use remus_math::curves::Circle3D;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::measure::solid_volume;
+use remus_operations::revolve::revolve;
+use remus_operations::tessellate::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid_with_tolerance,
 };
-use brepkit_operations::validate::validate_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_operations::validate::validate_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 const MAJOR_RADIUS: f64 = 6.0;
 const MINOR_RADIUS: f64 = 2.0;

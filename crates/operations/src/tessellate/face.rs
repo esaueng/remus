@@ -1,8 +1,8 @@
 //! Face tessellation dispatcher with UV computation.
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use super::AnalyticKind;
 use super::TriangleMeshUV;
@@ -40,7 +40,7 @@ const SPHERE_DIAG_LEGACY: f64 = 0.7;
 /// Returns an error if the face's outer wire cannot be read.
 pub(super) fn cylinder_has_non_standard_boundary(
     topo: &Topology,
-    face_data: &brepkit_topology::face::Face,
+    face_data: &remus_topology::face::Face,
 ) -> Result<bool, crate::OperationsError> {
     let wire = topo.wire(face_data.outer_wire())?;
     let mut has_nurbs = false;
@@ -75,7 +75,7 @@ pub fn tessellate_with_uvs(
         topo,
         face,
         deflection,
-        brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
     )
 }
 
@@ -114,7 +114,7 @@ pub(super) fn tessellate_with_uvs_floor(
             let mesh = tessellate_planar(topo, face_data, *normal, deflection, angular_tol)?;
             let (u_axis, v_axis) = plane_axes(*normal);
             let origin = if mesh.positions.is_empty() {
-                brepkit_math::vec::Point3::new(0.0, 0.0, 0.0)
+                remus_math::vec::Point3::new(0.0, 0.0, 0.0)
             } else {
                 mesh.positions[0]
             };
@@ -122,7 +122,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 .positions
                 .iter()
                 .map(|p| {
-                    let d: brepkit_math::vec::Vec3 = *p - origin;
+                    let d: remus_math::vec::Vec3 = *p - origin;
                     [d.dot(u_axis), d.dot(v_axis)]
                 })
                 .collect();

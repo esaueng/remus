@@ -5,8 +5,8 @@
     missing_docs
 )]
 
-use brepkit_math::cdt::Cdt;
-use brepkit_math::vec::Point2;
+use remus_math::cdt::Cdt;
+use remus_math::vec::Point2;
 use std::time::Instant;
 
 fn run_once() {

@@ -1,8 +1,8 @@
 //! Edge geometric validation checks.
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::FaceId;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::FaceId;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;
@@ -150,7 +150,7 @@ pub fn check_edge_same_parameter(
     // Skip planes — they have no UV parameterization for evaluate().
     if matches!(
         face.surface(),
-        brepkit_topology::face::FaceSurface::Plane { .. }
+        remus_topology::face::FaceSurface::Plane { .. }
     ) {
         return Ok(vec![]);
     }
