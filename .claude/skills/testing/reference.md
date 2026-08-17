@@ -169,7 +169,7 @@ Hooks (see `.husky/pre-commit` and `.husky/pre-push` for the authoritative conte
 
 ## 5. Glossary
 
-- **GFA**: brepkit's general boolean engine (`crates/algo`), a pave-filler plus builder pipeline that intersects, splits, classifies, and reassembles faces.
+- **GFA**: Remus's general boolean engine (`crates/algo`), a pave-filler plus builder pipeline that intersects, splits, classifies, and reassembles faces.
 - **PaveFiller**: GFA phase 1, computes interferences between entity pairs and splits edges at paves (intersection points). Phases VV/VE/EE/VF/EF/FF; FF (face-face) creates intersection sections and hosts most curved-boolean bugs.
 - **Section**: an intersection curve segment between two faces, produced in FF, later stitched into face-splitting wires.
 - **Same-domain (SD)**: detection that two operand faces lie on the same surface (coincident contact), so they merge instead of splitting each other.
@@ -179,5 +179,5 @@ Hooks (see `.husky/pre-commit` and `.husky/pre-push` for the authoritative conte
 - **Ray-cast classifier**: `brepkit_check::classify::classify_point`, the trustworthy in/out oracle. The winding classifier is unreliable on non-analytic solids.
 - **Approx census**: `crates/operations/examples/approx_census.rs`, enumerates operations that still degrade analytic input.
 - **Parity corpus**: the `parity_boolean_*.rs` tests scoring booleans against exact analytic volume oracles, built to match and beat the reference kernel.
-- **Reference kernel**: the mature C++ CAD kernel brepkit benchmarks against via the brepjs harness (see the parity-benchmarking skill).
+- **Reference kernel**: the mature C++ CAD kernel Remus benchmarks against via the brepjs harness (see the parity-benchmarking skill).
 - **Ready-repro**: an `#[ignore]`d, compiling test that reproduces a known-open bug and whose assertions encode the fix's acceptance target.

@@ -1,6 +1,6 @@
 # parity-benchmarking reference
 
-Naming rule applies here too: the competing kernel is "the reference kernel". Its ids inside the brepjs harness are defined in `~/Git/brepjs/tests/helpers/kernelInit.ts` (`~/Git/brepjs/benchmarks/setup.ts` only documents the `BENCH_KERNELS` syntax); the tool's ids live in its kernel-test helpers. Do not write them into brepkit files.
+Naming rule applies here too: the competing kernel is "the reference kernel". Its ids inside the brepjs harness are defined in `~/Git/brepjs/tests/helpers/kernelInit.ts` (`~/Git/brepjs/benchmarks/setup.ts` only documents the `BENCH_KERNELS` syntax); the tool's ids live in its kernel-test helpers. Do not write them into Remus files.
 
 ## Symptom-to-cause table
 
@@ -52,7 +52,7 @@ For the fast recipe, copy this and repoint only the `brepkit-wasm` alias at your
 
 The report baselines its "vs" column to the native reference-kernel id and warns when the subset omits it. That 3-kernel table is for the README-style overview; for parity work the wasm-vs-wasm pair is the fair fight.
 
-Sanity anchors for quoted numbers: `cut(box, cylinder)` makes both kernels do comparable general-boolean work. Rows where brepkit hits an analytic fast path are legitimate wins only after you confirm the outputs are equivalent (face count, volume).
+Sanity anchors for quoted numbers: `cut(box, cylinder)` makes both kernels do comparable general-boolean work. Rows where Remus hits an analytic fast path are legitimate wins only after you confirm the outputs are equivalent (face count, volume).
 
 ## Tool overlay (gridfinity-layout-tool)
 
@@ -145,7 +145,7 @@ Flamegraphs: `cargo flamegraph --profile profiling --bench cad_operations -p bre
 
 ## Glossary
 
-- **GFA**: brepkit's General Fuse Algorithm, the analytic boolean engine (`crates/algo/src/gfa.rs`): intersect all faces (PaveFiller), split, classify, reassemble.
+- **GFA**: Remus's General Fuse Algorithm, the analytic boolean engine (`crates/algo/src/gfa.rs`): intersect all faces (PaveFiller), split, classify, reassemble.
 - **PaveFiller**: GFA phase 1 (`crates/algo/src/pave_filler/`), pairwise interference phases VV/VE/EE/VF/EF/FF; edges split at intersection points ("paves").
 - **FF phase**: face-face intersection (`pave_filler/phase_ff.rs`), producer of section curves; historically the richest bug vein.
 - **SD / same-domain**: detection of coincident/overlapping faces between operands (`detect_same_domain`), merged rather than intersected. Coincident-contact bugs usually live in the classifier, not SD; rule SD out by instrumenting it first (see the boolean-debugging skill).

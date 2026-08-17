@@ -3,7 +3,7 @@ name: add-operation
 description: Use when adding a new modeling operation to crates/operations (a new pub fn taking &mut Topology and returning a SolidId or similar), when extending an existing operation with a new code path, or when an operation's tests need to prove correctness before shipping. Covers implementation traps, error handling, test placement, wasm exposure, and the verification bar.
 ---
 
-# Adding an Operation to brepkit
+# Adding an Operation to Remus
 
 ## When to use
 

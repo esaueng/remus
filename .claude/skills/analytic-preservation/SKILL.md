@@ -22,7 +22,7 @@ Terms used below (GFA, FF phase, marcher, mesh fallback, SD, seam): glossary in
 - Analytic paths beat the mesh fallback by one to two orders of magnitude on the same
   inputs; the census prints per-row timings, so the margin is cheap to regenerate. One
   git-history example (#1006): box-sphere intersect went from 190 ms and 956 mesh faces
-  to under 2 ms and 8 analytic faces. This margin is why brepkit beats the reference
+  to under 2 ms and 8 analytic faces. This margin is why Remus beats the reference
   kernel head to head. Re-measure via the parity-benchmarking skill before quoting any
   number.
 

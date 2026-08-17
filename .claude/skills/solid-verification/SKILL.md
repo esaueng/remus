@@ -1,6 +1,6 @@
 ---
 name: solid-verification
-description: Ground-truth verification of any B-Rep result in brepkit. Use when checking whether a solid is watertight, manifold, correctly classified, or has the right volume; when signing off a boolean, offset, fillet, or other geometry change; when a volume looks wrong or disagrees across deflections; or when deciding whether a "passing" check actually proves the geometry is correct.
+description: Ground-truth verification of any B-Rep result in Remus. Use when checking whether a solid is watertight, manifold, correctly classified, or has the right volume; when signing off a boolean, offset, fillet, or other geometry change; when a volume looks wrong or disagrees across deflections; or when deciding whether a "passing" check actually proves the geometry is correct.
 ---
 
 # Solid Verification

@@ -1,4 +1,4 @@
-# Contributing to brepkit
+# Contributing to Remus
 
 ## License of contributions
 
@@ -17,7 +17,7 @@ right to submit the work under those terms.
 
 ## Development Workflow
 
-1. Create a branch from `apache-main`
+1. Create a branch from `main`
 2. Make your changes
 3. Run `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings`
 4. Run `cargo test --workspace`
@@ -47,7 +47,7 @@ refactor: simplify arena allocation
 
 ## Architecture
 
-See `CLAUDE.md` for the layer system and dependency rules. The key rule:
+See `AGENTS.md` for the layer system and dependency rules. The key rule:
 **never add a dependency from a lower layer to a higher layer.**
 
 ## Testing
