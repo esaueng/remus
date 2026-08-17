@@ -136,3 +136,75 @@ fn coaxial_cylinder_fast_path_preserves_full_circle_trims() {
         "arena round trip must preserve every assembled interval bit-for-bit"
     );
 }
+
+/// A partial arc trim on an input rim must not be stamped onto the rebuilt
+/// FULL-circle rims of the coaxial-cylinder shortcut: `circle_param_range`
+/// prefers the stored trim over the closed-edge full-turn fallback, so a
+/// leaked half-turn skins the result over half its circumference.
+#[test]
+fn coaxial_cylinder_fast_path_rejects_partial_rim_trims() {
+    let mut topo = Topology::new();
+    let lower = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
+    let upper = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
+
+    // One rim of `lower` carries a half-turn, standing in for a rim that an
+    // earlier boolean split into arcs.
+    let rim = brepkit_topology::explorer::solid_edges(&topo, lower)
+        .unwrap()
+        .into_iter()
+        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    topo.edge_mut(rim)
+        .unwrap()
+        .set_trim(Some((0.0, std::f64::consts::PI)));
+
+    transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
+
+    for (start, end) in solid_trims(&topo, result) {
+        assert!(
+            ((end - start).abs() - TAU).abs() < 1e-9,
+            "rebuilt full rim must not inherit a partial arc span: ({start}, {end})"
+        );
+    }
+
+    let mut mesh_area = 0.0;
+    for face in brepkit_topology::explorer::solid_faces(&topo, result).unwrap() {
+        let mesh = brepkit_operations::tessellate::tessellate(&topo, face, 0.001).unwrap();
+        for t in mesh.indices.chunks(3) {
+            let p = |i: usize| mesh.positions[t[i] as usize];
+            mesh_area += (p(1) - p(0)).cross(p(2) - p(0)).length() * 0.5;
+        }
+    }
+    // Lateral 2*pi*r*h + two caps, r = 2, h = 3.
+    let expected = TAU * 2.0 * 3.0 + 2.0 * std::f64::consts::PI * 4.0;
+    assert!(
+        (mesh_area - expected).abs() < 0.05,
+        "result must mesh over its whole circumference: {mesh_area} vs {expected}"
+    );
+}
+
+/// Each rebuilt rim anchors its stored interval at its OWN start vertex.
+#[test]
+fn coaxial_cylinder_fast_path_keeps_each_rim_in_phase() {
+    let mut topo = Topology::new();
+    let lower = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
+    let upper = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
+    stamp_exact_full_circle_trims(&mut topo, lower);
+    stamp_exact_full_circle_trims(&mut topo, upper);
+    transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
+
+    let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
+    for edge_id in brepkit_topology::explorer::solid_edges(&topo, result).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        let (t0, _) = edge.trim().expect("rebuilt rim carries an exact interval");
+        let anchor = circle.project(topo.vertex(edge.start()).unwrap().point());
+        assert!(
+            (t0 - anchor).abs() < 1e-9,
+            "stored interval must start at this rim's own vertex: {t0} vs {anchor}"
+        );
+    }
+}
