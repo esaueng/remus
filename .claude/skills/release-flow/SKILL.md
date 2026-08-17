@@ -1,137 +1,130 @@
 ---
 name: release-flow
-description: Shipping a remus change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the remus-wasm pin in brepjs, when running or debugging the type sync (sync:brepkit-types, tsc failures on Brepkit* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
+description: Getting a merged Remus change into the hands of a consumer. Use when a feature PR has merged and someone needs the new kernel, when refreshing the committed WASM package, when validating a package build before handing it over, or when asked whether Remus can publish to npm or crates.io. Covers the committed-snapshot channel, the validation harness, and the release-ownership gate that blocks publishing.
 ---
 
-# release-flow: remus merge to brepjs activation
+# release-flow: merged change to consumer
 
 ## When to use
 
-A remus change is not "shipped" when its PR merges. It is shipped when brepjs
-installs the new kernel version, the type sync regenerates cleanly, and the
-adapter can call the new method. This skill covers that 4-hop chain and the
-trap at each hop. For getting the feature PR itself merged, see the
-`pr-workflow` skill. For benchmark comparisons after a release, see
-`parity-benchmarking`. To test an unreleased kernel build inside brepjs
-without waiting for any of this chain, see the `wasm-bindings` skill.
+A Remus change is not in a consumer's hands when its PR merges. This repository
+**publishes nothing** — no crates.io, no npm, no GitHub releases — so the only
+channel that reaches a consumer is the WASM package committed at
+`crates/wasm/pkg`, installed by git path. This skill covers that channel: how
+to refresh it, how to validate it, and what is deliberately not automated.
 
-## Quick reference: the 4-hop chain
+For getting the feature PR merged, see `pr-workflow`. For benchmark
+comparisons, see `parity-benchmarking`. To test an unreleased build inside a
+JS consumer without touching the committed snapshot, see `wasm-bindings`.
 
-Each hop is gated on the previous one. Never skip a gate.
+## The one hard rule
+
+**Remus does not publish.** `docs/production-readiness/fork-maintenance.md`
+gates every published artifact behind release ownership that does not yet
+exist: named maintainers, package identity, vulnerability intake, signing and
+provenance, rollback and yank authority. Until those are established:
+
+- Do not run `npm publish` or `cargo publish` from this repository.
+- Do not create GitHub releases or tags intended as releases.
+- An npm package under this project's name — or under the name it carried
+  before the rename — did not come from here.
+
+`release-please-config.json` and `.release-please-manifest.json` exist in the
+tree, but **no workflow runs release-please**. Do not infer a release pipeline
+from their presence; verify with
+`rg -l 'release-please' .github/workflows/` before believing otherwise.
+
+## The actual chain
 
 | Hop | Action | Gate before next hop |
 |-----|--------|---------------------|
-| 1 | Feature PR squash-merges to remus main | Merge lands on main |
-| 2 | release-please opens `chore(main): release X.Y.Z` PR; it auto-merges, tags `vX.Y.Z`, and the release event triggers the publish workflow | GitHub release exists |
-| 3 | Publish workflow builds wasm and runs `npm publish` | `npm view remus-wasm versions --json` lists X.Y.Z AND your commit is an ancestor of the tag |
-| 4 | In brepjs: bump the devDependency pin, `npm install`, `npm run sync:brepkit-types` | tsc and knip pass, diff drops no method signatures |
+| 1 | Feature PR squash-merges to `main` | `CI Pass` green on the merge |
+| 2 | Build and validate the package locally | `cargo xtask wasm-build` succeeds; both consumer harnesses pass |
+| 3 | Refresh the committed snapshot (manual dispatch) | New `chore(wasm): refresh committed package` commit on `main` |
+| 4 | Consumer reinstalls from the git path | Consumer's own tests pass against the new snapshot |
 
-Key commands:
+Hops 3 and 4 are **not automatic**. See "Why hop 3 is manual" below.
 
-```bash
-npm view remus-wasm versions --json
-git fetch --tags   # in this repo
-git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
-cd $BREPJS && npm install && npm run sync:brepkit-types
-```
-
-`$BREPJS` is your checkout of `andymai/brepjs` (that slug is current). There
-is no brepjs checkout on this machine, so clone it before hop 4. The kernel
-side is this repo, `esaueng/remus`; run its commands from the repo root rather
-than an absolute path, since it has several checkouts and worktrees.
-
-## Procedure
-
-### Hop 1 to 2: remus release
-
-1. After the feature PR merges, the push to main runs
-   `.github/workflows/publish.yml`. Its `release-please` job opens or updates
-   the release PR, and its `auto-merge` job enables squash auto-merge on that
-   PR. You do not merge it by hand; it lands when checks pass.
-2. Checkpoint: `gh pr list --search 'chore(main): release'` shows the PR, then
-   it disappears and `gh release list` shows the new version. If the release
-   PR is stuck, check its CI, not the workflow.
-3. The tag is plain `vX.Y.Z` (no package prefix; see
-   `release-please-config.json`, `include-component-in-tag: false`).
-
-### Hop 3: poll npm, do not trust the tag
-
-The GitHub tag and release appear minutes before npm has the version, because
-the publish job is still building wasm. Gate on both of these:
+## Hop 2: build and validate
 
 ```bash
-npm view remus-wasm versions --json          # array must end with "X.Y.Z"
-git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
+cargo xtask wasm-build              # dual-target build, merge, validate
+node scripts/test-wasm-smoke.mjs    # loads the package, runs consumer regressions
+node scripts/test-wasm-tarball-consumer.mjs   # npm pack into a disposable consumer
 ```
 
-The second check matters when releases are frequent: your commit may have
-missed the cut and be waiting for the NEXT release. Do not bump brepjs to a
-version that does not contain your change.
+The tarball test is the stronger of the two: it packs the package and installs
+it into a throwaway consumer, so it catches `files`-list omissions and entry
+point mistakes that the in-tree smoke test cannot.
 
-If the release exists but npm never gets the version, the publish job failed;
-`workflow_dispatch` on publish.yml with a `publish_version` input is the
-manual escape hatch.
+Both run the regressions in `scripts/openzcad-wasm-consumer-regressions.mjs`,
+which encode consumer-shaped geometry rather than synthetic cases — for
+example the flange demo's "Union flange blank": two coaxial revolved annuli
+sharing an exact cylindrical wall, which must fuse analytically. A mesh
+fallback can stay watertight, valid, and close on volume, so those assertions
+check face counts and surface kinds, not just volume. **Do not relax them to
+get a build out.**
 
-### Hop 4: brepjs dependency bump and type sync
+## Hop 3: refreshing the committed snapshot
 
-In `$BREPJS` (use a worktree if the checkout is busy):
+Workflow: **Refresh Apache Staging Package** (`.github/workflows/publish.yml`),
+`workflow_dispatch` only, on `main`.
 
-1. Edit `package.json`: set the **devDependencies** entry
-   `"remus-wasm": "X.Y.Z"` (exact pin). Leave the **peerDependencies**
-   range alone; it already covers `^2.0.0`. The pin is what brepjs CI tests
-   against; the range is what consumers may bring.
-2. `npm install`. Then verify the lockfile kept the three `@emnapi` entries
-   (see Pitfalls below).
-3. `npm run sync:brepkit-types`. This regenerates
-   `src/kernel/brepkit/brepkitWasmTypes.ts` from the installed
-   `node_modules/remus-wasm/remus_wasm.d.ts`. That file is generated;
-   never hand-edit it.
-4. Checkpoint: `npm run validate && npm run knip`; pass means both exit 0.
-   `validate` (`scripts/validate-change.sh`) runs typecheck, lint, boundary
-   check, format check, and tests. knip is a separate gate not covered by
-   `validate`; do not skip it. If tsc fails on an undefined
-   `Js*` or `Brepkit*` type, you hit the type-sync trap: see
-   [reference.md](reference.md), "Type-sync internals".
-5. Checkpoint: the diff of `brepkitWasmTypes.ts` may legitimately shrink
-   (comment compaction), but it must drop zero real method signatures:
+Two jobs. `build-committed-package` runs `cargo xtask wasm-build --skip-opt`,
+stamps fork provenance into `package.json`, and uploads the result as an
+artifact. `sync-committed-package` downloads it, installs it through
+`scripts/install-wasm-package-archive.py` (which accepts only regular files and
+directories under `crates/wasm/pkg` — never extract a build-produced archive
+straight into the checkout), commits, and pushes to `main` with `[skip ci]`.
 
-   ```bash
-   git diff src/kernel/brepkit/brepkitWasmTypes.ts | grep '^-' | grep -E '\w+\(' 
-   ```
+Notes that matter:
 
-   Every removed line here must reappear as a `+` line or be a comment.
+- It force-stages (`git add --force`) because wasm-pack writes a `*`
+  `.gitignore` into its own output directory.
+- It never rebases. A concurrent push to `main` makes the push fail on
+  purpose; the newer source commit starts its own refresh.
+- The commit is `[skip ci]`, so the refreshed snapshot is not itself re-tested
+  by CI. Hop 2 is where the validation happens.
 
-## Pitfalls: symptom to cause
+### Why hop 3 is manual
+
+The push trigger was removed deliberately, not lost. Automatic refresh on every
+push to `main` would regenerate `crates/wasm/pkg` under the current package
+name — and after the rename that means the snapshot stops being the package the
+existing consumer imports. `fork-maintenance.md` keeps the snapshot frozen
+until the consumer migrates. **Restore the push trigger in the same change that
+repoints the consumer, not before.**
+
+## Hop 4: the consumer
+
+The documented consumer installs the snapshot by git path:
+
+```
+"remus-wasm": "github:esaueng/remus#main&path:/crates/wasm/pkg"
+```
+
+⚠️ **Verify this pin before relying on it.** It previously referenced
+`apache-main`, a branch that has since been deleted, so any consumer still
+holding the old pin has a broken install. The `#main` form above is what the
+repository now documents; whether the consumer has repinned is not observable
+from inside this repository. Confirm with whoever owns it.
+
+There is also a manual **Build OpenZCAD WASM Candidate** workflow
+(`.github/workflows/openzcad-wasm-release.yml`). It is validation-only: it
+builds, stamps provenance, `npm pack`s, and uploads a short-lived artifact. It
+cannot push commits or create releases. Use it to hand someone a candidate
+tarball without touching `main`.
+
+## Traps
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| Tag `vX.Y.Z` exists but `npm view` lacks X.Y.Z | Publish job still running or failed | Wait and re-poll; if failed, `workflow_dispatch` publish |
-| tsc: cannot find name `JsFoo` after sync | New return type has no `mapReturnType` case and no emitted interface block | reference.md, "Type-sync internals": both edits are required |
-| New method missing from generated types | Method not listed in `METHOD_SECTIONS` in `scripts/sync-brepkit-types.ts` | Add it to the right section |
-| Dep-bump PR: "merge commit cannot be cleanly created" | release-please bumped package.json/lock on brepjs main right after a merge | reference.md, "Lockfile rebase": rebase, take main's lock, `npm install`, never hand-merge |
-| `gh pr view` says CONFLICTING right after force-push | GitHub computes mergeability async; the value is stale | Re-query after a few seconds before acting |
-| knip flags a src export as unused, blocks push | knip cannot trace usage from `tests/` | `@testOnly` JSDoc tag on the export; `knip.config.ts` already has `tags: ['-testOnly']` |
-| CI `npm ci` fails: `Missing: @emnapi/core ... from lock file` | Old npm (< 11.11) dropped the three `@emnapi` lock entries | reference.md, "@emnapi lockfile" |
-| `git push` hangs or times out | NOT the historical SSH cause on the kernel side: this repo's `origin` is HTTPS with no `insteadOf` rewrite, so suspect credentials or the network. On brepjs the cause is unverified (no checkout to inspect) | `git ls-remote origin` to isolate auth from the push; for brepjs see reference.md, "Pushing over HTTPS" |
-| `git rev-parse origin/<branch>` disagrees with GitHub | Explicit-URL pushes do not update remote-tracking refs | Confirm head via `gh pr view <n> --json headRefOid` |
+|---|---|---|
+| "Where is the npm package?" | There isn't one; this fork publishes nothing | Build from source, or use the committed snapshot by git path |
+| A release-please PR is expected but never appears | The config exists; no workflow runs it | Do not wait for it; there is no release automation |
+| Refresh workflow does nothing | It is `workflow_dispatch` only, and the job also requires `sync_package` and `github.ref == refs/heads/main` | Dispatch it against `main` with the input enabled |
+| Snapshot commit succeeds but the consumer sees nothing | Consumer pin points at a deleted branch, or its lockfile pins an older commit | Check the pin; git-path installs resolve at install time |
+| App-token step silently skipped | `REMUS_BOT_APP_ID` / `REMUS_BOT_PRIVATE_KEY` unset; `HAS_APP_CREDENTIALS` evaluates false without failing | Set both secrets; the job degrades quietly by design |
+| Consumer regressions fail only through the tarball | A `files` omission or entry-point error in the generated `package.json` | Fix the package metadata; do not skip the tarball test |
 
-## Anti-patterns: what NOT to conclude
-
-- Tag exists, so npm has it: false, poll npm.
-- Tag exists, so my commit is in it: false, check ancestry.
-- Types now declare the method, so the adapter's `typeof` guard is dead code:
-  false. Consumers bring any kernel in the peer range, which is wider than
-  the pin. Keep the guard (see reference.md, "Adapter feature-detection").
-- Lockfile conflict, so resolve hunks by hand: never. Take main's lockfile
-  and regenerate with `npm install`.
-- Peer range needs bumping with the pin: no, only the devDependency pin moves
-  per release.
-- `brepkitWasmTypes.ts` needs a small fix, so edit it directly: no, it is
-  regenerated; fix the sync script and re-run.
-
-## Before any push, in either repo
-
-Grep changed files, commit messages, and the PR body for the banned
-reference-kernel names. See reference.md, "Reference-kernel hygiene" for the
-exact commands (the pattern is split there so these skill files pass their
-own check).
+See [reference.md](reference.md) for the package layout, the provenance stamp,
+and what "frozen snapshot" means for the binary itself.

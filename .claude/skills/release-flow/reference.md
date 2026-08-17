@@ -2,249 +2,147 @@
 
 Deep detail for the hops in SKILL.md.
 
-**Repos and paths.** The kernel side is this repo, `esaueng/remus` (the remus
-kernel); paths below are relative to its root, because it is checked out in
-several places (`~/claude/remus`, `~/codex/remus`, plus `.worktrees/*`) and no
-single absolute path is correct. Do not confuse it with `esaueng/brepkit`, a
-separate fork of `andymai/brepkit` checked out at `~/claude/brepkit`.
+**Repo and paths.** The kernel side is this repo, `esaueng/remus`; paths below
+are relative to its root, because it is checked out in several places
+(`~/claude/remus`, `~/codex/remus`, plus `.worktrees/*`) and no single absolute
+path is correct. Do not confuse it with `esaueng/brepkit`, a separate fork of
+`andymai/brepkit`.
 
-The consumer side is `andymai/brepjs` — that slug is current, not a leftover.
-There is currently **no brepjs checkout on this machine**, and the home-level
-`Git` directory that earlier revisions of these skills assumed does not exist
-either. Clone brepjs before starting hop 4 and substitute its path for
-`$BREPJS` below.
+## What "publishes nothing" rests on
 
-## Publish workflow anatomy (remus)
+`docs/production-readiness/fork-maintenance.md`, "Release ownership": this fork
+must not publish Rust crates or npm packages, or create GitHub releases, until
+named maintainers, package identity, vulnerability intake, signing/provenance,
+rollback, and yanking authority are established. That is a governance gate, not
+a technical one — a green build does not satisfy it.
 
-File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
+Consequences worth stating plainly, because they contradict what a reader may
+assume from the repository's shape:
 
-- `release-please` job: runs on push to main, opens or updates the
-  `chore(main): release X.Y.Z` PR, exposes a `release_created` output.
-- `auto-merge` job: runs `gh pr merge <release-pr> --auto --squash`. The
-  release PR merges itself once checks pass. Do not merge it manually unless
-  auto-merge visibly failed.
-- `publish` job: triggers on the GitHub `release` event, on the
-  `release_created` output, or on `workflow_dispatch` with a
-  `publish_version` input (the manual escape hatch). It builds the wasm
-  package for both targets:
+- `release-please-config.json` sets `"component": "remus-wasm"` with
+  `"include-component-in-tag": false`, and `.release-please-manifest.json`
+  tracks a version. **No workflow consumes either.** Verify with
+  `rg -l 'release-please' .github/workflows/`.
+- `crates/wasm/Cargo.toml` carries a version (2.x) inherited from the
+  pre-fork line. It is not a published version.
+- Anything on npm under a Remus-like name came from somewhere else.
 
-  ```bash
-  wasm-pack build crates/wasm --target bundler --release --out-dir pkg
-  wasm-pack build crates/wasm --target nodejs --release --out-dir pkg-node
-  ```
+## The committed package
 
-  merges them into one package, verifies `package.json` version equals the
-  tag, and runs `npm publish --provenance`. Publish is idempotent: it skips
-  if the version is already on npm, so a re-run is safe.
-- Versioning config: `release-please-config.json` sets
-  `"component": "remus-wasm"` but `"include-component-in-tag": false`, so
-  tags are plain `vX.Y.Z`. It also bumps `crates/wasm/Cargo.toml` via
-  `extra-files`.
+`crates/wasm/pkg` is a real distribution channel, not a build leftover: a
+consumer installs it by git path, so whatever is committed there is what they
+get. Contents:
 
-## Type-sync internals (brepjs)
+```
+package.json          # name, exports, files list, provenance stamp
+<crate>_wasm.js       # bundler entry (ESM)
+<crate>_wasm_bg.js
+<crate>_wasm_bg.wasm  # the binary
+<crate>_wasm.d.ts     # TypeScript declarations
+<crate>_wasm_node.cjs # node entry; xtask renames the nodejs build to .cjs
+LICENSE-APACHE
+```
 
-Script: `$BREPJS/scripts/sync-brepkit-types.ts`, run via
-`npm run sync:brepkit-types`.
+The `.cjs` rename matters: the node entry is CommonJS, and `package.json` sets
+`"type": "module"`, so without the extension change Node would misparse it.
 
-What it does:
+### The snapshot is frozen, and why that is not laziness
 
-1. Parses the `BrepKernel` class body out of
-   `node_modules/remus-wasm/remus_wasm.d.ts` with a regex (the regex
-   cannot handle nested-paren parameter types; a method like that will parse
-   wrong, check the output).
-2. Emits `src/kernel/brepkit/brepkitWasmTypes.ts`. The header records
-   `Synced against remus-wasm@<version>`. The file is AUTO-GENERATED;
-   hand edits are clobbered on the next sync.
-3. Only methods listed in `const METHOD_SECTIONS: Section[]` appear in the
-   output, grouped by category label. Find it:
-   `rg -n 'const METHOD_SECTIONS' scripts/sync-brepkit-types.ts`.
-4. Methods not referenced from the adapter layer
-   (`src/kernel/brepkit/*.ts`, excluding the generated file) are tagged
-   `/** @unwired */`.
-
-### The new-return-type trap
-
-`function mapReturnType(rt, methodName)` maps known wasm return types to
-local interface names: `JsMesh` to `RemusMesh`, `JsEdgeLines` to
-`RemusEdgeLines`, `JsGroupedMesh` to `RemusGroupedMesh`. A return type of
-`any` maps to `ANY_RETURN_OVERRIDES[methodName] ?? 'string'` (example
-override: `getEdgeNurbsData: 'string | null'`).
-
-An unmapped `JsFoo` passes through verbatim into the generated file, where no
-`RemusFoo` interface exists, so tsc fails. Adding the method to
-`METHOD_SECTIONS` alone is NOT enough. A new `Js*` return type requires BOTH:
-
-1. A case in `mapReturnType` returning `'RemusFoo'`.
-2. A hardcoded interface block emitted by the script. The existing ones are
-   pushed as lines, e.g. `lines.push('export interface RemusMesh {')`.
-   Find them: `rg -n "export interface Remus" scripts/sync-brepkit-types.ts`.
-   Add a matching block for the new type, mirroring the fields of the Rust
-   struct in `crates/wasm/src/shapes.rs` or `types.rs`.
-
-Then re-run the sync and re-check tsc.
-
-Notes:
-
-- wasm-bindgen `Vec<f32>` / `Vec<u32>` getters return owned copies (the JS
-  glue slices and frees the Rust buffer), so the interface fields are plain
-  `Float32Array` / `Uint32Array` and no defensive copy is needed JS-side.
-- Interim state before a dep bump lands: a hand-added OPTIONAL forward
-  declaration for the new method lets the adapter's `typeof` guard typecheck
-  against the old kernel; the next sync replaces it canonically.
-
-### Verifying the sync diff
-
-The regenerated file may shrink for legitimate reasons (JSDoc and formatting
-compaction). What it must never do is silently drop a method. Check:
+The committed binary embeds its own glue module path in the wasm import
+section. Renaming the files without regenerating breaks the package outright;
+regenerating changes the package name, which breaks a consumer importing the
+old one. So the snapshot stays as-is until the consumer migrates, and
+`scripts/check-remus-rename.sh` allowlists `crates/wasm/pkg` for exactly that
+reason. Check the embedded paths before assuming a rename is safe:
 
 ```bash
-git diff src/kernel/brepkit/brepkitWasmTypes.ts | grep '^-' | grep -E '\w+\('
+rg -a --count-matches 'wasm_bg\.js' crates/wasm/pkg/*.wasm   # currently 15
 ```
 
-Eyeball each hit: it must either reappear as an added line or be a comment.
-A genuinely dropped signature means a method fell out of `METHOD_SECTIONS`
-or the upstream `.d.ts` regressed; stop and find out which.
+## Build anatomy
 
-## Lockfile rebase (the release-please collision)
+`cargo xtask wasm-build` (see `xtask/src/wasm.rs`):
 
-brepjs also uses release-please. Right after any brepjs PR merges, the bot
-pushes a commit to main bumping `package.json` version, `package-lock.json`,
-and `CHANGELOG.md`. A dep-bump branch that also touches package.json and the
-lock then fails to merge ("merge commit cannot be cleanly created").
+1. `wasm-pack build crates/wasm --target bundler --out-dir pkg`
+2. `wasm-pack build crates/wasm --target nodejs --out-dir pkg-node`
+3. Merges: copies the node entry in as `*_node.cjs`, rewrites `package.json`
+   (`main`, `module`, `exports`, `files`).
+4. Copies `LICENSE-APACHE` in, removes a stale `LICENSE-MIT` if present.
+5. Runs `wasm-opt` unless `--skip-opt`.
 
-Resolution, always the same shape:
+Flags: `--no-simd` disables the SIMD build; `--skip-opt` skips `wasm-opt`
+(what CI uses, for speed). `cargo xtask wasm-publish` exists and takes
+`--dry-run`; **do not run it without the dry-run flag** — see the publishing
+gate above.
+
+Note that wasm-pack wipes its `--out-dir`. A local `cargo xtask wasm-build`
+therefore destroys the committed snapshot in your working tree. That is
+recoverable (`git checkout -- crates/wasm/pkg`) but easy to commit by accident;
+check `git status` before staging.
+
+## Provenance stamp
+
+The manual candidate workflow stamps the generated `package.json` before
+packing:
 
 ```bash
-git fetch origin
-git rebase origin/main
-git checkout --ours package-lock.json
-npm install
-git add package-lock.json
-git rebase --continue
-expected=$(gh pr view <n> --json headRefOid -q .headRefOid)
-git push --force-with-lease=<branch>:"$expected" \
-  "https://x-access-token:$(gh auth token)@github.com/andymai/brepjs.git" <branch>
+npm pkg set \
+  repository.type=git \
+  repository.url=git+https://github.com/esaueng/remus.git \
+  homepage=https://github.com/esaueng/remus \
+  remusSourceCommit="$GITHUB_SHA"
 ```
 
-Notes:
+`remusSourceCommit` is the audit trail: given a tarball, it identifies the
+source commit that produced it. Preserve the field if you touch the stamping
+step.
 
-- The lease MUST carry an explicit expected value. Explicit-URL pushes never
-  update remote-tracking refs (see "Pushing over HTTPS"), so a bare
-  `--force-with-lease` has no expected value to check against and is always
-  rejected with `! [rejected] ... (stale info)`. Take the expected old head
-  from `gh pr view` immediately before the push, as above.
-- In a REBASE, `--ours` is the side you are rebasing ONTO, i.e. main. That
-  is intentional: discard your branch's lockfile, then let `npm install`
-  regenerate it against the merged `package.json`.
-- `package.json` usually auto-merges cleanly (the version field and your dep
-  line are far apart); only the lockfile truly conflicts.
-- Never resolve lockfile hunks by hand. The file is generated; hand-merged
-  lockfiles are how CI gets `npm ci` integrity failures.
-- After the force-push, GitHub's mergeable state is computed asynchronously.
-  `gh pr view <n> --json mergeable,mergeStateStatus` returning `CONFLICTING`
-  or `DIRTY` immediately after the push is usually stale. Re-query after a
-  few seconds; it flips to `MERGEABLE` or `BLOCKED` (blocked = waiting on
-  checks, which is fine).
+## The consumer regressions
 
-## brepjs push gates
+`scripts/openzcad-wasm-consumer-regressions.mjs` is shared by both harnesses
+(`test-wasm-smoke.mjs` in-tree, `test-wasm-tarball-consumer.mjs` through a
+packed install). Two classes of assertion:
 
-### knip and @testOnly
+- **Exact-geometry**: e.g. coaxial revolved annuli sharing an exact
+  cylindrical wall must fuse analytically. The assertions check face counts and
+  surface kinds because a mesh fallback can remain watertight, valid, and
+  close on volume — volume alone would not catch the regression.
+- **Evolution payload completeness**: every source face must be accounted for
+  as modified, deleted, or explicitly unresolved, and likewise for results.
+  This mirrors what a consumer needs to keep selections alive across an edit.
 
-knip (the unused-export linter, a pre-push gate) cannot trace usage from
-`tests/` (separate tsconfig and import alias), so a src export exercised only
-by tests gets flagged as unused and blocks the push. The sanctioned escape
-hatch, already wired in `$BREPJS/knip.config.ts` via
-`tags: ['-testOnly']`:
+If you add a consumer-visible behavior, add its regression here rather than
+only in Rust: this is the layer that proves the *packaged* artifact behaves,
+not just the workspace.
 
-```ts
-/** @testOnly Exercised by tests/vectorOperations.test.ts. */
-export function myHelper() { ... }
-```
+## Snapshot refresh mechanics
 
-Live examples: `src/utils/vec2d.ts`, `src/measurement/measureCache.ts`,
-`src/core/kernelBoundary.ts`. Do not delete the export or inline it into the
-test to appease knip; tag it.
+Workflow: `.github/workflows/publish.yml`, "Refresh Apache Staging Package",
+`workflow_dispatch` only. The job additionally requires `sync_package` and
+`github.ref == 'refs/heads/main'`, so a dispatch from another ref no-ops.
 
-### @emnapi lockfile entries
+- `install-wasm-package-archive.py` is a deliberate airlock: it accepts only
+  regular files and directories beneath `crates/wasm/pkg`, so a build-produced
+  archive can never write elsewhere in the checkout.
+- The commit job disables git hooks (`core.hooksPath=/dev/null`) while a write
+  token is present, and the build job never sees that token.
+- `HAS_APP_CREDENTIALS` is computed from `REMUS_BOT_APP_ID` and
+  `REMUS_BOT_PRIVATE_KEY`. If either is unset the app-token step is skipped and
+  the job falls back to `github.token` — **without failing**. A missing secret
+  is therefore silent; check the step's status, not just the job's.
+- The push is `HEAD:main` with no rebase, by design. Losing a race is the
+  correct outcome: the newer source commit refreshes from the right tree.
 
-`remus-wasm` has three transitive optional deps whose top-level lockfile
-entries npm older than 11.11 silently dropped on `npm install`, making CI's
-`npm ci` fail with `Missing: @emnapi/core@... from lock file`. Current local
-npm is past 11.11, so plain `npm install` is safe. Keep the verification
-step regardless, after any install that touches the lock:
+## Handing over a candidate without touching main
+
+`.github/workflows/openzcad-wasm-release.yml` ("Build OpenZCAD WASM
+Candidate"), `workflow_dispatch`. Builds, stamps provenance, `npm pack`s, and
+uploads the tarball as a workflow artifact. It has `contents: read` only, so it
+cannot push or release. This is the sanctioned way to give someone a build for
+evaluation.
+
+The receiving side can validate it the same way CI does:
 
 ```bash
-grep -c '"node_modules/@emnapi/core"' package-lock.json
-grep -c '"node_modules/@emnapi/runtime"' package-lock.json
-grep -c '"node_modules/@emnapi/wasi-threads"' package-lock.json
+node scripts/test-wasm-tarball-consumer.mjs   # packs and installs into a temp consumer
 ```
-
-Each must print `1`. If any prints `0` you are on an old npm; upgrade npm
-rather than hand-editing the lock.
-
-### Adapter feature-detection
-
-The adapter layer (`src/kernel/brepkit/*Ops.ts`) guards newer kernel methods
-and keeps a fallback path:
-
-```ts
-if (typeof bk.tessellateSolidGroupedBinary === 'function') { ... }
-```
-
-Live guard sites: `meshOps.ts` (`tessellateSolidGroupedBinary`),
-`modifierOps.ts` (`chamferAsymmetric`, `offsetWire2DWithJoin`),
-`ioOps.ts` (`fromBREP`), `repairOps.ts` (`validateSolidDetails`).
-
-Keep the guard even after the re-synced types declare the method as present.
-The devDependency pin is exact, but consumers satisfy the wide
-peerDependencies range (`^0.10.1 || ^1.0.0 || ^2.0.0`) and may run an older
-kernel where the method does not exist. eslint does not flag the guard as
-redundant; leave it.
-
-## Reference-kernel hygiene
-
-The name of the C++ kernel remus replaces is banned from commits, PR
-titles and bodies, and code in both repos. Call it "the reference kernel".
-The remus-side compliance grep and the grandfathered file list (README,
-the two changelogs, three bench scripts) live in the pr-workflow skill.
-In brepjs, package and adapter identifiers that contain the name are
-legitimate code; the ban targets prose, commit messages, and PR text.
-
-For brepjs, the pattern below is assembled from split shell strings so this
-file passes its own check; the shell concatenates them into the real pattern.
-
-```bash
-pat="$(printf 'o%s|open%s' 'cct' 'cascade')"
-git diff main --name-only --diff-filter=d | xargs -r rg -in "$pat" --
-git log main.. --format='%B' | rg -in "$pat"
-gh pr view <n> --json title,body -q '.title + .body' | rg -in "$pat"
-```
-
-Run all three before every push and before merging, in BOTH repos. Expected
-output: nothing (rg exits nonzero on no match, which is the pass state).
-Any hit in prose must be rewritten before pushing. A hit that is a literal
-package identifier in brepjs code, or inside a remus grandfathered file,
-is acceptable.
-
-## Pushing over HTTPS
-
-On the kernel side this is no longer true: `esaueng/remus`'s `origin` is an
-HTTPS URL with no `insteadOf` rewrite, so plain `git push` works. See the
-pr-workflow skill, "Push details". The brepjs side is unverified — there is
-no local checkout to inspect — so if a plain push there hangs, the historical
-SSH-plus-blocked-port-22 cause is the first thing to check, and this
-token-embedded form is the workaround:
-
-```bash
-git push "https://x-access-token:$(gh auth token)@github.com/andymai/brepjs.git" <branch> \
-  2>&1 | sed 's/x-access-token:[^@]*@/x-access-token:***@/g'
-```
-
-Consequences:
-
-- Explicit-URL pushes do NOT update `origin/<branch>` remote-tracking refs.
-  Never trust `git rev-parse origin/<branch>` for the remote head; use
-  `gh pr view <n> --json headRefOid`, or `gh api repos/<owner>/<repo>/commits/<branch>`
-  with the right owner for the repo you are in — `esaueng/remus` for the
-  kernel, `andymai/brepjs` for brepjs.
-- `gh` itself (pr create, view, merge, api) talks HTTPS and is unaffected.
