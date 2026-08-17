@@ -19,7 +19,11 @@ use wasm_bindgen::prelude::*;
 use brepkit_algo::bop::BooleanOp;
 use brepkit_operations::journal_ops;
 use brepkit_topology::journal::{EntityKind, JournalAttributePropagation, OpId};
-use brepkit_topology::naming::{Discriminator, PersistentRef, Provenance, Resolution, resolve};
+// Discriminators are only constructed by the serialized-reference codec,
+// which is `io`-gated.
+#[cfg(feature = "io")]
+use brepkit_topology::naming::Discriminator;
+use brepkit_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
 use crate::error::StructuredWasmError;
 use crate::helpers::get_u32;
