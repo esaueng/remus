@@ -11,14 +11,14 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::surfaces::CylindricalSurface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::surfaces::CylindricalSurface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::boolean::{BooleanOp, boolean};
 use crate::copy::{copy_face, copy_solid_with_face_map};
@@ -451,7 +451,7 @@ fn repair_resized_cylinder_rim_orientation(
     #[derive(Clone, Copy)]
     struct EdgeUse {
         face: FaceId,
-        wire: brepkit_topology::wire::WireId,
+        wire: remus_topology::wire::WireId,
         position: usize,
         stored_forward: bool,
         effective_forward: bool,
@@ -502,7 +502,7 @@ fn repair_resized_cylinder_rim_orientation(
         }
     }
 
-    let mut edge_uses: HashMap<brepkit_topology::edge::EdgeId, Vec<EdgeUse>> = HashMap::new();
+    let mut edge_uses: HashMap<remus_topology::edge::EdgeId, Vec<EdgeUse>> = HashMap::new();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
         let reversed = face.is_reversed();
@@ -551,10 +551,10 @@ fn repair_resized_cylinder_rim_orientation(
             });
         };
         *oriented =
-            brepkit_topology::wire::OrientedEdge::new(oriented.edge(), !repair.stored_forward);
+            remus_topology::wire::OrientedEdge::new(oriented.edge(), !repair.stored_forward);
     }
 
-    let remaining = brepkit_check::validate::shell::check_shell_orientation(topo, shell_id)?;
+    let remaining = remus_check::validate::shell::check_shell_orientation(topo, shell_id)?;
     if !remaining.is_empty() {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!(
@@ -675,8 +675,8 @@ fn ensure_closed_shell(
     solid: SolidId,
     what: &str,
 ) -> Result<(), crate::OperationsError> {
-    use brepkit_check::validate::checks::{CheckId, Severity};
-    use brepkit_check::validate::{ValidateOptions, validate_solid};
+    use remus_check::validate::checks::{CheckId, Severity};
+    use remus_check::validate::{ValidateOptions, validate_solid};
 
     let report = validate_solid(topo, solid, &ValidateOptions::default())?;
     let open: Vec<&str> = report
@@ -842,7 +842,7 @@ mod tests {
     use std::collections::HashMap;
     use std::f64::consts::PI;
 
-    use brepkit_math::mat::Mat4;
+    use remus_math::mat::Mat4;
 
     use super::*;
     use crate::measure::solid_volume;

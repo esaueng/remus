@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use brepkit_operations::evolution::{EvolutionMap, EvolutionOrigin};
+use remus_operations::evolution::{EvolutionMap, EvolutionOrigin};
 use tsify::Tsify;
 
 /// Typed result for `tessellateSolidGrouped`.

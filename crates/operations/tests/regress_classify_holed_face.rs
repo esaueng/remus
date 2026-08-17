@@ -1,7 +1,7 @@
 //! Regression: `classify_point` must not count a ray crossing where the ray
 //! passes through a hole in a face.
 //!
-//! `brepkit_check::util::face_polygon` returns only a face's OUTER wire, and
+//! `remus_check::util::face_polygon` returns only a face's OUTER wire, and
 //! the classifier's containment tests used it alone. A GFA boolean result
 //! whose planar caps carry inner wires — the r24 hub circle absorbed into the
 //! flange's z=0 and z=12 annuli, and the r3.5 bolt hole punched through both
@@ -14,15 +14,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// Flange r45 h12 fused with a coaxial hub r24 h30, then a bolt hole
 /// r3.5 h18 cut through the flange at (34, 0).

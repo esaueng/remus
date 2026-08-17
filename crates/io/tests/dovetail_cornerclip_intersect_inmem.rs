@@ -5,7 +5,7 @@
 //! The gridfinity tool's `baseplateGenerator.scenario.dovetail.test.ts`
 //! "preferIdenticalPieces stays watertight on a corner tile with 2 join edges"
 //! (the 2×2 A1-canonical doubled-dovetail) reported ~597 non-manifold STL edges
-//! and took ~11 minutes per tile with brepkit. Capturing the tool's literal
+//! and took ~11 minutes per tile with remus. Capturing the tool's literal
 //! kernel operands (via the `serializeSolid` wasm binding, replayed through
 //! `arena_io::deserialize_solid`) showed the slowness is NOT in the dovetail
 //! tongue fuse. The connector fuse is slow only because it is handed a
@@ -63,12 +63,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -77,7 +77,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn load(name: &str, topo: &mut Topology) -> SolidId {
-    brepkit_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
+    remus_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 fn edge_health(topo: &Topology, solid: SolidId) -> (usize, usize) {
@@ -181,9 +181,9 @@ fn dovetail_corner_clip_intersect_is_watertight() {
 /// over-shared edges.
 #[test]
 fn cornerclip_intersect_raw_gfa_stays_watertight() {
-    use brepkit_algo::bop::BooleanOp as RawOp;
-    use brepkit_algo::gfa;
-    use brepkit_operations::boolean::flatten_planar_nurbs_faces_for_tests;
+    use remus_algo::bop::BooleanOp as RawOp;
+    use remus_algo::gfa;
+    use remus_operations::boolean::flatten_planar_nurbs_faces_for_tests;
 
     let mut topo = Topology::new();
     let slab = load("dovetail_cornerclip_slab.bin", &mut topo);

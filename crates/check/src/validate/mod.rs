@@ -13,9 +13,9 @@ pub use wire::check_wire_self_intersection;
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_topology::Topology;
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::shell::ShellId;
+use remus_topology::solid::SolidId;
 
 use crate::CheckError;
 
@@ -127,14 +127,14 @@ fn validate_shell_checks(
     for &fid in shell.faces() {
         let face = topo.face(fid)?;
         let periodic = match face.surface() {
-            brepkit_topology::face::FaceSurface::Plane { .. } => false,
-            brepkit_topology::face::FaceSurface::Nurbs(surface) => {
+            remus_topology::face::FaceSurface::Plane { .. } => false,
+            remus_topology::face::FaceSurface::Nurbs(surface) => {
                 surface.is_periodic_u() || surface.is_periodic_v()
             }
-            brepkit_topology::face::FaceSurface::Cylinder(_)
-            | brepkit_topology::face::FaceSurface::Cone(_)
-            | brepkit_topology::face::FaceSurface::Sphere(_)
-            | brepkit_topology::face::FaceSurface::Torus(_) => true,
+            remus_topology::face::FaceSurface::Cylinder(_)
+            | remus_topology::face::FaceSurface::Cone(_)
+            | remus_topology::face::FaceSurface::Sphere(_)
+            | remus_topology::face::FaceSurface::Torus(_) => true,
         };
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             wire_periodicity
@@ -294,8 +294,8 @@ fn validate_shell_checks(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
 

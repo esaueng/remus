@@ -5,7 +5,7 @@
     clippy::print_stderr
 )]
 
-use brepkit_topology::Topology;
+use remus_topology::Topology;
 
 use super::*;
 
@@ -13,7 +13,7 @@ use super::*;
 fn strip_wire_spurs_cancels_nested_wraparound_pairs() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let edges = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
     let [a, b, c] = edges[..3] else {
         panic!("box should provide at least three edges");
     };
@@ -35,7 +35,7 @@ fn strip_wire_spurs_cancels_nested_wraparound_pairs() {
 fn strip_wire_spurs_handles_large_spur_heavy_wire() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-    let edge = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+    let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
     let pair_count = 50_000;
     let mut wire = Vec::with_capacity(pair_count * 2);
     for _ in 0..pair_count {
@@ -195,11 +195,11 @@ fn unify_clean_box_no_change() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
-    let (f_before, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
+    let (f_before, _, _) = remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
     let removed = unify_faces(&mut topo, solid).unwrap();
 
     assert_eq!(removed, 0, "clean box should have nothing to unify");
-    let (f_after, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
+    let (f_after, _, _) = remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
     assert_eq!(f_before, f_after);
 }
 
@@ -236,13 +236,13 @@ fn unify_boolean_box_reduces_faces() {
     )
     .unwrap();
 
-    let (f_before, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
+    let (f_before, _, _) = remus_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
 
     let vol_before = crate::measure::solid_volume(&topo, fused, 0.1).unwrap();
 
     let removed = unify_faces(&mut topo, fused).unwrap();
 
-    let (f_after, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
+    let (f_after, _, _) = remus_topology::explorer::solid_entity_counts(&topo, fused).unwrap();
 
     let vol_after = crate::measure::solid_volume(&topo, fused, 0.1).unwrap();
 
@@ -308,7 +308,7 @@ fn unify_shell_box_reduces_faces() {
     let shelled = crate::shell_op::shell(&mut topo, solid, 1.0, &open_faces).unwrap();
 
     let (f_before, e_before, v_before) =
-        brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+        remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let chi_before = (v_before as i64) - (e_before as i64) + (f_before as i64);
 
@@ -317,7 +317,7 @@ fn unify_shell_box_reduces_faces() {
     let removed = unify_faces(&mut topo, shelled).unwrap();
 
     let (f_after, e_after, v_after) =
-        brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+        remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let chi_after = (v_after as i64) - (e_after as i64) + (f_after as i64);
 
@@ -349,13 +349,13 @@ fn unify_cylinder_boolean_reduces_faces() {
     let cyl = crate::primitives::make_cylinder(&mut topo, 1.0, 6.0).unwrap();
 
     // Move cylinder to center of box top face.
-    let translate = brepkit_math::mat::Mat4::translation(2.0, 2.0, -1.0);
+    let translate = remus_math::mat::Mat4::translation(2.0, 2.0, -1.0);
     crate::transform::transform_solid(&mut topo, cyl, &translate).unwrap();
 
     let result =
         crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, box1, cyl).unwrap();
 
-    let (f_before, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    let (f_before, _, _) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
 
     let vol_before = crate::measure::solid_volume(&topo, result, 0.1).unwrap();
 
@@ -370,7 +370,7 @@ fn unify_cylinder_boolean_reduces_faces() {
     );
 
     // Log for diagnostics (test passes either way — this is informational).
-    let (f_after, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    let (f_after, _, _) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
     eprintln!("cylinder boolean: faces {f_before} -> {f_after}, removed {removed}");
 }
 
@@ -380,13 +380,13 @@ fn unify_shell_rounded_rect_preserves_volume() {
     // (matching brepjs behavior). The extrusion creates 3 cylindrical face
     // fragments per corner. unify_faces merges these. This is the exact
     // scenario that causes volume corruption in the topology parity test.
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -536,7 +536,7 @@ fn unify_shell_rounded_rect_preserves_volume() {
     let shelled = crate::shell_op::shell(&mut topo, solid, thickness, &top_faces).unwrap();
 
     let (f_before, e_before, v_before) =
-        brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+        remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     let vol_before = crate::measure::solid_volume(&topo, shelled, 0.01).unwrap();
 
     // Count cylinder faces before.
@@ -552,7 +552,7 @@ fn unify_shell_rounded_rect_preserves_volume() {
     let removed = unify_faces(&mut topo, shelled).unwrap();
 
     let (f_after, e_after, v_after) =
-        brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+        remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     let vol_after = crate::measure::solid_volume(&topo, shelled, 0.01).unwrap();
 
     let cyl_after = topo
@@ -593,7 +593,7 @@ fn unify_shell_rounded_rect_preserves_volume() {
 fn unify_faces_skips_opposite_normals() {
     let mut topo = Topology::new();
     let box_solid = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&topo, box_solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, box_solid).unwrap();
     // Find top face (z=2)
     let top = faces
         .iter()
@@ -605,9 +605,9 @@ fn unify_faces_skips_opposite_normals() {
         .unwrap();
     let shelled = crate::shell_op::shell(&mut topo, box_solid, 1.0, &[top]).unwrap();
 
-    let (f_before, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+    let (f_before, _, _) = remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
     let removed = unify_faces(&mut topo, shelled).unwrap();
-    let (f_after, _, _) = brepkit_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
+    let (f_after, _, _) = remus_topology::explorer::solid_entity_counts(&topo, shelled).unwrap();
 
     // unify_faces should NOT merge any faces — the shelled box has inner
     // faces with opposite normals that share the same plane equation.
@@ -640,12 +640,12 @@ fn heal_preserves_box_volume() {
 fn find_shared_vertex_matches_by_position() {
     // Two faces with different VertexIds at the same 3D position.
     // find_shared_vertex should match via position fallback.
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Point3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol = 1e-7;
@@ -674,7 +674,7 @@ fn find_shared_vertex_matches_by_position() {
         waid,
         vec![],
         FaceSurface::Plane {
-            normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
             d: 0.0,
         },
     );
@@ -705,7 +705,7 @@ fn find_shared_vertex_matches_by_position() {
         wbid,
         vec![],
         FaceSurface::Plane {
-            normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
             d: 0.0,
         },
     );
@@ -737,9 +737,9 @@ fn convert_to_elementary_round_trip_cylinder() {
     // Build a cylinder, convert to B-spline (loses analytic types),
     // then convert back to elementary — should recover the lateral
     // cylinder face and the circular cap edges.
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::explorer;
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer;
+    use remus_topology::face::FaceSurface;
 
     let mut topo = Topology::new();
     let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();

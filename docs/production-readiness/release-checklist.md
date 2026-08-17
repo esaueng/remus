@@ -24,11 +24,11 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-cargo test -p brepkit-operations --features perf-counters scaling_ -- --nocapture
-cargo test --release -p brepkit-operations --test perf_64cut_determinism -- --nocapture
+cargo test -p remus-operations --features perf-counters scaling_ -- --nocapture
+cargo test --release -p remus-operations --test perf_64cut_determinism -- --nocapture
 cargo +1.88.0 check --workspace --all-features
-cargo check -p brepkit-wasm --target wasm32-unknown-unknown
-cargo check -p brepkit-wasm --target wasm32-unknown-unknown --no-default-features
+cargo check -p remus-wasm --target wasm32-unknown-unknown
+cargo check -p remus-wasm --target wasm32-unknown-unknown --no-default-features
 cargo test --manifest-path xtask/Cargo.toml
 RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features
 ./scripts/check-boundaries.sh

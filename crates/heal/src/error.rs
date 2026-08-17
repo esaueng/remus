@@ -5,15 +5,15 @@
 pub enum HealError {
     /// A topology lookup or mutation failed.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math operation failed.
     #[error(transparent)]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// A geometry-layer operation failed.
     #[error(transparent)]
-    Geometry(#[from] brepkit_geometry::GeomError),
+    Geometry(#[from] remus_geometry::GeomError),
 
     /// Analysis detected an unrecoverable problem.
     #[error("analysis failed: {0}")]

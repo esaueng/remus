@@ -6,13 +6,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 /// Sample the tangent of an edge curve at normalized parameter `t` in `[0, 1]`.
 ///
@@ -264,7 +264,7 @@ fn order_chain(topo: &Topology, edges: Vec<EdgeId>) -> Result<Vec<EdgeId>, crate
     }
 
     let mut incident: HashMap<usize, Vec<EdgeId>> = HashMap::new();
-    let mut vertices: HashMap<usize, brepkit_topology::vertex::VertexId> = HashMap::new();
+    let mut vertices: HashMap<usize, remus_topology::vertex::VertexId> = HashMap::new();
     for &eid in &edges {
         let edge = topo.edge(eid)?;
         for vid in [edge.start(), edge.end()] {

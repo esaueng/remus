@@ -63,7 +63,7 @@ jobs:
       # if a boolean hot path regresses to O(N²) (issue #987). Gated behind the
       # `perf-counters` feature, so they need an explicit run.
       - name: Complexity guards
-        run: cargo nextest run -p brepkit-operations --features perf-counters -E 'test(scaling_)'
+        run: cargo nextest run -p remus-operations --features perf-counters -E 'test(scaling_)'
 
   platform-test:
     name: Test (${{ matrix.os }})
@@ -144,8 +144,8 @@ jobs:
         run: npm pack --dry-run
       - name: Build WASM without optional I/O
         run: |
-          cargo clippy -p brepkit-wasm --target wasm32-unknown-unknown --no-default-features -- -D warnings
-          cargo test -p brepkit-wasm --no-default-features
+          cargo clippy -p remus-wasm --target wasm32-unknown-unknown --no-default-features -- -D warnings
+          cargo test -p remus-wasm --no-default-features
 
   fuzz-check:
     name: Fuzz Targets Compile
@@ -160,7 +160,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WGPU_BACKEND: vulkan
-      BREPKIT_REQUIRE_WGPU_ADAPTER: "1"
+      REMUS_REQUIRE_WGPU_ADAPTER: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
@@ -168,7 +168,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes libvulkan1 mesa-vulkan-drivers
-      - run: cargo test -p brepkit-render
+      - run: cargo test -p remus-render
 
   wasm-size:
     name: WASM Size Report
@@ -183,8 +183,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/apache-main' }}
       - name: Build WASM (PR)
         run: |
-          cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release
-          PR_SIZE=$(stat --printf="%s" target/wasm32-unknown-unknown/release/brepkit_wasm.wasm)
+          # Derive the package and cdylib target names from the manifest
+          # rather than hardcoding them. The base checkout below may predate a
+          # package rename, in which case a hardcoded -p would not resolve and
+          # the size job would fail on the renaming PR itself.
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/crates/wasm/Cargo.toml")) | .name' <<< "$metadata")
+          wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
+          test -n "$wasm_package"
+          test -n "$wasm_target"
+          cargo build -p "$wasm_package" --target wasm32-unknown-unknown --release
+          PR_SIZE=$(stat --printf="%s" "target/wasm32-unknown-unknown/release/${wasm_target}.wasm")
           echo "PR_SIZE=$PR_SIZE" >> "$GITHUB_ENV"
           echo "PR_SIZE_MB=$(echo "scale=2; $PR_SIZE / 1048576" | bc)" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,8 +204,17 @@ jobs:
       - name: Build WASM (base)
         run: |
           cd base
-          cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release
-          BASE_SIZE=$(stat --printf="%s" target/wasm32-unknown-unknown/release/brepkit_wasm.wasm)
+          # Derive the package and cdylib target names from the manifest
+          # rather than hardcoding them. The base checkout below may predate a
+          # package rename, in which case a hardcoded -p would not resolve and
+          # the size job would fail on the renaming PR itself.
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/crates/wasm/Cargo.toml")) | .name' <<< "$metadata")
+          wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
+          test -n "$wasm_package"
+          test -n "$wasm_target"
+          cargo build -p "$wasm_package" --target wasm32-unknown-unknown --release
+          BASE_SIZE=$(stat --printf="%s" "target/wasm32-unknown-unknown/release/${wasm_target}.wasm")
           echo "BASE_SIZE=$BASE_SIZE" >> "$GITHUB_ENV"
           echo "BASE_SIZE_MB=$(echo "scale=2; $BASE_SIZE / 1048576" | bc)" >> "$GITHUB_ENV"
       - name: Compute delta
@@ -225,7 +243,7 @@ jobs:
             echo ""
             echo "| File | apache-main | PR | Delta |"
             echo "|------|------|----|-------|"
-            echo "| \`brepkit_wasm.wasm\` | ${BASE_SIZE_MB} MB | ${PR_SIZE_MB} MB | ${SIGN}${DELTA_KB} KB (${SIGN}${PCT}%) |"
+            echo "| \`remus_wasm.wasm\` | ${BASE_SIZE_MB} MB | ${PR_SIZE_MB} MB | ${SIGN}${DELTA_KB} KB (${SIGN}${PCT}%) |"
             echo ""
             if [ $DELTA -gt 51200 ]; then
               echo "${EMOJI} Size increased by >50 KB. Please verify this is expected."
@@ -266,6 +284,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check-doc-paths.sh
+
+  naming:
+    name: Product Naming
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/check-remus-rename.sh
 
   deny:
     name: Cargo Deny
@@ -351,7 +376,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, deny, audit, docs, machete, secrets-scan, taplo]
+    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, deny, audit, docs, machete, secrets-scan, taplo]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs

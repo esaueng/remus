@@ -15,11 +15,11 @@
 
 use std::fmt::Write as _;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::IoError;
 
@@ -211,7 +211,7 @@ impl IgesWriteContext {
     }
 
     /// Write a NURBS curve entity (type 126).
-    fn write_nurbs_curve_entity(&mut self, nurbs: &brepkit_math::nurbs::NurbsCurve) {
+    fn write_nurbs_curve_entity(&mut self, nurbs: &remus_math::nurbs::NurbsCurve) {
         let n = nurbs.control_points().len() - 1; // Index of last control point.
         let degree = nurbs.degree();
         let knots = nurbs.knots();
@@ -256,7 +256,7 @@ impl IgesWriteContext {
     }
 
     /// Write a NURBS surface entity (type 128).
-    fn write_nurbs_surface_entity(&mut self, nurbs: &brepkit_math::nurbs::NurbsSurface) {
+    fn write_nurbs_surface_entity(&mut self, nurbs: &remus_math::nurbs::NurbsSurface) {
         let cps = nurbs.control_points();
         let nu = cps.len() - 1;
         let nv = if cps.is_empty() { 0 } else { cps[0].len() - 1 };
@@ -352,11 +352,11 @@ impl IgesWriteContext {
         let mut out = String::new();
 
         // Start section.
-        let _ = writeln!(out, "{:<72}S{:>7}", "brepkit IGES export", 1);
+        let _ = writeln!(out, "{:<72}S{:>7}", "remus IGES export", 1);
 
         // Global section (split into 72-char lines).
-        let global = "1H,,1H;,7Hbrepkit,12Hbrepkit.igs,\
-                       7Hbrepkit,7Hbrepkit,32,38,6,38,15,,1.,1,\
+        let global = "1H,,1H;,7Hremus,12Hremus.igs,\
+                       7Hremus,7Hremus,32,38,6,38,15,,1.,1,\
                        2HMM,1,0.001,13H000000.000000,,;";
         let g_chars: Vec<char> = global.chars().collect();
         let mut g_seq = 1u32;
@@ -434,16 +434,16 @@ fn fmt_f(v: f64) -> String {
 }
 
 /// Convert a [`TopologyError`] into an [`IoError`].
-fn topo_err(e: brepkit_topology::TopologyError) -> IoError {
-    IoError::Operations(brepkit_operations::OperationsError::from(e))
+fn topo_err(e: remus_topology::TopologyError) -> IoError {
+    IoError::Operations(remus_operations::OperationsError::from(e))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
 
@@ -490,17 +490,17 @@ mod tests {
     #[test]
     fn iges_box_primitive() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let iges_str = write_iges(&topo, &[solid]).unwrap();
         assert!(!iges_str.is_empty());
-        assert!(iges_str.contains("brepkit"));
+        assert!(iges_str.contains("remus"));
     }
 
     #[test]
     fn iges_multiple_solids() {
         let mut topo = Topology::new();
-        let s1 = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let s1 = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
         let s2 = make_unit_cube_non_manifold(&mut topo);
 
         let iges_str = write_iges(&topo, &[s1, s2]).unwrap();

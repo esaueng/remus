@@ -6,19 +6,19 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::WireId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::WireId;
 
 use crate::IoError;
 
 /// Metadata written into the STEP header and product structure.
 ///
-/// Defaults preserve the historical brepkit export values so callers of
+/// Defaults preserve the historical remus export values so callers of
 /// [`write_step`] remain byte-compatible.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -34,7 +34,7 @@ pub struct StepWriteOptions {
 impl Default for StepWriteOptions {
     fn default() -> Self {
         Self {
-            product_name: "brepkit_solid".to_string(),
+            product_name: "remus_solid".to_string(),
             file_name: "output.stp".to_string(),
             timestamp: "2024-01-01T00:00:00".to_string(),
         }
@@ -94,7 +94,7 @@ pub fn write_step_with_options(
         shape_repr_id,
         "ADVANCED_BREP_SHAPE_REPRESENTATION",
         &format!(
-            "'brepkit export', ({}), #{})",
+            "'remus export', ({}), #{})",
             items.join(", "),
             repr_context_id
         ),
@@ -394,7 +394,7 @@ impl StepWriteContext {
             }
             // ISO 10303-42 PARABOLA: the placement's location is the apex and
             // its ref_direction points apex→focus (the symmetry axis), with z
-            // the plane normal. STEP's own parameter differs from brepkit's by
+            // the plane normal. STEP's own parameter differs from remus's by
             // the constant factor `t = 2f·u`, but the point SET is identical
             // and the edge's vertices — not a parameter range — carry the trim.
             EdgeCurve::Parabola(par) => {
@@ -421,7 +421,7 @@ impl StepWriteContext {
         Ok(edge_curve)
     }
 
-    fn write_nurbs_curve(&mut self, nurbs: &brepkit_math::nurbs::NurbsCurve) -> u64 {
+    fn write_nurbs_curve(&mut self, nurbs: &remus_math::nurbs::NurbsCurve) -> u64 {
         let cp_ids: Vec<u64> = nurbs
             .control_points()
             .iter()
@@ -514,10 +514,7 @@ impl StepWriteContext {
         // sense, matching the reader's representation.
         let step_face_reversed = face.is_reversed() != flip;
         let reverse_bounds = step_face_reversed
-            && !matches!(
-                face.surface(),
-                brepkit_topology::face::FaceSurface::Nurbs(_)
-            );
+            && !matches!(face.surface(), remus_topology::face::FaceSurface::Nurbs(_));
 
         let outer_loop = self.write_edge_loop(topo, face.outer_wire(), reverse_bounds)?;
         let outer_bound = self.next_id();
@@ -565,7 +562,7 @@ impl StepWriteContext {
                 let axis = self.write_axis2_placement(cone.apex(), cone.axis(), ref_dir);
                 let id = self.next_id();
                 // ISO 10303-42's `semi_angle` is measured from the axis;
-                // brepkit's `half_angle` is measured from the radial plane.
+                // remus's `half_angle` is measured from the radial plane.
                 // Emitting the latter unconverted made every cone we wrote
                 // read back at its complement in any other CAD system.
                 let semi_angle = std::f64::consts::FRAC_PI_2 - cone.half_angle();
@@ -627,7 +624,7 @@ impl StepWriteContext {
 
     fn write_nurbs_surface(
         &mut self,
-        nurbs: &brepkit_math::nurbs::NurbsSurface,
+        nurbs: &remus_math::nurbs::NurbsSurface,
     ) -> Result<u64, IoError> {
         let cps = nurbs.control_points();
         if cps.is_empty() {
@@ -726,7 +723,7 @@ impl StepWriteContext {
         for inner_shell_id in inner_shell_ids {
             // ISO 10303-42 requires void shells to be oriented .F., which
             // flips the underlying CLOSED_SHELL's normals so they point away
-            // from the material. brepkit's inner-shell faces already point
+            // from the material. remus's inner-shell faces already point
             // that way, so they are written flipped and the .F. puts them
             // back on read.
             let closed = self.write_shell(topo, inner_shell_id, true)?;
@@ -751,7 +748,7 @@ impl StepWriteContext {
     fn write_shell(
         &mut self,
         topo: &Topology,
-        shell_id: brepkit_topology::shell::ShellId,
+        shell_id: remus_topology::shell::ShellId,
         flip: bool,
     ) -> Result<u64, IoError> {
         let shell = topo.shell(shell_id).map_err(topo_err)?;
@@ -779,11 +776,11 @@ impl StepWriteContext {
         let timestamp = step_string_literal(&self.options.timestamp);
         let _ = writeln!(out, "ISO-10303-21;");
         let _ = writeln!(out, "HEADER;");
-        let _ = writeln!(out, "FILE_DESCRIPTION(('brepkit STEP export'), '2;1');");
+        let _ = writeln!(out, "FILE_DESCRIPTION(('remus STEP export'), '2;1');");
         let _ = writeln!(
             out,
             "FILE_NAME({file_name}, {timestamp}, (''), (''), \
-             'brepkit', 'brepkit', '');"
+             'remus', 'remus', '');"
         );
         let _ = writeln!(out, "FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));");
         let _ = writeln!(out, "ENDSEC;");
@@ -853,17 +850,17 @@ fn compute_knot_multiplicities(knots: &[f64]) -> (Vec<u32>, Vec<f64>) {
     (mults, vals)
 }
 
-/// Convert a [`TopologyError`](brepkit_topology::TopologyError) into an [`IoError`].
-fn topo_err(e: brepkit_topology::TopologyError) -> IoError {
-    IoError::Operations(brepkit_operations::OperationsError::from(e))
+/// Convert a [`TopologyError`](remus_topology::TopologyError) into an [`IoError`].
+fn topo_err(e: remus_topology::TopologyError) -> IoError {
+    IoError::Operations(remus_operations::OperationsError::from(e))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
 
@@ -995,7 +992,7 @@ mod tests {
     #[test]
     fn step_box_primitive() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let step_str = write_step(&topo, &[solid]).unwrap();
 
@@ -1007,7 +1004,7 @@ mod tests {
     #[test]
     fn step_multiple_solids() {
         let mut topo = Topology::new();
-        let s1 = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let s1 = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
         let s2 = make_unit_cube_non_manifold(&mut topo);
 
         let step_str = write_step(&topo, &[s1, s2]).unwrap();
@@ -1056,7 +1053,7 @@ mod tests {
     #[test]
     fn step_exports_cylinder() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let solid = remus_operations::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
 
         let step_str = write_step(&topo, &[solid]).unwrap();
 
@@ -1070,7 +1067,7 @@ mod tests {
     #[test]
     fn step_exports_sphere() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_sphere(&mut topo, 1.5, 16).unwrap();
+        let solid = remus_operations::primitives::make_sphere(&mut topo, 1.5, 16).unwrap();
 
         let step_str = write_step(&topo, &[solid]).unwrap();
 
@@ -1083,7 +1080,7 @@ mod tests {
     #[test]
     fn step_exports_cone() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_cone(&mut topo, 1.0, 0.0, 2.0).unwrap();
+        let solid = remus_operations::primitives::make_cone(&mut topo, 1.0, 0.0, 2.0).unwrap();
 
         let step_str = write_step(&topo, &[solid]).unwrap();
 
@@ -1096,7 +1093,7 @@ mod tests {
     #[test]
     fn step_circle_entities_well_formed() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let solid = remus_operations::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
 
         let step_str = write_step(&topo, &[solid]).unwrap();
 
@@ -1115,7 +1112,7 @@ mod tests {
     #[test]
     fn step_all_entities_properly_closed() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let solid = remus_operations::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
 
         let step_str = write_step(&topo, &[solid]).unwrap();
 

@@ -15,11 +15,9 @@
 
 use std::f64::consts::FRAC_1_SQRT_2;
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
 
 use crate::HealError;
 
@@ -95,7 +93,7 @@ pub fn cylinder_to_nurbs(
 /// linearly with v along the cone generator. The result is degree
 /// `(2, 1)` and exactly reproduces the cone within floating-point
 /// tolerance — finer than the sampled approximation in
-/// `brepkit_math::ConicalSurface::to_nurbs`.
+/// `remus_math::ConicalSurface::to_nurbs`.
 ///
 /// `v_range = (v_min, v_max)` is measured from the apex along the
 /// cone-generator direction (NOT axial). Both endpoints must be
@@ -114,7 +112,7 @@ pub fn cone_to_nurbs(
     // Apex degeneracy: v_min must be strictly positive (the rational
     // form requires a non-zero radius row).
     if v_min <= 0.0 {
-        return Err(brepkit_math::MathError::ParameterOutOfRange {
+        return Err(remus_math::MathError::ParameterOutOfRange {
             value: v_min,
             min: f64::EPSILON,
             max: f64::INFINITY,
@@ -123,7 +121,7 @@ pub fn cone_to_nurbs(
     }
     // Empty/inverted range: v_max must lie strictly above v_min.
     if v_max <= v_min {
-        return Err(brepkit_math::MathError::ParameterOutOfRange {
+        return Err(remus_math::MathError::ParameterOutOfRange {
             value: v_max,
             min: v_min,
             max: f64::INFINITY,
@@ -410,7 +408,7 @@ fn plane_frame_axes(normal: Vec3) -> (Vec3, Vec3) {
     clippy::float_cmp
 )]
 mod tests {
-    use brepkit_math::traits::ParametricSurface;
+    use remus_math::traits::ParametricSurface;
 
     use super::*;
 
@@ -478,7 +476,7 @@ mod tests {
         // `max=f64::INFINITY` (NOT v_max), since the failure mode is
         // "apex degeneracy", not "range too small".
         match err {
-            crate::HealError::Math(brepkit_math::MathError::ParameterOutOfRange {
+            crate::HealError::Math(remus_math::MathError::ParameterOutOfRange {
                 value,
                 max,
                 ..
@@ -503,7 +501,7 @@ mod tests {
         // describe v_max coherently — `value: v_max, min: v_min`,
         // not v_min as value.
         match err {
-            crate::HealError::Math(brepkit_math::MathError::ParameterOutOfRange {
+            crate::HealError::Math(remus_math::MathError::ParameterOutOfRange {
                 value,
                 min,
                 ..
@@ -557,7 +555,7 @@ mod tests {
         let cone = ConicalSurface::new(apex, axis, half_angle).unwrap();
         let surface = cone_to_nurbs(&cone, (1.0, 4.0)).unwrap();
 
-        // brepkit's `half_angle` is measured from the radial plane (NOT
+        // remus's `half_angle` is measured from the radial plane (NOT
         // axis), so the cone surface satisfies `r = z · cot(α)` (with
         // apex at origin, axis +z): radial component is v·cos(α), axial
         // is v·sin(α), yielding r/z = cos(α)/sin(α) = cot(α).

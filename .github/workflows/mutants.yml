@@ -36,11 +36,11 @@ jobs:
           cargo mutants \
             --test-tool=nextest \
             --timeout=120 \
-            --package brepkit-math \
-            --package brepkit-algo \
-            --package brepkit-blend \
-            --package brepkit-offset \
-            --package brepkit-operations \
+            --package remus-math \
+            --package remus-algo \
+            --package remus-blend \
+            --package remus-offset \
+            --package remus-operations \
             -e 'tests/**' \
             -e 'benches/**' \
             -e 'examples/**' \

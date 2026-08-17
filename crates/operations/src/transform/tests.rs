@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+use remus_math::mat::Mat4;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::test_utils::make_unit_cube_non_manifold;
 use std::ops::Mul;
 
 use super::*;
@@ -100,14 +100,14 @@ fn rotation_updates_face_normals() {
 fn make_single_face_solid(
     topo: &mut Topology,
     surface: FaceSurface,
-) -> brepkit_topology::solid::SolidId {
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+) -> remus_topology::solid::SolidId {
+    use remus_math::vec::Point3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let tol = 1e-7;
     let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), tol));
@@ -139,8 +139,8 @@ fn make_single_face_solid(
 
 #[test]
 fn translate_cylinder_face_updates_origin() {
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::Point3;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::Point3;
 
     let mut topo = Topology::new();
     let cyl =
@@ -189,8 +189,8 @@ fn translate_cylinder_face_updates_origin() {
 
 #[test]
 fn rotate_cylinder_face_updates_axis() {
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::Point3;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::Point3;
 
     let mut topo = Topology::new();
     // Cylinder with axis along +Z.
@@ -222,8 +222,8 @@ fn rotate_cylinder_face_updates_axis() {
 
 #[test]
 fn translate_cone_face_updates_apex() {
-    use brepkit_math::surfaces::ConicalSurface;
-    use brepkit_math::vec::Point3;
+    use remus_math::surfaces::ConicalSurface;
+    use remus_math::vec::Point3;
 
     let mut topo = Topology::new();
     let cone = ConicalSurface::new(
@@ -269,8 +269,8 @@ fn translate_cone_face_updates_apex() {
 
 #[test]
 fn translate_sphere_face_updates_center() {
-    use brepkit_math::surfaces::SphericalSurface;
-    use brepkit_math::vec::Point3;
+    use remus_math::surfaces::SphericalSurface;
+    use remus_math::vec::Point3;
 
     let mut topo = Topology::new();
     let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0).unwrap();
@@ -309,8 +309,8 @@ fn translate_sphere_face_updates_center() {
 
 #[test]
 fn translate_torus_face_updates_center() {
-    use brepkit_math::surfaces::ToroidalSurface;
-    use brepkit_math::vec::Point3;
+    use remus_math::surfaces::ToroidalSurface;
+    use remus_math::vec::Point3;
 
     let mut topo = Topology::new();
     let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0, 1.5).unwrap();
@@ -377,11 +377,11 @@ fn transform_direction_unit_z_identity_unchanged() {
 /// should move both vertices and NURBS control points.
 #[test]
 fn transform_nurbs_solid() {
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Point3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
 
@@ -414,7 +414,7 @@ fn transform_nurbs_solid() {
             wid,
             vec![],
             FaceSurface::Plane {
-                normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
                 d: z,
             },
         ))
@@ -473,8 +473,8 @@ fn transform_nurbs_solid() {
 
 #[test]
 fn translate_wire() {
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::builder::make_polygon_wire;
+    use remus_math::vec::Point3;
+    use remus_topology::builder::make_polygon_wire;
 
     let mut topo = Topology::new();
     let wire = make_polygon_wire(
@@ -505,8 +505,8 @@ fn translate_wire() {
 
 #[test]
 fn degenerate_matrix_errors_for_wire() {
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::builder::make_polygon_wire;
+    use remus_math::vec::Point3;
+    use remus_topology::builder::make_polygon_wire;
 
     let mut topo = Topology::new();
     let wire = make_polygon_wire(
@@ -526,11 +526,11 @@ fn degenerate_matrix_errors_for_wire() {
 
 #[test]
 fn translate_wire_with_circle_edge() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
@@ -600,8 +600,8 @@ const BOX_CORNERS: [(f64, f64, f64); 8] = [
 /// closed 2-manifold with no free or non-manifold edges, and the volume is
 /// `|det| * 30` — the closed form, not another route through the kernel.
 fn transformed_box_is_sound(matrix: &Mat4, what: &str) {
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::adjacency::AdjacencyIndex;
+    use remus_math::vec::Point3;
+    use remus_topology::adjacency::AdjacencyIndex;
 
     let (dx, dy, dz) = BOX_DIMS;
     let mut topo = Topology::new();

@@ -30,9 +30,9 @@ mod solid;
 #[cfg(test)]
 mod tests;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
 
 // Re-export all public items.
 pub use face::{tessellate_with_uvs, tessellate_with_uvs_a};
@@ -149,7 +149,7 @@ pub(super) fn position_based_boundary_count(mesh: &TriangleMesh) -> usize {
     /// gaps the production pipeline should have closed.
     const DIAGNOSTIC_GRID: f64 = 1e-6;
 
-    use brepkit_math::det_hash::{DetHashMap, DetHashSet};
+    use remus_math::det_hash::{DetHashMap, DetHashSet};
 
     // Build canonical vertex ID from snapped position.
     let mut pos_to_canonical: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();

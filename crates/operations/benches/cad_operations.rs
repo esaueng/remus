@@ -7,7 +7,7 @@
 //! Run with:
 //!   `cargo bench-fast`               — this file only, 20 samples (~2 min)
 //!   `cargo bench-full`               — all bench files, full settings
-//!   `cargo bench -p brepkit-operations`  — all bench files (same as bench-full)
+//!   `cargo bench -p remus-operations`  — all bench files (same as bench-full)
 
 #![allow(
     clippy::unwrap_used,
@@ -20,20 +20,20 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Vec3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::chamfer::chamfer;
-use brepkit_operations::copy::copy_solid;
+use remus_math::mat::Mat4;
+use remus_math::vec::Vec3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::chamfer::chamfer;
+use remus_operations::copy::copy_solid;
 #[allow(deprecated)]
-use brepkit_operations::fillet::{fillet, fillet_rolling_ball};
-use brepkit_operations::measure;
-use brepkit_operations::pattern;
-use brepkit_operations::primitives;
-use brepkit_operations::shell_op;
-use brepkit_operations::tessellate;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_operations::fillet::{fillet, fillet_rolling_ball};
+use remus_operations::measure;
+use remus_operations::pattern;
+use remus_operations::primitives;
+use remus_operations::shell_op;
+use remus_operations::tessellate;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
 // ---------------------------------------------------------------------------
 // Criterion config — fast defaults for development iteration
@@ -53,8 +53,8 @@ fn fast_config() -> Criterion {
 /// Collect all unique edge IDs from a solid's outer shell.
 fn collect_edges(
     topo: &Topology,
-    solid: brepkit_topology::solid::SolidId,
-) -> Vec<brepkit_topology::edge::EdgeId> {
+    solid: remus_topology::solid::SolidId,
+) -> Vec<remus_topology::edge::EdgeId> {
     let shell_id = topo.solid(solid).unwrap().outer_shell();
     let shell = topo.shell(shell_id).unwrap();
     let mut edges = Vec::new();
@@ -73,7 +73,7 @@ fn collect_edges(
 /// Tessellate all faces of a solid into a combined mesh.
 fn tessellate_solid(
     topo: &Topology,
-    solid: brepkit_topology::solid::SolidId,
+    solid: remus_topology::solid::SolidId,
     deflection: f64,
 ) -> tessellate::TriangleMesh {
     let shell_id = topo.solid(solid).unwrap().outer_shell();
@@ -376,7 +376,7 @@ fn bench_make_cylinder_single(c: &mut Criterion) {
 
 /// Phase 2: copy+transform vs fused copy_and_transform_solid
 fn bench_translate_fused_x1000(c: &mut Criterion) {
-    use brepkit_operations::copy::copy_and_transform_solid;
+    use remus_operations::copy::copy_and_transform_solid;
 
     let mut group = c.benchmark_group("translate_x1000_ab");
 

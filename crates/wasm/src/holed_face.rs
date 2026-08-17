@@ -12,7 +12,7 @@
 //!
 //! Always, for every surface type:
 //! - each hole wire is topologically closed
-//!   ([`validate_wire_closed`](brepkit_topology::validation::validate_wire_closed));
+//!   ([`validate_wire_closed`](remus_topology::validation::validate_wire_closed));
 //! - each hole wire is distinct from the outer wire and from every other
 //!   inner wire on the face;
 //! - every sampled point of each hole wire lies on the face's surface within
@@ -28,7 +28,7 @@
 //! - holes do not overlap or nest inside each other.
 //!
 //! Containment on a curved surface would need a UV-space point-in-polygon
-//! test with periodic-seam unwrapping, which `brepkit-check` keeps private.
+//! test with periodic-seam unwrapping, which `remus-check` keeps private.
 //! Rather than approximate it — a wrong containment answer on a cylinder
 //! would reject valid input — the three positional checks are skipped there
 //! and this limitation is stated rather than hidden.
@@ -46,19 +46,19 @@
 //! of containment.
 //!
 //! Hole winding is deliberately NOT constrained: `extrude` detects inner-wire
-//! winding per wire (`brepkit_operations::winding::inner_wire_is_cw`) and
+//! winding per wire (`remus_operations::winding::inner_wire_is_cw`) and
 //! builds correct side faces for either, so requiring CW here would reject
 //! input the kernel already handles.
 
-use brepkit_check::util::{point_in_polygon_3d, wire_polygon_curve_sampled};
-use brepkit_geometry::extrema::{
+use remus_check::util::{point_in_polygon_3d, wire_polygon_curve_sampled};
+use remus_geometry::extrema::{
     point_to_cone, point_to_cylinder, point_to_sphere, point_to_surface, point_to_torus,
 };
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::wire::WireId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::wire::WireId;
 
 use crate::error::WasmError;
 use crate::helpers::{polygons_overlap_2d, segments_intersect_2d};
@@ -86,7 +86,7 @@ const NURBS_SURFACE_REL_TOL: f64 = 1e-5;
 /// Distance from `p` to the (untrimmed) surface `surface`.
 ///
 /// Plane and the four analytic surfaces have closed-form answers. NURBS goes
-/// through the grid-seeded Newton projection in `brepkit-geometry` rather
+/// through the grid-seeded Newton projection in `remus-geometry` rather
 /// than [`FaceSurface::project_point`]: the latter falls back to the domain
 /// midpoint when its Newton iteration fails, which would read as an enormous
 /// deviation and reject a hole that is in fact on the surface.
@@ -309,7 +309,7 @@ pub fn validate_hole_wires(
     // ── Closedness ────────────────────────────────────────────────
     for (i, &hole) in new_holes.iter().enumerate() {
         let wire = topo.wire(hole)?;
-        brepkit_topology::validation::validate_wire_closed(wire, topo).map_err(|e| {
+        remus_topology::validation::validate_wire_closed(wire, topo).map_err(|e| {
             WasmError::InvalidInput {
                 reason: format!(
                     "hole wire {i} (wire {}) is not a closed loop: {e}",
@@ -496,14 +496,14 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{EXACT_SURFACE_REL_TOL, NURBS_SURFACE_REL_TOL, validate_hole_wires};
-    use brepkit_math::surfaces::{
+    use remus_math::surfaces::{
         ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
     };
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::builder::make_polygon_wire;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::wire::WireId;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::builder::make_polygon_wire;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::wire::WireId;
 
     const TOL: f64 = 1e-7;
 
@@ -652,9 +652,8 @@ mod tests {
         let cyl =
             CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0)
                 .unwrap();
-        let nurbs =
-            brepkit_geometry::convert::surface_to_nurbs::cylinder_to_nurbs(&cyl, (-5.0, 5.0))
-                .expect("cylinder → NURBS");
+        let nurbs = remus_geometry::convert::surface_to_nurbs::cylinder_to_nurbs(&cyl, (-5.0, 5.0))
+            .expect("cylinder → NURBS");
         assert_on_surface(
             &FaceSurface::Nurbs(nurbs),
             &on_cylinder(5.0),
@@ -739,9 +738,8 @@ mod tests {
         let cyl =
             CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5)
                 .unwrap();
-        let nurbs =
-            brepkit_geometry::convert::surface_to_nurbs::cylinder_to_nurbs(&cyl, (-0.5, 0.5))
-                .expect("cylinder → NURBS");
+        let nurbs = remus_geometry::convert::surface_to_nurbs::cylinder_to_nurbs(&cyl, (-0.5, 0.5))
+            .expect("cylinder → NURBS");
 
         let mut topo = Topology::new();
         let outer = wire(&mut topo, &on_cylinder(0.5));

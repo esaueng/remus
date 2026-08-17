@@ -66,10 +66,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -77,11 +77,11 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
-fn health(topo: &Topology, sid: brepkit_topology::solid::SolidId) -> (usize, usize, usize) {
+fn health(topo: &Topology, sid: remus_topology::solid::SolidId) -> (usize, usize, usize) {
     let faces = solid_faces(topo, sid).unwrap();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     let mut curved = 0;
@@ -117,10 +117,10 @@ fn oshape_socket_fuse_is_analytic_watertight() {
     let mut topo = Topology::new();
     let a = load("oshape_socket_a.bin", &mut topo);
     let b = load("oshape_socket_b.bin", &mut topo);
-    let vol_a = brepkit_operations::measure::oriented_solid_volume(&topo, a, 0.05).unwrap();
-    let vol_b = brepkit_operations::measure::oriented_solid_volume(&topo, b, 0.05).unwrap();
+    let vol_a = remus_operations::measure::oriented_solid_volume(&topo, a, 0.05).unwrap();
+    let vol_b = remus_operations::measure::oriented_solid_volume(&topo, b, 0.05).unwrap();
 
-    let result = brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, a, b)
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, a, b)
         .expect("analytic fuse should not abort");
 
     let (free, over, curved) = health(&topo, result);
@@ -130,7 +130,7 @@ fn oshape_socket_fuse_is_analytic_watertight() {
 
     // The halves are complementary and non-overlapping, so the fuse volume
     // must equal the operand sum (measured 8391.860 = 6151.772 + 2240.088).
-    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
+    let vol = remus_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
     assert!(
         (vol - (vol_a + vol_b)).abs() < 0.01,
         "fuse volume {vol:.3} must equal the operand sum {:.3}",

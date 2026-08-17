@@ -1,8 +1,8 @@
 //! Curve analysis — arc length, degeneracy, continuity breaks.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::traits::ParametricCurve;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::tolerance::Tolerance;
+use remus_math::traits::ParametricCurve;
 
 use crate::status::Status;
 

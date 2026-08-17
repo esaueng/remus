@@ -20,14 +20,14 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::revolve::revolve;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::revolve::revolve;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::solid::SolidId;
 
 /// A wedge: rectangle `r0..r1 × z0..z1` in the XZ plane (which contains the Z
 /// axis), revolved `angle` about Z. Wound the way the tool's own profiles are —
@@ -39,14 +39,14 @@ fn wedge(
     z0: f64,
     z1: f64,
     angle: f64,
-) -> brepkit_topology::solid::SolidId {
+) -> remus_topology::solid::SolidId {
     let pts = vec![
         Point3::new(r0, 0.0, z0),
         Point3::new(r1, 0.0, z0),
         Point3::new(r1, 0.0, z1),
         Point3::new(r0, 0.0, z1),
     ];
-    let wire = brepkit_topology::builder::make_polygon_wire(topo, &pts, 1e-7).unwrap();
+    let wire = remus_topology::builder::make_polygon_wire(topo, &pts, 1e-7).unwrap();
     let face = topo.add_face(Face::new(
         wire,
         vec![],
@@ -149,7 +149,7 @@ fn corner_wedge_operands_are_outward_analytic() {
             (0, 0),
             "{label} operand must be watertight and manifold"
         );
-        let signed = brepkit_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap();
+        let signed = remus_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap();
         assert!(
             signed > 0.0,
             "{label} operand must be outward-oriented, got signed volume {signed:.3}"
@@ -182,7 +182,7 @@ fn corner_wedge_cut_stays_analytic() {
 
     // The by-edge-id gate above is blind to POSITION-duplicate free edges, so
     // confirm watertightness on the welded mesh too.
-    let mesh = brepkit_operations::tessellate::tessellate_solid(&topo, result, 0.01).unwrap();
+    let mesh = remus_operations::tessellate::tessellate_solid(&topo, result, 0.01).unwrap();
     assert_eq!(
         mesh_boundary_edges(&mesh.positions, &mesh.indices),
         0,
@@ -195,7 +195,7 @@ fn corner_wedge_cut_stays_analytic() {
     let base_vol = 45.0_f64.to_radians() * (0.5 * (1.55 + 4.75)) * ((4.75 - 1.55) * (20.8 - 2.7));
     let cut_vol = 25.0_f64.to_radians() * (0.5 * (3.0 + 4.75)) * ((4.75 - 3.0) * (9.0 - 8.0));
     let expected = base_vol - cut_vol;
-    let signed = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
+    let signed = remus_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
     let rel_err = (signed - expected).abs() / expected;
     assert!(
         rel_err < 0.01,

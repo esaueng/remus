@@ -2,19 +2,19 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use brepkit_check::validate::{ValidateOptions, validate_solid};
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::resize_blend::{resize_blend, resize_blend_failure_code};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_check::validate::{ValidateOptions, validate_solid};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
 

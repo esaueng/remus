@@ -1,6 +1,6 @@
 #![no_main]
 
-use brepkit_wasm::kernel::BrepKernel;
+use remus_wasm::kernel::BrepKernel;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

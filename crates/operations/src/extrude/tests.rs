@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::test_utils::{make_unit_square_face, make_unit_triangle_face};
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::test_utils::{make_unit_square_face, make_unit_triangle_face};
 
 use super::*;
 use crate::test_helpers::assert_euler_genus0;
@@ -50,10 +50,10 @@ fn extrude_rect_with_circular_hole_uses_exact_cylinder() {
     // exact analytic π·r²·h instead of an inscribed-polygon prism. The hole
     // wall becomes ONE cylinder face, not a faceted ring, and the measured
     // volume matches the analytic value.
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::builder::{make_circle_edge, make_polygon_wire};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Point3;
+    use remus_topology::builder::{make_circle_edge, make_polygon_wire};
+    use remus_topology::face::Face;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let tol = 1e-7;
     let mut topo = Topology::new();
@@ -189,7 +189,7 @@ fn extrude_orientation_correct() {
 
 /// Build a NURBS face: a curved surface on the XY plane.
 fn make_nurbs_face(topo: &mut Topology) -> FaceId {
-    use brepkit_math::nurbs::surface::NurbsSurface;
+    use remus_math::nurbs::surface::NurbsSurface;
 
     // Bicubic surface with some curvature.
     let cps = vec![
@@ -333,7 +333,7 @@ fn make_face_with_hole(topo: &mut Topology) -> FaceId {
         Point3::new(1.0, 1.0, 0.0),
         Point3::new(-1.0, 1.0, 0.0),
     ];
-    let outer_wire = brepkit_topology::builder::make_polygon_wire(topo, &outer_pts, 1e-7).unwrap();
+    let outer_wire = remus_topology::builder::make_polygon_wire(topo, &outer_pts, 1e-7).unwrap();
 
     // Inner wire: 0.5×0.5 square hole (CW winding = hole).
     let inner_pts = vec![
@@ -342,7 +342,7 @@ fn make_face_with_hole(topo: &mut Topology) -> FaceId {
         Point3::new(0.25, 0.25, 0.0),
         Point3::new(0.25, -0.25, 0.0),
     ];
-    let inner_wire = brepkit_topology::builder::make_polygon_wire(topo, &inner_pts, 1e-7).unwrap();
+    let inner_wire = remus_topology::builder::make_polygon_wire(topo, &inner_pts, 1e-7).unwrap();
 
     let normal = Vec3::new(0.0, 0.0, 1.0);
     let d = 0.0;
@@ -512,7 +512,7 @@ fn extrude_face_with_ccw_circle_hole_volume() {
         Point3::new(0.0, 20.0, 0.0),
     ];
     let outer_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
 
     // Inner wire: 32-segment polygon circle at center (10,10), radius 3.
     // CCW winding (standard math convention: cos/sin going counter-clockwise).
@@ -528,7 +528,7 @@ fn extrude_face_with_ccw_circle_hole_volume() {
         })
         .collect();
     let inner_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &inner_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &inner_pts, 1e-7).unwrap();
 
     let normal = Vec3::new(0.0, 0.0, 1.0);
     let face = Face::new(
@@ -566,7 +566,7 @@ fn extrude_face_with_ccw_circle_hole_volume() {
 
 #[test]
 fn extrude_analytic_circle_hole_volume_is_exact() {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
 
     // 20×20 plate with a true (analytic) circular hole, radius 3, extruded by
     // 10. The hole is four quarter-circle arc edges (how a full circle is
@@ -583,7 +583,7 @@ fn extrude_analytic_circle_hole_volume_is_exact() {
         Point3::new(0.0, 20.0, 0.0),
     ];
     let outer_wire =
-        brepkit_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
+        remus_topology::builder::make_polygon_wire(&mut topo, &outer_pts, 1e-7).unwrap();
 
     let (cx, cy, r) = (10.0, 10.0, 3.0);
     let mk = |topo: &mut Topology, x: f64, y: f64| {
@@ -650,7 +650,7 @@ fn extrude_cw_profile_produces_correct_solid() {
 /// the solid is translated far from the origin.
 #[test]
 fn extrude_cw_profile_translation_invariant() {
-    use brepkit_topology::test_utils::make_cw_unit_square_face;
+    use remus_topology::test_utils::make_cw_unit_square_face;
 
     // Build solid at origin
     let mut topo1 = Topology::new();
@@ -665,7 +665,7 @@ fn extrude_cw_profile_translation_invariant() {
     crate::transform::transform_solid(
         &mut topo2,
         solid2,
-        &brepkit_math::mat::Mat4::translation(1000.0, 1000.0, 1000.0),
+        &remus_math::mat::Mat4::translation(1000.0, 1000.0, 1000.0),
     )
     .unwrap();
     let vol2 = crate::measure::solid_volume(&topo2, solid2, 0.1).unwrap();
@@ -691,7 +691,7 @@ fn extrude_cw_profile_translation_invariant() {
 /// rest of the side_face_surface match arm).
 #[test]
 fn extrude_recognized_circle_nurbs_arc_uses_cylinder_side_face() {
-    use brepkit_math::nurbs::curve::NurbsCurve;
+    use remus_math::nurbs::curve::NurbsCurve;
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -768,7 +768,7 @@ fn extrude_recognized_circle_nurbs_arc_uses_cylinder_side_face() {
 /// Extruding a face with a Circle edge should produce a cylindrical side face.
 #[test]
 fn extrude_circle_edge_produces_cylinder_side_face() {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -832,8 +832,8 @@ fn extrude_circle_edge_produces_cylinder_side_face() {
 /// NURBS arc extrude → volume should match analytic formula.
 #[test]
 fn nurbs_arc_extrude_volume() {
-    use brepkit_math::nurbs::fitting::interpolate;
-    use brepkit_math::tolerance::Tolerance;
+    use remus_math::nurbs::fitting::interpolate;
+    use remus_math::tolerance::Tolerance;
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -942,7 +942,7 @@ fn nurbs_arc_extrude_volume() {
             .collect();
         let mk_line2 = |topo: &mut Topology, s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
         let mk_arc2 = |topo: &mut Topology, s, e, center: Point3| {
-            let circle = brepkit_math::curves::Circle3D::new(center, z_axis, r).unwrap();
+            let circle = remus_math::curves::Circle3D::new(center, z_axis, r).unwrap();
             topo.add_edge(Edge::new(s, e, EdgeCurve::Circle(circle)))
         };
         let e2_bot = mk_line2(&mut t2, vids2[7], vids2[0]);
@@ -1048,8 +1048,8 @@ fn nurbs_arc_extrude_volume() {
 /// alone give zero signed area.
 #[test]
 fn extrude_half_circle_face_volume() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
 
     let mut topo = Topology::new();
     let tol = Tolerance::new();
@@ -1092,8 +1092,8 @@ fn extrude_half_circle_face_volume() {
 
 #[test]
 fn extrude_half_circle_reversed_edge_volume() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
 
     // Same upper half-disc as `extrude_half_circle_face_volume`, but the arc is
     // used REVERSED in the wire — guards the Circle arm of `reverse_edge_curve`
@@ -1140,8 +1140,8 @@ fn extrude_half_circle_reversed_edge_volume() {
 
 #[test]
 fn extrude_half_disc_reversed_nurbs_edge_volume() {
-    use brepkit_math::nurbs::fitting::interpolate;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::nurbs::fitting::interpolate;
+    use remus_math::vec::{Point3, Vec3};
 
     // Upper half-disc whose arc boundary is a NURBS (interpolated semicircle),
     // used REVERSED in the wire. Guards the NURBS arm of `reverse_edge_curve`:
@@ -1196,8 +1196,8 @@ fn extrude_half_disc_reversed_nurbs_edge_volume() {
 /// the solid volume matches the half-ellipse swept area (not the full ellipse).
 #[test]
 fn extrude_half_ellipse_face_volume() {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::builder::make_ellipse_arc;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::builder::make_ellipse_arc;
 
     let mut topo = Topology::new();
     let center = Point3::new(5.0, 0.0, 0.0);
@@ -1261,8 +1261,8 @@ fn extrude_half_ellipse_face_volume() {
 
 #[test]
 fn extrude_half_ellipse_reversed_edge_volume() {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::builder::make_ellipse_arc;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::builder::make_ellipse_arc;
 
     // Same upper-half-ellipse region as `extrude_half_ellipse_face_volume`, but
     // the arc is traversed REVERSED in the wire. The arc edge's stored start/end
@@ -1324,11 +1324,11 @@ fn extrude_spline_encoded_profile_recovers_analytic_walls() {
     // drawing pipeline ships corner-treated profiles this way): four straight
     // runs and one chamfer segment as degree-1 NURBS, one fillet corner as a
     // rational-quadratic arc. Every side wall must come out Plane/Cylinder.
-    use brepkit_geometry::convert::{circle_to_nurbs, line_to_nurbs};
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::Wire;
+    use remus_geometry::convert::{circle_to_nurbs, line_to_nurbs};
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::Wire;
 
     let mut topo = Topology::new();
     let tol = Tolerance::new().linear;
@@ -1347,7 +1347,7 @@ fn extrude_spline_encoded_profile_recovers_analytic_walls() {
         .map(|&p| topo.add_vertex(Vertex::new(p, tol)))
         .collect();
     let nurbs_line = |a: Point3, b: Point3| EdgeCurve::NurbsCurve(line_to_nurbs(a, b).unwrap());
-    let fillet_circle = brepkit_math::curves::Circle3D::new(
+    let fillet_circle = remus_math::curves::Circle3D::new(
         Point3::new(2.0, 4.0, 0.0),
         Vec3::new(0.0, 0.0, 1.0),
         2.0,
@@ -1388,7 +1388,7 @@ fn extrude_spline_encoded_profile_recovers_analytic_walls() {
     let solid = extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 3.0).unwrap();
     let mut nurbs_walls = 0usize;
     let mut cylinders = 0usize;
-    for fid in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
         match topo.face(fid).unwrap().surface() {
             FaceSurface::Nurbs(_) => nurbs_walls += 1,
             FaceSurface::Cylinder(_) => cylinders += 1,
@@ -1414,11 +1414,11 @@ fn extrude_spline_encoded_profile_recovers_analytic_walls() {
 
 #[test]
 fn extrude_does_not_flatten_spline_between_recognizer_samples() {
-    use brepkit_math::nurbs::curve::NurbsCurve;
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::Wire;
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::Wire;
 
     let mut topo = Topology::new();
     let tol = Tolerance::new().linear;
@@ -1501,11 +1501,11 @@ fn extrude_reversed_spline_arc_profile_recovers_analytic_walls() {
     // end-to-start relative to the edge vertices (the `rev` branch of the
     // profile normalization): the recovered Circle must still cover the
     // fillet arc, not its complement.
-    use brepkit_geometry::convert::{circle_to_nurbs, line_to_nurbs};
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::Wire;
+    use remus_geometry::convert::{circle_to_nurbs, line_to_nurbs};
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::Wire;
 
     let mut topo = Topology::new();
     let tol = Tolerance::new().linear;
@@ -1521,7 +1521,7 @@ fn extrude_reversed_spline_arc_profile_recovers_analytic_walls() {
         .map(|&p| topo.add_vertex(Vertex::new(p, tol)))
         .collect();
     let nurbs_line = |a: Point3, b: Point3| EdgeCurve::NurbsCurve(line_to_nurbs(a, b).unwrap());
-    let fillet_circle = brepkit_math::curves::Circle3D::new(
+    let fillet_circle = remus_math::curves::Circle3D::new(
         Point3::new(2.0, 4.0, 0.0),
         Vec3::new(0.0, 0.0, 1.0),
         2.0,
@@ -1558,7 +1558,7 @@ fn extrude_reversed_spline_arc_profile_recovers_analytic_walls() {
     ));
     let solid = extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 3.0).unwrap();
     let mut nurbs_walls = 0usize;
-    for fid in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
         if matches!(topo.face(fid).unwrap().surface(), FaceSurface::Nurbs(_)) {
             nurbs_walls += 1;
         }

@@ -14,11 +14,11 @@
 //!    on degenerate surfaces or very tight folds), fall back to grid sampling
 //!    with distance checks against the original surface.
 
-use brepkit_math::nurbs::projection::project_point_to_surface;
-use brepkit_math::nurbs::self_intersection::detect_self_intersection;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::nurbs::surface_fitting::interpolate_surface;
-use brepkit_math::vec::Point3;
+use remus_math::nurbs::projection::project_point_to_surface;
+use remus_math::nurbs::self_intersection::detect_self_intersection;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::nurbs::surface_fitting::interpolate_surface;
+use remus_math::vec::Point3;
 
 use crate::OperationsError;
 
@@ -77,7 +77,7 @@ pub fn trim_offset_self_intersections(
     }
 
     log::debug!(
-        target: "brepkit_approx",
+        target: "remus_approx",
         "offset_trim: SSI curve detection found nothing — falling back to grid-sampling trim ({DETECTION_GRID}x{DETECTION_GRID})"
     );
     trim_via_sampling(original, offset, offset_distance, tolerance)
@@ -95,7 +95,7 @@ fn trim_via_ssi(
     offset: &NurbsSurface,
     offset_distance: f64,
     tolerance: f64,
-    ssi_curves: &[brepkit_math::nurbs::self_intersection::SelfIntersectionCurve],
+    ssi_curves: &[remus_math::nurbs::self_intersection::SelfIntersectionCurve],
 ) -> Result<NurbsSurface, OperationsError> {
     let expected_dist = offset_distance.abs();
     let dist_tol = distance_tolerance(tolerance, expected_dist);
@@ -457,8 +457,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use brepkit_math::nurbs::NurbsSurface;
-    use brepkit_math::vec::Point3 as P;
+    use remus_math::nurbs::NurbsSurface;
+    use remus_math::vec::Point3 as P;
 
     /// Build a convex dome surface (paraboloid opening upward).
     /// Control points form a bowl shape, so offsetting outward (along +Z normal)
@@ -522,7 +522,7 @@ mod tests {
         }
 
         let degree = surface.degree_u().min(surface.degree_v()).min(3);
-        brepkit_math::nurbs::surface_fitting::interpolate_surface(&grid, degree, degree).unwrap()
+        remus_math::nurbs::surface_fitting::interpolate_surface(&grid, degree, degree).unwrap()
     }
 
     #[test]

@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::fill_face::fill_coons_patch;
 
@@ -309,7 +309,7 @@ fn make_circle_face_at(topo: &mut Topology, radius: f64, z: f64) -> FaceId {
     let tol_val = 1e-7;
     let axis = Vec3::new(0.0, 0.0, 1.0);
     let center = Point3::new(0.0, 0.0, z);
-    let circle = brepkit_math::curves::Circle3D::new(center, axis, radius).unwrap();
+    let circle = remus_math::curves::Circle3D::new(center, axis, radius).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), tol_val));
     let edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
     let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
@@ -328,10 +328,9 @@ fn make_nurbs_circle_face_at(topo: &mut Topology, radius: f64, z: f64) -> FaceId
     let tol_val = 1e-7;
     let axis = Vec3::new(0.0, 0.0, 1.0);
     let center = Point3::new(0.0, 0.0, z);
-    let circle = brepkit_math::curves::Circle3D::new(center, axis, radius).unwrap();
+    let circle = remus_math::curves::Circle3D::new(center, axis, radius).unwrap();
     let nurbs =
-        brepkit_geometry::convert::circle_to_nurbs(&circle, 0.0, 2.0 * std::f64::consts::PI)
-            .unwrap();
+        remus_geometry::convert::circle_to_nurbs(&circle, 0.0, 2.0 * std::f64::consts::PI).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), tol_val));
     let edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::NurbsCurve(nurbs)));
     let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
@@ -410,7 +409,7 @@ fn loft_non_coaxial_circles_falls_back_with_positive_volume() {
     let tol_val = 1e-7;
     let axis = Vec3::new(0.0, 0.0, 1.0);
     let center = Point3::new(8.0, 0.0, 20.0);
-    let circle = brepkit_math::curves::Circle3D::new(center, axis, 5.0).unwrap();
+    let circle = remus_math::curves::Circle3D::new(center, axis, 5.0).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), tol_val));
     let edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
     let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
@@ -508,7 +507,7 @@ fn loft_smooth_surface_passes_through_profiles() {
 
 /// Rounded-rect profile (4 Line edges + 4 Circle arc corners), CCW.
 fn make_rr_arcs(topo: &mut Topology, hw: f64, hd: f64, r: f64, z: f64) -> FaceId {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
     let r = r.min(hw.min(hd));
     let cc = [
         Point3::new(hw - r, -hd + r, z),
@@ -578,12 +577,12 @@ fn loft_rounded_rect_preserves_arc_corners() {
     );
 
     // Watertight genus-0: every edge shared by exactly 2 faces, euler == 2.
-    let manifold = brepkit_topology::validation::validate_shell_manifold(sh, &topo);
+    let manifold = remus_topology::validation::validate_shell_manifold(sh, &topo);
     assert!(
         manifold.is_ok(),
         "loft should be a closed manifold: {manifold:?}"
     );
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     assert_eq!(
@@ -646,12 +645,12 @@ fn loft_multi_section_rounded_rect_preserves_arc_corners() {
         "3 bands x 4 arc corners = 12 curve-preserved side faces (not faceted)"
     );
 
-    let manifold = brepkit_topology::validation::validate_shell_manifold(sh, &topo);
+    let manifold = remus_topology::validation::validate_shell_manifold(sh, &topo);
     assert!(
         manifold.is_ok(),
         "multi-section loft should be a closed manifold: {manifold:?}"
     );
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     assert_eq!(
@@ -663,7 +662,7 @@ fn loft_multi_section_rounded_rect_preserves_arc_corners() {
 /// Rounded-rect profile with each 90° corner split into TWO co-circular arcs,
 /// mimicking drawn rounded-rects that split corners inconsistently with size.
 fn make_rr_arcs_split(topo: &mut Topology, hw: f64, hd: f64, r: f64, z: f64) -> FaceId {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
     let r = r.min(hw.min(hd));
     let cc = [
         Point3::new(hw - r, -hd + r, z),
@@ -737,12 +736,12 @@ fn loft_merges_split_arc_corners_for_curve_preservation() {
         curved, 4,
         "the 4 corners must stay curve-preserved despite the split-arc profile"
     );
-    let manifold = brepkit_topology::validation::validate_shell_manifold(sh, &topo);
+    let manifold = remus_topology::validation::validate_shell_manifold(sh, &topo);
     assert!(
         manifold.is_ok(),
         "split-arc loft should be a closed manifold: {manifold:?}"
     );
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
     #[allow(clippy::cast_possible_wrap)]
     let euler = (v as i64) - (e as i64) + (f as i64);
     assert_eq!(
@@ -863,8 +862,7 @@ fn loft_two_nonplanar_coons_patches_is_valid_solid() {
 /// accepted and closed with an exact flat (`Plane`) cap.
 fn make_sphere_cap_patch(topo: &mut Topology, ring_z: f64, ring_r: f64, sphere_r: f64) -> FaceId {
     let sphere =
-        brepkit_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), sphere_r)
-            .unwrap();
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), sphere_r).unwrap();
     let pts = [
         Point3::new(ring_r, 0.0, ring_z),
         Point3::new(0.0, ring_r, ring_z),
@@ -1020,19 +1018,16 @@ fn make_rounded_rect_face_at(
     }
     let mut oes = Vec::new();
     for (k, &(cx, cy, _)) in corners.iter().enumerate() {
-        let circle = brepkit_math::curves::Circle3D::new(
-            Point3::new(cx, cy, z),
-            Vec3::new(0.0, 0.0, 1.0),
-            r,
-        )
-        .unwrap();
+        let circle =
+            remus_math::curves::Circle3D::new(Point3::new(cx, cy, z), Vec3::new(0.0, 0.0, 1.0), r)
+                .unwrap();
         let curve = if nurbs_arcs {
             let (a0, a1) = EdgeCurve::Circle(circle.clone()).domain_with_endpoints(
                 topo.vertex(vids[2 * k]).unwrap().point(),
                 topo.vertex(vids[2 * k + 1]).unwrap().point(),
             );
             EdgeCurve::NurbsCurve(
-                brepkit_geometry::convert::circle_to_nurbs(&circle, a0, a1).unwrap(),
+                remus_geometry::convert::circle_to_nurbs(&circle, a0, a1).unwrap(),
             )
         } else {
             EdgeCurve::Circle(circle)
@@ -1084,7 +1079,7 @@ fn loft_rounded_rect_nurbs_arcs_stays_analytic() {
             })
             .collect();
         let solid = loft(&mut topo, &profs).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
         let curved = faces
             .iter()
             .filter(|&&f| {

@@ -20,9 +20,9 @@
 
 use std::path::{Path, PathBuf};
 
-use brepkit_operations::measure;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
+use remus_operations::measure;
+use remus_topology::Topology;
+use remus_topology::explorer;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,7 +48,7 @@ fn omitted_optional_placements_import_as_one_solid() {
     );
 
     let mut topo = Topology::new();
-    let solids = brepkit_io::step::reader::read_step(&text, &mut topo).unwrap();
+    let solids = remus_io::step::reader::read_step(&text, &mut topo).unwrap();
     assert_eq!(solids.len(), 1, "expected exactly one solid");
 
     let faces = explorer::solid_faces(&topo, solids[0]).unwrap();
@@ -82,7 +82,7 @@ fn the_fuzz_seed_reaches_the_placement_code() {
     );
 
     let mut topo = Topology::new();
-    let solids = brepkit_io::step::reader::read_step(&text, &mut topo).unwrap();
+    let solids = remus_io::step::reader::read_step(&text, &mut topo).unwrap();
     assert_eq!(solids.len(), 1, "expected exactly one solid");
     assert_eq!(
         explorer::solid_faces(&topo, solids[0]).unwrap().len(),
@@ -105,13 +105,13 @@ fn omitted_optional_placements_round_trip() {
     let text = std::fs::read_to_string(fixture(FIXTURE)).unwrap();
 
     let mut topo = Topology::new();
-    let solid = brepkit_io::step::reader::read_step(&text, &mut topo).unwrap()[0];
+    let solid = remus_io::step::reader::read_step(&text, &mut topo).unwrap()[0];
     let volume = measure::solid_volume(&topo, solid, DEFLECTION).unwrap();
     let center = measure::solid_center_of_mass(&topo, solid, DEFLECTION).unwrap();
 
-    let written = brepkit_io::step::write_step(&topo, &[solid]).unwrap();
+    let written = remus_io::step::write_step(&topo, &[solid]).unwrap();
     let mut round_topo = Topology::new();
-    let round_solids = brepkit_io::step::reader::read_step(&written, &mut round_topo).unwrap();
+    let round_solids = remus_io::step::reader::read_step(&written, &mut round_topo).unwrap();
     assert_eq!(round_solids.len(), 1);
 
     let round_faces = explorer::solid_faces(&round_topo, round_solids[0]).unwrap();

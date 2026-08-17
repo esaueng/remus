@@ -8,10 +8,10 @@
 //! The walker produces a sequence of [`CircSection`]s that can be assembled
 //! into a NURBS surface via [`approximate_blend_surface`].
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
 
 use crate::BlendError;
 use crate::blend_func::{BlendContext, BlendFunction, BlendParams};
@@ -373,7 +373,7 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
 pub fn approximate_blend_surface(sections: &[CircSection]) -> Result<NurbsSurface, BlendError> {
     let n = sections.len();
     if n < 2 {
-        return Err(BlendError::Math(brepkit_math::MathError::EmptyInput));
+        return Err(BlendError::Math(remus_math::MathError::EmptyInput));
     }
 
     // U direction: rational quadratic arc (degree 2, 3 control points).
@@ -483,11 +483,11 @@ mod tests {
 
     use super::*;
     use crate::blend_func::ConstRadBlend;
-    use brepkit_math::traits::ParametricSurface;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
+    use remus_math::traits::ParametricSurface;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
 
     struct TestPlane {
         origin: Point3,
@@ -541,7 +541,7 @@ mod tests {
         (plane1, plane2)
     }
 
-    fn make_line_edge(topo: &mut Topology, a: Point3, b: Point3) -> brepkit_topology::edge::EdgeId {
+    fn make_line_edge(topo: &mut Topology, a: Point3, b: Point3) -> remus_topology::edge::EdgeId {
         let v0 = topo.add_vertex(Vertex::new(a, 1e-7));
         let v1 = topo.add_vertex(Vertex::new(b, 1e-7));
         topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line))

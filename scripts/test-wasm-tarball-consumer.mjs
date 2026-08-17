@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Pack and install brepkit-wasm into a disposable consumer, then run the
+ * Pack and install remus-wasm into a disposable consumer, then run the
  * OpenZCAD-shaped exact-geometry regressions through the installed package.
  *
  * Usage: node scripts/test-wasm-tarball-consumer.mjs
@@ -18,7 +18,7 @@ import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regress
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
 const packageDir = resolve(projectRoot, 'crates/wasm/pkg');
-const temporaryRoot = mkdtempSync(resolve(tmpdir(), 'brepkit-tarball-consumer-'));
+const temporaryRoot = mkdtempSync(resolve(tmpdir(), 'remus-tarball-consumer-'));
 const consumerDir = resolve(temporaryRoot, 'consumer');
 const npmEnvironment = {
   ...process.env,
@@ -53,14 +53,14 @@ try {
   );
 
   const consumerRequire = createRequire(resolve(consumerDir, 'consumer.cjs'));
-  const resolvedEntry = consumerRequire.resolve('brepkit-wasm');
-  const installedPackageDir = realpathSync(resolve(consumerDir, 'node_modules/brepkit-wasm'));
+  const resolvedEntry = consumerRequire.resolve('remus-wasm');
+  const installedPackageDir = realpathSync(resolve(consumerDir, 'node_modules/remus-wasm'));
   assert.ok(
     resolvedEntry.startsWith(`${installedPackageDir}${sep}`),
-    `brepkit-wasm resolved outside the installed consumer: ${resolvedEntry}`,
+    `remus-wasm resolved outside the installed consumer: ${resolvedEntry}`,
   );
 
-  const packageExports = consumerRequire('brepkit-wasm');
+  const packageExports = consumerRequire('remus-wasm');
   assert.equal(typeof packageExports.BrepKernel, 'function', 'installed BrepKernel export');
   assert.equal(
     typeof packageExports.decodeEvolutionPayload,

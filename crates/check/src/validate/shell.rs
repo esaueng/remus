@@ -2,9 +2,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::shell::ShellId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::shell::ShellId;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;
@@ -34,7 +34,7 @@ pub fn check_shell_empty(
 /// Collect all edge IDs from a face (outer wire + inner wires).
 fn face_edge_ids(
     topo: &Topology,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
 ) -> Result<Vec<EdgeId>, crate::CheckError> {
     let face = topo.face(face_id)?;
     let mut eids = Vec::new();

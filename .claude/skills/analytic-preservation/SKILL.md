@@ -30,13 +30,13 @@ Terms used below (GFA, FF phase, marcher, mesh fallback, SD, seam): glossary in
 
 ```bash
 # The census: which operations degrade, and via which path
-cargo run --release --example approx_census -p brepkit-operations
+cargo run --release --example approx_census -p remus-operations
 
 # Where the boolean mesh fallback (the one path that loses analytic types) fires
 rg -n 'analytic surface types will be lost' crates/operations/src/boolean/mod.rs
 
-# All degradation probe sites (log target "brepkit_approx")
-rg -l 'brepkit_approx' crates/
+# All degradation probe sites (log target "remus_approx")
+rg -l 'remus_approx' crates/
 ```
 
 | Symptom | Likely cause | Where to look |
@@ -49,11 +49,11 @@ rg -l 'brepkit_approx' crates/
 
 ## Procedure: run and read the census
 
-1. `cargo run --release --example approx_census -p brepkit-operations`
+1. `cargo run --release --example approx_census -p remus-operations`
 2. Expect one row per operation, shaped like:
    `boolean   sphere-cyl cut   0.84ms  faces=3   exact analytic`
    or `... FALLBACK xN: <probe texts>` or `[ERR]` rows.
-3. `exact analytic` means no `brepkit_approx` probe fired during that op.
+3. `exact analytic` means no `remus_approx` probe fired during that op.
    `FALLBACK xN` lists which degradation path ran.
 4. The final "remaining paths" section deliberately fires every approximation path;
    fallbacks there are expected, not regressions.

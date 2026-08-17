@@ -6,11 +6,11 @@
     clippy::cast_precision_loss
 )]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_operations::boolean::BooleanOp;
-use brepkit_operations::tessellate;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_operations::boolean::BooleanOp;
+use remus_operations::tessellate;
+use remus_topology::Topology;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{StructuredWasmError, WasmError};
@@ -239,11 +239,11 @@ pub fn json_f64(val: &serde_json::Value, key: &str) -> Result<f64, JsError> {
 /// is always rolled back to its untouched pre-attempt state on failure.
 #[allow(deprecated)]
 pub fn try_fillet(
-    topo: &mut brepkit_topology::Topology,
-    solid_id: brepkit_topology::solid::SolidId,
-    edge_ids: &[brepkit_topology::edge::EdgeId],
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
     radius: f64,
-) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
+) -> Result<remus_topology::solid::SolidId, remus_operations::OperationsError> {
     try_fillet_with_origins(topo, solid_id, edge_ids, radius).map(|(solid, _)| solid)
 }
 
@@ -259,24 +259,24 @@ pub fn try_fillet(
 /// Same as [`try_fillet`].
 #[allow(deprecated)]
 pub fn try_fillet_with_origins(
-    topo: &mut brepkit_topology::Topology,
-    solid_id: brepkit_topology::solid::SolidId,
-    edge_ids: &[brepkit_topology::edge::EdgeId],
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
     radius: f64,
 ) -> Result<
     (
-        brepkit_topology::solid::SolidId,
-        Option<brepkit_operations::blend_ops::BlendFaceOrigins>,
+        remus_topology::solid::SolidId,
+        Option<remus_operations::blend_ops::BlendFaceOrigins>,
     ),
-    brepkit_operations::OperationsError,
+    remus_operations::OperationsError,
 > {
     // Drop tangent / degenerate edges (e.g. a fillet face's G1 contact line
     // with its planar neighbour). If none qualify there is nothing to blend,
     // which is a selection problem the caller must hear about — not a
     // success.
-    let edges = brepkit_operations::query::filter_filletable_edges(topo, solid_id, edge_ids)?;
+    let edges = remus_operations::query::filter_filletable_edges(topo, solid_id, edge_ids)?;
     if edges.is_empty() {
-        return Err(brepkit_operations::OperationsError::InvalidInput {
+        return Err(remus_operations::OperationsError::InvalidInput {
             reason:
                 "no filletable edges in the selection (tangent and degenerate edges are skipped)"
                     .into(),
@@ -290,13 +290,12 @@ pub fn try_fillet_with_origins(
     // that leaves a cap untrimmed at a contact circle), which tessellate to a
     // plausible-but-wrong volume; reject them so the next engine or the
     // unchanged input is used.
-    let is_valid =
-        |topo: &brepkit_topology::Topology, s: brepkit_topology::solid::SolidId| -> bool {
-            topo.solid(s)
-                .and_then(|sd| topo.shell(sd.outer_shell()))
-                .map(|sh| brepkit_topology::validation::validate_shell_closed(sh, topo).is_ok())
-                .unwrap_or(false)
-        };
+    let is_valid = |topo: &remus_topology::Topology, s: remus_topology::solid::SolidId| -> bool {
+        topo.solid(s)
+            .and_then(|sd| topo.shell(sd.outer_shell()))
+            .map(|sh| remus_topology::validation::validate_shell_closed(sh, topo).is_ok())
+            .unwrap_or(false)
+    };
 
     // Every engine mutates the shared arena in place (the trimmer's
     // `propagate_split` rewrites the wires of each face touching a split
@@ -316,23 +315,23 @@ pub fn try_fillet_with_origins(
     // development and matches v1 on every measured case. Its failure is
     // remembered verbatim — if the fallback engines cannot rescue the call,
     // that typed diagnosis is what the caller receives.
-    let v2_failure = match brepkit_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius) {
+    let v2_failure = match remus_operations::blend_ops::fillet_v2(topo, solid_id, edges, radius) {
         Ok(r) if is_valid(topo, r.solid) => return Ok((r.solid, r.face_origins)),
-        Ok(_) => brepkit_operations::OperationsError::InvalidInput {
+        Ok(_) => remus_operations::OperationsError::InvalidInput {
             reason: "fillet produced an open shell".into(),
         },
         Err(e) => e,
     };
     topo.restore_preserving_handle_slots(&snapshot);
 
-    if let Ok(s) = brepkit_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
+    if let Ok(s) = remus_operations::fillet::fillet_rolling_ball(topo, solid_id, edges, radius)
         && is_valid(topo, s)
     {
         return Ok((s, None));
     }
     topo.restore_preserving_handle_slots(&snapshot);
 
-    if let Ok(s) = brepkit_operations::fillet::fillet(topo, solid_id, edges, radius)
+    if let Ok(s) = remus_operations::fillet::fillet(topo, solid_id, edges, radius)
         && is_valid(topo, s)
     {
         return Ok((s, None));
@@ -366,27 +365,27 @@ pub fn try_fillet_with_origins(
 /// Returns the engine chain's typed failure, or `EdgesNotBlended` when the only
 /// thing that would have succeeded is a strict subset of the selection.
 pub fn fillet_whole_selection(
-    topo: &mut brepkit_topology::Topology,
-    solid_id: brepkit_topology::solid::SolidId,
-    edge_ids: &[brepkit_topology::edge::EdgeId],
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
     radius: f64,
-) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
+) -> Result<remus_topology::solid::SolidId, remus_operations::OperationsError> {
     let primary = match try_fillet(topo, solid_id, edge_ids, radius) {
         Ok(solid) => return Ok(solid),
         Err(e) => e,
     };
 
-    let planar_edges = brepkit_operations::query::filter_planar_edges(topo, solid_id, edge_ids)?;
+    let planar_edges = remus_operations::query::filter_planar_edges(topo, solid_id, edge_ids)?;
     if planar_edges.is_empty() || planar_edges.len() == edge_ids.len() {
         return Err(primary);
     }
-    let dropped: Vec<brepkit_topology::edge::EdgeId> = edge_ids
+    let dropped: Vec<remus_topology::edge::EdgeId> = edge_ids
         .iter()
         .copied()
         .filter(|e| !planar_edges.contains(e))
         .collect();
-    Err(brepkit_operations::OperationsError::Blend(
-        brepkit_operations::blend_ops::BlendError::EdgesNotBlended {
+    Err(remus_operations::OperationsError::Blend(
+        remus_operations::blend_ops::BlendError::EdgesNotBlended {
             edges: dropped,
             reason: format!(
                 "the blend engines refused the whole selection ({primary}); the {} \
@@ -418,35 +417,34 @@ pub fn fillet_whole_selection(
 /// silently does nothing while reporting success is the no-op trap, and the
 /// caller (and its user) is better served by the error.
 pub fn try_chamfer(
-    topo: &mut brepkit_topology::Topology,
-    solid_id: brepkit_topology::solid::SolidId,
-    edge_ids: &[brepkit_topology::edge::EdgeId],
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
     distance: f64,
-) -> Result<brepkit_topology::solid::SolidId, brepkit_operations::OperationsError> {
+) -> Result<remus_topology::solid::SolidId, remus_operations::OperationsError> {
     try_chamfer_with_origins(topo, solid_id, edge_ids, distance).map(|(solid, _)| solid)
 }
 
 /// [`try_chamfer`] with construction history from whichever production engine
 /// succeeds.
 pub fn try_chamfer_with_origins(
-    topo: &mut brepkit_topology::Topology,
-    solid_id: brepkit_topology::solid::SolidId,
-    edge_ids: &[brepkit_topology::edge::EdgeId],
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
     distance: f64,
 ) -> Result<
     (
-        brepkit_topology::solid::SolidId,
-        Option<brepkit_operations::blend_ops::BlendFaceOrigins>,
+        remus_topology::solid::SolidId,
+        Option<remus_operations::blend_ops::BlendFaceOrigins>,
     ),
-    brepkit_operations::OperationsError,
+    remus_operations::OperationsError,
 > {
-    let is_valid =
-        |topo: &brepkit_topology::Topology, s: brepkit_topology::solid::SolidId| -> bool {
-            topo.solid(s)
-                .and_then(|sd| topo.shell(sd.outer_shell()))
-                .map(|sh| brepkit_topology::validation::validate_shell_closed(sh, topo).is_ok())
-                .unwrap_or(false)
-        };
+    let is_valid = |topo: &remus_topology::Topology, s: remus_topology::solid::SolidId| -> bool {
+        topo.solid(s)
+            .and_then(|sd| topo.shell(sd.outer_shell()))
+            .map(|sh| remus_topology::validation::validate_shell_closed(sh, topo).is_ok())
+            .unwrap_or(false)
+    };
 
     // Both engines mutate the shared arena in place, so a rejected attempt
     // leaves the input partly chamfered. Snapshot once and roll back after a
@@ -455,19 +453,19 @@ pub fn try_chamfer_with_origins(
     // ships a corrupted body).
     let snapshot = topo.clone();
 
-    if let Ok((s, origins)) = brepkit_operations::blend_ops::planar_chamfer_with_origins(
-        topo, solid_id, edge_ids, distance,
-    ) && is_valid(topo, s)
+    if let Ok((s, origins)) =
+        remus_operations::blend_ops::planar_chamfer_with_origins(topo, solid_id, edge_ids, distance)
+        && is_valid(topo, s)
     {
         return Ok((s, Some(origins)));
     }
     topo.restore_preserving_handle_slots(&snapshot);
 
-    match brepkit_operations::blend_ops::chamfer_v2(topo, solid_id, edge_ids, distance, distance) {
+    match remus_operations::blend_ops::chamfer_v2(topo, solid_id, edge_ids, distance, distance) {
         Ok(r) if is_valid(topo, r.solid) => Ok((r.solid, r.face_origins)),
         Ok(_) => {
             topo.restore_preserving_handle_slots(&snapshot);
-            Err(brepkit_operations::OperationsError::InvalidInput {
+            Err(remus_operations::OperationsError::InvalidInput {
                 reason: "chamfer produced an open shell".into(),
             })
         }
@@ -480,13 +478,13 @@ pub fn try_chamfer_with_origins(
 
 /// Convert a fillet/chamfer failure into a `JsError` whose message starts
 /// with the stable machine-readable code from
-/// [`brepkit_operations::blend_ops::blend_failure_code`], e.g.
+/// [`remus_operations::blend_ops::blend_failure_code`], e.g.
 /// `unsupported-vertex-blend: blend: unsupported vertex blend at Id(16): 2
 /// stripes meet`. Callers across the WASM boundary branch on the prefix.
-pub fn fillet_failure_js_error(error: &brepkit_operations::OperationsError) -> JsError {
+pub fn fillet_failure_js_error(error: &remus_operations::OperationsError) -> JsError {
     JsError::new(&format!(
         "{}: {error}",
-        brepkit_operations::blend_ops::blend_failure_code(error)
+        remus_operations::blend_ops::blend_failure_code(error)
     ))
 }
 
@@ -561,11 +559,11 @@ pub fn sample_open_span(n: usize, t0: f64, t1: f64, evaluate: impl Fn(f64) -> Po
 pub fn create_apex_face(
     topo: &mut Topology,
     point: Point3,
-    existing_profiles: &[brepkit_topology::face::FaceId],
-) -> Result<brepkit_topology::face::FaceId, WasmError> {
+    existing_profiles: &[remus_topology::face::FaceId],
+) -> Result<remus_topology::face::FaceId, WasmError> {
     // Determine target vertex count from the first profile.
     let n = if let Some(&fid) = existing_profiles.first() {
-        let verts = brepkit_operations::boolean::face_polygon(topo, fid)?;
+        let verts = remus_operations::boolean::face_polygon(topo, fid)?;
         verts.len().max(3)
     } else {
         3
@@ -583,8 +581,8 @@ pub fn create_apex_face(
         ));
     }
 
-    let wire_id = brepkit_topology::builder::make_polygon_wire(topo, &pts, TOL)?;
-    let face_id = brepkit_topology::builder::make_face_from_wire(topo, wire_id)?;
+    let wire_id = remus_topology::builder::make_polygon_wire(topo, &pts, TOL)?;
+    let face_id = remus_topology::builder::make_face_from_wire(topo, wire_id)?;
     Ok(face_id)
 }
 
@@ -625,19 +623,17 @@ pub fn triangle_mesh_to_js(mesh: &tessellate::TriangleMesh) -> JsMesh {
 // ── Classification / serialization ────────────────────────────────
 
 /// Convert a `PointClassification` to a string.
-pub fn classify_to_string(c: brepkit_operations::classify::PointClassification) -> String {
+pub fn classify_to_string(c: remus_operations::classify::PointClassification) -> String {
     match c {
-        brepkit_operations::classify::PointClassification::Inside => "inside".into(),
-        brepkit_operations::classify::PointClassification::Outside => "outside".into(),
-        brepkit_operations::classify::PointClassification::OnBoundary => "boundary".into(),
+        remus_operations::classify::PointClassification::Inside => "inside".into(),
+        remus_operations::classify::PointClassification::Outside => "outside".into(),
+        remus_operations::classify::PointClassification::OnBoundary => "boundary".into(),
     }
 }
 
 /// Serialize a `Feature` enum to JSON.
-pub fn serialize_feature(
-    f: &brepkit_operations::feature_recognition::Feature,
-) -> serde_json::Value {
-    use brepkit_operations::feature_recognition::Feature;
+pub fn serialize_feature(f: &remus_operations::feature_recognition::Feature) -> serde_json::Value {
+    use remus_operations::feature_recognition::Feature;
     match f {
         Feature::Hole {
             faces,
@@ -693,10 +689,10 @@ mod feature_serialization_tests {
 
     #[test]
     fn hole_serialization_includes_through_classification() {
-        let mut topo = brepkit_topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let face = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
-        let feature = brepkit_operations::feature_recognition::Feature::Hole {
+        let mut topo = remus_topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let feature = remus_operations::feature_recognition::Feature::Hole {
             faces: vec![face],
             diameter: Some(2.0),
             through: true,
@@ -714,8 +710,8 @@ mod feature_serialization_tests {
 /// Parse a sketch constraint from a JSON value.
 pub fn parse_sketch_constraint(
     val: &serde_json::Value,
-) -> Result<brepkit_operations::sketch::Constraint, JsError> {
-    use brepkit_operations::sketch::Constraint;
+) -> Result<remus_operations::sketch::Constraint, JsError> {
+    use remus_operations::sketch::Constraint;
     let ty = val["type"].as_str().unwrap_or("");
     match ty {
         "coincident" => {
@@ -824,7 +820,7 @@ pub fn parse_polygon_2d_checked(coords: &[f64], name: &str) -> Result<Vec<Point2
 
 /// Check if two 2D polygons overlap using vertex containment + edge crossing.
 pub fn polygons_overlap_2d(a: &[Point2], b: &[Point2]) -> bool {
-    use brepkit_math::predicates::point_in_polygon;
+    use remus_math::predicates::point_in_polygon;
 
     // Check if any vertex of A is inside B or vice versa.
     for p in a {
@@ -855,7 +851,7 @@ pub fn polygons_overlap_2d(a: &[Point2], b: &[Point2]) -> bool {
 
 /// Test if two 2D line segments intersect (proper crossing).
 pub fn segments_intersect_2d(a1: Point2, a2: Point2, b1: Point2, b2: Point2) -> bool {
-    use brepkit_math::polygon2d::cross_2d;
+    use remus_math::polygon2d::cross_2d;
     let d1 = cross_2d(b1, b2, a1);
     let d2 = cross_2d(b1, b2, a2);
     let d3 = cross_2d(a1, a2, b1);
@@ -886,9 +882,9 @@ mod fillet_tests {
 
     use std::collections::HashSet;
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::EdgeId;
-    use brepkit_topology::solid::SolidId;
+    use remus_topology::Topology;
+    use remus_topology::edge::EdgeId;
+    use remus_topology::solid::SolidId;
 
     use super::try_fillet;
 
@@ -920,30 +916,30 @@ mod fillet_tests {
     #[test]
     fn try_fillet_failure_leaves_the_input_untouched() {
         let mut topo = Topology::new();
-        let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edge_ids(&topo, cube);
         let before =
-            brepkit_topology::explorer::solid_entity_counts(&topo, cube).expect("counts before");
-        let vol_before = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+            remus_topology::explorer::solid_entity_counts(&topo, cube).expect("counts before");
+        let vol_before = remus_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
 
         // r = 20 on a 10³ box: no engine can produce a valid solid.
         let error = try_fillet(&mut topo, cube, &edges, 20.0)
             .expect_err("an all-engine failure must be a typed error, not a silent no-op");
         assert!(
-            !brepkit_operations::blend_ops::blend_failure_code(&error).is_empty(),
+            !remus_operations::blend_ops::blend_failure_code(&error).is_empty(),
             "every failure maps to a machine-readable code"
         );
 
         let after =
-            brepkit_topology::explorer::solid_entity_counts(&topo, cube).expect("counts after");
+            remus_topology::explorer::solid_entity_counts(&topo, cube).expect("counts after");
         assert_eq!(before, after, "failed fillet mutated the input topology");
-        let vol_after = brepkit_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
+        let vol_after = remus_operations::measure::solid_volume(&topo, cube, 0.01).unwrap();
         assert!(
             (vol_before - vol_after).abs() < 1e-9,
             "failed fillet changed the input volume: {vol_before} -> {vol_after}"
         );
         let shell = topo.shell(topo.solid(cube).unwrap().outer_shell()).unwrap();
-        brepkit_topology::validation::validate_shell_closed(shell, &topo)
+        remus_topology::validation::validate_shell_closed(shell, &topo)
             .expect("input must still be watertight after a failed fillet");
     }
 
@@ -957,10 +953,10 @@ mod fillet_tests {
     // corners: ≈60 mm³ removed, watertight, more faces than it started with.
     #[test]
     fn try_fillet_openzcad_bracket_corners() {
-        use brepkit_math::mat::Mat4;
-        use brepkit_operations::boolean::{BooleanOp, boolean};
-        use brepkit_operations::primitives::{make_box, make_cylinder};
-        use brepkit_operations::transform::transform_solid;
+        use remus_math::mat::Mat4;
+        use remus_operations::boolean::{BooleanOp, boolean};
+        use remus_operations::primitives::{make_box, make_cylinder};
+        use remus_operations::transform::transform_solid;
 
         let rot_x90_at = |tx: f64, ty: f64, tz: f64| {
             Mat4::translation(tx, ty, tz) * Mat4::rotation_x(std::f64::consts::FRAC_PI_2)
@@ -1012,12 +1008,12 @@ mod fillet_tests {
             .unwrap()
             .faces()
             .len();
-        let vol_before = brepkit_operations::measure::solid_volume(&topo, bracket, 0.1).unwrap();
+        let vol_before = remus_operations::measure::solid_volume(&topo, bracket, 0.1).unwrap();
 
         let result = try_fillet(&mut topo, bracket, &corners, 3.0).expect("bracket corner fillet");
         assert_ne!(result, bracket, "try_fillet returned the input unchanged");
 
-        let vol_after = brepkit_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
+        let vol_after = remus_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
         let removed = vol_before - vol_after;
         assert!(
             (50.0..=70.0).contains(&removed),
@@ -1031,7 +1027,7 @@ mod fillet_tests {
             shell.faces().len() > before_faces,
             "fillet must add blend faces"
         );
-        brepkit_topology::validation::validate_shell_closed(shell, &topo)
+        remus_topology::validation::validate_shell_closed(shell, &topo)
             .expect("filleted bracket must be watertight");
     }
 
@@ -1043,12 +1039,12 @@ mod fillet_tests {
     #[test]
     fn try_fillet_all_box_edges_no_corner_over_removal() {
         let mut topo = Topology::new();
-        let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edge_ids(&topo, cube);
         assert_eq!(edges.len(), 12, "box should have 12 edges");
 
         let result = try_fillet(&mut topo, cube, &edges, 1.0).expect("all-edges fillet");
-        let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+        let vol = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
         assert!(
             vol > 970.0 && vol < 1000.0,
             "filleted box volume should be ≈975.6, got {vol}"
@@ -1063,15 +1059,15 @@ mod fillet_tests {
     // never the corrupt ~3978.
     #[test]
     fn try_fillet_cylinder_rim_rounds_not_corrupts() {
-        use brepkit_topology::face::FaceSurface;
+        use remus_topology::face::FaceSurface;
 
         let mut topo = Topology::new();
-        let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
-        let raw = brepkit_operations::measure::solid_volume(&topo, cyl, 0.01).unwrap();
+        let cyl = remus_operations::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+        let raw = remus_operations::measure::solid_volume(&topo, cyl, 0.01).unwrap();
         let edges = solid_edge_ids(&topo, cyl);
 
         let result = try_fillet(&mut topo, cyl, &edges, 0.5).expect("rim fillet");
-        let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+        let vol = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
 
         // A tiny rim round — well under 1% removed, never the −37% corruption.
         assert!(
@@ -1089,7 +1085,7 @@ mod fillet_tests {
             .count();
         assert_eq!(torus_count, 2, "both rims round into toroidal bands");
         assert!(
-            brepkit_operations::validate::validate_solid(&topo, result)
+            remus_operations::validate::validate_solid(&topo, result)
                 .unwrap()
                 .is_valid(),
             "rounded rim solid must be watertight"
@@ -1098,7 +1094,7 @@ mod fillet_tests {
 
     #[test]
     fn try_fillet_second_pass_does_not_break_solid() {
-        use brepkit_topology::face::FaceSurface;
+        use remus_topology::face::FaceSurface;
 
         // #813: a second fillet whose target edge borders the first fillet's
         // NURBS blend face must not produce a self-intersecting solid — the
@@ -1106,10 +1102,10 @@ mod fillet_tests {
         // now skipped. Checked over *every* result edge so the guard doesn't
         // rely on a particular edge ordering.
         let mut topo = Topology::new();
-        let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edge_ids(&topo, cube);
         let first = try_fillet(&mut topo, cube, &[edges[0], edges[1]], 1.0).expect("first fillet");
-        let v1 = brepkit_operations::measure::solid_volume(&topo, first, 0.05).unwrap();
+        let v1 = remus_operations::measure::solid_volume(&topo, first, 0.05).unwrap();
 
         // The scenario under test only exists if the first fillet produced blend
         // faces for the later edges to border. It used to name NURBS
@@ -1144,11 +1140,11 @@ mod fillet_tests {
             let Ok(s) = try_fillet(&mut t, first, &[e], 0.5) else {
                 let ssd = t.solid(first).expect("input solid");
                 let ssh = t.shell(ssd.outer_shell()).expect("shell");
-                brepkit_topology::validation::validate_shell_manifold(ssh, &t)
+                remus_topology::validation::validate_shell_manifold(ssh, &t)
                     .expect("a refused second fillet must leave a manifold solid");
                 continue;
             };
-            let v2 = brepkit_operations::measure::solid_volume(&t, s, 0.05).unwrap();
+            let v2 = remus_operations::measure::solid_volume(&t, s, 0.05).unwrap();
             assert!(
                 v2 <= 1000.0 + 0.1,
                 "second fillet on edge {} inflated past the box: second={v2:.2}",
@@ -1156,7 +1152,7 @@ mod fillet_tests {
             );
             let ssd = t.solid(s).expect("result solid");
             let ssh = t.shell(ssd.outer_shell()).expect("shell");
-            brepkit_topology::validation::validate_shell_manifold(ssh, &t)
+            remus_topology::validation::validate_shell_manifold(ssh, &t)
                 .expect("second fillet result must remain a manifold solid");
         }
     }
@@ -1165,15 +1161,15 @@ mod fillet_tests {
     fn try_fillet_blend_neighbor_is_watertight() {
         use std::collections::HashMap;
 
-        use brepkit_topology::face::FaceSurface;
-        use brepkit_topology::validation::{validate_shell_closed, validate_shell_manifold};
+        use remus_topology::face::FaceSurface;
+        use remus_topology::validation::{validate_shell_closed, validate_shell_manifold};
 
         // #834 via the consumer path: a single fillet creates a blend face
         // (an exact cylinder — a constant radius along a straight edge between
         // two planes is one); `try_fillet` on a non-tangent edge bordering it
         // must round that into a valid watertight manifold, not skip it.
         let mut topo = Topology::new();
-        let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edge_ids(&topo, cube);
         let first = try_fillet(&mut topo, cube, &[edges[0]], 1.0).expect("first fillet");
         {
@@ -1215,7 +1211,7 @@ mod fillet_tests {
 
         let r_edges = solid_edge_ids(&topo, first);
         let filletable: HashSet<usize> =
-            brepkit_operations::query::filter_filletable_edges(&topo, first, &r_edges)
+            remus_operations::query::filter_filletable_edges(&topo, first, &r_edges)
                 .unwrap()
                 .iter()
                 .map(|e| e.index())
@@ -1251,11 +1247,11 @@ mod fillet_tests {
     // silent no-op, with the input rolled back untouched.
     #[test]
     fn try_fillet_failure_reports_the_walking_engine_diagnosis() {
-        use brepkit_math::mat::Mat4;
-        use brepkit_operations::blend_ops::{BlendError, blend_failure_code};
-        use brepkit_operations::boolean::{BooleanOp, boolean};
-        use brepkit_operations::primitives::{make_box, make_cylinder};
-        use brepkit_operations::transform::transform_solid;
+        use remus_math::mat::Mat4;
+        use remus_operations::blend_ops::{BlendError, blend_failure_code};
+        use remus_operations::boolean::{BooleanOp, boolean};
+        use remus_operations::primitives::{make_box, make_cylinder};
+        use remus_operations::transform::transform_solid;
 
         let mut topo = Topology::new();
         let plate = make_box(&mut topo, 80.0, 60.0, 6.0).unwrap();
@@ -1289,13 +1285,13 @@ mod fillet_tests {
                 on_top(&topo, e)
                     && matches!(
                         topo.edge(e).unwrap().curve(),
-                        brepkit_topology::edge::EdgeCurve::Circle(_)
+                        remus_topology::edge::EdgeCurve::Circle(_)
                     )
             })
             .unwrap();
 
         let before =
-            brepkit_topology::explorer::solid_entity_counts(&topo, solid).expect("counts before");
+            remus_topology::explorer::solid_entity_counts(&topo, solid).expect("counts before");
 
         // A radius half again the plate's own thickness cannot be seated: the
         // contact would hang below the bottom face. This is the case that must
@@ -1306,14 +1302,14 @@ mod fillet_tests {
         assert!(
             matches!(
                 too_large,
-                brepkit_operations::OperationsError::Blend(BlendError::RadiusTooLarge { .. })
+                remus_operations::OperationsError::Blend(BlendError::RadiusTooLarge { .. })
             ),
             "expected RadiusTooLarge, got: {too_large}"
         );
         assert_eq!(blend_failure_code(&too_large), "radius-too-large");
 
         let after =
-            brepkit_topology::explorer::solid_entity_counts(&topo, solid).expect("counts after");
+            remus_topology::explorer::solid_entity_counts(&topo, solid).expect("counts after");
         assert_eq!(before, after, "a failed fillet mutated the input topology");
 
         // Both of these used to be the failures this test asserted. They are
@@ -1324,7 +1320,7 @@ mod fillet_tests {
         let corner_shell = topo
             .shell(topo.solid(corner).expect("corner solid").outer_shell())
             .expect("corner shell");
-        brepkit_topology::validation::validate_shell_closed(corner_shell, &topo)
+        remus_topology::validation::validate_shell_closed(corner_shell, &topo)
             .expect("the corner-chain result must be watertight");
 
         let rim_solid = try_fillet(&mut topo, solid, &[rim], 1.0)
@@ -1332,7 +1328,7 @@ mod fillet_tests {
         let rim_shell = topo
             .shell(topo.solid(rim_solid).expect("rim solid").outer_shell())
             .expect("rim shell");
-        brepkit_topology::validation::validate_shell_closed(rim_shell, &topo)
+        remus_topology::validation::validate_shell_closed(rim_shell, &topo)
             .expect("the hole-rim result must be watertight");
     }
 
@@ -1355,15 +1351,15 @@ mod fillet_tests {
     fn bored_plate(
         topo: &mut Topology,
     ) -> (
-        brepkit_topology::solid::SolidId,
-        Vec<brepkit_topology::edge::EdgeId>,
-        brepkit_topology::edge::EdgeId,
+        remus_topology::solid::SolidId,
+        Vec<remus_topology::edge::EdgeId>,
+        remus_topology::edge::EdgeId,
     ) {
-        use brepkit_math::mat::Mat4;
-        use brepkit_operations::boolean::{BooleanOp, boolean};
-        use brepkit_operations::primitives::{make_box, make_cylinder};
-        use brepkit_operations::transform::transform_solid;
-        use brepkit_topology::edge::EdgeCurve;
+        use remus_math::mat::Mat4;
+        use remus_operations::boolean::{BooleanOp, boolean};
+        use remus_operations::primitives::{make_box, make_cylinder};
+        use remus_operations::transform::transform_solid;
+        use remus_topology::edge::EdgeCurve;
 
         let blank = make_box(topo, PLATE_W, PLATE_D, PLATE_T).unwrap();
         let drill = make_cylinder(topo, BORE_R, PLATE_T + 4.0).unwrap();
@@ -1375,8 +1371,8 @@ mod fillet_tests {
         .unwrap();
         let body = boolean(topo, BooleanOp::Cut, blank, drill).unwrap();
 
-        let mut edges: Vec<brepkit_topology::edge::EdgeId> = Vec::new();
-        for fid in brepkit_topology::explorer::solid_faces(topo, body).unwrap() {
+        let mut edges: Vec<remus_topology::edge::EdgeId> = Vec::new();
+        for fid in remus_topology::explorer::solid_faces(topo, body).unwrap() {
             let f = topo.face(fid).unwrap();
             for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
                 for oe in topo.wire(wid).unwrap().edges() {
@@ -1416,13 +1412,13 @@ mod fillet_tests {
         // fault: only the combination was.
         let mut topo = Topology::new();
         let (body, perimeter, rim) = bored_plate(&mut topo);
-        let blank = brepkit_operations::measure::solid_volume(&topo, body, 0.001).unwrap();
+        let blank = remus_operations::measure::solid_volume(&topo, body, 0.001).unwrap();
 
         let perimeter_only = {
             let mut t = topo.clone();
             let s = super::fillet_whole_selection(&mut t, body, &perimeter, radius)
                 .expect("the perimeter alone must round");
-            brepkit_operations::measure::solid_volume(&t, s, 0.001).unwrap()
+            remus_operations::measure::solid_volume(&t, s, 0.001).unwrap()
         };
         assert!(
             perimeter_only < blank,
@@ -1432,7 +1428,7 @@ mod fillet_tests {
             let mut t = topo.clone();
             let s = super::fillet_whole_selection(&mut t, body, &[rim], radius)
                 .expect("the bore rim alone must round");
-            brepkit_operations::measure::solid_volume(&t, s, 0.001).unwrap()
+            remus_operations::measure::solid_volume(&t, s, 0.001).unwrap()
         };
         assert!(rim_only < blank, "the rim fillet must remove material");
 
@@ -1442,7 +1438,7 @@ mod fillet_tests {
             Ok(s) => {
                 // Blending everything is the ideal answer; blending only the
                 // perimeter and calling it done is the defect.
-                let volume = brepkit_operations::measure::solid_volume(&topo, s, 0.001).unwrap();
+                let volume = remus_operations::measure::solid_volume(&topo, s, 0.001).unwrap();
                 let both = blank - (blank - perimeter_only) - (blank - rim_only);
                 assert!(
                     (volume - both).abs() < 0.02 * (blank - both),
@@ -1453,7 +1449,7 @@ mod fillet_tests {
             }
             Err(e) => {
                 assert_eq!(
-                    brepkit_operations::blend_ops::blend_failure_code(&e),
+                    remus_operations::blend_ops::blend_failure_code(&e),
                     "edges-not-blended",
                     "the refusal must say the selection was not fully blended: {e}"
                 );
@@ -1462,7 +1458,7 @@ mod fillet_tests {
                     msg.contains(&format!("{rim:?}")),
                     "the refusal must name the edge it could not blend, got: {msg}"
                 );
-                let after = brepkit_operations::measure::solid_volume(&topo, body, 0.001).unwrap();
+                let after = remus_operations::measure::solid_volume(&topo, body, 0.001).unwrap();
                 assert!(
                     (after - blank).abs() < 1e-9,
                     "a refused fillet must leave the input untouched ({blank} -> {after})"

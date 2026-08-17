@@ -4,7 +4,7 @@
 //! 1. Cylinder grids: 4, 16, 36, 64 tools
 //! 2. Box grids (honeycomb pattern): 7, 19, 37 tools — exercises ConvexPolyhedron classifier
 //!
-//! Run with: `cargo bench -p brepkit-operations --bench compound_cut_perf`
+//! Run with: `cargo bench -p remus-operations --bench compound_cut_perf`
 
 #![allow(
     clippy::unwrap_used,
@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, BooleanOptions, boolean, compound_cut};
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, BooleanOptions, boolean, compound_cut};
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,8 +33,8 @@ fn build_cylinder_grid(
     n: usize,
 ) -> (
     Topology,
-    brepkit_topology::solid::SolidId,
-    Vec<brepkit_topology::solid::SolidId>,
+    remus_topology::solid::SolidId,
+    Vec<remus_topology::solid::SolidId>,
 ) {
     let mut topo = Topology::new();
     let target = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
@@ -69,7 +69,7 @@ fn make_hex_prism(
     circumradius: f64,
     height: f64,
     z_offset: f64,
-) -> brepkit_topology::solid::SolidId {
+) -> remus_topology::solid::SolidId {
     // Use a box with side length ≈ circumradius * √3 (inscribed hex width).
     let side = circumradius * 1.732;
     let bx = primitives::make_box(topo, side, side, height).unwrap();
@@ -84,8 +84,8 @@ fn build_honeycomb_grid(
     rings: usize,
 ) -> (
     Topology,
-    brepkit_topology::solid::SolidId,
-    Vec<brepkit_topology::solid::SolidId>,
+    remus_topology::solid::SolidId,
+    Vec<remus_topology::solid::SolidId>,
 ) {
     let mut topo = Topology::new();
     let target = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();
@@ -142,8 +142,8 @@ fn build_strut_lattice(
     bars: usize,
 ) -> (
     Topology,
-    brepkit_topology::solid::SolidId,
-    Vec<brepkit_topology::solid::SolidId>,
+    remus_topology::solid::SolidId,
+    Vec<remus_topology::solid::SolidId>,
 ) {
     let mut topo = Topology::new();
     let target = primitives::make_box(&mut topo, 100.0, 100.0, 10.0).unwrap();

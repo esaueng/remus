@@ -1,10 +1,10 @@
 //! OBJ file reader.
 
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::tessellate::TriangleMesh;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::tessellate::TriangleMesh;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Read an OBJ file from a string and return a triangle mesh.
 ///
@@ -255,8 +255,8 @@ f 1 2 3
 
     #[test]
     fn roundtrip_write_read() {
-        let mut topo = brepkit_topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let mut topo = remus_topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let obj_str = crate::obj::write_obj(&topo, &[solid], 0.1).unwrap();
         let mesh = read_obj(&obj_str).unwrap();
@@ -305,7 +305,7 @@ f 1 3 4
 f 1 4 2
 f 2 4 3
 ";
-        let mut topo = brepkit_topology::Topology::new();
+        let mut topo = remus_topology::Topology::new();
         let result = read_obj_solid(&mut topo, obj, 1e-6);
         assert!(
             result.is_ok(),

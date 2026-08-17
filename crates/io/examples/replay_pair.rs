@@ -6,7 +6,7 @@
 //!
 //! ```sh
 //! A=.../op1-fuseWithEvolution-0.bin B=.../op1-fuseWithEvolution-1.bin \
-//!   OP=fuse cargo run --release -p brepkit-io --example replay_pair
+//!   OP=fuse cargo run --release -p remus-io --example replay_pair
 //! ```
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
@@ -14,11 +14,11 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn describe(topo: &Topology, sid: SolidId, label: &str) {
     let Ok(faces) = solid_faces(topo, sid) else {
@@ -26,7 +26,7 @@ fn describe(topo: &Topology, sid: SolidId, label: &str) {
         return;
     };
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
-    let mut users: HashMap<EdgeId, Vec<brepkit_topology::face::FaceId>> = HashMap::new();
+    let mut users: HashMap<EdgeId, Vec<remus_topology::face::FaceId>> = HashMap::new();
     let mut mix: HashMap<&'static str, usize> = HashMap::new();
     for &fid in &faces {
         let Ok(face) = topo.face(fid) else { continue };
@@ -116,14 +116,13 @@ fn describe(topo: &Topology, sid: SolidId, label: &str) {
     }
     let mut mix: Vec<_> = mix.into_iter().collect();
     mix.sort_unstable();
-    let vol =
-        brepkit_operations::measure::oriented_solid_volume(topo, sid, 0.05).unwrap_or(f64::NAN);
+    let vol = remus_operations::measure::oriented_solid_volume(topo, sid, 0.05).unwrap_or(f64::NAN);
     // TESS_BND=1 additionally tessellates at export tolerance (0.01 mm /
     // 5 degrees, matching the tool's STL export) and reports mesh boundary
     // and non-manifold edge counts — the discriminant between a B-Rep leak
     // and a tessellation-parity leak on a clean B-Rep.
     let tess = if std::env::var("TESS_BND").is_ok() {
-        match brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+        match remus_operations::tessellate::tessellate_solid_with_tolerance(
             topo,
             sid,
             0.01,
@@ -131,8 +130,8 @@ fn describe(topo: &Topology, sid: SolidId, label: &str) {
         ) {
             Ok(mesh) => format!(
                 " tess_bnd={} tess_nm={}",
-                brepkit_operations::tessellate::boundary_edge_count(&mesh),
-                brepkit_operations::tessellate::non_manifold_edge_count(&mesh)
+                remus_operations::tessellate::boundary_edge_count(&mesh),
+                remus_operations::tessellate::non_manifold_edge_count(&mesh)
             ),
             Err(e) => format!(" tess_err={e}"),
         }
@@ -153,7 +152,7 @@ impl log::Log for Tap {
         } else {
             log::Level::Debug
         };
-        m.target().starts_with("brepkit_") && m.level() <= max
+        m.target().starts_with("remus_") && m.level() <= max
     }
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
@@ -183,9 +182,9 @@ fn main() {
     describe(&topo, b, "B");
 
     let bop = match op.as_str() {
-        "cut" => brepkit_algo::bop::BooleanOp::Cut,
-        "intersect" => brepkit_algo::bop::BooleanOp::Intersect,
-        _ => brepkit_algo::bop::BooleanOp::Fuse,
+        "cut" => remus_algo::bop::BooleanOp::Cut,
+        "intersect" => remus_algo::bop::BooleanOp::Intersect,
+        _ => remus_algo::bop::BooleanOp::Fuse,
     };
 
     // POINT_IN=x,y,z classifies a point against BOTH operands with the
@@ -209,10 +208,10 @@ fn main() {
             if c.len() != 3 {
                 continue;
             }
-            let p = brepkit_math::vec::Point3::new(c[0], c[1], c[2]);
+            let p = remus_math::vec::Point3::new(c[0], c[1], c[2]);
             let mut row = format!("  POINT_IN[{i}] ({:.3},{:.3},{:.3})", c[0], c[1], c[2]);
             for (label, sid) in [("A", a), ("B", b)] {
-                match brepkit_operations::classify::classify_point(&topo, sid, p, defl, 1e-7) {
+                match remus_operations::classify::classify_point(&topo, sid, p, defl, 1e-7) {
                     Ok(v) => {
                         let _ = write!(row, "  {label}={v:?}");
                     }
@@ -236,11 +235,11 @@ fn main() {
             .collect();
         println!("-- compound_cut with {} tools --", tools.len());
         let t = std::time::Instant::now();
-        match brepkit_operations::boolean::compound_cut(
+        match remus_operations::boolean::compound_cut(
             &mut topo,
             a,
             &tools,
-            brepkit_operations::boolean::BooleanOptions::default(),
+            remus_operations::boolean::BooleanOptions::default(),
         ) {
             Ok(sid) => describe(
                 &topo,
@@ -257,7 +256,7 @@ fn main() {
 
     println!("-- raw GFA {op} --");
     let t = std::time::Instant::now();
-    match brepkit_algo::gfa::boolean(&mut topo, bop, a, b) {
+    match remus_algo::gfa::boolean(&mut topo, bop, a, b) {
         Ok(sid) => describe(
             &topo,
             sid,

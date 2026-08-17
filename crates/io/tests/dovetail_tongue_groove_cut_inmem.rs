@@ -3,7 +3,7 @@
 //! The gridfinity tool's `baseplateGenerator.scenario.dovetail.test.ts`
 //! "preferIdenticalPieces produces a watertight STL" (a 4x4 interior tile where
 //! EVERY cell boundary on a join edge carries both a tongue and a groove)
-//! reported 23 non-manifold STL edges with brepkit and fell back to a slow mesh
+//! reported 23 non-manifold STL edges with remus and fell back to a slow mesh
 //! repair (251 non-manifold edges during winding repair). Capturing the tool's
 //! literal kernel operands (via `serializeSolid`, replayed through
 //! `arena_io::deserialize_solid`) localized the defect to the FIRST groove `Cut`
@@ -42,11 +42,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +55,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn load(name: &str, topo: &mut Topology) -> SolidId {
-    brepkit_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
+    remus_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 /// Free (used-once) and over-shared (incident to >2 faces) counts keyed by the

@@ -5,22 +5,22 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::blend_ops::fillet_v2;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::compound_ops::fuse_all;
-use brepkit_operations::heal::unify_faces;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::push_pull::resize_cylindrical_face;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::compound::Compound;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::validation::validate_shell_closed;
+use remus_math::mat::Mat4;
+use remus_operations::blend_ops::fillet_v2;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::compound_ops::fuse_all;
+use remus_operations::heal::unify_faces;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::push_pull::resize_cylindrical_face;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::compound::Compound;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::validation::validate_shell_closed;
 
 const W: f64 = 80.0;
 const D: f64 = 40.0;
@@ -49,14 +49,14 @@ fn cut_uniform(topo: &mut Topology, mut target: SolidId, tools: &[SolidId]) -> S
 }
 
 fn corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
-    brepkit_topology::explorer::solid_edges(topo, solid)
+    remus_topology::explorer::solid_edges(topo, solid)
         .expect("solid edges")
         .into_iter()
         .filter(|&eid| {
             let edge = topo.edge(eid).expect("edge");
             let a = topo.vertex(edge.start()).expect("start").point();
             let b = topo.vertex(edge.end()).expect("end").point();
-            let at_corner = |p: brepkit_math::vec::Point3| {
+            let at_corner = |p: remus_math::vec::Point3| {
                 (p.x().abs() < 0.1 || (p.x() - W).abs() < 0.1)
                     && (p.y().abs() < 0.1 || (p.y() - D).abs() < 0.1)
                     && (-0.1..=8.1).contains(&p.z())
@@ -179,8 +179,8 @@ fn resized_mounting_bracket_step_round_trip_is_exact_and_deterministic() {
     assert_resized_geometry(&topo_a, solid_a, expected);
     assert_resized_geometry(&topo_b, solid_b, expected);
 
-    let step_a = brepkit_io::step::writer::write_step(&topo_a, &[solid_a]).expect("write STEP A");
-    let step_b = brepkit_io::step::writer::write_step(&topo_b, &[solid_b]).expect("write STEP B");
+    let step_a = remus_io::step::writer::write_step(&topo_a, &[solid_a]).expect("write STEP A");
+    let step_b = remus_io::step::writer::write_step(&topo_b, &[solid_b]).expect("write STEP B");
     assert_eq!(
         step_a, step_b,
         "repeated rebuilds must export byte-identical STEP"
@@ -192,8 +192,7 @@ fn resized_mounting_bracket_step_round_trip_is_exact_and_deterministic() {
     );
 
     let mut imported = Topology::new();
-    let solids =
-        brepkit_io::step::reader::read_step(&step_a, &mut imported).expect("re-import STEP");
+    let solids = remus_io::step::reader::read_step(&step_a, &mut imported).expect("re-import STEP");
     assert_eq!(solids.len(), 1);
     assert_resized_geometry(&imported, solids[0], expected);
 }

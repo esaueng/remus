@@ -20,7 +20,7 @@ concurrency:
 jobs:
   # The committed package directory is a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
-  #   "brepkit-wasm": "github:esaueng/remus#apache-main&path:/crates/wasm/pkg"
+  #   "remus-wasm": "github:esaueng/remus#apache-main&path:/crates/wasm/pkg"
   # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on apache-main. Nothing
   # A missed refresh would leave consumers running stale generated code while
   # apache-main's Rust source appears current.
@@ -98,14 +98,14 @@ jobs:
     permissions:
       contents: write
     env:
-      HAS_APP_CREDENTIALS: ${{ secrets.BREPKIT_BOT_APP_ID != '' && secrets.BREPKIT_BOT_PRIVATE_KEY != '' }}
+      HAS_APP_CREDENTIALS: ${{ secrets.REMUS_BOT_APP_ID != '' && secrets.REMUS_BOT_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         if: ${{ env.HAS_APP_CREDENTIALS == 'true' }}
         with:
-          app-id: ${{ secrets.BREPKIT_BOT_APP_ID }}
-          private-key: ${{ secrets.BREPKIT_BOT_PRIVATE_KEY }}
+          app-id: ${{ secrets.REMUS_BOT_APP_ID }}
+          private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,4 +149,4 @@ jobs:
           # a newer branch head. A concurrent source push makes this push fail;
           # that newer push starts its own refresh from the correct source.
           git push "$remote" HEAD:apache-main
-          echo "::notice::Committed brepkit-wasm ${VERSION}; consumers on #apache-main pick it up on the next install."
+          echo "::notice::Committed remus-wasm ${VERSION}; consumers on #apache-main pick it up on the next install."

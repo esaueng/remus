@@ -3,7 +3,7 @@ mod wasm;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "brepkit build automation")]
+#[command(name = "xtask", about = "remus build automation")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

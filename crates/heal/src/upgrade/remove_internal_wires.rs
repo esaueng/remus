@@ -1,8 +1,8 @@
 //! Remove internal (hole) wires from faces.
 
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 use crate::HealError;
 
@@ -41,20 +41,20 @@ pub fn remove_internal_wires(topo: &mut Topology, solid_id: SolidId) -> Result<u
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     fn add_face_with_n_inner_wires(
         topo: &mut Topology,
         anchor: Point3,
         n_inner: usize,
-    ) -> brepkit_topology::face::FaceId {
-        let make_triangle = |topo: &mut Topology, base: Point3| -> brepkit_topology::wire::WireId {
+    ) -> remus_topology::face::FaceId {
+        let make_triangle = |topo: &mut Topology, base: Point3| -> remus_topology::wire::WireId {
             let va = topo.add_vertex(Vertex::new(base, 1e-7));
             let vb = topo.add_vertex(Vertex::new(
                 Point3::new(base.x() + 1.0, base.y(), base.z()),

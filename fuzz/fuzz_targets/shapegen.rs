@@ -26,14 +26,14 @@
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 
 use arbitrary::{Arbitrary, Result as ArbResult, Unstructured};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::OperationsError;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::OperationsError;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Maximum tree depth. Depth 3 admits up to 8 leaves and 7 booleans — enough
 /// for a bored, filleted, re-cut body, small enough to stay interactive.
@@ -315,8 +315,8 @@ pub struct Combined {
 /// boolean has an exact answer.
 #[must_use]
 pub fn boxes_interior_disjoint(
-    a: &brepkit_math::aabb::Aabb3,
-    b: &brepkit_math::aabb::Aabb3,
+    a: &remus_math::aabb::Aabb3,
+    b: &remus_math::aabb::Aabb3,
 ) -> bool {
     const EPS: f64 = 1e-9;
     let sep = |amin: f64, amax: f64, bmin: f64, bmax: f64| amax <= bmin + EPS || bmax <= amin + EPS;
@@ -360,9 +360,9 @@ pub fn eval(
 
             // Read the operand boxes before the boolean consumes them: the
             // engine is free to reuse or retire operand entities.
-            let boxes = brepkit_operations::measure::solid_bounding_box(topo, lhs.solid)
+            let boxes = remus_operations::measure::solid_bounding_box(topo, lhs.solid)
                 .ok()
-                .zip(brepkit_operations::measure::solid_bounding_box(topo, rhs.solid).ok());
+                .zip(remus_operations::measure::solid_bounding_box(topo, rhs.solid).ok());
             let disjoint = boxes.is_some_and(|(x, y)| boxes_interior_disjoint(&x, &y));
 
             // When the operands cannot overlap, the algebra is total and the
@@ -450,9 +450,9 @@ impl BaseBody {
             BooleanOp::Cut
         };
 
-        let boxes = brepkit_operations::measure::solid_bounding_box(topo, stock)
+        let boxes = remus_operations::measure::solid_bounding_box(topo, stock)
             .ok()
-            .zip(brepkit_operations::measure::solid_bounding_box(topo, tool).ok());
+            .zip(remus_operations::measure::solid_bounding_box(topo, tool).ok());
         let exact = if boxes.is_some_and(|(a, b)| boxes_interior_disjoint(&a, &b)) {
             Some(if fuse { v_stock + v_tool } else { v_stock })
         } else {
@@ -505,7 +505,7 @@ pub fn pick_subset<T: Copy>(items: &[T], seed: u8, stride: u8, max: usize) -> Ve
 ///
 /// Returns [`Refusal`] if the solid has no vertices.
 pub fn body_center(topo: &Topology, solid: SolidId) -> Result<Point3, Refusal> {
-    let aabb = brepkit_operations::measure::solid_bounding_box(topo, solid)?;
+    let aabb = remus_operations::measure::solid_bounding_box(topo, solid)?;
     Ok(aabb.center())
 }
 

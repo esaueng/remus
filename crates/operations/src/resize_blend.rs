@@ -8,16 +8,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::curves::Circle3D;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 use crate::blend_ops::{BlendFaceOrigins, fillet_v2};
@@ -138,7 +138,7 @@ pub fn resize_blend(
     expected_radius: f64,
     new_radius: f64,
 ) -> Result<ResizeBlendResult, OperationsError> {
-    brepkit_topology::transaction::run_transacted(topo, |topo| {
+    remus_topology::transaction::run_transacted(topo, |topo| {
         resize_blend_impl(topo, solid, face, expected_radius, new_radius)
     })
 }
@@ -156,7 +156,7 @@ fn resize_blend_impl(
     if !new_radius.is_finite() || new_radius < 0.0 {
         return Err(invalid("new_radius must be finite and non-negative"));
     }
-    if !brepkit_topology::explorer::solid_faces(topo, solid)?.contains(&face) {
+    if !remus_topology::explorer::solid_faces(topo, solid)?.contains(&face) {
         return Err(invalid(format!(
             "face {} is not part of solid {}",
             face.index(),
@@ -214,7 +214,7 @@ fn resize_blend_impl(
     }
 
     let chains =
-        brepkit_blend::g1_chain::g1_chains(topo, sharp.solid, &sharp.edges, Tolerance::new())
+        remus_blend::g1_chain::g1_chains(topo, sharp.solid, &sharp.edges, Tolerance::new())
             .map_err(|error| {
                 reconstruction(format!("recovered sharp-edge walk failed: {error}"))
             })?;
@@ -227,10 +227,10 @@ fn resize_blend_impl(
 
     let rebuilt = match fillet_v2(topo, sharp.solid, &chains[0], new_radius) {
         Ok(result) => result,
-        Err(OperationsError::Blend(brepkit_blend::BlendError::RadiusTooLarge { .. })) => {
+        Err(OperationsError::Blend(remus_blend::BlendError::RadiusTooLarge { .. })) => {
             return Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into());
         }
-        Err(OperationsError::Blend(brepkit_blend::BlendError::TrimmingFailure { .. }))
+        Err(OperationsError::Blend(remus_blend::BlendError::TrimmingFailure { .. }))
             if new_radius > band.radius =>
         {
             return Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into());
@@ -652,7 +652,7 @@ fn heal_plane_cylinder_band(
         .filter(|edge| *edge != *cylinder_contact)
         .filter(|edge| {
             matches!(
-                topo.edge(*edge).map(brepkit_topology::edge::Edge::curve),
+                topo.edge(*edge).map(remus_topology::edge::Edge::curve),
                 Ok(EdgeCurve::Line)
             )
         })
@@ -768,7 +768,7 @@ fn other_circle_edges(
         .filter(|edge| !contacts.contains(edge))
         .filter(|edge| {
             matches!(
-                topo.edge(*edge).map(brepkit_topology::edge::Edge::curve),
+                topo.edge(*edge).map(remus_topology::edge::Edge::curve),
                 Ok(EdgeCurve::Circle(_))
             )
         })
@@ -784,7 +784,7 @@ fn other_circle_edges(
 fn boundary_directions(
     topo: &Topology,
     circles: &HashSet<EdgeId>,
-) -> Result<Vec<(Vec3, brepkit_topology::vertex::VertexId)>, OperationsError> {
+) -> Result<Vec<(Vec3, remus_topology::vertex::VertexId)>, OperationsError> {
     let mut directions = Vec::new();
     let mut seen = HashSet::new();
     for edge_id in circles {
@@ -813,8 +813,8 @@ fn common_boundary_direction(
 ) -> Result<
     (
         Vec3,
-        brepkit_topology::vertex::VertexId,
-        brepkit_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
     ),
     OperationsError,
 > {
@@ -848,7 +848,7 @@ fn ordered_circle_boundary(
     topo: &Topology,
     wire: &[OrientedEdge],
     circles: &HashSet<EdgeId>,
-    start_vertex: brepkit_topology::vertex::VertexId,
+    start_vertex: remus_topology::vertex::VertexId,
 ) -> Result<Vec<OrientedEdge>, OperationsError> {
     let mut remaining: Vec<OrientedEdge> = wire
         .iter()
@@ -903,8 +903,8 @@ fn rebuild_closed_periodic_support(
     face: FaceId,
     contacts: &HashSet<EdgeId>,
     sharp_edge: EdgeId,
-    sharp_vertex: brepkit_topology::vertex::VertexId,
-    far_vertex: brepkit_topology::vertex::VertexId,
+    sharp_vertex: remus_topology::vertex::VertexId,
+    far_vertex: remus_topology::vertex::VertexId,
     far_circles: &HashSet<EdgeId>,
     axis: Vec3,
 ) -> Result<(), OperationsError> {
@@ -1084,10 +1084,10 @@ fn validate_exact_result(
     solid: SolidId,
     label: &str,
 ) -> Result<(), OperationsError> {
-    let report = brepkit_check::validate::validate_solid(
+    let report = remus_check::validate::validate_solid(
         topo,
         solid,
-        &brepkit_check::validate::ValidateOptions::default(),
+        &remus_check::validate::ValidateOptions::default(),
     )?;
     if report.is_valid() {
         return Ok(());
@@ -1095,7 +1095,7 @@ fn validate_exact_result(
     let detail = report
         .issues
         .iter()
-        .filter(|issue| issue.severity == brepkit_check::validate::Severity::Error)
+        .filter(|issue| issue.severity == remus_check::validate::Severity::Error)
         .take(3)
         .map(|issue| issue.description.as_str())
         .collect::<Vec<_>>()

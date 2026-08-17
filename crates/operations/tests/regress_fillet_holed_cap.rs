@@ -18,22 +18,22 @@
 
 use std::collections::HashMap;
 
-use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::blend_ops;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::heal::unify_faces;
-use brepkit_operations::measure;
-use brepkit_operations::primitives;
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::blend_ops;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::heal::unify_faces;
+use remus_operations::measure;
+use remus_operations::primitives;
+use remus_operations::revolve::revolve;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn surface_census(topo: &Topology, s: SolidId) -> HashMap<&'static str, usize> {
     let mut m = HashMap::new();
@@ -322,7 +322,7 @@ fn washer_rim_fillet_rounds_inward() {
         .unwrap()
         .into_iter()
         .find_map(|f| match topo.face(f).unwrap().surface() {
-            brepkit_topology::face::FaceSurface::Torus(t) => Some(t.major_radius()),
+            remus_topology::face::FaceSurface::Torus(t) => Some(t.major_radius()),
             _ => None,
         })
         .expect("a torus band");

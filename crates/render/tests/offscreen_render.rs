@@ -14,11 +14,11 @@
 
 use std::collections::HashSet;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_render::{Camera, RenderOpts, RenderOutput, probe_adapter, render_solid_offscreen};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_render::{Camera, RenderOpts, RenderOutput, probe_adapter, render_solid_offscreen};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// An isometric-ish camera framing a model of bounding-sphere `radius` centered
 /// at `target`, pulled back far enough to fit the model with margin.
@@ -120,7 +120,7 @@ fn check_render(topo: &Topology, solid: SolidId, name: &str) {
     assert_eq!(out.height, 512);
     assert_eq!(out.id_buffer.len(), (512 * 512) as usize);
 
-    let path = std::env::temp_dir().join(format!("brepkit_render_{name}.png"));
+    let path = std::env::temp_dir().join(format!("remus_render_{name}.png"));
     out.color.save(&path).unwrap();
     println!("wrote {}", path.display());
 
@@ -178,11 +178,11 @@ fn check_render(topo: &Topology, solid: SolidId, name: &str) {
 
 /// Axis-aligned bounding box of a solid via its tessellation positions.
 fn solid_aabb(topo: &Topology, solid: SolidId) -> (Point3, Point3) {
-    let (mesh, _) = brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+    let (mesh, _) = remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
         topo,
         solid,
         0.05,
-        brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
     )
     .unwrap();
     let mut min = [f64::INFINITY; 3];
@@ -211,11 +211,11 @@ fn render_box_and_cylinder_offscreen() {
     println!("using wgpu adapter: {adapter}");
 
     let mut topo = Topology::new();
-    let cube = brepkit_operations::primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    let cube = remus_operations::primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
     check_render(&topo, cube, "box");
 
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, 8.0, 20.0).unwrap();
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, 8.0, 20.0).unwrap();
     check_render(&topo, cyl, "cylinder");
 }
 
@@ -223,7 +223,7 @@ fn render_box_and_cylinder_offscreen() {
 fn invalid_size_is_rejected() {
     // Zero-size validation short-circuits before any GPU work, so it always runs.
     let mut topo = Topology::new();
-    let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let cam = iso_camera(Point3::new(5.0, 5.0, 5.0), 9.0);
     let opts = RenderOpts {
         width: 0,
@@ -232,7 +232,7 @@ fn invalid_size_is_rejected() {
     let err = render_solid_offscreen(&topo, cube, &cam, &opts);
     assert!(matches!(
         err,
-        Err(brepkit_render::RenderError::InvalidSize { .. })
+        Err(remus_render::RenderError::InvalidSize { .. })
     ));
 }
 
@@ -243,13 +243,13 @@ fn oversized_render_is_rejected() {
     // a clean error rather than a wgpu panic or a giant allocation. The pixel
     // budget fires before device creation, so no adapter is required.
     let mut topo = Topology::new();
-    let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let cam = iso_camera(Point3::new(5.0, 5.0, 5.0), 9.0);
     let opts = RenderOpts::new(1_000_000, 1_000_000);
     match render_solid_offscreen(&topo, cube, &cam, &opts) {
         Err(
-            brepkit_render::RenderError::SizeTooLarge { .. }
-            | brepkit_render::RenderError::PixelBudgetExceeded { .. },
+            remus_render::RenderError::SizeTooLarge { .. }
+            | remus_render::RenderError::PixelBudgetExceeded { .. },
         ) => {}
         Err(other) => panic!("expected SizeTooLarge or PixelBudgetExceeded, got {other:?}"),
         Ok(_) => panic!("expected SizeTooLarge or PixelBudgetExceeded, got Ok"),
@@ -261,11 +261,11 @@ fn pixel_budget_render_is_rejected_without_adapter() {
     // Just over the 4096x4096-pixel budget: rejected before any device work,
     // so this runs identically on adapter-less machines.
     let mut topo = Topology::new();
-    let cube = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let cube = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let cam = iso_camera(Point3::new(5.0, 5.0, 5.0), 9.0);
     let opts = RenderOpts::new(4097, 4096);
     match render_solid_offscreen(&topo, cube, &cam, &opts) {
-        Err(brepkit_render::RenderError::PixelBudgetExceeded { pixels, .. }) => {
+        Err(remus_render::RenderError::PixelBudgetExceeded { pixels, .. }) => {
             assert_eq!(pixels, 4097 * 4096);
         }
         Err(other) => panic!("expected PixelBudgetExceeded, got {other:?}"),

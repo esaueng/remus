@@ -1,10 +1,10 @@
 //! Shared utility functions for the check crate.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::aabb::Aabb3;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
 
@@ -105,7 +105,7 @@ pub fn face_polygon(topo: &Topology, face_id: FaceId) -> Result<Vec<Point3>, Che
 /// Returns an error if any topology entity referenced by the wire is missing.
 pub fn wire_polygon(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
 ) -> Result<Vec<Point3>, CheckError> {
     wire_polygon_curve_sampled(topo, wire_id, CLOSED_CURVE_SAMPLES, OPEN_CURVE_SAMPLES)
 }
@@ -127,7 +127,7 @@ pub fn wire_polygon(
 /// Returns an error if any topology entity referenced by the wire is missing.
 pub fn wire_polygon_sampled(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     closed_samples: usize,
 ) -> Result<Vec<Point3>, CheckError> {
     wire_polygon_curve_sampled(topo, wire_id, closed_samples, 1)
@@ -152,13 +152,13 @@ pub fn wire_polygon_sampled(
 /// Returns an error if any topology entity referenced by the wire is missing.
 pub fn wire_polygon_curve_sampled(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     closed_samples: usize,
     open_samples: usize,
 ) -> Result<Vec<Point3>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let mut pts: Vec<Point3> = Vec::new();
-    let mut prev_end: Option<brepkit_topology::vertex::VertexId> = None;
+    let mut prev_end: Option<remus_topology::vertex::VertexId> = None;
 
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
@@ -441,7 +441,7 @@ const SEAM_COINCIDENT_SQ: f64 = 1e-14;
 /// start; when they do not, sampling from the domain origin breaks phase
 /// coherence with adjacent edges, so the vertex is projected onto the curve.
 fn nurbs_seam_parameter(
-    nc: &brepkit_math::nurbs::curve::NurbsCurve,
+    nc: &remus_math::nurbs::curve::NurbsCurve,
     seam_pt: Point3,
     u0: f64,
     u1: f64,
@@ -449,7 +449,7 @@ fn nurbs_seam_parameter(
     if (nc.evaluate(u0) - seam_pt).length_squared() <= SEAM_COINCIDENT_SQ {
         return u0;
     }
-    brepkit_math::nurbs::projection::project_point_to_curve(nc, seam_pt, 1e-9)
+    remus_math::nurbs::projection::project_point_to_curve(nc, seam_pt, 1e-9)
         .map_or(u0, |proj| proj.parameter.clamp(u0, u1))
 }
 
@@ -557,7 +557,7 @@ pub fn face_aabb(topo: &Topology, face_id: FaceId) -> Result<Aabb3, CheckError> 
 /// dominant axis plane (the plane most aligned with the polygon normal).
 #[must_use]
 pub fn point_in_polygon_3d(point: &Point3, polygon: &[Point3], normal: &Vec3) -> bool {
-    use brepkit_math::predicates::point_in_polygon;
+    use remus_math::predicates::point_in_polygon;
 
     let ax = normal.x().abs();
     let ay = normal.y().abs();
@@ -588,11 +588,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_geometry::convert::curve_to_nurbs::circle_to_nurbs;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_geometry::convert::curve_to_nurbs::circle_to_nurbs;
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     #[test]
     fn wire_polygon_anchors_closed_nurbs_rim_at_seam_vertex() {

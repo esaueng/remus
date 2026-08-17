@@ -1,6 +1,6 @@
 //! Wire and surface sampling functions for UV space.
 
-use brepkit_math::vec::Point2;
+use remus_math::vec::Point2;
 
 use super::super::split_types::OrientedPCurveEdge;
 
@@ -28,7 +28,7 @@ pub(super) fn sample_wire_loop_uv_via_frame(
     wire: &[OrientedPCurveEdge],
     frame: &super::super::plane_frame::PlaneFrame,
 ) -> Vec<Point2> {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
     const CURVE_SAMPLES: usize = 8;
 
     let mut pts = Vec::with_capacity(wire.len() * CURVE_SAMPLES);
@@ -87,7 +87,7 @@ pub(super) fn sample_wire_loop_uv_periodic(
     u_period: Option<f64>,
     v_period: Option<f64>,
 ) -> Vec<Point2> {
-    use brepkit_math::curves2d::Curve2D;
+    use remus_math::curves2d::Curve2D;
     const CURVE_SAMPLES: usize = 8;
 
     let mut pts: Vec<Point2> = Vec::new();
@@ -221,9 +221,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::{Point3, Vec2};
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point3, Vec2};
+    use remus_topology::edge::EdgeCurve;
     use std::f64::consts::{PI, TAU};
 
     /// A UV-space edge is all `sample_wire_loop_uv_periodic` reads; the 3D

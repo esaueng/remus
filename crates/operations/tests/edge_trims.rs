@@ -9,17 +9,17 @@
 
 use std::f64::consts::TAU;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::copy::copy_solid;
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::{SolidId, Topology};
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::copy::copy_solid;
+use remus_operations::primitives::make_cylinder;
+use remus_operations::transform::transform_solid;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::{SolidId, Topology};
 
 /// A cylinder whose rim circle edge gets an explicit (partial) trim
 /// stamped on it, standing in for a boolean split arc.
-fn cylinder_with_trimmed_rim() -> (Topology, brepkit_topology::SolidId) {
+fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId) {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
     let rims: Vec<_> = topo
@@ -47,7 +47,7 @@ fn trimmed_edges(topo: &Topology) -> usize {
 }
 
 fn solid_trims(topo: &Topology, solid: SolidId) -> Vec<(f64, f64)> {
-    let mut trims: Vec<_> = brepkit_topology::explorer::solid_edges(topo, solid)
+    let mut trims: Vec<_> = remus_topology::explorer::solid_edges(topo, solid)
         .unwrap()
         .into_iter()
         .filter_map(|edge| topo.edge(edge).unwrap().trim())
@@ -57,7 +57,7 @@ fn solid_trims(topo: &Topology, solid: SolidId) -> Vec<(f64, f64)> {
 }
 
 fn stamp_exact_full_circle_trims(topo: &mut Topology, solid: SolidId) {
-    for edge_id in brepkit_topology::explorer::solid_edges(topo, solid).unwrap() {
+    for edge_id in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
         let edge = topo.edge(edge_id).unwrap();
         let EdgeCurve::Circle(circle) = edge.curve() else {
             continue;
@@ -86,9 +86,9 @@ fn trims_survive_solid_copy() {
 #[test]
 fn trims_survive_arena_round_trip() {
     let (topo, solid) = cylinder_with_trimmed_rim();
-    let bytes = brepkit_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let bytes = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
     let mut restored = Topology::new();
-    let _ = brepkit_io::arena_io::deserialize_solid(&bytes, &mut restored).unwrap();
+    let _ = remus_io::arena_io::deserialize_solid(&bytes, &mut restored).unwrap();
     let trims: Vec<_> = restored
         .edges()
         .iter()
@@ -108,11 +108,11 @@ fn coaxial_cylinder_fast_path_preserves_full_circle_trims() {
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
     assert_eq!(
-        brepkit_topology::explorer::solid_entity_counts(&topo, result).unwrap(),
+        remus_topology::explorer::solid_entity_counts(&topo, result).unwrap(),
         (3, 3, 2),
         "coaxial shortcut must return one analytic cylinder"
     );
-    let report = brepkit_operations::validate::validate_solid(&topo, result).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, result).unwrap();
     assert!(
         report.is_valid(),
         "result must validate: {:?}",
@@ -127,9 +127,9 @@ fn coaxial_cylinder_fast_path_preserves_full_circle_trims() {
         "both rebuilt circular rims must retain exact full-turn domains: {result_trims:?}"
     );
 
-    let bytes = brepkit_io::arena_io::serialize_solid(&topo, result).unwrap();
+    let bytes = remus_io::arena_io::serialize_solid(&topo, result).unwrap();
     let mut restored = Topology::new();
-    let restored_solid = brepkit_io::arena_io::deserialize_solid(&bytes, &mut restored).unwrap();
+    let restored_solid = remus_io::arena_io::deserialize_solid(&bytes, &mut restored).unwrap();
     assert_eq!(
         solid_trims(&restored, restored_solid),
         result_trims,
@@ -149,7 +149,7 @@ fn coaxial_cylinder_fast_path_rejects_partial_rim_trims() {
 
     // One rim of `lower` carries a half-turn, standing in for a rim that an
     // earlier boolean split into arcs.
-    let rim = brepkit_topology::explorer::solid_edges(&topo, lower)
+    let rim = remus_topology::explorer::solid_edges(&topo, lower)
         .unwrap()
         .into_iter()
         .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
@@ -169,8 +169,8 @@ fn coaxial_cylinder_fast_path_rejects_partial_rim_trims() {
     }
 
     let mut mesh_area = 0.0;
-    for face in brepkit_topology::explorer::solid_faces(&topo, result).unwrap() {
-        let mesh = brepkit_operations::tessellate::tessellate(&topo, face, 0.001).unwrap();
+    for face in remus_topology::explorer::solid_faces(&topo, result).unwrap() {
+        let mesh = remus_operations::tessellate::tessellate(&topo, face, 0.001).unwrap();
         for t in mesh.indices.chunks(3) {
             let p = |i: usize| mesh.positions[t[i] as usize];
             mesh_area += (p(1) - p(0)).cross(p(2) - p(0)).length() * 0.5;
@@ -195,7 +195,7 @@ fn coaxial_cylinder_fast_path_keeps_each_rim_in_phase() {
     transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
-    for edge_id in brepkit_topology::explorer::solid_edges(&topo, result).unwrap() {
+    for edge_id in remus_topology::explorer::solid_edges(&topo, result).unwrap() {
         let edge = topo.edge(edge_id).unwrap();
         let EdgeCurve::Circle(circle) = edge.curve() else {
             continue;

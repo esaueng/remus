@@ -1,7 +1,7 @@
 //! Arc-length parameterized curve sampling.
 
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::Point3;
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::Point3;
 
 /// Number of segments used for the coarse chord-length table.
 const CHORD_SEGMENTS: usize = 256;
@@ -152,8 +152,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
     use std::f64::consts::TAU;
 
     fn unit_circle() -> Circle3D {

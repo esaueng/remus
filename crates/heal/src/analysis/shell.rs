@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::shell::ShellId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::shell::ShellId;
 
 use crate::HealError;
 use crate::status::Status;

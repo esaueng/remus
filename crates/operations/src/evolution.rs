@@ -34,7 +34,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point3, Vec3};
 
 /// How an [`EvolutionMap`] was derived.
 ///
@@ -509,7 +509,7 @@ fn all_cosurface(input_faces: &[FaceSignature], indices: &[usize], plane_tol: f6
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
 
@@ -688,9 +688,9 @@ mod tests {
 
     #[test]
     fn fillet_evolution_accepts_valid_planar_topology() {
-        use brepkit_topology::explorer::{solid_edges, solid_faces};
+        use remus_topology::explorer::{solid_edges, solid_faces};
 
-        let mut topo = brepkit_topology::Topology::new();
+        let mut topo = remus_topology::Topology::new();
         let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let edges = solid_edges(&topo, cube).unwrap();
         let result = crate::blend_ops::fillet_v2(&mut topo, cube, &[edges[0]], 1.0)
@@ -699,10 +699,10 @@ mod tests {
         assert!(!result.is_partial);
         assert!(solid_faces(&topo, result.solid).unwrap().len() > 6);
 
-        let report = brepkit_check::validate::validate_solid(
+        let report = remus_check::validate::validate_solid(
             &topo,
             result.solid,
-            &brepkit_check::validate::ValidateOptions::default(),
+            &remus_check::validate::ValidateOptions::default(),
         )
         .unwrap();
         assert!(report.is_valid(), "{:#?}", report.issues);
@@ -743,7 +743,7 @@ pub struct AttributePropagation {
 /// [`Geometry`](EvolutionOrigin::Geometry)-origin map rides on inference,
 /// which a consumer must opt into knowingly.
 pub fn propagate_face_attributes(
-    topo: &mut brepkit_topology::Topology,
+    topo: &mut remus_topology::Topology,
     map: &EvolutionMap,
 ) -> AttributePropagation {
     let mut report = AttributePropagation {
@@ -754,10 +754,8 @@ pub fn propagate_face_attributes(
     // Snapshot every source before mutating, grouped by result face. Including
     // empty source values matters for merges: Some + None is a conflict, not
     // permission to preserve the Some value.
-    let mut by_output: BTreeMap<
-        usize,
-        Vec<(usize, brepkit_topology::attributes::EntityAttributes)>,
-    > = BTreeMap::new();
+    let mut by_output: BTreeMap<usize, Vec<(usize, remus_topology::attributes::EntityAttributes)>> =
+        BTreeMap::new();
     for (&input_idx, outputs) in &map.modified {
         let Some(input_face) = topo.face_id_from_index(input_idx) else {
             continue;
@@ -789,7 +787,7 @@ pub fn propagate_face_attributes(
             .all(|(_, attributes)| attributes.color == first.color)
             .then_some(first.color)
             .flatten();
-        let attributes = brepkit_topology::attributes::EntityAttributes { name, color };
+        let attributes = remus_topology::attributes::EntityAttributes { name, color };
         if let Some(face) = topo.face_id_from_index(output_idx) {
             let carried = !attributes.is_empty();
             if topo.set_face_attributes(face, attributes).is_ok() && carried {
@@ -809,7 +807,7 @@ pub fn propagate_face_attributes(
         if let Some(face) = topo.face_id_from_index(output_idx) {
             let _ = topo.set_face_attributes(
                 face,
-                brepkit_topology::attributes::EntityAttributes::default(),
+                remus_topology::attributes::EntityAttributes::default(),
             );
         }
     }

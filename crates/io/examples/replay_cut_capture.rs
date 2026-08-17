@@ -6,11 +6,11 @@
 //! narrowed to a single `cutAll` of EIGHT tools taking **203.5 s** (telemetry:
 //! one batch attempt, one success, no fallbacks — honest N-way work, not retry
 //! churn). Capture:
-//! `~/.cache/brepkit-parity-captures/2026-07-24/goma-bisect/`
+//! `~/.cache/remus-parity-captures/2026-07-24/goma-bisect/`
 //!
 //! Usage:
 //!   CAPTURE_DIR=<dir> PREFIX=gomabisect \
-//!     cargo run --release --example replay_cut_capture -p brepkit-io [N]
+//!     cargo run --release --example replay_cut_capture -p remus-io [N]
 //!
 //! `N` limits the tool count, which is how you get the cost-vs-tool-count
 //! curve without waiting for the full run.
@@ -19,13 +19,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOptions, compound_cut};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOptions, compound_cut};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
-fn describe(topo: &Topology, sid: brepkit_topology::solid::SolidId, label: &str) {
+fn describe(topo: &Topology, sid: remus_topology::solid::SolidId, label: &str) {
     let faces = solid_faces(topo, sid).expect("faces");
     let mut mix: HashMap<&str, usize> = HashMap::new();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
@@ -45,9 +45,9 @@ fn describe(topo: &Topology, sid: brepkit_topology::solid::SolidId, label: &str)
     // operand with free edges silently poisons every classification.
     let free = uses.values().filter(|&&c| c == 1).count();
     let over = uses.values().filter(|&&c| c > 2).count();
-    let vol = brepkit_operations::measure::solid_volume(topo, sid, 0.01).unwrap_or(f64::NAN);
+    let vol = remus_operations::measure::solid_volume(topo, sid, 0.01).unwrap_or(f64::NAN);
     if std::env::var("BBOX").is_ok()
-        && let Ok(bb) = brepkit_operations::measure::solid_bounding_box(topo, sid)
+        && let Ok(bb) = remus_operations::measure::solid_bounding_box(topo, sid)
     {
         println!(
             "    {label} bbox x[{:.3},{:.3}] y[{:.3},{:.3}] z[{:.3},{:.3}]",
@@ -70,7 +70,7 @@ impl log::Log for DropLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
         // Only the assembler's shell chatter — an unconditional `true` here
         // would route every record in the workspace through `log()`.
-        m.target().starts_with("brepkit_algo") && m.level() <= log::Level::Debug
+        m.target().starts_with("remus_algo") && m.level() <= log::Level::Debug
     }
     fn log(&self, r: &log::Record) {
         if !self.enabled(r.metadata()) {
@@ -144,7 +144,7 @@ fn main() {
             "POINT_IN needs exactly x,y,z — got {} component(s)",
             v.len()
         );
-        let p = brepkit_math::vec::Point3::new(v[0], v[1], v[2]);
+        let p = remus_math::vec::Point3::new(v[0], v[1], v[2]);
         let labelled = std::iter::once(("base".to_string(), base)).chain(
             tools
                 .iter()
@@ -152,7 +152,7 @@ fn main() {
                 .map(|(i, &t)| (format!("tool{i}"), t)),
         );
         for (label, sid) in labelled {
-            match brepkit_operations::classify::classify_point(&topo, sid, p, 0.01, 1e-7) {
+            match remus_operations::classify::classify_point(&topo, sid, p, 0.01, 1e-7) {
                 Ok(c) => println!("  POINT_IN {label} {sid:?}: {c:?}"),
                 Err(e) => println!("  POINT_IN {label} {sid:?}: ERR {e}"),
             }
@@ -163,10 +163,10 @@ fn main() {
     // thin slab is pre-existing in the inputs or produced by the boolean.
     if let Ok(v) = std::env::var("XSCAN") {
         let target: f64 = v.parse().expect("XSCAN");
-        let report = |label: &str, sid: brepkit_topology::solid::SolidId| {
+        let report = |label: &str, sid: remus_topology::solid::SolidId| {
             let mut xs: Vec<f64> = Vec::new();
             for fid in solid_faces(&topo, sid).expect("faces") {
-                if let brepkit_topology::face::FaceSurface::Plane { normal, d } =
+                if let remus_topology::face::FaceSurface::Plane { normal, d } =
                     topo.face(fid).expect("face").surface()
                     && normal.x().abs() > 0.99
                 {
@@ -191,7 +191,7 @@ fn main() {
     // whether a trim boundary pre-exists or is produced by the boolean.
     if let Ok(v) = std::env::var("BASE_FACES_NEAR_X") {
         let target: f64 = v.parse().expect("BASE_FACES_NEAR_X");
-        let scan = |label: &str, sid: brepkit_topology::solid::SolidId| {
+        let scan = |label: &str, sid: remus_topology::solid::SolidId| {
             for fid in solid_faces(&topo, sid).expect("faces") {
                 let f = topo.face(fid).expect("face");
                 let (mut lo, mut hi) = (f64::MAX, f64::MIN);
@@ -233,7 +233,7 @@ fn main() {
         let single = std::env::var("TOOL")
             .ok()
             .and_then(|v| v.parse::<usize>().ok());
-        let selected: Vec<(usize, brepkit_topology::solid::SolidId)> = match single {
+        let selected: Vec<(usize, remus_topology::solid::SolidId)> = match single {
             Some(i) if i < tools.len() => vec![(i, tools[i])],
             _ => tools.iter().copied().enumerate().collect(),
         };
@@ -247,11 +247,11 @@ fn main() {
                 .unwrap_or_else(|_| "cut".into())
                 .as_str()
             {
-                "fuse" => brepkit_algo::bop::BooleanOp::Fuse,
-                "intersect" => brepkit_algo::bop::BooleanOp::Intersect,
-                _ => brepkit_algo::bop::BooleanOp::Cut,
+                "fuse" => remus_algo::bop::BooleanOp::Fuse,
+                "intersect" => remus_algo::bop::BooleanOp::Intersect,
+                _ => remus_algo::bop::BooleanOp::Cut,
             };
-            match brepkit_algo::gfa::boolean(&mut topo, op, acc, tool) {
+            match remus_algo::gfa::boolean(&mut topo, op, acc, tool) {
                 Ok(next) => {
                     let faces = solid_faces(&topo, next).expect("faces");
                     let mut uses: HashMap<EdgeId, usize> = HashMap::new();

@@ -457,7 +457,7 @@ pub fn validate_same_range(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     use crate::edge::{Edge, EdgeCurve};
     use crate::face::{Face, FaceSurface};
@@ -676,10 +676,10 @@ mod tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod same_parameter_tests {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 
     use crate::TopologyError;
     use crate::edge::{Edge, EdgeCurve, EdgeId};
@@ -701,7 +701,7 @@ mod same_parameter_tests {
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
         // Anchor the seam vertex to the curve's own zero-angle point so the
         // fixture does not assume how the reference frame is derived.
-        let p0 = brepkit_math::traits::ParametricCurve::evaluate(&circle, 0.0);
+        let p0 = remus_math::traits::ParametricCurve::evaluate(&circle, 0.0);
         let v = topo.add_vertex(Vertex::new(p0, 1e-7));
         let rim = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
@@ -772,7 +772,7 @@ mod same_parameter_tests {
 
     #[test]
     fn tolerance_violation_diagnostics_are_pinned() {
-        use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+        use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
         let (topo, rim, face) = cylinder_with_rim();
         drop(topo);
         let d = TopologyError::SameParameterExceeded {

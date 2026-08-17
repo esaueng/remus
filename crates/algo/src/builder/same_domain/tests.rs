@@ -3,10 +3,10 @@
 use super::*;
 use crate::builder::FaceClass;
 use crate::ds::Rank;
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::builder::{make_face_from_wire, make_polygon_wire};
+use remus_math::aabb::Aabb3;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
 
 #[test]
 fn overlap_candidates_stream_dense_pairs_in_order() {
@@ -383,7 +383,7 @@ fn mixed_surface_types_not_same_domain() {
         d: 0.0,
     };
     let b = FaceSurface::Sphere(
-        brepkit_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0)
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0)
             .expect("valid sphere"),
     );
     assert_eq!(surfaces_same_domain(&a, &b, tol), None);
@@ -393,7 +393,7 @@ fn mixed_surface_types_not_same_domain() {
 fn cones_same_domain_same_direction() {
     let tol = Tolerance::new();
     let a = FaceSurface::Cone(
-        brepkit_math::surfaces::ConicalSurface::with_ref_dir(
+        remus_math::surfaces::ConicalSurface::with_ref_dir(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             std::f64::consts::FRAC_PI_6,
@@ -402,7 +402,7 @@ fn cones_same_domain_same_direction() {
         .expect("valid cone"),
     );
     let b = FaceSurface::Cone(
-        brepkit_math::surfaces::ConicalSurface::with_ref_dir(
+        remus_math::surfaces::ConicalSurface::with_ref_dir(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             std::f64::consts::FRAC_PI_6,
@@ -417,7 +417,7 @@ fn cones_same_domain_same_direction() {
 fn cones_different_half_angle_not_same_domain() {
     let tol = Tolerance::new();
     let a = FaceSurface::Cone(
-        brepkit_math::surfaces::ConicalSurface::with_ref_dir(
+        remus_math::surfaces::ConicalSurface::with_ref_dir(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             std::f64::consts::FRAC_PI_6,
@@ -426,7 +426,7 @@ fn cones_different_half_angle_not_same_domain() {
         .expect("valid cone"),
     );
     let b = FaceSurface::Cone(
-        brepkit_math::surfaces::ConicalSurface::with_ref_dir(
+        remus_math::surfaces::ConicalSurface::with_ref_dir(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             std::f64::consts::FRAC_PI_4,
@@ -441,7 +441,7 @@ fn cones_different_half_angle_not_same_domain() {
 fn torus_same_domain_same_direction_ignores_ref_dir() {
     let tol = Tolerance::new();
     let a = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -452,7 +452,7 @@ fn torus_same_domain_same_direction_ignores_ref_dir() {
     // Same surface, but constructed with a different ref direction —
     // x_axis/y_axis differ but z_axis matches, so this is the same surface.
     let b = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
+        remus_math::surfaces::ToroidalSurface::with_axis_and_ref_dir(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -468,7 +468,7 @@ fn torus_same_domain_same_direction_ignores_ref_dir() {
 fn torus_same_domain_opposite_direction() {
     let tol = Tolerance::new();
     let a = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(1.0, 2.0, 3.0),
             5.0,
             1.0,
@@ -477,7 +477,7 @@ fn torus_same_domain_opposite_direction() {
         .expect("valid torus"),
     );
     let b = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(1.0, 2.0, 3.0),
             5.0,
             1.0,
@@ -492,7 +492,7 @@ fn torus_same_domain_opposite_direction() {
 fn torus_different_major_radius_not_same_domain() {
     let tol = Tolerance::new();
     let a = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -501,7 +501,7 @@ fn torus_different_major_radius_not_same_domain() {
         .expect("valid torus"),
     );
     let b = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             4.0,
             1.0,
@@ -516,7 +516,7 @@ fn torus_different_major_radius_not_same_domain() {
 fn torus_different_minor_radius_not_same_domain() {
     let tol = Tolerance::new();
     let a = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -525,7 +525,7 @@ fn torus_different_minor_radius_not_same_domain() {
         .expect("valid torus"),
     );
     let b = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             0.5,
@@ -540,7 +540,7 @@ fn torus_different_minor_radius_not_same_domain() {
 fn torus_different_center_not_same_domain() {
     let tol = Tolerance::new();
     let a = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -549,7 +549,7 @@ fn torus_different_center_not_same_domain() {
         .expect("valid torus"),
     );
     let b = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(1.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -564,7 +564,7 @@ fn torus_different_center_not_same_domain() {
 fn torus_skew_axes_not_same_domain() {
     let tol = Tolerance::new();
     let a = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -573,7 +573,7 @@ fn torus_skew_axes_not_same_domain() {
         .expect("valid torus"),
     );
     let b = FaceSurface::Torus(
-        brepkit_math::surfaces::ToroidalSurface::with_axis(
+        remus_math::surfaces::ToroidalSurface::with_axis(
             Point3::new(0.0, 0.0, 0.0),
             3.0,
             1.0,
@@ -646,12 +646,12 @@ fn cylinder_patch(
     z1: f64,
     rank: Rank,
 ) -> SubFace {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let center = Point3::new(cx, cy, 0.0);
     let axis = Vec3::new(0.0, 0.0, 1.0);
@@ -712,12 +712,12 @@ fn cone_patch(
     z1: f64,
     rank: Rank,
 ) -> SubFace {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::ConicalSurface;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::ConicalSurface;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let apex = Point3::new(0.0, 0.0, apex_z);
     let axis = Vec3::new(0.0, 0.0, 1.0);
@@ -1061,11 +1061,11 @@ fn coaxial_cylinder_opposite_sides_do_not_pair() {
 /// must keep them distinct.
 #[test]
 fn chord_split_disc_halves_are_not_duplicates() {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let circle =
@@ -1128,10 +1128,10 @@ fn chord_split_disc_halves_are_not_duplicates() {
 /// `seam`. Used to compare the same-domain key of two coincident rims that
 /// carry the same geometry under different parameterizations.
 fn closed_rim_face(topo: &mut Topology, curve: EdgeCurve, seam: Point3) -> FaceId {
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_topology::edge::Edge;
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let v = topo.add_vertex(Vertex::new(seam, 1e-7));
     let e = topo.add_edge(Edge::new(v, v, curve));
@@ -1158,7 +1158,7 @@ fn closed_rim_face(topo: &mut Topology, curve: EdgeCurve, seam: Point3) -> FaceI
 /// that flip because the equally-spaced angular offsets cancel.
 #[test]
 fn closed_ellipse_rims_with_opposed_axes_share_one_key() {
-    use brepkit_math::curves::Ellipse3D;
+    use remus_math::curves::Ellipse3D;
 
     let centre = Point3::new(10.0, 4.0, 0.0);
     let normal = Vec3::new(0.0, 0.0, 1.0);
@@ -1201,7 +1201,7 @@ fn closed_ellipse_rims_with_opposed_axes_share_one_key() {
 /// quarter turn apart still share one key.
 #[test]
 fn closed_circle_rims_with_rotated_axes_share_one_key() {
-    use brepkit_math::curves::Circle3D;
+    use remus_math::curves::Circle3D;
 
     let centre = Point3::new(-6.0, 2.5, 3.0);
     let normal = Vec3::new(0.0, 0.0, 1.0);
@@ -1231,7 +1231,7 @@ fn closed_circle_rims_with_rotated_axes_share_one_key() {
 /// whatever frame they store — that exactness is what the key relies on.
 #[test]
 fn closed_edge_centroid_is_the_centre_for_circle_and_ellipse() {
-    use brepkit_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::curves::{Circle3D, Ellipse3D};
 
     let tol = Tolerance::new();
     let centre = Point3::new(1.5, -7.25, 11.0);

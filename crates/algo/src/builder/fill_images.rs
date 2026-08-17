@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use brepkit_topology::edge::EdgeId;
+use remus_topology::edge::EdgeId;
 
 use crate::ds::GfaArena;
 

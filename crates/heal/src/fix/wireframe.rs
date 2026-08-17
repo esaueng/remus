@@ -7,11 +7,11 @@
 
 use std::collections::HashMap;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::vertex::VertexId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::shell::ShellId;
+use remus_topology::vertex::VertexId;
 
 use super::FixResult;
 use super::config::FixConfig;
@@ -107,9 +107,9 @@ struct FreeEdgeSnapshot {
     /// End vertex ID.
     end_vid: VertexId,
     /// Start vertex position.
-    start_pos: brepkit_math::vec::Point3,
+    start_pos: remus_math::vec::Point3,
     /// End vertex position.
-    end_pos: brepkit_math::vec::Point3,
+    end_pos: remus_math::vec::Point3,
     /// Whether this edge has been paired already.
     paired: bool,
 }

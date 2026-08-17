@@ -4,10 +4,10 @@
 //! Automatically detects binary vs ASCII format.
 
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::tessellate::TriangleMesh;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::tessellate::TriangleMesh;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Read an STL file (binary or ASCII) from raw bytes.
 ///
@@ -243,8 +243,8 @@ pub fn read_stl_solid(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
     use crate::stl::writer::{self, StlFormat};
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn roundtrip_binary_stl_box_primitive() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let bytes = writer::write_stl(&topo, &[solid], 0.1, StlFormat::Binary).unwrap();
         let mesh = read_stl(&bytes).unwrap();

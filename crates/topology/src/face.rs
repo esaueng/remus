@@ -9,12 +9,10 @@
 //! This is used by boolean operations when a curved face must contribute
 //! with flipped winding without altering the underlying surface definition.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point3, Vec3};
 
 use crate::arena;
 use crate::wire::WireId;
@@ -193,13 +191,13 @@ impl FaceSurface {
         !matches!(self, Self::Nurbs(_))
     }
 
-    /// Convert to an [`AnalyticSurface`](brepkit_math::analytic_intersection::AnalyticSurface)
+    /// Convert to an [`AnalyticSurface`](remus_math::analytic_intersection::AnalyticSurface)
     /// reference if applicable.
     ///
     /// Returns `None` for `Plane` and `Nurbs` variants.
     #[must_use]
-    pub fn as_analytic(&self) -> Option<brepkit_math::analytic_intersection::AnalyticSurface<'_>> {
-        use brepkit_math::analytic_intersection::AnalyticSurface;
+    pub fn as_analytic(&self) -> Option<remus_math::analytic_intersection::AnalyticSurface<'_>> {
+        use remus_math::analytic_intersection::AnalyticSurface;
         match self {
             Self::Cylinder(c) => Some(AnalyticSurface::Cylinder(c)),
             Self::Cone(c) => Some(AnalyticSurface::Cone(c)),

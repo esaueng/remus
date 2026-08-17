@@ -1,6 +1,6 @@
 //! Vertex — a point in 3D space with an associated tolerance.
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 use crate::arena;
 

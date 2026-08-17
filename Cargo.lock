@@ -251,181 +251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brepkit-algo"
-version = "0.1.0"
-dependencies = [
- "brepkit-check",
- "brepkit-math",
- "brepkit-topology",
- "log",
- "proptest",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-blend"
-version = "0.1.0"
-dependencies = [
- "brepkit-math",
- "brepkit-topology",
- "log",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-check"
-version = "0.1.0"
-dependencies = [
- "brepkit-geometry",
- "brepkit-math",
- "brepkit-topology",
- "proptest",
- "smallvec",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-geometry"
-version = "0.1.0"
-dependencies = [
- "brepkit-math",
- "proptest",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-heal"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.1",
- "brepkit-geometry",
- "brepkit-math",
- "brepkit-topology",
- "log",
- "proptest",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-io"
-version = "0.1.0"
-dependencies = [
- "brepkit-algo",
- "brepkit-check",
- "brepkit-math",
- "brepkit-operations",
- "brepkit-topology",
- "log",
- "proptest",
- "quick-xml 0.41.0",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "zip",
-]
-
-[[package]]
-name = "brepkit-math"
-version = "0.1.0"
-dependencies = [
- "log",
- "proptest",
- "robust",
- "serde",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-offset"
-version = "0.1.0"
-dependencies = [
- "brepkit-check",
- "brepkit-geometry",
- "brepkit-math",
- "brepkit-operations",
- "brepkit-topology",
- "log",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-operations"
-version = "0.1.0"
-dependencies = [
- "brepkit-algo",
- "brepkit-blend",
- "brepkit-check",
- "brepkit-geometry",
- "brepkit-heal",
- "brepkit-io",
- "brepkit-math",
- "brepkit-offset",
- "brepkit-sketch",
- "brepkit-topology",
- "criterion",
- "env_logger",
- "log",
- "proptest",
- "rayon",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-render"
-version = "0.1.0"
-dependencies = [
- "brepkit-math",
- "brepkit-operations",
- "brepkit-topology",
- "bytemuck",
- "image",
- "log",
- "pollster",
- "thiserror 2.0.20",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "brepkit-sketch"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-topology"
-version = "0.1.0"
-dependencies = [
- "brepkit-math",
- "proptest",
- "smallvec",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "brepkit-wasm"
-version = "2.130.0"
-dependencies = [
- "brepkit-algo",
- "brepkit-check",
- "brepkit-geometry",
- "brepkit-heal",
- "brepkit-io",
- "brepkit-math",
- "brepkit-operations",
- "brepkit-sketch",
- "brepkit-topology",
- "log",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tsify",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2170,6 +1995,181 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "remus-algo"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "proptest",
+ "remus-check",
+ "remus-math",
+ "remus-topology",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-blend"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "remus-math",
+ "remus-topology",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-check"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
+ "smallvec",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-geometry"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "remus-math",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-heal"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "log",
+ "proptest",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-io"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "proptest",
+ "quick-xml 0.41.0",
+ "remus-algo",
+ "remus-check",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "zip",
+]
+
+[[package]]
+name = "remus-math"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "proptest",
+ "robust",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-offset"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "remus-check",
+ "remus-geometry",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-operations"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "env_logger",
+ "log",
+ "proptest",
+ "rayon",
+ "remus-algo",
+ "remus-blend",
+ "remus-check",
+ "remus-geometry",
+ "remus-heal",
+ "remus-io",
+ "remus-math",
+ "remus-offset",
+ "remus-sketch",
+ "remus-topology",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "image",
+ "log",
+ "pollster",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "thiserror 2.0.20",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "remus-sketch"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-topology"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "remus-math",
+ "smallvec",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "remus-wasm"
+version = "2.130.0"
+dependencies = [
+ "log",
+ "remus-algo",
+ "remus-check",
+ "remus-geometry",
+ "remus-heal",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-sketch",
+ "remus-topology",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tsify",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "renderdoc-sys"
