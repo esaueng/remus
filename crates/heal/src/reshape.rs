@@ -9,13 +9,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeId};
-use brepkit_topology::face::FaceId;
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, WireId};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::face::FaceId;
+use remus_topology::shell::ShellId;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, WireId};
 
 use crate::HealError;
 
@@ -497,7 +497,7 @@ impl ReShape {
                             "edge replacements would empty wire {wire_id:?} on retained face {fid:?}"
                         )));
                     }
-                    let new_wire = brepkit_topology::wire::Wire::new(new_edges, is_closed)?;
+                    let new_wire = remus_topology::wire::Wire::new(new_edges, is_closed)?;
                     let new_wire_id = topo.add_wire(new_wire);
 
                     let face_mut = topo.face_mut(fid)?;
@@ -537,7 +537,7 @@ impl ReShape {
                         "face replacements would empty retained shell {shell_id:?}"
                     )));
                 }
-                *topo.shell_mut(shell_id)? = brepkit_topology::shell::Shell::new(new_faces)?;
+                *topo.shell_mut(shell_id)? = remus_topology::shell::Shell::new(new_faces)?;
             }
         }
         Ok(())
@@ -577,14 +577,14 @@ impl ReShape {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-    use brepkit_topology::face::{Face, FaceId, FaceSurface};
-    use brepkit_topology::shell::{Shell, ShellId};
-    use brepkit_topology::solid::{Solid, SolidId};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::shell::{Shell, ShellId};
+    use remus_topology::solid::{Solid, SolidId};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
     use super::ReShape;
 

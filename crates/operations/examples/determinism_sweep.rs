@@ -10,14 +10,14 @@
 //! diff the output: any line that differs between PROCESSES is seed-dependent
 //! (std `HashMap` iteration order leaking into branching).
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const DEFL: f64 = 0.05;
 
@@ -80,12 +80,12 @@ fn report(name: &str, topo: &Topology, solid: SolidId) {
 }
 
 /// An axis-aligned square face at height `z`, for lofting a NURBS-walled solid.
-fn square_profile(topo: &mut Topology, half: f64, z: f64) -> brepkit_topology::face::FaceId {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+fn square_profile(topo: &mut Topology, half: f64, z: f64) -> remus_topology::face::FaceId {
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
     let v: Vec<_> = corners
@@ -174,7 +174,7 @@ fn main() {
                     .is_some_and(|n| (n.z() - 1.0).abs() < 1e-6)
             })
             .collect();
-        match brepkit_operations::shell_op::shell(&mut t, c, wall, &top) {
+        match remus_operations::shell_op::shell(&mut t, c, wall, &top) {
             Ok(s) => report(name, &t, s),
             Err(e) => println!("{name} ERR {e}"),
         }
@@ -192,7 +192,7 @@ fn main() {
                     .is_some_and(|n| (n.z() - 1.0).abs() < 1e-6)
             })
             .collect();
-        match brepkit_operations::shell_op::shell(&mut t, b, 1.0, &top) {
+        match remus_operations::shell_op::shell(&mut t, b, 1.0, &top) {
             Ok(s) => report("shell_box", &t, s),
             Err(e) => println!("shell_box ERR {e}"),
         }
@@ -212,7 +212,7 @@ fn main() {
                     .is_some_and(|n| (n.z() - 1.0).abs() < 1e-6)
             })
             .collect();
-        let cup = brepkit_operations::shell_op::shell(&mut t, c, 1.2, &top).unwrap();
+        let cup = remus_operations::shell_op::shell(&mut t, c, 1.2, &top).unwrap();
         let ro = make_cylinder(&mut t, 7.0, 3.0).unwrap();
         at(&mut t, ro, 0.0, 0.0, 13.0);
         let ri = make_cylinder(&mut t, 5.0, 3.0).unwrap();
@@ -237,11 +237,11 @@ fn main() {
             .find(|&f| {
                 matches!(
                     t.face(f).unwrap().surface(),
-                    brepkit_topology::face::FaceSurface::Cylinder(_)
+                    remus_topology::face::FaceSurface::Cylinder(_)
                 )
             })
             .unwrap();
-        match brepkit_operations::push_pull::resize_cylindrical_face(&mut t, drilled, bore, 5.0) {
+        match remus_operations::push_pull::resize_cylindrical_face(&mut t, drilled, bore, 5.0) {
             Ok(r) => report("resize_bore_up", &t, r),
             Err(e) => println!("resize_bore_up ERR {e}"),
         }
@@ -251,8 +251,8 @@ fn main() {
     {
         let mut t = Topology::new();
         let b = make_box(&mut t, 20.0, 20.0, 10.0).unwrap();
-        let edges = brepkit_topology::explorer::solid_edges(&t, b).unwrap();
-        match brepkit_operations::blend_ops::fillet_v2(&mut t, b, &edges[..1], 1.5) {
+        let edges = remus_topology::explorer::solid_edges(&t, b).unwrap();
+        match remus_operations::blend_ops::fillet_v2(&mut t, b, &edges[..1], 1.5) {
             Ok(r) => report("fillet_one_edge", &t, r.solid),
             Err(e) => println!("fillet_one_edge ERR {e}"),
         }
@@ -260,8 +260,8 @@ fn main() {
     {
         let mut t = Topology::new();
         let b = make_box(&mut t, 20.0, 20.0, 10.0).unwrap();
-        let edges = brepkit_topology::explorer::solid_edges(&t, b).unwrap();
-        match brepkit_operations::blend_ops::chamfer_v2(&mut t, b, &edges[..1], 1.0, 1.0) {
+        let edges = remus_topology::explorer::solid_edges(&t, b).unwrap();
+        match remus_operations::blend_ops::chamfer_v2(&mut t, b, &edges[..1], 1.0, 1.0) {
             Ok(r) => report("chamfer_one_edge", &t, r.solid),
             Err(e) => println!("chamfer_one_edge ERR {e}"),
         }
@@ -296,7 +296,7 @@ fn main() {
     for (name, distance) in [("offset_cyl_out", 0.4), ("offset_cyl_in", -0.4)] {
         let mut t = Topology::new();
         let c = make_cylinder(&mut t, 6.0, 12.0).unwrap();
-        match brepkit_operations::offset_v2::offset_solid_v2(&mut t, c, distance) {
+        match remus_operations::offset_v2::offset_solid_v2(&mut t, c, distance) {
             Ok(r) => report(name, &t, r),
             Err(e) => println!("{name} ERR {e}"),
         }
@@ -304,7 +304,7 @@ fn main() {
     {
         let mut t = Topology::new();
         let b = make_box(&mut t, 10.0, 8.0, 6.0).unwrap();
-        match brepkit_operations::offset_v2::offset_solid_v2(&mut t, b, 0.5) {
+        match remus_operations::offset_v2::offset_solid_v2(&mut t, b, 0.5) {
             Ok(r) => report("offset_box", &t, r),
             Err(e) => println!("offset_box ERR {e}"),
         }
@@ -316,8 +316,8 @@ fn main() {
             .iter()
             .map(|&(half, z)| square_profile(&mut t, half, z))
             .collect();
-        match brepkit_operations::loft::loft_smooth(&mut t, &profiles) {
-            Ok(s) => match brepkit_operations::offset_v2::offset_solid_v2(&mut t, s, 0.5) {
+        match remus_operations::loft::loft_smooth(&mut t, &profiles) {
+            Ok(s) => match remus_operations::offset_v2::offset_solid_v2(&mut t, s, 0.5) {
                 Ok(r) => report("offset_nurbs_loft", &t, r),
                 Err(e) => println!("offset_nurbs_loft ERR {e}"),
             },
@@ -332,7 +332,7 @@ fn main() {
         let c = make_cylinder(&mut t, 4.0, 20.0).unwrap();
         at(&mut t, c, 10.0, 10.0, -5.0);
         let r = boolean(&mut t, BooleanOp::Cut, b, c).unwrap();
-        let m = brepkit_operations::tessellate::tessellate_solid(&t, r, DEFL).unwrap();
+        let m = remus_operations::tessellate::tessellate_solid(&t, r, DEFL).unwrap();
         println!(
             "tessellate_drilled_box             tris={} verts={}",
             m.indices.len() / 3,

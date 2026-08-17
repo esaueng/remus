@@ -6,11 +6,11 @@
 //! or re-approximation is not performed (that is an advanced NURBS
 //! operation requiring iterative fitting).
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 use crate::HealError;
 
@@ -161,17 +161,17 @@ pub fn check_bspline_restrictions(
 /// Count the number of spans (segments) in a NURBS curve.
 ///
 /// A span is a unique knot interval `[u_i, u_{i+1}]` where `u_i < u_{i+1}`.
-fn count_curve_segments(curve: &brepkit_math::nurbs::curve::NurbsCurve) -> usize {
+fn count_curve_segments(curve: &remus_math::nurbs::curve::NurbsCurve) -> usize {
     count_unique_knot_intervals(curve.knots(), curve.degree())
 }
 
 /// Count the number of u-spans in a NURBS surface.
-fn count_surface_segments_u(surface: &brepkit_math::nurbs::surface::NurbsSurface) -> usize {
+fn count_surface_segments_u(surface: &remus_math::nurbs::surface::NurbsSurface) -> usize {
     count_unique_knot_intervals(surface.knots_u(), surface.degree_u())
 }
 
 /// Count the number of v-spans in a NURBS surface.
-fn count_surface_segments_v(surface: &brepkit_math::nurbs::surface::NurbsSurface) -> usize {
+fn count_surface_segments_v(surface: &remus_math::nurbs::surface::NurbsSurface) -> usize {
     count_unique_knot_intervals(surface.knots_v(), surface.degree_v())
 }
 
@@ -203,21 +203,18 @@ fn count_unique_knot_intervals(knots: &[f64], degree: usize) -> usize {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use brepkit_math::surfaces::SphericalSurface;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::surfaces::SphericalSurface;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use crate::construct::convert_surface::sphere_to_nurbs;
 
-    fn add_nurbs_sphere_face(
-        topo: &mut Topology,
-        center: Point3,
-    ) -> brepkit_topology::face::FaceId {
+    fn add_nurbs_sphere_face(topo: &mut Topology, center: Point3) -> remus_topology::face::FaceId {
         let sphere = SphericalSurface::new(center, 1.0).unwrap();
         let nurbs = sphere_to_nurbs(&sphere).unwrap();
         let v = topo.add_vertex(Vertex::new(center, 1e-7));

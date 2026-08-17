@@ -31,10 +31,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -47,7 +47,7 @@ fn load(name: &str, topo: &mut Topology) -> SolidId {
 }
 
 fn directed_unmatched(topo: &Topology, solid: SolidId) -> usize {
-    let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+    let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
         topo,
         solid,
         0.01,
@@ -71,12 +71,12 @@ fn quarter_socket_loft_is_combinatorially_clean() {
     // whose mesh fails directed pairing.
     let mut topo = Topology::new();
     let solid = load("quarter_socket_loft38.bin", &mut topo);
-    let opts = brepkit_operations::validate::ValidationOptions {
+    let opts = remus_operations::validate::ValidationOptions {
         check_orientation: true,
         ..Default::default()
     };
     let report =
-        brepkit_operations::validate::validate_solid_with_options(&topo, solid, &opts).unwrap();
+        remus_operations::validate::validate_solid_with_options(&topo, solid, &opts).unwrap();
     assert!(
         !report
             .issues
@@ -97,12 +97,12 @@ fn quarter_socket_loft_regenerates_directed_watertight() {
     let eb = load("quarter_socket_loft_profile_b.bin", &mut topo);
     let top_face = |topo: &Topology, sid: SolidId| {
         let faces = solid_faces(topo, sid).unwrap();
-        let mut best: Option<(brepkit_topology::face::FaceId, f64)> = None;
+        let mut best: Option<(remus_topology::face::FaceId, f64)> = None;
         for &fid in &faces {
             let face = topo.face(fid).unwrap();
             if !matches!(
                 face.surface(),
-                brepkit_topology::face::FaceSurface::Plane { .. }
+                remus_topology::face::FaceSurface::Plane { .. }
             ) {
                 continue;
             }
@@ -121,7 +121,7 @@ fn quarter_socket_loft_regenerates_directed_watertight() {
     };
     let fa = top_face(&topo, ea);
     let fb = top_face(&topo, eb);
-    let solid = brepkit_operations::loft::loft(&mut topo, &[fa, fb]).unwrap();
+    let solid = remus_operations::loft::loft(&mut topo, &[fa, fb]).unwrap();
     assert_eq!(
         directed_unmatched(&topo, solid),
         0,
@@ -144,7 +144,7 @@ fn quarter_socket_loft_capture_documents_the_defective_era() {
         .filter(|&&fid| {
             matches!(
                 topo.face(fid).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Cylinder(_)
+                remus_topology::face::FaceSurface::Cylinder(_)
             )
         })
         .count();

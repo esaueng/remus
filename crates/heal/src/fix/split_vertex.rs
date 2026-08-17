@@ -8,11 +8,11 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::{Vertex, VertexId};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::{Vertex, VertexId};
 
 use super::FixResult;
 use super::config::FixConfig;

@@ -2,19 +2,19 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::Point3;
-use brepkit_math::vec::Vec3;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::vertex::VertexId;
+use remus_math::vec::Point3;
+use remus_math::vec::Vec3;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::vertex::VertexId;
 
 /// Extract inner wire vertex positions from a face's topology.
 ///
 /// Used for non-planar faces that don't have a `FacePolygon` (planar faces
 /// store inner wires in `FacePolygon::inner_wires` instead).
 pub(super) fn extract_inner_wire_positions(
-    topo: &brepkit_topology::Topology,
-    face: &brepkit_topology::face::Face,
+    topo: &remus_topology::Topology,
+    face: &remus_topology::face::Face,
 ) -> Result<Vec<Vec<Point3>>, crate::OperationsError> {
     let mut result = Vec::new();
     for &inner_wid in face.inner_wires() {

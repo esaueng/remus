@@ -37,10 +37,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::HealError;
 
@@ -57,7 +57,7 @@ pub fn split_self_intersecting_inner_wires(
     topo: &mut Topology,
     solid_id: SolidId,
 ) -> Result<usize, HealError> {
-    let face_ids = brepkit_topology::explorer::solid_faces(topo, solid_id)?;
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid_id)?;
     let mut wires_split: usize = 0;
 
     for fid in face_ids {
@@ -190,14 +190,14 @@ fn try_split_wire(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceId, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::{Vertex, VertexId};
-    use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::{Vertex, VertexId};
+    use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
     use super::*;
 
@@ -205,7 +205,7 @@ mod tests {
         topo.add_vertex(Vertex::new(p, 1e-7))
     }
 
-    fn edge_line(topo: &mut Topology, a: VertexId, b: VertexId) -> brepkit_topology::edge::EdgeId {
+    fn edge_line(topo: &mut Topology, a: VertexId, b: VertexId) -> remus_topology::edge::EdgeId {
         topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
     }
 

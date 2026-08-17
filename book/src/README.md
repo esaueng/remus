@@ -21,13 +21,6 @@ it is the caller's job.
 - **Contract-driven** — feature labels rest on a capability matrix and an
   operation contract, not on individual demonstrations
 
-## Naming
-
-The project and repository are **Remus**. The crates still carry the
-`brepkit-` prefix (`brepkit-math`, `brepkit-operations`, …) and the generated
-WASM package is still named `brepkit-wasm`; a rename is in flight. Code and
-identifiers throughout this book show today's names.
-
 ## Where to start
 
 - [Getting Started](./getting-started.md) — build the workspace and the WASM

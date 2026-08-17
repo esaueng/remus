@@ -14,14 +14,14 @@
 //! the cavity needs a boolean, and `check` sits below `operations`.
 #![allow(clippy::unwrap_used, clippy::cast_possible_wrap)]
 
-use brepkit_check::validate::{ValidateOptions, validate_solid};
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::make_box;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
+use remus_check::validate::{ValidateOptions, validate_solid};
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::make_box;
+use remus_topology::Topology;
+use remus_topology::explorer;
 
-fn euler_issues(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> Vec<String> {
+fn euler_issues(topo: &Topology, solid: remus_topology::solid::SolidId) -> Vec<String> {
     validate_solid(topo, solid, &ValidateOptions::default())
         .unwrap()
         .issues
@@ -52,7 +52,7 @@ fn a_hollow_block_scores_four_over_two_shells_and_is_not_flagged() {
     // Off-centre on purpose: a concentric void is symmetric enough to hide
     // several unrelated defects, and this file should not depend on where it
     // sits.
-    brepkit_operations::transform::transform_solid(
+    remus_operations::transform::transform_solid(
         &mut topo,
         void,
         &Mat4::translation(7.0, 7.0, 7.0),
@@ -85,7 +85,7 @@ fn a_wrong_total_is_still_reported() {
     let mut topo = Topology::new();
     let left = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let right = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-    brepkit_operations::transform::transform_solid(
+    remus_operations::transform::transform_solid(
         &mut topo,
         right,
         &Mat4::translation(40.0, 0.0, 0.0),

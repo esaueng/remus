@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Smoke test for the brepkit WASM package.
+ * Smoke test for the remus WASM package.
  * Verifies that the built package loads and basic operations work.
  *
  * Usage: node scripts/test-wasm-smoke.mjs
@@ -23,7 +23,7 @@ const projectRoot = resolve(__dirname, '..');
 // so Node treats it correctly even with "type": "module" in package.json.
 const require = createRequire(import.meta.url);
 const { BrepKernel, decodeEvolutionPayload } = require(
-  resolve(projectRoot, 'crates/wasm/pkg/brepkit_wasm_node.cjs'),
+  resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'),
 );
 
 const DEFLECTION = 0.1;

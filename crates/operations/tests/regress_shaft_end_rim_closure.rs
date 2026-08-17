@@ -14,7 +14,7 @@
 //!   analytic grid and then reconciles with the shared pool by 1 µm proximity.
 //!
 //! The second one only closes while the grid and the pool agree on WHERE a full
-//! turn starts. They stopped agreeing in brepkit#64: that PR moved a closed
+//! turn starts. They stopped agreeing in remus#64: that PR moved a closed
 //! rim's polyline to begin at the edge's own seam vertex (right, and it must
 //! stay), while `compute_angular_range` kept anchoring the grid at the SURFACE
 //! FRAME's `u = 0`, which after a boolean is unrelated to the seam. On this
@@ -51,18 +51,18 @@
 use std::collections::{BTreeSet, HashMap};
 use std::f64::consts::FRAC_PI_2;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_operations::tessellate::{
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_cylinder;
+use remus_operations::tessellate::{
     TriangleMesh, tessellate_solid_grouped_with_tolerance, welded_mesh_quality,
 };
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 /// Shaft radius and height at unit scale.
 const R: f64 = 3.0;
@@ -188,7 +188,7 @@ fn the_shaft_end_rims_carry_no_open_edge() {
 fn the_cap_and_the_wall_share_one_rim_vertex_ring() {
     let s = 1.0;
     let (topo, solid) = cross_drilled_shaft(2.0, s);
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
     // The shaft wall is the cylinder of radius R about the z axis; the caps are
     // the two planes. Identify them from geometry, not from index order.
@@ -248,7 +248,7 @@ fn the_cap_and_the_wall_share_one_rim_vertex_ring() {
     );
 }
 
-/// brepkit#64's invariant, kept live so the fix above cannot be "simplified"
+/// remus#64's invariant, kept live so the fix above cannot be "simplified"
 /// into a revert of it: the rim ring must contain the rim EDGE's own start
 /// vertex, and now so must the wall's grid.
 ///
@@ -258,7 +258,7 @@ fn the_cap_and_the_wall_share_one_rim_vertex_ring() {
 fn both_the_rim_polyline_and_the_wall_grid_contain_the_rim_edge_start_vertex() {
     let s = 1.0;
     let (topo, solid) = cross_drilled_shaft(2.0, s);
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
     // Collect every closed circle edge of radius R at an end plane, and take
     // its start vertex — the seam the rim polyline is anchored on.
@@ -271,7 +271,7 @@ fn both_the_rim_polyline_and_the_wall_grid_contain_the_rim_edge_start_vertex() {
             if e.start() != e.end() {
                 continue;
             }
-            if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+            if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                 continue;
             }
             let p = topo.vertex(e.start()).unwrap().point();
@@ -330,7 +330,7 @@ fn the_body_is_the_cross_drilled_shaft_it_claims_to_be() {
     // And the wall really is a holed cylindrical face — the shape that gets
     // declined by the structured band path and lands on the snap path this
     // fix is about. Without an inner wire the body would never exercise it.
-    let holed = brepkit_topology::explorer::solid_faces(&topo, solid)
+    let holed = remus_topology::explorer::solid_faces(&topo, solid)
         .unwrap()
         .into_iter()
         .filter(|&fid| {

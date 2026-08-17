@@ -1,6 +1,6 @@
-//! Offscreen GPU renderer for brepkit B-Rep solids.
+//! Offscreen GPU renderer for remus B-Rep solids.
 //!
-//! [`render_solid_offscreen`] tessellates a [`Solid`](brepkit_topology::solid)
+//! [`render_solid_offscreen`] tessellates a [`Solid`](remus_topology::solid)
 //! and rasterizes it to images with [`wgpu`], entirely off-screen (render to
 //! texture + read back). No window or display is required, so it runs in
 //! headless CI given any wgpu adapter — a real GPU or a software fallback
@@ -9,7 +9,7 @@
 //! # Outputs
 //!
 //! Each render produces a shaded color image plus a parallel face-id buffer:
-//! every pixel carries the [`FaceId`](brepkit_topology::face::FaceId) of the
+//! every pixel carries the [`FaceId`](remus_topology::face::FaceId) of the
 //! face drawn there (`0` = background). Use [`RenderOutput::face_id_at`] for
 //! pixel picking.
 //!
@@ -23,12 +23,12 @@
 //! # Example
 //!
 //! ```no_run
-//! use brepkit_render::{Camera, RenderOpts, render_solid_offscreen};
-//! use brepkit_math::vec::{Point3, Vec3};
-//! use brepkit_topology::Topology;
+//! use remus_render::{Camera, RenderOpts, render_solid_offscreen};
+//! use remus_math::vec::{Point3, Vec3};
+//! use remus_topology::Topology;
 //!
 //! let mut topo = Topology::new();
-//! let solid = brepkit_operations::primitives::make_box(&mut topo, 20.0, 20.0, 20.0)?;
+//! let solid = remus_operations::primitives::make_box(&mut topo, 20.0, 20.0, 20.0)?;
 //! let cam = Camera {
 //!     eye: Point3::new(60.0, 50.0, 70.0),
 //!     target: Point3::new(10.0, 10.0, 10.0),
@@ -63,8 +63,8 @@ pub use pipeline::probe_adapter;
 #[cfg(feature = "window")]
 pub use viewer::{ViewOpts, view_solid};
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Default linear chord tolerance used when [`RenderOpts`] does not override it.
 pub const DEFAULT_DEFLECTION: f64 = 0.05;

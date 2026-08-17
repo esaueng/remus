@@ -7,9 +7,9 @@
 //! Currently a stub — pcurve computation will be added when the Builder's
 //! wire splitter needs them.
 //!
-//! [`PCurveRegistry`]: brepkit_topology::pcurve::PCurveRegistry
+//! [`PCurveRegistry`]: remus_topology::pcurve::PCurveRegistry
 
-use brepkit_topology::Topology;
+use remus_topology::Topology;
 
 use crate::ds::GfaArena;
 use crate::error::AlgoError;

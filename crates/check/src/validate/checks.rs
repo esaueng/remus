@@ -1,11 +1,11 @@
 //! Check identifiers, severity levels, and validation issue types.
 
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::WireId;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::shell::ShellId;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::WireId;
 
 /// Identifies a specific validation check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

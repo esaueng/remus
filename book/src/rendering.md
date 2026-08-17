@@ -1,6 +1,6 @@
 # Rendering
 
-`brepkit-render` is an optional native wgpu renderer. It can render a solid to
+`remus-render` is an optional native wgpu renderer. It can render a solid to
 an RGBA buffer, produce a face-ID buffer for picking, and generate analytic
 cylinder meshes with screen-space level of detail.
 
@@ -14,5 +14,5 @@ but does not modify its B-Rep. Camera, output dimensions, and render options are
 explicit. Validate requested image dimensions because they are bounded by the
 adapter's maximum texture size.
 
-The renderer is not part of `brepkit-wasm`; browser consumers provide their
+The renderer is not part of `remus-wasm`; browser consumers provide their
 own WebGL/WebGPU scene integration from tessellated geometry.

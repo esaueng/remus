@@ -6,9 +6,9 @@
 //! camera enters the solid (a face is in front of it). Edges themselves are
 //! sampled to polylines because a projected drawing is inherently polygonal.
 
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::classify::{PointClassification, classify_point};
 
@@ -59,7 +59,7 @@ pub fn project_edges(
     // Preflight the exact sampler counts before it allocates. This check lives
     // in the native operation (rather than only in WASM validation) so every
     // caller, including batch dispatch, receives the same resource bound.
-    let edges = brepkit_topology::explorer::solid_edges(topo, solid)?;
+    let edges = remus_topology::explorer::solid_edges(topo, solid)?;
     let mut sample_points = 0usize;
     for edge_id in edges {
         let edge = topo.edge(edge_id)?;
@@ -67,7 +67,7 @@ pub fn project_edges(
             topo,
             edge,
             deflection,
-            brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
             false,
         );
         sample_points = sample_points.saturating_add(count);

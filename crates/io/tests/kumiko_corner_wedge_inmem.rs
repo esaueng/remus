@@ -27,10 +27,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -38,13 +38,13 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 fn surface_mix(
     topo: &Topology,
-    sid: brepkit_topology::solid::SolidId,
+    sid: remus_topology::solid::SolidId,
 ) -> HashMap<&'static str, usize> {
     let mut mix: HashMap<&'static str, usize> = HashMap::new();
     for fid in solid_faces(topo, sid).unwrap() {
@@ -54,7 +54,7 @@ fn surface_mix(
     mix
 }
 
-fn edge_uses(topo: &Topology, sid: brepkit_topology::solid::SolidId) -> (usize, usize) {
+fn edge_uses(topo: &Topology, sid: remus_topology::solid::SolidId) -> (usize, usize) {
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     for fid in solid_faces(topo, sid).unwrap() {
         let f = topo.face(fid).unwrap();
@@ -101,7 +101,7 @@ fn captured_operands_are_outward_oriented() {
     let mut topo = Topology::new();
     for name in ["kumiko_corner_wedge.bin", "kumiko_corner_strut.bin"] {
         let sid = load(name, &mut topo);
-        let signed = brepkit_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap();
+        let signed = remus_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap();
         assert!(
             signed > 0.0,
             "{name} should be outward-oriented post-re-capture, got {signed:.3}"
@@ -115,9 +115,9 @@ fn kumiko_corner_wedge_cut_stays_analytic() {
     let wedge = load("kumiko_corner_wedge.bin", &mut topo);
     let strut = load("kumiko_corner_strut.bin", &mut topo);
 
-    let result = brepkit_operations::boolean::boolean(
+    let result = remus_operations::boolean::boolean(
         &mut topo,
-        brepkit_operations::boolean::BooleanOp::Cut,
+        remus_operations::boolean::BooleanOp::Cut,
         wedge,
         strut,
     )
@@ -143,7 +143,7 @@ fn kumiko_corner_wedge_cut_stays_analytic() {
     // The strut genuinely overlaps the wedge (point-oracle verified), so the
     // cut must REMOVE material. Pin the measured overlap loosely: 285.861
     // down to 247.460 on the fixed splitter chain.
-    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
+    let vol = remus_operations::measure::oriented_solid_volume(&topo, result, 0.05).unwrap();
     assert!(
         vol > 240.0 && vol < 280.0,
         "cut must remove the overlap: got {vol:.3} from the 285.861 wedge"

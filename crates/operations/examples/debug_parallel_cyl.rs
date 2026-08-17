@@ -1,6 +1,6 @@
 //! Probe: fuse of two parallel overlapping cylinders (census cluster 4a).
 //!
-//! `cargo run --release --example debug_parallel_cyl -p brepkit-operations`
+//! `cargo run --release --example debug_parallel_cyl -p remus-operations`
 #![allow(
     clippy::unwrap_used,
     clippy::print_stdout,
@@ -8,16 +8,16 @@
     missing_docs
 )]
 
-use brepkit_check::classify::{ClassifyOptions, classify_point};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::{measure, primitives};
-use brepkit_topology::Topology;
+use remus_check::classify::{ClassifyOptions, classify_point};
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::transform::transform_solid;
+use remus_operations::{measure, primitives};
+use remus_topology::Topology;
 
-fn census(topo: &Topology, solid: brepkit_topology::solid::SolidId, tag: &str) {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+fn census(topo: &Topology, solid: remus_topology::solid::SolidId, tag: &str) {
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for &f in &faces {
         *counts
@@ -25,7 +25,7 @@ fn census(topo: &Topology, solid: brepkit_topology::solid::SolidId, tag: &str) {
             .or_default() += 1;
     }
     // edge usage
-    let mut usage: std::collections::HashMap<brepkit_topology::edge::EdgeId, usize> =
+    let mut usage: std::collections::HashMap<remus_topology::edge::EdgeId, usize> =
         std::collections::HashMap::new();
     for &f in &faces {
         let face = topo.face(f).unwrap();
@@ -132,7 +132,7 @@ fn main() {
     census(&topo, b, "operand B");
 
     let result = if raw {
-        match brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, a, b) {
+        match remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, a, b) {
             Ok(r) => {
                 println!("raw GFA ok");
                 r

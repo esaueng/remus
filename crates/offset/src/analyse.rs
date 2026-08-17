@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
-use brepkit_geometry::extrema::point_surface::point_to_surface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_geometry::extrema::point_surface::point_to_surface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 use crate::data::{EdgeClass, OffsetData, VertexClass};
 use crate::error::OffsetError;
@@ -32,7 +32,7 @@ pub fn analyse_edges(
     solid: SolidId,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
-    let edge_face_map = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+    let edge_face_map = remus_topology::explorer::edge_to_face_map(topo, solid)?;
 
     // Tolerance angle: 4 * arcsin(min(tol / (|offset| * 0.5), 1.0))
     let abs_offset = data.distance.abs();
@@ -96,8 +96,8 @@ pub fn analyse_edges(
 fn classify_edge(
     topo: &Topology,
     edge_id: EdgeId,
-    face_a: brepkit_topology::face::FaceId,
-    face_b: brepkit_topology::face::FaceId,
+    face_a: remus_topology::face::FaceId,
+    face_b: remus_topology::face::FaceId,
     tol_angle: f64,
 ) -> Result<EdgeClass, OffsetError> {
     let edge = topo.edge(edge_id)?;
@@ -185,7 +185,7 @@ fn classify_edge(
 /// Compute the centroid of a face's outer wire vertices.
 fn face_centroid(
     topo: &Topology,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
 ) -> Result<Point3, OffsetError> {
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
@@ -213,7 +213,7 @@ fn face_centroid(
 /// Compute the outward-facing surface normal of a face at a given 3D point.
 fn face_outward_normal(
     topo: &Topology,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
     point: Point3,
     edge_id: EdgeId,
 ) -> Result<Vec3, OffsetError> {
@@ -261,7 +261,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::data::{EdgeClass, OffsetData, OffsetOptions, VertexClass};
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     fn analyse_primitive(topo: &Topology, solid: SolidId) -> OffsetData {
         let mut data = OffsetData::new(1.0, OffsetOptions::default(), vec![]);
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn box_all_edges_convex() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = analyse_primitive(&topo, solid);
         assert_eq!(data.edge_class.len(), 12);
         for class in data.edge_class.values() {
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn box_dihedral_angle_approx_half_pi() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = analyse_primitive(&topo, solid);
         for class in data.edge_class.values() {
             if let EdgeClass::Convex { angle } = class {
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn box_vertices_all_convex() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = analyse_primitive(&topo, solid);
         assert_eq!(data.vertex_class.len(), 8);
         for class in data.vertex_class.values() {

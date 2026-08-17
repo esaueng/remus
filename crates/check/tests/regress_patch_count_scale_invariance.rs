@@ -7,7 +7,7 @@
 //! same surface, uniformly scaled, was tiled into a different number of patches
 //! and integrated to a different answer — with no error and no warning.
 //!
-//! The surface here is the one `brepkit#57` measured the defect on: the ruled
+//! The surface here is the one `remus#57` measured the defect on: the ruled
 //! parabolic wall of an extruded parabolic segment, built directly as a NURBS
 //! so this test does not depend on `operations`. Its knot domain is `[0, 2w]`,
 //! the width the parabola spans, which is what carries the length.
@@ -24,14 +24,14 @@
     clippy::print_stdout
 )]
 
-use brepkit_check::properties::face_integrator::integrate_face;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_check::properties::face_integrator::integrate_face;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// The ruled wall over `y = x^2 / w`, `x` in `[-w, w]`, swept `h` along +Z.
 ///
@@ -129,7 +129,7 @@ fn a_nurbs_face_area_does_not_move_with_model_scale() {
 fn the_knot_span_crossing_pi_over_4_is_not_a_cliff() {
     // The defect's signature was a discontinuity where the raw parameter span
     // crossed PI/4. The u domain here is 2w, so the crossing is at
-    // w = PI/8 = 0.3926990... Walk straight across it. brepkit#57 measured the
+    // w = PI/8 = 0.3926990... Walk straight across it. remus#57 measured the
     // jump on the assembled prism as 530x (8.5e-7 -> 4.5e-4); on this bare
     // wall it was 33,600x — 3.69e-10 at w = 0.393 against 1.24e-5 at 0.3925,
     // one thousandth of a unit of half-width apart.

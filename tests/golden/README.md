@@ -8,14 +8,14 @@ selected sorted mesh vertices in `tests/golden/data/`.
 Run only the golden regression target with:
 
 ```bash
-cargo test -p brepkit-operations --test golden_regression
+cargo test -p remus-operations --test golden_regression
 ```
 
 When an intentional geometry change alters a snapshot, inspect the diff first,
 then regenerate with:
 
 ```bash
-UPDATE_GOLDEN=1 cargo test -p brepkit-operations --test golden_regression
+UPDATE_GOLDEN=1 cargo test -p remus-operations --test golden_regression
 git diff -- tests/golden/data
 ```
 

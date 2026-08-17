@@ -1,17 +1,17 @@
 //! Print every face of a serialized solid: surface type, outer-wire vertex
 //! count, and the outer wire's vertex positions.
 //!
-//! Usage: `F=<path.bin> cargo run --release -p brepkit-io --example dump_solid`
+//! Usage: `F=<path.bin> cargo run --release -p remus-io --example dump_solid`
 
 #![allow(clippy::print_stdout, clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 
-fn dump_edge_uses(topo: &Topology, sid: brepkit_topology::solid::SolidId) {
+fn dump_edge_uses(topo: &Topology, sid: remus_topology::solid::SolidId) {
     use std::collections::HashMap;
-    let mut uses: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
+    let mut uses: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
     for fid in solid_faces(topo, sid).unwrap() {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {

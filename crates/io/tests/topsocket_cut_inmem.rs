@@ -32,9 +32,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -47,7 +47,7 @@ fn load(name: &str, topo: &mut Topology) -> SolidId {
 }
 
 fn directed_unmatched(topo: &Topology, solid: SolidId) -> usize {
-    let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+    let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
         topo,
         solid,
         0.01,
@@ -75,9 +75,8 @@ fn topsocket_cut_is_directed_watertight() {
     let tool = load("topsocket_cut_tool.bin", &mut topo);
     assert_eq!(directed_unmatched(&topo, base), 0, "base operand");
     assert_eq!(directed_unmatched(&topo, tool), 0, "tool operand");
-    let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, base, tool)
-            .expect("cut must succeed");
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, base, tool)
+        .expect("cut must succeed");
     assert_eq!(directed_unmatched(&topo, result), 0, "cut result");
 }
 
@@ -101,7 +100,7 @@ fn topsocket_chain001_cut_preserves_not_mints() {
     let mut topo = Topology::new();
     let a = load("topsocket_chain001_a.bin", &mut topo);
     let b = load("topsocket_chain001_b.bin", &mut topo);
-    let result = brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, a, b)
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, a, b)
         .expect("cut must succeed");
     assert_eq!(directed_unmatched(&topo, result), 116, "cut result");
 }

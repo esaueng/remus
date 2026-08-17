@@ -3,9 +3,9 @@
 //! Provides analytic fast paths for common curve types ([`Line3D`], [`Circle3D`])
 //! and a generic Newton-Raphson solver for any [`ParametricCurve`].
 
-use brepkit_math::curves::{Circle3D, Line3D};
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::Point3;
+use remus_math::curves::{Circle3D, Line3D};
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::Point3;
 
 use super::CurveProjection;
 
@@ -29,9 +29,9 @@ const N_SAMPLES: usize = 64;
 /// # Examples
 ///
 /// ```
-/// use brepkit_math::curves::Line3D;
-/// use brepkit_math::vec::{Point3, Vec3};
-/// use brepkit_geometry::extrema::point_to_line;
+/// use remus_math::curves::Line3D;
+/// use remus_math::vec::{Point3, Vec3};
+/// use remus_geometry::extrema::point_to_line;
 ///
 /// let line = Line3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
 /// let proj = point_to_line(Point3::new(3.0, 2.0, 0.0), &line, 0.0, 10.0);
@@ -62,9 +62,9 @@ pub fn point_to_line(point: Point3, line: &Line3D, t_start: f64, t_end: f64) -> 
 /// # Examples
 ///
 /// ```
-/// use brepkit_math::curves::Circle3D;
-/// use brepkit_math::vec::{Point3, Vec3};
-/// use brepkit_geometry::extrema::point_to_circle;
+/// use remus_math::curves::Circle3D;
+/// use remus_math::vec::{Point3, Vec3};
+/// use remus_geometry::extrema::point_to_circle;
 ///
 /// let circle = Circle3D::new(
 ///     Point3::new(0.0, 0.0, 0.0),
@@ -104,9 +104,9 @@ pub fn point_to_circle(point: Point3, circle: &Circle3D) -> CurveProjection {
 /// # Examples
 ///
 /// ```
-/// use brepkit_math::curves::Circle3D;
-/// use brepkit_math::vec::{Point3, Vec3};
-/// use brepkit_geometry::extrema::point_to_curve;
+/// use remus_math::curves::Circle3D;
+/// use remus_math::vec::{Point3, Vec3};
+/// use remus_geometry::extrema::point_to_curve;
 /// use std::f64::consts::TAU;
 ///
 /// let circle = Circle3D::new(
@@ -218,7 +218,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
     use std::f64::consts::{PI, TAU};
 
     // ── point_to_line ────────────────────────────────────────────────────────

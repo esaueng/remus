@@ -49,7 +49,7 @@ Deep catalog with verified paths, procedures, and case studies: [reference.md](r
 
 ```bash
 for i in $(seq 20); do
-  cargo test -p brepkit-operations --release the_failing_test -- --exact 2>&1 | tail -1
+  cargo test -p remus-operations --release the_failing_test -- --exact 2>&1 | tail -1
 done
 ```
 
@@ -65,7 +65,7 @@ rg -n 'pub fn' crates/math/src/predicates.rs crates/math/src/filtered.rs
 rg -n 'quantize_point|MERGE_TOL' crates/algo/src/builder/
 ```
 
-**Verify a boolean result geometrically:** use the ray-cast classifier `brepkit_check::classify::classify_point` (`crates/check/src/classify/mod.rs`), never volume alone (tessellated volume once read 1.4% high and nearly masked an un-carved slot) and never the winding classifier on faceted solids. See the solid-verification skill.
+**Verify a boolean result geometrically:** use the ray-cast classifier `remus_check::classify::classify_point` (`crates/check/src/classify/mod.rs`), never volume alone (tessellated volume once read 1.4% high and nearly masked an un-carved slot) and never the winding classifier on faceted solids. See the solid-verification skill.
 
 ## Anti-patterns: what NOT to conclude
 

@@ -4,29 +4,24 @@ Remus is an exact B-Rep solid modeling kernel: geometry, booleans, blends,
 tessellation, and I/O, with a Rust API and a WASM/JavaScript API over the same
 engine.
 
-The crates still carry the `brepkit-` prefix (`brepkit-math`,
-`brepkit-operations`, …) and the WASM package is still `brepkit-wasm`; a rename
-is in flight. Every crate name, module path, and `BREPKIT_*` environment
-variable in this document is today's identifier — use them verbatim.
-
 ## Architecture
 
 Strict layered Cargo workspace. Each layer depends only on layers below it.
 
 ```
-L4: brepkit-wasm        → JS bindings (wasm-bindgen)
-L4: brepkit-render      → Offscreen GPU rendering (wgpu) to image + face-id buffer
-L3: brepkit-io          → STEP, 3MF, STL, IGES, OBJ, PLY, glTF import/export
-L3: brepkit-operations  → Booleans, fillets, extrusions, tessellation
-L2: brepkit-algo        → GFA boolean engine, classification, intersection
-L2: brepkit-blend       → Walking-based fillet and chamfer engine
-L2: brepkit-check       → Classification, validation, properties, distance
-L2: brepkit-heal        → Shape healing (analysis, fixing, upgrading)
-L2: brepkit-offset      → Solid offset engine (global face-face intersection)
-L2: brepkit-sketch      → 2D parametric constraint solver (GCS)
-L1: brepkit-topology    → B-Rep data structures (arena-based)
-L1: brepkit-geometry    → Curve sampling, extrema, geometry conversion
-L0: brepkit-math        → Vectors, matrices, NURBS, predicates
+L4: remus-wasm        → JS bindings (wasm-bindgen)
+L4: remus-render      → Offscreen GPU rendering (wgpu) to image + face-id buffer
+L3: remus-io          → STEP, 3MF, STL, IGES, OBJ, PLY, glTF import/export
+L3: remus-operations  → Booleans, fillets, extrusions, tessellation
+L2: remus-algo        → GFA boolean engine, classification, intersection
+L2: remus-blend       → Walking-based fillet and chamfer engine
+L2: remus-check       → Classification, validation, properties, distance
+L2: remus-heal        → Shape healing (analysis, fixing, upgrading)
+L2: remus-offset      → Solid offset engine (global face-face intersection)
+L2: remus-sketch      → 2D parametric constraint solver (GCS)
+L1: remus-topology    → B-Rep data structures (arena-based)
+L1: remus-geometry    → Curve sampling, extrema, geometry conversion
+L0: remus-math        → Vectors, matrices, NURBS, predicates
 ```
 
 ### Layer dependency rules
@@ -53,18 +48,18 @@ The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the p
 
 **Allowed `use` paths per crate:**
 - `math/src/**` → only `std`, external crates
-- `geometry/src/**` → `brepkit_math::*`
-- `topology/src/**` → `brepkit_math::*`
-- `algo/src/**` → `brepkit_math::*`, `brepkit_topology::*`
-- `blend/src/**` → `brepkit_math::*`, `brepkit_topology::*`
-- `heal/src/**` → `brepkit_math::*`, `brepkit_topology::*`, `brepkit_geometry::*`
-- `check/src/**` → `brepkit_math::*`, `brepkit_topology::*`, `brepkit_geometry::*`
-- `offset/src/**` → `brepkit_math::*`, `brepkit_topology::*`, `brepkit_geometry::*`
+- `geometry/src/**` → `remus_math::*`
+- `topology/src/**` → `remus_math::*`
+- `algo/src/**` → `remus_math::*`, `remus_topology::*`
+- `blend/src/**` → `remus_math::*`, `remus_topology::*`
+- `heal/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
+- `check/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
+- `offset/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
 - `sketch/src/**` → only `std`, external crates
-- `operations/src/**` → `brepkit_math::*`, `brepkit_topology::*`, `brepkit_geometry::*`, `brepkit_algo::*`, `brepkit_blend::*`, `brepkit_heal::*`, `brepkit_check::*`, `brepkit_offset::*`, `brepkit_sketch::*`
-- `io/src/**` → `brepkit_math::*`, `brepkit_topology::*`, `brepkit_operations::*`
-- `render/src/**` → `brepkit_math::*`, `brepkit_topology::*`, `brepkit_operations::*`
-- `wasm/src/**` → all `brepkit_*`
+- `operations/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`, `remus_algo::*`, `remus_blend::*`, `remus_heal::*`, `remus_check::*`, `remus_offset::*`, `remus_sketch::*`
+- `io/src/**` → `remus_math::*`, `remus_topology::*`, `remus_operations::*`
+- `render/src/**` → `remus_math::*`, `remus_topology::*`, `remus_operations::*`
+- `wasm/src/**` → all `remus_*`
 
 ## Module Map
 
@@ -306,7 +301,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests) |
 | Point classification (in/on/out solid) | `classify.rs` |
-| Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to brepkit-offset), `offset_trim.rs` |
+| Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
 | Offset wire | `offset_wire.rs` |
 | Face filling (Coons patch) | `fill_face.rs` |
 | Shape healing | `heal.rs` |
@@ -323,7 +318,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Evolution tracking | `evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
-| Offset v2 (delegates to brepkit-offset) | `offset_v2.rs` |
+| Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
@@ -498,7 +493,7 @@ flattens outer + inner shells into a single `Vec<FaceId>`:
 
 ```rust
 // ✅ Correct: covers cavity faces too
-use brepkit_topology::explorer::solid_faces;
+use remus_topology::explorer::solid_faces;
 let face_ids = solid_faces(topo, solid_id)?;
 
 // ❌ Wrong: silently skips inner-shell faces
@@ -515,7 +510,7 @@ solid-scoped (counting, recognition, type-conversion). The
 per-shell helper with its own guard) is the template for those.
 
 ### Dev-dependency cycles
-Never add `brepkit-operations` as a dev-dependency of `brepkit-topology` — this
+Never add `remus-operations` as a dev-dependency of `remus-topology` — this
 creates a "two versions" error. Use the `test-utils` feature flag instead.
 
 ## Cookbook: Common Agent Tasks
@@ -603,7 +598,7 @@ cargo build --workspace                    # Build all
 cargo test --workspace                     # Test all
 cargo clippy --all-targets -- -D warnings  # Lint
 cargo fmt --all                            # Format
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown  # WASM
+cargo build -p remus-wasm --target wasm32-unknown-unknown  # WASM
 ./scripts/check-boundaries.sh              # Verify layer deps
 ./scripts/check-doc-paths.sh               # Verify doc file paths still resolve
 ```
@@ -615,7 +610,7 @@ The `[profile.profiling]` block in `Cargo.toml` inherits from release with debug
 ```bash
 cargo flamegraph --profile profiling \     # Flamegraph a single benchmark
   --bench cad_operations \
-  -p brepkit-operations \
+  -p remus-operations \
   -o /tmp/flamegraph.svg \
   -- --bench "bench_name_filter"
 ```

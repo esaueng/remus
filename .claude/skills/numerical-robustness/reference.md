@@ -152,7 +152,7 @@ This class recurs; the git history is rich with instances (search `git log --one
 1. Reproduce across FRESH processes (each reseeds):
    ```bash
    for i in $(seq 20); do
-     cargo test -p brepkit-operations --release the_failing_test -- --exact 2>&1 | tail -1
+     cargo test -p remus-operations --release the_failing_test -- --exact 2>&1 | tail -1
    done
    ```
    Checkpoint: a mix of `ok` and `FAILED` lines confirms process-seed nondeterminism. All-pass or all-fail means the bug is input-shaped, not seed-shaped: go to §2.
@@ -177,8 +177,8 @@ Supporting tactics (see the debugging-doctrine skill for the full discipline):
 
 - Dump literal data at the boundary between "generated" and "consumed": in one case dumping section edges pre- and post-dedup proved a missing edge was never generated (absent pre-dedup), eliminating the dedup as a suspect in one step.
 - Vary ONE variable at a time (one operand nudge, one flag, one tolerance).
-- Verify geometry with the ray-cast classifier `brepkit_check::classify::classify_point` (`crates/check/src/classify/mod.rs`). Do not use tessellated volume as a correctness oracle (it once read 1.4% high and nearly masked an entirely missing cut), and do not use the winding classifier (`classify_point_winding`) on faceted or non-analytic solids; ray-cast is what the GFA builder itself trusts.
-- Face count is the reliable mesh-fallback tell: an analytic boolean yields roughly 3 to 80 faces with curved types present; a mesh fallback yields hundreds to thousands of planar facets. The approximation census (`cargo run --release --example approx_census -p brepkit-operations`) reports which operations degrade analytic to approximate.
+- Verify geometry with the ray-cast classifier `remus_check::classify::classify_point` (`crates/check/src/classify/mod.rs`). Do not use tessellated volume as a correctness oracle (it once read 1.4% high and nearly masked an entirely missing cut), and do not use the winding classifier (`classify_point_winding`) on faceted or non-analytic solids; ray-cast is what the GFA builder itself trusts.
+- Face count is the reliable mesh-fallback tell: an analytic boolean yields roughly 3 to 80 faces with curved types present; a mesh fallback yields hundreds to thousands of planar facets. The approximation census (`cargo run --release --example approx_census -p remus-operations`) reports which operations degrade analytic to approximate.
 
 ## Glossary
 

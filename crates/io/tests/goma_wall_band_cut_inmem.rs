@@ -43,7 +43,7 @@
 //! SEPARATE, pre-existing defect that this fix does not address.
 //!
 //! Operands captured from the live tool on published 2.128.2; the other seven
-//! bands live in `~/.cache/brepkit-parity-captures/2026-07-24/goma-bisect/`
+//! bands live in `~/.cache/remus-parity-captures/2026-07-24/goma-bisect/`
 //! and replay via `crates/io/examples/replay_cut_capture.rs`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -51,10 +51,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -62,7 +62,7 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
@@ -72,9 +72,8 @@ fn goma_wall_band_cut_is_closed() {
     let base = load("goma_wall_base.bin", &mut topo);
     let band = load("goma_wall_band.bin", &mut topo);
 
-    let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Cut, base, band)
-            .expect("analytic cut should not fail outright");
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, base, band)
+        .expect("analytic cut should not fail outright");
 
     let faces = solid_faces(&topo, result).unwrap();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();

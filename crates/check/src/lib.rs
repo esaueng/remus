@@ -1,9 +1,9 @@
-//! # brepkit-check
+//! # remus-check
 //!
-//! Topology algorithms for brepkit B-Rep models.
+//! Topology algorithms for remus B-Rep models.
 //!
-//! This is layer L2, depending on `brepkit-math`, `brepkit-topology`,
-//! and `brepkit-geometry`.
+//! This is layer L2, depending on `remus-math`, `remus-topology`,
+//! and `remus-geometry`.
 //!
 //! Four subsystems:
 //! - **classify** — point-in-solid classification (ray casting + winding numbers)

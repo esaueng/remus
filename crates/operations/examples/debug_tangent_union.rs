@@ -6,35 +6,35 @@
     missing_docs
 )]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure;
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure;
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
-fn census(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> String {
+fn census(topo: &Topology, solid: remus_topology::solid::SolidId) -> String {
     use std::collections::BTreeMap;
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     for fid in &faces {
         let tag = match topo.face(*fid).unwrap().surface() {
-            brepkit_topology::face::FaceSurface::Plane { .. } => "plane",
-            brepkit_topology::face::FaceSurface::Nurbs(_) => "nurbs",
-            brepkit_topology::face::FaceSurface::Cylinder(_) => "cylinder",
-            brepkit_topology::face::FaceSurface::Cone(_) => "cone",
-            brepkit_topology::face::FaceSurface::Sphere(_) => "sphere",
-            brepkit_topology::face::FaceSurface::Torus(_) => "torus",
+            remus_topology::face::FaceSurface::Plane { .. } => "plane",
+            remus_topology::face::FaceSurface::Nurbs(_) => "nurbs",
+            remus_topology::face::FaceSurface::Cylinder(_) => "cylinder",
+            remus_topology::face::FaceSurface::Cone(_) => "cone",
+            remus_topology::face::FaceSurface::Sphere(_) => "sphere",
+            remus_topology::face::FaceSurface::Torus(_) => "torus",
         };
         *counts.entry(tag).or_default() += 1;
     }
     format!("{} faces {:?}", faces.len(), counts)
 }
 
-fn edge_usage(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> (usize, usize) {
+fn edge_usage(topo: &Topology, solid: remus_topology::solid::SolidId) -> (usize, usize) {
     use std::collections::HashMap;
-    let mut usage: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid).unwrap() {
+    let mut usage: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
         let face = topo.face(fid).unwrap();
         let mut wires = vec![face.outer_wire()];
         wires.extend(face.inner_wires().iter().copied());
@@ -70,14 +70,11 @@ fn run_case(name: &str, cx: f64, cy: f64, cz: f64, r: f64, h: f64) {
             let vol_fine = measure::solid_volume(&topo, result, 0.005).unwrap_or(-1.0);
             // Ray-cast classification: box interior, cylinder interior, and a
             // point outside both must classify correctly after the fuse.
-            use brepkit_check::classify::{ClassifyOptions, classify_point};
+            use remus_check::classify::{ClassifyOptions, classify_point};
             let probes = [
-                ("box-in", brepkit_math::vec::Point3::new(30.0, 20.0, 20.0)),
-                (
-                    "cyl-in",
-                    brepkit_math::vec::Point3::new(cx, cy, cz + h * 0.5),
-                ),
-                ("out", brepkit_math::vec::Point3::new(-30.0, -30.0, 20.0)),
+                ("box-in", remus_math::vec::Point3::new(30.0, 20.0, 20.0)),
+                ("cyl-in", remus_math::vec::Point3::new(cx, cy, cz + h * 0.5)),
+                ("out", remus_math::vec::Point3::new(-30.0, -30.0, 20.0)),
             ];
             let cls: Vec<String> = probes
                 .iter()
@@ -93,7 +90,7 @@ fn run_case(name: &str, cx: f64, cy: f64, cz: f64, r: f64, h: f64) {
                 vol - (v_box + v_cyl),
                 cls.join(" ")
             );
-            if let Ok(report) = brepkit_operations::validate::validate_solid(&topo, result) {
+            if let Ok(report) = remus_operations::validate::validate_solid(&topo, result) {
                 for issue in &report.issues {
                     println!("    validate: [{:?}] {}", issue.severity, issue.description);
                 }

@@ -5,9 +5,9 @@
 //! A spine represents the guideline along which a fillet or chamfer is
 //! computed. It may consist of multiple edges forming a G1-continuous chain.
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
 
 use crate::BlendError;
 
@@ -211,9 +211,9 @@ impl Spine {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
 
     fn make_line_edge(topo: &mut Topology, a: Point3, b: Point3) -> EdgeId {
         let v0 = topo.add_vertex(Vertex::new(a, 1e-7));

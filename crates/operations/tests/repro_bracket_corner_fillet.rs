@@ -13,15 +13,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::validation::validate_shell_closed;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::solid::SolidId;
+use remus_topology::validation::validate_shell_closed;
 
 const W: f64 = 80.0; // width
 const D: f64 = 40.0; // depth
@@ -93,7 +93,7 @@ fn near(a: f64, b: f64) -> bool {
 /// z within [-0.1, 8.1], z-span >= 4, xy-span <= 1.5).
 fn pick_corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     let mut picked = Vec::new();
-    for eid in brepkit_topology::explorer::solid_edges(topo, solid).expect("edges") {
+    for eid in remus_topology::explorer::solid_edges(topo, solid).expect("edges") {
         let edge = topo.edge(eid).expect("edge");
         let a = topo.vertex(edge.start()).expect("v").point();
         let b = topo.vertex(edge.end()).expect("v").point();
@@ -115,7 +115,7 @@ fn pick_corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
 }
 
 fn counts(topo: &Topology, solid: SolidId) -> (usize, usize, usize) {
-    brepkit_topology::explorer::solid_entity_counts(topo, solid).expect("counts")
+    remus_topology::explorer::solid_entity_counts(topo, solid).expect("counts")
 }
 
 /// Mesh edges with incidence != 2, after welding coincident vertices by
@@ -130,7 +130,7 @@ fn mesh_boundary_edges(
     use std::collections::HashMap;
     // The OpenZCAD adapter consumes the GROUPED entry point (per-face
     // triangle ranges), so probe that one.
-    let mesh = brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+    let mesh = remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
         topo, solid, deflection, angle,
     )
     .expect("tessellate")
@@ -174,7 +174,7 @@ fn bracket_corner_fillet_v2_all_corners() {
     let before = counts(&topo, bracket);
     let vol_before = solid_volume(&topo, bracket, 0.1).expect("volume before");
 
-    let result = brepkit_operations::blend_ops::fillet_v2(&mut topo, bracket, &edges, FILLET_R)
+    let result = remus_operations::blend_ops::fillet_v2(&mut topo, bracket, &edges, FILLET_R)
         .expect("fillet_v2 on bracket corners");
     assert!(!result.is_partial, "all 4 corners must succeed");
     assert_eq!(result.succeeded.len(), 4);
@@ -222,7 +222,7 @@ fn bracket_corner_fillet_v2_each_corner() {
         let eid = edges[idx];
         let vol_before = solid_volume(&topo, bracket, 0.1).expect("volume before");
 
-        let result = brepkit_operations::blend_ops::fillet_v2(&mut topo, bracket, &[eid], FILLET_R)
+        let result = remus_operations::blend_ops::fillet_v2(&mut topo, bracket, &[eid], FILLET_R)
             .unwrap_or_else(|e| panic!("fillet_v2 on corner {idx} failed: {e}"));
         let vol_after = solid_volume(&topo, result.solid, 0.1).expect("volume after");
         let removed = vol_before - vol_after;

@@ -6,10 +6,10 @@
 
 use std::io::{Cursor, Read as _};
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::tessellate::TriangleMesh;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::tessellate::TriangleMesh;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
@@ -340,8 +340,8 @@ pub fn read_threemf_solid_with_limits(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
     use crate::threemf::writer;
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn roundtrip_box_primitive() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let bytes = writer::write_threemf(&topo, &[solid], 0.1).unwrap();
         let meshes = read_threemf(&bytes).unwrap();
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn roundtrip_multiple_solids() {
         let mut topo = Topology::new();
-        let s1 = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let s1 = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
         let s2 = make_unit_cube_non_manifold(&mut topo);
 
         let bytes = writer::write_threemf(&topo, &[s1, s2], 0.1).unwrap();

@@ -1,8 +1,8 @@
 //! Axis-aligned bounding box computation for solids.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::CheckError;
 use crate::util::expand_aabb_for_surface;

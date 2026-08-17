@@ -20,10 +20,10 @@ use std::hash::BuildHasher;
 use super::SubFace;
 use crate::ds::{GfaArena, Rank};
 use crate::error::AlgoError;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 /// A detected same-domain face pair.
 #[derive(Debug, Clone)]
@@ -188,7 +188,7 @@ fn build_sd_grouping(
         .map(|sf| {
             topo.face(sf.face_id)
                 .ok()
-                .map(brepkit_topology::face::Face::surface)
+                .map(remus_topology::face::Face::surface)
         })
         .collect();
 
@@ -199,7 +199,7 @@ fn build_sd_grouping(
         .iter()
         .map(|sf| {
             topo.face(sf.face_id)
-                .is_ok_and(brepkit_topology::face::Face::is_reversed)
+                .is_ok_and(remus_topology::face::Face::is_reversed)
         })
         .collect();
 
@@ -302,8 +302,8 @@ fn build_sd_grouping(
         // the pair loop below). `planar_obbs` is indexed directly by sub-face
         // index — dense and hasher-free in the hot loop; an entry is `Some`
         // exactly for the faces that also entered `planar_aabbs`.
-        let mut planar_aabbs: Vec<(usize, brepkit_math::aabb::Aabb3)> = Vec::new();
-        let mut planar_obbs: Vec<Option<brepkit_math::obb::Obb3>> = vec![None; n];
+        let mut planar_aabbs: Vec<(usize, remus_math::aabb::Aabb3)> = Vec::new();
+        let mut planar_obbs: Vec<Option<remus_math::obb::Obb3>> = vec![None; n];
         for (idx, surf) in surfaces.iter().enumerate() {
             let Some(FaceSurface::Plane { normal, .. }) = surf else {
                 continue;
@@ -314,11 +314,11 @@ fn build_sd_grouping(
             }
             // Thickness axis pinned to the plane normal, in-plane axes from PCA,
             // expanded by tol so a boundary-coincident pair still passes.
-            let mut obb = brepkit_math::obb::Obb3::from_slice_with_normal(&pts, *normal);
+            let mut obb = remus_math::obb::Obb3::from_slice_with_normal(&pts, *normal);
             for e in &mut obb.half_extents {
                 *e += tol.linear;
             }
-            let Some(aabb) = brepkit_math::aabb::Aabb3::try_from_points(pts) else {
+            let Some(aabb) = remus_math::aabb::Aabb3::try_from_points(pts) else {
                 continue;
             };
             planar_aabbs.push((idx, aabb));
@@ -386,7 +386,7 @@ fn build_sd_grouping(
     // the smaller for Intersect, exactly as for the planar geometric-overlap
     // pairs above.
     {
-        let mut analytic_aabbs: Vec<(usize, brepkit_math::aabb::Aabb3)> = Vec::new();
+        let mut analytic_aabbs: Vec<(usize, remus_math::aabb::Aabb3)> = Vec::new();
         for (idx, surf) in surfaces.iter().enumerate() {
             if matches!(surf, Some(FaceSurface::Cylinder(_) | FaceSurface::Cone(_)))
                 && let Some(bb) = face_outer_aabb(topo, sub_faces[idx].face_id)
@@ -787,7 +787,7 @@ fn compute_edge_set_quantized(
     face_id: FaceId,
     scale: f64,
 ) -> Option<EdgeSet> {
-    use brepkit_topology::vertex::VertexId;
+    use remus_topology::vertex::VertexId;
 
     let face = topo.face(face_id).ok()?;
     let wire = topo.wire(face.outer_wire()).ok()?;
@@ -968,10 +968,10 @@ const CLOSED_EDGE_SAMPLES: usize = 16;
 /// curve hash together. Callers must not hand it a closed NURBS: uniform `t`
 /// walks the knot span there and the average is not invariant.
 fn closed_edge_centroid(
-    curve: &brepkit_topology::edge::EdgeCurve,
-    sp: brepkit_math::vec::Point3,
-    ep: brepkit_math::vec::Point3,
-) -> brepkit_math::vec::Point3 {
+    curve: &remus_topology::edge::EdgeCurve,
+    sp: remus_math::vec::Point3,
+    ep: remus_math::vec::Point3,
+) -> remus_math::vec::Point3 {
     let (mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0);
     for k in 0..CLOSED_EDGE_SAMPLES {
         #[allow(clippy::cast_precision_loss)]
@@ -983,7 +983,7 @@ fn closed_edge_centroid(
     }
     #[allow(clippy::cast_precision_loss)]
     let n = CLOSED_EDGE_SAMPLES as f64;
-    brepkit_math::vec::Point3::new(sx / n, sy / n, sz / n)
+    remus_math::vec::Point3::new(sx / n, sy / n, sz / n)
 }
 
 /// Test whether two planar sub-faces are geometrically coincident or one
@@ -1024,7 +1024,7 @@ fn planar_faces_overlap(
     // vertex-only polygon collapses to a single point and the hole
     // containment test silently treats the hole as absent — letting a
     // coincident coplanar face be wrongly cancelled through the hole.
-    let wire_points = |wire_id: brepkit_topology::wire::WireId| -> Vec<brepkit_math::vec::Point3> {
+    let wire_points = |wire_id: remus_topology::wire::WireId| -> Vec<remus_math::vec::Point3> {
         let samples_per_edge: usize = SD_EDGE_SAMPLES;
         let mut pts = Vec::new();
         let Ok(wire) = topo.wire(wire_id) else {
@@ -1079,7 +1079,7 @@ fn planar_faces_overlap(
     // Strict containment: every vertex of `verts` lies inside `poly` by the
     // ray-cast test, no boundary tolerance.
     let all_inside_strict =
-        |verts: &[brepkit_math::vec::Point2], poly: &[brepkit_math::vec::Point2]| -> bool {
+        |verts: &[remus_math::vec::Point2], poly: &[remus_math::vec::Point2]| -> bool {
             verts
                 .iter()
                 .all(|&v| super::classify_2d::point_in_polygon_2d(v, poly))
@@ -1090,7 +1090,7 @@ fn planar_faces_overlap(
     // boundary edges) has every vertex exactly ON the container's polygon,
     // where the strict ray-cast is unpredictable.
     let all_inside_tol =
-        |verts: &[brepkit_math::vec::Point2], poly: &[brepkit_math::vec::Point2]| -> bool {
+        |verts: &[remus_math::vec::Point2], poly: &[remus_math::vec::Point2]| -> bool {
             let boundary_eps = super::classify_2d::boundary_eps(poly);
             verts.iter().all(|&v| {
                 super::classify_2d::point_in_polygon_2d(v, poly)
@@ -1109,14 +1109,14 @@ fn planar_faces_overlap(
     let ip_j_in_i = super::classify_2d::point_in_polygon_2d(p_j_2d, &poly_i);
     let outlines_coincide = ip_i_in_j && ip_j_in_i;
     let all_inside =
-        |verts: &[brepkit_math::vec::Point2], poly: &[brepkit_math::vec::Point2]| -> bool {
+        |verts: &[remus_math::vec::Point2], poly: &[remus_math::vec::Point2]| -> bool {
             all_inside_strict(verts, poly) || (outlines_coincide && all_inside_tol(verts, poly))
         };
 
     // A point landing inside one of the container's inner wires sits in a
     // hole, not on the face — e.g. a frame face whose hole exactly hosts
     // the candidate. Containment through a hole is not overlap.
-    let in_hole = |p: brepkit_math::vec::Point2, face: &brepkit_topology::face::Face| -> bool {
+    let in_hole = |p: remus_math::vec::Point2, face: &remus_topology::face::Face| -> bool {
         face.inner_wires().iter().any(|&wid| {
             let pts = wire_points(wid);
             if pts.len() < 3 {
@@ -1135,10 +1135,10 @@ fn planar_faces_overlap(
     // outer boundary falls inside one of the container's holes. This keeps
     // the common case (interior sample alone) identical and only fires extra
     // for footprints fully over holes.
-    let footprint_in_holes = |sample: brepkit_math::vec::Point2,
-                              verts: &[brepkit_math::vec::Point2],
-                              outer: &[brepkit_math::vec::Point2],
-                              face: &brepkit_topology::face::Face|
+    let footprint_in_holes = |sample: remus_math::vec::Point2,
+                              verts: &[remus_math::vec::Point2],
+                              outer: &[remus_math::vec::Point2],
+                              face: &remus_topology::face::Face|
      -> bool {
         if face.inner_wires().is_empty() {
             return false;
@@ -1154,7 +1154,7 @@ fn planar_faces_overlap(
     // Recover full containment only when the container is convex and every
     // sampled candidate point is either inside that polygon or proven on one
     // of the container's true analytic boundary edges.
-    let convex = |poly: &[brepkit_math::vec::Point2]| -> bool {
+    let convex = |poly: &[remus_math::vec::Point2]| -> bool {
         let mut sign = 0.0_f64;
         for idx in 0..poly.len() {
             let ab = poly[(idx + 1) % poly.len()] - poly[idx];
@@ -1171,19 +1171,19 @@ fn planar_faces_overlap(
         sign != 0.0
     };
     let on_true_outer_boundary =
-        |p: brepkit_math::vec::Point3, face: &brepkit_topology::face::Face| -> bool {
+        |p: remus_math::vec::Point3, face: &remus_topology::face::Face| -> bool {
             topo.wire(face.outer_wire()).is_ok_and(|wire| {
                 wire.edges().iter().any(|oe| {
                     topo.edge(oe.edge()).is_ok_and(|edge| {
                         let Ok(start) = topo
                             .vertex(edge.start())
-                            .map(brepkit_topology::vertex::Vertex::point)
+                            .map(remus_topology::vertex::Vertex::point)
                         else {
                             return false;
                         };
                         let Ok(end) = topo
                             .vertex(edge.end())
-                            .map(brepkit_topology::vertex::Vertex::point)
+                            .map(remus_topology::vertex::Vertex::point)
                         else {
                             return false;
                         };
@@ -1198,10 +1198,10 @@ fn planar_faces_overlap(
                 })
             })
         };
-    let safely_contained = |points: &[brepkit_math::vec::Point3],
-                            projected: &[brepkit_math::vec::Point2],
-                            container: &[brepkit_math::vec::Point2],
-                            face: &brepkit_topology::face::Face|
+    let safely_contained = |points: &[remus_math::vec::Point3],
+                            projected: &[remus_math::vec::Point2],
+                            container: &[remus_math::vec::Point2],
+                            face: &remus_topology::face::Face|
      -> bool {
         convex(container)
             && points.len() == projected.len()
@@ -1211,7 +1211,7 @@ fn planar_faces_overlap(
             })
     };
     let contained_to_tolerance =
-        |candidate: &[brepkit_math::vec::Point2], container: &[brepkit_math::vec::Point2]| {
+        |candidate: &[remus_math::vec::Point2], container: &[remus_math::vec::Point2]| {
             candidate.iter().all(|&point| {
                 super::classify_2d::point_in_polygon_2d(point, container)
                     || super::classify_2d::distance_to_polygon_boundary(point, container)
@@ -1296,8 +1296,8 @@ fn planar_faces_overlap(
 /// half of the smaller face keeps a sliver of numerical overlap along a shared
 /// edge from pairing disjoint faces.
 fn polygons_overlap_majority(
-    a: &[brepkit_math::vec::Point2],
-    b: &[brepkit_math::vec::Point2],
+    a: &[remus_math::vec::Point2],
+    b: &[remus_math::vec::Point2],
     tol: Tolerance,
 ) -> bool {
     let area_a = super::classify_2d::signed_area_2d(a).abs();
@@ -1319,10 +1319,10 @@ fn polygons_overlap_majority(
         return false;
     }
     crate::perf::bump_sd_poly_clip();
-    let intersection = brepkit_math::polygon_boolean::polygon_boolean(
+    let intersection = remus_math::polygon_boolean::polygon_boolean(
         a,
         b,
-        brepkit_math::polygon_boolean::BooleanOp::Intersection,
+        remus_math::polygon_boolean::BooleanOp::Intersection,
         tol.linear,
     );
     intersection.area().abs() > smaller * 0.5
@@ -1333,8 +1333,8 @@ fn polygons_overlap_majority(
 /// A conservative (over-)estimate of the polygons' intersection area: the
 /// intersection lies inside both boxes, so its area never exceeds this. Used to
 /// skip the exact polygon clip when no meaningful overlap is possible.
-fn bbox2d_overlap_area(a: &[brepkit_math::vec::Point2], b: &[brepkit_math::vec::Point2]) -> f64 {
-    let bounds = |poly: &[brepkit_math::vec::Point2]| {
+fn bbox2d_overlap_area(a: &[remus_math::vec::Point2], b: &[remus_math::vec::Point2]) -> f64 {
+    let bounds = |poly: &[remus_math::vec::Point2]| {
         let (mut lo_x, mut lo_y) = (f64::MAX, f64::MAX);
         let (mut hi_x, mut hi_y) = (f64::MIN, f64::MIN);
         for p in poly {
@@ -1371,7 +1371,7 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
         return None;
     };
     let wire = topo.wire(face.outer_wire()).ok()?;
-    let mut pts: Vec<brepkit_math::vec::Point3> =
+    let mut pts: Vec<remus_math::vec::Point3> =
         Vec::with_capacity(wire.edges().len() * SD_EDGE_SAMPLES);
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge()).ok()?;
@@ -1407,7 +1407,7 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
 /// project BOTH faces through a single shared reference surface — projecting
 /// each face through its own surface would reference the axial coordinate to a
 /// different origin and falsely align disjoint z-bands.
-fn wire_points_3d(topo: &Topology, face_id: FaceId) -> Option<Vec<brepkit_math::vec::Point3>> {
+fn wire_points_3d(topo: &Topology, face_id: FaceId) -> Option<Vec<remus_math::vec::Point3>> {
     let face = topo.face(face_id).ok()?;
     if !matches!(
         face.surface(),
@@ -1449,7 +1449,7 @@ fn wire_points_3d(topo: &Topology, face_id: FaceId) -> Option<Vec<brepkit_math::
 /// for a cone it is the radius at the samples' mid-axial coordinate.
 fn project_points_through_surface(
     surface: &FaceSurface,
-    pts: &[brepkit_math::vec::Point3],
+    pts: &[remus_math::vec::Point3],
 ) -> Option<(Vec<(f64, f64)>, f64)> {
     let samples: Vec<(f64, f64)> = match surface {
         FaceSurface::Cylinder(c) => pts.iter().map(|&p| c.project_point(p)).collect(),
@@ -1607,7 +1607,7 @@ fn analytic_faces_overlap(
     // polygons are metrically consistent.
     let scale = radius_i;
     let to_2d = |&(u, axial): &(f64, f64), shift: f64| {
-        brepkit_math::vec::Point2::new((u + shift) * scale, axial)
+        remus_math::vec::Point2::new((u + shift) * scale, axial)
     };
     let poly_i: Vec<_> = unwrapped_i.iter().map(|s| to_2d(s, 0.0)).collect();
     let poly_j: Vec<_> = unwrapped_j.iter().map(|s| to_2d(s, best_shift)).collect();
@@ -1619,13 +1619,13 @@ fn analytic_faces_overlap(
     let p_j = super::classify_2d::sample_interior_point(&poly_j);
 
     let all_inside_strict =
-        |verts: &[brepkit_math::vec::Point2], poly: &[brepkit_math::vec::Point2]| -> bool {
+        |verts: &[remus_math::vec::Point2], poly: &[remus_math::vec::Point2]| -> bool {
             verts
                 .iter()
                 .all(|&v| super::classify_2d::point_in_polygon_2d(v, poly))
         };
     let all_inside_tol =
-        |verts: &[brepkit_math::vec::Point2], poly: &[brepkit_math::vec::Point2]| -> bool {
+        |verts: &[remus_math::vec::Point2], poly: &[remus_math::vec::Point2]| -> bool {
             let boundary_eps = super::classify_2d::boundary_eps(poly);
             verts.iter().all(|&v| {
                 super::classify_2d::point_in_polygon_2d(v, poly)
@@ -1637,7 +1637,7 @@ fn analytic_faces_overlap(
     let ip_j_in_i = super::classify_2d::point_in_polygon_2d(p_j, &poly_i);
     let outlines_coincide = ip_i_in_j && ip_j_in_i;
     let all_inside =
-        |verts: &[brepkit_math::vec::Point2], poly: &[brepkit_math::vec::Point2]| -> bool {
+        |verts: &[remus_math::vec::Point2], poly: &[remus_math::vec::Point2]| -> bool {
             all_inside_strict(verts, poly) || (outlines_coincide && all_inside_tol(verts, poly))
         };
 
@@ -1646,7 +1646,7 @@ fn analytic_faces_overlap(
     // boundary-tolerant containment of every sampled vertex is a whole-patch
     // proof, not an area-percentage guess. Imported NURBS and other curve kinds
     // remain on the conservative path below.
-    let exact_iso_patch = |face: &brepkit_topology::face::Face| -> bool {
+    let exact_iso_patch = |face: &remus_topology::face::Face| -> bool {
         face.inner_wires().is_empty()
             && topo.wire(face.outer_wire()).is_ok_and(|wire| {
                 wire.edges().iter().all(|oe| {
@@ -1656,7 +1656,7 @@ fn analytic_faces_overlap(
                 })
             })
     };
-    let convex = |poly: &[brepkit_math::vec::Point2]| -> bool {
+    let convex = |poly: &[remus_math::vec::Point2]| -> bool {
         let mut sign = 0.0_f64;
         for idx in 0..poly.len() {
             let ab = poly[(idx + 1) % poly.len()] - poly[idx];
@@ -1710,7 +1710,7 @@ fn analytic_face_param_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
     let unwrapped = unwrap_angles(&samples);
     let poly: Vec<_> = unwrapped
         .iter()
-        .map(|&(u, axial)| brepkit_math::vec::Point2::new(u * radius, axial))
+        .map(|&(u, axial)| remus_math::vec::Point2::new(u * radius, axial))
         .collect();
     if poly.len() < 3 {
         return None;
@@ -1742,21 +1742,21 @@ fn repr_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
 /// [`planar_faces_overlap`] and [`analytic_faces_overlap`] can only return
 /// `true` when the two faces share real 3D area, which requires their AABBs
 /// (expanded by tolerance for boundary-coincident cases) to intersect.
-fn face_outer_aabb(topo: &Topology, face_id: FaceId) -> Option<brepkit_math::aabb::Aabb3> {
-    brepkit_math::aabb::Aabb3::try_from_points(face_outer_wire_points(topo, face_id))
+fn face_outer_aabb(topo: &Topology, face_id: FaceId) -> Option<remus_math::aabb::Aabb3> {
+    remus_math::aabb::Aabb3::try_from_points(face_outer_wire_points(topo, face_id))
 }
 
 /// Sample a face's outer wire at [`SD_EDGE_SAMPLES`] points per edge, matching
 /// the polygons the overlap tests build. Samples `0..SD_EDGE_SAMPLES` (not
 /// `..=`) so each shared vertex is covered once, by the next edge's `frac=0`.
-fn face_outer_wire_points(topo: &Topology, face_id: FaceId) -> Vec<brepkit_math::vec::Point3> {
+fn face_outer_wire_points(topo: &Topology, face_id: FaceId) -> Vec<remus_math::vec::Point3> {
     let Ok(face) = topo.face(face_id) else {
         return Vec::new();
     };
     let Ok(wire) = topo.wire(face.outer_wire()) else {
         return Vec::new();
     };
-    let mut pts: Vec<brepkit_math::vec::Point3> =
+    let mut pts: Vec<remus_math::vec::Point3> =
         Vec::with_capacity(wire.edges().len() * SD_EDGE_SAMPLES);
     for oe in wire.edges() {
         let Ok(edge) = topo.edge(oe.edge()) else {
@@ -1790,7 +1790,7 @@ fn face_outer_wire_points(topo: &Topology, face_id: FaceId) -> Vec<brepkit_math:
 /// the truly-overlapping pairs; the caller still runs the exact
 /// `*_faces_overlap` test on each.
 fn for_each_overlap_candidate_pair(
-    aabbs: &[(usize, brepkit_math::aabb::Aabb3)],
+    aabbs: &[(usize, remus_math::aabb::Aabb3)],
     margin: f64,
     mut visit: impl FnMut(usize, usize),
 ) {
@@ -1895,7 +1895,7 @@ fn for_each_overlap_candidate_pair(
 /// Quantize a 3D point to integer grid coordinates.
 ///
 /// Returns the collision-free `(i64, i64, i64)` triple directly.
-fn quantize_point(p: brepkit_math::vec::Point3, scale: f64) -> QVert {
+fn quantize_point(p: remus_math::vec::Point3, scale: f64) -> QVert {
     (
         (p.x() * scale).round() as i64,
         (p.y() * scale).round() as i64,

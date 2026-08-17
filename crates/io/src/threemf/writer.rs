@@ -1,6 +1,6 @@
 //! 3MF file writer.
 //!
-//! Exports one or more [`Solid`](brepkit_topology::solid::Solid)s to the
+//! Exports one or more [`Solid`](remus_topology::solid::Solid)s to the
 //! [3D Manufacturing Format](https://3mf.io/specification/) (`.3mf`).
 //!
 //! A `.3mf` file is a ZIP archive containing:
@@ -10,11 +10,11 @@
 
 use std::io::{Cursor, Write as _};
 
-use brepkit_operations::tessellate::{self, TriangleMesh};
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
 use quick_xml::Writer;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
+use remus_operations::tessellate::{self, TriangleMesh};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
@@ -205,11 +205,11 @@ fn write_zip(model_xml: &[u8]) -> Result<Vec<u8>, IoError> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_operations::extrude::extrude;
-    use brepkit_operations::revolve::revolve;
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::{make_unit_cube_non_manifold, make_unit_square_face};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_operations::extrude::extrude;
+    use remus_operations::revolve::revolve;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::{make_unit_cube_non_manifold, make_unit_square_face};
 
     use super::*;
 

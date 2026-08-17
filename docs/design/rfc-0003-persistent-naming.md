@@ -283,12 +283,12 @@ Refinements the serialization implementation added to the design above:
 1. **Journal** — append-only log + live index, populated first by the
    operations that already produce construction evolution (booleans via
    Issue 12, v2 blends, patterns); barrier entries for the rest.
-   **Implemented** (`brepkit_topology::journal` +
-   `brepkit_operations::journal_ops`); see the implementation notes below.
+   **Implemented** (`remus_topology::journal` +
+   `remus_operations::journal_ops`); see the implementation notes below.
 2. **Resolver** — `PersistentRef` v1 with `OperationOutput` and
    `LineageOf` anchors over the journal; typed resolution results and the
    three diagnostic codes; determinism tests native/WASM.
-   **Implemented** (`brepkit_topology::naming`); see the Stage 2
+   **Implemented** (`remus_topology::naming`); see the Stage 2
    implementation notes below.
 3. **Signature tier** — `EntitySignature` v1 with `Inferred` provenance
    and ambiguity semantics.

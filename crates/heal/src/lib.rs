@@ -1,4 +1,4 @@
-//! Shape healing for brepkit B-Rep models.
+//! Shape healing for remus B-Rep models.
 //!
 //! This crate provides comprehensive shape healing with three layers:
 //!
@@ -15,7 +15,7 @@
 //! # Quick start
 //!
 //! ```ignore
-//! use brepkit_heal::fix::{fix_shape, FixConfig};
+//! use remus_heal::fix::{fix_shape, FixConfig};
 //!
 //! let config = FixConfig::default();
 //! let (new_solid, result) = fix_shape(&mut topo, solid_id, &config)?;

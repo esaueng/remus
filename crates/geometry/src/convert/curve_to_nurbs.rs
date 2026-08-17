@@ -6,9 +6,9 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use brepkit_math::curves::{Circle3D, Ellipse3D};
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::Point3;
+use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::Point3;
 
 use crate::GeomError;
 
@@ -184,7 +184,7 @@ fn arc_segments_to_nurbs<F>(
     eval_fn: F,
 ) -> Result<NurbsCurve, GeomError>
 where
-    F: Fn(f64) -> (Point3, brepkit_math::vec::Vec3),
+    F: Fn(f64) -> (Point3, remus_math::vec::Vec3),
 {
     // Each arc contributes 2 new control points; plus the first point.
     // Total CPs = 2*n_arcs + 1.
@@ -248,9 +248,9 @@ where
 /// parallel.
 fn tangent_intersection(
     p0: Point3,
-    d0: brepkit_math::vec::Vec3,
+    d0: remus_math::vec::Vec3,
     p1: Point3,
-    d1: brepkit_math::vec::Vec3,
+    d1: remus_math::vec::Vec3,
 ) -> Option<Point3> {
     // Solve in least-squares sense for the closest approach point.
     // [d0 | -d1] * [s; t] = p1 - p0
@@ -305,8 +305,8 @@ mod tests {
 
     use std::f64::consts::{PI, TAU};
 
-    use brepkit_math::curves::{Circle3D, Ellipse3D};
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::{Circle3D, Ellipse3D};
+    use remus_math::vec::{Point3, Vec3};
 
     use super::*;
 

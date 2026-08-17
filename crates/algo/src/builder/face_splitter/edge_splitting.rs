@@ -1,8 +1,8 @@
 //! Curve-specific edge splitting at 3D intersection points.
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::FaceSurface;
+use remus_math::vec::Point3;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceSurface;
 
 use super::super::pcurve_compute::{
     compute_pcurve_on_surface, evaluate_edge_at_t, project_point_on_surface, shorter_arc_delta,
@@ -99,7 +99,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
             let split_uv = if let Some(f) = frame {
                 f.project(split_3d)
             } else if let Some(dir) = closed_ring_dir {
-                brepkit_math::vec::Point2::new(
+                remus_math::vec::Point2::new(
                     std::f64::consts::TAU.mul_add(dir * t, edge.start_uv.x()),
                     edge.start_uv.y(),
                 )
@@ -108,7 +108,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
                 // pcurve is u-linear, and a raw principal-value projection
                 // would break phase coherence with the neighbouring
                 // boundary edges' unwrapped u.
-                brepkit_math::vec::Point2::new(
+                remus_math::vec::Point2::new(
                     (edge.end_uv.x() - edge.start_uv.x()).mul_add(t, edge.start_uv.x()),
                     edge.start_uv.y(),
                 )
@@ -140,7 +140,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
         // (`sample_edge_to_uv` ignores orientation), so a reverse-traversed ring
         // would close a period on the wrong side of its own start.
         let tail_end_uv = match closed_ring_dir {
-            Some(dir) => brepkit_math::vec::Point2::new(
+            Some(dir) => remus_math::vec::Point2::new(
                 std::f64::consts::TAU.mul_add(dir, edge.start_uv.x()),
                 edge.start_uv.y(),
             ),
@@ -214,7 +214,7 @@ pub(super) fn find_splits_on_line(
 /// full `(-pi, pi]` domain. For true arcs, it uses endpoint projection -- this
 /// is correct for the boundary edges produced by `make_cylinder`/`make_cone`.
 pub(super) fn find_splits_on_circle(
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     edge: &OrientedPCurveEdge,
     split_pts_3d: &[Point3],
     surface: &FaceSurface,
@@ -345,7 +345,7 @@ pub(super) fn find_splits_on_circle(
 /// arrangement classify the wrong cell. Both choices are derived from the
 /// circle itself, so the cap and wall stay split in step.
 fn subdivide_ambiguous_closed_rim_pieces(
-    circle: &brepkit_math::curves::Circle3D,
+    circle: &remus_math::curves::Circle3D,
     base: f64,
     forward: bool,
     splits: &mut Vec<(f64, Point3)>,
@@ -600,7 +600,7 @@ pub(super) fn find_splits_on_section_ellipse(
 
 /// Find split parameters on an ellipse edge.
 pub(super) fn find_splits_on_ellipse(
-    ellipse: &brepkit_math::curves::Ellipse3D,
+    ellipse: &remus_math::curves::Ellipse3D,
     edge: &OrientedPCurveEdge,
     split_pts_3d: &[Point3],
     tol: f64,
@@ -633,9 +633,9 @@ pub(super) fn find_splits_on_ellipse(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::nurbs::fitting::interpolate;
-    use brepkit_math::vec::{Point2, Vec2};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::nurbs::fitting::interpolate;
+    use remus_math::vec::{Point2, Vec2};
 
     fn parabola_section_edge(reversed: bool) -> OrientedPCurveEdge {
         let pts: Vec<Point3> = (0..=8)
@@ -677,7 +677,7 @@ mod tests {
     }
 
     fn ellipse_section_edge(
-        ellipse: &brepkit_math::curves::Ellipse3D,
+        ellipse: &remus_math::curves::Ellipse3D,
         a0: f64,
         a1: f64,
         forward: bool,
@@ -709,8 +709,8 @@ mod tests {
     /// complement span), minting a phantom split that desynced the twins.
     #[test]
     fn ellipse_section_reverse_twin_ignores_other_window_points() {
-        use brepkit_math::curves::Ellipse3D;
-        use brepkit_math::vec::Vec3;
+        use remus_math::curves::Ellipse3D;
+        use remus_math::vec::Vec3;
 
         let ellipse = Ellipse3D::new(
             Point3::new(0.0, 0.0, 0.0),
@@ -751,9 +751,9 @@ mod tests {
     /// A CLOSED rim on a cylinder, seamed at 3pi/2 (i.e. NOT at the circle's
     /// own angular origin), with split points bracketing that seam.
     fn closed_rim_edge(forward: bool) -> (FaceSurface, OrientedPCurveEdge, Vec<Point3>) {
-        use brepkit_math::curves::Circle3D;
-        use brepkit_math::surfaces::CylindricalSurface;
-        use brepkit_math::vec::Vec3;
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::Vec3;
         use std::f64::consts::TAU;
 
         let cyl =

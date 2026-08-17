@@ -28,14 +28,14 @@
 
 use std::f64::consts::PI;
 
-use brepkit_check::properties::face_integrator::{FaceContribution, integrate_face};
-use brepkit_math::curves::Circle3D;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_check::properties::face_integrator::{FaceContribution, integrate_face};
+use remus_math::curves::Circle3D;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// The bracket's wall face: `x ∈ [0, W]`, `z ∈ [Z0, Z1]`, on the plane `y = Y`,
 /// with a full-circle bore of radius `R` centred at `(CX, Y, CZ)`.
@@ -116,7 +116,7 @@ fn wall_face(flags: Flags) -> FaceContribution {
     integrate_face(&topo, face, 8).unwrap()
 }
 
-fn topo_add(topo: &mut Topology, x: f64, z: f64) -> brepkit_topology::vertex::VertexId {
+fn topo_add(topo: &mut Topology, x: f64, z: f64) -> remus_topology::vertex::VertexId {
     topo.add_vertex(Vertex::new(Point3::new(x, Y, z), TOL))
 }
 

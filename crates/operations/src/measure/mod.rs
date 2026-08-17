@@ -21,10 +21,10 @@ pub(crate) use volume::{negligible_volume, shell_signed_volume};
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::Topology;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::Topology;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
 
@@ -47,7 +47,7 @@ mod tests {
     /// Assert that `aabb` contains the box `[min_x..max_x, min_y..max_y, min_z..max_z]`
     /// within a 1e-6 slack on each bound.
     fn assert_aabb_contains(
-        aabb: &brepkit_math::aabb::Aabb3,
+        aabb: &remus_math::aabb::Aabb3,
         min_x: f64,
         min_y: f64,
         min_z: f64,
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn box_fuse_volume_exact_via_planar_path() {
         use crate::boolean::{BooleanOp, boolean};
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
         let mut topo = Topology::new();
         let a = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn box_through_hole_volume_exact_via_planar_path() {
         use crate::boolean::{BooleanOp, boolean};
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
         let mut topo = Topology::new();
         let a = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
         let tool = crate::primitives::make_box(&mut topo, 2.0, 2.0, 12.0).unwrap();
@@ -371,7 +371,7 @@ mod tests {
 
         let mut topo = Topology::new();
         let solid = crate::primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
-        let mat = brepkit_math::mat::Mat4::scale(5.0, 3.0, 2.0);
+        let mat = remus_math::mat::Mat4::scale(5.0, 3.0, 2.0);
         crate::transform::transform_solid(&mut topo, solid, &mat).unwrap();
         // Use fine deflection (0.01) for NURBS ellipsoid -- the adaptive
         // tessellator needs small chord tolerance to refine the high-curvature
@@ -385,11 +385,11 @@ mod tests {
     /// Extruded 2x3 rectangle by 4 -> volume = 2*3*4 = 24.0 exactly.
     #[test]
     fn extruded_box_volume() {
-        use brepkit_math::vec::{Point3, Vec3 as V};
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::{Face, FaceSurface};
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+        use remus_math::vec::{Point3, Vec3 as V};
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let mut topo = Topology::new();
 
@@ -445,7 +445,7 @@ mod tests {
     /// Now: 1% tolerance around the derived value.
     #[test]
     fn fillet_single_edge_volume() {
-        use brepkit_topology::explorer;
+        use remus_topology::explorer;
         use std::f64::consts::PI;
 
         let mut topo = Topology::new();
@@ -618,7 +618,7 @@ mod tests {
                 let wire = topo.wire(face.outer_wire()).unwrap();
                 for oe in wire.edges() {
                     let edge = topo.edge(oe.edge()).unwrap();
-                    if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+                    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                         let len = edge_length(&topo, oe.edge()).unwrap();
                         // Circumference = 2*pi*r = 6*pi ~ 18.8496
                         assert_rel(len, 2.0 * PI * 3.0, 1e-8, "circle edge length");
@@ -646,7 +646,7 @@ mod tests {
 
     #[test]
     fn wire_length_rectangle() {
-        use brepkit_topology::builder::make_rectangle_face;
+        use remus_topology::builder::make_rectangle_face;
 
         let mut topo = Topology::new();
         let fid = make_rectangle_face(&mut topo, 3.0, 5.0, 1e-7).unwrap();
@@ -665,7 +665,7 @@ mod tests {
         use crate::boolean::{BooleanOp, boolean};
         use crate::primitives::{make_box, make_cylinder};
         use crate::transform::transform_solid;
-        use brepkit_math::mat::Mat4;
+        use remus_math::mat::Mat4;
         use std::f64::consts::PI;
 
         let mut topo = Topology::new();
@@ -778,7 +778,7 @@ mod tests {
     fn volume_after_uniform_scale() {
         let mut topo = Topology::new();
         let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let mat = brepkit_math::mat::Mat4::scale(2.0, 2.0, 2.0);
+        let mat = remus_math::mat::Mat4::scale(2.0, 2.0, 2.0);
         crate::transform::transform_solid(&mut topo, solid, &mat).unwrap();
         let vol = solid_volume(&topo, solid, 0.1).unwrap();
         assert_rel(vol, 8.0, 1e-8, "unit cube scaled x2 volume");
@@ -790,7 +790,7 @@ mod tests {
     fn center_of_mass_after_translation() {
         let mut topo = Topology::new();
         let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let mat = brepkit_math::mat::Mat4::translation(10.0, 20.0, 30.0);
+        let mat = remus_math::mat::Mat4::translation(10.0, 20.0, 30.0);
         crate::transform::transform_solid(&mut topo, solid, &mat).unwrap();
         let com = solid_center_of_mass(&topo, solid, 0.1).unwrap();
         assert_rel(com.x(), 10.5, 1e-8, "translated CoM x");
@@ -808,7 +808,7 @@ mod tests {
         let vol_before = solid_volume(&topo, solid, 0.1).unwrap();
 
         // Rotate 45 deg around Z axis.
-        let mat = brepkit_math::mat::Mat4::rotation_z(PI / 4.0);
+        let mat = remus_math::mat::Mat4::rotation_z(PI / 4.0);
         crate::transform::transform_solid(&mut topo, solid, &mat).unwrap();
         let vol_after = solid_volume(&topo, solid, 0.1).unwrap();
 

@@ -24,7 +24,7 @@ Every seam-crossing capability cell is at best Partial until this is fixed
 
 ## Design
 
-Two new arena entities in `brepkit-topology`:
+Two new arena entities in `remus-topology`:
 
 ```rust
 /// One directed use of an edge by one face boundary.
@@ -223,7 +223,7 @@ Once Stage 2 lands, new code must not construct face boundaries from raw
   new deprecation warnings as errors (already implied by `-D warnings`).
 - The adapter module carries a tracking comment and a deletion gate: the
   facade is removed when `rg` finds no `outer_wire()` consumers outside
-  `brepkit-topology` and the deprecation has been through one release.
+  `remus-topology` and the deprecation has been through one release.
 
 ## Serialization
 

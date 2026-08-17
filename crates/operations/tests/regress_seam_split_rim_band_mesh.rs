@@ -50,15 +50,15 @@
 
 use std::f64::consts::{PI, TAU};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::tessellate::{TriangleMesh, tessellate_solid};
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::validate;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::tessellate::{TriangleMesh, tessellate_solid};
+use remus_operations::transform::transform_solid;
+use remus_operations::validate;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Plate and boss in units of the model's own scale factor.
 const PLATE_X: f64 = 40.0;
@@ -300,17 +300,17 @@ fn the_meshed_volume_is_the_closed_form_at_and_above_unit_scale() {
 
 /// The cylindrical faces of the fused body, each with its own meshed area.
 fn cylinder_face_areas(topo: &Topology, solid: SolidId, deflection: f64) -> Vec<f64> {
-    brepkit_topology::explorer::solid_faces(topo, solid)
+    remus_topology::explorer::solid_faces(topo, solid)
         .unwrap()
         .into_iter()
         .filter(|fid| {
             matches!(
                 topo.face(*fid).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Cylinder { .. }
+                remus_topology::face::FaceSurface::Cylinder { .. }
             )
         })
         .map(|fid| {
-            mesh_area(&brepkit_operations::tessellate::tessellate(topo, fid, deflection).unwrap())
+            mesh_area(&remus_operations::tessellate::tessellate(topo, fid, deflection).unwrap())
         })
         .collect()
 }
@@ -318,11 +318,11 @@ fn cylinder_face_areas(topo: &Topology, solid: SolidId, deflection: f64) -> Vec<
 /// The whole boundary's area, summed face by face rather than from the solid
 /// mesh — the only way to see surface the solid mesh cannot stitch.
 fn summed_face_area(topo: &Topology, solid: SolidId, deflection: f64) -> f64 {
-    brepkit_topology::explorer::solid_faces(topo, solid)
+    remus_topology::explorer::solid_faces(topo, solid)
         .unwrap()
         .into_iter()
         .map(|fid| {
-            mesh_area(&brepkit_operations::tessellate::tessellate(topo, fid, deflection).unwrap())
+            mesh_area(&remus_operations::tessellate::tessellate(topo, fid, deflection).unwrap())
         })
         .sum()
 }
@@ -378,7 +378,7 @@ fn the_reported_body_measures_its_closed_form() {
         // True on BOTH sides: the exact per-face integral never saw any of
         // this. It is why the corruption below is invisible to measurement.
         let want_vol = closed_form_volume(d, s);
-        let mp = brepkit_operations::measure::mass_properties(&topo, solid)
+        let mp = remus_operations::measure::mass_properties(&topo, solid)
             .unwrap()
             .mass;
         let mp_rel = (mp - want_vol).abs() / want_vol;

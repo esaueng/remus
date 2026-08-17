@@ -2,11 +2,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_io::step::{reader::read_step, writer::write_step};
-use brepkit_operations::primitives::make_box;
-use brepkit_topology::Topology;
-use brepkit_topology::attributes::EntityAttributes;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::step::{reader::read_step, writer::write_step};
+use remus_operations::primitives::make_box;
+use remus_topology::Topology;
+use remus_topology::attributes::EntityAttributes;
+use remus_topology::explorer::solid_faces;
 
 fn with_name(name: &str) -> EntityAttributes {
     EntityAttributes {

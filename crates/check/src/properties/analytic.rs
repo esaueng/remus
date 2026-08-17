@@ -5,7 +5,7 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 use super::accumulator::GProps;
 

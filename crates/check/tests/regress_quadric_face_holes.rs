@@ -26,15 +26,15 @@
 
 use std::f64::consts::TAU;
 
-use brepkit_check::properties::face_integrator::integrate_face;
-use brepkit_math::curves::Circle3D;
-use brepkit_math::surfaces::CylindricalSurface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_check::properties::face_integrator::integrate_face;
+use remus_math::curves::Circle3D;
+use remus_math::surfaces::CylindricalSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 const TOL: f64 = 1e-7;
 /// Wall radius. `P · n̂ = R` on it, so volume is `(1/3)·R·area`.
@@ -58,7 +58,7 @@ fn uv_rect_wire(
     u: (f64, f64),
     v: (f64, f64),
     ccw: bool,
-) -> brepkit_topology::wire::WireId {
+) -> remus_topology::wire::WireId {
     let p = |uu: f64, vv: f64| s.evaluate(uu, vv);
     let (u0, u1) = u;
     let (v0, v1) = v;
@@ -99,7 +99,7 @@ fn uv_rect_wire(
 
 /// A wire of ONE closed edge: the full circle of the wall at height `v`.
 /// `forward` picks the sense it is traversed in.
-fn ring_wire(topo: &mut Topology, v: f64, forward: bool) -> brepkit_topology::wire::WireId {
+fn ring_wire(topo: &mut Topology, v: f64, forward: bool) -> remus_topology::wire::WireId {
     let c = Circle3D::new(Point3::new(0.0, 0.0, v), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
     let seam = topo.add_vertex(Vertex::new(c.evaluate(0.0), TOL));
     let e = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(c)));

@@ -5,7 +5,7 @@ find everything with `rg -n 'fn <symbol>' crates/...`.
 
 ## Glossary
 
-- **GFA**: the boolean engine in `crates/algo` (general-fuse family). Entry `brepkit_algo::gfa::boolean(topo, op, a, b)`. Pipeline: PaveFiller, then Builder, then select/assemble.
+- **GFA**: the boolean engine in `crates/algo` (general-fuse family). Entry `remus_algo::gfa::boolean(topo, op, a, b)`. Pipeline: PaveFiller, then Builder, then select/assemble.
 - **PaveFiller** (`crates/algo/src/pave_filler/`): computes pairwise interferences between the operands' sub-shapes in phases VV/VE/EE/VF/EF/FF (vertex/edge/face pairs), producing paves and pave blocks.
 - **Pave / PaveBlock** (`crates/algo/src/ds/pave.rs`): a split point on an edge / the edge fragment between two paves.
 - **FF phase / sections** (`pave_filler/phase_ff.rs`): face x face intersection; produces the section curves along which faces are split. Most boolean bugs live here or just downstream.
@@ -16,7 +16,7 @@ find everything with `rg -n 'fn <symbol>' crates/...`.
 - **Free edge / over-shared edge**: edge used by exactly 1 face (open shell) / 3+ faces (non-manifold). Closed manifold means every edge used exactly twice.
 - **Seam edge**: the u=0 equivalent u=2pi closure edge of a periodic surface. Closed edges have start == end, which breaks any endpoint-based logic.
 - **Classifiers**: analytic closed-form (`algo/src/classifier/analytic.rs`), ray-cast parity (`check/src/classify/mod.rs::classify_point`, mirrored by `algo/src/classifier/ray_cast.rs`), winding number (`classify_point_winding`, wrong for faceted solids).
-- **`brepkit_approx` probe**: `log::debug!` target fired whenever an approximation path is taken; captured by the `approx_census` example.
+- **`remus_approx` probe**: `log::debug!` target fired whenever an approximation path is taken; captured by the `approx_census` example.
 - **Arena serialization**: byte-exact solid capture/replay (`crates/io/src/arena_io.rs`, wasm `serializeSolid`) for repros that STEP's ~15-sig-fig serialization would normalize away.
 
 ## Bug-class catalog
@@ -43,7 +43,7 @@ owned and fixed; recurrences of the same class usually land in the same file.
 `crates/operations/examples/debug_boolean.rs`. Run:
 
 ```bash
-cargo run --release --example debug_boolean -p brepkit-operations
+cargo run --release --example debug_boolean -p remus-operations
 ```
 
 Current behavior: builds `make_box(50,30,10)` and `make_cylinder(5,20)`, translates the
@@ -55,12 +55,12 @@ z=0), runs `boolean(Cut)` through the FULL operations gate, then prints:
 - `measure::solid_volume` vs the closed-form expected value
 
 Caveat: it iterates `outer_shell()` only. For hollow results, switch to
-`brepkit_topology::explorer::solid_faces` (CLAUDE.md, "Walking faces in a solid").
+`remus_topology::explorer::solid_faces` (CLAUDE.md, "Walking faces in a solid").
 
 Extensions, in the order you usually need them:
 
 1. **Swap operands.** Replace the primitives/transform with your repro. One variable per run.
-2. **Bypass the gate.** Call `brepkit_algo::gfa::boolean(&mut topo, algo_op, a, b)` directly
+2. **Bypass the gate.** Call `remus_algo::gfa::boolean(&mut topo, algo_op, a, b)` directly
    (op enum from `crates/algo/src/bop.rs`). This skips the operations-layer shortcuts, heal
    passes, and fallback, so you see the raw GFA artifact.
 3. **Edge-usage census.** `has_free_edges` and `is_closed_manifold` are private to
@@ -70,11 +70,11 @@ Extensions, in the order you usually need them:
    wire. A consecutive same-edge forward-then-reverse pair is a spur.
 5. **Logger.** Add `env_logger::init()` at the top of `main` (already a dev-dependency;
    pattern in `examples/profile_boolean.rs`) and run with `RUST_LOG=debug` to see the
-   "falling back" warnings and `brepkit_approx` probes.
+   "falling back" warnings and `remus_approx` probes.
 
-The census example: `cargo run --release --example approx_census -p brepkit-operations` runs
+The census example: `cargo run --release --example approx_census -p remus-operations` runs
 `boolean_matrix()` over overlapping primitives plus offset/fillet/chamfer, captures the
-`brepkit_approx` log target in-process, and reports exact vs which-fallback, wall time, and
+`remus_approx` log target in-process, and reports exact vs which-fallback, wall time, and
 face count per op. A census "exact" verdict only proves no fallback probe fired; the geometry
 can still be wrong (an un-carved cut has scored "exact"). Follow with the ray-cast check.
 
@@ -86,7 +86,7 @@ testing skill. Boolean-specific rules on top of it:
 1. Export each failing boolean's OPERANDS from the tool, one file per operand per step:
    `k.unwrap(k.exportSTEP(operand))`. Never capture a serialized batch result; a mid-bisect
    intermediate looks plausible and burns a full pass.
-2. Read back with `brepkit_io::step::reader::read_step(input: &str, &mut topo)`: it takes
+2. Read back with `remus_io::step::reader::read_step(input: &str, &mut topo)`: it takes
    the file CONTENTS as `&str` and returns `Result<Vec<SolidId>, IoError>`, unlike the
    generic reader shape in the CLAUDE.md cookbook.
 3. **Gate: confirm the round-trip is analytic.** Run the face census (Rust `type_tag`, or
@@ -94,7 +94,7 @@ testing skill. Boolean-specific rules on top of it:
    Circle edges. NURBS where the source had analytics means the fixture is unfaithful and
    any fix derived on it will overfit and not transfer. Bugs that depend on sub-ULP vertex
    noise that STEP rounds away need the arena tier (`serializeSolid`,
-   `brepkit_io::arena_io`); see the testing skill.
+   `remus_io::arena_io`); see the testing skill.
 4. Replay the boolean on the imported operands via `gfa::boolean` direct, then via
    `operations::boolean`, and compare.
 5. If you built a synthetic proxy instead (e.g. a hand-placed 1e-13 nudge), validate that it

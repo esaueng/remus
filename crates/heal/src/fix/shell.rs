@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use brepkit_topology::Topology;
-use brepkit_topology::shell::ShellId;
+use remus_topology::Topology;
+use remus_topology::shell::ShellId;
 
 use super::FixResult;
 use super::config::FixConfig;

@@ -8,16 +8,16 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
 
 use crate::error::{
     WasmError, validate_finite, validate_positive, validate_work_count, validate_work_product,
 };
 use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
-use brepkit_geometry::extrema::point_to_nurbs_surface;
+use remus_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
     TOL, classify_to_string, create_apex_face, fillet_failure_js_error, panic_message,
@@ -26,25 +26,25 @@ use crate::helpers::{
 use crate::kernel::BrepKernel;
 use crate::types::FaceEvolutionPayloadV1;
 
-use brepkit_operations::extrude::extrude;
-use brepkit_operations::offset_wire::JoinType;
-use brepkit_operations::push_pull::{push_pull_face, resize_cylindrical_face};
-use brepkit_operations::resize_blend::{resize_blend, resize_blend_failure_code};
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::sweep::sweep;
+use remus_operations::extrude::extrude;
+use remus_operations::offset_wire::JoinType;
+use remus_operations::push_pull::{push_pull_face, resize_cylindrical_face};
+use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
+use remus_operations::revolve::revolve;
+use remus_operations::sweep::sweep;
 
 fn wasm_blend_evolution(
-    topo: &brepkit_topology::Topology,
-    result: brepkit_topology::solid::SolidId,
-    origins: Option<&brepkit_operations::blend_ops::BlendFaceOrigins>,
-) -> Result<brepkit_operations::evolution::EvolutionMap, brepkit_operations::OperationsError> {
+    topo: &remus_topology::Topology,
+    result: remus_topology::solid::SolidId,
+    origins: Option<&remus_operations::blend_ops::BlendFaceOrigins>,
+) -> Result<remus_operations::evolution::EvolutionMap, remus_operations::OperationsError> {
     let Some(origins) = origins else {
         // The stable WASM contract never runs the legacy normal/centroid
         // matcher. An engine without construction history is an explicit
         // refusal, which the payload expands to complete unresolved domains.
-        return Ok(brepkit_operations::evolution::EvolutionMap::new());
+        return Ok(remus_operations::evolution::EvolutionMap::new());
     };
-    brepkit_operations::blend_ops::evolution_from_blend_origins(topo, result, Some(origins), &[])
+    remus_operations::blend_ops::evolution_from_blend_origins(topo, result, Some(origins), &[])
 }
 
 /// Parse a join type string into a [`JoinType`] enum value.
@@ -66,10 +66,10 @@ pub fn parse_join_type_str(s: &str) -> Result<JoinType, WasmError> {
 /// Shared implementation for the direct and batch `loftWithOptions` entry
 /// points.
 pub(super) fn loft_with_options_impl(
-    topo: &mut brepkit_topology::Topology,
-    mut face_ids: Vec<brepkit_topology::face::FaceId>,
+    topo: &mut remus_topology::Topology,
+    mut face_ids: Vec<remus_topology::face::FaceId>,
     options: &serde_json::Value,
-) -> Result<brepkit_topology::solid::SolidId, WasmError> {
+) -> Result<remus_topology::solid::SolidId, WasmError> {
     if let Some(sp) = options.get("startPoint").and_then(|value| value.as_array())
         && sp.len() >= 3
     {
@@ -99,9 +99,9 @@ pub(super) fn loft_with_options_impl(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
     if ruled {
-        Ok(brepkit_operations::loft::loft(topo, &face_ids)?)
+        Ok(remus_operations::loft::loft(topo, &face_ids)?)
     } else {
-        Ok(brepkit_operations::loft::loft_smooth(topo, &face_ids)?)
+        Ok(remus_operations::loft::loft_smooth(topo, &face_ids)?)
     }
 }
 
@@ -111,8 +111,8 @@ pub(super) fn parse_sweep_options(
     scale_values: Vec<f64>,
     segments: u32,
     corner_mode: &str,
-) -> Result<brepkit_operations::sweep::SweepOptions, String> {
-    use brepkit_operations::sweep::{SweepContactMode, SweepCornerMode, SweepOptions};
+) -> Result<remus_operations::sweep::SweepOptions, String> {
+    use remus_operations::sweep::{SweepContactMode, SweepCornerMode, SweepOptions};
 
     let contact_mode = if contact_mode == "fixed" {
         SweepContactMode::Fixed
@@ -209,7 +209,7 @@ impl BrepKernel {
         validate_finite(ny, "ny")?;
         validate_finite(nz, "nz")?;
         let solid_id = self.resolve_solid(solid)?;
-        let result = brepkit_operations::section::section(
+        let result = remus_operations::section::section(
             self.topo_mut(),
             solid_id,
             Point3::new(px, py, pz),
@@ -232,12 +232,12 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "loft")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn loft_faces(&mut self, faces: Vec<u32>) -> Result<u32, JsError> {
-        let face_ids: Vec<brepkit_topology::face::FaceId> = faces
+        let face_ids: Vec<remus_topology::face::FaceId> = faces
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
         let solid_id =
-            self.with_topology_transaction(|topo| brepkit_operations::loft::loft(topo, &face_ids))?;
+            self.with_topology_transaction(|topo| remus_operations::loft::loft(topo, &face_ids))?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -256,12 +256,12 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "loftSmooth")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn loft_smooth_faces(&mut self, faces: Vec<u32>) -> Result<u32, JsError> {
-        let face_ids: Vec<brepkit_topology::face::FaceId> = faces
+        let face_ids: Vec<remus_topology::face::FaceId> = faces
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
         let solid_id = self.with_topology_transaction(|topo| {
-            brepkit_operations::loft::loft_smooth(topo, &face_ids)
+            remus_operations::loft::loft_smooth(topo, &face_ids)
         })?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -278,7 +278,7 @@ impl BrepKernel {
         let opts: serde_json::Value =
             serde_json::from_str(options).unwrap_or(serde_json::Value::Null);
 
-        let face_ids: Vec<brepkit_topology::face::FaceId> = faces
+        let face_ids: Vec<remus_topology::face::FaceId> = faces
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
@@ -306,11 +306,11 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         validate_positive(thickness, "thickness")?;
         let solid_id = self.resolve_solid(solid)?;
-        let open_face_ids: Vec<brepkit_topology::face::FaceId> = open_faces
+        let open_face_ids: Vec<remus_topology::face::FaceId> = open_faces
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let result = brepkit_operations::shell_op::shell(
+        let result = remus_operations::shell_op::shell(
             self.topo_mut(),
             solid_id,
             thickness,
@@ -338,7 +338,7 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         validate_positive(distance, "distance")?;
         let solid_id = self.resolve_solid(solid)?;
-        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
@@ -372,18 +372,18 @@ impl BrepKernel {
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
         validate_positive(distance, "distance")?;
         let solid_id = self.resolve_solid(solid)?;
-        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
             .iter()
             .map(|&handle| self.resolve_edge(handle))
             .collect::<Result<_, _>>()?;
-        let source_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?
+        let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
             .into_iter()
             .map(face_id_to_u32)
             .collect();
         let (result, origins) =
             try_chamfer_with_origins(self.topo_mut(), solid_id, &edge_ids, distance)?;
         let evolution = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
-        let result_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, result)?
+        let result_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, result)?
             .into_iter()
             .map(face_id_to_u32)
             .collect();
@@ -416,7 +416,7 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         validate_positive(radius, "radius")?;
         let solid_id = self.resolve_solid(solid)?;
-        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
@@ -469,14 +469,14 @@ impl BrepKernel {
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
         validate_positive(radius, "radius")?;
         let solid_id = self.resolve_solid(solid)?;
-        let edge_ids: Vec<brepkit_topology::edge::EdgeId> = edge_handles
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
 
         // Wrap in catch_unwind like `fillet` does: a fillet panic must not
         // abort the whole WASM instance.
-        let source_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?
+        let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
             .into_iter()
             .map(face_id_to_u32)
             .collect();
@@ -487,7 +487,7 @@ impl BrepKernel {
                         .map_err(|e| fillet_failure_js_error(&e))?;
                 let evo = wasm_blend_evolution(&self.topo, result, origins.as_ref())?;
                 let result_faces: Vec<u32> =
-                    brepkit_topology::explorer::solid_faces(&self.topo, result)?
+                    remus_topology::explorer::solid_faces(&self.topo, result)?
                         .into_iter()
                         .map(face_id_to_u32)
                         .collect();
@@ -630,7 +630,7 @@ impl BrepKernel {
         }
         let solid_id = self.resolve_solid(solid)?;
         let face_id = self.resolve_face(face)?;
-        let source_faces: Vec<u32> = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?
+        let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
             .into_iter()
             .map(face_id_to_u32)
             .collect();
@@ -647,7 +647,7 @@ impl BrepKernel {
                     JsError::new(&format!("{}: {error}", resize_blend_failure_code(&error)))
                 })?;
                 let result_faces: Vec<u32> =
-                    brepkit_topology::explorer::solid_faces(&self.topo, result.solid)?
+                    remus_topology::explorer::solid_faces(&self.topo, result.solid)?
                         .into_iter()
                         .map(face_id_to_u32)
                         .collect();
@@ -909,13 +909,13 @@ impl BrepKernel {
             spine_weights,
         )?;
 
-        let sections: Vec<(brepkit_topology::face::FaceId, f64)> = face_handles
+        let sections: Vec<(remus_topology::face::FaceId, f64)> = face_handles
             .iter()
             .zip(params.iter())
             .map(|(&h, &p)| self.resolve_face(h).map(|f| (f, p)))
             .collect::<Result<_, _>>()?;
 
-        let solid_id = brepkit_operations::sweep::multi_section_sweep(
+        let solid_id = remus_operations::sweep::multi_section_sweep(
             self.topo_mut(),
             &spine,
             &sections,
@@ -974,7 +974,7 @@ impl BrepKernel {
         };
 
         #[allow(clippy::cast_possible_truncation)]
-        let path_curve = brepkit_math::nurbs::curve::NurbsCurve::new(
+        let path_curve = remus_math::nurbs::curve::NurbsCurve::new(
             path_degree as usize,
             path_knots,
             control_points,
@@ -982,7 +982,7 @@ impl BrepKernel {
         )?;
 
         let solid_id = self.with_topology_transaction(|topo| {
-            brepkit_operations::sweep::sweep_smooth(topo, face_id, &path_curve)
+            remus_operations::sweep::sweep_smooth(topo, face_id, &path_curve)
         })?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -1002,7 +1002,7 @@ impl BrepKernel {
         let _ = validate_work_product(samples, samples, "sample grid")?;
         let samples = validate_work_count(samples, "samples")?;
         let face_id = self.resolve_face(face)?;
-        let result = brepkit_operations::offset_face::offset_face(
+        let result = remus_operations::offset_face::offset_face(
             self.topo_mut(),
             face_id,
             distance,
@@ -1040,10 +1040,10 @@ impl BrepKernel {
         validate_positive(pitch, "pitch")?;
         let face_id = self.resolve_face(profile)?;
 
-        let origin = brepkit_math::vec::Point3::new(axis_origin_x, axis_origin_y, axis_origin_z);
-        let axis_dir = brepkit_math::vec::Vec3::new(axis_dir_x, axis_dir_y, axis_dir_z);
+        let origin = remus_math::vec::Point3::new(axis_origin_x, axis_origin_y, axis_origin_z);
+        let axis_dir = remus_math::vec::Vec3::new(axis_dir_x, axis_dir_y, axis_dir_z);
 
-        let solid_id = brepkit_operations::helix::helical_sweep(
+        let solid_id = remus_operations::helix::helical_sweep(
             self.topo_mut(),
             face_id,
             origin,
@@ -1084,7 +1084,7 @@ impl BrepKernel {
         validate_finite(ny, "ny")?;
         validate_finite(nz, "nz")?;
         let solid_id = self.resolve_solid(solid)?;
-        let result = brepkit_operations::split::split(
+        let result = remus_operations::split::split(
             self.topo_mut(),
             solid_id,
             Point3::new(px, py, pz),
@@ -1132,11 +1132,11 @@ impl BrepKernel {
             validate_finite(value, name)?;
         }
         let solid_id = self.resolve_solid(solid)?;
-        let face_ids: Vec<brepkit_topology::face::FaceId> = face_handles
+        let face_ids: Vec<remus_topology::face::FaceId> = face_handles
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let result = brepkit_operations::draft::draft(
+        let result = remus_operations::draft::draft(
             self.topo_mut(),
             solid_id,
             &face_ids,
@@ -1190,7 +1190,7 @@ impl BrepKernel {
         )?;
 
         let solid_id = self.with_topology_transaction(|topo| {
-            brepkit_operations::pipe::pipe(topo, face_id, &path_curve, None)
+            remus_operations::pipe::pipe(topo, face_id, &path_curve, None)
         })?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -1314,11 +1314,11 @@ impl BrepKernel {
         // sampled only at endpoints) so the global interpolating fit below does
         // not overshoot at adjacent high-curvature corners (e.g. non-square
         // rounded-rect spines).
-        let points = brepkit_operations::sweep::densify_path_points(&points);
+        let points = remus_operations::sweep::densify_path_points(&points);
 
         // Fit an interpolating NURBS curve through the points.
         let degree = std::cmp::min(3, points.len() - 1);
-        let path_curve = brepkit_math::nurbs::fitting::interpolate(&points, degree)?;
+        let path_curve = remus_math::nurbs::fitting::interpolate(&points, degree)?;
 
         let face_id = self.resolve_face(face)?;
         let solid_id = self.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))?;
@@ -1339,13 +1339,13 @@ impl BrepKernel {
         validate_finite(distance, "distance")?;
         let solid_id = self.resolve_solid(solid)?;
         let result =
-            brepkit_operations::offset_v2::offset_solid_v2(self.topo_mut(), solid_id, distance)?;
+            remus_operations::offset_v2::offset_solid_v2(self.topo_mut(), solid_id, distance)?;
         Ok(solid_id_to_u32(result))
     }
 
     /// Offset all faces of a solid outward or inward (V2 pipeline).
     ///
-    /// Uses the new `brepkit-offset` engine with intersection-based joints.
+    /// Uses the new `remus-offset` engine with intersection-based joints.
     ///
     /// # Errors
     ///
@@ -1354,8 +1354,7 @@ impl BrepKernel {
     pub fn offset_solid_v2(&mut self, solid: u32, distance: f64) -> Result<u32, JsError> {
         validate_finite(distance, "distance")?;
         let sid = self.resolve_solid(solid)?;
-        let result =
-            brepkit_operations::offset_v2::offset_solid_v2(self.topo_mut(), sid, distance)?;
+        let result = remus_operations::offset_v2::offset_solid_v2(self.topo_mut(), sid, distance)?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -1371,7 +1370,7 @@ impl BrepKernel {
     pub fn thicken_face(&mut self, face: u32, thickness: f64) -> Result<u32, JsError> {
         validate_finite(thickness, "thickness")?;
         let face_id = self.resolve_face(face)?;
-        let result = brepkit_operations::thicken::thicken(self.topo_mut(), face_id, thickness)?;
+        let result = remus_operations::thicken::thicken(self.topo_mut(), face_id, thickness)?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -1400,7 +1399,7 @@ impl BrepKernel {
                     reason: "missing 'edge' in fillet spec".into(),
                 })? as u32;
             let edge_id = self.resolve_edge(edge_handle)?;
-            // Accept both brepkit-native ("start"/"end") and brepjs ("startRadius"/"endRadius")
+            // Accept both remus-native ("start"/"end") and brepjs ("startRadius"/"endRadius")
             let start_val = spec["start"]
                 .as_f64()
                 .or_else(|| spec["startRadius"].as_f64());
@@ -1417,22 +1416,22 @@ impl BrepKernel {
                 "linear" => {
                     let s = start_val.unwrap_or(1.0);
                     let e = end_val.unwrap_or(1.0);
-                    brepkit_operations::fillet::FilletRadiusLaw::Linear { start: s, end: e }
+                    remus_operations::fillet::FilletRadiusLaw::Linear { start: s, end: e }
                 }
                 "scurve" => {
                     let s = start_val.unwrap_or(1.0);
                     let e = end_val.unwrap_or(1.0);
-                    brepkit_operations::fillet::FilletRadiusLaw::SCurve { start: s, end: e }
+                    remus_operations::fillet::FilletRadiusLaw::SCurve { start: s, end: e }
                 }
                 _ => {
                     let r = spec["radius"].as_f64().or(start_val).unwrap_or(1.0);
-                    brepkit_operations::fillet::FilletRadiusLaw::Constant(r)
+                    remus_operations::fillet::FilletRadiusLaw::Constant(r)
                 }
             };
             edge_laws.push((edge_id, law));
         }
         let result =
-            brepkit_operations::fillet::fillet_variable(self.topo_mut(), solid_id, &edge_laws)?;
+            remus_operations::fillet::fillet_variable(self.topo_mut(), solid_id, &edge_laws)?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -1460,7 +1459,7 @@ impl BrepKernel {
             .map_err(|error| JsError::new(&error))?;
 
         let result = self.with_topology_transaction(|topo| {
-            brepkit_operations::sweep::sweep_with_options(topo, face_id, &path_curve, &options)
+            remus_operations::sweep::sweep_with_options(topo, face_id, &path_curve, &options)
         })?;
         Ok(solid_id_to_u32(result))
     }
@@ -1553,7 +1552,7 @@ impl BrepKernel {
             "aux",
         )?;
         let face_id = self.resolve_face(face)?;
-        let solid = brepkit_operations::sweep::sweep_guided(self.topo_mut(), face_id, &spine, aux)?;
+        let solid = remus_operations::sweep::sweep_guided(self.topo_mut(), face_id, &spine, aux)?;
         Ok(solid_id_to_u32(solid))
     }
 
@@ -1571,7 +1570,7 @@ impl BrepKernel {
     pub fn minkowski_sum(&mut self, solid_a: u32, solid_b: u32) -> Result<u32, JsError> {
         let a = self.resolve_solid(solid_a)?;
         let b = self.resolve_solid(solid_b)?;
-        let result = brepkit_operations::primitives::make_minkowski_sum(self.topo_mut(), a, b)?;
+        let result = remus_operations::primitives::make_minkowski_sum(self.topo_mut(), a, b)?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -1618,7 +1617,7 @@ impl BrepKernel {
             validate_finite(v, name)?;
         }
         let solid_id = self.resolve_solid(solid)?;
-        let result = brepkit_operations::projection::project_edges(
+        let result = remus_operations::projection::project_edges(
             &self.topo,
             solid_id,
             Point3::new(origin_x, origin_y, origin_z),
@@ -1627,7 +1626,7 @@ impl BrepKernel {
             hidden_lines,
             deflection,
         )?;
-        let flatten = |polys: &[Vec<brepkit_math::vec::Point2>]| -> Vec<Vec<f64>> {
+        let flatten = |polys: &[Vec<remus_math::vec::Point2>]| -> Vec<Vec<f64>> {
             polys
                 .iter()
                 .map(|poly| poly.iter().flat_map(|p| [p.x(), p.y()]).collect())
@@ -1656,7 +1655,7 @@ impl BrepKernel {
     ) -> Result<String, JsError> {
         let solid_id = self.resolve_solid(solid)?;
         let point = Point3::new(x, y, z);
-        let result = brepkit_operations::classify::classify_point_winding(
+        let result = remus_operations::classify::classify_point_winding(
             &self.topo, solid_id, point, 0.1, tolerance,
         )?;
         Ok(classify_to_string(result))
@@ -1676,7 +1675,7 @@ impl BrepKernel {
     ) -> Result<String, JsError> {
         let solid_id = self.resolve_solid(solid)?;
         let point = Point3::new(x, y, z);
-        let result = brepkit_operations::classify::classify_point_robust(
+        let result = remus_operations::classify::classify_point_robust(
             &self.topo, solid_id, point, 0.1, tolerance,
         )?;
         Ok(classify_to_string(result))
@@ -1719,7 +1718,7 @@ impl BrepKernel {
             curves.push(points[offset..offset + l].to_vec());
             offset += l;
         }
-        let face_id = brepkit_operations::fill_face::fill_coons_patch(self.topo_mut(), &curves)?;
+        let face_id = remus_operations::fill_face::fill_coons_patch(self.topo_mut(), &curves)?;
         Ok(face_id_to_u32(face_id))
     }
 
@@ -1758,14 +1757,14 @@ impl BrepKernel {
             let v_end = self.topo.vertex(edge.end())?;
             // Project endpoints to UV
             let proj_start = point_to_nurbs_surface(v_start.point(), &surface);
-            let uv_start = brepkit_math::vec::Point2::new(proj_start.u, proj_start.v);
+            let uv_start = remus_math::vec::Point2::new(proj_start.u, proj_start.v);
             let proj_end = point_to_nurbs_surface(v_end.point(), &surface);
-            let uv_end = brepkit_math::vec::Point2::new(proj_end.u, proj_end.v);
-            trim_curves.push(brepkit_operations::untrim::TrimCurve {
+            let uv_end = remus_math::vec::Point2::new(proj_end.u, proj_end.v);
+            trim_curves.push(remus_operations::untrim::TrimCurve {
                 curve: vec![uv_start, uv_end],
             });
         }
-        let new_surface = brepkit_operations::untrim::untrim_face(
+        let new_surface = remus_operations::untrim::untrim_face(
             &surface,
             &trim_curves,
             samples_per_curve,
@@ -1781,7 +1780,7 @@ impl BrepKernel {
     pub fn offset_wire(&mut self, face: u32, distance: f64) -> Result<u32, JsError> {
         let face_id = self.resolve_face(face)?;
         let wire_id =
-            brepkit_operations::offset_wire::offset_wire(self.topo_mut(), face_id, distance)?;
+            remus_operations::offset_wire::offset_wire(self.topo_mut(), face_id, distance)?;
         Ok(wire_id_to_u32(wire_id))
     }
 
@@ -1803,7 +1802,7 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         let face_id = self.resolve_face(face)?;
         let jt = parse_join_type_str(join_type)?;
-        let wire_id = brepkit_operations::offset_wire::offset_wire_with_join(
+        let wire_id = remus_operations::offset_wire::offset_wire_with_join(
             self.topo_mut(),
             face_id,
             distance,
@@ -1839,8 +1838,8 @@ impl BrepKernel {
         let wire_id = self.resolve_wire(wire)?;
         let jt = parse_join_type_str(join_type)?;
         let face_id =
-            brepkit_topology::builder::make_planar_face_from_wire(self.topo_mut(), wire_id)?;
-        let result = brepkit_operations::offset_wire::offset_wire_with_join(
+            remus_topology::builder::make_planar_face_from_wire(self.topo_mut(), wire_id)?;
+        let result = remus_operations::offset_wire::offset_wire_with_join(
             self.topo_mut(),
             face_id,
             distance,
@@ -1853,13 +1852,13 @@ impl BrepKernel {
 
     /// Get the orientation of a shape.
     ///
-    /// Returns `"forward"` for all faces (brepkit faces don't have an
+    /// Returns `"forward"` for all faces (remus faces don't have an
     /// independent orientation flag; the normal direction is canonical).
     #[allow(clippy::unused_self)]
     #[must_use]
     #[wasm_bindgen(js_name = "getShapeOrientation")]
     pub fn get_shape_orientation(&self, _id: u32) -> String {
-        // In brepkit, face normals are always canonical (outward-pointing).
+        // In remus, face normals are always canonical (outward-pointing).
         // There is no separate orientation flag.
         "forward".to_string()
     }
@@ -1932,7 +1931,7 @@ impl BrepKernel {
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
         let result =
-            brepkit_operations::blend_ops::fillet_v2(self.topo_mut(), solid_id, &edge_ids, radius)?;
+            remus_operations::blend_ops::fillet_v2(self.topo_mut(), solid_id, &edge_ids, radius)?;
         Ok(solid_id_to_u32(result.solid))
     }
 
@@ -1960,13 +1959,8 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
-        let result = brepkit_operations::blend_ops::chamfer_v2(
-            self.topo_mut(),
-            solid_id,
-            &edge_ids,
-            d1,
-            d2,
-        )?;
+        let result =
+            remus_operations::blend_ops::chamfer_v2(self.topo_mut(), solid_id, &edge_ids, d1, d2)?;
         Ok(solid_id_to_u32(result.solid))
     }
 
@@ -1997,7 +1991,7 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
-        let result = brepkit_operations::blend_ops::chamfer_distance_angle(
+        let result = remus_operations::blend_ops::chamfer_distance_angle(
             self.topo_mut(),
             solid_id,
             &edge_ids,
@@ -2014,8 +2008,8 @@ mod tests {
 
     use std::collections::HashSet;
 
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::builder::make_polygon_wire;
+    use remus_math::vec::Point3;
+    use remus_topology::builder::make_polygon_wire;
 
     use crate::handles::{solid_id_to_u32, wire_id_to_u32};
     use crate::helpers::TOL;
@@ -2053,13 +2047,13 @@ mod tests {
             .topo
             .shell(k.topo.solid(solid).unwrap().outer_shell())
             .unwrap();
-        brepkit_topology::validation::validate_shell_closed(shell, &k.topo)
+        remus_topology::validation::validate_shell_closed(shell, &k.topo)
             .unwrap_or_else(|error| panic!("{label}: solid must be closed: {error:?}"));
-        brepkit_topology::validation::validate_shell_manifold(shell, &k.topo)
+        remus_topology::validation::validate_shell_manifold(shell, &k.topo)
             .unwrap_or_else(|error| panic!("{label}: solid must be manifold: {error:?}"));
 
-        let coarse = brepkit_operations::measure::solid_volume(&k.topo, solid, 0.25).unwrap();
-        let fine = brepkit_operations::measure::solid_volume(&k.topo, solid, 0.05).unwrap();
+        let coarse = remus_operations::measure::solid_volume(&k.topo, solid, 0.25).unwrap();
+        let fine = remus_operations::measure::solid_volume(&k.topo, solid, 0.05).unwrap();
         assert!(fine > 0.0, "{label}: volume must be positive, got {fine}");
         assert!(
             (coarse - fine).abs() / fine < 0.02,
@@ -2069,7 +2063,7 @@ mod tests {
 
     fn wire_perimeter(k: &BrepKernel, wire_handle: u32) -> f64 {
         let wid = k.resolve_wire(wire_handle).unwrap();
-        brepkit_operations::measure::wire_length(&k.topo, wid).unwrap()
+        remus_operations::measure::wire_length(&k.topo, wid).unwrap()
     }
 
     // ── Closed-rim chamfer fixture (shared by both entry points) ──
@@ -2085,10 +2079,9 @@ mod tests {
 
     /// Cylinder solid handle plus the handles of its two closed rim circles.
     fn rim_cylinder(k: &mut BrepKernel) -> (u32, Vec<u32>) {
-        use brepkit_topology::explorer::solid_faces;
+        use remus_topology::explorer::solid_faces;
 
-        let cyl =
-            brepkit_operations::primitives::make_cylinder(k.topo_mut(), RIM_R, RIM_H).unwrap();
+        let cyl = remus_operations::primitives::make_cylinder(k.topo_mut(), RIM_R, RIM_H).unwrap();
         let topo = &k.topo;
         let mut rims = Vec::new();
         for fid in solid_faces(topo, cyl).unwrap() {
@@ -2193,11 +2186,10 @@ mod tests {
         let filleted = kernel.fillet_v2(solid, selection, 1.0).unwrap();
 
         let solid_id = kernel.resolve_solid(filleted).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&kernel.topo, solid_id)
+        let faces = remus_topology::explorer::solid_faces(&kernel.topo, solid_id)
             .unwrap()
             .len();
-        let volume =
-            brepkit_operations::measure::solid_volume(&kernel.topo, solid_id, 0.01).unwrap();
+        let volume = remus_operations::measure::solid_volume(&kernel.topo, solid_id, 0.01).unwrap();
         assert!(faces > 6, "fillet must add a face, got {faces}");
         assert!(
             volume < 1000.0,
@@ -2343,16 +2335,15 @@ mod tests {
             .topo
             .shell(k.topo.solid(sid).unwrap().outer_shell())
             .unwrap();
-        brepkit_topology::validation::validate_shell_closed(shell, &k.topo)
+        remus_topology::validation::validate_shell_closed(shell, &k.topo)
             .unwrap_or_else(|e| panic!("{label}: chamfered solid must be closed: {e:?}"));
-        brepkit_topology::validation::validate_shell_manifold(shell, &k.topo)
+        remus_topology::validation::validate_shell_manifold(shell, &k.topo)
             .unwrap_or_else(|e| panic!("{label}: chamfered solid must be manifold: {e:?}"));
 
-        let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
-            &k.topo, sid, 0.01, 0.1,
-        )
-        .unwrap();
-        let quality = brepkit_operations::tessellate::welded_mesh_quality(&mesh);
+        let mesh =
+            remus_operations::tessellate::tessellate_solid_with_tolerance(&k.topo, sid, 0.01, 0.1)
+                .unwrap();
+        let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
         assert!(
             quality.is_watertight(),
             "{label}: tessellation must be watertight ({} boundary, {} non-manifold edges)",
@@ -2360,7 +2351,7 @@ mod tests {
             quality.non_manifold_edges
         );
 
-        let vol = brepkit_operations::measure::solid_volume(&k.topo, sid, 0.02).unwrap();
+        let vol = remus_operations::measure::solid_volume(&k.topo, sid, 0.02).unwrap();
         let want = rim_chamfer_volume(d);
         assert!(
             (vol - want).abs() / want < 1e-6,
@@ -2371,7 +2362,7 @@ mod tests {
 
     #[test]
     fn both_entry_points_chamfer_a_closed_rim_identically() {
-        // The batch arm used to call `brepkit_operations::chamfer::chamfer`
+        // The batch arm used to call `remus_operations::chamfer::chamfer`
         // directly, skipping the v2 fallback that `try_chamfer` provides — so
         // this exact geometry errored through `executeBatch` ("cannot normalize
         // zero vector") while succeeding through the single-call binding.
@@ -2408,7 +2399,7 @@ mod tests {
         for entry in [Entry::Binding, Entry::Batch] {
             let mut k = BrepKernel::new();
             let cube =
-                brepkit_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+                remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
             let edge = first_box_edge(&k, cube);
             let out = chamfer_via(&mut k, entry, solid_id_to_u32(cube), edge, d);
             let vol = k.volume(out, 0.05).unwrap();
@@ -2427,7 +2418,7 @@ mod tests {
         );
     }
 
-    fn first_box_edge(k: &BrepKernel, solid: brepkit_topology::solid::SolidId) -> u32 {
+    fn first_box_edge(k: &BrepKernel, solid: remus_topology::solid::SolidId) -> u32 {
         let topo = &k.topo;
         let shell = topo
             .shell(topo.solid(solid).unwrap().outer_shell())
@@ -2623,7 +2614,7 @@ mod tests {
     #[test]
     fn validate_solid_batch_returns_error_count() {
         let mut k = BrepKernel::new();
-        let solid = brepkit_operations::primitives::make_box(k.topo_mut(), 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 3.0, 4.0).unwrap();
         let out = dispatch(
             &mut k,
             "validateSolid",
@@ -2689,8 +2680,8 @@ mod tests {
     #[test]
     fn minkowski_sum_binding_box10_box2_is_box12() {
         let mut k = BrepKernel::new();
-        let a = brepkit_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
-        let b = brepkit_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
+        let a = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let b = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
         let sum = k
             .minkowski_sum(solid_id_to_u32(a), solid_id_to_u32(b))
             .unwrap();
@@ -2704,8 +2695,8 @@ mod tests {
     #[test]
     fn minkowski_sum_batch_dispatch() {
         let mut k = BrepKernel::new();
-        let a = brepkit_operations::primitives::make_box(k.topo_mut(), 4.0, 4.0, 4.0).unwrap();
-        let b = brepkit_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
+        let a = remus_operations::primitives::make_box(k.topo_mut(), 4.0, 4.0, 4.0).unwrap();
+        let b = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
         let out = dispatch(
             &mut k,
             "minkowskiSum",
@@ -2720,8 +2711,7 @@ mod tests {
     #[test]
     fn project_edges_batch_dispatch_box_oblique() {
         let mut k = BrepKernel::new();
-        let solid =
-            brepkit_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
+        let solid = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let out = dispatch(
             &mut k,
             "projectEdges",

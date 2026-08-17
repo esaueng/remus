@@ -3,9 +3,9 @@
 //! Finds all vertex pairs (one from each solid) that are spatially
 //! coincident within tolerance. Merges them via same-domain mapping.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::ds::{GfaArena, Interference};
 use crate::error::AlgoError;
@@ -38,8 +38,8 @@ pub fn perform(
         return Ok(());
     }
 
-    let verts_a = brepkit_topology::explorer::solid_vertices(topo, solid_a)?;
-    let verts_b = brepkit_topology::explorer::solid_vertices(topo, solid_b)?;
+    let verts_a = remus_topology::explorer::solid_vertices(topo, solid_a)?;
+    let verts_b = remus_topology::explorer::solid_vertices(topo, solid_b)?;
 
     for &va in &verts_a {
         let vertex_a = topo.vertex(va)?;

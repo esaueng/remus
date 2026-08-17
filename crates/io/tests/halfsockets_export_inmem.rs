@@ -14,11 +14,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -39,7 +39,7 @@ fn halfsockets_export_fuse_is_analytic_and_watertight() {
     let result = boolean(&mut topo, BooleanOp::Fuse, body, base).unwrap();
 
     let faces = solid_faces(&topo, result).unwrap();
-    let mut uses: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
+    let mut uses: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
     let mut curved = 0;
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
@@ -69,7 +69,7 @@ fn halfsockets_export_fuse_is_analytic_and_watertight() {
     );
 
     // Volume pins the geometry (analytic reference from the fixed engine).
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
     assert!(
         (vol - 23241.3).abs() < 10.0,
         "fused volume out of band: got {vol}"

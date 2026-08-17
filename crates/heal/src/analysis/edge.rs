@@ -1,8 +1,8 @@
 //! Edge analysis — vertex-curve deviation, degeneracy, arc length.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
 
 use crate::HealError;
 use crate::status::Status;
@@ -40,7 +40,7 @@ pub fn has_curve_3d(topo: &Topology, edge_id: EdgeId) -> Result<bool, HealError>
     let edge = topo.edge(edge_id)?;
     Ok(!matches!(
         edge.curve(),
-        brepkit_topology::edge::EdgeCurve::Line
+        remus_topology::edge::EdgeCurve::Line
     ))
 }
 
@@ -52,7 +52,7 @@ pub fn has_curve_3d(topo: &Topology, edge_id: EdgeId) -> Result<bool, HealError>
 pub fn has_pcurve(
     topo: &Topology,
     edge_id: EdgeId,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
 ) -> Result<bool, HealError> {
     // Validate that both entities exist.
     let _ = topo.edge(edge_id)?;
@@ -70,7 +70,7 @@ pub fn has_pcurve(
 pub fn is_seam(
     topo: &Topology,
     edge_id: EdgeId,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
 ) -> Result<bool, HealError> {
     let face = topo.face(face_id)?;
     let mut forward_count = 0u32;

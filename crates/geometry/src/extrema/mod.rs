@@ -32,7 +32,7 @@ pub use point_surface::{
 };
 pub use segment::segment_segment_distance;
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 /// Result of a distance/extrema computation between two geometric entities.
 #[derive(Debug, Clone, Copy)]

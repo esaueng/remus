@@ -24,76 +24,76 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
-name = "brepkit-algo"
+name = "remus-algo"
 version = "0.1.0"
 dependencies = [
- "brepkit-math",
- "brepkit-topology",
+ "remus-math",
+ "remus-topology",
  "log",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-blend"
+name = "remus-blend"
 version = "0.1.0"
 dependencies = [
- "brepkit-math",
- "brepkit-topology",
+ "remus-math",
+ "remus-topology",
  "log",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-check"
+name = "remus-check"
 version = "0.1.0"
 dependencies = [
- "brepkit-geometry",
- "brepkit-math",
- "brepkit-topology",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
  "smallvec",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-fuzz"
+name = "remus-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "brepkit-io",
- "brepkit-math",
- "brepkit-operations",
- "brepkit-topology",
- "brepkit-wasm",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "remus-wasm",
  "libfuzzer-sys",
 ]
 
 [[package]]
-name = "brepkit-geometry"
+name = "remus-geometry"
 version = "0.1.0"
 dependencies = [
- "brepkit-math",
+ "remus-math",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-heal"
+name = "remus-heal"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "brepkit-geometry",
- "brepkit-math",
- "brepkit-topology",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
  "log",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-io"
+name = "remus-io"
 version = "0.1.0"
 dependencies = [
- "brepkit-math",
- "brepkit-operations",
- "brepkit-topology",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
  "quick-xml",
  "serde",
  "serde_json",
@@ -102,7 +102,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "brepkit-math"
+name = "remus-math"
 version = "0.1.0"
 dependencies = [
  "log",
@@ -112,63 +112,63 @@ dependencies = [
 ]
 
 [[package]]
-name = "brepkit-offset"
+name = "remus-offset"
 version = "0.1.0"
 dependencies = [
- "brepkit-geometry",
- "brepkit-math",
- "brepkit-topology",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
  "log",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-operations"
+name = "remus-operations"
 version = "0.1.0"
 dependencies = [
- "brepkit-algo",
- "brepkit-blend",
- "brepkit-check",
- "brepkit-geometry",
- "brepkit-heal",
- "brepkit-math",
- "brepkit-offset",
- "brepkit-sketch",
- "brepkit-topology",
+ "remus-algo",
+ "remus-blend",
+ "remus-check",
+ "remus-geometry",
+ "remus-heal",
+ "remus-math",
+ "remus-offset",
+ "remus-sketch",
+ "remus-topology",
  "log",
  "rayon",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-sketch"
+name = "remus-sketch"
 version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-topology"
+name = "remus-topology"
 version = "0.1.0"
 dependencies = [
- "brepkit-math",
+ "remus-math",
  "smallvec",
  "thiserror",
 ]
 
 [[package]]
-name = "brepkit-wasm"
+name = "remus-wasm"
 version = "2.130.0"
 dependencies = [
- "brepkit-algo",
- "brepkit-check",
- "brepkit-geometry",
- "brepkit-heal",
- "brepkit-io",
- "brepkit-math",
- "brepkit-operations",
- "brepkit-sketch",
- "brepkit-topology",
+ "remus-algo",
+ "remus-check",
+ "remus-geometry",
+ "remus-heal",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-sketch",
+ "remus-topology",
  "log",
  "serde",
  "serde_json",

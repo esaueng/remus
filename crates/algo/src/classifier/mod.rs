@@ -16,10 +16,10 @@ pub use ray_cast::{
 };
 pub(crate) use ray_cast::{largest_u_gap, u_in_gap};
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 use crate::builder::FaceClass;
 use crate::error::AlgoError;
@@ -110,15 +110,15 @@ pub fn classify_coincident_coplanar(
     topo: &Topology,
     opposing_solid: SolidId,
     geoms: Option<&ray_cast::RayCastGeoms>,
-    sub_face_id: brepkit_topology::face::FaceId,
+    sub_face_id: remus_topology::face::FaceId,
     sub_normal: Vec3,
     sub_d: f64,
     interior_hint: Option<Point3>,
-    tol: brepkit_math::tolerance::Tolerance,
+    tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<FaceClass>, AlgoError> {
     let plane_tol = tol.linear.max(1e-7);
     let n_tol = 1e-6_f64;
-    let faces = brepkit_topology::explorer::solid_faces(topo, opposing_solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, opposing_solid)?;
     for fid in faces {
         let face = topo.face(fid)?;
         let FaceSurface::Plane {
@@ -366,7 +366,7 @@ fn dist_to_polygon_boundary(p: Point3, poly: &[Point3], _normal: &Vec3) -> f64 {
 /// Collect a planar sub-face's outer-wire vertices (3D), de-duplicated.
 fn sub_face_outer_vertices(
     topo: &Topology,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
 ) -> Result<Option<Vec<Point3>>, AlgoError> {
     let face = topo.face(face_id)?;
     let wire = topo.wire(face.outer_wire())?;
@@ -380,7 +380,7 @@ fn sub_face_outer_vertices(
         // perfectly classifiable. Sampling the arc yields a real polygon, and
         // its centroid is the circle centre, which is what the wedge probe
         // needs to step inward from the rim.
-        if !matches!(e.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+        if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
             let sp = topo.vertex(e.start())?.point();
             let ep = topo.vertex(e.end())?.point();
             let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);

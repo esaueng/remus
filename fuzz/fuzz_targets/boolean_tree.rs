@@ -16,7 +16,7 @@ use libfuzzer_sys::fuzz_target;
 mod invariants;
 mod shapegen;
 
-use brepkit_topology::Topology;
+use remus_topology::Topology;
 use invariants as inv;
 use shapegen::{Node, Refusal};
 
@@ -85,7 +85,7 @@ fuzz_target!(|node: Node| {
     // I1 (mesh rung) — a closed B-Rep that tessellates leaky is still broken.
     // Necessary but not sufficient: #52 was watertight with the bore filled and
     // the bore walls missing, two errors that cancelled.
-    if let Ok(aabb) = brepkit_operations::measure::solid_bounding_box(&topo, root.solid) {
+    if let Ok(aabb) = remus_operations::measure::solid_bounding_box(&topo, root.solid) {
         let diag = (aabb.max - aabb.min).length();
         inv::assert_watertight_mesh(
             "root",
@@ -138,9 +138,9 @@ fuzz_target!(|node: Node| {
 });
 
 /// `fuse(a, a)` must be `a`: same hole count, same volume.
-fn check_self_fuse(topo: &Topology, root: brepkit_topology::solid::SolidId, before: &inv::Census) {
-    use brepkit_operations::boolean::{BooleanOp, boolean};
-    use brepkit_operations::copy::copy_solid;
+fn check_self_fuse(topo: &Topology, root: remus_topology::solid::SolidId, before: &inv::Census) {
+    use remus_operations::boolean::{BooleanOp, boolean};
+    use remus_operations::copy::copy_solid;
 
     let mut t = topo.clone();
     let Ok(twin) = copy_solid(&mut t, root) else {

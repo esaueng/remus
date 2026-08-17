@@ -2,9 +2,9 @@
 
 ## Layer Boundary
 
-Flag any `use brepkit_algo::*`, `use brepkit_blend::*`, `use brepkit_heal::*`,
-`use brepkit_operations::*`, or `use brepkit_io::*` import. `brepkit-check` is
-L1.5 and may only depend on `brepkit-math`, `brepkit-topology`, and `brepkit-geometry`.
+Flag any `use remus_algo::*`, `use remus_blend::*`, `use remus_heal::*`,
+`use remus_operations::*`, or `use remus_io::*` import. `remus-check` is
+L1.5 and may only depend on `remus-math`, `remus-topology`, and `remus-geometry`.
 
 ## Solver Positive Filtering
 

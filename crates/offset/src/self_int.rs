@@ -7,8 +7,8 @@
 //! The current implementation returns an error when invoked. Full
 //! BOP-based SI removal will be added in a follow-up.
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::error::OffsetError;
 

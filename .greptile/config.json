@@ -6,7 +6,7 @@
     {
       "id": "layer-boundaries",
       "severity": "high",
-      "rule": "Reject any `use brepkit_*` import or Cargo.toml dependency that violates the layer hierarchy: math(L0) has no workspace deps, topology(L1) depends only on math, operations(L2) on math+topology, io(L2) on math+topology+operations, wasm(L3) on all."
+      "rule": "Reject any `use remus_*` import or Cargo.toml dependency that violates the layer hierarchy: math(L0) has no workspace deps, topology(L1) depends only on math, operations(L2) on math+topology, io(L2) on math+topology+operations, wasm(L3) on all."
     },
     {
       "id": "no-new-unwrap",

@@ -3,9 +3,9 @@
 //! Determines the best permutation of edges to form a connected chain,
 //! accounting for edge orientations.
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::wire::WireId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::wire::WireId;
 
 use crate::HealError;
 

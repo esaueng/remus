@@ -6,27 +6,27 @@
 //!
 //! Three classifiers are provided:
 //! - [`classify_point`]: analytic ray casting. Delegates to
-//!   [`brepkit_check::classify::classify_point`], which is the ground-truth
+//!   [`remus_check::classify::classify_point`], which is the ground-truth
 //!   classifier — exact for every supported surface type, and hole-aware.
 //! - [`classify_point_winding`]: a true generalized winding number, summing
 //!   signed solid angles over a watertight tessellation of the solid.
 //! - [`classify_point_robust`]: winding numbers with a ray-casting fallback in
 //!   the ambiguous band.
 //!
-//! # Why winding lives here and not in `brepkit-check`
+//! # Why winding lives here and not in `remus-check`
 //!
 //! A correct winding number needs a triangulation of the solid, and the mesher
-//! is L3 (`crate::tessellate`) while `brepkit-check` is L2. The version in
-//! `brepkit-check` fan-triangulates each face's *boundary loop*, which equals
+//! is L3 (`crate::tessellate`) while `remus-check` is L2. The version in
+//! `remus-check` fan-triangulates each face's *boundary loop*, which equals
 //! the face only when the face is planar — on curved geometry it is wrong.
 //! This module sums solid angles over `tessellate_solid` output instead, which
 //! handles cylinders, cones, spheres, tori, and NURBS correctly.
 
 use std::f64::consts::PI;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 
@@ -41,9 +41,9 @@ pub enum PointClassification {
     OnBoundary,
 }
 
-impl From<brepkit_check::classify::PointClassification> for PointClassification {
-    fn from(c: brepkit_check::classify::PointClassification) -> Self {
-        use brepkit_check::classify::PointClassification as C;
+impl From<remus_check::classify::PointClassification> for PointClassification {
+    fn from(c: remus_check::classify::PointClassification) -> Self {
+        use remus_check::classify::PointClassification as C;
         match c {
             C::Inside => Self::Inside,
             C::Outside => Self::Outside,
@@ -81,11 +81,11 @@ pub fn classify_point(
     tolerance: f64,
 ) -> Result<PointClassification, OperationsError> {
     let _ = deflection;
-    let options = brepkit_check::classify::ClassifyOptions {
+    let options = remus_check::classify::ClassifyOptions {
         tolerance,
         ..Default::default()
     };
-    Ok(brepkit_check::classify::classify_point(topo, solid, point, &options)?.into())
+    Ok(remus_check::classify::classify_point(topo, solid, point, &options)?.into())
 }
 
 /// Generalized winding number of `point` with respect to `solid`.
@@ -142,7 +142,7 @@ pub fn classify_point_winding(
     deflection: f64,
     tolerance: f64,
 ) -> Result<PointClassification, OperationsError> {
-    if brepkit_check::classify::is_point_on_boundary(topo, solid, point, tolerance)? {
+    if remus_check::classify::is_point_on_boundary(topo, solid, point, tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
     let w = winding_number(topo, solid, point, deflection)?;
@@ -169,7 +169,7 @@ pub fn classify_point_robust(
     deflection: f64,
     tolerance: f64,
 ) -> Result<PointClassification, OperationsError> {
-    if brepkit_check::classify::is_point_on_boundary(topo, solid, point, tolerance)? {
+    if remus_check::classify::is_point_on_boundary(topo, solid, point, tolerance)? {
         return Ok(PointClassification::OnBoundary);
     }
 
@@ -218,8 +218,8 @@ fn solid_angle(p: Point3, a: Point3, b: Point3, c: Point3) -> f64 {
 mod tests {
     use super::*;
     use crate::primitives::{self, make_box, make_cone, make_cylinder, make_sphere, make_torus};
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::face::FaceSurface;
+    use remus_math::vec::Vec3;
+    use remus_topology::face::FaceSurface;
 
     #[test]
     fn point_inside_box() {
@@ -256,7 +256,7 @@ mod tests {
         crate::transform::transform_solid(
             &mut topo,
             inner,
-            &brepkit_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+            &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
         )
         .unwrap();
         let hollow =
@@ -394,12 +394,12 @@ mod tests {
         big_r: f64,
         rho: f64,
         angle: f64,
-    ) -> brepkit_topology::solid::SolidId {
-        use brepkit_math::curves::Circle3D;
-        use brepkit_topology::edge::{Edge, EdgeCurve};
-        use brepkit_topology::face::Face;
-        use brepkit_topology::vertex::Vertex;
-        use brepkit_topology::wire::{OrientedEdge, Wire};
+    ) -> remus_topology::solid::SolidId {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
 
         let circ =
             Circle3D::new(Point3::new(big_r, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), rho).unwrap();

@@ -16,23 +16,23 @@
 //!
 //! Run with `BK_AREAS=1` to see each shell's signed volume.
 
-use brepkit_io::arena_io::{deserialize_solid, serialize_solid};
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_io::arena_io::{deserialize_solid, serialize_solid};
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 struct StdoutLogger;
 impl log::Log for StdoutLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.target().starts_with("brepkit_algo") && m.level() <= log::Level::Debug
+        m.target().starts_with("remus_algo") && m.level() <= log::Level::Debug
     }
     fn log(&self, r: &log::Record) {
         if !self.enabled(r.metadata()) {
@@ -53,7 +53,7 @@ fn cut_by_far_box(topo: &mut Topology, solid: SolidId, label: &str) {
     transform_solid(topo, far, &Mat4::translation(500.0, 500.0, 500.0)).expect("move far box");
     match boolean(topo, BooleanOp::Cut, solid, far) {
         Ok(sid) => {
-            let n = brepkit_topology::explorer::solid_faces(topo, sid)
+            let n = remus_topology::explorer::solid_faces(topo, sid)
                 .map(|f| f.len())
                 .unwrap_or(0);
             println!("  {label}: ok F={n}");
@@ -68,8 +68,8 @@ fn cut_by_far_box(topo: &mut Topology, solid: SolidId, label: &str) {
 /// The profile plane must contain the revolve axis. A unit square in XY is
 /// perpendicular to Z and revolves degenerately — it returns six planar faces
 /// that look like a result and are not one.
-fn wedge_profile(topo: &mut Topology, ccw: bool, ny: f64) -> brepkit_topology::face::FaceId {
-    let tol = brepkit_math::tolerance::Tolerance::new().linear;
+fn wedge_profile(topo: &mut Topology, ccw: bool, ny: f64) -> remus_topology::face::FaceId {
+    let tol = remus_math::tolerance::Tolerance::new().linear;
     let mut pts = [
         Point3::new(1.55, 0.0, 2.7),
         Point3::new(4.75, 0.0, 2.7),
@@ -124,7 +124,7 @@ fn main() {
     for (ccw, ny) in [(true, -1.0), (true, 1.0), (false, -1.0), (false, 1.0)] {
         println!("PARTIAL revolve 45deg (ccw={ccw} normal_y={ny}):");
         let profile = wedge_profile(&mut topo, ccw, ny);
-        match brepkit_operations::revolve::revolve(
+        match remus_operations::revolve::revolve(
             &mut topo,
             profile,
             Point3::new(0.0, 0.0, 0.0),
@@ -142,7 +142,7 @@ fn main() {
     for ccw in [true, false] {
         println!("FULL revolve 360deg (ccw={ccw}):");
         let profile = wedge_profile(&mut topo, ccw, -1.0);
-        match brepkit_operations::revolve::revolve(
+        match remus_operations::revolve::revolve(
             &mut topo,
             profile,
             Point3::new(0.0, 0.0, 0.0),

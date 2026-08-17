@@ -9,16 +9,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_render::{
+use remus_math::vec::{Point3, Vec3};
+use remus_render::{
     Camera, CylinderDescriptor, RenderOpts, RenderOutput, TessFactor, extract_cylinder_descriptor,
     probe_adapter, render_cylinder_compute_offscreen, render_cylinder_compute_screen_lod,
     screen_space_tess_factor,
 };
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 const RADIUS: f64 = 8.0;
 const HEIGHT: f64 = 20.0;
@@ -53,7 +53,7 @@ fn cylinder_face(topo: &Topology, solid: SolidId) -> FaceId {
 /// The default cylinder descriptor (base at z=0, axis +Z), centered on its AABB.
 fn cylinder_descriptor() -> (CylinderDescriptor, Point3) {
     let mut topo = Topology::new();
-    let cyl = brepkit_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+    let cyl = remus_operations::primitives::make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
     let face = cylinder_face(&topo, cyl);
     let desc = extract_cylinder_descriptor(&topo, face).unwrap();
     (desc, desc.center)
@@ -155,8 +155,8 @@ fn screen_lod_triangle_count_scales_with_distance() {
     // non-blank, bounded silhouettes.
     let near = render_cylinder_compute_screen_lod(&desc, 1, &near_cam, &opts, TARGET_PX).unwrap();
     let far = render_cylinder_compute_screen_lod(&desc, 1, &far_cam, &opts, TARGET_PX).unwrap();
-    let near_path = std::env::temp_dir().join("brepkit_lod_near.png");
-    let far_path = std::env::temp_dir().join("brepkit_lod_far.png");
+    let near_path = std::env::temp_dir().join("remus_lod_near.png");
+    let far_path = std::env::temp_dir().join("remus_lod_far.png");
     near.color.save(&near_path).unwrap();
     far.color.save(&far_path).unwrap();
     println!("wrote {} and {}", near_path.display(), far_path.display());

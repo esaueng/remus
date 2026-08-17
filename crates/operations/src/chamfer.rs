@@ -16,15 +16,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use brepkit_blend::BlendFaceOrigins;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::WireId;
+use remus_blend::BlendFaceOrigins;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::WireId;
 
 use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
@@ -994,7 +994,7 @@ fn chamfer_core(
         .filter_map(|(source, present)| (!present).then_some(source))
         .collect();
     face_origins.deleted.sort_by_key(|source| source.index());
-    for face in brepkit_topology::explorer::solid_faces(topo, result)? {
+    for face in remus_topology::explorer::solid_faces(topo, result)? {
         if !named.contains(&face.index()) {
             face_origins.created_unattributed.push(face);
         }
@@ -1485,8 +1485,8 @@ fn record_chamfer_point(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, deprecated)]
 mod tests {
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
-    use brepkit_topology::validation::validate_shell_manifold;
+    use remus_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::validation::validate_shell_manifold;
 
     use super::*;
 
@@ -1555,18 +1555,18 @@ mod tests {
         let cube = make_unit_cube_manifold(&mut topo);
 
         // Create a stray edge not part of the cube.
-        let v0 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+        let v0 = topo.add_vertex(remus_topology::vertex::Vertex::new(
             Point3::new(99.0, 99.0, 99.0),
             1e-7,
         ));
-        let v1 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
+        let v1 = topo.add_vertex(remus_topology::vertex::Vertex::new(
             Point3::new(100.0, 100.0, 100.0),
             1e-7,
         ));
-        let stray = topo.add_edge(brepkit_topology::edge::Edge::new(
+        let stray = topo.add_edge(remus_topology::edge::Edge::new(
             v0,
             v1,
-            brepkit_topology::edge::EdgeCurve::Line,
+            remus_topology::edge::EdgeCurve::Line,
         ));
 
         let result = chamfer(&mut topo, cube, &[stray], 0.2);
@@ -1728,10 +1728,10 @@ mod tests {
 
         let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], 0.2, 0.3).unwrap();
 
-        let report = brepkit_check::validate::validate_solid(
+        let report = remus_check::validate::validate_solid(
             &topo,
             result,
-            &brepkit_check::validate::ValidateOptions::default(),
+            &remus_check::validate::ValidateOptions::default(),
         )
         .expect("validation should run");
         assert!(
@@ -1861,10 +1861,10 @@ mod tests {
             let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], d1, d2)
                 .unwrap_or_else(|e| panic!("d1={d1}, d2={d2} should chamfer cleanly: {e}"));
 
-            let report = brepkit_check::validate::validate_solid(
+            let report = remus_check::validate::validate_solid(
                 &topo,
                 result,
-                &brepkit_check::validate::ValidateOptions::default(),
+                &remus_check::validate::ValidateOptions::default(),
             )
             .expect("validation should run");
             assert!(
@@ -1894,10 +1894,10 @@ mod tests {
             let cube = make_unit_cube_manifold(&mut topo);
             let edges = solid_edge_ids(&topo, cube);
             let result = chamfer_asymmetric(&mut topo, cube, &[edges[0]], d1, d2).unwrap();
-            let report = brepkit_check::validate::validate_solid(
+            let report = remus_check::validate::validate_solid(
                 &topo,
                 result,
-                &brepkit_check::validate::ValidateOptions::default(),
+                &remus_check::validate::ValidateOptions::default(),
             )
             .unwrap();
             assert!(report.is_valid(), "d1={d1}, d2={d2} must close");

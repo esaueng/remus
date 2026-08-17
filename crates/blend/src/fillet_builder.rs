@@ -6,15 +6,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::curves::Circle3D;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::analytic;
 use crate::blend_func::{ConstRadBlend, EvolRadBlend};
@@ -98,11 +98,9 @@ impl<'a> FilletBuilder<'a> {
         }
 
         if seeds_by_law.iter().all(Vec::is_empty) {
-            return Err(BlendError::Topology(
-                brepkit_topology::TopologyError::Empty {
-                    entity: "fillet edge set",
-                },
-            ));
+            return Err(BlendError::Topology(remus_topology::TopologyError::Empty {
+                entity: "fillet edge set",
+            }));
         }
 
         let topo = self.topo;
@@ -129,7 +127,7 @@ impl<'a> FilletBuilder<'a> {
         // there is no cap face to close against. Expanding to the chain gives
         // the stripe real ends. This matches the v1 rolling-ball engine, which
         // has always called `expand_g1_chain`.
-        let tol = brepkit_math::tolerance::Tolerance::new();
+        let tol = remus_math::tolerance::Tolerance::new();
         let mut chain_work: Vec<(Vec<EdgeId>, usize)> = Vec::new();
         for (law_idx, seeds) in seeds_by_law.iter().enumerate() {
             if seeds.is_empty() {
@@ -170,7 +168,7 @@ impl<'a> FilletBuilder<'a> {
         // still blocks is corner chains on curved or imported geometry the fast
         // path declines.
         {
-            let mut chains_at_vertex: HashMap<usize, (brepkit_topology::vertex::VertexId, usize)> =
+            let mut chains_at_vertex: HashMap<usize, (remus_topology::vertex::VertexId, usize)> =
                 HashMap::new();
             for (chain_idx, (chain, _)) in chain_work.iter().enumerate() {
                 let mut seen_here: HashSet<usize> = HashSet::new();
@@ -305,8 +303,8 @@ impl<'a> FilletBuilder<'a> {
         }
 
         let mut stripe_contact_edges: Vec<(
-            Option<brepkit_topology::edge::EdgeId>,
-            Option<brepkit_topology::edge::EdgeId>,
+            Option<remus_topology::edge::EdgeId>,
+            Option<remus_topology::edge::EdgeId>,
         )> = Vec::new();
         for sr in &regular_results {
             let stripe = &sr.stripe;
@@ -378,9 +376,9 @@ impl<'a> FilletBuilder<'a> {
         }
 
         let mut blend_cross_edges: Vec<(
-            brepkit_topology::edge::EdgeId,
-            brepkit_topology::vertex::VertexId,
-            brepkit_topology::vertex::VertexId,
+            remus_topology::edge::EdgeId,
+            remus_topology::vertex::VertexId,
+            remus_topology::vertex::VertexId,
         )> = Vec::new();
         for (si, (sr, (tr1, tr2))) in regular_results.iter().zip(&trim_pairs).enumerate() {
             let stripe = &sr.stripe;
@@ -509,7 +507,7 @@ fn make_end_arc(
     radius: f64,
     v_pt: Point3,
 ) -> Result<Option<EdgeId>, BlendError> {
-    use brepkit_math::traits::ParametricCurve;
+    use remus_math::traits::ParametricCurve;
     const TAU: f64 = std::f64::consts::TAU;
 
     let pa = topo.vertex(c_a)?.point();
@@ -568,7 +566,7 @@ fn stitch_end(
     // --- Case A: a single wire traverses c → v → c' consecutively. ---
     let wire_ids: Vec<_> = topo.wires().iter().map(|(id, _)| id).collect();
     let mut case_a: Option<(
-        brepkit_topology::wire::WireId,
+        remus_topology::wire::WireId,
         usize,
         usize,
         VertexId,
@@ -1482,7 +1480,7 @@ fn assemble_closed_rim(
 /// from the plate toward the material — so the band's outward axial direction is
 /// the one pointing from the wall-contact circle back toward the plate.
 fn torus_band_needs_reversal(
-    torus: &brepkit_math::surfaces::ToroidalSurface,
+    torus: &remus_math::surfaces::ToroidalSurface,
     rim: &ClosedRimInfo,
 ) -> bool {
     // The torus geometric normal at the mid-arc point (halfway between the two
@@ -1520,14 +1518,14 @@ fn torus_band_needs_reversal(
 #[allow(clippy::too_many_lines)]
 fn compute_stripe_for_spine(
     topo: &Topology,
-    adjacency: &brepkit_topology::adjacency::AdjacencyIndex,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
     spine: Spine,
     law: &RadiusLaw,
 ) -> Result<StripeResult, BlendError> {
     // Every edge on a G1 chain shares one face pair (that is what makes it a
     // ridgeline), so the first edge speaks for the whole spine.
     let edge_id = spine.edges().first().copied().ok_or(BlendError::Topology(
-        brepkit_topology::TopologyError::Empty {
+        remus_topology::TopologyError::Empty {
             entity: "fillet spine",
         },
     ))?;
@@ -1581,7 +1579,7 @@ fn compute_stripe_for_spine(
     }
 
     log::debug!(
-        target: "brepkit_approx",
+        target: "remus_approx",
         "fillet: analytic fast-path unavailable for {}+{} ({} radius) — using Newton-Raphson walker (approximate NURBS blend surface)",
         surf1.type_tag(),
         surf2.type_tag(),
@@ -1626,7 +1624,7 @@ fn compute_stripe_for_spine(
     };
 
     let blend_surface = approximate_blend_surface(&walk_result.sections)?;
-    let blend_face_surface = brepkit_topology::face::FaceSurface::Nurbs(blend_surface);
+    let blend_face_surface = remus_topology::face::FaceSurface::Nurbs(blend_surface);
 
     let contact1 = sections_to_contact_curve(&walk_result.sections, |s| s.p1)?;
     let contact2 = sections_to_contact_curve(&walk_result.sections, |s| s.p2)?;
@@ -1658,11 +1656,11 @@ fn compute_stripe_for_spine(
 #[derive(Debug, Clone, Copy)]
 pub struct BlendCrossSection {
     /// Contact point on the first surface (`u = 0` end of the arc).
-    pub contact1: brepkit_math::vec::Point3,
+    pub contact1: remus_math::vec::Point3,
     /// Arc apex / middle control point (tangent intersection).
-    pub apex: brepkit_math::vec::Point3,
+    pub apex: remus_math::vec::Point3,
     /// Contact point on the second surface (`u = 1` end of the arc).
-    pub contact2: brepkit_math::vec::Point3,
+    pub contact2: remus_math::vec::Point3,
     /// Rational-quadratic weight of the apex (`cos(half_angle)`).
     pub weight: f64,
 }
@@ -1686,14 +1684,14 @@ pub struct BlendCrossSection {
 pub fn blend_cross_sections(
     topo: &Topology,
     edge_id: EdgeId,
-    surf1: &brepkit_topology::face::FaceSurface,
+    surf1: &remus_topology::face::FaceSurface,
     surf1_reversed: bool,
-    surf2: &brepkit_topology::face::FaceSurface,
+    surf2: &remus_topology::face::FaceSurface,
     surf2_reversed: bool,
     radius: f64,
     fractions: &[f64],
 ) -> Result<Vec<BlendCrossSection>, BlendError> {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     let spine = Spine::from_single_edge(topo, edge_id)?;
     let len = spine.length();
@@ -1709,9 +1707,9 @@ pub fn blend_cross_sections(
     // then; keep it when the face is reversed.
     let flip1 = FlippedNormalSurface::new(base1);
     let flip2 = FlippedNormalSurface::new(base2);
-    let ps1: &dyn brepkit_math::traits::ParametricSurface =
+    let ps1: &dyn remus_math::traits::ParametricSurface =
         if surf1_reversed { base1 } else { &flip1 };
-    let ps2: &dyn brepkit_math::traits::ParametricSurface =
+    let ps2: &dyn remus_math::traits::ParametricSurface =
         if surf2_reversed { base2 } else { &flip2 };
 
     let blend = ConstRadBlend { radius };
@@ -1766,11 +1764,11 @@ pub fn blend_cross_sections(
 /// For non-plane surfaces, returns a clone unchanged — the walker already
 /// accounts for orientation through the `ParametricSurface` trait.
 fn orient_plane_surface(
-    surface: &brepkit_topology::face::FaceSurface,
-) -> brepkit_topology::face::FaceSurface {
+    surface: &remus_topology::face::FaceSurface,
+) -> remus_topology::face::FaceSurface {
     match surface {
-        brepkit_topology::face::FaceSurface::Plane { normal, d } => {
-            brepkit_topology::face::FaceSurface::Plane {
+        remus_topology::face::FaceSurface::Plane { normal, d } => {
+            remus_topology::face::FaceSurface::Plane {
                 normal: -*normal,
                 d: -*d,
             }
@@ -1810,11 +1808,11 @@ fn mirror_law(law: &RadiusLaw) -> RadiusLaw {
 /// Build a degree-1 NURBS curve from section contact points.
 fn sections_to_contact_curve(
     sections: &[crate::section::CircSection],
-    pick: impl Fn(&crate::section::CircSection) -> brepkit_math::vec::Point3,
-) -> Result<brepkit_math::nurbs::curve::NurbsCurve, BlendError> {
-    let pts: Vec<brepkit_math::vec::Point3> = sections.iter().map(&pick).collect();
+    pick: impl Fn(&crate::section::CircSection) -> remus_math::vec::Point3,
+) -> Result<remus_math::nurbs::curve::NurbsCurve, BlendError> {
+    let pts: Vec<remus_math::vec::Point3> = sections.iter().map(&pick).collect();
     if pts.len() < 2 {
-        return Err(BlendError::Math(brepkit_math::MathError::EmptyInput));
+        return Err(BlendError::Math(remus_math::MathError::EmptyInput));
     }
     let n = pts.len();
     let degree = 1.min(n - 1);
@@ -1827,15 +1825,15 @@ fn sections_to_contact_curve(
     }
     knots.extend(vec![1.0; degree + 1]);
     let weights = vec![1.0; n];
-    let curve = brepkit_math::nurbs::curve::NurbsCurve::new(degree, knots, pts, weights)?;
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(degree, knots, pts, weights)?;
     Ok(curve)
 }
 
 /// Build a PCurve (2D UV line) by projecting 3D contact endpoints onto a surface.
 fn build_pcurve_from_contact(
-    surf: &dyn brepkit_math::traits::ParametricSurface,
-    contact: &brepkit_math::nurbs::curve::NurbsCurve,
-) -> Result<brepkit_math::curves2d::Curve2D, BlendError> {
+    surf: &dyn remus_math::traits::ParametricSurface,
+    contact: &remus_math::nurbs::curve::NurbsCurve,
+) -> Result<remus_math::curves2d::Curve2D, BlendError> {
     let (t0, t1) = contact.domain();
     let p_start = contact.evaluate(t0);
     let p_end = contact.evaluate(t1);
@@ -1843,11 +1841,11 @@ fn build_pcurve_from_contact(
     let (u0, v0) = surf.project_point(p_start);
     let (u1, v1) = surf.project_point(p_end);
 
-    let origin = brepkit_math::vec::Point2::new(u0, v0);
-    let dir = brepkit_math::vec::Vec2::new(u1 - u0, v1 - v0);
+    let origin = remus_math::vec::Point2::new(u0, v0);
+    let dir = remus_math::vec::Vec2::new(u1 - u0, v1 - v0);
 
-    let line = brepkit_math::curves2d::Line2D::new(origin, dir)?;
-    Ok(brepkit_math::curves2d::Curve2D::Line(line))
+    let line = remus_math::curves2d::Line2D::new(origin, dir)?;
+    Ok(remus_math::curves2d::Curve2D::Line(line))
 }
 
 #[cfg(test)]
@@ -1855,9 +1853,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_topology::adjacency::AdjacencyIndex;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::adjacency::AdjacencyIndex;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     #[test]
     fn fillet_builder_empty_edges_error() {
@@ -1930,18 +1928,18 @@ mod tests {
         let mut topo = Topology::new();
         let solid = make_unit_cube_manifold(&mut topo);
 
-        let v0 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
-            brepkit_math::vec::Point3::new(10.0, 10.0, 10.0),
+        let v0 = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            remus_math::vec::Point3::new(10.0, 10.0, 10.0),
             1e-7,
         ));
-        let v1 = topo.add_vertex(brepkit_topology::vertex::Vertex::new(
-            brepkit_math::vec::Point3::new(11.0, 10.0, 10.0),
+        let v1 = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            remus_math::vec::Point3::new(11.0, 10.0, 10.0),
             1e-7,
         ));
-        let fake_edge = topo.add_edge(brepkit_topology::edge::Edge::new(
+        let fake_edge = topo.add_edge(remus_topology::edge::Edge::new(
             v0,
             v1,
-            brepkit_topology::edge::EdgeCurve::Line,
+            remus_topology::edge::EdgeCurve::Line,
         ));
 
         let mut builder = FilletBuilder::new(&mut topo, solid);

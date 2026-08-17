@@ -2,10 +2,10 @@
 #![allow(dead_code)]
 //! Stripe: a fillet band connecting two adjacent faces.
 
-use brepkit_math::curves2d::Curve2D;
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::curves2d::Curve2D;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::section::CircSection;
 use crate::spine::Spine;
