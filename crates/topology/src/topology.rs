@@ -377,7 +377,10 @@ impl Topology {
         {
             self.journal.record_global_barrier(self.mutation_ticks);
         }
-        PendingOp { kind: kind.into() }
+        PendingOp {
+            kind: kind.into(),
+            scope: Vec::new(),
+        }
     }
 
     /// Records the evolution entry for a journaled operation.
@@ -397,7 +400,7 @@ impl Topology {
         draft: EvolutionDraft,
     ) -> Result<OpId, TopologyError> {
         self.journal
-            .record_evolution(pending.kind, draft, self.mutation_ticks)
+            .record_evolution(pending.kind, pending.scope, draft, self.mutation_ticks)
     }
 
     /// Records an explicit barrier entry for an operation that produces no
@@ -406,7 +409,7 @@ impl Topology {
     /// reference through this entry fails closed naming the operation.
     pub fn journal_record_barrier(&mut self, pending: PendingOp, affected: Vec<EntityKey>) -> OpId {
         self.journal
-            .record_barrier(pending.kind, affected, self.mutation_ticks)
+            .record_barrier(pending.kind, pending.scope, affected, self.mutation_ticks)
     }
     arena_get_mut!(
         compsolid_mut,

@@ -30,14 +30,27 @@
 //! the history is complete. Operations that produce no evolution records
 //! journal an explicit scoped [`EntryPayload::Barrier`] themselves.
 //!
-//! # What an entry claims
+//! # What an entry claims, and its scope
 //!
-//! An evolution entry claims exactly what it records: entities it does not
-//! mention have **no** continuity across it. A faces-only entry (a blend's
-//! face evolution, say) therefore leaves edge and vertex references
-//! unresolvable across that operation — absent claims are gaps, never
-//! implicit preservation. This is the "wrong is worse than none" discipline
-//! from `operations::evolution`, applied to history.
+//! Every entry carries a **scope**: the set of entities the operation may
+//! have touched (its operands' and result's entities), declared by the
+//! recording operation as a construction fact. The scope is what makes the
+//! fail-closed rule usable on multi-body models:
+//!
+//! - an entity **outside** the scope was untouched and carries through the
+//!   entry unchanged;
+//! - an entity **inside** the scope follows its claim if the entry makes
+//!   one, and is **severed** (fails closed) if it does not — a faces-only
+//!   entry from a blend leaves that solid's edge and vertex references
+//!   unresolvable across the operation, while every other solid's entities
+//!   are unaffected.
+//!
+//! Absent claims are gaps within the declared scope, never implicit
+//! preservation — the "wrong is worse than none" discipline from
+//! `operations::evolution`, applied to history. A scope that omits touched
+//! entities would fake continuity, so it is a claim held to the same
+//! standard as the events themselves; the ingestion helpers in
+//! `operations::journal_ops` derive it from the operand and result solids.
 
 use std::collections::HashMap;
 
@@ -256,6 +269,13 @@ pub struct EvolutionDraft {
     /// Whether the events are construction records or geometric inference —
     /// a claim the recording operation must make explicitly.
     pub origin: RecordedOrigin,
+    /// Entities the operation may have touched beyond those its events
+    /// mention (typically the result solid's full entity set for a
+    /// partial record). The entry's effective scope is these plus every
+    /// entity the events mention plus the pre-operation scope captured on
+    /// the [`PendingOp`]. In-scope entities without a claim are severed;
+    /// out-of-scope entities carry through.
+    pub scope: Vec<EntityKey>,
 }
 
 impl EvolutionDraft {
@@ -265,6 +285,7 @@ impl EvolutionDraft {
         Self {
             events: Vec::new(),
             origin: RecordedOrigin::Construction,
+            scope: Vec::new(),
         }
     }
 
@@ -274,12 +295,18 @@ impl EvolutionDraft {
         Self {
             events: Vec::new(),
             origin: RecordedOrigin::Geometry,
+            scope: Vec::new(),
         }
     }
 
     /// Adds one subject's event.
     pub fn push(&mut self, subject: EntityKey, event: EventDraft) {
         self.events.push((subject, event));
+    }
+
+    /// Adds entities to the declared scope (see [`Self::scope`]).
+    pub fn add_scope(&mut self, keys: impl IntoIterator<Item = EntityKey>) {
+        self.scope.extend(keys);
     }
 }
 
@@ -291,6 +318,11 @@ pub enum EntryPayload {
     Evolution {
         /// Whether the events are construction records or inference.
         origin: RecordedOrigin,
+        /// The entities the operation may have touched (sorted, deduped;
+        /// always a superset of everything the events mention). In-scope
+        /// entities without a claim are severed across this entry;
+        /// out-of-scope entities carry through.
+        scope: Vec<JournalOrdinal>,
         /// Subject ordinal → its event, sorted by subject.
         events: Vec<(JournalOrdinal, EntityEvent)>,
     },
@@ -367,9 +399,24 @@ pub const UNJOURNALED_MUTATIONS: &str = "unjournaled_mutations";
 /// is not cloneable, and is consumed by the record call. Dropping it
 /// without recording is safe — the operation's mutations then surface as a
 /// gap (global barrier) at the next `journal_begin`.
+///
+/// Because the token exists *before* the operation runs, it is also where
+/// the **pre-operation** half of the entry's scope is captured: entities
+/// of the operands that the operation may touch (they may be retired by
+/// the time the entry is recorded). Add them with [`Self::add_scope`].
 #[derive(Debug)]
 pub struct PendingOp {
     pub(crate) kind: String,
+    pub(crate) scope: Vec<EntityKey>,
+}
+
+impl PendingOp {
+    /// Adds pre-operation entities to the entry's scope: entities the
+    /// operation may touch, captured before it runs. Merged into the
+    /// recorded entry's effective scope (evolution and barrier alike).
+    pub fn add_scope(&mut self, keys: impl IntoIterator<Item = EntityKey>) {
+        self.scope.extend(keys);
+    }
 }
 
 /// The append-only evolution journal, owned by
@@ -487,12 +534,19 @@ impl Journal {
     pub(crate) fn record_evolution(
         &mut self,
         kind: String,
+        pre_scope: Vec<EntityKey>,
         draft: EvolutionDraft,
         ticks_after: u64,
     ) -> Result<OpId, TopologyError> {
+        let mut scope: Vec<JournalOrdinal> = pre_scope
+            .into_iter()
+            .chain(draft.scope)
+            .map(|key| self.intern(key))
+            .collect();
         let mut events: Vec<(JournalOrdinal, EntityEvent)> = Vec::with_capacity(draft.events.len());
         for (subject, event) in draft.events {
             let subject = self.intern(subject);
+            scope.push(subject);
             let event = match event {
                 EventDraft::Preserved { from } => EntityEvent::Preserved {
                     from: self.intern(from),
@@ -511,6 +565,16 @@ impl Journal {
                     candidates: candidates.into_iter().map(|key| self.intern(key)).collect(),
                 },
             };
+            // The scope is a superset of everything the events mention.
+            match &event {
+                EntityEvent::Preserved { from } | EntityEvent::Modified { from } => {
+                    scope.push(*from);
+                }
+                EntityEvent::Generated { sources } => scope.extend(sources.iter().copied()),
+                EntityEvent::Merged { from } => scope.extend(from.iter().copied()),
+                EntityEvent::Unresolved { candidates } => scope.extend(candidates.iter().copied()),
+                EntityEvent::Deleted => {}
+            }
             events.push((subject, event));
         }
         events.sort_by_key(|(subject, _)| *subject);
@@ -519,12 +583,15 @@ impl Journal {
                 ordinal: window[0].0.value(),
             });
         }
+        scope.sort_unstable();
+        scope.dedup();
         let op = self.issue_op();
         self.entries.push(JournalEntry {
             op,
             kind,
             payload: EntryPayload::Evolution {
                 origin: draft.origin,
+                scope,
                 events,
             },
             ticks_after,
@@ -532,15 +599,20 @@ impl Journal {
         Ok(op)
     }
 
-    /// Records an explicit barrier over `affected`.
+    /// Records an explicit barrier over `affected` plus the pre-operation
+    /// scope captured on the pending token.
     pub(crate) fn record_barrier(
         &mut self,
         kind: String,
+        pre_scope: Vec<EntityKey>,
         affected: Vec<EntityKey>,
         ticks_after: u64,
     ) -> OpId {
-        let mut affected: Vec<JournalOrdinal> =
-            affected.into_iter().map(|key| self.intern(key)).collect();
+        let mut affected: Vec<JournalOrdinal> = pre_scope
+            .into_iter()
+            .chain(affected)
+            .map(|key| self.intern(key))
+            .collect();
         affected.sort_unstable();
         affected.dedup();
         let op = self.issue_op();

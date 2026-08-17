@@ -9,7 +9,7 @@
 
 use brepkit_algo::bop::BooleanOp;
 use brepkit_operations::journal_ops::{
-    boolean_journaled, record_barrier_over_solid, record_face_evolution,
+    begin_scoped, boolean_journaled, record_barrier_over_solid, record_face_evolution,
 };
 use brepkit_operations::primitives::make_box;
 use brepkit_topology::Topology;
@@ -39,7 +39,7 @@ fn journaled_boolean_records_total_construction_history() {
     let entry = journal.entries().last().unwrap();
     assert_eq!(entry.op(), result.op);
     assert_eq!(entry.kind(), "boolean_fuse");
-    let EntryPayload::Evolution { origin, events } = entry.payload() else {
+    let EntryPayload::Evolution { origin, events, .. } = entry.payload() else {
         panic!("a journaled boolean records evolution, not a barrier");
     };
     assert_eq!(
@@ -191,13 +191,13 @@ fn blend_face_evolution_journals_with_unresolved_claims_intact() {
     let cube = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let edges = solid_edges(&topo, cube).unwrap();
 
-    let pending = topo.journal_begin("fillet");
+    let pending = begin_scoped(&mut topo, "fillet", &[cube]).unwrap();
     let (result, map) = fillet_with_evolution(&mut topo, cube, &[edges[0]], 1.0).unwrap();
-    let op = record_face_evolution(&mut topo, pending, &map).unwrap();
+    let op = record_face_evolution(&mut topo, pending, &map, &[result.solid]).unwrap();
 
     let entry = topo.journal().entries().last().unwrap();
     assert_eq!(entry.op(), op);
-    let EntryPayload::Evolution { origin, events } = entry.payload() else {
+    let EntryPayload::Evolution { origin, events, .. } = entry.payload() else {
         panic!("face evolution must journal as an evolution entry");
     };
     assert_eq!(
@@ -258,7 +258,7 @@ fn merged_outputs_journal_as_one_merged_event() {
     map.add_modified(7, 101);
 
     let pending = topo.journal_begin("unify_same_domain");
-    record_face_evolution(&mut topo, pending, &map).unwrap();
+    record_face_evolution(&mut topo, pending, &map, &[]).unwrap();
 
     let journal = topo.journal();
     let merged_subject = journal.ordinal_of(EntityKey::face(100)).unwrap();
