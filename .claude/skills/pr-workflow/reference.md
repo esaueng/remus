@@ -39,7 +39,7 @@ Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `
 
 `benchmark.yml` contributes `Boolean perf` and `Publish benchmark` on PRs; neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is the CI runner provider, not a reviewer or a quality check.
 
-Note the `wasm-size` baseline is `main`, not your PR base, so a nonzero delta on a change that cannot affect the binary (e.g. a `#[cfg(test)]`-only diff) is usually dependency drift from the gitignored `Cargo.lock`, not your work.
+The `wasm-size` comment's first column is *labelled* `main`, but that label is a hardcoded string in `ci.yml`. The job actually checks out `ref: ${{ github.base_ref }}` — your PR's real base. The two coincide today only because PRs target `main`; the header would still read `main` for a PR based on anything else, so never read it as evidence of what was compared. Because the baseline IS your base, a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) is NOT explained away by a stale baseline and deserves a second look. `Cargo.lock` is gitignored, so the PR and base builds resolve dependencies independently — that is the likeliest remaining cause, but confirm it rather than assuming it.
 
 Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only when the binaries are installed (the hook skips them silently otherwise). Everything else (tests, boundaries, deny, docs) first runs in CI unless you run it yourself. Before pushing, run at minimum the tests for touched crates and, on any `Cargo.toml` change, `./scripts/check-boundaries.sh`.
 
@@ -145,7 +145,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | Merged PR's branch still on the remote | `delete_branch_on_merge` is false | `git push origin --delete <branch>`, but check for stacked PRs first (next row) |
 | A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged; GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
-| `WASM Size Report` shows a delta on a test-only diff | Baseline is `main` and `Cargo.lock` is gitignored, so deps re-resolve | Expected drift; confirm your diff cannot reach the binary, then note it |
+| `WASM Size Report` shows a delta on a test-only diff | NOT a stale baseline — the job builds `github.base_ref`, your real base; the `main` column label is hardcoded. Independent dependency resolution between the two builds (`Cargo.lock` is gitignored) is the likeliest cause | Confirm your diff cannot reach the binary, then report the delta as unexplained rather than calling it expected drift |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
 | CI `taplo` or `machete` fails but pre-commit passed | Tool not installed locally; the hook skips it silently | `cargo install taplo-cli cargo-machete`, fix, re-commit |
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
