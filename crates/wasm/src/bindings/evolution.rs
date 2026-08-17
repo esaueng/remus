@@ -380,6 +380,37 @@ mod evolution_contract_tests {
             .collect()
     }
 
+    fn assert_assembly_rebuilds_are_typed(evolution: &serde_json::Value) {
+        let events = evolution["edges"].as_array().unwrap();
+        assert!(
+            events.iter().any(|edge| edge["event"] == "modified"),
+            "fixture must exercise typed edge reconstruction: {events:?}"
+        );
+        assert!(
+            events.iter().all(|edge| edge["event"] != "unresolved"),
+            "recorded assembly rebuilds must not surface as unresolved: {events:?}"
+        );
+    }
+
+    #[test]
+    fn direct_wasm_entity_evolution_types_assembly_rebuilds() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let b = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        kernel
+            .transform_solid_binding(
+                b,
+                vec![
+                    1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 5.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0, 0.0, 1.0,
+                ],
+            )
+            .unwrap();
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&kernel.fuse_with_entity_evolution(a, b).unwrap()).unwrap();
+        assert_assembly_rebuilds_are_typed(&payload["evolution"]);
+    }
+
     #[test]
     fn entity_evolution_surfaces_all_three_claim_strengths() {
         let mut kernel = BrepKernel::new();
@@ -411,6 +442,7 @@ mod evolution_contract_tests {
                 "a cube fuse must show {expected} edges: {edge_events:?}"
             );
         }
+        assert_assembly_rebuilds_are_typed(evolution);
         // Generated edges name their generating faces when they map.
         assert!(
             evolution["edges"]

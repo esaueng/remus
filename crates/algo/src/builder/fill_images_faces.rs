@@ -305,8 +305,14 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
             );
             let expanded =
                 rebuild_face_with_edge_images(topo, face_id, edge_images).unwrap_or(face_id);
-            let rebuilt =
-                rebuild_face_with_cb_edges(topo, expanded, &cb_qpair_edges, &vv_vertex_seed, tol);
+            let rebuilt = rebuild_face_with_cb_edges(
+                lineage,
+                topo,
+                expanded,
+                &cb_qpair_edges,
+                &vv_vertex_seed,
+                tol,
+            );
             sub_faces.push(SubFace {
                 face_id: rebuilt.unwrap_or(expanded),
                 source_face: face_id,
@@ -738,6 +744,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                         ),
                     );
                     let new_eid = topo.add_edge(rebuilt);
+                    lineage.rewrites.insert(new_eid.index(), oe.edge().index());
                     new_oes.push(OrientedEdge::new(new_eid, true));
                     any_changed = true;
                 } else {
@@ -1003,6 +1010,7 @@ fn expand_edge<S: BuildHasher>(
 /// Falls back to `None` (keeping the original face) if any wire rebuild fails.
 #[allow(clippy::too_many_lines)]
 fn rebuild_face_with_cb_edges(
+    lineage: &mut super::split_types::EdgeLineageLog,
     topo: &mut Topology,
     face_id: FaceId,
     cb_qpair_edges: &HashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
@@ -1093,8 +1101,8 @@ fn rebuild_face_with_cb_edges(
     //     at the same position, create a new edge with the canonical vertex.
     // This ensures ALL boundary edges share canonical vertices, not just
     // CB-matched edges.
-    let remap_wire = |topo: &mut Topology,
-                      wid: remus_topology::wire::WireId|
+    let mut remap_wire = |topo: &mut Topology,
+                          wid: remus_topology::wire::WireId|
      -> Option<remus_topology::wire::WireId> {
         // Snapshot wire data (snapshot-then-allocate pattern)
         let wire = topo.wire(wid).ok()?;
@@ -1187,6 +1195,7 @@ fn rebuild_face_with_cb_edges(
                 let mut new_edge = Edge::new(new_s, new_e, curve);
                 new_edge.set_trim(trim);
                 let new_eid = topo.add_edge(new_edge);
+                lineage.rewrites.insert(new_eid.index(), eid.index());
                 oes.push(OrientedEdge::new(new_eid, fwd));
                 continue;
             }

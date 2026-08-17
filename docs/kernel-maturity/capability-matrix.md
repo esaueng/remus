@@ -208,11 +208,11 @@ does not itself promote or demote anything.
   shell, draft, split, defeature, and direct edits produce none.
   **Edge and vertex history** (Issue 12): `gfa::boolean_with_entity_evolution`
   returns construction-derived edge events (Preserved / Modified via the
-  splitter's source-edge chain and pave blocks / Generated via FF
-  section-origin records / honest Unresolved for the assembly rebuild paths,
-  pinned as a minority) and vertex events (Preserved / Created via the copy
-  maps). Operations/WASM surfacing, the assembly rebuild records, and the
-  lineage graph remain queued. Persistent naming does not exist yet; arena
+  splitter's source-edge chain, pave blocks, face-assembly canonicalization,
+  and final-shell weld/split rewrites / Generated via FF section-origin
+  records / honest Unresolved when no construction chain reaches an origin)
+  and vertex events (Preserved / Created via the copy maps). The lineage graph
+  remains queued. Persistent naming does not exist yet; arena
   indices are the only handles (and are explicitly not persistent names).
   Design: `docs/design/rfc-0003-persistent-naming.md` (journal + resolver
   over the evolution events, staged; Issue 13).
@@ -275,9 +275,8 @@ does not itself promote or demote anything.
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
   `chamferJournaled` / `linearPatternJournaled`, and the read-only
   `journalSummary`, all with executeBatch companions and contract
-  tests. Remaining evolution queue: assembly-rebuild lineage records
-  (the Unresolved minority in GFA edge events) and evolution for the
-  declared-gap operations (offset, shell, draft, split, defeature —
+  tests. Remaining evolution queue: evolution for the declared-gap operations
+  (offset, shell, draft, split, defeature —
   journaled as barriers until each grows real records).
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting

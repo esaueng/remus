@@ -355,14 +355,6 @@ impl Builder {
     /// # Errors
     ///
     /// Returns [`AlgoError`] if topology lookups or classification fails.
-    /// The construction lineage recorded so far (populated by
-    /// [`Self::perform`]); cloned by entity-evolution callers before the
-    /// builder is consumed.
-    #[must_use]
-    pub fn edge_lineage(&self) -> &split_types::EdgeLineageLog {
-        &self.edge_lineage
-    }
-
     pub fn perform(&mut self) -> Result<(), AlgoError> {
         self.build_face_ranks()?;
         self.fill_images();
@@ -436,6 +428,42 @@ impl Builder {
         let (solid_id, origins) =
             assemble::assemble_solid_with_origins(&mut self.topo, &selected, &cap_planes)?;
         Ok((self.topo, solid_id, origins))
+    }
+
+    /// Like [`Self::build_result_with_origins`], returning the complete edge
+    /// construction log after final shell assembly has appended its explicit
+    /// weld and split rewrites.
+    pub fn build_result_with_origins_and_lineage(
+        mut self,
+        op: BooleanOp,
+    ) -> Result<
+        (
+            Topology,
+            SolidId,
+            FaceProvenance,
+            split_types::EdgeLineageLog,
+        ),
+        AlgoError,
+    > {
+        let selected = bop::select_faces(
+            &self.sub_faces,
+            op,
+            &self.sd_pairs,
+            &self.sd_within_rank_dups,
+        );
+        if op == BooleanOp::Fuse {
+            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
+        }
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
+        log_source_face_partition(&self.topo, &self.sub_faces, &selected);
+        let cap_planes = self.partial_overlap_cap_planes(&selected);
+        let (solid_id, origins) = assemble::assemble_solid_with_origins_and_lineage(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
+        Ok((self.topo, solid_id, origins, self.edge_lineage))
     }
 
     /// Candidate cap planes for partial coplanar same-domain overlaps.

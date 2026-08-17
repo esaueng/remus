@@ -51,3 +51,19 @@ pub fn assemble_solid_with_origins(
 ) -> Result<(SolidId, super::FaceProvenance), AlgoError> {
     super::builder_solid::build_solid_with_origins(topo, selected, cap_planes)
 }
+
+/// Like [`assemble_solid_with_origins`], while recording exact final-assembly
+/// edge rebuild lineage for entity-evolution callers.
+///
+/// # Errors
+///
+/// Returns `AlgoError::AssemblyFailed` if no faces are selected or shell
+/// construction fails.
+pub fn assemble_solid_with_origins_and_lineage(
+    topo: &mut Topology,
+    selected: &[SelectedFace],
+    cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
+) -> Result<(SolidId, super::FaceProvenance), AlgoError> {
+    super::builder_solid::build_solid_with_origins_and_lineage(topo, selected, cap_planes, lineage)
+}
