@@ -278,7 +278,7 @@ fn geometric_edge_length(topo: &Topology, edge_id: EdgeId) -> Result<f64, Operat
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+    let (t0, t1) = edge.domain_with_endpoints(start, end);
     let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
     let mut length = 0.0;
     for i in 1..=16 {
@@ -1507,7 +1507,7 @@ mod tests {
         let edge = topo.edge(edge_id).unwrap();
         let start = topo.vertex(edge.start()).unwrap().point();
         let end = topo.vertex(edge.end()).unwrap().point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        let (t0, t1) = edge.domain_with_endpoints(start, end);
         let midpoint = edge
             .curve()
             .evaluate_with_endpoints(f64::midpoint(t0, t1), start, end);

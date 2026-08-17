@@ -2687,10 +2687,11 @@ fn corner_is_concave(
         };
         let (p_s, p_e) = (vs.point(), ve.point());
         let curve = edge.curve().clone();
+        let domain = edge.domain_with_endpoints(p_s, p_e);
         let (t_param, sign) = if edge.start().index() == vi {
-            (curve.domain_with_endpoints(p_s, p_e).0, 1.0)
+            (domain.0, 1.0)
         } else {
-            (curve.domain_with_endpoints(p_s, p_e).1, -1.0)
+            (domain.1, -1.0)
         };
         let tan = curve.tangent_with_endpoints(t_param, p_s, p_e);
         if let Ok(n) = (tan * sign).normalize() {

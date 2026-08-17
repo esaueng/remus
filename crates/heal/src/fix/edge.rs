@@ -254,7 +254,7 @@ fn compute_pcurve_deviation(
     let face = topo.face(face_id)?;
     let surface = face.surface();
 
-    let (t0_3d, t1_3d) = curve.domain_with_endpoints(start_pos, end_pos);
+    let (t0_3d, t1_3d) = edge.domain_with_endpoints(start_pos, end_pos);
     let t0_pc = pcurve.t_start();
     let t1_pc = pcurve.t_end();
 

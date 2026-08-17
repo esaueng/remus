@@ -53,7 +53,7 @@ fn validate_cap_wires_planar(
             let edge = topo.edge(oriented.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+            let (t0, t1) = edge.domain_with_endpoints(start, end);
             for index in 0..=CURVE_INTERVALS {
                 #[allow(clippy::cast_precision_loss)]
                 let fraction = index as f64 / CURVE_INTERVALS as f64;
@@ -629,7 +629,7 @@ fn try_analytic_full_revolution(
         // — sampling with traversal endpoints directly would pick the CCW
         // complement of a reversed arc.
         let interior = if matches!(class, RevEdge::Torus { .. }) {
-            let (t0, t1) = curve.domain_with_endpoints(ns, ne);
+            let (t0, t1) = edge.domain_with_endpoints(ns, ne);
             let mut pts: Vec<Point3> = [0.25, 0.5, 0.75]
                 .iter()
                 .map(|f| curve.evaluate_with_endpoints((t1 - t0).mul_add(*f, t0), ns, ne))
@@ -1159,7 +1159,7 @@ fn profile_chart_is_ccw(
         pts.push(if oe.is_forward() { ns } else { ne });
         if !matches!(edge.curve(), EdgeCurve::Line) {
             let curve = edge.curve();
-            let (t0, t1) = curve.domain_with_endpoints(ns, ne);
+            let (t0, t1) = edge.domain_with_endpoints(ns, ne);
             // Sample in the curve's NATURAL direction, then reverse to traversal
             // order — sampling from traversal endpoints picks the CCW complement
             // of a reversed arc.

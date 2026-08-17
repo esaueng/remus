@@ -1311,7 +1311,7 @@ fn edge_is_g1_between(topo: &Topology, edge: EdgeId, a: FaceId, b: FaceId) -> bo
     let edge_data = topo.edge(edge).unwrap();
     let start = topo.vertex(edge_data.start()).unwrap().point();
     let end = topo.vertex(edge_data.end()).unwrap().point();
-    let (t0, mut t1) = edge_data.curve().domain_with_endpoints(start, end);
+    let (t0, mut t1) = edge_data.domain_with_endpoints(start, end);
     if edge_data.is_closed() {
         t1 = t0 + std::f64::consts::TAU;
     }

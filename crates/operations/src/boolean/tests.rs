@@ -1232,6 +1232,53 @@ fn assemble_mixed_planar_only() {
 }
 
 #[test]
+fn assemble_mixed_existing_faces_preserve_exact_arc_trims() {
+    let mut topo = Topology::new();
+    let source = crate::primitives::make_cylinder(&mut topo, 2.0, 2.0).unwrap();
+    for edge_id in brepkit_topology::explorer::solid_edges(&topo, source).unwrap() {
+        if matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Circle(_)) {
+            topo.edge_mut(edge_id)
+                .unwrap()
+                .set_trim(Some((0.125, std::f64::consts::TAU + 0.125)));
+        }
+    }
+    let specs: Vec<_> = brepkit_topology::explorer::solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .map(|face| FaceSpec::Existing { face, outer: None })
+        .collect();
+
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+    assert_eq!(
+        brepkit_topology::explorer::solid_entity_counts(&topo, solid).unwrap(),
+        (3, 3, 2),
+        "existing-face assembly must keep the cylinder's exact analytic topology"
+    );
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(
+        report.is_valid(),
+        "result must validate: {:?}",
+        report.issues
+    );
+
+    let circle_trims: Vec<_> = brepkit_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter_map(|edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            matches!(edge.curve(), EdgeCurve::Circle(_)).then_some(edge.trim())
+        })
+        .collect();
+    assert_eq!(circle_trims.len(), 2);
+    assert!(
+        circle_trims.iter().all(|trim| trim
+            .is_some_and(|(start, end)| start.to_bits() == 0.125_f64.to_bits()
+                && end.to_bits() == (std::f64::consts::TAU + 0.125).to_bits())),
+        "assembled rims need bit-exact source intervals: {circle_trims:?}"
+    );
+}
+
+#[test]
 fn assemble_mixed_with_nurbs() {
     use brepkit_math::nurbs::surface::NurbsSurface;
 
