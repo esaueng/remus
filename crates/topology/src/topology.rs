@@ -512,6 +512,24 @@ impl Topology {
         Ok(report)
     }
 
+    /// Installs a journal restored from a serialized snapshot
+    /// (RFC 0003, Stage 5), replacing the current journal.
+    ///
+    /// The mutation counter is synced to the loaded journal's newest
+    /// entry, so a topology restored together with its journal reads as
+    /// consistent — a clean load is not an unjournaled gap. Any mutation
+    /// after this call diverges the counter again and severs as usual.
+    ///
+    /// This is the deserialization path; installing a journal that does
+    /// not describe this topology's history would fake continuity, and
+    /// the caller (the document reader) owns that consistency.
+    pub fn load_journal(&mut self, journal: Journal) {
+        if let Some(ticks) = journal.last_ticks() {
+            self.mutation_ticks = ticks;
+        }
+        self.journal = journal;
+    }
+
     /// Records an explicit barrier entry for an operation that produces no
     /// evolution records: every entity in `affected` (the result's
     /// entities) is unresolved across it, and a resolver chasing a

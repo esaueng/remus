@@ -9,6 +9,7 @@ pub mod arena_io;
 pub mod gltf;
 pub mod iges;
 pub mod limits;
+pub mod naming_io;
 pub mod obj;
 pub mod ply;
 pub mod step;
