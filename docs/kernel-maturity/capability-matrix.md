@@ -241,9 +241,15 @@ does not itself promote or demote anything.
   equality), structural adjacency counts, endpoint vertex signatures for
   edges; `Anchor::Signature` resolves against the current model only,
   always `Inferred`, `Ambiguous` on several matches (never first-match) —
-  the recovery path for imported or severed references. Attribute
-  integration (Stage 4), journal serialization (Stage 5), and the WASM
-  reference API remain queued.
+  the recovery path for imported or severed references.
+  **Attribute integration** (RFC 0003 Stage 4):
+  `Topology::propagate_attributes_for_op` — per-event, journal-driven
+  face-attribute propagation (splits keep names unchanged, merges carry
+  only agreement, generated/unresolved stay bare, inference is an
+  explicit opt-in); `naming::resolve_face_attributes` reads attributes
+  through a `PersistentRef` with every non-binding resolution a typed
+  `ref_*` error. Journal serialization (Stage 5) and the WASM reference
+  API remain queued.
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
