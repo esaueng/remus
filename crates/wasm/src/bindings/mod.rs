@@ -14,6 +14,7 @@ pub mod heal;
 pub mod io;
 pub mod lifecycle;
 pub mod measure;
+pub mod naming;
 pub mod nurbs;
 pub mod operations;
 pub mod polygon2d;
