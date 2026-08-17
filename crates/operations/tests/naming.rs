@@ -225,3 +225,136 @@ fn resolution_is_deterministic_across_identical_histories() {
         "identical history plus identical reference must resolve identically"
     );
 }
+
+// ── Signature tier (RFC 0003, Stage 3) ──────────────────────────────────
+
+const QUANTUM: f64 = 1e-7;
+
+#[test]
+fn every_box_face_signature_recovers_its_own_face() {
+    use brepkit_topology::naming::EntitySignature;
+
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 10.0, 20.0, 30.0).unwrap();
+
+    // An unequal box: all six planes are distinct, so every face's
+    // signature recovers exactly that face, marked inferred.
+    for face in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+        let signature = EntitySignature::capture_face(&topo, face, QUANTUM).unwrap();
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        let Resolution::Bound { entity, provenance } = r else {
+            panic!("face {face:?}: {r:?}");
+        };
+        assert_eq!(entity.index, face.index());
+        assert_eq!(provenance, Provenance::Inferred);
+    }
+}
+
+#[test]
+fn coplanar_twin_faces_are_ambiguous_and_discriminators_cannot_rescue_them() {
+    use brepkit_topology::naming::EntitySignature;
+
+    let mut topo = Topology::new();
+    let a = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let b = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let shift = brepkit_math::mat::Mat4::translation(20.0, 0.0, 0.0);
+    brepkit_operations::transform::transform_solid(&mut topo, b, &shift).unwrap();
+
+    // The two top faces lie on the same plane (z = 10) with identical
+    // adjacency: geometrically indistinguishable, so the signature must
+    // report both — never first-match one of them.
+    let top_of = |topo: &Topology, solid| {
+        brepkit_topology::explorer::solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&f| {
+                matches!(
+                    topo.face(f).unwrap().surface(),
+                    brepkit_topology::face::FaceSurface::Plane { normal, d }
+                        if normal.z() > 0.9 && (d - 10.0).abs() < 1e-9
+                )
+            })
+            .unwrap()
+    };
+    let top_a = top_of(&topo, a);
+    let top_b = top_of(&topo, b);
+
+    let signature = EntitySignature::capture_face(&topo, top_a, QUANTUM).unwrap();
+    let r = resolve(&topo, &PersistentRef::signature(signature.clone()));
+    let Resolution::Ambiguous { candidates, .. } = r else {
+        panic!("coplanar twins must be ambiguous: {r:?}");
+    };
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.contains(&brepkit_topology::journal::EntityKey::face(top_a.index())));
+    assert!(candidates.contains(&brepkit_topology::journal::EntityKey::face(top_b.index())));
+
+    // A type discriminator keeps both candidates (both are planes): the
+    // ambiguity survives, fail-closed, rather than being "resolved" by
+    // an arbitrary pick.
+    let discriminated = PersistentRef::signature(signature)
+        .with_discriminator(Discriminator::SurfaceType("plane".into()));
+    assert!(matches!(
+        resolve(&topo, &discriminated),
+        Resolution::Ambiguous { .. }
+    ));
+}
+
+#[test]
+fn cylinder_signature_carries_quantized_radius() {
+    use brepkit_topology::naming::EntitySignature;
+
+    let mut topo = Topology::new();
+    let solid = brepkit_operations::primitives::make_cylinder(&mut topo, 5.0, 12.0).unwrap();
+
+    let lateral = brepkit_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            matches!(
+                topo.face(f).unwrap().surface(),
+                brepkit_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .unwrap();
+
+    let signature = EntitySignature::capture_face(&topo, lateral, QUANTUM).unwrap();
+    assert_eq!(signature.type_tag, "cylinder");
+    // The radius is the last parameter: 5.0 in units of the 1e-7 quantum.
+    assert_eq!(signature.params.last().copied(), Some(50_000_000));
+
+    let r = resolve(&topo, &PersistentRef::signature(signature));
+    assert_eq!(
+        r,
+        Resolution::Bound {
+            entity: brepkit_topology::journal::EntityKey::face(lateral.index()),
+            provenance: Provenance::Inferred
+        }
+    );
+}
+
+#[test]
+fn signatures_recover_after_journal_severing() {
+    use brepkit_topology::naming::EntitySignature;
+
+    // The recovery story: an edge reference severed by a faces-only
+    // fillet entry (tested above) can be re-anchored by signature —
+    // knowingly, with inferred provenance — against the current model.
+    let mut topo = Topology::new();
+    let (solid, _) = fused_boxes(&mut topo);
+    let edges = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap();
+    let pending = begin_scoped(&mut topo, "fillet", &[solid]).unwrap();
+    let (result, map) = fillet_with_evolution(&mut topo, solid, &[edges[0]], 1.0).unwrap();
+    record_face_evolution(&mut topo, pending, &map, &[result.solid]).unwrap();
+
+    // Capture a surviving edge's signature from the current model and
+    // resolve it: the signature tier answers where the journal cannot,
+    // and says it inferred the answer.
+    let surviving = brepkit_topology::explorer::solid_edges(&topo, result.solid).unwrap();
+    let signature = EntitySignature::capture_edge(&topo, surviving[3], QUANTUM).unwrap();
+    let r = resolve(&topo, &PersistentRef::signature(signature));
+    match r {
+        Resolution::Bound { provenance, .. } => assert_eq!(provenance, Provenance::Inferred),
+        Resolution::Ambiguous { .. } => {} // several congruent edges: honest
+        other => panic!("recovery must answer or refuse loudly: {other:?}"),
+    }
+}

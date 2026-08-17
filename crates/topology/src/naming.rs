@@ -77,6 +77,17 @@ impl PersistentRef {
         }
     }
 
+    /// A reference resolved by signature matching (inference tier).
+    #[must_use]
+    pub fn signature(signature: EntitySignature) -> Self {
+        let entity_kind = signature.kind;
+        Self {
+            anchor: Anchor::Signature { signature },
+            discriminators: Vec::new(),
+            entity_kind,
+        }
+    }
+
     /// Adds a discriminator (builder style).
     #[must_use]
     pub fn with_discriminator(mut self, discriminator: Discriminator) -> Self {
@@ -110,6 +121,17 @@ pub enum Anchor {
     LineageOf {
         /// The wrapped reference.
         base: Box<PersistentRef>,
+    },
+    /// An entity matching a typed geometric + adjacency signature — the
+    /// **inference tier** (RFC 0003, Stage 3). Resolves against the
+    /// current model only (no journal chase), always
+    /// [`Provenance::Inferred`]; a signature matching several entities is
+    /// [`Resolution::Ambiguous`], never first-match. For recovery —
+    /// imported models with no journal, gaps the caller accepts — never
+    /// the primary path.
+    Signature {
+        /// The signature to match.
+        signature: EntitySignature,
     },
 }
 
@@ -319,6 +341,41 @@ pub fn resolve(topo: &Topology, reference: &PersistentRef) -> Resolution {
             }
             return bind(entities, provenance);
         }
+        Anchor::Signature { signature } => {
+            if signature.kind != reference.entity_kind {
+                return Resolution::NoMatch {
+                    reason: format!(
+                        "anchor: signature describes a {}, reference addresses a {}",
+                        signature.kind.as_str(),
+                        reference.entity_kind.as_str()
+                    ),
+                };
+            }
+            let mut entities = resolve_signature(topo, signature);
+            if entities.is_empty() {
+                return Resolution::NoMatch {
+                    reason: "anchor: signature matched nothing".to_owned(),
+                };
+            }
+            if let Some(no_match) =
+                apply_discriminators(topo, &reference.discriminators, &mut entities)
+            {
+                return no_match;
+            }
+            // A signature is an identity question, not a lineage: several
+            // survivors are an ambiguity, never a BoundMany, and never a
+            // first-match pick.
+            return match entities.as_slice() {
+                [single] => Resolution::Bound {
+                    entity: *single,
+                    provenance: Provenance::Inferred,
+                },
+                _ => Resolution::Ambiguous {
+                    reason: format!("signature matches {} entities", entities.len()),
+                    candidates: entities,
+                },
+            };
+        }
     };
 
     // 2. Chase forward through every subsequent entry.
@@ -494,9 +551,479 @@ fn apply_discriminators(
     None
 }
 
+// ─── Signature tier (RFC 0003, Stage 3) ─────────────────────────────────
+
+/// Adjacency counts of one entity, structural only.
+///
+/// Faces: `primary` = boundary edge uses across all wires (a seam edge
+/// used twice counts twice), `secondary` = wire count. Edges: `primary` =
+/// face boundary uses, `secondary` = 0. Vertices: `primary` = incident
+/// live edge uses (a closed edge contributes both ends), `secondary` = 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AdjacencySignature {
+    /// The kind-specific primary count (see type docs).
+    pub primary: u32,
+    /// The kind-specific secondary count (see type docs).
+    pub secondary: u32,
+}
+
+/// A typed geometric + adjacency signature of one entity (the inference
+/// tier of RFC 0003).
+///
+/// Signatures are for *recovery* — imported models with no journal, or
+/// journal gaps the caller knowingly accepts — never the primary path.
+/// Everything about them resolves [`Provenance::Inferred`], and a
+/// signature matching several entities is [`Resolution::Ambiguous`] —
+/// never first-match.
+///
+/// Parameters are stored **quantized** (integer multiples of the capture
+/// quantum, derived from the operation tolerance) so the signature is a
+/// hashable value object; matching compares a candidate's raw parameters
+/// against the stored multiples within one quantum, never by raw float
+/// equality. Directions of orientation-free geometry (a cylinder or torus
+/// axis, a circle normal) are sign-canonicalized before quantization so
+/// the same surface captured twice signs identically; orientation-bearing
+/// directions (a plane normal, a cone axis) are not. NURBS geometry
+/// carries no analytic parameters — its signature is the type tag plus
+/// adjacency, which usually resolves `Ambiguous` and is meant to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EntitySignature {
+    /// The entity kind this signature describes.
+    pub kind: EntityKind,
+    /// Surface/curve type tag (`"plane"`, `"circle"`, …); vertices use
+    /// `"vertex"`.
+    pub type_tag: String,
+    /// Quantized analytic parameters, in a fixed per-type order.
+    pub params: Vec<i64>,
+    /// The capture quantum as `f64` bits (bit-stable, hashable).
+    pub quantum_bits: u64,
+    /// Structural adjacency counts.
+    pub adjacency: AdjacencySignature,
+    /// For edges: the `(start, end)` vertex signatures, structural.
+    pub endpoints: Option<Box<(Self, Self)>>,
+}
+
+impl EntitySignature {
+    /// The quantum this signature was captured with.
+    #[must_use]
+    pub fn quantum(&self) -> f64 {
+        f64::from_bits(self.quantum_bits)
+    }
+
+    /// The quantization an [`OperationContext`] implies (its linear
+    /// tolerance) — the RFC-designated source; never raw float equality.
+    ///
+    /// [`OperationContext`]: brepkit_math::context::OperationContext
+    #[must_use]
+    pub fn context_quantum(context: &brepkit_math::context::OperationContext) -> f64 {
+        context.tolerance.linear
+    }
+
+    /// Captures a face's signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error if the face or one of its wires is
+    /// invalid.
+    pub fn capture_face(
+        topo: &Topology,
+        face: crate::face::FaceId,
+        quantum: f64,
+    ) -> Result<Self, crate::TopologyError> {
+        let face_data = topo.face(face)?;
+        let mut edge_uses = 0u32;
+        let mut wires = 0u32;
+        for wire_id in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            let wire = topo.wire(wire_id)?;
+            edge_uses =
+                edge_uses.saturating_add(u32::try_from(wire.edges().len()).unwrap_or(u32::MAX));
+            wires = wires.saturating_add(1);
+        }
+        Ok(Self {
+            kind: EntityKind::Face,
+            type_tag: face_data.surface().type_tag().to_owned(),
+            params: quantize_all(&face_raw_params(face_data.surface(), quantum), quantum),
+            quantum_bits: quantum.to_bits(),
+            adjacency: AdjacencySignature {
+                primary: edge_uses,
+                secondary: wires,
+            },
+            endpoints: None,
+        })
+    }
+
+    /// Captures an edge's signature, including its endpoint vertex
+    /// signatures.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error if the edge or one of its vertices is
+    /// invalid.
+    pub fn capture_edge(
+        topo: &Topology,
+        edge: crate::edge::EdgeId,
+        quantum: f64,
+    ) -> Result<Self, crate::TopologyError> {
+        let counts = adjacency_counts(topo);
+        Self::capture_edge_with_counts(topo, edge, quantum, &counts)
+    }
+
+    fn capture_edge_with_counts(
+        topo: &Topology,
+        edge: crate::edge::EdgeId,
+        quantum: f64,
+        counts: &AdjacencyCounts,
+    ) -> Result<Self, crate::TopologyError> {
+        let edge_data = topo.edge(edge)?;
+        let start = Self::capture_vertex_with_counts(topo, edge_data.start(), quantum, counts)?;
+        let end = Self::capture_vertex_with_counts(topo, edge_data.end(), quantum, counts)?;
+        Ok(Self {
+            kind: EntityKind::Edge,
+            type_tag: edge_data.curve().type_tag().to_owned(),
+            params: quantize_all(&edge_raw_params(edge_data.curve(), quantum), quantum),
+            quantum_bits: quantum.to_bits(),
+            adjacency: AdjacencySignature {
+                primary: counts.edge_face_uses(edge.index()),
+                secondary: 0,
+            },
+            endpoints: Some(Box::new((start, end))),
+        })
+    }
+
+    /// Captures a vertex's signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error if the vertex is invalid.
+    pub fn capture_vertex(
+        topo: &Topology,
+        vertex: crate::vertex::VertexId,
+        quantum: f64,
+    ) -> Result<Self, crate::TopologyError> {
+        let counts = adjacency_counts(topo);
+        Self::capture_vertex_with_counts(topo, vertex, quantum, &counts)
+    }
+
+    fn capture_vertex_with_counts(
+        topo: &Topology,
+        vertex: crate::vertex::VertexId,
+        quantum: f64,
+        counts: &AdjacencyCounts,
+    ) -> Result<Self, crate::TopologyError> {
+        let vertex_data = topo.vertex(vertex)?;
+        let p = vertex_data.point();
+        Ok(Self {
+            kind: EntityKind::Vertex,
+            type_tag: "vertex".to_owned(),
+            params: quantize_all(&[p.x(), p.y(), p.z()], quantum),
+            quantum_bits: quantum.to_bits(),
+            adjacency: AdjacencySignature {
+                primary: counts.vertex_edge_uses(vertex.index()),
+                secondary: 0,
+            },
+            endpoints: None,
+        })
+    }
+
+    /// Whether a candidate's raw description matches this signature: same
+    /// type tag and adjacency, every raw parameter within one quantum of
+    /// the stored multiple.
+    fn matches_raw(
+        &self,
+        type_tag: &str,
+        raw_params: &[f64],
+        adjacency: AdjacencySignature,
+    ) -> bool {
+        if self.type_tag != type_tag || self.adjacency != adjacency {
+            return false;
+        }
+        if self.params.len() != raw_params.len() {
+            return false;
+        }
+        let quantum = self.quantum();
+        if !(quantum.is_finite() && quantum > 0.0) {
+            return false;
+        }
+        self.params.iter().zip(raw_params).all(|(&stored, &raw)| {
+            #[allow(clippy::cast_precision_loss)]
+            let center = stored as f64 * quantum;
+            (raw - center).abs() <= quantum
+        })
+    }
+}
+
+/// Quantizes raw parameters to integer multiples of the quantum.
+fn quantize_all(raw: &[f64], quantum: f64) -> Vec<i64> {
+    raw.iter().map(|&value| quantize(value, quantum)).collect()
+}
+
+fn quantize(value: f64, quantum: f64) -> i64 {
+    if !(quantum.is_finite() && quantum > 0.0) {
+        return i64::MAX;
+    }
+    let scaled = (value / quantum).round();
+    if !scaled.is_finite() {
+        return i64::MAX;
+    }
+    // Guarded: the clamp keeps the cast in range.
+    #[allow(clippy::cast_possible_truncation)]
+    if scaled >= 9.2e18 {
+        i64::MAX
+    } else if scaled <= -9.2e18 {
+        i64::MIN
+    } else {
+        scaled as i64
+    }
+}
+
+/// Sign-canonicalizes an orientation-free direction: flipped so its first
+/// component larger than the quantum is positive.
+fn canonical_direction(v: brepkit_math::vec::Vec3, quantum: f64) -> brepkit_math::vec::Vec3 {
+    for component in [v.x(), v.y(), v.z()] {
+        if component.abs() > quantum {
+            return if component < 0.0 { -v } else { v };
+        }
+    }
+    v
+}
+
+/// A face surface's raw signature parameters, in a fixed per-type order.
+fn face_raw_params(surface: &crate::face::FaceSurface, quantum: f64) -> Vec<f64> {
+    use crate::face::FaceSurface;
+    match surface {
+        FaceSurface::Plane { normal, d } => vec![normal.x(), normal.y(), normal.z(), *d],
+        FaceSurface::Cylinder(c) => {
+            let axis = canonical_direction(c.axis(), quantum);
+            // Anchor the axis at its point nearest the world origin so
+            // two parameterizations of one cylinder sign identically.
+            let anchor = c.axis().normalize().map_or_else(
+                |_| c.origin(),
+                |unit| {
+                    let o = c.origin();
+                    let along = o
+                        .x()
+                        .mul_add(unit.x(), o.y().mul_add(unit.y(), o.z() * unit.z()));
+                    brepkit_math::vec::Point3::new(
+                        unit.x().mul_add(-along, o.x()),
+                        unit.y().mul_add(-along, o.y()),
+                        unit.z().mul_add(-along, o.z()),
+                    )
+                },
+            );
+            vec![
+                axis.x(),
+                axis.y(),
+                axis.z(),
+                anchor.x(),
+                anchor.y(),
+                anchor.z(),
+                c.radius(),
+            ]
+        }
+        FaceSurface::Cone(c) => {
+            let apex = c.apex();
+            vec![
+                c.axis().x(),
+                c.axis().y(),
+                c.axis().z(),
+                apex.x(),
+                apex.y(),
+                apex.z(),
+                c.half_angle(),
+            ]
+        }
+        FaceSurface::Sphere(s) => {
+            let center = s.center();
+            vec![center.x(), center.y(), center.z(), s.radius()]
+        }
+        FaceSurface::Torus(t) => {
+            let axis = canonical_direction(t.z_axis(), quantum);
+            let center = t.center();
+            vec![
+                axis.x(),
+                axis.y(),
+                axis.z(),
+                center.x(),
+                center.y(),
+                center.z(),
+                t.major_radius(),
+                t.minor_radius(),
+            ]
+        }
+        FaceSurface::Nurbs(_) => Vec::new(),
+    }
+}
+
+/// An edge curve's raw signature parameters, in a fixed per-type order.
+///
+/// `Line` carries no parameters on purpose: a line edge's geometry is its
+/// endpoints, and the endpoint vertex signatures carry it. NURBS and the
+/// open conics are tag-plus-endpoints only.
+fn edge_raw_params(curve: &crate::edge::EdgeCurve, quantum: f64) -> Vec<f64> {
+    use crate::edge::EdgeCurve;
+    match curve {
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => Vec::new(),
+        EdgeCurve::Circle(c) => {
+            let normal = canonical_direction(c.normal(), quantum);
+            let center = c.center();
+            vec![
+                normal.x(),
+                normal.y(),
+                normal.z(),
+                center.x(),
+                center.y(),
+                center.z(),
+                c.radius(),
+            ]
+        }
+        EdgeCurve::Ellipse(e) => {
+            let normal = canonical_direction(e.normal(), quantum);
+            let center = e.center();
+            vec![
+                normal.x(),
+                normal.y(),
+                normal.z(),
+                center.x(),
+                center.y(),
+                center.z(),
+                e.semi_major(),
+                e.semi_minor(),
+            ]
+        }
+    }
+}
+
+/// Global structural adjacency counts, built by one model walk.
+struct AdjacencyCounts {
+    edge_face_uses: std::collections::HashMap<usize, u32>,
+    vertex_edge_uses: std::collections::HashMap<usize, u32>,
+}
+
+impl AdjacencyCounts {
+    fn edge_face_uses(&self, edge_index: usize) -> u32 {
+        self.edge_face_uses.get(&edge_index).copied().unwrap_or(0)
+    }
+
+    fn vertex_edge_uses(&self, vertex_index: usize) -> u32 {
+        self.vertex_edge_uses
+            .get(&vertex_index)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn adjacency_counts(topo: &Topology) -> AdjacencyCounts {
+    let mut edge_face_uses: std::collections::HashMap<usize, u32> =
+        std::collections::HashMap::new();
+    for (_, face) in topo.faces().iter() {
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            if let Ok(wire) = topo.wire(wire_id) {
+                for oriented in wire.edges() {
+                    *edge_face_uses.entry(oriented.edge().index()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    let mut vertex_edge_uses: std::collections::HashMap<usize, u32> =
+        std::collections::HashMap::new();
+    for (_, edge) in topo.edges().iter() {
+        *vertex_edge_uses.entry(edge.start().index()).or_insert(0) += 1;
+        *vertex_edge_uses.entry(edge.end().index()).or_insert(0) += 1;
+    }
+    AdjacencyCounts {
+        edge_face_uses,
+        vertex_edge_uses,
+    }
+}
+
+/// Resolves a signature against the current model (no journal chase:
+/// signatures describe the present, not history).
+fn resolve_signature(topo: &Topology, signature: &EntitySignature) -> Vec<EntityKey> {
+    let counts = adjacency_counts(topo);
+    let mut matches = Vec::new();
+    match signature.kind {
+        EntityKind::Face => {
+            for (id, face) in topo.faces().iter() {
+                let mut edge_uses = 0u32;
+                let mut wires = 0u32;
+                for wire_id in
+                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+                {
+                    if let Ok(wire) = topo.wire(wire_id) {
+                        edge_uses = edge_uses
+                            .saturating_add(u32::try_from(wire.edges().len()).unwrap_or(u32::MAX));
+                    }
+                    wires = wires.saturating_add(1);
+                }
+                let adjacency = AdjacencySignature {
+                    primary: edge_uses,
+                    secondary: wires,
+                };
+                let raw = face_raw_params(face.surface(), signature.quantum());
+                if signature.matches_raw(face.surface().type_tag(), &raw, adjacency) {
+                    matches.push(EntityKey::face(id.index()));
+                }
+            }
+        }
+        EntityKind::Edge => {
+            for (id, edge) in topo.edges().iter() {
+                let adjacency = AdjacencySignature {
+                    primary: counts.edge_face_uses(id.index()),
+                    secondary: 0,
+                };
+                let raw = edge_raw_params(edge.curve(), signature.quantum());
+                if !signature.matches_raw(edge.curve().type_tag(), &raw, adjacency) {
+                    continue;
+                }
+                // Endpoint signatures are structural discriminators: both
+                // must match in order (start, end).
+                let endpoints_match = signature.endpoints.as_ref().is_none_or(|expected| {
+                    vertex_matches(topo, &counts, edge.start(), &expected.0)
+                        && vertex_matches(topo, &counts, edge.end(), &expected.1)
+                });
+                if endpoints_match {
+                    matches.push(EntityKey::edge(id.index()));
+                }
+            }
+        }
+        EntityKind::Vertex => {
+            for (id, _) in topo.vertices().iter() {
+                if vertex_matches(topo, &counts, id, signature) {
+                    matches.push(EntityKey::vertex(id.index()));
+                }
+            }
+        }
+    }
+    matches.sort_unstable();
+    matches
+}
+
+fn vertex_matches(
+    topo: &Topology,
+    counts: &AdjacencyCounts,
+    vertex: crate::vertex::VertexId,
+    signature: &EntitySignature,
+) -> bool {
+    let Ok(vertex_data) = topo.vertex(vertex) else {
+        return false;
+    };
+    let p = vertex_data.point();
+    let adjacency = AdjacencySignature {
+        primary: counts.vertex_edge_uses(vertex.index()),
+        secondary: 0,
+    };
+    signature.matches_raw("vertex", &[p.x(), p.y(), p.z()], adjacency)
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use crate::TopologyError;
     use crate::journal::{EventDraft, EvolutionDraft, UNJOURNALED_MUTATIONS};
@@ -1032,6 +1559,123 @@ mod tests {
             ),
             "{r:?}"
         );
+    }
+
+    // ── Signature tier (Stage 3) ────────────────────────────────────────
+
+    const QUANTUM: f64 = 1e-7;
+
+    fn topo_with_vertex(x: f64) -> (Topology, crate::VertexId) {
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(crate::vertex::Vertex::new(
+            brepkit_math::vec::Point3::new(x, 2.0, 3.0),
+            1e-7,
+        ));
+        (topo, v)
+    }
+
+    #[test]
+    fn vertex_signature_binds_within_one_quantum_across_topologies() {
+        let (topo_a, v) = topo_with_vertex(1.0);
+        let signature = EntitySignature::capture_vertex(&topo_a, v, QUANTUM).unwrap();
+
+        // A different topology whose vertex sits within one quantum.
+        let (topo_b, v_b) = topo_with_vertex(1.0 + 0.4 * QUANTUM);
+        let r = resolve(&topo_b, &PersistentRef::signature(signature.clone()));
+        assert_eq!(
+            r,
+            Resolution::Bound {
+                entity: EntityKey::vertex(v_b.index()),
+                provenance: Provenance::Inferred
+            },
+            "signatures are tolerance-aware and always inferred"
+        );
+
+        // Beyond the window: no match, never a nearest-pick.
+        let (topo_c, _) = topo_with_vertex(1.0 + 3.0 * QUANTUM);
+        let r = resolve(&topo_c, &PersistentRef::signature(signature));
+        assert!(matches!(r, Resolution::NoMatch { .. }), "{r:?}");
+    }
+
+    #[test]
+    fn identical_entities_are_ambiguous_never_first_match() {
+        let mut topo = Topology::new();
+        let p = brepkit_math::vec::Point3::new(1.0, 1.0, 1.0);
+        let a = topo.add_vertex(crate::vertex::Vertex::new(p, 1e-7));
+        let b = topo.add_vertex(crate::vertex::Vertex::new(p, 1e-7));
+        let signature = EntitySignature::capture_vertex(&topo, a, QUANTUM).unwrap();
+
+        let r = resolve(&topo, &PersistentRef::signature(signature));
+        let Resolution::Ambiguous { candidates, .. } = &r else {
+            panic!("two identical vertices must be ambiguous: {r:?}");
+        };
+        assert_eq!(
+            candidates,
+            &vec![EntityKey::vertex(a.index()), EntityKey::vertex(b.index())]
+        );
+        let err = r.into_entities().unwrap_err();
+        assert!(matches!(
+            err,
+            TopologyError::RefAmbiguous { candidates: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn edge_signatures_discriminate_by_endpoints() {
+        use crate::edge::{Edge, EdgeCurve};
+
+        // Two parallel line edges: identical curve type (Line carries no
+        // parameters), identical adjacency — only the endpoint vertex
+        // signatures tell them apart.
+        let mut topo = Topology::new();
+        let mk = |topo: &mut Topology, y: f64| {
+            let a = topo.add_vertex(crate::vertex::Vertex::new(
+                brepkit_math::vec::Point3::new(0.0, y, 0.0),
+                1e-7,
+            ));
+            let b = topo.add_vertex(crate::vertex::Vertex::new(
+                brepkit_math::vec::Point3::new(1.0, y, 0.0),
+                1e-7,
+            ));
+            topo.add_edge(Edge::new(a, b, EdgeCurve::Line))
+        };
+        let e0 = mk(&mut topo, 0.0);
+        let e1 = mk(&mut topo, 5.0);
+
+        for (edge, other) in [(e0, e1), (e1, e0)] {
+            let signature = EntitySignature::capture_edge(&topo, edge, QUANTUM).unwrap();
+            let r = resolve(&topo, &PersistentRef::signature(signature));
+            assert_eq!(
+                r,
+                Resolution::Bound {
+                    entity: EntityKey::edge(edge.index()),
+                    provenance: Provenance::Inferred
+                },
+                "endpoints must separate parallel lines (not {other:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_kind_must_match_the_reference_kind() {
+        let (topo, v) = topo_with_vertex(1.0);
+        let signature = EntitySignature::capture_vertex(&topo, v, QUANTUM).unwrap();
+        let mut reference = PersistentRef::signature(signature);
+        reference.entity_kind = EntityKind::Face;
+        let r = resolve(&topo, &reference);
+        assert!(
+            matches!(r, Resolution::NoMatch { ref reason } if reason.contains("describes a vertex")),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn quantization_is_total_and_poisoned_on_nonsense() {
+        assert_eq!(quantize(1.0, 0.0), i64::MAX, "zero quantum cannot match");
+        assert_eq!(quantize(f64::NAN, 1e-7), i64::MAX);
+        assert_eq!(quantize(f64::INFINITY, 1e-7), i64::MAX);
+        assert_eq!(quantize(-1e30, 1e-9), i64::MIN, "clamped, not wrapped");
+        assert_eq!(quantize(2.5e-7, 1e-7), 3, "round to nearest multiple");
     }
 
     #[test]
