@@ -1,4 +1,4 @@
-# brepkit Review Rules
+# Remus Review Rules
 
 Refer to `CLAUDE.md` for full architecture docs, module map, and coding conventions.
 These rules tell Greptile what to **flag during review**.

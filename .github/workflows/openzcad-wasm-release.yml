@@ -31,8 +31,8 @@ jobs:
         run: |
           npm pkg set \
             repository.type=git \
-            repository.url=git+https://github.com/esaueng/brepkit.git \
-            homepage=https://github.com/esaueng/brepkit \
+            repository.url=git+https://github.com/esaueng/remus.git \
+            homepage=https://github.com/esaueng/remus \
             brepkitSourceCommit="$GITHUB_SHA"
 
       - name: Pack npm-compatible artifact

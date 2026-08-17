@@ -113,7 +113,7 @@ For head-to-head numeric comparison against the reference kernel, use the brepjs
 
 ## Glossary
 
-- **GFA**: brepkit's boolean engine (`crates/algo`): pave-filler intersection phases plus a builder that splits faces, classifies pieces, and assembles the result.
+- **GFA**: Remus's boolean engine (`crates/algo`): pave-filler intersection phases plus a builder that splits faces, classifies pieces, and assembles the result.
 - **Mesh fallback**: when the analytic boolean fails, meshes are co-refined instead; detected by face count and census, not triangle count.
 - **Census**: the `approx_census` example; per-operation analytic-vs-approximation report driven by `brepkit_approx` log probes.
 - **Deflection**: max chord deviation for tessellation; smaller is finer.

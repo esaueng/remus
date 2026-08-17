@@ -125,7 +125,7 @@ A general "arc-identity merge key" for duplicate-edge merging is provably imposs
 
 ## Glossary
 
-- **GFA**: brepkit's general fuse algorithm, the boolean engine in `crates/algo`. Raw entry `gfa::boolean`; `operations::boolean::boolean` wraps it with the acceptance gate and mesh fallback.
+- **GFA**: Remus's general fuse algorithm, the boolean engine in `crates/algo`. Raw entry `gfa::boolean`; `operations::boolean::boolean` wraps it with the acceptance gate and mesh fallback.
 - **PaveFiller**: GFA phase computing pairwise interferences (VV/VE/EE/VF/EF/FF) and splitting edges at intersection parameters. `crates/algo/src/pave_filler/`.
 - **FF phase**: face-face intersection (`pave_filler/phase_ff.rs`), producing section curves. Historically the richest bug habitat.
 - **Section**: an FF intersection curve threaded into a face's splitting arrangement (`build_section_edges`). Degenerate sections poison everything downstream.
@@ -134,4 +134,4 @@ A general "arc-identity merge key" for duplicate-edge merging is provably imposs
 - **Free / over-shared edge**: edge used by exactly 1 face (open) or 3+ faces (non-manifold). Both zero means watertight-manifold.
 - **Spur**: consecutive out-and-back same-edge pair in a wire. Zero area, breaks manifoldness.
 - **Faithful fixture**: the real failing operands captured losslessly (STEP if analytic round trip holds, arena snapshot otherwise) and replayed in a Rust test.
-- **The reference kernel**: the incumbent C++ B-Rep kernel brepkit replaces. Its source may be consulted for algorithm structure (see the fuse note: it keeps sub-blocks whose midpoint classifies in-or-on both faces, rather than clipping to the opposing polygon). Never name it in commits, PRs, code, or docs. For head-to-head benchmarks, use the brepjs harness (see the **parity-benchmarking** skill).
+- **The reference kernel**: the incumbent C++ B-Rep kernel Remus replaces. Its source may be consulted for algorithm structure (see the fuse note: it keeps sub-blocks whose midpoint classifies in-or-on both faces, rather than clipping to the opposing polygon). Never name it in commits, PRs, code, or docs. For head-to-head benchmarks, use the brepjs harness (see the **parity-benchmarking** skill).

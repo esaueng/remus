@@ -20,7 +20,7 @@ concurrency:
 jobs:
   # The committed package directory is a real distribution channel, not a
   # build leftover: OpenZCAD installs this repo as
-  #   "brepkit-wasm": "github:esaueng/brepkit#apache-main&path:/crates/wasm/pkg"
+  #   "brepkit-wasm": "github:esaueng/remus#apache-main&path:/crates/wasm/pkg"
   # so npm/pnpm fetches whatever `crates/wasm/pkg` holds on apache-main. Nothing
   # A missed refresh would leave consumers running stale generated code while
   # apache-main's Rust source appears current.

@@ -3,9 +3,9 @@
 Deep detail for the hops in SKILL.md. Paths are absolute; brepjs lives at
 `~/Git/brepjs`.
 
-## Publish workflow anatomy (brepkit)
+## Publish workflow anatomy (Remus)
 
-File: `~/Git/brepkit/.github/workflows/publish.yml` ("Release & Publish").
+File: `~/Git/remus/.github/workflows/publish.yml` ("Release & Publish").
 
 - `release-please` job: runs on push to main, opens or updates the
   `chore(main): release X.Y.Z` PR, exposes a `release_created` output.
@@ -192,9 +192,9 @@ redundant; leave it.
 
 ## Reference-kernel hygiene
 
-The name of the C++ kernel brepkit replaces is banned from commits, PR
+The name of the C++ kernel Remus replaces is banned from commits, PR
 titles and bodies, and code in both repos. Call it "the reference kernel".
-The brepkit-side compliance grep and the grandfathered file list (README,
+The Remus-side compliance grep and the grandfathered file list (README,
 the two changelogs, three bench scripts) live in the pr-workflow skill.
 In brepjs, package and adapter identifiers that contain the name are
 legitimate code; the ban targets prose, commit messages, and PR text.
@@ -212,7 +212,7 @@ gh pr view <n> --json title,body -q '.title + .body' | rg -in "$pat"
 Run all three before every push and before merging, in BOTH repos. Expected
 output: nothing (rg exits nonzero on no match, which is the pass state).
 Any hit in prose must be rewritten before pushing. A hit that is a literal
-package identifier in brepjs code, or inside a brepkit grandfathered file,
+package identifier in brepjs code, or inside a Remus grandfathered file,
 is acceptable.
 
 ## Pushing over HTTPS (SSH blocked)

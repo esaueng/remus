@@ -1,11 +1,11 @@
 ---
 name: layer-boundaries
-description: Use when adding a workspace dependency between brepkit crates, deciding which crate new code belongs in, adding a variant to EdgeCurve or FaceSurface (or a new analytic surface type), fixing a CI "boundaries" job failure or a VIOLATION from scripts/check-boundaries.sh, or hitting "two different versions of crate brepkit-topology" errors.
+description: Use when adding a workspace dependency between Remus crates, deciding which crate new code belongs in, adding a variant to EdgeCurve or FaceSurface (or a new analytic surface type), fixing a CI "boundaries" job failure or a VIOLATION from scripts/check-boundaries.sh, or hitting "two different versions of crate brepkit-topology" errors.
 ---
 
 # Layer Boundaries
 
-brepkit is a strict layered DAG (L0 math up to L4 wasm/render). This skill covers: keeping the DAG intact, the safe procedure for adding `EdgeCurve`/`FaceSurface` variants, and where new code goes. The dependency table itself lives in CLAUDE.md, "Layer dependency rules". Do not restate it; check against it.
+Remus is a strict layered DAG (L0 math up to L4 wasm/render). This skill covers: keeping the DAG intact, the safe procedure for adding `EdgeCurve`/`FaceSurface` variants, and where new code goes. The dependency table itself lives in CLAUDE.md, "Layer dependency rules". Do not restate it; check against it.
 
 ## Quick reference
 

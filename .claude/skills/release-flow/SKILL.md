@@ -1,13 +1,13 @@
 ---
 name: release-flow
-description: Shipping a brepkit change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the brepkit-wasm pin in brepjs, when running or debugging the type sync (sync:brepkit-types, tsc failures on Brepkit* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
+description: Shipping a Remus change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the brepkit-wasm pin in brepjs, when running or debugging the type sync (sync:brepkit-types, tsc failures on Brepkit* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
 ---
 
-# release-flow: brepkit merge to brepjs activation
+# release-flow: Remus merge to brepjs activation
 
 ## When to use
 
-A brepkit change is not "shipped" when its PR merges. It is shipped when brepjs
+A Remus change is not "shipped" when its PR merges. It is shipped when brepjs
 installs the new kernel version, the type sync regenerates cleanly, and the
 adapter can call the new method. This skill covers that 4-hop chain and the
 trap at each hop. For getting the feature PR itself merged, see the
@@ -21,7 +21,7 @@ Each hop is gated on the previous one. Never skip a gate.
 
 | Hop | Action | Gate before next hop |
 |-----|--------|---------------------|
-| 1 | Feature PR squash-merges to brepkit main | Merge lands on main |
+| 1 | Feature PR squash-merges to Remus main | Merge lands on main |
 | 2 | release-please opens `chore(main): release X.Y.Z` PR; it auto-merges, tags `vX.Y.Z`, and the release event triggers the publish workflow | GitHub release exists |
 | 3 | Publish workflow builds wasm and runs `npm publish` | `npm view brepkit-wasm versions --json` lists X.Y.Z AND your commit is an ancestor of the tag |
 | 4 | In brepjs: bump the devDependency pin, `npm install`, `npm run sync:brepkit-types` | tsc and knip pass, diff drops no method signatures |
@@ -30,14 +30,14 @@ Key commands:
 
 ```bash
 npm view brepkit-wasm versions --json
-cd ~/Git/brepkit && git fetch --tags
+cd ~/Git/remus && git fetch --tags
 git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
 cd ~/Git/brepjs && npm install && npm run sync:brepkit-types
 ```
 
 ## Procedure
 
-### Hop 1 to 2: brepkit release
+### Hop 1 to 2: Remus release
 
 1. After the feature PR merges, the push to main runs
    `.github/workflows/publish.yml`. Its `release-please` job opens or updates
