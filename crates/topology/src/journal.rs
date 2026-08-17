@@ -387,6 +387,24 @@ impl JournalEntry {
     }
 }
 
+/// Report of one journal-driven attribute propagation pass
+/// (RFC 0003, Stage 4); see
+/// [`Topology::propagate_attributes_for_op`](crate::Topology::propagate_attributes_for_op).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JournalAttributePropagation {
+    /// Result faces that received attributes.
+    pub carried: usize,
+    /// Face-kind `unresolved` outputs, left bare (reported, never
+    /// guessed).
+    pub unresolved_outputs: usize,
+    /// Merged outputs whose attributed inputs disagreed, left bare — a
+    /// merge does not toss coins between names.
+    pub merge_conflicts: usize,
+    /// The entry is geometry-derived and the caller did not opt into
+    /// inferred propagation; nothing was carried.
+    pub refused_inferred: bool,
+}
+
 /// Kind name of the synthetic entry inserted when mutations happened that
 /// no journal entry accounts for.
 pub const UNJOURNALED_MUTATIONS: &str = "unjournaled_mutations";
@@ -665,6 +683,210 @@ mod tests {
         let mut draft = EvolutionDraft::construction();
         draft.push(subject, event);
         draft
+    }
+
+    // ── Journal-driven attribute propagation (RFC 0003, Stage 4) ────────
+
+    /// A minimal live face (one open-wire edge, planar surface) so
+    /// attribute propagation has real arena entities to write to.
+    fn add_test_face(topo: &mut Topology) -> crate::FaceId {
+        use crate::edge::{Edge, EdgeCurve};
+        use crate::face::{Face, FaceSurface};
+        use crate::wire::{OrientedEdge, Wire};
+
+        let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let e = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let w = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], false).unwrap());
+        topo.add_face(Face::new(
+            w,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ))
+    }
+
+    fn named(name: &str) -> crate::attributes::EntityAttributes {
+        crate::attributes::EntityAttributes {
+            name: Some(name.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn split_pieces_each_carry_the_name_unchanged() {
+        let mut topo = Topology::new();
+        let input = add_test_face(&mut topo);
+        let piece_a = add_test_face(&mut topo);
+        let piece_b = add_test_face(&mut topo);
+        topo.set_face_attributes(input, named("mounting face"))
+            .unwrap();
+
+        let pending = topo.journal_begin("boolean_cut");
+        let mut draft = EvolutionDraft::construction();
+        for piece in [piece_a, piece_b] {
+            draft.push(
+                EntityKey::face(piece.index()),
+                EventDraft::Modified {
+                    from: EntityKey::face(input.index()),
+                },
+            );
+        }
+        let op = topo.journal_record_evolution(pending, draft).unwrap();
+
+        let report = topo.propagate_attributes_for_op(op, false).unwrap();
+        assert_eq!(report.carried, 2);
+        assert_eq!(report.merge_conflicts, 0);
+        for piece in [piece_a, piece_b] {
+            assert_eq!(
+                topo.attributes().face(piece).unwrap().name.as_deref(),
+                Some("mounting face"),
+                "a split's pieces keep the name unchanged — never suffixed"
+            );
+        }
+        // Copy-forward only: the input keeps its own attributes.
+        assert!(topo.attributes().face(input).is_some());
+    }
+
+    #[test]
+    fn merges_carry_agreement_and_refuse_conflict() {
+        let mut topo = Topology::new();
+        let agree_a = add_test_face(&mut topo);
+        let agree_b = add_test_face(&mut topo);
+        let merged_ok = add_test_face(&mut topo);
+        let clash_a = add_test_face(&mut topo);
+        let clash_b = add_test_face(&mut topo);
+        let merged_clash = add_test_face(&mut topo);
+        topo.set_face_attributes(agree_a, named("wall")).unwrap();
+        topo.set_face_attributes(agree_b, named("wall")).unwrap();
+        topo.set_face_attributes(clash_a, named("wall")).unwrap();
+        topo.set_face_attributes(clash_b, named("floor")).unwrap();
+
+        let pending = topo.journal_begin("unify_same_domain");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(merged_ok.index()),
+            EventDraft::Merged {
+                from: vec![
+                    EntityKey::face(agree_a.index()),
+                    EntityKey::face(agree_b.index()),
+                ],
+            },
+        );
+        draft.push(
+            EntityKey::face(merged_clash.index()),
+            EventDraft::Merged {
+                from: vec![
+                    EntityKey::face(clash_a.index()),
+                    EntityKey::face(clash_b.index()),
+                ],
+            },
+        );
+        let op = topo.journal_record_evolution(pending, draft).unwrap();
+
+        let report = topo.propagate_attributes_for_op(op, false).unwrap();
+        assert_eq!(report.carried, 1);
+        assert_eq!(report.merge_conflicts, 1);
+        assert_eq!(
+            topo.attributes().face(merged_ok).unwrap().name.as_deref(),
+            Some("wall")
+        );
+        assert!(
+            topo.attributes().face(merged_clash).is_none(),
+            "disagreeing inputs must not be coin-tossed onto the merge"
+        );
+    }
+
+    #[test]
+    fn generated_and_unresolved_stay_bare() {
+        let mut topo = Topology::new();
+        let input = add_test_face(&mut topo);
+        let band = add_test_face(&mut topo);
+        let mystery = add_test_face(&mut topo);
+        topo.set_face_attributes(input, named("base")).unwrap();
+
+        let pending = topo.journal_begin("fillet");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(band.index()),
+            EventDraft::Generated {
+                sources: vec![EntityKey::face(input.index())],
+            },
+        );
+        draft.push(
+            EntityKey::face(mystery.index()),
+            EventDraft::Unresolved {
+                candidates: vec![EntityKey::face(input.index())],
+            },
+        );
+        let op = topo.journal_record_evolution(pending, draft).unwrap();
+
+        let report = topo.propagate_attributes_for_op(op, false).unwrap();
+        assert_eq!(report.carried, 0);
+        assert_eq!(report.unresolved_outputs, 1);
+        assert!(topo.attributes().face(band).is_none());
+        assert!(topo.attributes().face(mystery).is_none());
+    }
+
+    #[test]
+    fn inferred_entries_require_opt_in() {
+        let mut topo = Topology::new();
+        let input = add_test_face(&mut topo);
+        let output = add_test_face(&mut topo);
+        topo.set_face_attributes(input, named("legacy")).unwrap();
+
+        let pending = topo.journal_begin("legacy_op");
+        let mut draft = EvolutionDraft::geometry();
+        draft.push(
+            EntityKey::face(output.index()),
+            EventDraft::Modified {
+                from: EntityKey::face(input.index()),
+            },
+        );
+        let op = topo.journal_record_evolution(pending, draft).unwrap();
+
+        let refused = topo.propagate_attributes_for_op(op, false).unwrap();
+        assert!(refused.refused_inferred);
+        assert_eq!(refused.carried, 0);
+        assert!(topo.attributes().face(output).is_none());
+
+        let allowed = topo.propagate_attributes_for_op(op, true).unwrap();
+        assert!(!allowed.refused_inferred);
+        assert_eq!(allowed.carried, 1);
+        assert_eq!(
+            topo.attributes().face(output).unwrap().name.as_deref(),
+            Some("legacy")
+        );
+    }
+
+    #[test]
+    fn barriers_and_unknown_ops_carry_nothing() {
+        let mut topo = Topology::new();
+        let face = add_test_face(&mut topo);
+        let pending = topo.journal_begin("offset_solid");
+        let barrier = topo.journal_record_barrier(pending, vec![EntityKey::face(face.index())]);
+
+        let report = topo.propagate_attributes_for_op(barrier, false).unwrap();
+        assert_eq!(
+            report,
+            crate::journal::JournalAttributePropagation::default()
+        );
+
+        let snapshot = topo.clone();
+        let pending = topo.journal_begin("rolled_back");
+        let rolled_back = topo
+            .journal_record_evolution(
+                pending,
+                draft_one(EntityKey::face(face.index()), EventDraft::Deleted),
+            )
+            .unwrap();
+        topo.restore_preserving_handle_slots(&snapshot);
+        let err = topo
+            .propagate_attributes_for_op(rolled_back, false)
+            .unwrap_err();
+        assert!(matches!(err, TopologyError::RefUnknownOperation { .. }));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # RFC 0003: Persistent topological naming
 
-Status: accepted design; Stages 1–3 (journal, resolver, signature tier)
-implemented — see "Staging" and the implementation-notes sections.
-Stages 4–5 remain design.
+Status: accepted design; Stages 1–4 (journal, resolver, signature tier,
+attribute integration) implemented — see "Staging" and the
+implementation-notes sections. Stage 5 (serialization) remains design.
 
 ## Problem
 
@@ -191,6 +191,42 @@ per policy whether inferred rebinding is acceptable.
 - **Direct face edits**: direct-modeling operations must emit construction
   evolution (their capability gate includes it); until an operation does,
   it journals a barrier and references across it fail closed.
+
+## Stage 4 implementation notes
+
+Refinements the attribute-integration implementation added to the design
+above:
+
+- **Propagation is journal-driven and per-event.**
+  `Topology::propagate_attributes_for_op(op, allow_inferred)` copies face
+  attributes forward across one journaled operation, claim for claim:
+  `Preserved`/`Modified` subjects receive their source's attributes (a
+  split's pieces each keep the name unchanged — never suffixed);
+  `Merged` subjects receive attributes only when every attributed input
+  agrees, with disagreement counted as a conflict and left bare (a merge
+  does not toss coins between names); `Generated` and `Unresolved`
+  subjects receive nothing (`Unresolved` counted). Inputs keep their own
+  attributes (copy-forward only). Non-face subjects are skipped — the
+  attribute store's v1 scope is solids and faces; edge/vertex attributes
+  remain queued in `deferred-e3b`.
+- **Inference is an explicit opt-in.** A geometry-origin entry propagates
+  only under `allow_inferred = true`; the refusal is reported
+  (`refused_inferred`), never silent. Barrier entries carry nothing —
+  they have no claims to ride. An unknown `OpId` (rolled back) is the
+  typed `ref_unknown_operation` failure.
+- **"Keyed by references" is composition, not re-keying.** The store
+  stays arena-keyed (correct within a session, and lifecycle-integrated
+  since Issue 14); the durable key is the reference:
+  `naming::resolve_face_attributes` resolves a `PersistentRef` and reads
+  the bound faces' attributes in one step, and every non-binding
+  resolution converts to its typed `ref_*` error — an attribute can never
+  be read through a dangling, severed, or ambiguous reference.
+- **Propagation never severs.** Attribute writes are not model mutations
+  (Stage 1 rule), so propagating between journaled operations does not
+  create unjournaled-mutation gaps.
+- The map-driven `operations::evolution::propagate_face_attributes`
+  (Issue 14) remains for callers holding an `EvolutionMap` without a
+  journal; the journal path is the general one.
 
 ## Explicit non-goals (v1)
 
