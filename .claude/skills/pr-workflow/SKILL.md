@@ -1,6 +1,6 @@
 ---
 name: pr-workflow
-description: Use when committing, pushing, opening, reviewing, or merging a pull request in brepkit, or when a git hook fails, a push hangs, commitlint flags a message, a PR sits waiting on AI review, or parallel work needs a worktree. Covers hooks, conventional commits, the AI-review merge gate, the sandbox HTTPS push, and release-please.
+description: Use when committing, pushing, opening, reviewing, or merging a pull request in Remus, or when a git hook fails, a push hangs, commitlint flags a message, a PR sits waiting on AI review, or parallel work needs a worktree. Covers hooks, conventional commits, the AI-review merge gate, the sandbox HTTPS push, and release-please.
 ---
 
 # PR Workflow
@@ -14,10 +14,10 @@ End-to-end change flow for this repo: branch, commit, push, PR, AI review gate, 
 | Branch | `git checkout -b <type>/<kebab-description>` (e.g. `feat/render-lod`, `fix/ci-crates-io-flake`) |
 | Local gate before push | `cargo nextest run -p <touched-crate>` and, if any `Cargo.toml` changed, `./scripts/check-boundaries.sh` |
 | Compliance grep | See "Banned-name compliance" below |
-| Push (sandbox) | `git push "https://x-access-token:$(gh auth token)@github.com/andymai/brepkit.git" <branch>` |
+| Push (sandbox) | `git push "https://x-access-token:$(gh auth token)@github.com/esaueng/remus.git" <branch>` |
 | Verify remote head | `gh pr view <N> --json headRefOid` (never `git rev-parse origin/<branch>`) |
 | Review-gate poll | `gh pr checks <N>` until the `cubic · AI code reviewer` check is completed |
-| Read findings | `gh api repos/andymai/brepkit/pulls/<N>/comments` and `gh pr view <N> --comments` |
+| Read findings | `gh api repos/esaueng/remus/pulls/<N>/comments` and `gh pr view <N> --comments` |
 | Merge | `gh pr merge <N> --squash --auto` (only after findings are addressed) |
 | Post-merge | `git checkout main && git pull --ff-only` |
 | Worktree | `git worktree add .worktrees/<branch-name> <branch>` |
@@ -56,7 +56,7 @@ Branch protection requires only `CI Pass`. The AI review check (`cubic · AI cod
      --jq '.statusCheckRollup[] | select(.name=="cubic · AI code reviewer") | .status'
    ```
    Expect `COMPLETED` (its conclusion is `NEUTRAL` even with no findings — that is a pass, not a failure). Verify the reviewer ran against your CURRENT head before trusting a clean result: a stale review from an earlier push reports on files your latest commit did not touch. `CI Pass` does not appear in the rollup at all until every job it gates on finishes, so its absence is not a failure either. Any poll keyed to a check name that does not exist stays silent forever and reads exactly like "no findings" — list the rollup unfiltered once before trusting a filter. A background watcher may poll for this, but it must hand control back for the next step, never merge on its own.
-3. Read every inline finding: `gh api repos/andymai/brepkit/pulls/<N>/comments`. Fix P0/P1 findings (push a follow-up commit, which restarts CI). Reply to lower-severity findings with a reasoned response.
+3. Read every inline finding: `gh api repos/esaueng/remus/pulls/<N>/comments`. Fix P0/P1 findings (push a follow-up commit, which restarts CI). Reply to lower-severity findings with a reasoned response.
 4. Only then: `gh pr merge <N> --squash --auto`. Auto-merge fires once `CI Pass` is green.
 5. This applies to every PR including high-risk core changes (GFA boolean engine, public WASM API). No human review step exists; review-check completion plus addressed findings is the whole gate.
 
