@@ -66,6 +66,16 @@ use crate::TopologyError;
 pub struct OpId(u64);
 
 impl OpId {
+    /// Reconstruct an operation identifier from its stable numeric value.
+    ///
+    /// This does not assert that the operation exists in a particular
+    /// journal. A resolver given an identifier that was never recorded (or
+    /// whose entry was rolled back) returns a typed unknown-operation outcome.
+    #[must_use]
+    pub const fn from_value(value: u64) -> Self {
+        Self(value)
+    }
+
     /// The raw monotonic value, for display and serialization.
     #[must_use]
     pub fn value(self) -> u64 {

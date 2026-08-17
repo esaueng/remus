@@ -23,7 +23,7 @@ pub mod shapes;
 mod state;
 mod types;
 
-pub use types::FaceEvolutionPayloadV1;
+pub use types::{FaceEvolutionPayloadV1, PersistentRefResolutionV1, PersistentRefV1};
 
 /// Decode and validate a serialized version-1 face-evolution payload.
 ///

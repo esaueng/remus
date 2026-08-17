@@ -212,8 +212,8 @@ does not itself promote or demote anything.
   section-origin records / honest Unresolved for the assembly rebuild paths,
   pinned as a minority) and vertex events (Preserved / Created via the copy
   maps). Operations/WASM surfacing, the assembly rebuild records, and the
-  lineage graph remain queued. Persistent naming does not exist yet; arena
-  indices are the only handles (and are explicitly not persistent names).
+  lineage graph remain queued. Arena indices remain session-local handles;
+  the Stage 2 persistent-reference resolver now provides journal-backed names.
   Design: `docs/design/rfc-0003-persistent-naming.md` (journal + resolver
   over the evolution events, staged; Issue 13).
   **Evolution journal** (RFC 0003 Stage 1): `brepkit_topology::journal` is
@@ -236,6 +236,10 @@ does not itself promote or demote anything.
   NoMatch, each with a pinned `ref_*` diagnostic code), disclosed
   Construction-vs-Inferred provenance, entry scopes so unrelated solids'
   references survive (in-scope-unclaimed severs, out-of-scope carries).
+  WASM exposes the precision-safe `PersistentRefV1` input and tagged
+  `PersistentRefResolutionV1` result through `resolvePersistentRef`, including
+  the native SurfaceType / CurveType discriminators and stable failure
+  diagnostics.
   **Signature tier** (RFC 0003 Stage 3): `EntitySignature` — quantized
   analytic parameters (tolerance-derived quantum, never raw float
   equality), structural adjacency counts, endpoint vertex signatures for
@@ -248,8 +252,8 @@ does not itself promote or demote anything.
   only agreement, generated/unresolved stay bare, inference is an
   explicit opt-in); `naming::resolve_face_attributes` reads attributes
   through a `PersistentRef` with every non-binding resolution a typed
-  `ref_*` error. Journal serialization (Stage 5) and the WASM reference
-  API remain queued.
+  `ref_*` error. Journal serialization (Stage 5) remains queued; the WASM
+  surface covers Stage 2 anchors, not signature anchors.
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 

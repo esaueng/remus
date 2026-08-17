@@ -247,7 +247,8 @@ above:
    `LineageOf` anchors over the journal; typed resolution results and the
    three diagnostic codes; determinism tests native/WASM.
    **Implemented** (`brepkit_topology::naming`); see the Stage 2
-   implementation notes below.
+   implementation notes below. WASM exposes the same resolver through
+   `BrepKernel.resolvePersistentRef`.
 3. **Signature tier** — `EntitySignature` v1 with `Inferred` provenance
    and ambiguity semantics.
    **Implemented** (`Anchor::Signature`); see the Stage 3 implementation
@@ -357,10 +358,15 @@ Refinements the resolver implementation added to the design above:
   existence is a journal fact even when their lineage is not).
 - **Discriminators shipped: `SurfaceType`, `CurveType`.** Adjacency,
   proximity, and operation-declared roles are queued with Stage 3.
-- **WASM surfacing queued.** References resolve natively; the WASM API
-  lands with the operations/WASM evolution-surfacing work. Determinism is
-  pinned by native double-run tests (the WASM build shares the same
-  deterministic code paths).
+- **The WASM value object is precision-safe.** `PersistentRefV1` uses canonical
+  decimal strings for `OpId`, avoiding JavaScript's integer precision limit,
+  and returns a tagged `PersistentRefResolutionV1` object. Resolution failures
+  are data with the same stable diagnostic code/category, not thrown
+  exceptions. Malformed schemas remain input errors. Surface/curve-type
+  discriminators use the same ordered, fail-closed native implementation.
+  Recursive references and discriminator payloads are bounded at the WASM
+  boundary. Native and WASM regressions pin deterministic split resolution;
+  the installed-package smoke test pins the tagged failure contract.
 
 ## Stage 3 implementation notes
 

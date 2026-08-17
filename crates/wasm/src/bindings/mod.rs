@@ -16,6 +16,7 @@ pub mod lifecycle;
 pub mod measure;
 pub mod nurbs;
 pub mod operations;
+pub mod persistent_ref;
 pub mod polygon2d;
 pub mod primitives;
 pub mod query;

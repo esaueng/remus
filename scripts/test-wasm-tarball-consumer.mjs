@@ -67,6 +67,14 @@ try {
     'function',
     'installed decodeEvolutionPayload export',
   );
+  const referenceOutcome = new packageExports.BrepKernel().resolvePersistentRef({
+    schemaVersion: 1,
+    anchor: { type: 'operationOutput', operation: '7', output: 0 },
+    discriminators: [],
+    entityKind: 'face',
+  });
+  assert.equal(referenceOutcome.status, 'unknownOperation');
+  assert.equal(referenceOutcome.diagnostic.code, 'ref_unknown_operation');
   console.log(`ok - installed tarball entry resolved from ${resolvedEntry}`);
 
   runOpenZcadConsumerRegressions(packageExports);

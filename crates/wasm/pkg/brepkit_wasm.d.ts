@@ -56,6 +56,16 @@ export interface EvolutionShapeV1 {
 }
 
 /**
+ * Confidence carried by a successful WASM resolution.
+ */
+export type PersistentRefProvenanceV1 = "construction" | "inferred";
+
+/**
+ * Entity kind in the version-1 persistent-reference wire contract.
+ */
+export type PersistentRefEntityKindV1 = "vertex" | "edge" | "face";
+
+/**
  * One issue reported by detailed solid validation.
  */
 export interface ValidationIssueResult {
@@ -67,6 +77,14 @@ export interface ValidationIssueResult {
      * Human-readable description supplied by the operations validator.
      */
     description: string;
+}
+
+/**
+ * One session-local entity returned by persistent-reference resolution.
+ */
+export interface PersistentRefEntityV1 {
+    entityKind: PersistentRefEntityKindV1;
+    handle: number;
 }
 
 /**
@@ -122,6 +140,15 @@ export interface GcsConstraintResidual {
 }
 
 /**
+ * Stable diagnostic paired with every failed WASM resolution outcome.
+ */
+export interface PersistentRefDiagnosticV1 {
+    code: string;
+    category: string;
+    message: string;
+}
+
+/**
  * Stable, versioned WASM contract returned by fillet/chamfer evolution APIs.
  *
  * `source.faces` and `result.faces` are the complete handle domains. A valid
@@ -148,6 +175,16 @@ export interface FaceEvolutionPayloadV1 {
      */
     evolution: FaceEvolutionClaimsV1;
 }
+
+/**
+ * Stage-2 geometry-type filters, applied in array order.
+ */
+export type PersistentRefDiscriminatorV1 = { type: "surfaceType"; tag: string } | { type: "curveType"; tag: string };
+
+/**
+ * Stage-2 persistent-reference anchors.
+ */
+export type PersistentRefAnchorV1 = { type: "operationOutput"; operation: string; output: number } | { type: "lineageOf"; base: PersistentRefV1 };
 
 /**
  * Typed result for `boundingBox`.
@@ -431,6 +468,11 @@ export interface ValidationReportResult {
 }
 
 /**
+ * Typed, tagged version-1 resolution outcome.
+ */
+export type PersistentRefResolutionV1 = { status: "bound"; entity: PersistentRefEntityV1; provenance: PersistentRefProvenanceV1 } | { status: "boundMany"; entities: PersistentRefEntityV1[]; provenance: PersistentRefProvenanceV1 } | { status: "ambiguous"; candidates: PersistentRefEntityV1[]; reason: string; diagnostic: PersistentRefDiagnosticV1 } | { status: "dangling"; deletedAt: string; diagnostic: PersistentRefDiagnosticV1 } | { status: "unresolvedAcrossOperation"; operation: string; kind: string; diagnostic: PersistentRefDiagnosticV1 } | { status: "unknownOperation"; operation: string; diagnostic: PersistentRefDiagnosticV1 } | { status: "noMatch"; reason: string; diagnostic: PersistentRefDiagnosticV1 };
+
+/**
  * Version 1 face-evolution claims.
  */
 export interface FaceEvolutionClaimsV1 {
@@ -440,6 +482,28 @@ export interface FaceEvolutionClaimsV1 {
     deleted: number[];
     unresolvedResults: UnresolvedEvolutionResultV1[];
     unresolvedSources: number[];
+}
+
+/**
+ * Version-1 persistent reference accepted by `resolvePersistentRef`.
+ */
+export interface PersistentRefV1 {
+    /**
+     * Contract version; currently always `1`.
+     */
+    schemaVersion: number;
+    /**
+     * Historical identity seed or lineage request.
+     */
+    anchor: PersistentRefAnchorV1;
+    /**
+     * Ordered geometry-type filters.
+     */
+    discriminators: PersistentRefDiscriminatorV1[];
+    /**
+     * Kind of entity the reference selects.
+     */
+    entityKind: PersistentRefEntityKindV1;
 }
 
 /**
@@ -2601,6 +2665,22 @@ export class BrepKernel {
      * the edit does not produce a valid solid.
      */
     resizeCylindricalFace(solid: number, face: number, new_radius: number): number;
+    /**
+     * Resolve a version-1 persistent reference over this kernel's evolution
+     * journal.
+     *
+     * Stage 2 accepts `operationOutput` and `lineageOf` anchors with
+     * surface/curve-type discriminators. The tagged result is always returned as data:
+     * dangling, ambiguous, and journal-gap outcomes are not thrown JS errors.
+     * Malformed or unsupported reference schemas are rejected.
+     *
+     * # Errors
+     *
+     * Returns an error if the value object has an unsupported schema version,
+     * a non-canonical operation id, mismatched lineage kinds, or a result
+     * handle outside the WASM `u32` range.
+     */
+    resolvePersistentRef(reference: PersistentRefV1): PersistentRefResolutionV1;
     /**
      * Restore the kernel to a previously saved checkpoint.
      *

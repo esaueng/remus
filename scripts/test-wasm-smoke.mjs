@@ -50,6 +50,30 @@ const assertCompleteEvolution = (payload, label) => {
 const kernel = new BrepKernel();
 console.log('ok - BrepKernel created');
 
+// RFC 0003 Stage 2: typed persistent-reference outcomes are data, not thrown
+// errors. Decimal operation ids avoid JavaScript's u64 precision limit.
+{
+  const reference = {
+    schemaVersion: 1,
+    anchor: { type: 'operationOutput', operation: '42', output: 0 },
+    discriminators: [],
+    entityKind: 'face',
+  };
+  const first = new BrepKernel().resolvePersistentRef(reference);
+  const second = new BrepKernel().resolvePersistentRef(reference);
+  assert.deepEqual(first, second, 'persistent-ref resolution must be deterministic');
+  assert.deepEqual(first, {
+    status: 'unknownOperation',
+    operation: '42',
+    diagnostic: {
+      code: 'ref_unknown_operation',
+      category: 'invalid_input',
+      message: 'persistent reference anchors to unknown operation 42',
+    },
+  });
+  console.log('ok - persistent reference typed deterministic outcome');
+}
+
 // Stable batch-v2 errors are additive: successful envelopes match v1, while
 // v1 keeps its string error and v2 exposes the same text plus code/details.
 {

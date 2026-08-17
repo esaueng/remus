@@ -624,6 +624,339 @@ mod evolution_payload_tests {
     }
 }
 
+/// WASM schema version of persistent references and their outcomes.
+pub const PERSISTENT_REF_SCHEMA_VERSION: u32 = 1;
+
+const MAX_PERSISTENT_REF_DEPTH: usize = 64;
+const MAX_PERSISTENT_REF_DISCRIMINATORS: usize = 64;
+const MAX_PERSISTENT_REF_TAG_LENGTH: usize = 128;
+
+/// Entity kind in the version-1 persistent-reference wire contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub enum PersistentRefEntityKindV1 {
+    Vertex,
+    Edge,
+    Face,
+}
+
+impl From<PersistentRefEntityKindV1> for brepkit_topology::journal::EntityKind {
+    fn from(kind: PersistentRefEntityKindV1) -> Self {
+        match kind {
+            PersistentRefEntityKindV1::Vertex => Self::Vertex,
+            PersistentRefEntityKindV1::Edge => Self::Edge,
+            PersistentRefEntityKindV1::Face => Self::Face,
+        }
+    }
+}
+
+impl From<brepkit_topology::journal::EntityKind> for PersistentRefEntityKindV1 {
+    fn from(kind: brepkit_topology::journal::EntityKind) -> Self {
+        match kind {
+            brepkit_topology::journal::EntityKind::Vertex => Self::Vertex,
+            brepkit_topology::journal::EntityKind::Edge => Self::Edge,
+            brepkit_topology::journal::EntityKind::Face => Self::Face,
+        }
+    }
+}
+
+/// Stage-2 persistent-reference anchors.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PersistentRefAnchorV1 {
+    /// One deterministic operation output. `operation` is canonical decimal
+    /// text so all `u64` values round-trip without JavaScript number loss.
+    OperationOutput { operation: String, output: u32 },
+    /// Descendants of another version-1 reference.
+    LineageOf { base: Box<PersistentRefV1> },
+}
+
+/// Stage-2 geometry-type filters, applied in array order.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PersistentRefDiscriminatorV1 {
+    SurfaceType { tag: String },
+    CurveType { tag: String },
+}
+
+/// Version-1 persistent reference accepted by `resolvePersistentRef`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(from_wasm_abi)]
+pub struct PersistentRefV1 {
+    /// Contract version; currently always `1`.
+    pub schema_version: u32,
+    /// Historical identity seed or lineage request.
+    pub anchor: PersistentRefAnchorV1,
+    /// Ordered geometry-type filters.
+    pub discriminators: Vec<PersistentRefDiscriminatorV1>,
+    /// Kind of entity the reference selects.
+    pub entity_kind: PersistentRefEntityKindV1,
+}
+
+impl PersistentRefV1 {
+    pub(crate) fn into_native(self) -> Result<brepkit_topology::naming::PersistentRef, String> {
+        self.into_native_at_depth(0)
+    }
+
+    fn into_native_at_depth(
+        self,
+        depth: usize,
+    ) -> Result<brepkit_topology::naming::PersistentRef, String> {
+        use brepkit_topology::journal::OpId;
+        use brepkit_topology::naming::{Discriminator, PersistentRef};
+
+        if self.schema_version != PERSISTENT_REF_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported persistent reference schema version {}",
+                self.schema_version
+            ));
+        }
+        if depth >= MAX_PERSISTENT_REF_DEPTH {
+            return Err(format!(
+                "persistent reference nesting exceeds {MAX_PERSISTENT_REF_DEPTH} levels"
+            ));
+        }
+        if self.discriminators.len() > MAX_PERSISTENT_REF_DISCRIMINATORS {
+            return Err(format!(
+                "persistent reference has more than {MAX_PERSISTENT_REF_DISCRIMINATORS} discriminators"
+            ));
+        }
+        let entity_kind = self.entity_kind.into();
+        let mut reference = match self.anchor {
+            PersistentRefAnchorV1::OperationOutput { operation, output } => {
+                let value = operation.parse::<u64>().map_err(|_| {
+                    format!("persistent reference operation '{operation}' is not a u64")
+                })?;
+                if value.to_string() != operation {
+                    return Err(format!(
+                        "persistent reference operation '{operation}' is not canonical decimal"
+                    ));
+                }
+                PersistentRef::operation_output(
+                    OpId::from_value(value),
+                    entity_kind,
+                    usize::try_from(output).map_err(|_| {
+                        "persistent reference output exceeds the native index range".to_owned()
+                    })?,
+                )
+            }
+            PersistentRefAnchorV1::LineageOf { base } => {
+                let base = base.into_native_at_depth(depth + 1)?;
+                if base.entity_kind != entity_kind {
+                    return Err("lineage reference entityKind must match its base".to_owned());
+                }
+                PersistentRef::lineage_of(base)
+            }
+        };
+        reference.discriminators = self
+            .discriminators
+            .into_iter()
+            .map(|value| match value {
+                PersistentRefDiscriminatorV1::SurfaceType { tag } => {
+                    validate_persistent_ref_tag(&tag)?;
+                    Ok(Discriminator::SurfaceType(tag))
+                }
+                PersistentRefDiscriminatorV1::CurveType { tag } => {
+                    validate_persistent_ref_tag(&tag)?;
+                    Ok(Discriminator::CurveType(tag))
+                }
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(reference)
+    }
+}
+
+fn validate_persistent_ref_tag(tag: &str) -> Result<(), String> {
+    if tag.is_empty() {
+        return Err("persistent reference discriminator tag must not be empty".to_owned());
+    }
+    if tag.len() > MAX_PERSISTENT_REF_TAG_LENGTH {
+        return Err(format!(
+            "persistent reference discriminator tag exceeds {MAX_PERSISTENT_REF_TAG_LENGTH} bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// One session-local entity returned by persistent-reference resolution.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentRefEntityV1 {
+    pub entity_kind: PersistentRefEntityKindV1,
+    pub handle: u32,
+}
+
+impl PersistentRefEntityV1 {
+    fn from_key(key: brepkit_topology::journal::EntityKey) -> Result<Self, String> {
+        Ok(Self {
+            entity_kind: key.kind.into(),
+            handle: u32::try_from(key.index).map_err(|_| {
+                format!(
+                    "persistent reference result {} exceeds the u32 handle range",
+                    key.index
+                )
+            })?,
+        })
+    }
+}
+
+/// Stable diagnostic paired with every failed WASM resolution outcome.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentRefDiagnosticV1 {
+    pub code: String,
+    pub category: String,
+    pub message: String,
+}
+
+/// Confidence carried by a successful WASM resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub enum PersistentRefProvenanceV1 {
+    Construction,
+    Inferred,
+}
+
+/// Typed, tagged version-1 resolution outcome.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[tsify(into_wasm_abi)]
+pub enum PersistentRefResolutionV1 {
+    /// Exactly one current entity binds.
+    Bound {
+        /// Current session-local entity handle.
+        entity: PersistentRefEntityV1,
+        /// Confidence of the full history chain.
+        provenance: PersistentRefProvenanceV1,
+    },
+    /// A split produced several equally valid descendants.
+    BoundMany {
+        /// Current session-local handles, in journal order.
+        entities: Vec<PersistentRefEntityV1>,
+        /// Confidence of the full history chain.
+        provenance: PersistentRefProvenanceV1,
+    },
+    /// Conflicting claims made choosing unsafe.
+    Ambiguous {
+        /// Candidate entities in deterministic journal order.
+        candidates: Vec<PersistentRefEntityV1>,
+        /// Stable ambiguity reason.
+        reason: String,
+        /// Stable code/category/message.
+        diagnostic: PersistentRefDiagnosticV1,
+    },
+    /// The entity or its operation anchor no longer exists.
+    Dangling {
+        /// Decimal operation id at which binding was lost.
+        deleted_at: String,
+        /// Stable code/category/message.
+        diagnostic: PersistentRefDiagnosticV1,
+    },
+    /// A barrier, unresolved event, or absent claim severed continuity.
+    UnresolvedAcrossOperation {
+        /// Decimal id of the first unresolvable operation.
+        operation: String,
+        /// Stable operation kind that lacked sufficient evolution data.
+        kind: String,
+        /// Stable code/category/message.
+        diagnostic: PersistentRefDiagnosticV1,
+    },
+    /// The anchor operation does not exist in the journal.
+    UnknownOperation {
+        /// Unknown operation id as precision-safe decimal text.
+        operation: String,
+        /// Stable code/category/message.
+        diagnostic: PersistentRefDiagnosticV1,
+    },
+    /// The anchor or a discriminator removed every candidate.
+    NoMatch {
+        /// Stable explanation of what eliminated the candidates.
+        reason: String,
+        /// Stable code/category/message.
+        diagnostic: PersistentRefDiagnosticV1,
+    },
+}
+
+impl PersistentRefResolutionV1 {
+    pub(crate) fn from_native(
+        outcome: &brepkit_topology::naming::Resolution,
+    ) -> Result<Self, String> {
+        use brepkit_math::diagnostic::ToDiagnostic;
+        use brepkit_topology::naming::{Provenance, Resolution};
+
+        let provenance = |value: Provenance| match value {
+            Provenance::Construction => PersistentRefProvenanceV1::Construction,
+            Provenance::Inferred => PersistentRefProvenanceV1::Inferred,
+        };
+        let diagnostic = || -> Result<PersistentRefDiagnosticV1, String> {
+            let error = match outcome.clone().into_entities() {
+                Ok(_) => return Err("successful persistent reference has no diagnostic".to_owned()),
+                Err(error) => error,
+            };
+            let value = error.diagnostic();
+            Ok(PersistentRefDiagnosticV1 {
+                code: value.code().to_owned(),
+                category: value.category().as_str().to_owned(),
+                message: value.message().to_owned(),
+            })
+        };
+
+        match outcome {
+            Resolution::Bound {
+                entity,
+                provenance: confidence,
+            } => Ok(Self::Bound {
+                entity: PersistentRefEntityV1::from_key(*entity)?,
+                provenance: provenance(*confidence),
+            }),
+            Resolution::BoundMany {
+                entities,
+                provenance: confidence,
+            } => Ok(Self::BoundMany {
+                entities: entities
+                    .iter()
+                    .copied()
+                    .map(PersistentRefEntityV1::from_key)
+                    .collect::<Result<_, _>>()?,
+                provenance: provenance(*confidence),
+            }),
+            Resolution::Ambiguous { candidates, reason } => Ok(Self::Ambiguous {
+                candidates: candidates
+                    .iter()
+                    .copied()
+                    .map(PersistentRefEntityV1::from_key)
+                    .collect::<Result<_, _>>()?,
+                reason: reason.clone(),
+                diagnostic: diagnostic()?,
+            }),
+            Resolution::Dangling { deleted_at } => Ok(Self::Dangling {
+                deleted_at: deleted_at.value().to_string(),
+                diagnostic: diagnostic()?,
+            }),
+            Resolution::UnresolvedAcrossOperation { op, kind } => {
+                Ok(Self::UnresolvedAcrossOperation {
+                    operation: op.value().to_string(),
+                    kind: kind.clone(),
+                    diagnostic: diagnostic()?,
+                })
+            }
+            Resolution::UnknownOperation { op } => Ok(Self::UnknownOperation {
+                operation: op.value().to_string(),
+                diagnostic: diagnostic()?,
+            }),
+            Resolution::NoMatch { reason } => Ok(Self::NoMatch {
+                reason: reason.clone(),
+                diagnostic: diagnostic()?,
+            }),
+        }
+    }
+}
+
 /// Typed result for `massProperties`.
 #[derive(serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
