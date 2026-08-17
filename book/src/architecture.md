@@ -1,12 +1,12 @@
 # Architecture
 
-brepkit is the computational engine behind brepjs. While brepjs provides the
-TypeScript API that developers interact with, brepkit handles the underlying
-B-Rep modeling: geometry evaluation, boolean operations, tessellation, and
-data exchange.
+Remus is a modeling kernel: geometry evaluation, boolean operations,
+blends, tessellation, and data exchange. It exposes a Rust API and a
+JavaScript API over the same engine, and leaves presentation to the caller.
 
-brepkit uses a strict layered architecture. Each layer may only depend on
-layers below it, never above or sideways.
+Remus uses a strict layered architecture. Each layer may only depend on
+layers below it, never above or sideways. The layer DAG is a program
+invariant, not a convention: preserving it is a constraint on every change.
 
 ```
 ┌──────────────────────────────────────────────────────┐
