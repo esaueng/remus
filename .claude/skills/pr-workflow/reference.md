@@ -92,7 +92,7 @@ git ls-remote --heads origin <branch>
 - Flow: merging a `feat`/`fix`/`perf` PR creates or updates the pending release PR (`chore(main): release X.Y.Z`, head branch `release-please--branches--main--components--brepkit-wasm`). Merging that release PR creates the tag and GitHub release and publishes to npm.
 - Version-neutral changes: `docs` and `chore` commits are changelog-hidden; changes only under excluded paths (`.github`, `book`, `scripts`, `benches`, `bench-results`, `examples`, `bindings`) do not bump.
 - Manual escape hatch: `workflow_dispatch` on the Publish workflow with a `publish_version` input skips release-please.
-- Cross-repo: brepjs (`~/Git/brepjs`) consumes the published wasm package; see the release-flow skill for the two-repo runbook.
+- Cross-repo: brepjs (`andymai/brepjs`) consumes the published wasm package; see the release-flow skill for the two-repo runbook. There is no brepjs checkout on this machine — clone it when you need hop 4.
 
 ## CI failures you did not cause
 
