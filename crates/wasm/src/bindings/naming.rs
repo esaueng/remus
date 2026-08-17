@@ -588,7 +588,9 @@ mod naming_contract_tests {
 
     /// The full journey: name a face, run a journaled fuse, propagate,
     /// resolve through the journal, and read the name back through a
-    /// serialized reference.
+    /// serialized reference. Needs the `io` feature: the serialized
+    /// reference codec lives in `brepkit-io`.
+    #[cfg(feature = "io")]
     #[test]
     fn names_survive_a_journaled_fuse_end_to_end() {
         let mut kernel = BrepKernel::new();
@@ -711,6 +713,8 @@ mod naming_contract_tests {
     }
 
     /// Signature references: capture, discriminate, resolve — inferred.
+    /// Needs the `io` feature (the reference codec).
+    #[cfg(feature = "io")]
     #[test]
     fn signature_refs_capture_and_discriminate() {
         let mut kernel = BrepKernel::new();
