@@ -227,9 +227,17 @@ does not itself promote or demote anything.
   operations without evolution records). Gap coverage is structural:
   `Topology` counts mutations, and any mutation no entry accounts for
   triggers a synthetic global barrier at the next `journal_begin` — no
-  operation can be silently absent from history. The resolver
-  (`PersistentRef`, Stage 2), signatures (Stage 3), and journal
-  serialization (Stage 5) remain queued.
+  operation can be silently absent from history.
+  **Persistent references** (RFC 0003 Stage 2): `brepkit_topology::naming`
+  — `PersistentRef` (OperationOutput / LineageOf anchors + SurfaceType /
+  CurveType discriminators) resolves against the journal by chasing
+  identity claims to the present model. Typed outcomes (Bound / BoundMany
+  for splits / Dangling / UnresolvedAcrossOperation / UnknownOperation /
+  NoMatch, each with a pinned `ref_*` diagnostic code), disclosed
+  Construction-vs-Inferred provenance, entry scopes so unrelated solids'
+  references survive (in-scope-unclaimed severs, out-of-scope carries).
+  Signatures (Stage 3), attribute integration (Stage 4), journal
+  serialization (Stage 5), and the WASM reference API remain queued.
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
