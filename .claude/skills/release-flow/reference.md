@@ -1,11 +1,22 @@
 # release-flow reference
 
-Deep detail for the hops in SKILL.md. Paths are absolute; brepjs lives at
-`~/Git/brepjs`.
+Deep detail for the hops in SKILL.md.
 
-## Publish workflow anatomy (Remus)
+**Repos and paths.** The kernel side is this repo, `esaueng/remus` (the brepkit
+kernel); paths below are relative to its root, because it is checked out in
+several places (`~/claude/remus`, `~/codex/remus`, plus `.worktrees/*`) and no
+single absolute path is correct. Do not confuse it with `esaueng/brepkit`, a
+separate fork of `andymai/brepkit` checked out at `~/claude/brepkit`.
 
-File: `~/Git/remus/.github/workflows/publish.yml` ("Release & Publish").
+The consumer side is `andymai/brepjs` — that slug is current, not a leftover.
+There is currently **no brepjs checkout on this machine**: the `~/Git/brepjs`
+path earlier revisions of this skill used does not exist, nor does `~/Git`
+itself. Clone brepjs before starting hop 4 and substitute its path for
+`<brepjs>` below.
+
+## Publish workflow anatomy (brepkit)
+
+File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
 
 - `release-please` job: runs on push to main, opens or updates the
   `chore(main): release X.Y.Z` PR, exposes a `release_created` output.
@@ -32,7 +43,7 @@ File: `~/Git/remus/.github/workflows/publish.yml` ("Release & Publish").
 
 ## Type-sync internals (brepjs)
 
-Script: `~/Git/brepjs/scripts/sync-remus-types.ts`, run via
+Script: `<brepjs>/scripts/sync-remus-types.ts`, run via
 `npm run sync:remus-types`.
 
 What it does:
@@ -142,7 +153,7 @@ Notes:
 knip (the unused-export linter, a pre-push gate) cannot trace usage from
 `tests/` (separate tsconfig and import alias), so a src export exercised only
 by tests gets flagged as unused and blocks the push. The sanctioned escape
-hatch, already wired in `~/Git/brepjs/knip.config.ts` via
+hatch, already wired in `<brepjs>/knip.config.ts` via
 `tags: ['-testOnly']`:
 
 ```ts
@@ -192,9 +203,9 @@ redundant; leave it.
 
 ## Reference-kernel hygiene
 
-The name of the C++ kernel Remus replaces is banned from commits, PR
+The name of the C++ kernel brepkit replaces is banned from commits, PR
 titles and bodies, and code in both repos. Call it "the reference kernel".
-The Remus-side compliance grep and the grandfathered file list (README,
+The brepkit-side compliance grep and the grandfathered file list (README,
 the two changelogs, three bench scripts) live in the pr-workflow skill.
 In brepjs, package and adapter identifiers that contain the name are
 legitimate code; the ban targets prose, commit messages, and PR text.
@@ -212,15 +223,17 @@ gh pr view <n> --json title,body -q '.title + .body' | rg -in "$pat"
 Run all three before every push and before merging, in BOTH repos. Expected
 output: nothing (rg exits nonzero on no match, which is the pass state).
 Any hit in prose must be rewritten before pushing. A hit that is a literal
-package identifier in brepjs code, or inside a Remus grandfathered file,
+package identifier in brepjs code, or inside a brepkit grandfathered file,
 is acceptable.
 
 ## Pushing over HTTPS (SSH blocked)
 
-Both repos' `origin` is an SSH URL, port 22 is blocked, and a global
-`insteadOf` rewrite converts even explicit `https://github.com/...` URLs
-back to SSH. Full mechanics: see the pr-workflow skill, "Sandbox push
-details". The same token-embedded form works for brepjs:
+On the kernel side this is no longer true: `esaueng/remus`'s `origin` is an
+HTTPS URL with no `insteadOf` rewrite, so plain `git push` works. See the
+pr-workflow skill, "Push details". The brepjs side is unverified — there is
+no local checkout to inspect — so if a plain push there hangs, the historical
+SSH-plus-blocked-port-22 cause is the first thing to check, and this
+token-embedded form is the workaround:
 
 ```bash
 git push "https://x-access-token:$(gh auth token)@github.com/andymai/brepjs.git" <branch> \
@@ -231,6 +244,7 @@ Consequences:
 
 - Explicit-URL pushes do NOT update `origin/<branch>` remote-tracking refs.
   Never trust `git rev-parse origin/<branch>` for the remote head; use
-  `gh pr view <n> --json headRefOid` or
-  `gh api repos/andymai/<repo>/commits/<branch>`.
+  `gh pr view <n> --json headRefOid`, or `gh api repos/<owner>/<repo>/commits/<branch>`
+  with the right owner for the repo you are in — `esaueng/remus` for the
+  kernel, `andymai/brepjs` for brepjs.
 - `gh` itself (pr create, view, merge, api) talks HTTPS and is unaffected.
