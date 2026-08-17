@@ -248,8 +248,17 @@ does not itself promote or demote anything.
   only agreement, generated/unresolved stay bare, inference is an
   explicit opt-in); `naming::resolve_face_attributes` reads attributes
   through a `PersistentRef` with every non-binding resolution a typed
-  `ref_*` error. Journal serialization (Stage 5) and the WASM reference
-  API remain queued.
+  `ref_*` error.
+  **Serialization** (RFC 0003 Stage 5): the v2 arena document carries the
+  journal and attributes additively (absent when empty; byte-identical
+  legacy output), with validated snapshots
+  (`journal_snapshot_invalid`), local-index remapping, `UNMAPPED`
+  placeholders for out-of-document entities, and tick re-derivation so a
+  clean load is not a gap; `io::naming_io` serializes references as
+  versioned context-free JSON. References resolve identically across
+  save/load (pinned) — a naming regression is a replayable fixture. Only
+  the WASM reference API remains queued (with operations/WASM evolution
+  surfacing).
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
