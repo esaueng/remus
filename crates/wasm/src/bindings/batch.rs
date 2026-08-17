@@ -132,6 +132,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "surfaceArea"
         | "validateSolid"
         | "resolveOperationOutput"
+        | "journalSummary"
         | "getFaceName"
         | "makeOperationOutputRef"
         | "captureSignatureRef"
@@ -146,6 +147,12 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "journalBarrier"
         | "propagateAttributesForOp"
         | "setFaceName"
+        | "fuseWithEntityEvolution"
+        | "cutWithEntityEvolution"
+        | "intersectWithEntityEvolution"
+        | "filletJournaled"
+        | "chamferJournaled"
+        | "linearPatternJournaled"
         | "makeCylinder"
         | "makeSphere"
         | "makeCone"
@@ -2179,6 +2186,7 @@ impl BrepKernel {
             }
             other => self
                 .dispatch_naming_op(other, args)
+                .or_else(|| self.dispatch_evolution_op(other, args))
                 .unwrap_or_else(|| Err(StructuredWasmError::unknown_operation(other))),
         }
     }
