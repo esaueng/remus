@@ -291,7 +291,7 @@ fn winding_sample_points(
             EdgeCurve::Line => &[0.0],
             _ => &[0.0, 0.25, 0.5, 0.75],
         };
-        let (d0, d1) = curve.domain_with_endpoints(p_start, p_end);
+        let (d0, d1) = edge.domain_with_endpoints(p_start, p_end);
         for &f in fracs {
             let f = if oe.is_forward() { f } else { 1.0 - f };
             let t = d0 + (d1 - d0) * f;
@@ -424,11 +424,12 @@ fn side_face_surface(
     // The edge's STORED start/end (its natural orientation), used to pick the
     // arc span. `p0`/`p1` are wire-traversal order and may be swapped (reversed
     // edge), which would select the complementary arc for ellipses/circles.
-    curve_start: Point3,
-    curve_end: Point3,
+    curve_endpoints: (Point3, Point3),
+    trim: Option<(f64, f64)>,
     offset: Vec3,
     outer_is_cw: bool,
 ) -> Result<(FaceSurface, bool), crate::OperationsError> {
+    let (curve_start, curve_end) = curve_endpoints;
     match curve {
         EdgeCurve::Line => {
             let edge_dir = p1 - p0;
@@ -515,7 +516,8 @@ fn side_face_surface(
         // chord fallback — the side face meets the caps at the same
         // boundary the trimmed arc has.
         c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
-            let (t_start, t_end) = c.domain_with_endpoints(curve_start, curve_end);
+            let (t_start, t_end) =
+                trim.unwrap_or_else(|| c.domain_with_endpoints(curve_start, curve_end));
             let (lo, hi) = (t_start.min(t_end), t_start.max(t_end));
             let nc = open_conic_to_nurbs(c, lo, hi)?;
             let surface = ruled_nurbs_surface(&nc, offset)?;
@@ -530,7 +532,8 @@ fn side_face_surface(
             // the edge endpoints and build the rational-quadratic NURBS over
             // just that span (geometry's arc converter is exact at the arc
             // endpoints, so the side and planar cap share the boundary).
-            let (t_start, t_end) = curve.domain_with_endpoints(curve_start, curve_end);
+            let (t_start, t_end) =
+                trim.unwrap_or_else(|| curve.domain_with_endpoints(curve_start, curve_end));
             let nc =
                 brepkit_geometry::convert::ellipse_to_nurbs(ell, t_start, t_end).map_err(|e| {
                     crate::OperationsError::InvalidInput {
@@ -955,14 +958,14 @@ pub fn extrude(
 
         let p0 = input_positions[i];
         let p1 = input_positions[next];
-        let (edge_curve, e_start, e_end) = {
+        let (edge_curve, e_start, e_end, trim) = {
             let e = topo.edge(input_edge_ids[i])?;
-            (e.curve().clone(), e.start(), e.end())
+            (e.curve().clone(), e.start(), e.end(), e.trim())
         };
         let cs = topo.vertex(e_start)?.point();
         let ce = topo.vertex(e_end)?.point();
         let (surface, reversed) =
-            side_face_surface(&edge_curve, p0, p1, cs, ce, offset, outer_is_cw)?;
+            side_face_surface(&edge_curve, p0, p1, (cs, ce), trim, offset, outer_is_cw)?;
 
         // A reversed face flips every edge's effective traversal, so the wire
         // must be built with reversed winding too, or the face traverses its
@@ -1015,16 +1018,16 @@ pub fn extrude(
 
             let p0 = iwd.positions[i];
             let p1 = iwd.positions[next];
-            let (edge_curve, e_start, e_end) = {
+            let (edge_curve, e_start, e_end, trim) = {
                 let e = topo.edge(iwd.edge_ids[i])?;
-                (e.curve().clone(), e.start(), e.end())
+                (e.curve().clone(), e.start(), e.end(), e.trim())
             };
             let cs = topo.vertex(e_start)?.point();
             let ce = topo.vertex(e_end)?.point();
             // Inner wires have flipped winding relative to outer
             let inner_is_cw = !is_cw;
             let (surface, reversed) =
-                side_face_surface(&edge_curve, p0, p1, cs, ce, offset, inner_is_cw)?;
+                side_face_surface(&edge_curve, p0, p1, (cs, ce), trim, offset, inner_is_cw)?;
 
             // A full closed circle passed through unsplit becomes one exact
             // cylinder wall, but its start==end vertex makes `edge_dir` zero, so

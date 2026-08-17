@@ -49,7 +49,7 @@ fn sphere_outer_wire_constant_v(
             return false;
         };
         let (sp, ep) = (sv.point(), ev.point());
-        let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t0, t1) = edge.domain_with_endpoints(sp, ep);
         // Sample ALONG each edge, not just its start vertex: a great-circle arc
         // has both endpoints on the seam latitude yet bulges away from it, so
         // endpoint-only sampling would mis-read a scalloped collar floor as a
@@ -1945,7 +1945,7 @@ fn planar_wire_signed_area2(
                     // [0,1]) to disambiguate the signed sweep > π for a major arc.
                     let nat_start = topo.vertex(edge.start())?.point();
                     let nat_end = topo.vertex(edge.end())?.point();
-                    let (t0, t1) = edge.curve().domain_with_endpoints(nat_start, nat_end);
+                    let (t0, t1) = edge.domain_with_endpoints(nat_start, nat_end);
                     let mid_pt = edge.curve().evaluate_with_endpoints(
                         f64::midpoint(t0, t1),
                         nat_start,

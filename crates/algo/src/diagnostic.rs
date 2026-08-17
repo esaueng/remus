@@ -134,7 +134,7 @@ fn face_aabb(topo: &Topology, fid: FaceId) -> Result<Aabb3, crate::error::AlgoEr
         include(end, &mut any);
 
         let curve = edge.curve();
-        let (t0, t1) = curve.domain_with_endpoints(start, end);
+        let (t0, t1) = edge.domain_with_endpoints(start, end);
         for i in 1..=EDGE_INTERIOR_SAMPLES {
             #[allow(clippy::cast_precision_loss)]
             let frac = i as f64 / (EDGE_INTERIOR_SAMPLES as f64 + 1.0);

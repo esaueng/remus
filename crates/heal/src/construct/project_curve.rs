@@ -106,7 +106,7 @@ pub fn project_edge_to_pcurve(
     let curve = edge.curve();
 
     // Sample 3D points along the edge.
-    let (t0, t1) = curve.domain_with_endpoints(start_pos, end_pos);
+    let (t0, t1) = edge.domain_with_endpoints(start_pos, end_pos);
     let mut pts_3d = Vec::with_capacity(samples + 1);
     for i in 0..=samples {
         #[allow(clippy::cast_precision_loss)]

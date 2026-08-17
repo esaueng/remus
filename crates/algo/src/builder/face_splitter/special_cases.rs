@@ -77,6 +77,7 @@ pub(super) fn split_noseam_face_direct(
 
         let edge = OrientedPCurveEdge {
             curve_3d: section.curve_3d.clone(),
+            trim: section.trim,
             pcurve: pcurve_on_this_face.clone(),
             start_uv,
             end_uv,
@@ -139,6 +140,7 @@ pub(super) fn split_noseam_face_direct(
 
     let reverse_of = |e: &OrientedPCurveEdge| OrientedPCurveEdge {
         curve_3d: e.curve_3d.clone(),
+        trim: e.trim,
         pcurve: e.pcurve.clone(),
         start_uv: e.end_uv,
         end_uv: e.start_uv,
@@ -268,6 +270,7 @@ fn split_noseam_by_arrangement(
     let both = |e: &OrientedPCurveEdge| -> [OrientedPCurveEdge; 2] {
         let rev = OrientedPCurveEdge {
             curve_3d: e.curve_3d.clone(),
+            trim: e.trim,
             pcurve: e.pcurve.clone(),
             start_uv: e.end_uv,
             end_uv: e.start_uv,
@@ -466,6 +469,7 @@ fn build_seam_arcs(
         let end_uv =
             super::super::pcurve_compute::project_point_on_surface(end_3d, surface, &[], None);
         arcs.push(OrientedPCurveEdge {
+            trim: None,
             curve_3d: curve,
             pcurve,
             start_uv,
@@ -650,6 +654,7 @@ fn reverse_loop(loop_edges: &[OrientedPCurveEdge]) -> Vec<OrientedPCurveEdge> {
         .rev()
         .map(|e| OrientedPCurveEdge {
             curve_3d: e.curve_3d.clone(),
+            trim: e.trim,
             pcurve: e.pcurve.clone(),
             start_uv: e.end_uv,
             end_uv: e.start_uv,
@@ -954,6 +959,7 @@ pub(super) fn split_periodic_face_into_bands(
         };
         let mk = |forward: bool| OrientedPCurveEdge {
             curve_3d: s.curve_3d.clone(),
+            trim: s.trim,
             pcurve: pcurve.clone(),
             start_uv: Point2::new(seam_u, v),
             end_uv: Point2::new(seam_u, v),
@@ -988,6 +994,7 @@ pub(super) fn split_periodic_face_into_bands(
         let pcurve = Curve2D::Line(Line2D::new(Point2::new(seam_u, va), dir).ok()?);
         Some(OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve,
             start_uv: Point2::new(seam_u, va),
             end_uv: Point2::new(seam_u, vb),
@@ -1173,6 +1180,7 @@ pub(super) fn split_periodic_face_into_sectors(
             .and_then(|r| r.1.pave_block_id);
         Some(OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve,
             start_uv: Point2::new(u, vs),
             end_uv: Point2::new(u, ve),
@@ -1217,8 +1225,10 @@ pub(super) fn split_periodic_face_into_sectors(
         let forward = traversal_tan.dot(circle_tan) > 0.0;
         let dir = Vec2::new(if to > from { 1.0 } else { -1.0 }, 0.0);
         let pcurve = Curve2D::Line(Line2D::new(Point2::new(seam_u + from, v), dir).ok()?);
+        let curve = EdgeCurve::Circle(circle.clone());
         Some(OrientedPCurveEdge {
-            curve_3d: EdgeCurve::Circle(circle.clone()),
+            trim: None,
+            curve_3d: curve,
             pcurve,
             start_uv: Point2::new(seam_u + from, v),
             end_uv: Point2::new(seam_u + to, v),
@@ -1301,6 +1311,7 @@ fn torus_section_to_edge(
     .unwrap_or_else(|| uv_endpoints_from_pcurve(pcurve, section.start, section.end, surface, &[]));
     OrientedPCurveEdge {
         curve_3d: section.curve_3d.clone(),
+        trim: section.trim,
         pcurve: pcurve.clone(),
         start_uv,
         end_uv,
@@ -1539,6 +1550,7 @@ pub(super) fn split_face_with_internal_loops(
 
         forward_edges.push(OrientedPCurveEdge {
             curve_3d: section.curve_3d.clone(),
+            trim: section.trim,
             pcurve: pcurve_on_face.clone(),
             start_uv,
             end_uv,
@@ -1794,9 +1806,7 @@ pub(super) fn split_face_with_internal_loops(
             let mut sum = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
             let mut count = 0_usize;
             for edge in loop_edges.iter() {
-                let (t0, t1) = edge
-                    .curve_3d
-                    .domain_with_endpoints(edge.start_3d, edge.end_3d);
+                let (t0, t1) = edge.domain();
                 for k in 0..n_samples {
                     #[allow(clippy::cast_precision_loss)]
                     let t = t0 + (t1 - t0) * (k as f64 / n_samples as f64);
@@ -1876,6 +1886,7 @@ pub(super) fn split_face_with_internal_loops(
                 .rev()
                 .map(|e| OrientedPCurveEdge {
                     curve_3d: e.curve_3d.clone(),
+                    trim: e.trim,
                     pcurve: e.pcurve.clone(),
                     start_uv: e.end_uv,
                     end_uv: e.start_uv,
@@ -2018,7 +2029,7 @@ fn annulus_interior_3d(
             } else {
                 (e.end_3d, e.start_3d)
             };
-            let (t0, t1) = e.curve_3d.domain_with_endpoints(s3, e3);
+            let (t0, t1) = e.native_domain();
             for k in 0..SAMPLES {
                 #[allow(clippy::cast_precision_loss)]
                 let t = (t1 - t0).mul_add(k as f64 / SAMPLES as f64, t0);
@@ -2192,6 +2203,7 @@ fn union_internal_loop_with_hole(
         );
         Some(OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve,
             start_uv: s_uv,
             end_uv: e_uv,
@@ -2356,9 +2368,7 @@ pub fn cylinder_cone_remainder_interior(remainder: &SplitSubFace) -> Option<Poin
     for hole in &remainder.inner_wires {
         let mut prev_uv: Option<(f64, f64)> = None;
         for edge in hole {
-            let (t0, t1) = edge
-                .curve_3d
-                .domain_with_endpoints(edge.start_3d, edge.end_3d);
+            let (t0, t1) = edge.domain();
             for k in 0..=n {
                 #[allow(clippy::cast_precision_loss)]
                 let t = t0 + (t1 - t0) * (k as f64 / f64::from(n));
@@ -2403,7 +2413,7 @@ pub fn cylinder_cone_remainder_interior(remainder: &SplitSubFace) -> Option<Poin
     let mut v_min = f64::INFINITY;
     let mut v_max = f64::NEG_INFINITY;
     for e in &remainder.outer_wire {
-        let (t0, t1) = e.curve_3d.domain_with_endpoints(e.start_3d, e.end_3d);
+        let (t0, t1) = e.domain();
         let n = 16;
         for k in 0..=n {
             #[allow(clippy::cast_precision_loss)]
@@ -2774,6 +2784,7 @@ pub(super) fn try_split_crossing_plane_face(
         );
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve,
             start_uv: su,
             end_uv: eu,
@@ -3341,6 +3352,7 @@ pub(super) fn try_split_disk_by_chords(
                 );
                 Some(OrientedPCurveEdge {
                     curve_3d: EdgeCurve::Line,
+                    trim: None,
                     pcurve,
                     start_uv: su,
                     end_uv: eu,
@@ -3367,6 +3379,7 @@ pub(super) fn try_split_disk_by_chords(
                 };
                 let pcurve = compute_pcurve_on_surface(&curve, s3, e3, surface, &[], Some(frame));
                 Some(OrientedPCurveEdge {
+                    trim: None,
                     curve_3d: curve,
                     pcurve,
                     start_uv: frame.project(s3),
@@ -3439,6 +3452,7 @@ mod tests {
     ) -> OrientedPCurveEdge {
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::Circle(circle.clone()),
+            trim: None,
             pcurve: dummy_pcurve(),
             start_uv: Point2::new(0.0, 0.0),
             end_uv: Point2::new(0.0, 0.0),
@@ -3454,6 +3468,7 @@ mod tests {
     fn line_chord(start: Point3, end: Point3) -> OrientedPCurveEdge {
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve: dummy_pcurve(),
             start_uv: Point2::new(0.0, 0.0),
             end_uv: Point2::new(0.0, 0.0),
@@ -3743,6 +3758,7 @@ mod tests {
     fn section_chord(start: Point3, end: Point3) -> SectionEdge {
         SectionEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve_a: dummy_pcurve(),
             pcurve_b: dummy_pcurve(),
             start,
@@ -3757,7 +3773,7 @@ mod tests {
     }
 
     fn arc_span(e: &OrientedPCurveEdge) -> f64 {
-        let (a, b) = e.curve_3d.domain_with_endpoints(e.start_3d, e.end_3d);
+        let (a, b) = e.domain();
         (b - a).abs()
     }
 
@@ -4013,6 +4029,7 @@ mod tests {
         let boundary = vec![arc_edge(&circle, 0.0, TAU, true)];
         let sections = vec![SectionEdge {
             curve_3d: EdgeCurve::Circle(inner.clone()),
+            trim: None,
             pcurve_a: dummy_pcurve(),
             pcurve_b: dummy_pcurve(),
             start: inner.evaluate(0.0),
