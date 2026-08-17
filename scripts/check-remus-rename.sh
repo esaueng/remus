@@ -59,10 +59,17 @@ done
 # prose in the same file is still caught.
 readonly OTHER_REPOS='esaueng/brepkit|andymai/brepkit|/claude/brepkit'
 
+# Identifiers owned by the downstream brepjs repository: its type-sync script,
+# its generated types module, its adapter directory, and the kernel id its
+# benchmark harness uses. They are named over there, so renaming them here
+# would have these docs describe a script and paths that do not exist. They
+# lose the old name when brepjs renames them, not before.
+readonly EXTERNAL_IDENTIFIERS='sync-brepkit-types|sync:brepkit-types|brepkitWasmTypes|src/kernel/brepkit/|Brepkit\*|BREPJS_KERNEL=brepkit'
+
 status=0
 
 if stale_content=$(rg -n -i --hidden --glob '!.git' 'brepkit|brep-kit' "${search_args[@]}" 2>/dev/null \
-  | rg -v "$OTHER_REPOS"); then
+  | rg -v "$OTHER_REPOS" | rg -v "$EXTERNAL_IDENTIFIERS"); then
   echo "Remus rename violation: stale product identity found in content"
   echo "$stale_content"
   status=1
