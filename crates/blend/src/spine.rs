@@ -179,7 +179,7 @@ impl Spine {
         let p_start = topo.vertex(edge.start())?.point();
         let p_end = topo.vertex(edge.end())?.point();
         let curve = edge.curve();
-        let (t0, t1) = curve.domain_with_endpoints(p_start, p_end);
+        let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
         let param = t0 + (t1 - t0) * t;
         Ok(curve.evaluate_with_endpoints(param, p_start, p_end))
     }
@@ -199,7 +199,7 @@ impl Spine {
         let p_start = topo.vertex(edge.start())?.point();
         let p_end = topo.vertex(edge.end())?.point();
         let curve = edge.curve();
-        let (t0, t1) = curve.domain_with_endpoints(p_start, p_end);
+        let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
         let param = t0 + (t1 - t0) * t;
         let tan = curve.tangent_with_endpoints(param, p_start, p_end);
         let tan = if fwd { tan } else { -tan };

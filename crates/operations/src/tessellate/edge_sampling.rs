@@ -3,8 +3,6 @@
 use brepkit_math::vec::{Point3, Vec3};
 use brepkit_topology::Topology;
 
-use super::shorter_arc_range;
-
 /// Combined linear+angular segment count for a circular arc.
 ///
 /// Delegates to [`brepkit_math::chord::segments_for_chord_deviation_with_angle`]
@@ -130,7 +128,7 @@ pub fn edge_sample_count(
             ) else {
                 return 2;
             };
-            let (t0, t1) = (h.project(sp), h.project(ep));
+            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             open_conic_segments(
                 h.min_curvature_radius(t0, t1),
                 h.arc_length(t0, t1),
@@ -147,7 +145,7 @@ pub fn edge_sample_count(
             ) else {
                 return 2;
             };
-            let (t0, t1) = (p.project(sp), p.project(ep));
+            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             open_conic_segments(
                 p.min_curvature_radius(t0, t1),
                 p.arc_length(t0, t1),
@@ -165,20 +163,14 @@ pub fn edge_sample_count(
             let a = ellipse.semi_major();
             let b = ellipse.semi_minor();
             let max_curv_radius = a * a / b;
-            let arc_range = if edge.is_closed() {
-                std::f64::consts::TAU
-            } else if let (Ok(sp), Ok(ep)) = (
+            let arc_range = if let (Ok(sp), Ok(ep)) = (
                 topo.vertex(edge.start())
                     .map(brepkit_topology::vertex::Vertex::point),
                 topo.vertex(edge.end())
                     .map(brepkit_topology::vertex::Vertex::point),
             ) {
-                let ts = ellipse.project(sp);
-                let mut te = ellipse.project(ep);
-                if te <= ts {
-                    te += std::f64::consts::TAU;
-                }
-                te - ts
+                let (ts, te) = edge.domain_with_endpoints(sp, ep);
+                (te - ts).abs()
             } else {
                 std::f64::consts::TAU
             };
@@ -198,7 +190,7 @@ pub fn edge_sample_count(
             // sub-span of its stored curve; measuring the FULL knot domain
             // would size (and later sample) the whole parent curve.
             let (u0, u1) = match (topo.vertex(edge.start()), topo.vertex(edge.end())) {
-                (Ok(sv), Ok(ev)) => edge.curve().domain_with_endpoints(sv.point(), ev.point()),
+                (Ok(sv), Ok(ev)) => edge.domain_with_endpoints(sv.point(), ev.point()),
                 _ => nurbs.domain(),
             };
             let n_spans = nurbs
@@ -304,18 +296,15 @@ pub(super) fn circle_param_range(
     edge: &brepkit_topology::edge::Edge,
     circle: &brepkit_math::curves::Circle3D,
 ) -> Result<(f64, f64), crate::OperationsError> {
-    if edge.is_closed() {
-        let ts = circle.project(topo.vertex(edge.start())?.point());
-        Ok((ts, ts + std::f64::consts::TAU))
+    let sp = topo.vertex(edge.start())?.point();
+    let ep = topo.vertex(edge.end())?.point();
+    if let Some(trim) = edge.trim() {
+        Ok(trim)
+    } else if edge.is_closed() {
+        let start = circle.project(sp);
+        Ok((start, start + std::f64::consts::TAU))
     } else {
-        let sp = topo.vertex(edge.start())?.point();
-        let ep = topo.vertex(edge.end())?.point();
-        let ts = circle.project(sp);
-        let mut te = circle.project(ep);
-        if te <= ts {
-            te += std::f64::consts::TAU;
-        }
-        Ok((ts, te))
+        Ok(edge.domain_with_endpoints(sp, ep))
     }
 }
 
@@ -348,7 +337,7 @@ pub(super) fn sample_edge(
         });
     }
 
-    let points = match edge.curve() {
+    let mut points = match edge.curve() {
         EdgeCurve::Line => {
             vec![
                 topo.vertex(edge.start())?.point(),
@@ -360,27 +349,22 @@ pub(super) fn sample_edge(
             sample_uniform(circle, t_start, t_end, n)
         }
         EdgeCurve::Ellipse(ellipse) => {
-            let (t_start, t_end) = if edge.is_closed() {
-                // Same as `circle_param_range`: begin at the edge's own start
-                // vertex so the polyline joins its neighbours without a jump.
-                let ts = ellipse.project(topo.vertex(edge.start())?.point());
-                (ts, ts + std::f64::consts::TAU)
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let (t_start, t_end) = if let Some(trim) = edge.trim() {
+                trim
+            } else if edge.is_closed() {
+                let start = ellipse.project(sp);
+                (start, start + std::f64::consts::TAU)
             } else {
-                let sp = topo.vertex(edge.start())?.point();
-                let ep = topo.vertex(edge.end())?.point();
-                let ts = ellipse.project(sp);
-                let mut te = ellipse.project(ep);
-                if te <= ts {
-                    te += std::f64::consts::TAU;
-                }
-                (ts, te)
+                edge.domain_with_endpoints(sp, ep)
             };
             sample_uniform(ellipse, t_start, t_end, n)
         }
         EdgeCurve::Hyperbola(h) => {
             let sp = topo.vertex(edge.start())?.point();
             let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = (h.project(sp), h.project(ep));
+            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             (0..n)
                 .map(|i| {
                     #[allow(clippy::cast_precision_loss)]
@@ -392,7 +376,7 @@ pub(super) fn sample_edge(
         EdgeCurve::Parabola(p) => {
             let sp = topo.vertex(edge.start())?.point();
             let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = (p.project(sp), p.project(ep));
+            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             (0..n)
                 .map(|i| {
                     #[allow(clippy::cast_precision_loss)]
@@ -408,7 +392,7 @@ pub(super) fn sample_edge(
             // curve and rips a crack along the un-shared part.
             let sp = topo.vertex(edge.start())?.point();
             let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             let (u0, u1) = nurbs.domain();
             let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
             let mut pts = sample_uniform(nurbs, t0, t1, n);
@@ -421,6 +405,15 @@ pub(super) fn sample_edge(
             pts
         }
     };
+
+    if !matches!(edge.curve(), EdgeCurve::Line) {
+        if let Some(first) = points.first_mut() {
+            *first = topo.vertex(edge.start())?.point();
+        }
+        if let Some(last) = points.last_mut() {
+            *last = topo.vertex(edge.end())?.point();
+        }
+    }
 
     Ok(points)
 }
@@ -505,11 +498,7 @@ pub(super) fn sample_wire_positions(
         let edge = topo.edge(oe.edge())?;
         match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                let (t_start, t_end) = if edge.is_closed() {
-                    (0.0, std::f64::consts::TAU)
-                } else {
-                    shorter_arc_range(circle, topo, edge)?
-                };
+                let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
                 let arc_range = (t_end - t_start).abs();
                 let n_samples = segments_for_chord_deviation_a(
                     circle.radius(),
@@ -528,17 +517,15 @@ pub(super) fn sample_wire_positions(
                 );
             }
             EdgeCurve::Ellipse(ellipse) => {
-                let (t_start, t_end) = if edge.is_closed() {
-                    (0.0, std::f64::consts::TAU)
+                let sp = topo.vertex(edge.start())?.point();
+                let ep = topo.vertex(edge.end())?.point();
+                let (t_start, t_end) = if let Some(trim) = edge.trim() {
+                    trim
+                } else if edge.is_closed() {
+                    let start = ellipse.project(sp);
+                    (start, start + std::f64::consts::TAU)
                 } else {
-                    let sp = topo.vertex(edge.start())?.point();
-                    let ep = topo.vertex(edge.end())?.point();
-                    let ts = ellipse.project(sp);
-                    let mut te = ellipse.project(ep);
-                    if te <= ts {
-                        te += std::f64::consts::TAU;
-                    }
-                    (ts, te)
+                    edge.domain_with_endpoints(sp, ep)
                 };
                 let arc_range = t_end - t_start;
                 // Largest radius of curvature (a^2/b) governs uniform-parameter
@@ -568,7 +555,7 @@ pub(super) fn sample_wire_positions(
             EdgeCurve::Hyperbola(h) => {
                 let sp = topo.vertex(edge.start())?.point();
                 let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = (h.project(sp), h.project(ep));
+                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
                 let n_samples = open_conic_segments(
                     h.min_curvature_radius(t0, t1),
                     h.arc_length(t0, t1),
@@ -587,7 +574,7 @@ pub(super) fn sample_wire_positions(
             EdgeCurve::Parabola(p) => {
                 let sp = topo.vertex(edge.start())?.point();
                 let ep = topo.vertex(edge.end())?.point();
-                let (t0, t1) = (p.project(sp), p.project(ep));
+                let (t0, t1) = edge.domain_with_endpoints(sp, ep);
                 let n_samples = open_conic_segments(
                     p.min_curvature_radius(t0, t1),
                     p.arc_length(t0, t1),
@@ -608,7 +595,7 @@ pub(super) fn sample_wire_positions(
                 // sub-span of the stored curve (see `sample_edge`).
                 let sp = topo.vertex(edge.start())?.point();
                 let ep = topo.vertex(edge.end())?.point();
-                let (u0, u1) = edge.curve().domain_with_endpoints(sp, ep);
+                let (u0, u1) = edge.domain_with_endpoints(sp, ep);
                 let full = nurbs.domain();
                 let is_subspan = (u0 - full.0).abs() > 1e-12 || (u1 - full.1).abs() > 1e-12;
                 let n_spans = nurbs

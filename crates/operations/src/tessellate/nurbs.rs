@@ -118,9 +118,7 @@ pub(super) fn compute_torus_v_range(
             let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
                 return full_range;
             };
-            let (t0, t1) = edge
-                .curve()
-                .domain_with_endpoints(start.point(), end.point());
+            let (t0, t1) = edge.domain_with_endpoints(start.point(), end.point());
             for fraction in [0.0, 0.25, 0.5, 0.75] {
                 let point = edge.curve().evaluate_with_endpoints(
                     t0 + (t1 - t0) * fraction,
@@ -324,33 +322,21 @@ where
                 {
                     match edge.curve() {
                         EdgeCurve::Circle(circle) => {
-                            let ts = circle.project(sv.point());
-                            let te = circle.project(ev.point());
-                            let fwd = (te - ts).rem_euclid(TAU);
-                            let mid_t = if fwd <= std::f64::consts::PI {
-                                ts + fwd * 0.5
-                            } else {
-                                ts - (TAU - fwd) * 0.5
-                            };
+                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let mid_t = f64::midpoint(ts, te);
                             let mid = circle.evaluate(mid_t);
                             let (u, _) = project(mid);
                             angles.push(u);
                         }
                         EdgeCurve::Ellipse(ellipse) => {
-                            let ts = ellipse.project(sv.point());
-                            let te = ellipse.project(ev.point());
-                            let fwd = (te - ts).rem_euclid(TAU);
-                            let mid_t = if fwd <= std::f64::consts::PI {
-                                ts + fwd * 0.5
-                            } else {
-                                ts - (TAU - fwd) * 0.5
-                            };
+                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
+                            let mid_t = f64::midpoint(ts, te);
                             let mid = ellipse.evaluate(mid_t);
                             let (u, _) = project(mid);
                             angles.push(u);
                         }
                         EdgeCurve::NurbsCurve(nurbs) => {
-                            let (t0, t1) = nurbs.domain();
+                            let (t0, t1) = edge.domain_with_endpoints(sv.point(), ev.point());
                             let mid = nurbs.evaluate(f64::midpoint(t0, t1));
                             let (u, _) = project(mid);
                             angles.push(u);
@@ -359,12 +345,12 @@ where
                         // exact inverse for both, so no wrap correction is
                         // needed as for the periodic conics above.
                         EdgeCurve::Hyperbola(h) => {
-                            let (ts, te) = (h.project(sv.point()), h.project(ev.point()));
+                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
                             let (u, _) = project(h.evaluate(f64::midpoint(ts, te)));
                             angles.push(u);
                         }
                         EdgeCurve::Parabola(pb) => {
-                            let (ts, te) = (pb.project(sv.point()), pb.project(ev.point()));
+                            let (ts, te) = edge.domain_with_endpoints(sv.point(), ev.point());
                             let (u, _) = project(pb.evaluate(f64::midpoint(ts, te)));
                             angles.push(u);
                         }

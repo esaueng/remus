@@ -80,6 +80,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
             });
         let mut prev_uv = edge.start_uv;
         let mut prev_3d = edge.start_3d;
+        let mut prev_t = 0.0;
         for &(t, pt) in &splits {
             // Circle splits carry the exact on-curve foot; re-evaluating via
             // `evaluate_edge_at_t` would re-apply the CCW-span convention
@@ -118,6 +119,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
                 compute_pcurve_on_surface(&edge.curve_3d, prev_3d, split_3d, surface, &[], frame);
             result.push(OrientedPCurveEdge {
                 curve_3d: edge.curve_3d.clone(),
+                trim: edge.sub_trim_fraction(prev_t, t),
                 pcurve,
                 start_uv: prev_uv,
                 end_uv: split_uv,
@@ -130,6 +132,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
             });
             prev_uv = split_uv;
             prev_3d = split_3d;
+            prev_t = t;
         }
         let pcurve =
             compute_pcurve_on_surface(&edge.curve_3d, prev_3d, edge.end_3d, surface, &[], frame);
@@ -145,6 +148,7 @@ pub(super) fn split_boundary_edges_at_3d_points(
         };
         result.push(OrientedPCurveEdge {
             curve_3d: edge.curve_3d.clone(),
+            trim: edge.sub_trim_fraction(prev_t, 1.0),
             pcurve,
             start_uv: prev_uv,
             end_uv: tail_end_uv,
@@ -216,9 +220,7 @@ pub(super) fn find_splits_on_circle(
     surface: &FaceSurface,
     tol: f64,
 ) -> Vec<(f64, Point3)> {
-    let (t0, t1) = edge
-        .curve_3d
-        .domain_with_endpoints(edge.start_3d, edge.end_3d);
+    let (t0, t1) = edge.domain();
     let span = t1 - t0;
     if span.abs() < 1e-14 {
         return Vec::new();
@@ -437,9 +439,7 @@ pub(super) fn find_splits_on_nurbs_section(
     // evaluations per candidate point, which turned each pad-fuse face split
     // into ~700ms (the lite magnet scenarios' timeout class). One domain
     // computation per edge, then direct parametric evaluation.
-    let (dom0, dom1) = edge
-        .curve_3d
-        .domain_with_endpoints(edge.start_3d, edge.end_3d);
+    let (dom0, dom1) = edge.domain();
     let dom_span = dom1 - dom0;
     let eval_at = |t: f64| -> Point3 {
         edge.curve_3d
@@ -605,9 +605,7 @@ pub(super) fn find_splits_on_ellipse(
     split_pts_3d: &[Point3],
     tol: f64,
 ) -> Vec<(f64, Point3)> {
-    let (t0, t1) = edge
-        .curve_3d
-        .domain_with_endpoints(edge.start_3d, edge.end_3d);
+    let (t0, t1) = edge.domain();
     let span = t1 - t0;
     if span.abs() < 1e-14 {
         return Vec::new();
@@ -654,6 +652,7 @@ mod tests {
         };
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::NurbsCurve(nurbs),
+            trim: None,
             pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
             start_uv: Point2::new(0.0, 0.0),
             end_uv: Point2::new(1.0, 0.0),
@@ -690,6 +689,7 @@ mod tests {
         };
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::Ellipse(ellipse.clone()),
+            trim: Some((a0, a1)),
             pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
             start_uv: Point2::new(0.0, 0.0),
             end_uv: Point2::new(1.0, 0.0),
@@ -740,18 +740,12 @@ mod tests {
             );
         }
 
-        // Pin the divergence that motivated the section-specific finder: the
-        // domain-based `find_splits_on_ellipse` (still correct for boundary
-        // edges) DOES phantom-split the reverse twin on the other-window
-        // point. If it ever becomes twin-safe, delete this assertion and
-        // consider re-unifying the finders.
+        // The general boundary finder intentionally retains its structural
+        // endpoint-domain convention; the section-specific finder above is
+        // what makes the reverse twin safe.
         let rev = ellipse_section_edge(&ellipse, 0.2, 1.0, false);
         let old = find_splits_on_ellipse(&ellipse, &rev, &[other_window_pt], 1e-7);
-        assert_eq!(
-            old.len(),
-            1,
-            "domain-based finder is expected to phantom-split the reverse twin"
-        );
+        assert_eq!(old.len(), 1);
     }
 
     /// A CLOSED rim on a cylinder, seamed at 3pi/2 (i.e. NOT at the circle's
@@ -781,6 +775,7 @@ mod tests {
         // closed rim always reports its span as `u_seam -> u_seam + 2pi`.
         let edge = OrientedPCurveEdge {
             curve_3d: EdgeCurve::Circle(circle.clone()),
+            trim: None,
             pcurve: Curve2D::Line(
                 Line2D::new(Point2::new(u_seam, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
             ),
@@ -919,6 +914,7 @@ mod tests {
         let tol = 1e-7;
         let edge = OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
             start_uv: Point2::new(0.0, 0.0),
             end_uv: Point2::new(10.0, 0.0),

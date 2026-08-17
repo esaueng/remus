@@ -167,7 +167,7 @@ Exit gate: the seam face round-trips two independent p-curve branches;
 `solid_faces`-based consumers pass unchanged through the adapters; the GFA
 boolean suite, blend builders, and tessellation pass on loop-backed faces.
 
-### Stage 3 — trims and SameParameter (Issue 8; first slice landed)
+### Stage 3 — trims and SameParameter (Issue 8; carrier migration landed)
 
 What landed:
 
@@ -185,6 +185,16 @@ What landed:
   carry trims forward (flipping the span with a flipped vertex order).
 - Trim carriers: solid copy, GFA store export, and the arena format
   (additive optional field) preserve stored trims.
+- Boolean result assembly now carries exact sub-span trims through transient
+  p-curve records, section-edge splitting, face rebuilds, vertex remaps, and
+  analytic face construction. Coaxial cylinder/cone shortcuts emit explicit
+  full-circle trims, and affine transforms retain or exactly remap them when
+  an analytic curve's parameterization changes.
+- High-traffic topology readers in boolean assembly, classification,
+  validation, healing, blending, tessellation, measurement, and I/O use the
+  edge-level accessor. Endpoint projection is now the fallback for raw
+  construction and controlled import/healing paths, not the normal way those
+  consumers recover an existing edge domain.
 - `SameParameter`/`SameRange` validators (`check_*` reporting,
   `validate_*` enforcing) with the registry's first `tolerance_violation`
   codes (`same_parameter_exceeded`, `same_range_exceeded`); planar faces
@@ -195,16 +205,8 @@ What landed:
   `RepairBudgetExceeded` when the budget cannot be met — never silent,
   never committing a miss.
 
-Queued (writer migration continues incrementally):
+Queued:
 
-- The boolean **result-assembly** rebuild paths and the op-level
-  **analytic fast paths** construct result edges without carrying trims,
-  so result topologies do not yet expose the store-level trims (probes
-  confirm split edges inside the GFA store carry them). Migrating those
-  writers — and then switching high-traffic domain readers
-  (~168 `domain_with_endpoints` call sites) to the edge-level accessor —
-  is the follow-up, after which endpoint projection demotes to an
-  import/healing operation per RFC section 1.2.
 - Periodic winding counts on `Coedge` (multi-turn support) arrive with the
   physical p-curve storage move.
 - The transactional wrapper (Issue 9) supplies the sanctioned-mutation

@@ -178,7 +178,7 @@ fn main() {
                         if let brepkit_topology::edge::EdgeCurve::Circle(_) = e.curve() {
                             let ps = topo.vertex(e.start()).unwrap().point();
                             let pe = topo.vertex(e.end()).unwrap().point();
-                            let (t0, t1) = e.curve().domain_with_endpoints(ps, pe);
+                            let (t0, t1) = e.domain_with_endpoints(ps, pe);
                             let mid =
                                 e.curve()
                                     .evaluate_with_endpoints(f64::midpoint(t0, t1), ps, pe);
