@@ -403,6 +403,115 @@ impl Topology {
             .record_evolution(pending.kind, pending.scope, draft, self.mutation_ticks)
     }
 
+    /// Copies face attributes forward across one journaled operation,
+    /// driven by its entry's events (RFC 0003, Stage 4).
+    ///
+    /// The journal-driven generalization of the Issue 14 propagation
+    /// rules, claim for claim:
+    ///
+    /// - **`Preserved` / `Modified`** subjects receive their source
+    ///   face's attributes — a split's pieces are each still the same
+    ///   semantic surface, so every piece gets the name **unchanged**
+    ///   (the kernel never synthesizes, suffixes, or concatenates names).
+    /// - **`Merged`** subjects receive attributes only when every
+    ///   attributed input agrees; disagreeing inputs are a counted
+    ///   conflict and the output stays bare — a merge does not toss coins
+    ///   between names.
+    /// - **`Generated`** and **`Unresolved`** subjects receive nothing
+    ///   (`Unresolved` is counted) — an attribute never rides on a
+    ///   guessed binding.
+    /// - Inputs keep their own attributes (copy-forward only); non-face
+    ///   subjects are skipped (the attribute store's v1 scope is solids
+    ///   and faces).
+    ///
+    /// A geometry-derived entry propagates only when `allow_inferred` is
+    /// set — riding attributes on inference is a policy the caller must
+    /// opt into knowingly; a refusal is reported, not silent. Barrier
+    /// entries carry nothing (they have no claims to ride).
+    ///
+    /// Attribute writes are not model mutations, so propagating between
+    /// journaled operations never creates an unjournaled-mutation gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::RefUnknownOperation`] if `op` is not in
+    /// the journal (never journaled, or truncated by a rollback).
+    pub fn propagate_attributes_for_op(
+        &mut self,
+        op: OpId,
+        allow_inferred: bool,
+    ) -> Result<crate::journal::JournalAttributePropagation, TopologyError> {
+        use crate::journal::{EntityEvent, EntityKind, EntryPayload, JournalAttributePropagation};
+
+        let mut report = JournalAttributePropagation::default();
+        let Some(entry) = self.journal.entries().iter().find(|entry| entry.op() == op) else {
+            return Err(TopologyError::RefUnknownOperation { op: op.value() });
+        };
+        let (origin, events) = match entry.payload() {
+            EntryPayload::Evolution { origin, events, .. } => (*origin, events),
+            // A barrier has no claims to ride: nothing carries.
+            EntryPayload::Barrier { .. } | EntryPayload::GlobalBarrier => return Ok(report),
+        };
+        if origin == crate::journal::RecordedOrigin::Geometry && !allow_inferred {
+            report.refused_inferred = true;
+            return Ok(report);
+        }
+
+        // Snapshot phase: read every carried attribute before mutating.
+        // Events are subject-ordinal-sorted, so the pass is deterministic.
+        let face_attributes = |journal_ordinal: crate::journal::JournalOrdinal| {
+            self.journal
+                .key_of(journal_ordinal)
+                .filter(|key| key.kind == EntityKind::Face)
+                .and_then(|key| self.faces.id_from_index(key.index))
+                .and_then(|id| self.attributes.face(id))
+        };
+        let mut writes: Vec<(usize, crate::attributes::EntityAttributes)> = Vec::new();
+        for (subject, event) in events {
+            let Some(subject_key) = self.journal.key_of(*subject) else {
+                continue;
+            };
+            if subject_key.kind != EntityKind::Face {
+                continue;
+            }
+            match event {
+                EntityEvent::Preserved { from } | EntityEvent::Modified { from } => {
+                    if let Some(attributes) = face_attributes(*from) {
+                        writes.push((subject_key.index, attributes.clone()));
+                    }
+                }
+                EntityEvent::Merged { from } => {
+                    let mut distinct: Vec<&crate::attributes::EntityAttributes> = Vec::new();
+                    for &source in from {
+                        if let Some(attributes) = face_attributes(source)
+                            && !distinct.contains(&attributes)
+                        {
+                            distinct.push(attributes);
+                        }
+                    }
+                    match distinct.as_slice() {
+                        [] => {}
+                        [agreed] => writes.push((subject_key.index, (*agreed).clone())),
+                        _ => report.merge_conflicts += 1,
+                    }
+                }
+                EntityEvent::Unresolved { .. } => report.unresolved_outputs += 1,
+                EntityEvent::Generated { .. } | EntityEvent::Deleted => {}
+            }
+        }
+
+        // Deterministic write order regardless of upstream ordering.
+        writes.sort_by_key(|(index, _)| *index);
+        for (index, attributes) in writes {
+            if let Some(face) = self.faces.id_from_index(index)
+                && self.set_face_attributes(face, attributes).is_ok()
+            {
+                report.carried += 1;
+            }
+        }
+        Ok(report)
+    }
+
     /// Records an explicit barrier entry for an operation that produces no
     /// evolution records: every entity in `affected` (the result's
     /// entities) is unresolved across it, and a resolver chasing a
