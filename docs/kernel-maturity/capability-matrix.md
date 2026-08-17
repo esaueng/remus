@@ -264,9 +264,21 @@ does not itself promote or demote anything.
   / `captureSignatureRef` / `addRefDiscriminator` / `resolveRef` /
   `resolveRefFaceAttributes`; all with `executeBatch` companions and
   contract tests. Resolution outcomes are data (`status` JSON), never
-  exceptions. RFC 0003 is fully surfaced; broader operations/WASM
-  evolution surfacing (per-op evolution payloads beyond booleans)
-  remains the open queue item.
+  exceptions. RFC 0003 is fully surfaced.
+  **Evolution surfacing**: `operations::boolean::boolean_with_entity_evolution`
+  (L3 surface of the Issue-12 entry point, re-exported event types);
+  one-call journaled wrappers `journal_ops::{fillet_journaled,
+  chamfer_journaled, linear_pattern_journaled}` — the journal is now
+  populated by every construction-evolution producer (booleans, v2
+  blends, patterns) per the RFC 0003 Stage 1 goal; WASM
+  `fuseWithEntityEvolution` (+cut/intersect) exposing the full
+  vertex/edge/face event payload as stable JSON, `filletJournaled` /
+  `chamferJournaled` / `linearPatternJournaled`, and the read-only
+  `journalSummary`, all with executeBatch companions and contract
+  tests. Remaining evolution queue: assembly-rebuild lineage records
+  (the Unresolved minority in GFA edge events) and evolution for the
+  declared-gap operations (offset, shell, draft, split, defeature —
+  journaled as barriers until each grows real records).
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
