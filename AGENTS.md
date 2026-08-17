@@ -658,6 +658,6 @@ Workspace-level strict lints:
 - Conventional commits enforced by commitlint
 - Pre-commit: fmt + clippy (parallel) → test
 - Pre-push: full test + cargo-deny
-- Branch: `apache-main` is the primary Apache-2.0 branch
+- Branch: `main` is the primary Apache-2.0 branch
 - Never merge upstream v3 or later. Future upstream behavior must arrive under
   an explicit Apache-2.0 grant or be independently implemented.
