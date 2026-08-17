@@ -256,9 +256,17 @@ does not itself promote or demote anything.
   placeholders for out-of-document entities, and tick re-derivation so a
   clean load is not a gap; `io::naming_io` serializes references as
   versioned context-free JSON. References resolve identically across
-  save/load (pinned) — a naming regression is a replayable fixture. Only
-  the WASM reference API remains queued (with operations/WASM evolution
-  surfacing).
+  save/load (pinned) — a naming regression is a replayable fixture.
+  **WASM reference API**: `bindings/naming.rs` — `fuseJournaled` /
+  `cutJournaled` / `intersectJournaled`, `journalBarrier`,
+  `propagateAttributesForOp`, `resolveOperationOutput`,
+  `setFaceName`/`getFaceName`, and (io feature) `makeOperationOutputRef`
+  / `captureSignatureRef` / `addRefDiscriminator` / `resolveRef` /
+  `resolveRefFaceAttributes`; all with `executeBatch` companions and
+  contract tests. Resolution outcomes are data (`status` JSON), never
+  exceptions. RFC 0003 is fully surfaced; broader operations/WASM
+  evolution surfacing (per-op evolution payloads beyond booleans)
+  remains the open queue item.
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
