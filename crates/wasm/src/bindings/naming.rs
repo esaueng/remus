@@ -589,9 +589,8 @@ mod naming_contract_tests {
     /// The full journey: name a face, run a journaled fuse, propagate,
     /// resolve through the journal, and read the name back through a
     /// serialized reference.
-    // Exercises io-gated batch ops (makeOperationOutputRef,
-    // captureSignatureRef, addRefDiscriminator), so it only applies to
-    // the build that dispatches them.
+    // Exercises the io-gated serialized-reference ops; those batch
+    // operations are not registered in a no-default-features build.
     #[cfg(feature = "io")]
     #[test]
     fn names_survive_a_journaled_fuse_end_to_end() {
@@ -715,9 +714,8 @@ mod naming_contract_tests {
     }
 
     /// Signature references: capture, discriminate, resolve — inferred.
-    // Exercises io-gated batch ops (makeOperationOutputRef,
-    // captureSignatureRef, addRefDiscriminator), so it only applies to
-    // the build that dispatches them.
+    // Exercises the io-gated serialized-reference ops; those batch
+    // operations are not registered in a no-default-features build.
     #[cfg(feature = "io")]
     #[test]
     fn signature_refs_capture_and_discriminate() {
