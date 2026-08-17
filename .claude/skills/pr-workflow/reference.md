@@ -142,7 +142,8 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | PR shows mergeable with nothing green yet | `main` has no branch protection, so mergeability says nothing about checks | Wait for `CI Pass`; mergeable is not a quality signal here |
 | A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
 | `gh pr merge --auto` errors or is refused | `allow_auto_merge` is false repo-wide | Wait for checks, then plain `gh pr merge <N> --squash` |
-| Merged PR's branch still on the remote | `delete_branch_on_merge` is false | `git push origin --delete <branch>` |
+| Merged PR's branch still on the remote | `delete_branch_on_merge` is false | `git push origin --delete <branch>`, but check for stacked PRs first (next row) |
+| A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged; GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
 | `WASM Size Report` shows a delta on a test-only diff | Baseline is `apache-main` and `Cargo.lock` is gitignored, so deps re-resolve | Expected drift; confirm your diff cannot reach the binary, then note it |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
