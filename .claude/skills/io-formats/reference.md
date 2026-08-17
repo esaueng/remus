@@ -95,7 +95,7 @@ faces. This is faithful faceting, never analytic.
 - `heal_solid` / `repair_solid`: gaps, orientation, degenerate edges, coincident vertices,
   wire spurs.
 - `convert_to_elementary(topo, solid, tolerance)`: wraps
-  `brepkit_heal::custom::convert_to_elementary::{convert_to_elementary, convert_edges_to_elementary}`.
+  `remus_heal::custom::convert_to_elementary::{convert_to_elementary, convert_edges_to_elementary}`.
   Its doc: the inverse of convert-to-bspline; STEP/IGES imports that came in as NURBS
   (from CAD systems that export everything as B-splines) are normalized back into analytic
   forms. Two passes (surfaces then edges), non-transactional (may leave a partially
@@ -106,7 +106,7 @@ faces. This is faithful faceting, never analytic.
   (`rg -n 'pub fn recognize_surface' crates/geometry/src/convert/recognize_surface.rs`,
   same for `recognize_curve.rs`). Tolerance-driven; can reconstruct slightly different
   parameters than the original (overfit risk).
-- `brepkit_heal::upgrade::unify_same_domain::unify_same_domain(topo, solid, &UnifyOptions)`:
+- `remus_heal::upgrade::unify_same_domain::unify_same_domain(topo, solid, &UnifyOptions)`:
   merge coplanar / co-cylindrical adjacent faces (wasm `unifyFaces`).
 
 ## 5. Fixture faithfulness and the arena escape hatch
@@ -143,7 +143,7 @@ Priority order when capturing a fixture from a real failing case:
 `rg -n 'ISO-10303-21|FILE_SCHEMA|SI_UNIT|fmt_f64' crates/io/src/step/writer.rs`
 
 Header envelope: `ISO-10303-21;` / `HEADER;` /
-`FILE_DESCRIPTION(('brepkit STEP export'), '2;1');` / `FILE_NAME(..)` /
+`FILE_DESCRIPTION(('remus STEP export'), '2;1');` / `FILE_NAME(..)` /
 `FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));` / `DATA;` .. `ENDSEC;` / `END-ISO-10303-21;`.
 Units: length `SI_UNIT(.MILLI.,.METRE.)`, angle `SI_UNIT($,.RADIAN.)`, plus a solid-angle
 unit. Product structure via `ADVANCED_BREP_SHAPE_REPRESENTATION` +

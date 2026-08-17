@@ -106,7 +106,7 @@ pub fn acquire_device(
     let mut last_err = String::new();
     for adapter in adapters {
         match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("brepkit-render device"),
+            label: Some("remus-render device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::downlevel_defaults(),
             ..Default::default()
@@ -497,7 +497,7 @@ pub fn encode_scene(
 
 /// Build the [`Globals`] block for a frame from the camera, RTC center, and the
 /// rendering options (with no face selected).
-pub fn build_globals(cam: &Camera, center: brepkit_math::vec::Point3, ambient: f32) -> Globals {
+pub fn build_globals(cam: &Camera, center: remus_math::vec::Point3, ambient: f32) -> Globals {
     let view_proj = crate::camera::view_proj_rtc(cam, center);
     let view_dir = cam.view_direction();
     #[allow(clippy::cast_possible_truncation)]

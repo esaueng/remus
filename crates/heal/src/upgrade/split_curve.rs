@@ -4,8 +4,8 @@
 //! has insufficient continuity (based on internal knot multiplicity) and
 //! for splitting the curve at those parameters.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::knot_ops::curve_split;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::knot_ops::curve_split;
 
 use crate::HealError;
 
@@ -61,7 +61,7 @@ pub fn find_continuity_breaks(curve: &NurbsCurve, min_continuity: usize) -> Vec<
 ///
 /// Returns sub-curves whose union is geometrically identical to the
 /// input — produced by repeatedly applying
-/// [`brepkit_math::nurbs::knot_ops::curve_split`] at each split
+/// [`remus_math::nurbs::knot_ops::curve_split`] at each split
 /// parameter. Each sub-curve preserves the original degree, weights,
 /// and knot structure exactly (no fit-through-samples drift).
 ///
@@ -115,7 +115,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     fn make_cubic_with_c0_break() -> NurbsCurve {
         // Degree 3, with an internal knot at 0.5 with multiplicity 3 (C0 break).

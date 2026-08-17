@@ -8,7 +8,7 @@
 //!
 //! These `.bin` fixtures are the tool's EXACT in-memory operands, captured via
 //! the `serializeSolid` wasm binding (byte-exact f64) and replayed here through
-//! `brepkit_io::arena_io::deserialize_solid`. They are the first faithful
+//! `remus_io::arena_io::deserialize_solid`. They are the first faithful
 //! committed scoop-family guard: unlike the STEP fixtures, they reproduce the
 //! production fallback.
 
@@ -17,11 +17,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -39,7 +39,7 @@ fn load_inmem(name: &str, topo: &mut Topology) -> SolidId {
 fn edge_use(topo: &Topology, solid: SolidId) -> (usize, usize) {
     type QPoint = (i64, i64, i64);
     let scale = 1.0e6;
-    let q = |p: brepkit_math::vec::Point3| -> QPoint {
+    let q = |p: remus_math::vec::Point3| -> QPoint {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,

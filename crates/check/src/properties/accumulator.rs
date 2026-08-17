@@ -3,7 +3,7 @@
 //! `GProps` stores mass (volume or area), center of mass, and inertia tensor.
 //! Multiple `GProps` can be combined using Huygens' parallel-axis theorem.
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 /// Accumulated geometric properties of a shape.
 ///

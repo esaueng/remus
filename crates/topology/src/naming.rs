@@ -655,9 +655,9 @@ impl EntitySignature {
     /// The quantization an [`OperationContext`] implies (its linear
     /// tolerance) — the RFC-designated source; never raw float equality.
     ///
-    /// [`OperationContext`]: brepkit_math::context::OperationContext
+    /// [`OperationContext`]: remus_math::context::OperationContext
     #[must_use]
-    pub fn context_quantum(context: &brepkit_math::context::OperationContext) -> f64 {
+    pub fn context_quantum(context: &remus_math::context::OperationContext) -> f64 {
         context.tolerance.linear
     }
 
@@ -822,7 +822,7 @@ fn quantize(value: f64, quantum: f64) -> i64 {
 
 /// Sign-canonicalizes an orientation-free direction: flipped so its first
 /// component larger than the quantum is positive.
-fn canonical_direction(v: brepkit_math::vec::Vec3, quantum: f64) -> brepkit_math::vec::Vec3 {
+fn canonical_direction(v: remus_math::vec::Vec3, quantum: f64) -> remus_math::vec::Vec3 {
     for component in [v.x(), v.y(), v.z()] {
         if component.abs() > quantum {
             return if component < 0.0 { -v } else { v };
@@ -847,7 +847,7 @@ fn face_raw_params(surface: &crate::face::FaceSurface, quantum: f64) -> Vec<f64>
                     let along = o
                         .x()
                         .mul_add(unit.x(), o.y().mul_add(unit.y(), o.z() * unit.z()));
-                    brepkit_math::vec::Point3::new(
+                    remus_math::vec::Point3::new(
                         unit.x().mul_add(-along, o.x()),
                         unit.y().mul_add(-along, o.y()),
                         unit.z().mul_add(-along, o.z()),
@@ -1584,7 +1584,7 @@ mod tests {
         );
         // Unjournaled mutation → synthetic global barrier at next begin.
         topo.add_vertex(crate::vertex::Vertex::new(
-            brepkit_math::vec::Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
             1e-7,
         ));
         record(&mut topo, "op_b", vec![modified(50, 51)], Vec::new());
@@ -1610,7 +1610,7 @@ mod tests {
     fn topo_with_vertex(x: f64) -> (Topology, crate::VertexId) {
         let mut topo = Topology::new();
         let v = topo.add_vertex(crate::vertex::Vertex::new(
-            brepkit_math::vec::Point3::new(x, 2.0, 3.0),
+            remus_math::vec::Point3::new(x, 2.0, 3.0),
             1e-7,
         ));
         (topo, v)
@@ -1642,7 +1642,7 @@ mod tests {
     #[test]
     fn identical_entities_are_ambiguous_never_first_match() {
         let mut topo = Topology::new();
-        let p = brepkit_math::vec::Point3::new(1.0, 1.0, 1.0);
+        let p = remus_math::vec::Point3::new(1.0, 1.0, 1.0);
         let a = topo.add_vertex(crate::vertex::Vertex::new(p, 1e-7));
         let b = topo.add_vertex(crate::vertex::Vertex::new(p, 1e-7));
         let signature = EntitySignature::capture_vertex(&topo, a, QUANTUM).unwrap();
@@ -1672,11 +1672,11 @@ mod tests {
         let mut topo = Topology::new();
         let mk = |topo: &mut Topology, y: f64| {
             let a = topo.add_vertex(crate::vertex::Vertex::new(
-                brepkit_math::vec::Point3::new(0.0, y, 0.0),
+                remus_math::vec::Point3::new(0.0, y, 0.0),
                 1e-7,
             ));
             let b = topo.add_vertex(crate::vertex::Vertex::new(
-                brepkit_math::vec::Point3::new(1.0, y, 0.0),
+                remus_math::vec::Point3::new(1.0, y, 0.0),
                 1e-7,
             ));
             topo.add_edge(Edge::new(a, b, EdgeCurve::Line))

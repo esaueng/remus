@@ -25,7 +25,7 @@ let c = classify_point(&topo, solid, probe, 0.01, 1e-6)?;
 assert_eq!(c, PointClassification::Inside);
 ```
 
-This is the ray-cast classifier. The winding-number classifier exists both in `brepkit-check` (`classify/winding.rs`) and as `classify_point_winding` / `classify_point_robust` in the same `crates/operations/src/classify.rs`; none of these are valid verification oracles for faceted or NURBS solids. Use `classify_point` only.
+This is the ray-cast classifier. The winding-number classifier exists both in `remus-check` (`classify/winding.rs`) and as `classify_point_winding` / `classify_point_robust` in the same `crates/operations/src/classify.rs`; none of these are valid verification oracles for faceted or NURBS solids. Use `classify_point` only.
 
 ### 2. Validate
 
@@ -54,10 +54,10 @@ use crate::tessellate::{tessellate_solid_with_tolerance, is_watertight, boundary
 ### 4. Approx census (only if the op touches analytic geometry)
 
 ```
-cargo run --release --example approx_census -p brepkit-operations
+cargo run --release --example approx_census -p remus-operations
 ```
 
-- Installs a logger that captures `brepkit_approx` debug probes and prints per-op rows: exact analytic vs which approximation fallback fired, plus wall clock and face count. Probe-site catalog: analytic-preservation skill, reference section 1.
+- Installs a logger that captures `remus_approx` debug probes and prints per-op rows: exact analytic vs which approximation fallback fired, plus wall clock and face count. Probe-site catalog: analytic-preservation skill, reference section 1.
 - Bar: an op that re-creates existing analytic surface types (extrude of a circle should make a Cylinder, revolve of a line should make a Cone, and so on) must not light a probe. If it does, you converted analytic geometry to NURBS or fell back to the mesh boolean; see the analytic-preservation skill.
 - Do NOT conclude correctness from a clean census. It proves only that no fallback fired. A documented near-miss: a slot cut read 1.4% high on volume and almost passed while the slot had not actually been carved. Volume + census + classify_point probes together are the minimum.
 - If you add a new operation with fallback paths, add a census scenario for it in `crates/operations/examples/approx_census.rs`.
@@ -67,7 +67,7 @@ cargo run --release --example approx_census -p brepkit-operations
 ```
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test -p brepkit-operations
+cargo test -p remus-operations
 ./scripts/check-boundaries.sh
 ```
 

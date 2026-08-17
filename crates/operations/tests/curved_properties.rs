@@ -1,4 +1,4 @@
-//! Regression guard for `brepkit_check` property integration on curved
+//! Regression guard for `remus_check` property integration on curved
 //! analytic surfaces.
 //!
 //! `solid_volume` / `solid_area` integrate each face numerically via
@@ -14,10 +14,10 @@
 
 use std::f64::consts::PI;
 
-use brepkit_check::properties::{PropertiesOptions, solid_area, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_check::properties::{PropertiesOptions, solid_area, solid_volume};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 fn assert_close(got: f64, expected: f64, rel_tol: f64, what: &str) {
     let rel = (got - expected).abs() / expected.abs().max(1.0);
@@ -102,10 +102,10 @@ fn curved_primitive_areas_match_analytic() {
 /// guards the topology that the metric oracles in the parity corpus cannot.
 #[test]
 fn contained_cut_cavity_topology_is_faithful() {
-    use brepkit_math::mat::Mat4;
-    use brepkit_operations::boolean::{BooleanOp, boolean};
-    use brepkit_operations::transform::transform_solid;
-    use brepkit_operations::validate::euler_characteristic;
+    use remus_math::mat::Mat4;
+    use remus_operations::boolean::{BooleanOp, boolean};
+    use remus_operations::transform::transform_solid;
+    use remus_operations::validate::euler_characteristic;
 
     type ToolBuilder = fn(&mut Topology) -> SolidId;
     let cases: [(&str, ToolBuilder); 5] = [

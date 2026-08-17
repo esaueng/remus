@@ -7,11 +7,11 @@
 
 use std::f64::consts::TAU;
 
-use brepkit_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::{Point2, Point3, Vec2, Vec3};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::FaceSurface;
+use remus_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceSurface;
 
 use super::plane_frame::PlaneFrame;
 
@@ -432,7 +432,7 @@ fn fit_nurbs2d_through_points(pts: &[Point2]) -> Curve2D {
 
     let pts_3d: Vec<Point3> = pts.iter().map(|p| Point3::new(p.x(), p.y(), 0.0)).collect();
     let degree = 3.min(pts_3d.len() - 1);
-    let Ok(nurbs_3d) = brepkit_math::nurbs::fitting::interpolate(&pts_3d, degree) else {
+    let Ok(nurbs_3d) = remus_math::nurbs::fitting::interpolate(&pts_3d, degree) else {
         return fallback();
     };
 
@@ -451,7 +451,7 @@ fn fit_nurbs2d_through_points(pts: &[Point2]) -> Curve2D {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
 
     #[test]
     fn line_on_xy_plane_produces_line2d_with_roundtrip() {
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn pcurve_line_on_cylinder_is_vertical() {
-        let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+        let cyl = remus_math::surfaces::CylindricalSurface::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             1.0,
@@ -593,14 +593,14 @@ mod tests {
 
     #[test]
     fn pcurve_circle_on_cylinder_is_horizontal() {
-        let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+        let cyl = remus_math::surfaces::CylindricalSurface::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             1.0,
         )
         .unwrap();
         let surface = FaceSurface::Cylinder(cyl);
-        let circle = brepkit_math::curves::Circle3D::new(
+        let circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 3.0),
             Vec3::new(0.0, 0.0, 1.0),
             1.0,
@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(surface_periods(&plane), (None, None));
 
         let cyl = FaceSurface::Cylinder(
-            brepkit_math::surfaces::CylindricalSurface::new(
+            remus_math::surfaces::CylindricalSurface::new(
                 Point3::new(0.0, 0.0, 0.0),
                 Vec3::new(0.0, 0.0, 1.0),
                 1.0,
@@ -637,12 +637,12 @@ mod tests {
         assert_eq!(surface_periods(&cyl), (Some(TAU), None));
 
         let sphere = FaceSurface::Sphere(
-            brepkit_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap(),
+            remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap(),
         );
         assert_eq!(surface_periods(&sphere), (Some(TAU), None));
 
         let torus = FaceSurface::Torus(
-            brepkit_math::surfaces::ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0)
+            remus_math::surfaces::ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0)
                 .unwrap(),
         );
         assert_eq!(surface_periods(&torus), (Some(TAU), Some(TAU)));
@@ -653,10 +653,10 @@ mod tests {
     /// hoist the per-arm setup, never to change the sampled points.
     #[test]
     fn sample_edge_uniform_matches_evaluate_edge_at_t() {
-        use brepkit_math::curves::{Circle3D, Ellipse3D};
-        use brepkit_math::nurbs::fitting::interpolate;
-        use brepkit_math::vec::Vec3;
-        use brepkit_topology::edge::EdgeCurve;
+        use remus_math::curves::{Circle3D, Ellipse3D};
+        use remus_math::nurbs::fitting::interpolate;
+        use remus_math::vec::Vec3;
+        use remus_topology::edge::EdgeCurve;
 
         let circle = Circle3D::new_with_ref(
             Point3::new(1.0, 2.0, 3.0),

@@ -7,20 +7,20 @@
     clippy::print_stderr
 )]
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::Solid;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::Solid;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::ds::GfaArena;
 use crate::pave_filler::PaveFiller;
 
 /// Build a minimal axis-aligned box solid in the topology.
-fn make_box(topo: &mut Topology, min: [f64; 3], max: [f64; 3]) -> brepkit_topology::solid::SolidId {
+fn make_box(topo: &mut Topology, min: [f64; 3], max: [f64; 3]) -> remus_topology::solid::SolidId {
     let [x0, y0, z0] = min;
     let [x1, y1, z1] = max;
 
@@ -35,7 +35,7 @@ fn make_box(topo: &mut Topology, min: [f64; 3], max: [f64; 3]) -> brepkit_topolo
         topo.add_vertex(Vertex::new(Point3::new(x0, y1, z1), 1e-7)),
     ];
 
-    let mut edge = |a: usize, b: usize| -> brepkit_topology::edge::EdgeId {
+    let mut edge = |a: usize, b: usize| -> remus_topology::edge::EdgeId {
         topo.add_edge(Edge::new(v[a], v[b], EdgeCurve::Line))
     };
 
@@ -218,7 +218,7 @@ fn gfa_boolean_fuse_two_boxes() {
     match &result {
         Ok(solid_id) => {
             eprintln!("GFA fuse succeeded: solid {:?}", solid_id);
-            let faces = brepkit_topology::explorer::solid_faces(&topo, *solid_id).unwrap();
+            let faces = remus_topology::explorer::solid_faces(&topo, *solid_id).unwrap();
             eprintln!("  Result has {} faces", faces.len());
             assert!(!faces.is_empty(), "fuse result should have faces");
         }
@@ -240,7 +240,7 @@ fn gfa_fuse_adjacent_boxes_same_domain() {
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Fuse, a, b);
     match &result {
         Ok(solid_id) => {
-            let faces = brepkit_topology::explorer::solid_faces(&topo, *solid_id).unwrap();
+            let faces = remus_topology::explorer::solid_faces(&topo, *solid_id).unwrap();
             eprintln!("Adjacent fuse: {} faces", faces.len());
             assert_eq!(
                 faces.len(),
@@ -263,7 +263,7 @@ fn gfa_cut_overlapping_boxes() {
 
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Cut, a, b);
     let solid_id = result.expect("GFA cut of overlapping boxes should succeed");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid_id).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid_id).unwrap();
     eprintln!("Cut: {} faces", faces.len());
     assert!(
         faces.len() >= 6,
@@ -297,7 +297,7 @@ fn gfa_intersect_overlapping_boxes() {
 
     let solid_id = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Intersect, a, b)
         .expect("GFA intersect should succeed");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid_id).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid_id).unwrap();
     assert_eq!(
         faces.len(),
         6,
@@ -310,7 +310,7 @@ fn gfa_intersect_overlapping_boxes() {
 /// when two boxes share a face.
 #[test]
 fn force_interf_ee_adjacent_boxes_creates_common_blocks() {
-    use brepkit_math::tolerance::Tolerance;
+    use remus_math::tolerance::Tolerance;
 
     let mut topo = Topology::default();
     let a = make_box(&mut topo, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
@@ -358,7 +358,7 @@ fn force_interf_ee_adjacent_boxes_creates_common_blocks() {
 /// ForceInterfEE should NOT create CommonBlocks for disjoint boxes.
 #[test]
 fn force_interf_ee_disjoint_boxes_no_common_blocks() {
-    use brepkit_math::tolerance::Tolerance;
+    use remus_math::tolerance::Tolerance;
 
     let mut topo = Topology::default();
     let a = make_box(&mut topo, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
@@ -381,7 +381,7 @@ fn force_interf_ee_disjoint_boxes_no_common_blocks() {
 /// CB-aware MakeSplitEdges: all PaveBlocks in a CommonBlock share one edge.
 #[test]
 fn make_split_edges_common_block_shares_edge() {
-    use brepkit_math::tolerance::Tolerance;
+    use remus_math::tolerance::Tolerance;
 
     let mut topo = Topology::default();
     let a = make_box(&mut topo, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
@@ -432,7 +432,7 @@ fn builder_solid_adjacent_boxes_connectivity() {
 
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Fuse, a, b)
         .expect("adjacent box fuse");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert_eq!(faces.len(), 10, "adjacent fuse should have 10 faces");
 
     // Check manifold: each edge should be shared by exactly 2 faces
@@ -479,12 +479,12 @@ fn builder_solid_angle_with_ref_basic() {
 #[test]
 fn gfa_fuse_manifold_boxes_10_faces() {
     let mut topo = Topology::default();
-    let a = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
-    let b = brepkit_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 1.0, 0.0, 0.0);
+    let a = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+    let b = remus_topology::test_utils::make_unit_cube_manifold_at(&mut topo, 1.0, 0.0, 0.0);
 
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Fuse, a, b)
         .expect("manifold box fuse");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     assert_eq!(
         faces.len(),
         10,
@@ -503,7 +503,7 @@ fn gfa_cut_touching_boxes() {
 
     let solid = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Cut, a, b)
         .expect("cut of touching boxes");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
     assert_eq!(
         faces.len(),
         6,
@@ -520,7 +520,7 @@ fn gfa_fuse_disjoint_boxes() {
 
     let solid =
         crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Fuse, a, b).expect("disjoint fuse");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
     assert_eq!(
         faces.len(),
         12,
@@ -540,7 +540,7 @@ fn gfa_cut_nested_boxes() {
     // The GFA itself may also produce a result. Either outcome is acceptable.
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Cut, a, b);
     if let Ok(solid) = result {
-        let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
         assert!(
             faces.len() >= 6,
             "nested cut should have at least 6 faces, got {}",
@@ -558,7 +558,7 @@ fn gfa_fuse_overlapping_boxes_face_count() {
 
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Fuse, a, b)
         .expect("fuse of overlapping boxes");
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     // Section curves are trimmed to the mutual face overlap, so each cut
     // face splits into exactly 2 sub-faces (kept L + discarded square):
     // 6 untouched faces + 6 L-faces = 12 at the algo level. The
@@ -584,7 +584,7 @@ fn coplanar_phase_creates_section_edges() {
     let b = make_box(&mut topo, [0.5, 0.0, 0.0], [1.5, 1.0, 1.0]);
 
     let mut arena = GfaArena::default();
-    let tol = brepkit_math::tolerance::Tolerance::new();
+    let tol = remus_math::tolerance::Tolerance::new();
 
     // Run PaveFiller (includes Phase FF-coplanar)
     crate::pave_filler::run_pave_filler(&mut topo, a, b, tol, &mut arena).unwrap();
@@ -602,7 +602,7 @@ fn coplanar_phase_creates_section_edges() {
     let result = crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Fuse, a, b).unwrap();
     let solid = topo.solid(result).unwrap();
     let shell = topo.shell(solid.outer_shell()).unwrap();
-    let mut edge_face_count: std::collections::HashMap<brepkit_topology::edge::EdgeId, usize> =
+    let mut edge_face_count: std::collections::HashMap<remus_topology::edge::EdgeId, usize> =
         std::collections::HashMap::new();
     for &fid in shell.faces() {
         let face = topo.face(fid).unwrap();
@@ -623,8 +623,8 @@ fn coplanar_phase_creates_section_edges() {
 /// Debug: check how many section PBs and boundary PBs exist for overlapping boxes.
 #[test]
 fn debug_overlapping_boxes_section_pbs() {
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     let mut topo = Topology::default();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
@@ -750,9 +750,9 @@ fn debug_overlapping_boxes_section_pbs() {
 /// Dumps sub-face count, SD pairs, classification, and BOP selection.
 #[test]
 fn trace_builder_overlapping_box_fuse() {
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     let mut topo = Topology::default();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
@@ -775,7 +775,7 @@ fn trace_builder_overlapping_box_fuse() {
         let surface_desc = match topo
             .face(sf.face_id)
             .ok()
-            .map(brepkit_topology::face::Face::surface)
+            .map(remus_topology::face::Face::surface)
         {
             Some(FaceSurface::Plane { normal, d }) => {
                 format!(
@@ -827,11 +827,11 @@ fn trace_builder_overlapping_box_fuse() {
                     if let Ok(edge) = topo.edge(oe.edge()) {
                         let sp = topo
                             .vertex(edge.start())
-                            .map(brepkit_topology::vertex::Vertex::point)
+                            .map(remus_topology::vertex::Vertex::point)
                             .ok();
                         let ep = topo
                             .vertex(edge.end())
-                            .map(brepkit_topology::vertex::Vertex::point)
+                            .map(remus_topology::vertex::Vertex::point)
                             .ok();
                         if let (Some(s), Some(e)) = (sp, ep) {
                             eprintln!(
@@ -879,7 +879,7 @@ fn trace_builder_overlapping_box_fuse() {
 /// Checks face count and edge manifoldness at the algo level.
 #[test]
 fn gfa_fuse_1d_overlapping_manifold_boxes() {
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
     use std::collections::HashMap;
 
     let mut topo = Topology::default();
@@ -894,7 +894,7 @@ fn gfa_fuse_1d_overlapping_manifold_boxes() {
     eprintln!("1D-offset fuse: {face_count} faces");
 
     // Check edge manifoldness
-    let mut edge_face_count: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
+    let mut edge_face_count: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
     for &fid in shell.faces() {
         let face = topo.face(fid).unwrap();
         let wire = topo.wire(face.outer_wire()).unwrap();
@@ -925,9 +925,9 @@ fn gfa_fuse_1d_overlapping_manifold_boxes() {
 /// Z-axis offset creates 4 coplanar side face pairs (x=0, x=1, y=0, y=1).
 #[test]
 fn trace_builder_z_axis_overlap() {
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     let mut topo = Topology::default();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
@@ -982,11 +982,11 @@ fn trace_builder_z_axis_overlap() {
                     let ev = arena.resolve_vertex(pb.end.vertex);
                     let sp = topo
                         .vertex(sv)
-                        .map(brepkit_topology::vertex::Vertex::point)
+                        .map(remus_topology::vertex::Vertex::point)
                         .ok();
                     let ep = topo
                         .vertex(ev)
-                        .map(brepkit_topology::vertex::Vertex::point)
+                        .map(remus_topology::vertex::Vertex::point)
                         .ok();
                     eprintln!(
                         "  FF: {f1:?}({f1_desc}) x {f2:?}({f2_desc}) PBs={n_pbs} \
@@ -1012,7 +1012,7 @@ fn trace_builder_z_axis_overlap() {
         let surface_desc = match topo
             .face(sf.face_id)
             .ok()
-            .map(brepkit_topology::face::Face::surface)
+            .map(remus_topology::face::Face::surface)
         {
             Some(FaceSurface::Plane { normal, d }) => format!(
                 "Plane(n=({:.1},{:.1},{:.1}),d={d:.2})",
@@ -1045,11 +1045,11 @@ fn trace_builder_z_axis_overlap() {
                 if let Ok(edge) = topo.edge(oe.edge()) {
                     let sp = topo
                         .vertex(edge.start())
-                        .map(brepkit_topology::vertex::Vertex::point)
+                        .map(remus_topology::vertex::Vertex::point)
                         .ok();
                     let ep = topo
                         .vertex(edge.end())
-                        .map(brepkit_topology::vertex::Vertex::point)
+                        .map(remus_topology::vertex::Vertex::point)
                         .ok();
                     eprintln!("    E[{ei}]: {sp:?} -> {ep:?} fwd={}", oe.is_forward());
                 }
@@ -1071,7 +1071,7 @@ fn trace_builder_z_axis_overlap() {
 /// GFA fuse of z-axis-offset overlapping manifold boxes.
 #[test]
 fn gfa_fuse_z_axis_overlapping_manifold_boxes() {
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
     use std::collections::HashMap;
 
     let mut topo = Topology::default();
@@ -1086,7 +1086,7 @@ fn gfa_fuse_z_axis_overlapping_manifold_boxes() {
     eprintln!("Z-axis fuse: {face_count} faces");
 
     // Check edge manifoldness
-    let mut edge_face_count: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
+    let mut edge_face_count: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
     for &fid in shell.faces() {
         let face = topo.face(fid).unwrap();
         let wire = topo.wire(face.outer_wire()).unwrap();
@@ -1096,7 +1096,7 @@ fn gfa_fuse_z_axis_overlapping_manifold_boxes() {
     }
 
     let non_manifold = edge_face_count.values().filter(|&&n| n != 2).count();
-    let mut verts: std::collections::HashSet<brepkit_topology::vertex::VertexId> =
+    let mut verts: std::collections::HashSet<remus_topology::vertex::VertexId> =
         std::collections::HashSet::new();
     for &fid in shell.faces() {
         let face = topo.face(fid).unwrap();
@@ -1119,11 +1119,11 @@ fn gfa_fuse_z_axis_overlapping_manifold_boxes() {
         {
             let sp = topo
                 .vertex(e.start())
-                .map(brepkit_topology::vertex::Vertex::point)
+                .map(remus_topology::vertex::Vertex::point)
                 .ok();
             let ep = topo
                 .vertex(e.end())
-                .map(brepkit_topology::vertex::Vertex::point)
+                .map(remus_topology::vertex::Vertex::point)
                 .ok();
             eprintln!("  NM edge {eid:?}: count={count} {sp:?} -> {ep:?}");
         }
@@ -1161,16 +1161,16 @@ fn make_cylinder(
     z0: f64,
     radius: f64,
     height: f64,
-) -> brepkit_topology::solid::SolidId {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+) -> remus_topology::solid::SolidId {
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let v_bot = topo.add_vertex(Vertex::new(Point3::new(cx + radius, cy, z0), 1e-7));
     let v_top = topo.add_vertex(Vertex::new(Point3::new(cx + radius, cy, z0 + height), 1e-7));
@@ -1236,7 +1236,7 @@ fn make_cylinder(
 /// Compute (face_count, edge_count, vertex_count, euler) for a solid.
 fn solid_topology_summary(
     topo: &Topology,
-    solid: brepkit_topology::solid::SolidId,
+    solid: remus_topology::solid::SolidId,
 ) -> (usize, usize, usize, i64) {
     use std::collections::HashSet;
     let s = topo.solid(solid).unwrap();
@@ -1292,7 +1292,7 @@ fn gfa_cut_box_cylinder_through_produces_valid_topology() {
     // Manifold check: every edge must be shared by exactly 2 faces.
     let s = topo.solid(result).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
-    let manifold = brepkit_topology::validation::validate_shell_closed(sh, &topo);
+    let manifold = remus_topology::validation::validate_shell_closed(sh, &topo);
     assert!(
         manifold.is_ok(),
         "result shell must be manifold, got {manifold:?}"
@@ -1358,7 +1358,7 @@ fn gfa_cut_box_cylinder_grid_through_sequential_produces_valid_topology() {
 
     let s = topo.solid(target).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
-    let manifold = brepkit_topology::validation::validate_shell_closed(sh, &topo);
+    let manifold = remus_topology::validation::validate_shell_closed(sh, &topo);
     assert!(
         manifold.is_ok(),
         "result shell must be manifold, got {manifold:?}"
@@ -1395,7 +1395,7 @@ fn gfa_cut_box_cylinder_coplanar_caps_produces_valid_topology() {
     eprintln!("coplanar-cap cut: faces={f}, edges={e}, verts={v}, euler={euler}");
 
     // Manifold: every edge shared by exactly 2 oriented-edge uses.
-    let mut edge_use_count: std::collections::HashMap<brepkit_topology::edge::EdgeId, usize> =
+    let mut edge_use_count: std::collections::HashMap<remus_topology::edge::EdgeId, usize> =
         std::collections::HashMap::new();
     let s = topo.solid(result).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
@@ -1455,10 +1455,8 @@ fn gfa_cut_box_cylinder_coplanar_caps_produces_valid_topology() {
     );
 
     // No two coincident full-circle edges (same center/radius/axis).
-    let mut full_circles: Vec<(
-        brepkit_topology::edge::EdgeId,
-        brepkit_math::curves::Circle3D,
-    )> = Vec::new();
+    let mut full_circles: Vec<(remus_topology::edge::EdgeId, remus_math::curves::Circle3D)> =
+        Vec::new();
     for &eid in edge_use_count.keys() {
         let edge = topo.edge(eid).unwrap();
         if edge.start() == edge.end()
@@ -1487,11 +1485,11 @@ fn gfa_cut_box_cylinder_coplanar_caps_produces_valid_topology() {
     // Order 5 is too coarse for full-period trig integrands on the
     // cylindrical hole wall; 16 keeps quadrature error far below the
     // 0.1% assertion budget.
-    let options = brepkit_check::properties::PropertiesOptions {
+    let options = remus_check::properties::PropertiesOptions {
         gauss_order: 16,
         ..Default::default()
     };
-    let vol = brepkit_check::properties::solid_volume(&topo, result, &options).unwrap();
+    let vol = remus_check::properties::solid_volume(&topo, result, &options).unwrap();
     let rel = (vol - expected_vol).abs() / expected_vol;
     assert!(
         rel < 0.001,
@@ -1524,18 +1522,18 @@ fn gfa_cut_box_two_coplanar_cap_cylinders_sequential_valid() {
 
     let s = topo.solid(target).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
-    let manifold = brepkit_topology::validation::validate_shell_closed(sh, &topo);
+    let manifold = remus_topology::validation::validate_shell_closed(sh, &topo);
     assert!(
         manifold.is_ok(),
         "result must be manifold, got {manifold:?}"
     );
 
     let expected_vol = 32.0 - 2.0 * std::f64::consts::PI * 0.3 * 0.3 * 2.0;
-    let options = brepkit_check::properties::PropertiesOptions {
+    let options = remus_check::properties::PropertiesOptions {
         gauss_order: 16,
         ..Default::default()
     };
-    let vol = brepkit_check::properties::solid_volume(&topo, target, &options).unwrap();
+    let vol = remus_check::properties::solid_volume(&topo, target, &options).unwrap();
     let rel = (vol - expected_vol).abs() / expected_vol;
     assert!(
         rel < 0.001,
@@ -1562,7 +1560,7 @@ fn gfa_cut_shelled_box_through_floor_is_manifold() {
     let result =
         crate::gfa::boolean(&mut topo, crate::bop::BooleanOp::Cut, tray, tool).expect("floor cut");
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).expect("faces");
+    let faces = remus_topology::explorer::solid_faces(&topo, result).expect("faces");
     assert_eq!(
         faces.len(),
         15,
@@ -1592,7 +1590,7 @@ fn gfa_cut_shelled_box_through_floor_is_manifold() {
 
 #[test]
 fn source_pairs_include_every_pair() {
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
     let mut topo = Topology::default();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
@@ -1606,7 +1604,7 @@ fn source_pairs_include_every_pair() {
 #[test]
 fn pave_filler_n_empty_sources_errors() {
     let mut topo = Topology::default();
-    let tol = brepkit_math::tolerance::Tolerance::default();
+    let tol = remus_math::tolerance::Tolerance::default();
     let mut arena = GfaArena::new();
     assert!(crate::pave_filler::run_pave_filler_n(&mut topo, &[], tol, &mut arena).is_err());
 }
@@ -1616,9 +1614,9 @@ fn pave_filler_n_empty_sources_errors() {
 /// fuse) must produce an identical result. Compare the fused face count.
 #[test]
 fn pave_filler_n_matches_two_solid_for_n2() {
-    use brepkit_topology::explorer::solid_faces;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let tol = remus_math::tolerance::Tolerance::default();
 
     let fuse_faces = |use_nway: bool| -> usize {
         let mut topo = Topology::default();
@@ -1652,8 +1650,8 @@ fn pave_filler_n_matches_two_solid_for_n2() {
 /// across pairs without a hidden two-solid assumption.
 #[test]
 fn pave_filler_n_accumulates_three_overlapping_boxes() {
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let tol = remus_math::tolerance::Tolerance::default();
     let mut topo = Topology::default();
     let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
     let b = make_unit_cube_manifold_at(&mut topo, 0.5, 0.0, 0.0);
@@ -1678,10 +1676,10 @@ fn pave_filler_n_accumulates_three_overlapping_boxes() {
 
 /// Count how many distinct edges of a solid are used by exactly two faces
 /// (manifold) vs otherwise, as a watertightness proxy.
-fn edge_face_share(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> (usize, usize) {
+fn edge_face_share(topo: &Topology, solid: remus_topology::solid::SolidId) -> (usize, usize) {
     use std::collections::HashMap;
     let mut uses: HashMap<usize, usize> = HashMap::new();
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oe in topo.wire(wid).unwrap().edges() {
@@ -1699,9 +1697,9 @@ fn edge_face_share(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> 
 /// face count and be watertight.
 #[test]
 fn build_fuse_n_two_interpenetrating_boxes_matches_two_solid() {
-    use brepkit_topology::explorer::solid_faces;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let tol = remus_math::tolerance::Tolerance::default();
 
     // Two-solid reference.
     let two_solid_faces = {
@@ -1750,9 +1748,9 @@ fn build_fuse_n_two_interpenetrating_boxes_matches_two_solid() {
 /// in a single pass.
 #[test]
 fn build_fuse_n_three_interpenetrating_boxes_is_watertight() {
-    use brepkit_topology::explorer::solid_faces;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let tol = remus_math::tolerance::Tolerance::default();
 
     let mut src = Topology::default();
     let a = make_unit_cube_manifold_at(&mut src, 0.0, 0.0, 0.0);
@@ -1786,9 +1784,9 @@ fn build_fuse_n_three_interpenetrating_boxes_is_watertight() {
 
 /// Run the full N-way fuse pipeline for `offsets` unit cubes and return
 /// (result topology, solid, face count).
-fn nway_fuse(offsets: &[[f64; 3]]) -> (Topology, brepkit_topology::solid::SolidId) {
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
+fn nway_fuse(offsets: &[[f64; 3]]) -> (Topology, remus_topology::solid::SolidId) {
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let tol = remus_math::tolerance::Tolerance::default();
     let mut src = Topology::default();
     let solids: Vec<_> = offsets
         .iter()
@@ -1814,9 +1812,9 @@ fn nway_fuse(offsets: &[[f64; 3]]) -> (Topology, brepkit_topology::solid::SolidI
 /// fuse and is watertight — the case that used to bail.
 #[test]
 fn build_fuse_n_axis_aligned_overlap_matches_two_solid() {
-    use brepkit_topology::explorer::solid_faces;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-    let tol = brepkit_math::tolerance::Tolerance::default();
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
+    let tol = remus_math::tolerance::Tolerance::default();
 
     let two_solid = {
         let mut topo = Topology::default();
@@ -1845,7 +1843,7 @@ fn build_fuse_n_axis_aligned_overlap_matches_two_solid() {
 /// producing one watertight 2×1×1 bar.
 #[test]
 fn build_fuse_n_abutting_boxes_drop_shared_wall() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
     let (topo, result) = nway_fuse(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]);
     let (two, other) = edge_face_share(&topo, result);
     assert!(
@@ -1862,7 +1860,7 @@ fn build_fuse_n_abutting_boxes_drop_shared_wall() {
 /// pass, resolving coincident faces between every interacting pair.
 #[test]
 fn build_fuse_n_three_axis_aligned_row_watertight() {
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::explorer::solid_faces;
     let (topo, result) = nway_fuse(&[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [1.0, 0.0, 0.0]]);
     assert!(!solid_faces(&topo, result).unwrap().is_empty());
     let (two, other) = edge_face_share(&topo, result);

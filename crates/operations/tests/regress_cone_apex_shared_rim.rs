@@ -34,15 +34,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::det_hash::DetHashSet;
-use brepkit_operations::measure::{solid_bounding_box, solid_volume};
-use brepkit_operations::primitives::make_cone;
-use brepkit_operations::tessellate::{
+use remus_math::det_hash::DetHashSet;
+use remus_operations::measure::{solid_bounding_box, solid_volume};
+use remus_operations::primitives::make_cone;
+use remus_operations::tessellate::{
     TriangleMesh, boundary_edge_count, non_manifold_edge_count, tessellate_solid,
     tessellate_solid_grouped_with_tolerance,
 };
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Deflection used by the structured fuzz harness's mesh rung.
 const FUZZ_K: f64 = 4e-5;
@@ -112,7 +112,7 @@ fn assert_pointed_cone_closed(r: f64, h: f64, k: f64) -> usize {
         &topo,
         solid,
         deflection,
-        brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
     )
     .unwrap();
     let mut per_face_rings: Vec<Vec<u32>> = Vec::new();

@@ -59,11 +59,11 @@
 
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -104,7 +104,7 @@ fn faces_on_plane(topo: &Topology, solid: SolidId, target: f64) -> Vec<(SolidFac
     out
 }
 
-type SolidFace = brepkit_topology::face::FaceId;
+type SolidFace = remus_topology::face::FaceId;
 
 #[test]
 fn lipband_cut_bottom_is_a_single_ring() {
@@ -112,8 +112,8 @@ fn lipband_cut_bottom_is_a_single_ring() {
     let outer = load("lipband_outerprism.bin", &mut topo);
     let inner = load("lipband_innerfrustum.bin", &mut topo);
 
-    let v_outer = brepkit_operations::measure::solid_volume(&topo, outer, 0.005).unwrap();
-    let v_inner = brepkit_operations::measure::solid_volume(&topo, inner, 0.005).unwrap();
+    let v_outer = remus_operations::measure::solid_volume(&topo, outer, 0.005).unwrap();
+    let v_inner = remus_operations::measure::solid_volume(&topo, inner, 0.005).unwrap();
 
     let band = boolean(&mut topo, BooleanOp::Cut, outer, inner).unwrap();
 
@@ -135,12 +135,12 @@ fn lipband_cut_bottom_is_a_single_ring() {
     let area_on_bottom = |solid| -> f64 {
         faces_on_plane(&topo, solid, -2.6)
             .iter()
-            .map(|(fid, _, _)| brepkit_operations::measure::face_area(&topo, *fid, 0.01).unwrap())
+            .map(|(fid, _, _)| remus_operations::measure::face_area(&topo, *fid, 0.01).unwrap())
             .sum()
     };
     let band_bottom_area: f64 = bottom
         .iter()
-        .map(|(fid, _, _)| brepkit_operations::measure::face_area(&topo, *fid, 0.01).unwrap())
+        .map(|(fid, _, _)| remus_operations::measure::face_area(&topo, *fid, 0.01).unwrap())
         .sum();
     let expected_bottom_area = area_on_bottom(outer) - area_on_bottom(inner);
     assert!(
@@ -152,7 +152,7 @@ fn lipband_cut_bottom_is_a_single_ring() {
     // Volume follows from the two operands; the doubled bottom over-counts it
     // roughly 3.3x, so the band only has to be tight enough to separate the two
     // regimes.
-    let v_band = brepkit_operations::measure::solid_volume(&topo, band, 0.005).unwrap();
+    let v_band = remus_operations::measure::solid_volume(&topo, band, 0.005).unwrap();
     let expected = v_outer - v_inner;
     assert!(
         (v_band - expected).abs() < expected * 5e-3,

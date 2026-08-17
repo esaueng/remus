@@ -1,8 +1,8 @@
 //! Intersection curve from face-face intersection.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::FaceId;
+use remus_math::aabb::Aabb3;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceId;
 
 use super::pave::PaveBlockId;
 

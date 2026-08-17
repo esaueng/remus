@@ -1,8 +1,8 @@
-//! # brepkit-topology
+//! # remus-topology
 //!
 //! Boundary representation (B-Rep) topological data structures.
 //!
-//! This is layer L1, depending only on `brepkit-math`.
+//! This is layer L1, depending only on `remus-math`.
 //!
 //! # Architecture
 //!
@@ -278,9 +278,9 @@ pub enum DeleteSolidError {
     },
 }
 
-impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
-    fn diagnostic(&self) -> brepkit_math::diagnostic::Diagnostic {
-        use brepkit_math::diagnostic::{Diagnostic, FailureCategory};
+impl remus_math::diagnostic::ToDiagnostic for TopologyError {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
         let message = self.to_string();
         let entity_not_found = |entity: &'static str, index: usize| {
             Diagnostic::new(FailureCategory::InvalidInput, "entity_not_found", &message)
@@ -417,7 +417,7 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
 mod diagnostic_registry_tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::diagnostic::{DetailValue, FailureCategory, ToDiagnostic};
+    use remus_math::diagnostic::{DetailValue, FailureCategory, ToDiagnostic};
 
     use super::*;
 
@@ -426,7 +426,7 @@ mod diagnostic_registry_tests {
         // Stable-code pins: changing any string is a public contract change.
         let mut arena: Arena<vertex::Vertex> = Arena::new();
         let vid = arena.alloc(vertex::Vertex::new(
-            brepkit_math::vec::Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Point3::new(0.0, 0.0, 0.0),
             1e-7,
         ));
 

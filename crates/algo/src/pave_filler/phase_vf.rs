@@ -6,13 +6,13 @@
 
 use std::collections::HashSet;
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Interference};
 use crate::error::AlgoError;
@@ -34,10 +34,10 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
-    let verts_a = brepkit_topology::explorer::solid_vertices(topo, solid_a)?;
-    let verts_b = brepkit_topology::explorer::solid_vertices(topo, solid_b)?;
-    let faces_a = brepkit_topology::explorer::solid_faces(topo, solid_a)?;
-    let faces_b = brepkit_topology::explorer::solid_faces(topo, solid_b)?;
+    let verts_a = remus_topology::explorer::solid_vertices(topo, solid_a)?;
+    let verts_b = remus_topology::explorer::solid_vertices(topo, solid_b)?;
+    let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
+    let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
     // Collect face-edge vertex sets to skip vertices already on face edges
     let face_edge_verts_b = collect_face_edge_vertices(topo, &faces_b)?;
@@ -59,7 +59,7 @@ fn collect_face_edge_vertices(
 ) -> Result<Vec<HashSet<VertexId>>, AlgoError> {
     let mut result = Vec::with_capacity(faces.len());
     for &fid in faces {
-        let edges = brepkit_topology::explorer::face_edges(topo, fid)?;
+        let edges = remus_topology::explorer::face_edges(topo, fid)?;
         let mut verts = HashSet::new();
         for eid in edges {
             let edge = topo.edge(eid)?;
@@ -152,7 +152,7 @@ fn record_vf(arena: &mut GfaArena, vertex: VertexId, face: FaceId, uv: (f64, f64
 }
 
 /// Dot product of a point (as position vector) with a direction.
-fn dot_point_normal(p: brepkit_math::vec::Point3, n: Vec3) -> f64 {
+fn dot_point_normal(p: remus_math::vec::Point3, n: Vec3) -> f64 {
     p.x() * n.x() + p.y() * n.y() + p.z() * n.z()
 }
 

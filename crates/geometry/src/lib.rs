@@ -1,8 +1,8 @@
-//! # brepkit-geometry
+//! # remus-geometry
 //!
-//! Geometry algorithms for brepkit B-Rep models.
+//! Geometry algorithms for remus B-Rep models.
 //!
-//! This is layer L1, depending only on `brepkit-math`.
+//! This is layer L1, depending only on `remus-math`.
 //!
 //! Three subsystems:
 //! - **sampling** — adaptive and uniform curve/surface sampling

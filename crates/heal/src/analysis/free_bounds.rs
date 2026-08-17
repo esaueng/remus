@@ -5,9 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::shell::ShellId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::shell::ShellId;
 
 use crate::HealError;
 

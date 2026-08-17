@@ -5,15 +5,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// Combined result of [`repair_solid`]: validation before, healing, validation after.
 #[derive(Debug, Clone)]
@@ -83,7 +83,7 @@ pub fn merge_split_rim_arcs(
     solid: SolidId,
     tolerance: Tolerance,
 ) -> Result<usize, crate::OperationsError> {
-    Ok(brepkit_heal::upgrade::merge_split_rim_arcs::merge_split_rim_arcs(topo, solid, tolerance)?)
+    Ok(remus_heal::upgrade::merge_split_rim_arcs::merge_split_rim_arcs(topo, solid, tolerance)?)
 }
 
 /// Summary of repairs performed by [`heal_solid`].
@@ -241,7 +241,7 @@ pub fn merge_coincident_vertices(
 
     for (eid, new_start, new_end) in updates {
         let edge = topo.edge_mut(eid)?;
-        *edge = brepkit_topology::edge::Edge::new(new_start, new_end, edge.curve().clone());
+        *edge = remus_topology::edge::Edge::new(new_start, new_end, edge.curve().clone());
     }
 
     Ok(merged_count)
@@ -302,7 +302,7 @@ pub fn remove_degenerate_edges(
             // modification via wire_mut corrupts other solids that share
             // the same wire ID (analytic_boolean shares edges/wires across
             // faces via edge_map dedup in a single topology arena).
-            let new_wire = brepkit_topology::wire::Wire::new(new_edges, wire.is_closed())?;
+            let new_wire = remus_topology::wire::Wire::new(new_edges, wire.is_closed())?;
             let new_wire_id = topo.add_wire(new_wire);
             let face = topo.face_mut(fid)?;
             if face.outer_wire() == wire_id {
@@ -344,7 +344,7 @@ pub fn remove_wire_spurs(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<usize, crate::OperationsError> {
-    let face_ids = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
     let mut removed = 0;
 
     for fid in face_ids {
@@ -658,7 +658,7 @@ pub fn close_wire_gaps(
                 // Allocate: apply the updates.
                 for (eid, new_start, new_end, curve) in updates {
                     let em = topo.edge_mut(eid)?;
-                    *em = brepkit_topology::edge::Edge::new(new_start, new_end, curve);
+                    *em = remus_topology::edge::Edge::new(new_start, new_end, curve);
                 }
                 gaps_closed += 1;
             }
@@ -747,7 +747,7 @@ pub fn remove_small_faces(
     }
 
     let new_shell =
-        brepkit_topology::shell::Shell::new(remaining).map_err(crate::OperationsError::Topology)?;
+        remus_topology::shell::Shell::new(remaining).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
     Ok(removed_count)
@@ -867,7 +867,7 @@ pub fn remove_duplicate_faces(
     }
 
     let new_shell =
-        brepkit_topology::shell::Shell::new(remaining).map_err(crate::OperationsError::Topology)?;
+        remus_topology::shell::Shell::new(remaining).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
     Ok(removed_count)
@@ -1009,7 +1009,7 @@ fn find_shared_vertex(
     topo: &Topology,
     face_a: FaceId,
     face_b: FaceId,
-) -> Option<brepkit_math::vec::Point3> {
+) -> Option<remus_math::vec::Point3> {
     let fa = topo.face(face_a).ok()?;
     let fb = topo.face(face_b).ok()?;
 
@@ -1050,7 +1050,7 @@ fn find_shared_vertex(
                     return topo
                         .vertex(vid)
                         .ok()
-                        .map(brepkit_topology::vertex::Vertex::point);
+                        .map(remus_topology::vertex::Vertex::point);
                 }
                 if let Ok(v) = topo.vertex(vid) {
                     let qp = quantize_vertex(v.point());
@@ -1141,7 +1141,7 @@ pub(crate) fn unify_faces_with_history(
     }
 
     // Step 1: Build edge→face map (topology-shared edges).
-    let edge_face_map = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+    let edge_face_map = remus_topology::explorer::edge_to_face_map(topo, solid)?;
 
     // Step 1b: Build geometric edge→face map for unshared curved edges.
     // Groups edges by (vertex_pair, curve_geometry) so that Circle edges with
@@ -1163,7 +1163,7 @@ pub(crate) fn unify_faces_with_history(
                 let (kmin, kmax) = if si <= ei { (si, ei) } else { (ei, si) };
                 #[allow(clippy::type_complexity)]
                 let key: Option<(usize, usize, u8, i64, i64, i64, i64)> = match edge.curve() {
-                    brepkit_topology::edge::EdgeCurve::Circle(c) => {
+                    remus_topology::edge::EdgeCurve::Circle(c) => {
                         let center = c.center();
                         Some((
                             kmin,
@@ -1175,7 +1175,7 @@ pub(crate) fn unify_faces_with_history(
                             q(c.radius()),
                         ))
                     }
-                    brepkit_topology::edge::EdgeCurve::Ellipse(e) => {
+                    remus_topology::edge::EdgeCurve::Ellipse(e) => {
                         let center = e.center();
                         Some((
                             kmin,
@@ -1190,10 +1190,10 @@ pub(crate) fn unify_faces_with_history(
                     // No geometric key is minted for these, so they fall back
                     // to topological edge identity rather than being merged by
                     // a coarse quantized key.
-                    brepkit_topology::edge::EdgeCurve::Line
-                    | brepkit_topology::edge::EdgeCurve::Hyperbola(_)
-                    | brepkit_topology::edge::EdgeCurve::Parabola(_)
-                    | brepkit_topology::edge::EdgeCurve::NurbsCurve(_) => None,
+                    remus_topology::edge::EdgeCurve::Line
+                    | remus_topology::edge::EdgeCurve::Hyperbola(_)
+                    | remus_topology::edge::EdgeCurve::Parabola(_)
+                    | remus_topology::edge::EdgeCurve::NurbsCurve(_) => None,
                 };
                 if let Some(k) = key {
                     geom_edge_faces.entry(k).or_default().push(fid);
@@ -1377,7 +1377,7 @@ pub(crate) fn unify_faces_with_history(
     struct MergeGroupData {
         face_ids: Vec<FaceId>,
         boundary_edges: Vec<OrientedEdge>,
-        inner_wires: Vec<brepkit_topology::wire::WireId>,
+        inner_wires: Vec<remus_topology::wire::WireId>,
         surface: FaceSurface,
         reversed: bool,
     }
@@ -1407,7 +1407,7 @@ pub(crate) fn unify_faces_with_history(
         }
 
         let mut boundary_edges: Vec<OrientedEdge> = Vec::new();
-        let mut all_inner_wires: Vec<brepkit_topology::wire::WireId> = Vec::new();
+        let mut all_inner_wires: Vec<remus_topology::wire::WireId> = Vec::new();
         let mut representative_surface: Option<FaceSurface> = None;
         let mut representative_reversed = false;
 
@@ -1892,7 +1892,7 @@ fn order_edges_into_loops(
 ///
 /// Converts every analytic surface and curve to a NURBS representation.
 /// Stored pcurves are dropped on conversion — see
-/// `brepkit_heal::custom::convert_to_bspline` for the full rationale.
+/// `remus_heal::custom::convert_to_bspline` for the full rationale.
 ///
 /// # Errors
 ///
@@ -1901,7 +1901,7 @@ pub fn convert_to_bspline(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<usize, crate::OperationsError> {
-    brepkit_heal::custom::convert_to_bspline::convert_solid_to_bspline(topo, solid).map_err(|e| {
+    remus_heal::custom::convert_to_bspline::convert_solid_to_bspline(topo, solid).map_err(|e| {
         crate::OperationsError::InvalidInput {
             reason: format!("convert_to_bspline failed: {e}"),
         }
@@ -1918,7 +1918,7 @@ pub fn convert_to_bspline(
 /// This is the inverse of [`convert_to_bspline`]: STEP/IGES imports
 /// that came in as NURBS (e.g., from CAD systems that export
 /// everything as B-splines) can be normalized back into the analytic
-/// forms that brepkit's intersection / blend / boolean operators
+/// forms that remus's intersection / blend / boolean operators
 /// handle most efficiently.
 ///
 /// Hyperbola and Parabola curve types are recognized but cannot yet
@@ -1951,20 +1951,20 @@ pub fn convert_to_elementary(
     solid: SolidId,
     tolerance: f64,
 ) -> Result<usize, crate::OperationsError> {
-    let tol = brepkit_math::tolerance::Tolerance {
+    let tol = remus_math::tolerance::Tolerance {
         linear: tolerance,
-        ..brepkit_math::tolerance::Tolerance::new()
+        ..remus_math::tolerance::Tolerance::new()
     };
     let surfaces =
-        brepkit_heal::custom::convert_to_elementary::convert_to_elementary(topo, solid, &tol)
+        remus_heal::custom::convert_to_elementary::convert_to_elementary(topo, solid, &tol)
             .map_err(|e| crate::OperationsError::InvalidInput {
                 reason: format!("convert_to_elementary (surfaces) failed: {e}"),
             })?;
     let edges =
-        brepkit_heal::custom::convert_to_elementary::convert_edges_to_elementary(topo, solid, &tol)
+        remus_heal::custom::convert_to_elementary::convert_edges_to_elementary(topo, solid, &tol)
             .map_err(|e| crate::OperationsError::InvalidInput {
-                reason: format!("convert_to_elementary (edges) failed: {e}"),
-            })?;
+            reason: format!("convert_to_elementary (edges) failed: {e}"),
+        })?;
     Ok(surfaces + edges)
 }
 

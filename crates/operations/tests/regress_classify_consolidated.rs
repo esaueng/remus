@@ -1,7 +1,7 @@
-//! Regression: `brepkit_operations::classify` must agree with the ground-truth
+//! Regression: `remus_operations::classify` must agree with the ground-truth
 //! ray caster, and its winding number must be correct on curved geometry.
 //!
-//! Two defects motivated consolidating this module onto `brepkit_check`:
+//! Two defects motivated consolidating this module onto `remus_check`:
 //!
 //! 1. `operations::classify` was a ~1000-line near-duplicate of
 //!    `check::classify` that never read `inner_wires`. Because the WASM
@@ -17,17 +17,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::classify::{
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::classify::{
     PointClassification, classify_point, classify_point_robust, classify_point_winding,
     winding_number,
 };
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.05;
 const TOL: f64 = 1e-6;

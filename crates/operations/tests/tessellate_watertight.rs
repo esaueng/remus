@@ -9,11 +9,11 @@
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
-use brepkit_math::vec::Point3;
-use brepkit_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::topology::Topology;
+use remus_math::vec::Point3;
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_topology::solid::SolidId;
+use remus_topology::topology::Topology;
 
 /// Returns `(edge_count, non_manifold_or_boundary_count)` after welding
 /// coincident vertices by quantized position (1e-6), so the check reflects

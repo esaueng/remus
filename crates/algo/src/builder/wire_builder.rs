@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
-use brepkit_math::vec::Point2;
+use remus_math::vec::Point2;
 
 use super::split_types::OrientedPCurveEdge;
 
@@ -637,7 +637,7 @@ fn edge_angle_at_vertex_periodic(
 /// to approximate the true tangent -- important for half-circle arcs where
 /// the chord direction can be perpendicular to the actual tangent.
 fn pcurve_tangent_at_endpoint(edge: &OrientedPCurveEdge, at_start: bool) -> (f64, f64) {
-    use brepkit_math::curves2d::Curve2D;
+    use remus_math::curves2d::Curve2D;
 
     // For NURBS pcurves, sample near the endpoint for tangent direction.
     // Reverse edges reuse the same pcurve -- swap t0/tn to match the
@@ -723,9 +723,9 @@ fn clockwise_angle(angle_in: f64, angle_out: f64) -> f64 {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::curves2d::{Curve2D, Line2D};
-    use brepkit_math::vec::Vec2;
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::Vec2;
+    use remus_topology::edge::EdgeCurve;
 
     fn make_line_edge(start: Point2, end: Point2) -> OrientedPCurveEdge {
         let dir = Vec2::new(end.x() - start.x(), end.y() - start.y());
@@ -737,8 +737,8 @@ mod tests {
             pcurve,
             start_uv: start,
             end_uv: end,
-            start_3d: brepkit_math::vec::Point3::new(start.x(), start.y(), 0.0),
-            end_3d: brepkit_math::vec::Point3::new(end.x(), end.y(), 0.0),
+            start_3d: remus_math::vec::Point3::new(start.x(), start.y(), 0.0),
+            end_3d: remus_math::vec::Point3::new(end.x(), end.y(), 0.0),
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,

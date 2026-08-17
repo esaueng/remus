@@ -1,4 +1,4 @@
-use brepkit_io::ImportLimits;
+use remus_io::ImportLimits;
 
 pub fn limits() -> ImportLimits {
     ImportLimits {

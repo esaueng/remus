@@ -15,8 +15,8 @@ kernel-maturity contract:
 
 ## Naming
 
-The kernel is published under the `brepkit-*` crate prefix; the repository is
-`remus` and a rename is in flight. These documents say "the kernel" wherever
+The kernel is Remus: the repository is `remus` and the crates carry the
+`remus-*` prefix. These documents say "the kernel" wherever
 possible. Nothing in this contract depends on the name.
 
 ## Objective

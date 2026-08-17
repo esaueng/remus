@@ -8,12 +8,12 @@
 //! straight contact lines, creating new edges, vertices, and wires for the
 //! trimmed result.
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::BlendError;
 
@@ -503,8 +503,8 @@ fn plane_local_frame(
     surface: &FaceSurface,
     edge_data: &[(OrientedEdge, Point3, Point3)],
     face_id: FaceId,
-) -> Result<(Point3, brepkit_math::vec::Vec3, brepkit_math::vec::Vec3), BlendError> {
-    use brepkit_math::vec::Vec3;
+) -> Result<(Point3, remus_math::vec::Vec3, remus_math::vec::Vec3), BlendError> {
+    use remus_math::vec::Vec3;
 
     let normal = match surface {
         FaceSurface::Plane { normal, .. } => *normal,
@@ -646,9 +646,9 @@ pub fn trim_face_general(
     // Planar path: construct UV from plane frame and delegate
     if let FaceSurface::Plane { normal, d } = &surface {
         let arbitrary = if normal.x().abs() < 0.9 {
-            brepkit_math::vec::Vec3::new(1.0, 0.0, 0.0)
+            remus_math::vec::Vec3::new(1.0, 0.0, 0.0)
         } else {
-            brepkit_math::vec::Vec3::new(0.0, 1.0, 0.0)
+            remus_math::vec::Vec3::new(0.0, 1.0, 0.0)
         };
         let u_axis = normal.cross(arbitrary);
         let u_len = u_axis.length();
@@ -664,7 +664,7 @@ pub fn trim_face_general(
         let contact_uv: Vec<(f64, f64)> = contact_3d
             .iter()
             .map(|p| {
-                let rel = brepkit_math::vec::Vec3::new(
+                let rel = remus_math::vec::Vec3::new(
                     p.x() - origin.x(),
                     p.y() - origin.y(),
                     p.z() - origin.z(),
@@ -885,8 +885,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
 
     /// Helper: create a unit square face on the XY plane (z=0).
     ///
@@ -1161,9 +1161,9 @@ mod tests {
 
     #[test]
     fn propagate_split_drops_stale_pcurve_entries() {
-        use brepkit_math::curves2d::{Curve2D, Line2D};
-        use brepkit_math::vec::{Point2, Vec2};
-        use brepkit_topology::pcurve::PCurve;
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::vec::{Point2, Vec2};
+        use remus_topology::pcurve::PCurve;
 
         let mut topo = Topology::new();
         let (face_id, verts, edges) = make_square_face(&mut topo);
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn non_planar_face_returns_untrimmed() {
-        use brepkit_math::surfaces::CylindricalSurface;
+        use remus_math::surfaces::CylindricalSurface;
 
         let mut topo = Topology::new();
 

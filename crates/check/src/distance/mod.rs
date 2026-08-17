@@ -11,12 +11,12 @@ pub(crate) mod edge;
 
 use std::collections::HashSet;
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::bvh::Bvh;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::bvh::Bvh;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::CheckError;
 
@@ -151,7 +151,7 @@ pub fn point_to_face(
             }
         }
         FaceSurface::Nurbs(nurbs) => {
-            match brepkit_math::nurbs::projection::project_point_to_surface(nurbs, point, 1e-7) {
+            match remus_math::nurbs::projection::project_point_to_surface(nurbs, point, 1e-7) {
                 Ok(proj) => {
                     if is_point_in_face_boundary(topo, face_id, proj.point)? {
                         Ok(Some((proj.distance, proj.point)))
@@ -326,7 +326,7 @@ fn collect_solid_edge_segments(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<Vec<(Point3, Point3)>, CheckError> {
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_topology::edge::EdgeCurve;
 
     let solid_data = topo.solid(solid)?;
     let mut seen = HashSet::new();
@@ -556,7 +556,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::surfaces::{CylindricalSurface, SphericalSurface, ToroidalSurface};
+    use remus_math::surfaces::{CylindricalSurface, SphericalSurface, ToroidalSurface};
 
     #[test]
     fn point_to_sphere_outside() {
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn solid_to_solid_separated() {
-        use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+        use remus_topology::test_utils::make_unit_cube_manifold_at;
         let mut topo = Topology::new();
         // Two unit cubes: one at origin, one at (3, 0, 0). Gap of 2.0 in X.
         let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);

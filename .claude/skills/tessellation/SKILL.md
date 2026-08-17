@@ -12,7 +12,7 @@ You are producing or debugging a `TriangleMesh` from a solid: cracks between fac
 ## Quick reference
 
 ```rust
-use brepkit_operations::tessellate::{
+use remus_operations::tessellate::{
     tessellate_solid, is_watertight, boundary_edge_count, non_manifold_edge_count,
 };
 
@@ -21,7 +21,7 @@ assert_eq!(boundary_edge_count(&mesh), 0);
 assert!(is_watertight(&mesh));
 ```
 
-`is_watertight` == boundary edges 0 AND non-manifold edges 0. Defined in `crates/operations/src/tessellate/mesh_ops.rs`, re-exported from `tessellate/mod.rs`. `TriangleMesh { positions, normals, indices }` is in `tessellate/mod.rs`. Deflection is the max chord sag; the default angular tolerance is `brepkit_math::chord::DEFAULT_ANGULAR_TOL`.
+`is_watertight` == boundary edges 0 AND non-manifold edges 0. Defined in `crates/operations/src/tessellate/mesh_ops.rs`, re-exported from `tessellate/mod.rs`. `TriangleMesh { positions, normals, indices }` is in `tessellate/mod.rs`. Deflection is the max chord sag; the default angular tolerance is `remus_math::chord::DEFAULT_ANGULAR_TOL`.
 
 Locate the meshers and the dispatch:
 
@@ -77,7 +77,7 @@ A full-revolution periodic wall carrying two hole loops that CROSS each other (f
 
 ## GPU path: keep faces analytic
 
-CPU tessellation is not the only consumer of surface parameters. `crates/render/src/compute_mesh.rs` meshes cylinders on the GPU from packed analytic descriptors at screen-space LOD (`CylinderDescriptor`, `screen_space_tess_factor`). Cylinder only at time of writing; verify with `rg -n 'Descriptor' crates/render/src/compute_mesh.rs` before claiming more. Any operation that degrades an analytic face to NURBS or mesh kills this path for that face. See the **analytic-preservation** skill; audit degradations with `cargo run --release --example approx_census -p brepkit-operations`.
+CPU tessellation is not the only consumer of surface parameters. `crates/render/src/compute_mesh.rs` meshes cylinders on the GPU from packed analytic descriptors at screen-space LOD (`CylinderDescriptor`, `screen_space_tess_factor`). Cylinder only at time of writing; verify with `rg -n 'Descriptor' crates/render/src/compute_mesh.rs` before claiming more. Any operation that degrades an analytic face to NURBS or mesh kills this path for that face. See the **analytic-preservation** skill; audit degradations with `cargo run --release --example approx_census -p remus-operations`.
 
 ## Anti-patterns
 

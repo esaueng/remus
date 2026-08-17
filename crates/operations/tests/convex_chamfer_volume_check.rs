@@ -6,13 +6,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::blend_ops::chamfer_v2;
-use brepkit_operations::extrude::extrude;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::make_polygon_wire;
-use brepkit_topology::explorer::solid_edges;
-use brepkit_topology::face::{Face, FaceSurface};
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::blend_ops::chamfer_v2;
+use remus_operations::extrude::extrude;
+use remus_topology::Topology;
+use remus_topology::builder::make_polygon_wire;
+use remus_topology::explorer::solid_edges;
+use remus_topology::face::{Face, FaceSurface};
 
 #[test]
 fn chamfer_v2_convex_ridge_fails_closed_on_winding_defect() {
@@ -53,7 +53,7 @@ fn chamfer_v2_convex_ridge_fails_closed_on_winding_defect() {
         })
         .expect("ridge edge");
 
-    let before = brepkit_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    let before = remus_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
     let error = match chamfer_v2(&mut topo, solid, &[ridge], 0.5, 0.5) {
         Ok(_) => panic!("orientation-invalid chamfer must fail closed"),
         Err(error) => error,
@@ -64,7 +64,7 @@ fn chamfer_v2_convex_ridge_fails_closed_on_winding_defect() {
     );
 
     // The transactional modifier contract restores the input after rejection.
-    let after = brepkit_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    let after = remus_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
     assert!(
         (after - before).abs() < 1e-9,
         "failed chamfer mutated the input: before={before:.12} after={after:.12}"

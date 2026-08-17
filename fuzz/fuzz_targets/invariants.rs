@@ -19,14 +19,14 @@
 
 use std::collections::BTreeMap;
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_operations::measure::{mass_properties, solid_bounding_box, solid_volume};
-use brepkit_operations::tessellate::{
+use remus_math::aabb::Aabb3;
+use remus_operations::measure::{mass_properties, solid_bounding_box, solid_volume};
+use remus_operations::tessellate::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid,
 };
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::explorer;
+use remus_topology::solid::SolidId;
 
 /// Relative slack for volume comparisons.
 ///
@@ -109,7 +109,7 @@ impl Census {
 /// # Errors
 ///
 /// Propagates topology lookup failures.
-pub fn census(topo: &Topology, solid: SolidId) -> Result<Census, brepkit_topology::TopologyError> {
+pub fn census(topo: &Topology, solid: SolidId) -> Result<Census, remus_topology::TopologyError> {
     let (faces, edges, vertices) = explorer::solid_entity_counts(topo, solid)?;
 
     let mut inner_wires = 0;
@@ -161,7 +161,7 @@ pub fn census(topo: &Topology, solid: SolidId) -> Result<Census, brepkit_topolog
 pub fn shell_census(
     topo: &Topology,
     solid: SolidId,
-) -> Result<Vec<ShellCensus>, brepkit_topology::TopologyError> {
+) -> Result<Vec<ShellCensus>, remus_topology::TopologyError> {
     use std::collections::{BTreeSet, HashMap};
 
     let faces = explorer::solid_faces(topo, solid)?;
@@ -621,8 +621,8 @@ pub fn assert_deflection_stable(what: &str, topo: &Topology, solid: SolidId, coa
 ///
 /// Panics when the census, the watertightness or the `s³` volume law breaks.
 pub fn assert_scale_invariant(what: &str, topo: &Topology, solid: SolidId, s: f64) {
-    use brepkit_math::mat::Mat4;
-    use brepkit_operations::transform::transform_solid;
+    use remus_math::mat::Mat4;
+    use remus_operations::transform::transform_solid;
 
     let Ok(base) = census(topo, solid) else {
         return;
@@ -720,7 +720,7 @@ pub fn fingerprint(topo: &Topology, solid: SolidId) -> Option<Vec<u8>> {
     let mut rows: Vec<(i64, i64, i64, i64, i64, i64, &'static str)> = Vec::new();
     for fid in explorer::solid_faces(topo, solid).ok()? {
         let face = topo.face(fid).ok()?;
-        let verts = brepkit_operations::boolean::face_polygon(topo, fid).ok()?;
+        let verts = remus_operations::boolean::face_polygon(topo, fid).ok()?;
         let n = verts.len().max(1) as f64;
         let cx = verts.iter().map(|p| p.x()).sum::<f64>() / n;
         let cy = verts.iter().map(|p| p.y()).sum::<f64>() / n;

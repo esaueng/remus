@@ -21,12 +21,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::wire::OrientedEdge;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::wire::OrientedEdge;
 
 use crate::boolean::{FaceSpec, assemble_solid_mixed};
 use crate::dot_normal_point;
@@ -441,7 +441,7 @@ pub fn shell(
                             inner_wires: vec![],
                         });
                     }
-                } else if let Ok(new_cyl) = brepkit_math::surfaces::CylindricalSurface::new(
+                } else if let Ok(new_cyl) = remus_math::surfaces::CylindricalSurface::new(
                     cyl.origin(),
                     cyl.axis(),
                     new_radius,
@@ -489,7 +489,7 @@ pub fn shell(
                         ),
                     });
                 }
-                let new_sph = brepkit_math::surfaces::SphericalSurface::new(sphere.center(), new_r)
+                let new_sph = remus_math::surfaces::SphericalSurface::new(sphere.center(), new_r)
                     .map_err(crate::OperationsError::Math)?;
                 result_specs.push(FaceSpec::Surface {
                     vertices: inner_verts,
@@ -517,8 +517,8 @@ pub fn shell(
 
     let solid = assemble_solid_mixed(topo, &result_specs, tol)?;
 
-    let edge_face_map = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
-    let mut boundary_edge_ids: Vec<brepkit_topology::edge::EdgeId> = Vec::new();
+    let edge_face_map = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+    let mut boundary_edge_ids: Vec<remus_topology::edge::EdgeId> = Vec::new();
     for (&edge_idx, faces) in &edge_face_map {
         if faces.len() == 1
             && let Some(eid) = topo.edge_id_from_index(edge_idx)
@@ -589,7 +589,7 @@ pub fn shell(
     let mut rim_wires = Vec::with_capacity(loops.len());
     let mut rim_polys: Vec<Vec<Point3>> = Vec::with_capacity(loops.len());
     for lp in &loops {
-        let wire = brepkit_topology::wire::Wire::new(lp.clone(), true)
+        let wire = remus_topology::wire::Wire::new(lp.clone(), true)
             .map_err(crate::OperationsError::Topology)?;
         let wid = topo.add_wire(wire);
         let poly = crate::boolean::wire_polygon(topo, wid)?;
@@ -693,7 +693,7 @@ pub fn shell(
                 })
                 .map(|(_, &j)| rim_wires[j])
                 .collect();
-            let rim_face = brepkit_topology::face::Face::new(
+            let rim_face = remus_topology::face::Face::new(
                 rim_wires[i],
                 holes,
                 FaceSurface::Plane { normal, d },
@@ -708,7 +708,7 @@ pub fn shell(
     let mut new_faces: Vec<FaceId> = shell.faces().to_vec();
     new_faces.extend(rim_face_ids);
     let new_shell =
-        brepkit_topology::shell::Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
+        remus_topology::shell::Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
     gate(topo, solid)
@@ -769,7 +769,7 @@ fn point_in_loop(poly: &[Point3], p: Point3, u: Vec3, v: Vec3) -> bool {
 /// `validate_solid` would check is checked, by way of its relaxed form plus
 /// the edge-sharing count that form leaves out.
 fn gate(topo: &Topology, solid: SolidId) -> Result<SolidId, crate::OperationsError> {
-    let edge_uses = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+    let edge_uses = remus_topology::explorer::edge_to_face_map(topo, solid)?;
     let free = edge_uses.values().filter(|f| f.len() < 2).count();
     let non_manifold = edge_uses.values().filter(|f| f.len() > 2).count();
     if free > 0 || non_manifold > 0 {
@@ -811,7 +811,7 @@ fn sort_edges_into_loops(
     topo: &Topology,
     edges: &[OrientedEdge],
 ) -> Result<Vec<Vec<OrientedEdge>>, crate::OperationsError> {
-    use brepkit_topology::vertex::VertexId;
+    use remus_topology::vertex::VertexId;
 
     if edges.is_empty() {
         return Ok(Vec::new());
@@ -877,7 +877,7 @@ fn sort_edges_into_loops(
 mod tests;
 
 /// Outward normals of `face` at each of `verts`, honouring the reversal flag.
-fn face_surface_normals(face: &brepkit_topology::face::Face, verts: &[Point3]) -> Vec<Vec3> {
+fn face_surface_normals(face: &remus_topology::face::Face, verts: &[Point3]) -> Vec<Vec3> {
     verts
         .iter()
         .map(|v| {

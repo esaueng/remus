@@ -3,13 +3,13 @@
 //! For each (vertex, edge) pair across solids, checks if the vertex
 //! lies on the edge. If so, adds an extra pave to the edge's pave block.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
+use remus_math::aabb::Aabb3;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Interference, Pave};
 use crate::error::AlgoError;
@@ -20,7 +20,7 @@ fn edge_aabb(topo: &Topology, eid: EdgeId, margin: f64) -> Result<Option<Aabb3>,
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
     Ok(
-        matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line)
+        matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
             .then(|| Aabb3::try_from_points([start_pos, end_pos]).map(|a| a.expanded(margin)))
             .flatten(),
     )
@@ -53,10 +53,10 @@ pub fn perform(
         return Ok(());
     }
 
-    let verts_a = brepkit_topology::explorer::solid_vertices(topo, solid_a)?;
-    let verts_b = brepkit_topology::explorer::solid_vertices(topo, solid_b)?;
-    let edges_a = brepkit_topology::explorer::solid_edges(topo, solid_a)?;
-    let edges_b = brepkit_topology::explorer::solid_edges(topo, solid_b)?;
+    let verts_a = remus_topology::explorer::solid_vertices(topo, solid_a)?;
+    let verts_b = remus_topology::explorer::solid_vertices(topo, solid_b)?;
+    let edges_a = remus_topology::explorer::solid_edges(topo, solid_a)?;
+    let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
 
     check_vertex_edge_pairs(topo, &verts_a, &edges_b, tol, arena)?;
     check_vertex_edge_pairs(topo, &verts_b, &edges_a, tol, arena)?;

@@ -5,12 +5,12 @@
 //! fallback, the fillet Newton-Raphson walker, the sampled-NURBS surface offset,
 //! the grid-sampling offset trim, or the rolling-ball planar corner patch.
 //!
-//! It installs an in-process logger that captures the `brepkit_approx` debug
+//! It installs an in-process logger that captures the `remus_approx` debug
 //! probes, so each row shows exactly which fallback (if any) fired during that
 //! single operation, alongside wall-clock and result face count.
 //!
 //! Run:
-//!   cargo run --release --example approx_census -p brepkit-operations
+//!   cargo run --release --example approx_census -p remus-operations
 //!
 //! The boolean matrix uses overlapping primitives; offset/fillet/chamfer run on
 //! every analytic primitive to show they stay exact (no probe fires). A final
@@ -24,40 +24,40 @@ use std::error::Error;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::OperationsError;
-use brepkit_operations::blend_ops::{chamfer_v2, fillet_v2};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::chamfer::chamfer;
-use brepkit_operations::fillet::fillet_rolling_ball;
-use brepkit_operations::loft::loft_smooth;
-use brepkit_operations::offset_face::offset_face;
-use brepkit_operations::offset_v2::{offset_solid_v2, shell_v2};
-use brepkit_operations::primitives;
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::explorer::{solid_edges, solid_faces};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::OperationsError;
+use remus_operations::blend_ops::{chamfer_v2, fillet_v2};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::chamfer::chamfer;
+use remus_operations::fillet::fillet_rolling_ball;
+use remus_operations::loft::loft_smooth;
+use remus_operations::offset_face::offset_face;
+use remus_operations::offset_v2::{offset_solid_v2, shell_v2};
+use remus_operations::primitives;
+use remus_operations::revolve::revolve;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::explorer::{solid_edges, solid_faces};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Captures only `brepkit_approx` probe records into `EVENTS`; everything else is
+/// Captures only `remus_approx` probe records into `EVENTS`; everything else is
 /// cheaply ignored (filtered in `enabled` and again in `log`) so unrelated engine
 /// logging does not skew the per-op timings this example measures.
 struct CaptureLogger;
 impl log::Log for CaptureLogger {
     fn enabled(&self, m: &log::Metadata) -> bool {
-        m.target() == "brepkit_approx"
+        m.target() == "remus_approx"
     }
     fn log(&self, record: &log::Record) {
-        if record.target() == "brepkit_approx"
+        if record.target() == "remus_approx"
             && let Ok(mut ev) = EVENTS.lock()
         {
             ev.push(record.args().to_string());
@@ -459,9 +459,9 @@ fn revolve_matrix() {
 /// Build a full-circle profile clearing the axis (centre at radius 6, ρ = 2)
 /// for the partial-turn trimmed-torus case.
 fn build_circle_profile(topo: &mut Topology) -> Result<FaceId, Box<dyn Error>> {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::vertex::Vertex;
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
     let circ = Circle3D::new(Point3::new(6.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 2.0)?;
     let p0 = circ.evaluate(0.0);
     let v0 = topo.add_vertex(Vertex::new(p0, 1e-7));
@@ -483,9 +483,9 @@ fn build_circle_profile(topo: &mut Topology) -> Result<FaceId, Box<dyn Error>> {
 /// torus case. Surfaces any construction error to the caller instead of
 /// swallowing it.
 fn build_half_disc_profile(topo: &mut Topology) -> Result<FaceId, Box<dyn Error>> {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_topology::edge::Edge;
-    use brepkit_topology::vertex::Vertex;
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
     let circ = Circle3D::new(Point3::new(10.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 3.0)?;
     let pa = circ.evaluate(-std::f64::consts::FRAC_PI_2);
     let pb = circ.evaluate(std::f64::consts::FRAC_PI_2);
@@ -512,7 +512,7 @@ fn build_half_disc_profile(topo: &mut Topology) -> Result<FaceId, Box<dyn Error>
 }
 
 /// Revolve a profile a full turn and report via the shared capture/report path
-/// (so any `brepkit_approx` probe that fires is surfaced), with the analytic
+/// (so any `remus_approx` probe that fires is surfaced), with the analytic
 /// surface-type breakdown appended.
 fn report_revolve(topo: &mut Topology, name: &str, face: FaceId, z: Point3, zdir: Vec3) {
     report_revolve_angle(topo, name, face, z, zdir, std::f64::consts::TAU);
@@ -837,7 +837,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     log::set_logger(&LOGGER)?;
     log::set_max_level(log::LevelFilter::Debug);
 
-    println!("=== brepkit approximation-path census ===");
+    println!("=== remus approximation-path census ===");
     println!("(a probe firing = that op degraded from exact analytic B-Rep)\n");
 
     boolean_matrix();
@@ -848,6 +848,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     remaining_paths()?;
 
     println!("\nLegend: 'exact analytic' = no degradation; 'FALLBACK' = an");
-    println!("approximation path fired (see the brepkit_approx probe text).");
+    println!("approximation path fired (see the remus_approx probe text).");
     Ok(())
 }

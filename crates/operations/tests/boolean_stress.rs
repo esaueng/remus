@@ -7,16 +7,16 @@
 
 #![allow(clippy::unwrap_used)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with_options};
-use brepkit_operations::copy::copy_solid;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::test_utils::make_unit_cube_manifold_at;
-use brepkit_topology::validation::validate_shell_manifold;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with_options};
+use remus_operations::copy::copy_solid;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
+use remus_topology::test_utils::make_unit_cube_manifold_at;
+use remus_topology::validation::validate_shell_manifold;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -445,7 +445,7 @@ fn disjoint_intersect_empty() {
     // The empty intersection succeeds with a zero-face, zero-volume result.
     let result = boolean(&mut topo, BooleanOp::Intersect, a, b).unwrap();
     assert_eq!(
-        brepkit_topology::explorer::solid_faces(&topo, result)
+        remus_topology::explorer::solid_faces(&topo, result)
             .unwrap()
             .len(),
         0,

@@ -1,13 +1,13 @@
 ---
 name: release-flow
-description: Shipping a brepkit change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the brepkit-wasm pin in brepjs, when running or debugging the type sync (sync:brepkit-types, tsc failures on Brepkit* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
+description: Shipping a remus change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the remus-wasm pin in brepjs, when running or debugging the type sync (sync:brepkit-types, tsc failures on Brepkit* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
 ---
 
-# release-flow: brepkit merge to brepjs activation
+# release-flow: remus merge to brepjs activation
 
 ## When to use
 
-A brepkit change is not "shipped" when its PR merges. It is shipped when brepjs
+A remus change is not "shipped" when its PR merges. It is shipped when brepjs
 installs the new kernel version, the type sync regenerates cleanly, and the
 adapter can call the new method. This skill covers that 4-hop chain and the
 trap at each hop. For getting the feature PR itself merged, see the
@@ -21,15 +21,15 @@ Each hop is gated on the previous one. Never skip a gate.
 
 | Hop | Action | Gate before next hop |
 |-----|--------|---------------------|
-| 1 | Feature PR squash-merges to brepkit main | Merge lands on main |
+| 1 | Feature PR squash-merges to remus main | Merge lands on main |
 | 2 | release-please opens `chore(main): release X.Y.Z` PR; it auto-merges, tags `vX.Y.Z`, and the release event triggers the publish workflow | GitHub release exists |
-| 3 | Publish workflow builds wasm and runs `npm publish` | `npm view brepkit-wasm versions --json` lists X.Y.Z AND your commit is an ancestor of the tag |
+| 3 | Publish workflow builds wasm and runs `npm publish` | `npm view remus-wasm versions --json` lists X.Y.Z AND your commit is an ancestor of the tag |
 | 4 | In brepjs: bump the devDependency pin, `npm install`, `npm run sync:brepkit-types` | tsc and knip pass, diff drops no method signatures |
 
 Key commands:
 
 ```bash
-npm view brepkit-wasm versions --json
+npm view remus-wasm versions --json
 git fetch --tags   # in this repo
 git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
 cd $BREPJS && npm install && npm run sync:brepkit-types
@@ -42,7 +42,7 @@ than an absolute path, since it has several checkouts and worktrees.
 
 ## Procedure
 
-### Hop 1 to 2: brepkit release
+### Hop 1 to 2: remus release
 
 1. After the feature PR merges, the push to main runs
    `.github/workflows/publish.yml`. Its `release-please` job opens or updates
@@ -60,7 +60,7 @@ The GitHub tag and release appear minutes before npm has the version, because
 the publish job is still building wasm. Gate on both of these:
 
 ```bash
-npm view brepkit-wasm versions --json          # array must end with "X.Y.Z"
+npm view remus-wasm versions --json          # array must end with "X.Y.Z"
 git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
 ```
 
@@ -77,14 +77,14 @@ manual escape hatch.
 In `$BREPJS` (use a worktree if the checkout is busy):
 
 1. Edit `package.json`: set the **devDependencies** entry
-   `"brepkit-wasm": "X.Y.Z"` (exact pin). Leave the **peerDependencies**
+   `"remus-wasm": "X.Y.Z"` (exact pin). Leave the **peerDependencies**
    range alone; it already covers `^2.0.0`. The pin is what brepjs CI tests
    against; the range is what consumers may bring.
 2. `npm install`. Then verify the lockfile kept the three `@emnapi` entries
    (see Pitfalls below).
 3. `npm run sync:brepkit-types`. This regenerates
    `src/kernel/brepkit/brepkitWasmTypes.ts` from the installed
-   `node_modules/brepkit-wasm/brepkit_wasm.d.ts`. That file is generated;
+   `node_modules/remus-wasm/remus_wasm.d.ts`. That file is generated;
    never hand-edit it.
 4. Checkpoint: `npm run validate && npm run knip`; pass means both exit 0.
    `validate` (`scripts/validate-change.sh`) runs typecheck, lint, boundary

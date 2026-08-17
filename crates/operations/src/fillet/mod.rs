@@ -32,20 +32,20 @@ mod rolling_ball;
 #[cfg(test)]
 mod tests;
 
-pub use brepkit_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 pub(crate) use geometry::face_surface_normal_at;
+pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
 pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
@@ -821,11 +821,11 @@ pub fn fillet_variable(
         let row_mid: Vec<Point3> = (0..n_v).map(|i| grid[i][1]).collect();
         let row_contact2: Vec<Point3> = (0..n_v).map(|i| grid[i][2]).collect();
 
-        let crv0 = brepkit_math::nurbs::fitting::interpolate(&row_contact1, degree_v)
+        let crv0 = remus_math::nurbs::fitting::interpolate(&row_contact1, degree_v)
             .map_err(crate::OperationsError::Math)?;
-        let crv1 = brepkit_math::nurbs::fitting::interpolate(&row_mid, degree_v)
+        let crv1 = remus_math::nurbs::fitting::interpolate(&row_mid, degree_v)
             .map_err(crate::OperationsError::Math)?;
-        let crv2 = brepkit_math::nurbs::fitting::interpolate(&row_contact2, degree_v)
+        let crv2 = remus_math::nurbs::fitting::interpolate(&row_contact2, degree_v)
             .map_err(crate::OperationsError::Math)?;
 
         // All three curves share the same knot vector and degree since they
@@ -850,7 +850,7 @@ pub fn fillet_variable(
                 .collect()
         };
 
-        let surface = brepkit_math::nurbs::surface::NurbsSurface::new(
+        let surface = remus_math::nurbs::surface::NurbsSurface::new(
             2,                                  // degree_u (circular arc)
             crv0.degree(),                      // degree_v
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], // knots_u

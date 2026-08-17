@@ -14,22 +14,22 @@
 //! validate + audit the result.
 //!
 //! ```sh
-//! cargo run --release -p brepkit-io --example audit_bin -- /tmp/stages/*.bin
+//! cargo run --release -p remus-io --example audit_bin -- /tmp/stages/*.bin
 //! ```
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::classify::{PointClassification, classify_point};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::classify::{PointClassification, classify_point};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 
 fn main() {
     // BOOL_A=<path> BOOL_B=<path> BOOL_OP=cut|fuse: run the boolean natively
     // and audit its result instead of loading files.
     if let (Ok(pa), Ok(pb)) = (std::env::var("BOOL_A"), std::env::var("BOOL_B")) {
         let op = match std::env::var("BOOL_OP").as_deref() {
-            Ok("fuse") => brepkit_algo::bop::BooleanOp::Fuse,
-            _ => brepkit_algo::bop::BooleanOp::Cut,
+            Ok("fuse") => remus_algo::bop::BooleanOp::Fuse,
+            _ => remus_algo::bop::BooleanOp::Cut,
         };
         let mut topo = Topology::new();
         let load = |path: &str, topo: &mut Topology| {
@@ -41,15 +41,14 @@ fn main() {
             println!("BOOL mode: could not load {pa} / {pb} as solids");
             return;
         };
-        match brepkit_algo::gfa::boolean(&mut topo, op, a, b) {
+        match remus_algo::gfa::boolean(&mut topo, op, a, b) {
             Ok(result) => {
-                let opts = brepkit_operations::validate::ValidationOptions {
+                let opts = remus_operations::validate::ValidationOptions {
                     check_orientation: true,
                     ..Default::default()
                 };
-                match brepkit_operations::validate::validate_solid_with_options(
-                    &topo, result, &opts,
-                ) {
+                match remus_operations::validate::validate_solid_with_options(&topo, result, &opts)
+                {
                     Ok(report) => {
                         for i in &report.issues {
                             println!("validate: {}", i.description);
@@ -60,7 +59,7 @@ fn main() {
                     }
                     Err(e) => println!("validate failed: {e}"),
                 }
-                if let Ok(mesh) = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+                if let Ok(mesh) = remus_operations::tessellate::tessellate_solid_with_tolerance(
                     &topo,
                     result,
                     0.01,
@@ -89,34 +88,34 @@ fn main() {
     // wrong-region repro without fixture files.
     if std::env::var("PRIM").as_deref() == Ok("octant") {
         let mut topo = Topology::new();
-        let b = brepkit_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
-        let s = brepkit_operations::primitives::make_sphere(&mut topo, 8.0, 32).unwrap();
+        let b = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let s = remus_operations::primitives::make_sphere(&mut topo, 8.0, 32).unwrap();
         let op = match std::env::var("BOOL_OP").as_deref() {
-            Ok("cut") => brepkit_algo::bop::BooleanOp::Cut,
-            Ok("fuse") => brepkit_algo::bop::BooleanOp::Fuse,
-            _ => brepkit_algo::bop::BooleanOp::Intersect,
+            Ok("cut") => remus_algo::bop::BooleanOp::Cut,
+            Ok("fuse") => remus_algo::bop::BooleanOp::Fuse,
+            _ => remus_algo::bop::BooleanOp::Intersect,
         };
         let r = if std::env::var("VIA").as_deref() == Ok("ops") {
             let op2 = match op {
-                brepkit_algo::bop::BooleanOp::Cut => brepkit_operations::boolean::BooleanOp::Cut,
-                brepkit_algo::bop::BooleanOp::Fuse => brepkit_operations::boolean::BooleanOp::Fuse,
-                brepkit_algo::bop::BooleanOp::Intersect => {
-                    brepkit_operations::boolean::BooleanOp::Intersect
+                remus_algo::bop::BooleanOp::Cut => remus_operations::boolean::BooleanOp::Cut,
+                remus_algo::bop::BooleanOp::Fuse => remus_operations::boolean::BooleanOp::Fuse,
+                remus_algo::bop::BooleanOp::Intersect => {
+                    remus_operations::boolean::BooleanOp::Intersect
                 }
             };
-            brepkit_operations::boolean::boolean(&mut topo, op2, b, s).unwrap()
+            remus_operations::boolean::boolean(&mut topo, op2, b, s).unwrap()
         } else {
-            brepkit_algo::gfa::boolean(&mut topo, op, b, s).unwrap()
+            remus_algo::gfa::boolean(&mut topo, op, b, s).unwrap()
         };
-        let vol = brepkit_operations::measure::solid_volume(&topo, r, 0.01).unwrap();
-        let ovol = brepkit_operations::measure::oriented_solid_volume(&topo, r, 0.01).unwrap();
+        let vol = remus_operations::measure::solid_volume(&topo, r, 0.01).unwrap();
+        let ovol = remus_operations::measure::oriented_solid_volume(&topo, r, 0.01).unwrap();
         println!("result vol={vol:.3} oriented={ovol:.3}");
-        let opts = brepkit_operations::validate::ValidationOptions {
+        let opts = remus_operations::validate::ValidationOptions {
             check_orientation: true,
             ..Default::default()
         };
         let report =
-            brepkit_operations::validate::validate_solid_with_options(&topo, r, &opts).unwrap();
+            remus_operations::validate::validate_solid_with_options(&topo, r, &opts).unwrap();
         println!(
             "validate issues: {:?}",
             report
@@ -125,7 +124,7 @@ fn main() {
                 .map(|i| i.description.clone())
                 .collect::<Vec<_>>()
         );
-        if let Ok(mesh) = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+        if let Ok(mesh) = remus_operations::tessellate::tessellate_solid_with_tolerance(
             &topo,
             r,
             0.01,
@@ -143,10 +142,10 @@ fn main() {
                 .count();
             println!("mesh: {unmatched} unmatched half-edges");
         }
-        let c = brepkit_operations::classify::classify_point(
+        let c = remus_operations::classify::classify_point(
             &topo,
             r,
-            brepkit_math::vec::Point3::new(1.0, 1.0, 1.0),
+            remus_math::vec::Point3::new(1.0, 1.0, 1.0),
             0.01,
             1e-7,
         );
@@ -175,7 +174,7 @@ fn main() {
                 {
                     for oe in topo.wire(wid).unwrap().edges() {
                         let e = topo.edge(oe.edge()).unwrap();
-                        if let brepkit_topology::edge::EdgeCurve::Circle(_) = e.curve() {
+                        if let remus_topology::edge::EdgeCurve::Circle(_) = e.curve() {
                             let ps = topo.vertex(e.start()).unwrap().point();
                             let pe = topo.vertex(e.end()).unwrap().point();
                             let (t0, t1) = e.domain_with_endpoints(ps, pe);
@@ -224,14 +223,14 @@ fn main() {
             println!("LOFT mode: could not load {pa} / {pb} as solids");
             return;
         };
-        let top_face = |topo: &Topology, sid: brepkit_topology::solid::SolidId| {
+        let top_face = |topo: &Topology, sid: remus_topology::solid::SolidId| {
             let faces = solid_faces(topo, sid).unwrap();
-            let mut best: Option<(brepkit_topology::face::FaceId, f64)> = None;
+            let mut best: Option<(remus_topology::face::FaceId, f64)> = None;
             for &fid in &faces {
                 let face = topo.face(fid).unwrap();
                 if !matches!(
                     face.surface(),
-                    brepkit_topology::face::FaceSurface::Plane { .. }
+                    remus_topology::face::FaceSurface::Plane { .. }
                 ) {
                     continue;
                 }
@@ -252,9 +251,9 @@ fn main() {
             println!("LOFT mode: could not find top caps");
             return;
         };
-        match brepkit_operations::loft::loft(&mut topo, &[fa, fb]) {
+        match remus_operations::loft::loft(&mut topo, &[fa, fb]) {
             Ok(result) => {
-                let mesh = brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+                let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
                     &topo,
                     result,
                     0.01,
@@ -288,7 +287,7 @@ fn main() {
             continue;
         };
         if std::env::var("HALFEDGE").is_ok() {
-            match brepkit_operations::tessellate::tessellate_solid_with_tolerance(
+            match remus_operations::tessellate::tessellate_solid_with_tolerance(
                 &topo,
                 solid,
                 0.01,
@@ -313,7 +312,7 @@ fn main() {
                             .copied()
                             .collect();
                         let (gmesh, offsets) =
-                            brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+                            remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
                                 &topo,
                                 solid,
                                 0.01,
@@ -375,10 +374,10 @@ fn main() {
     }
 }
 
-fn audit_one(topo: &Topology, solid: brepkit_topology::solid::SolidId, label: &str) {
+fn audit_one(topo: &Topology, solid: remus_topology::solid::SolidId, label: &str) {
     {
         let Ok((mesh, offsets)) =
-            brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+            remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
                 topo,
                 solid,
                 0.05,
@@ -410,7 +409,7 @@ fn audit_one(topo: &Topology, solid: brepkit_topology::solid::SolidId, label: &s
                     mesh.positions[t[1] as usize],
                     mesh.positions[t[2] as usize],
                 );
-                let centroid = brepkit_math::vec::Point3::new(
+                let centroid = remus_math::vec::Point3::new(
                     (pa.x() + pb.x() + pc.x()) / 3.0,
                     (pa.y() + pb.y() + pc.y()) / 3.0,
                     (pa.z() + pb.z() + pc.z()) / 3.0,

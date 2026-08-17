@@ -16,23 +16,23 @@ use crate::state::SketchState;
 /// Result of building a GCS from sketch state.
 #[allow(dead_code)]
 struct GcsBuildResult {
-    sys: brepkit_operations::sketch::GcsSystem,
-    point_ids: Vec<brepkit_operations::sketch::PointId>,
-    arc_ids: Vec<brepkit_operations::sketch::ArcId>,
-    circle_ids: Vec<brepkit_operations::sketch::CircleId>,
+    sys: remus_operations::sketch::GcsSystem,
+    point_ids: Vec<remus_operations::sketch::PointId>,
+    arc_ids: Vec<remus_operations::sketch::ArcId>,
+    circle_ids: Vec<remus_operations::sketch::CircleId>,
 }
 
 fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
-    use brepkit_operations::sketch::GcsConstraint;
+    use remus_operations::sketch::GcsConstraint;
 
-    let mut sys = brepkit_operations::sketch::GcsSystem::new();
+    let mut sys = remus_operations::sketch::GcsSystem::new();
 
     // Add points
-    let point_ids: Vec<brepkit_operations::sketch::PointId> = sk
+    let point_ids: Vec<remus_operations::sketch::PointId> = sk
         .points
         .iter()
         .map(|p| {
-            sys.add_point(brepkit_operations::sketch::PointData {
+            sys.add_point(remus_operations::sketch::PointData {
                 x: p.x,
                 y: p.y,
                 fixed: p.fixed,
@@ -65,14 +65,14 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     // Implicit line cache for point-pair-based constraints
     let mut line_cache: std::collections::HashMap<
         (usize, usize),
-        brepkit_operations::sketch::LineId,
+        remus_operations::sketch::LineId,
     > = std::collections::HashMap::new();
 
-    let mut get_or_create_line = |sys: &mut brepkit_operations::sketch::GcsSystem,
-                                  ids: &[brepkit_operations::sketch::PointId],
+    let mut get_or_create_line = |sys: &mut remus_operations::sketch::GcsSystem,
+                                  ids: &[remus_operations::sketch::PointId],
                                   a: usize,
                                   b: usize|
-     -> Option<brepkit_operations::sketch::LineId> {
+     -> Option<remus_operations::sketch::LineId> {
         if let std::collections::hash_map::Entry::Vacant(e) = line_cache.entry((a, b))
             && let Ok(lid) = sys.add_line(ids[a], ids[b])
         {
@@ -84,33 +84,33 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
     // Convert legacy constraints
     for c in &sk.constraints {
         let _ = match c {
-            brepkit_operations::sketch::Constraint::Coincident(a, b) => {
+            remus_operations::sketch::Constraint::Coincident(a, b) => {
                 sys.add_constraint(GcsConstraint::Coincident(point_ids[*a], point_ids[*b]))
             }
-            brepkit_operations::sketch::Constraint::Distance(a, b, d) => {
+            remus_operations::sketch::Constraint::Distance(a, b, d) => {
                 sys.add_constraint(GcsConstraint::Distance(point_ids[*a], point_ids[*b], *d))
             }
-            brepkit_operations::sketch::Constraint::FixX(p, v) => {
+            remus_operations::sketch::Constraint::FixX(p, v) => {
                 sys.add_constraint(GcsConstraint::FixX(point_ids[*p], *v))
             }
-            brepkit_operations::sketch::Constraint::FixY(p, v) => {
+            remus_operations::sketch::Constraint::FixY(p, v) => {
                 sys.add_constraint(GcsConstraint::FixY(point_ids[*p], *v))
             }
-            brepkit_operations::sketch::Constraint::Horizontal(a, b) => {
+            remus_operations::sketch::Constraint::Horizontal(a, b) => {
                 if let Some(l) = get_or_create_line(&mut sys, &point_ids, *a, *b) {
                     sys.add_constraint(GcsConstraint::Horizontal(l))
                 } else {
                     continue;
                 }
             }
-            brepkit_operations::sketch::Constraint::Vertical(a, b) => {
+            remus_operations::sketch::Constraint::Vertical(a, b) => {
                 if let Some(l) = get_or_create_line(&mut sys, &point_ids, *a, *b) {
                     sys.add_constraint(GcsConstraint::Vertical(l))
                 } else {
                     continue;
                 }
             }
-            brepkit_operations::sketch::Constraint::Angle(a, b, c, d, theta) => {
+            remus_operations::sketch::Constraint::Angle(a, b, c, d, theta) => {
                 let l1 = get_or_create_line(&mut sys, &point_ids, *a, *b);
                 let l2 = get_or_create_line(&mut sys, &point_ids, *c, *d);
                 if let (Some(l1), Some(l2)) = (l1, l2) {
@@ -119,7 +119,7 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
                     continue;
                 }
             }
-            brepkit_operations::sketch::Constraint::Perpendicular(a, b, c, d) => {
+            remus_operations::sketch::Constraint::Perpendicular(a, b, c, d) => {
                 let l1 = get_or_create_line(&mut sys, &point_ids, *a, *b);
                 let l2 = get_or_create_line(&mut sys, &point_ids, *c, *d);
                 if let (Some(l1), Some(l2)) = (l1, l2) {
@@ -128,7 +128,7 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
                     continue;
                 }
             }
-            brepkit_operations::sketch::Constraint::Parallel(a, b, c, d) => {
+            remus_operations::sketch::Constraint::Parallel(a, b, c, d) => {
                 let l1 = get_or_create_line(&mut sys, &point_ids, *a, *b);
                 let l2 = get_or_create_line(&mut sys, &point_ids, *c, *d);
                 if let (Some(l1), Some(l2)) = (l1, l2) {
@@ -169,17 +169,17 @@ fn build_gcs_from_state(sk: &SketchState) -> Result<GcsBuildResult, JsError> {
 /// using the entity IDs created during `build_gcs_from_state`.
 fn resolve_deferred_constraint(
     val: &serde_json::Value,
-    point_ids: &[brepkit_operations::sketch::PointId],
-    arc_ids: &[brepkit_operations::sketch::ArcId],
-    circle_ids: &[brepkit_operations::sketch::CircleId],
-    line_cache: &mut std::collections::HashMap<(usize, usize), brepkit_operations::sketch::LineId>,
-    sys: &mut brepkit_operations::sketch::GcsSystem,
-) -> Result<brepkit_operations::sketch::GcsConstraint, JsError> {
-    use brepkit_operations::sketch::GcsConstraint;
+    point_ids: &[remus_operations::sketch::PointId],
+    arc_ids: &[remus_operations::sketch::ArcId],
+    circle_ids: &[remus_operations::sketch::CircleId],
+    line_cache: &mut std::collections::HashMap<(usize, usize), remus_operations::sketch::LineId>,
+    sys: &mut remus_operations::sketch::GcsSystem,
+) -> Result<remus_operations::sketch::GcsConstraint, JsError> {
+    use remus_operations::sketch::GcsConstraint;
 
     let ty = val["type"].as_str().unwrap_or("");
 
-    let get_point = |key: &str| -> Result<brepkit_operations::sketch::PointId, JsError> {
+    let get_point = |key: &str| -> Result<remus_operations::sketch::PointId, JsError> {
         let idx = json_usize(val, key)?;
         point_ids.get(idx).copied().ok_or_else(|| {
             WasmError::InvalidInput {
@@ -189,7 +189,7 @@ fn resolve_deferred_constraint(
         })
     };
 
-    let get_arc = |key: &str| -> Result<brepkit_operations::sketch::ArcId, JsError> {
+    let get_arc = |key: &str| -> Result<remus_operations::sketch::ArcId, JsError> {
         let idx = json_usize(val, key)?;
         arc_ids.get(idx).copied().ok_or_else(|| {
             WasmError::InvalidInput {
@@ -199,7 +199,7 @@ fn resolve_deferred_constraint(
         })
     };
 
-    let get_circle = |key: &str| -> Result<brepkit_operations::sketch::CircleId, JsError> {
+    let get_circle = |key: &str| -> Result<remus_operations::sketch::CircleId, JsError> {
         let idx = json_usize(val, key)?;
         circle_ids.get(idx).copied().ok_or_else(|| {
             WasmError::InvalidInput {
@@ -213,10 +213,10 @@ fn resolve_deferred_constraint(
                               p2: usize,
                               cache: &mut std::collections::HashMap<
         (usize, usize),
-        brepkit_operations::sketch::LineId,
+        remus_operations::sketch::LineId,
     >,
-                              s: &mut brepkit_operations::sketch::GcsSystem|
-     -> Result<brepkit_operations::sketch::LineId, JsError> {
+                              s: &mut remus_operations::sketch::GcsSystem|
+     -> Result<remus_operations::sketch::LineId, JsError> {
         if p1 >= point_ids.len() || p2 >= point_ids.len() {
             return Err(WasmError::InvalidInput {
                 reason: "point index out of range in deferred constraint".to_string(),
@@ -348,9 +348,9 @@ impl BrepKernel {
                 index: sketch as usize,
             })?;
         let pt = if fixed {
-            brepkit_operations::sketch::SketchPoint::fixed(x, y)
+            remus_operations::sketch::SketchPoint::fixed(x, y)
         } else {
-            brepkit_operations::sketch::SketchPoint::new(x, y)
+            remus_operations::sketch::SketchPoint::new(x, y)
         };
         sk.points.push(pt);
         #[allow(clippy::cast_possible_truncation)]
@@ -504,7 +504,7 @@ impl BrepKernel {
 
         // If no arcs, circles, or deferred constraints, use the fast legacy path
         if sk.arcs.is_empty() && sk.circles.is_empty() && sk.deferred_constraints.is_empty() {
-            let mut sketch_obj = brepkit_operations::sketch::Sketch {
+            let mut sketch_obj = remus_operations::sketch::Sketch {
                 points: std::mem::take(&mut sk.points),
                 constraints: std::mem::take(&mut sk.constraints),
             };

@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_topology::face::Face;
+use remus_topology::face::Face;
 
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::{TOL, serialize_feature};
@@ -24,11 +24,11 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "sewFaces")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn sew_faces(&mut self, face_handles: Vec<u32>, tolerance: f64) -> Result<u32, JsError> {
-        let face_ids: Vec<brepkit_topology::face::FaceId> = face_handles
+        let face_ids: Vec<remus_topology::face::FaceId> = face_handles
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let solid = brepkit_operations::sew::sew_faces(self.topo_mut(), &face_ids, tolerance)?;
+        let solid = remus_operations::sew::sew_faces(self.topo_mut(), &face_ids, tolerance)?;
         Ok(solid_id_to_u32(solid))
     }
 
@@ -39,12 +39,12 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makeSolid")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn make_solid_from_faces(&mut self, face_handles: Vec<u32>) -> Result<u32, JsError> {
-        let face_ids: Vec<brepkit_topology::face::FaceId> = face_handles
+        let face_ids: Vec<remus_topology::face::FaceId> = face_handles
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
-        let tolerance = brepkit_math::tolerance::Tolerance::new().linear;
-        let solid = brepkit_operations::sew::sew_faces(self.topo_mut(), &face_ids, tolerance)?;
+        let tolerance = remus_math::tolerance::Tolerance::new().linear;
+        let solid = remus_operations::sew::sew_faces(self.topo_mut(), &face_ids, tolerance)?;
         Ok(solid_id_to_u32(solid))
     }
 
@@ -71,16 +71,16 @@ impl BrepKernel {
         face_handles: Vec<u32>,
         tolerance: f64,
     ) -> Result<u32, JsError> {
-        let face_ids: Vec<brepkit_topology::face::FaceId> = face_handles
+        let face_ids: Vec<remus_topology::face::FaceId> = face_handles
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<_, _>>()?;
         let tol = if tolerance > 0.0 {
             tolerance
         } else {
-            brepkit_math::tolerance::Tolerance::new().linear
+            remus_math::tolerance::Tolerance::new().linear
         };
-        let solid = brepkit_operations::sew::sew_faces(self.topo_mut(), &face_ids, tol)?;
+        let solid = remus_operations::sew::sew_faces(self.topo_mut(), &face_ids, tol)?;
         Ok(solid_id_to_u32(solid))
     }
 
@@ -94,7 +94,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "unifyFaces")]
     pub fn unify_faces(&mut self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let removed = brepkit_operations::heal::unify_faces(self.topo_mut(), solid_id)?;
+        let removed = remus_operations::heal::unify_faces(self.topo_mut(), solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(removed as u32)
     }
@@ -116,7 +116,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "convertToBspline")]
     pub fn convert_to_bspline(&mut self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let count = brepkit_operations::heal::convert_to_bspline(self.topo_mut(), solid_id)?;
+        let count = remus_operations::heal::convert_to_bspline(self.topo_mut(), solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(count as u32)
     }
@@ -135,8 +135,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "convertToElementary")]
     pub fn convert_to_elementary(&mut self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let count =
-            brepkit_operations::heal::convert_to_elementary(self.topo_mut(), solid_id, TOL)?;
+        let count = remus_operations::heal::convert_to_elementary(self.topo_mut(), solid_id, TOL)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(count as u32)
     }
@@ -147,7 +146,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "healSolid")]
     pub fn heal_solid(&mut self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let report = brepkit_operations::heal::heal_solid(self.topo_mut(), solid_id, TOL)?;
+        let report = remus_operations::heal::heal_solid(self.topo_mut(), solid_id, TOL)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok((report.vertices_merged
             + report.degenerate_edges_removed
@@ -168,7 +167,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "repairSolid")]
     pub fn repair_solid(&mut self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let report = brepkit_operations::heal::repair_solid(self.topo_mut(), solid_id, TOL)?;
+        let report = remus_operations::heal::repair_solid(self.topo_mut(), solid_id, TOL)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(report.after.error_count() as u32)
     }
@@ -179,11 +178,8 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "removeDegenerateEdges")]
     pub fn remove_degenerate_edges(&mut self, solid: u32, tolerance: f64) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let count = brepkit_operations::heal::remove_degenerate_edges(
-            self.topo_mut(),
-            solid_id,
-            tolerance,
-        )?;
+        let count =
+            remus_operations::heal::remove_degenerate_edges(self.topo_mut(), solid_id, tolerance)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(count as u32)
     }
@@ -194,7 +190,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "fixFaceOrientations")]
     pub fn fix_face_orientations(&mut self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let count = brepkit_operations::heal::fix_face_orientations(self.topo_mut(), solid_id)?;
+        let count = remus_operations::heal::fix_face_orientations(self.topo_mut(), solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(count as u32)
     }
@@ -213,8 +209,7 @@ impl BrepKernel {
             .iter()
             .map(|&h| self.resolve_face(h))
             .collect::<Result<Vec<_>, _>>()?;
-        let result =
-            brepkit_operations::defeature::defeature(self.topo_mut(), solid_id, &face_ids)?;
+        let result = remus_operations::defeature::defeature(self.topo_mut(), solid_id, &face_ids)?;
         Ok(solid_id_to_u32(result))
     }
 
@@ -229,7 +224,7 @@ impl BrepKernel {
         deflection: f64,
     ) -> Result<Vec<u32>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let faces = brepkit_operations::defeature::detect_small_features(
+        let faces = remus_operations::defeature::detect_small_features(
             &self.topo,
             solid_id,
             area_threshold,
@@ -244,7 +239,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "recognizeFeatures")]
     pub fn recognize_features(&self, solid: u32, deflection: f64) -> Result<String, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let features = brepkit_operations::feature_recognition::recognize_features(
+        let features = remus_operations::feature_recognition::recognize_features(
             &self.topo, solid_id, deflection,
         )?;
         let json_features: Vec<serde_json::Value> =
@@ -357,8 +352,8 @@ mod tests {
 /// with defaults.
 fn parse_heal_config(
     json: &str,
-) -> Result<(brepkit_heal::fix::config::FixConfig, Option<f64>), crate::error::WasmError> {
-    use brepkit_heal::fix::config::{FixConfig, FixMode};
+) -> Result<(remus_heal::fix::config::FixConfig, Option<f64>), crate::error::WasmError> {
+    use remus_heal::fix::config::{FixConfig, FixMode};
 
     use crate::error::WasmError;
 
@@ -456,9 +451,9 @@ impl BrepKernel {
                 })?;
         let (new_solid, result) = match tolerance {
             Some(t) => {
-                brepkit_heal::fix::fix_shape_with_tolerance(self.topo_mut(), solid_id, &config, t)
+                remus_heal::fix::fix_shape_with_tolerance(self.topo_mut(), solid_id, &config, t)
             }
-            None => brepkit_heal::fix::fix_shape(self.topo_mut(), solid_id, &config),
+            None => remus_heal::fix::fix_shape(self.topo_mut(), solid_id, &config),
         }
         .map_err(|e| crate::error::WasmError::InvalidInput {
             reason: format!("heal: {e}"),
@@ -495,7 +490,7 @@ impl BrepKernel {
                     entity: "solid",
                     index: solid as usize,
                 })?;
-        let mut process = brepkit_heal::pipeline::process::HealProcess::new();
+        let mut process = remus_heal::pipeline::process::HealProcess::new();
         let valid_steps: std::collections::HashSet<&str> =
             process.registry_mut().names().into_iter().collect();
         if let Some(step) = steps
@@ -592,7 +587,7 @@ impl BrepKernel {
     #[must_use]
     #[allow(clippy::unused_self)] // instance method so JS finds it on the kernel
     pub fn heal_pipeline_steps(&self) -> Vec<String> {
-        let mut process = brepkit_heal::pipeline::process::HealProcess::new();
+        let mut process = remus_heal::pipeline::process::HealProcess::new();
         process
             .registry_mut()
             .names()

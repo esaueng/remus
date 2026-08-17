@@ -2,7 +2,7 @@
 //!
 //! A swept/lofted/revolved end is closed by filling its section *boundary* — a
 //! ring of chord edges — rather than by reusing the section's own surface.
-//! brepkit tessellates and integrates a non-planar face over its full u/v
+//! remus tessellates and integrates a non-planar face over its full u/v
 //! extent rather than clipping to a chord-polygon wire, so a reused parent
 //! surface would overfill past the section. Instead: a planar ring gets an exact
 //! `Plane` cap (the planar tessellator clips it to the polygon), and a
@@ -10,13 +10,13 @@
 //! iso-curves are exactly the ring chords (`domain == wire`, so it can't
 //! overfill).
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::dot_normal_point;
 
@@ -67,7 +67,7 @@ fn ring_is_planar(cap_verts: &[Point3], outward: Vec3) -> bool {
 ///
 /// Returns an error if the four corners cannot define a valid bilinear NURBS
 /// patch.
-pub fn bilinear_cap_patch(corners: &[Point3]) -> Result<NurbsSurface, brepkit_math::MathError> {
+pub fn bilinear_cap_patch(corners: &[Point3]) -> Result<NurbsSurface, remus_math::MathError> {
     NurbsSurface::new(
         1,
         1,

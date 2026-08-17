@@ -4,13 +4,13 @@
 //! model AABB center (RTC); the f64 center travels separately into the camera
 //! matrix (see [`crate::camera`]).
 
-use brepkit_math::vec::Point3;
-use brepkit_operations::tessellate::{
+use remus_math::vec::Point3;
+use remus_operations::tessellate::{
     EdgeLines, sample_solid_edges, tessellate_solid_grouped_with_tolerance,
 };
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 use crate::error::RenderError;
 
@@ -62,7 +62,7 @@ impl RenderMesh {
     /// if the tessellation violates a mesh invariant (index buffer not a whole
     /// number of triangles, an out-of-range index, or incomplete face offsets).
     pub fn build(topo: &Topology, solid: SolidId, deflection: f64) -> Result<Self, RenderError> {
-        let angular_tol = brepkit_math::chord::DEFAULT_ANGULAR_TOL;
+        let angular_tol = remus_math::chord::DEFAULT_ANGULAR_TOL;
         let (mesh, face_offsets) =
             tessellate_solid_grouped_with_tolerance(topo, solid, deflection, angular_tol)?;
         let faces = solid_faces(topo, solid)?;

@@ -7,7 +7,7 @@ requires metre-scaled deflections and linear tolerances.
 
 ## Default model
 
-`brepkit_math::tolerance::Tolerance` separates linear, angular, relative, and
+`remus_math::tolerance::Tolerance` separates linear, angular, relative, and
 parametric comparisons. Prefer it over a raw epsilon when an algorithm already
 accepts a tolerance. Exact topological identity is different from geometric
 coincidence: compare typed handles directly, but compare coordinates with the

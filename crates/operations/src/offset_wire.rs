@@ -3,14 +3,14 @@
 //! Creates a new wire that is parallel to the input wire, offset by a
 //! specified distance.
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::curves::Circle3D;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::FaceSurface;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::boolean::face_polygon;
 
@@ -41,7 +41,7 @@ pub enum JoinType {
 /// or offset produces degenerate geometry.
 pub fn offset_wire(
     topo: &mut Topology,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
     distance: f64,
 ) -> Result<WireId, crate::OperationsError> {
     offset_wire_with_join(topo, face_id, distance, JoinType::Intersection)
@@ -73,7 +73,7 @@ pub fn offset_wire(
 #[allow(clippy::too_many_lines)]
 pub fn offset_wire_with_join(
     topo: &mut Topology,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
     distance: f64,
     join_type: JoinType,
 ) -> Result<WireId, crate::OperationsError> {
@@ -439,18 +439,18 @@ mod tests {
 
     use std::f64::consts::PI;
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
 
     /// Helper: make a unit square face on XY plane.
-    fn make_square(topo: &mut Topology) -> brepkit_topology::face::FaceId {
+    fn make_square(topo: &mut Topology) -> remus_topology::face::FaceId {
         let tol_val = 1e-7;
         let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), tol_val));
         let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), tol_val));
@@ -487,7 +487,7 @@ mod tests {
     /// Helper: make a 20x20 face whose loop winds clockwise in the (x, y)
     /// projection and whose surface normal points -Z, mirroring the bottom
     /// face of a box. Loop order: (20,0) -> (0,0) -> (0,20) -> (20,20).
-    fn make_cw_bottom_face(topo: &mut Topology) -> brepkit_topology::face::FaceId {
+    fn make_cw_bottom_face(topo: &mut Topology) -> remus_topology::face::FaceId {
         let tol_val = 1e-7;
         let v0 = topo.add_vertex(Vertex::new(Point3::new(20.0, 0.0, 0.0), tol_val));
         let v1 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), tol_val));
@@ -521,7 +521,7 @@ mod tests {
         ))
     }
 
-    fn wire_signed_area(topo: &Topology, wid: brepkit_topology::wire::WireId) -> f64 {
+    fn wire_signed_area(topo: &Topology, wid: remus_topology::wire::WireId) -> f64 {
         let wire = topo.wire(wid).unwrap();
         let pts: Vec<Point3> = wire
             .edges()

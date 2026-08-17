@@ -15,7 +15,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "assemblyNew")]
     pub fn assembly_new(&mut self, name: &str) -> u32 {
         self.assemblies
-            .push(brepkit_operations::assembly::Assembly::new(name));
+            .push(remus_operations::assembly::Assembly::new(name));
         #[allow(clippy::cast_possible_truncation)]
         let idx = (self.assemblies.len() - 1) as u32;
         idx

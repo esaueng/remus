@@ -3,13 +3,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::WireId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::WireId;
 
 /// Classification of an edge based on the dihedral angle between its
 /// two adjacent faces.

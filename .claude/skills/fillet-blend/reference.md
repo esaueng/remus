@@ -8,7 +8,7 @@ There are three fillet code paths and two chamfer paths. "v1 vs v2" is a simplif
 
 ### Fillet engines
 
-- **v1 rolling-ball** `crates/operations/src/fillet/rolling_ball.rs`, `pub fn fillet_rolling_ball`. Emits real rounded blend faces: NURBS walls for curved neighbors, `FaceSpec::CylindricalFace` for straight edges. `#[deprecated(since = "2.44.0", note = "Use brepkit_blend::fillet_builder::FilletBuilder (via blend_ops::fillet_v2) instead.")]`, yet still the primary production path. G1 chain propagation is internal; `fillet_rolling_ball_propagate_g1` (`fillet/mod.rs`) just delegates.
+- **v1 rolling-ball** `crates/operations/src/fillet/rolling_ball.rs`, `pub fn fillet_rolling_ball`. Emits real rounded blend faces: NURBS walls for curved neighbors, `FaceSpec::CylindricalFace` for straight edges. `#[deprecated(since = "2.44.0", note = "Use remus_blend::fillet_builder::FilletBuilder (via blend_ops::fillet_v2) instead.")]`, yet still the primary production path. G1 chain propagation is internal; `fillet_rolling_ball_propagate_g1` (`fillet/mod.rs`) just delegates.
 - **v1 flat-bevel** `crates/operations/src/fillet/mod.rs`, `pub fn fillet`. `#[deprecated(since = "0.8.0", note = "Use fillet_rolling_ball for true rounded fillets")]`. Replaces each edge with a flat bevel; planar neighbors only. Last-resort fallback.
 - **v1 variable** `fillet/mod.rs`, `pub fn fillet_variable` with `FilletRadiusLaw` (Constant / Linear / SCurve).
 - **v2 walking (blend)** `crates/blend/` wrapped by `crates/operations/src/blend_ops.rs`: `fillet_v2`, `chamfer_v2`, `chamfer_distance_angle` construct `FilletBuilder` / `ChamferBuilder`.

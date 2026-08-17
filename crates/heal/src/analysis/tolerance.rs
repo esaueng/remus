@@ -1,7 +1,7 @@
 //! Tolerance analysis — tolerance distribution and statistics.
 
-use brepkit_topology::Topology;
-use brepkit_topology::shell::ShellId;
+use remus_topology::Topology;
+use remus_topology::shell::ShellId;
 
 use crate::HealError;
 

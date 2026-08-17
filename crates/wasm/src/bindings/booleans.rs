@@ -4,8 +4,8 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::compound_ops;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::compound_ops;
 
 use crate::handles::solid_id_to_u32;
 use crate::helpers::{build_triangle_mesh, panic_message, parse_boolean_op, triangle_mesh_to_js};
@@ -26,7 +26,7 @@ use crate::shapes::JsMesh;
 /// crate-internal sharing explicit.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn coincident_face_pairs_to_json(
-    pairs: &[brepkit_algo::diagnostic::CoincidentFacePair],
+    pairs: &[remus_algo::diagnostic::CoincidentFacePair],
 ) -> serde_json::Value {
     let arr: Vec<serde_json::Value> = pairs
         .iter()
@@ -99,11 +99,11 @@ impl BrepKernel {
     pub fn detect_coincident_faces(&self, a: u32, b: u32) -> Result<String, JsError> {
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let pairs = brepkit_algo::diagnostic::detect_coincident_faces(
+        let pairs = remus_algo::diagnostic::detect_coincident_faces(
             self.topo(),
             a_id,
             b_id,
-            brepkit_math::tolerance::Tolerance::default(),
+            remus_math::tolerance::Tolerance::default(),
         )
         .map_err(|e| JsError::new(&format!("{e}")))?;
         Ok(coincident_face_pairs_to_json(&pairs).to_string())
@@ -129,7 +129,7 @@ impl BrepKernel {
             .collect::<Result<Vec<_>, _>>()?;
         let compound = self
             .topo_mut()
-            .add_compound(brepkit_topology::compound::Compound::new(solid_ids));
+            .add_compound(remus_topology::compound::Compound::new(solid_ids));
         let result = compound_ops::fuse_all(self.topo_mut(), compound)?;
         Ok(solid_id_to_u32(result))
     }
@@ -225,7 +225,7 @@ impl BrepKernel {
     pub fn fuse_with_evolution(&mut self, a: u32, b: u32) -> Result<JsValue, JsError> {
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let (result, evo) = brepkit_operations::boolean::boolean_with_evolution(
+        let (result, evo) = remus_operations::boolean::boolean_with_evolution(
             self.topo_mut(),
             BooleanOp::Fuse,
             a_id,
@@ -251,7 +251,7 @@ impl BrepKernel {
     pub fn cut_with_evolution(&mut self, a: u32, b: u32) -> Result<JsValue, JsError> {
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let (result, evo) = brepkit_operations::boolean::boolean_with_evolution(
+        let (result, evo) = remus_operations::boolean::boolean_with_evolution(
             self.topo_mut(),
             BooleanOp::Cut,
             a_id,
@@ -277,7 +277,7 @@ impl BrepKernel {
     pub fn intersect_with_evolution(&mut self, a: u32, b: u32) -> Result<JsValue, JsError> {
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let (result, evo) = brepkit_operations::boolean::boolean_with_evolution(
+        let (result, evo) = remus_operations::boolean::boolean_with_evolution(
             self.topo_mut(),
             BooleanOp::Intersect,
             a_id,
@@ -313,7 +313,7 @@ impl BrepKernel {
         let mesh_b = build_triangle_mesh(&positions_b, &indices_b)?;
         let bool_op = parse_boolean_op(op)?;
         let result =
-            brepkit_operations::mesh_boolean::mesh_boolean(&mesh_a, &mesh_b, bool_op, tolerance)?;
+            remus_operations::mesh_boolean::mesh_boolean(&mesh_a, &mesh_b, bool_op, tolerance)?;
         Ok(triangle_mesh_to_js(&result.mesh))
     }
 }
@@ -343,15 +343,15 @@ impl BrepKernel {
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let target_id = self.resolve_solid(target)?;
-            let tools: Vec<brepkit_topology::solid::SolidId> = tool_ids
+            let tools: Vec<remus_topology::solid::SolidId> = tool_ids
                 .iter()
                 .map(|&h| self.resolve_solid(h))
                 .collect::<Result<Vec<_>, _>>()?;
-            let result = brepkit_operations::boolean::compound_cut(
+            let result = remus_operations::boolean::compound_cut(
                 self.topo_mut(),
                 target_id,
                 &tools,
-                brepkit_operations::boolean::BooleanOptions::default(),
+                remus_operations::boolean::BooleanOptions::default(),
             )?;
             Ok(solid_id_to_u32(result))
         }));
@@ -377,17 +377,12 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let opts = brepkit_operations::boolean::BooleanOptions {
+        let opts = remus_operations::boolean::BooleanOptions {
             unify_faces: unify_faces.unwrap_or(true),
             ..Default::default()
         };
-        let result = brepkit_operations::boolean::boolean_with_options(
-            self.topo_mut(),
-            op,
-            a_id,
-            b_id,
-            opts,
-        )?;
+        let result =
+            remus_operations::boolean::boolean_with_options(self.topo_mut(), op, a_id, b_id, opts)?;
         Ok(solid_id_to_u32(result))
     }
 }

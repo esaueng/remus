@@ -1,4 +1,4 @@
-//! Bridge brepkit's `log` crate calls to JS `console.{log, warn, error}`.
+//! Bridge remus's `log` crate calls to JS `console.{log, warn, error}`.
 //!
 //! Without this, all `log::warn!` / `log::info!` etc. throughout the Rust
 //! code are silently dropped under wasm-pack — useful diagnostic output
@@ -41,7 +41,7 @@ impl Log for ConsoleLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let msg = format!("[brepkit:{}] {}", record.target(), record.args());
+        let msg = format!("[remus:{}] {}", record.target(), record.args());
         match record.level() {
             Level::Error => console_error(&msg),
             Level::Warn => console_warn(&msg),
@@ -83,7 +83,7 @@ fn parse_level(s: &str) -> Option<LevelFilter> {
     })
 }
 
-/// Route brepkit's Rust `log::*` calls to JavaScript `console.{log, warn,
+/// Route remus's Rust `log::*` calls to JavaScript `console.{log, warn,
 /// error}`. Without this every `log::warn!` in the engine is silently
 /// dropped under wasm-pack.
 ///

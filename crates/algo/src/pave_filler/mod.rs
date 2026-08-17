@@ -26,9 +26,9 @@ pub mod phase_vv;
 #[cfg(test)]
 mod tests;
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::ds::GfaArena;
 use crate::error::AlgoError;
@@ -106,7 +106,7 @@ impl<'a> PaveFiller<'a> {
     /// Initialize pave blocks for all edges of both solids.
     fn init_pave_blocks(&self, arena: &mut GfaArena) -> Result<(), AlgoError> {
         for &solid in &[self.solid_a, self.solid_b] {
-            let edges = brepkit_topology::explorer::solid_edges(self.topo, solid)?;
+            let edges = remus_topology::explorer::solid_edges(self.topo, solid)?;
             for edge_id in edges {
                 // Skip if already initialized (shared edges between solids)
                 if arena.edge_pave_blocks.contains_key(&edge_id) {
@@ -262,7 +262,7 @@ fn init_pave_blocks_n(
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
     for &solid in sources {
-        for edge_id in brepkit_topology::explorer::solid_edges(topo, solid)? {
+        for edge_id in remus_topology::explorer::solid_edges(topo, solid)? {
             if arena.edge_pave_blocks.contains_key(&edge_id) {
                 continue;
             }

@@ -21,12 +21,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::validate::validate_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::validate::validate_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// Plate dimensions used across the matrix.
 const PLATE: (f64, f64, f64) = (30.0, 30.0, 10.0);
@@ -51,19 +51,19 @@ fn fill_through_hole(radius: f64) -> PlugCase {
     // The bore overhangs the plate on both sides so the cut is a clean
     // through-hole rather than a coincident-cap configuration.
     let bore = make_cylinder(&mut topo, radius, dz * 3.0).unwrap();
-    brepkit_operations::transform::transform_solid(
+    remus_operations::transform::transform_solid(
         &mut topo,
         bore,
         &Mat4::translation(dx / 2.0, dy / 2.0, -dz),
     )
     .unwrap();
     let holed = boolean(&mut topo, BooleanOp::Cut, plate, bore).unwrap();
-    let faces_before = brepkit_topology::explorer::solid_faces(&topo, holed)
+    let faces_before = remus_topology::explorer::solid_faces(&topo, holed)
         .unwrap()
         .len();
 
     let plug = make_cylinder(&mut topo, radius, dz).unwrap();
-    brepkit_operations::transform::transform_solid(
+    remus_operations::transform::transform_solid(
         &mut topo,
         plug,
         &Mat4::translation(dx / 2.0, dy / 2.0, 0.0),
@@ -109,7 +109,7 @@ fn filling_the_bore_restores_the_plain_plate_at_every_radius() {
 
         // Exact, not merely close. The mesh fallback's ~1e-4 relative error
         // would sail through a loose gate; a bound at float noise cannot.
-        let volume = brepkit_operations::measure::solid_volume(topo, *filled, 0.02).unwrap();
+        let volume = remus_operations::measure::solid_volume(topo, *filled, 0.02).unwrap();
         let error = (volume - solid_volume).abs() / solid_volume;
         assert!(
             error < 1e-12,
@@ -121,7 +121,7 @@ fn filling_the_bore_restores_the_plain_plate_at_every_radius() {
         // them is `unify_faces`' job — see the next test). The mesh fallback
         // returned 93-177 faces here against this 7-face input, so a bound
         // just above the exact answer separates the two outcomes decisively.
-        let faces = brepkit_topology::explorer::solid_faces(topo, *filled)
+        let faces = remus_topology::explorer::solid_faces(topo, *filled)
             .unwrap()
             .len();
         assert!(
@@ -132,7 +132,7 @@ fn filling_the_bore_restores_the_plain_plate_at_every_radius() {
 
         // Nothing curved survives: the bore wall is gone and no facetted
         // stand-in replaced it.
-        for face in brepkit_topology::explorer::solid_faces(topo, *filled).unwrap() {
+        for face in remus_topology::explorer::solid_faces(topo, *filled).unwrap() {
             assert!(
                 topo.face(face).unwrap().surface().is_planar(),
                 "r={radius}: filled plate should be all planar, found {}",
@@ -151,11 +151,11 @@ fn the_filled_plate_unifies_back_to_six_faces() {
     for radius in RADII {
         let mut case = fill_through_hole(radius);
         for _ in 0..3 {
-            if brepkit_operations::heal::unify_faces(&mut case.topo, case.result).unwrap() == 0 {
+            if remus_operations::heal::unify_faces(&mut case.topo, case.result).unwrap() == 0 {
                 break;
             }
         }
-        let faces = brepkit_topology::explorer::solid_faces(&case.topo, case.result)
+        let faces = remus_topology::explorer::solid_faces(&case.topo, case.result)
             .unwrap()
             .len();
         assert_eq!(faces, 6, "r={radius}: filled plate should unify to a box");
@@ -173,7 +173,7 @@ fn filling_the_bore_leaves_the_holed_plate_intact() {
     let report = validate_solid(&case.topo, case.holed).unwrap();
     assert!(report.is_valid(), "the input must survive the fuse");
     assert_eq!(
-        brepkit_topology::explorer::solid_faces(&case.topo, case.holed)
+        remus_topology::explorer::solid_faces(&case.topo, case.holed)
             .unwrap()
             .len(),
         case.faces_before
@@ -189,7 +189,7 @@ fn an_off_centre_bore_fills_exactly_too() {
     let mut topo = Topology::new();
     let plate = make_box(&mut topo, dx, dy, dz).unwrap();
     let bore = make_cylinder(&mut topo, radius, dz * 3.0).unwrap();
-    brepkit_operations::transform::transform_solid(
+    remus_operations::transform::transform_solid(
         &mut topo,
         bore,
         &Mat4::translation(9.0, 21.0, -dz),
@@ -198,7 +198,7 @@ fn an_off_centre_bore_fills_exactly_too() {
     let holed = boolean(&mut topo, BooleanOp::Cut, plate, bore).unwrap();
 
     let plug = make_cylinder(&mut topo, radius, dz).unwrap();
-    brepkit_operations::transform::transform_solid(
+    remus_operations::transform::transform_solid(
         &mut topo,
         plug,
         &Mat4::translation(9.0, 21.0, 0.0),
@@ -207,13 +207,13 @@ fn an_off_centre_bore_fills_exactly_too() {
     let filled = boolean(&mut topo, BooleanOp::Fuse, holed, plug).unwrap();
 
     assert!(validate_solid(&topo, filled).unwrap().is_valid());
-    let volume = brepkit_operations::measure::solid_volume(&topo, filled, 0.02).unwrap();
+    let volume = remus_operations::measure::solid_volume(&topo, filled, 0.02).unwrap();
     let expected = dx * dy * dz;
     assert!(
         (volume - expected).abs() / expected < 1e-12,
         "off-centre fill volume {volume} is not exactly {expected}"
     );
-    for face in brepkit_topology::explorer::solid_faces(&topo, filled).unwrap() {
+    for face in remus_topology::explorer::solid_faces(&topo, filled).unwrap() {
         assert!(topo.face(face).unwrap().surface().is_planar());
     }
 }

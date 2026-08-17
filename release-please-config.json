@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "component": "brepkit-wasm",
+      "component": "remus-wasm",
       "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [

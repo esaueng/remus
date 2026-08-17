@@ -16,14 +16,14 @@
 //! Keep it active alongside `perf_64cut_determinism` — divergence means
 //! topology construction has become order-dependent again. To check across
 //! processes directly, run `cargo run --release --example determinism_sweep -p
-//! brepkit-operations` several times and diff the output.
+//! remus-operations` several times and diff the output.
 
 #![allow(clippy::unwrap_used)]
 
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_cylinder;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 
 #[test]
 fn shelled_cylinder_rim_is_deterministic() {
@@ -41,7 +41,7 @@ fn shelled_cylinder_rim_is_deterministic() {
                 .is_some_and(|n| (n.z() - 1.0).abs() < 1e-6)
         })
         .collect();
-    let shelled = brepkit_operations::shell_op::shell(&mut topo, cyl, wall, &top).unwrap();
+    let shelled = remus_operations::shell_op::shell(&mut topo, cyl, wall, &top).unwrap();
 
     let faces = solid_faces(&topo, shelled).unwrap();
     assert_eq!(faces.len(), 5, "shelled cup face count");

@@ -2,11 +2,11 @@
 //! Shared type definitions, constants, and the selection truth table for the
 //! boolean pipeline.
 
-use brepkit_math::surfaces::{CylindricalSurface, SphericalSurface};
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 /// Number of samples used when discretizing closed curves (circles, ellipses)
 /// in the analytic boolean path. All code paths must use this constant so that
@@ -256,7 +256,7 @@ pub enum Source {
     B,
 }
 
-pub(super) use brepkit_algo::FaceClass;
+pub(super) use remus_algo::FaceClass;
 
 /// Result of classifying an intersection curve against a face boundary.
 pub(super) enum CurveClassification {

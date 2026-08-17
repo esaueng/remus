@@ -22,23 +22,23 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Vec3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::Vec3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 /// Divergence-theorem volume of a triangle mesh, plus its count of edges that
 /// are not shared by exactly two triangles (0 ⇒ closed).
 fn mesh_volume(topo: &Topology, solid: SolidId, deflection: f64) -> (f64, usize) {
     use std::collections::HashMap;
 
-    let mesh = brepkit_operations::tessellate::tessellate_solid(topo, solid, deflection).unwrap();
+    let mesh = remus_operations::tessellate::tessellate_solid(topo, solid, deflection).unwrap();
     let mut incidence: HashMap<(u32, u32), usize> = HashMap::new();
     let mut total = 0.0;
     for tri in mesh.indices.chunks_exact(3) {
@@ -61,7 +61,7 @@ fn mesh_volume(topo: &Topology, solid: SolidId, deflection: f64) -> (f64, usize)
 
 /// `(planes, cylinders, nurbs, faces)` of a solid's outer shell.
 fn census(topo: &Topology, solid: SolidId) -> (usize, usize, usize, usize) {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     let (mut planes, mut cylinders, mut nurbs) = (0, 0, 0);
     for &fid in &faces {
         match topo.face(fid).unwrap().surface() {
@@ -126,7 +126,7 @@ fn rot_x90_translate(tx: f64, ty: f64, tz: f64) -> Mat4 {
 /// adapter does.
 fn build_bracket_rev_b(topo: &mut Topology) -> SolidId {
     let unify = |topo: &mut Topology, s: SolidId| {
-        brepkit_operations::heal::unify_faces(topo, s).unwrap();
+        remus_operations::heal::unify_faces(topo, s).unwrap();
         s
     };
 
@@ -198,7 +198,7 @@ fn bracket_rev_b_closed_form() -> f64 {
 /// (all points in a corner column, z within [−0.1, 8.1], z-span ≥ 4).
 fn pick_corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     let near = |a: f64, b: f64| (a - b).abs() < 0.1;
-    brepkit_topology::explorer::solid_edges(topo, solid)
+    remus_topology::explorer::solid_edges(topo, solid)
         .unwrap()
         .into_iter()
         .filter(|&eid| {
@@ -248,11 +248,11 @@ fn demo_bracket_rev_c_volume_matches_closed_form() {
         "the demo picks four base-plate corner edges"
     );
 
-    let filleted = brepkit_operations::blend_ops::fillet_v2(&mut topo, body, &edges, FILLET_R)
+    let filleted = remus_operations::blend_ops::fillet_v2(&mut topo, body, &edges, FILLET_R)
         .expect("bracket corner fillet")
         .solid;
     let shell = topo.solid(filleted).unwrap().outer_shell();
-    brepkit_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
+    remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), &topo)
         .expect("filleted bracket must be watertight");
 
     // The reported fast-path face set: 9 planes, 8 cylinders, no b-splines.
@@ -301,7 +301,7 @@ fn build_scalloped_plate(
     let drill = make_cylinder(topo, bore_r, h + 20.0).unwrap();
     transform_solid(topo, drill, &Mat4::translation(w / 2.0, d / 2.0, -10.0)).unwrap();
     let out = boolean(topo, BooleanOp::Cut, rounded, drill).unwrap();
-    brepkit_operations::heal::unify_faces(topo, out).unwrap();
+    remus_operations::heal::unify_faces(topo, out).unwrap();
     out
 }
 
@@ -366,7 +366,7 @@ fn planar_face_boundary_keeps_the_vertex_where_a_reversed_arc_starts() {
     transform_solid(&mut topo, scallop, &Mat4::translation(0.0, d, -10.0)).unwrap();
     let body = boolean(&mut topo, BooleanOp::Cut, plate, scallop).unwrap();
 
-    let top = brepkit_topology::explorer::solid_faces(&topo, body)
+    let top = remus_topology::explorer::solid_faces(&topo, body)
         .unwrap()
         .into_iter()
         .find(|&fid| {
@@ -386,7 +386,7 @@ fn planar_face_boundary_keeps_the_vertex_where_a_reversed_arc_starts() {
     // straight run that precedes the arc.
     let deflection = 0.02;
     let bound = 2.0 / 3.0 * (r * PI / 2.0) * deflection * 1.5;
-    let mesh = brepkit_operations::tessellate::tessellate(&topo, top, deflection).unwrap();
+    let mesh = remus_operations::tessellate::tessellate(&topo, top, deflection).unwrap();
     let mut area = 0.0;
     for tri in mesh.indices.chunks_exact(3) {
         let p = |k: usize| {
@@ -403,7 +403,7 @@ fn planar_face_boundary_keeps_the_vertex_where_a_reversed_arc_starts() {
     );
 
     // And the arc's arrival vertex must actually be on the boundary.
-    let arrival = brepkit_math::vec::Point3::new(r, d, h);
+    let arrival = remus_math::vec::Point3::new(r, d, h);
     assert!(
         mesh.positions
             .iter()

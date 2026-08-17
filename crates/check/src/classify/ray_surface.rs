@@ -7,11 +7,9 @@
 
 use smallvec::SmallVec;
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
 
 use crate::CheckError;
 
@@ -116,11 +114,11 @@ pub fn ray_sphere(origin: Point3, direction: Vec3, sph: &SphericalSurface) -> Sm
 /// Intersect a ray with a torus.
 ///
 /// Returns up to 4 positive-t values (quartic equation). Delegates to the
-/// residual-verified quartic root finder in `brepkit_math` — a local Ferrari
+/// residual-verified quartic root finder in `remus_math` — a local Ferrari
 /// solver previously both missed real roots and emitted off-surface spurious
 /// ones for oblique rays at moderate radii, flipping crossing parity.
 pub fn ray_torus(origin: Point3, direction: Vec3, tor: &ToroidalSurface) -> SmallVec<[f64; 4]> {
-    brepkit_math::analytic_intersection::intersect_line_torus(tor, origin, direction)
+    remus_math::analytic_intersection::intersect_line_torus(tor, origin, direction)
         .into_iter()
         .filter(|&t| t > RAY_T_MIN)
         .collect()
@@ -143,7 +141,7 @@ pub fn ray_nurbs(
     surface: &NurbsSurface,
     n_samples: usize,
 ) -> Result<Vec<(f64, f64, f64)>, CheckError> {
-    use brepkit_math::nurbs::intersection::intersect_line_nurbs;
+    use remus_math::nurbs::intersection::intersect_line_nurbs;
 
     let hits = intersect_line_nurbs(surface, origin, direction, n_samples)?;
     let dir_dot_dir = direction.dot(direction);

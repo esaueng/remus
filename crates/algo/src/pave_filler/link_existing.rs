@@ -10,9 +10,9 @@
 //! pattern: section edges that coincide with face boundary edges are
 //! linked so `MakeSplitEdges` creates one shared edge entity.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
 
 use crate::ds::{GfaArena, PaveBlockId};
 use crate::error::AlgoError;
@@ -28,8 +28,8 @@ type QCircle = ((i64, i64, i64), i64, (i64, i64, i64));
 const AXIS_SCALE: f64 = 1.0e7;
 
 fn circle_key(
-    c: &brepkit_math::curves::Circle3D,
-    qpt: impl Fn(brepkit_math::vec::Point3) -> (i64, i64, i64),
+    c: &remus_math::curves::Circle3D,
+    qpt: impl Fn(remus_math::vec::Point3) -> (i64, i64, i64),
     linear_scale: f64,
 ) -> QCircle {
     let n = c.normal();
@@ -66,7 +66,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
     // Collect resolved endpoints for all boundary leaf PBs.
     // Key: (min_pos, max_pos) quantized at tolerance, Value: list of PB IDs.
     let scale = 1.0 / tol.linear;
-    let qpt = |p: brepkit_math::vec::Point3| -> (i64, i64, i64) {
+    let qpt = |p: remus_math::vec::Point3| -> (i64, i64, i64) {
         (
             (p.x() * scale).round() as i64,
             (p.y() * scale).round() as i64,
@@ -96,10 +96,10 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
             };
             let sv = arena.resolve_vertex(pb.start.vertex);
             let ev = arena.resolve_vertex(pb.end.vertex);
-            let Ok(sp) = topo.vertex(sv).map(brepkit_topology::vertex::Vertex::point) else {
+            let Ok(sp) = topo.vertex(sv).map(remus_topology::vertex::Vertex::point) else {
                 continue;
             };
-            let Ok(ep) = topo.vertex(ev).map(brepkit_topology::vertex::Vertex::point) else {
+            let Ok(ep) = topo.vertex(ev).map(remus_topology::vertex::Vertex::point) else {
                 continue;
             };
             let qs = qpt(sp);
@@ -140,10 +140,10 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
             };
             let sv = arena.resolve_vertex(section_pb.start.vertex);
             let ev = arena.resolve_vertex(section_pb.end.vertex);
-            let Ok(sp) = topo.vertex(sv).map(brepkit_topology::vertex::Vertex::point) else {
+            let Ok(sp) = topo.vertex(sv).map(remus_topology::vertex::Vertex::point) else {
                 continue;
             };
-            let Ok(ep) = topo.vertex(ev).map(brepkit_topology::vertex::Vertex::point) else {
+            let Ok(ep) = topo.vertex(ev).map(remus_topology::vertex::Vertex::point) else {
                 continue;
             };
             let qs = qpt(sp);

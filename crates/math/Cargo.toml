@@ -1,8 +1,8 @@
 [package]
-description = "Vector math, transforms, NURBS, and geometric predicates for brepkit"
+description = "Vector math, transforms, NURBS, and geometric predicates for remus"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-math"
+name = "remus-math"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# bench-compare.sh — Unified brepkit vs OCCT benchmark comparison.
+# bench-compare.sh — Unified remus vs OCCT benchmark comparison.
 #
-# Runs native Criterion benchmarks, builds brepkit WASM, installs into brepjs,
+# Runs native Criterion benchmarks, builds remus WASM, installs into brepjs,
 # runs the JS kernel-comparison suite, then produces a unified comparison report.
 #
 # Usage:
@@ -12,8 +12,8 @@
 
 set -euo pipefail
 
-BREPKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RESULTS_DIR="$BREPKIT_ROOT/bench-results"
+REMUS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RESULTS_DIR="$REMUS_ROOT/bench-results"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -32,8 +32,8 @@ if [[ ! -f "$BREPJS_DIR/package.json" ]]; then
     exit 1
 fi
 
-echo "=== brepkit vs OCCT Benchmark Comparison ==="
-echo "  brepkit:  $BREPKIT_ROOT"
+echo "=== remus vs OCCT Benchmark Comparison ==="
+echo "  remus:  $REMUS_ROOT"
 echo "  brepjs:   $BREPJS_DIR"
 echo ""
 
@@ -44,18 +44,18 @@ mkdir -p "$RESULTS_DIR"
 # ---------------------------------------------------------------------------
 
 echo "[1/5] Running Criterion benchmarks (native)..."
-if cargo bench -p brepkit-operations 2>&1 | tee "$RESULTS_DIR/criterion.log"; then
+if cargo bench -p remus-operations 2>&1 | tee "$RESULTS_DIR/criterion.log"; then
     echo "  Criterion benchmarks complete."
 else
     echo "  Warning: Criterion benchmarks failed. Native results will be missing."
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: Build brepkit WASM via wasm-pack
+# Step 2: Build remus WASM via wasm-pack
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[2/5] Building brepkit WASM (--target nodejs --release)..."
+echo "[2/5] Building remus WASM (--target nodejs --release)..."
 
 # Check wasm-pack is available
 if ! command -v wasm-pack &>/dev/null; then
@@ -77,10 +77,10 @@ if [[ -f /etc/fedora-release ]] && ! ldconfig -p 2>/dev/null | grep -q 'libbz2.s
     fi
 fi
 
-WASM_PKG="$BREPKIT_ROOT/crates/wasm/pkg"
+WASM_PKG="$REMUS_ROOT/crates/wasm/pkg"
 
 (
-    cd "$BREPKIT_ROOT"
+    cd "$REMUS_ROOT"
     wasm-pack build crates/wasm --target nodejs --release --out-dir "$WASM_PKG"
 ) 2>&1 | tee -a "$RESULTS_DIR/criterion.log"
 
@@ -91,7 +91,7 @@ echo "  WASM package built at: $WASM_PKG"
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "[3/5] Installing brepkit-wasm into brepjs..."
+echo "[3/5] Installing remus-wasm into brepjs..."
 (
     cd "$BREPJS_DIR"
     npm install "$WASM_PKG" --no-save 2>&1
@@ -131,8 +131,8 @@ fi
 echo ""
 echo "[5/5] Generating comparison report..."
 
-npx tsx "$BREPKIT_ROOT/scripts/bench-report.ts" \
-    --criterion-dir "$BREPKIT_ROOT/target/criterion" \
+npx tsx "$REMUS_ROOT/scripts/bench-report.ts" \
+    --criterion-dir "$REMUS_ROOT/target/criterion" \
     --js-json "$JS_JSON" \
     --output-dir "$RESULTS_DIR"
 

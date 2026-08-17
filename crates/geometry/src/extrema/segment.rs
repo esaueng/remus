@@ -3,7 +3,7 @@
 //! Provides [`segment_segment_distance`] using the standard closed-form
 //! algorithm (Shoemake / Ericson "Real-Time Collision Detection" §5.1).
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 /// Compute the minimum distance between two line segments `(a0, a1)` and
 /// `(b0, b1)`.
@@ -16,8 +16,8 @@ use brepkit_math::vec::Point3;
 /// # Examples
 ///
 /// ```
-/// use brepkit_math::vec::Point3;
-/// use brepkit_geometry::extrema::segment_segment_distance;
+/// use remus_math::vec::Point3;
+/// use remus_geometry::extrema::segment_segment_distance;
 ///
 /// // Perpendicular segments in 3-D; closest approach is at (0,0,0) on both.
 /// let (dist, pa, pb) = segment_segment_distance(

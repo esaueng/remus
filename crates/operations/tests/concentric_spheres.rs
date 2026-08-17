@@ -10,13 +10,13 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_sphere;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_sphere;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.05;
 const SEGMENTS: usize = 32;
@@ -135,7 +135,7 @@ fn non_concentric_spheres_fuse_fails_closed_without_shortcut() {
     assert!(
         matches!(
             boolean(&mut topo, BooleanOp::Fuse, a, b),
-            Err(brepkit_operations::OperationsError::NonManifoldResult)
+            Err(remus_operations::OperationsError::NonManifoldResult)
         ),
         "non-concentric sphere fuse must fail closed"
     );

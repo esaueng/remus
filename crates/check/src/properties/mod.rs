@@ -7,11 +7,11 @@ pub mod face_integrator;
 
 pub use accumulator::GProps;
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 use crate::CheckError;
 
@@ -59,7 +59,7 @@ pub fn solid_volume(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<f64, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_volume = 0.0;
     for fid in faces {
@@ -82,7 +82,7 @@ pub fn solid_area(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<f64, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_area = 0.0;
     for fid in faces {
@@ -107,7 +107,7 @@ pub fn center_of_mass(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<Point3, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut total_volume = 0.0;
     let mut mx = 0.0;
@@ -151,7 +151,7 @@ pub fn solid_properties(
     solid: SolidId,
     options: &PropertiesOptions,
 ) -> Result<GProps, CheckError> {
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid)?;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let mut volume = 0.0;
     let mut mx = 0.0;
@@ -264,9 +264,9 @@ pub fn axial_v_range(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_math::vec::Point3;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     #[test]
     fn gprops_accumulator_two_cubes() {

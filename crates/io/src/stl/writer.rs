@@ -2,10 +2,10 @@
 
 use std::io::Write;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::tessellate::{self, TriangleMesh};
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::tessellate::{self, TriangleMesh};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 /// STL output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,7 @@ fn write_binary_stl(mesh: &TriangleMesh) -> Vec<u8> {
     // 80-byte header + 4-byte count + 50 bytes per triangle.
     let mut buf = Vec::with_capacity(84 + tri_count * 50);
 
-    let header = b"brepkit STL export";
+    let header = b"remus STL export";
     buf.extend_from_slice(header);
     // The STL binary header is a fixed 80 bytes; zero-pad whatever the
     // header string didn't fill.
@@ -122,7 +122,7 @@ fn write_ascii_stl(mesh: &TriangleMesh) -> Result<Vec<u8>, crate::IoError> {
     let tri_count = mesh.indices.len() / 3;
     let mut buf = Vec::new();
 
-    writeln!(buf, "solid brepkit").map_err(crate::IoError::Io)?;
+    writeln!(buf, "solid remus").map_err(crate::IoError::Io)?;
 
     for t in 0..tri_count {
         let (normal, v0, v1, v2) = triangle_data(mesh, t);
@@ -143,7 +143,7 @@ fn write_ascii_stl(mesh: &TriangleMesh) -> Result<Vec<u8>, crate::IoError> {
         writeln!(buf, "  endfacet").map_err(crate::IoError::Io)?;
     }
 
-    writeln!(buf, "endsolid brepkit").map_err(crate::IoError::Io)?;
+    writeln!(buf, "endsolid remus").map_err(crate::IoError::Io)?;
 
     Ok(buf)
 }
@@ -163,8 +163,8 @@ fn write_f32_le(buf: &mut Vec<u8>, v: f64) {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
 
@@ -195,10 +195,10 @@ mod tests {
         let bytes = write_stl(&topo, &[solid], 0.1, StlFormat::Ascii).unwrap();
         let text = String::from_utf8(bytes).unwrap();
 
-        assert!(text.starts_with("solid brepkit"));
+        assert!(text.starts_with("solid remus"));
         assert!(text.contains("facet normal"));
         assert!(text.contains("vertex"));
-        assert!(text.trim().ends_with("endsolid brepkit"));
+        assert!(text.trim().ends_with("endsolid remus"));
 
         let facet_count = text.matches("facet normal").count();
         assert_eq!(facet_count, 12, "expected 12 facets for unit cube");
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn write_stl_box_primitive() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let bytes = write_stl(&topo, &[solid], 0.1, StlFormat::Binary).unwrap();
         let tri_count = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
@@ -218,8 +218,8 @@ mod tests {
     #[test]
     fn write_stl_multiple_solids() {
         let mut topo = Topology::new();
-        let s1 = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let s2 = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let s1 = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let s2 = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let bytes = write_stl(&topo, &[s1, s2], 0.1, StlFormat::Binary).unwrap();
         let tri_count = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
@@ -230,13 +230,13 @@ mod tests {
     #[test]
     fn write_stl_watertight_box() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         // Tessellate the same way write_stl does internally (via tessellate_solid).
-        let mesh = brepkit_operations::tessellate::tessellate_solid(&topo, solid, 0.1).unwrap();
+        let mesh = remus_operations::tessellate::tessellate_solid(&topo, solid, 0.1).unwrap();
 
         // A watertight mesh has 0 boundary edges: every half-edge (a,b) has a twin (b,a).
-        let boundary = brepkit_operations::tessellate::boundary_edge_count(&mesh);
+        let boundary = remus_operations::tessellate::boundary_edge_count(&mesh);
         assert_eq!(
             boundary, 0,
             "STL mesh should have 0 boundary edges (watertight)"
@@ -248,9 +248,9 @@ mod tests {
         // With tessellate_solid, a box should have exactly 8 unique vertices
         // (one per corner), not 24 (4 per face × 6 faces) as with per-face tessellation.
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
-        let mesh = brepkit_operations::tessellate::tessellate_solid(&topo, solid, 0.1).unwrap();
+        let mesh = remus_operations::tessellate::tessellate_solid(&topo, solid, 0.1).unwrap();
         assert_eq!(
             mesh.positions.len(),
             8,

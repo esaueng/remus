@@ -2,22 +2,22 @@
 //!
 //! Some STEP producers encode a periodic face rim as a cycle of open
 //! `Circle` edges instead of the single closed circle edge emitted by
-//! BrepKit's writer.  The representation is legal, but it is needlessly
+//! Remus's writer.  The representation is legal, but it is needlessly
 //! hazardous for algorithms that must distinguish the doubled periodic seam
 //! from the rim.  This pass recognizes only unambiguous, full-turn cycles and
 //! rewrites every wire that references them to one shared closed `EdgeId`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::curves::Circle3D;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::HealError;
 
@@ -38,7 +38,7 @@ pub fn merge_split_rim_arcs(
     solid_id: SolidId,
     tol: Tolerance,
 ) -> Result<usize, HealError> {
-    let face_ids = brepkit_topology::explorer::solid_faces(topo, solid_id)?;
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid_id)?;
     let mut wire_ids = Vec::new();
     let mut edge_to_faces: HashMap<EdgeId, HashSet<FaceId>> = HashMap::new();
     let mut edges_in_solid = HashSet::new();
@@ -437,15 +437,15 @@ fn run_start(edges: &[OrientedEdge], plan: &HashSet<EdgeId>) -> Option<usize> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
 

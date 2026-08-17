@@ -7,12 +7,12 @@
 
 use std::f64::consts::TAU;
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point2, Point3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::HealError;
 
@@ -45,7 +45,7 @@ pub fn project_points_to_surface(
     let mut uv_pts: Vec<Point2> = if let FaceSurface::Plane { normal, d } = surface {
         // Fixed UV origin: closest point on plane to global origin.
         let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
-        let frame = brepkit_math::frame::Frame3::from_normal(origin, *normal)
+        let frame = remus_math::frame::Frame3::from_normal(origin, *normal)
             .map_err(|e| HealError::AnalysisFailed(format!("plane frame: {e}")))?;
         points
             .iter()
@@ -77,7 +77,7 @@ pub fn project_points_to_surface(
 ///
 /// Samples the edge at `num_samples` points, projects each to UV via
 /// [`project_points_to_surface`], then fits a NURBS curve through the
-/// UV points using `brepkit_math::nurbs::fitting::interpolate()`.
+/// UV points using `remus_math::nurbs::fitting::interpolate()`.
 ///
 /// The returned `NurbsCurve` lives in 3D space with z=0, representing
 /// (u, v, 0) coordinates suitable for constructing a `NurbsCurve2D`.
@@ -131,7 +131,7 @@ pub fn project_edge_to_pcurve(
 
     // Fit: use degree 3 (or less if too few points).
     let degree = 3.min(pts_3d_uv.len() - 1);
-    let nurbs = brepkit_math::nurbs::fitting::interpolate(&pts_3d_uv, degree)?;
+    let nurbs = remus_math::nurbs::fitting::interpolate(&pts_3d_uv, degree)?;
 
     Ok(nurbs)
 }
@@ -184,7 +184,7 @@ fn unwrap_periodic_params(pts: &mut [Point2], u_period: Option<f64>, v_period: O
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
 
     use super::*;
 
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn project_points_on_cylinder() {
-        let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+        let cyl = remus_math::surfaces::CylindricalSurface::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             1.0,

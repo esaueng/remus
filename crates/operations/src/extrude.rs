@@ -4,23 +4,23 @@
 //! extrusion translates all control points, preserving the exact surface
 //! representation for both caps.
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::tolerance::Tolerance;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::tolerance::Tolerance;
 
 /// Default tessellation deflection for splitting closed edges.
 ///
 /// Used when the operation's public API does not expose a deflection parameter.
 /// Matches `DEFAULT_BOOLEAN_DEFLECTION` in `boolean/types.rs`.
 pub const DEFAULT_DEFLECTION: f64 = 0.1;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::WireId;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::WireId;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::dot_normal_point;
 
@@ -100,9 +100,9 @@ fn curve_is_analytic_circle(curve: &EdgeCurve) -> bool {
         EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
         EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => true,
         EdgeCurve::NurbsCurve(nc) => matches!(
-            brepkit_geometry::convert::recognize_curve(nc, tol * 100.0),
-            brepkit_geometry::convert::RecognizedCurve::Circle { .. }
-                | brepkit_geometry::convert::RecognizedCurve::Ellipse { .. }
+            remus_geometry::convert::recognize_curve(nc, tol * 100.0),
+            remus_geometry::convert::RecognizedCurve::Circle { .. }
+                | remus_geometry::convert::RecognizedCurve::Ellipse { .. }
         ),
     }
 }
@@ -133,8 +133,8 @@ fn inner_wire_is_single_circle(topo: &Topology, wire_id: WireId) -> bool {
     match edge.curve() {
         EdgeCurve::Circle(_) => true,
         EdgeCurve::NurbsCurve(nc) => matches!(
-            brepkit_geometry::convert::recognize_curve(nc, tol * 100.0),
-            brepkit_geometry::convert::RecognizedCurve::Circle { .. }
+            remus_geometry::convert::recognize_curve(nc, tol * 100.0),
+            remus_geometry::convert::RecognizedCurve::Circle { .. }
         ),
         _ => false,
     }
@@ -152,17 +152,17 @@ fn closed_edge_segments(curve: &EdgeCurve, deflection: f64) -> usize {
         EdgeCurve::Circle(c) => {
             // Constant curvature: the chord formula is exact, so skip the
             // curvature floor that the convenience wrapper applies.
-            brepkit_math::chord::segments_for_chord_deviation_with_angle(
+            remus_math::chord::segments_for_chord_deviation_with_angle(
                 c.radius(),
                 TAU,
                 deflection,
-                brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+                remus_math::chord::DEFAULT_ANGULAR_TOL,
                 0.0,
                 false,
             )
         }
         EdgeCurve::Ellipse(e) => {
-            brepkit_math::chord::segments_for_chord_deviation(e.semi_major(), TAU, deflection)
+            remus_math::chord::segments_for_chord_deviation(e.semi_major(), TAU, deflection)
         }
         EdgeCurve::NurbsCurve(nc) => {
             // Estimate characteristic radius from control polygon bounding box.
@@ -186,7 +186,7 @@ fn closed_edge_segments(curve: &EdgeCurve, deflection: f64) -> usize {
             let diag = (dx * dx + dy * dy + dz * dz).sqrt();
             // Use half the diagonal as a conservative radius estimate.
             let radius_est = diag / 2.0;
-            brepkit_math::chord::segments_for_chord_deviation(radius_est, TAU, deflection)
+            remus_math::chord::segments_for_chord_deviation(radius_est, TAU, deflection)
         }
         // Lines can't be closed with start==end in a meaningful way;
         // split_closed_edge already returns early for them. The same is
@@ -352,10 +352,7 @@ fn extrude_wire_vertices_with(
 
     let positions: Vec<Point3> = verts
         .iter()
-        .map(|&vid| {
-            topo.vertex(vid)
-                .map(brepkit_topology::vertex::Vertex::point)
-        })
+        .map(|&vid| topo.vertex(vid).map(remus_topology::vertex::Vertex::point))
         .collect::<Result<_, _>>()?;
 
     let top_verts: Vec<VertexId> = positions
@@ -368,7 +365,7 @@ fn extrude_wire_vertices_with(
 
     let edge_ids: Vec<EdgeId> = oriented
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
 
     let mut top_edge_ids = Vec::with_capacity(n);
@@ -446,7 +443,7 @@ fn side_face_surface(
         EdgeCurve::Circle(circle) => {
             // The extruded circle sweeps out a cylinder whose axis is the
             // extrusion direction, passing through the circle center.
-            let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+            let cyl = remus_math::surfaces::CylindricalSurface::new(
                 circle.center(),
                 offset.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
                 circle.radius(),
@@ -479,14 +476,14 @@ fn side_face_surface(
             // circle and use a true `Cylinder` surface for the side face
             // when possible — the recognition is geometrically exact for
             // the rational-quadratic circle construction.
-            let tol = brepkit_math::tolerance::Tolerance::new().linear;
-            if let brepkit_geometry::convert::RecognizedCurve::Circle {
+            let tol = remus_math::tolerance::Tolerance::new().linear;
+            if let remus_geometry::convert::RecognizedCurve::Circle {
                 center,
                 normal: _,
                 radius,
-            } = brepkit_geometry::convert::recognize_curve(nc, tol * 100.0)
+            } = remus_geometry::convert::recognize_curve(nc, tol * 100.0)
             {
-                let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+                let cyl = remus_math::surfaces::CylindricalSurface::new(
                     center,
                     offset.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
                     radius,
@@ -535,7 +532,7 @@ fn side_face_surface(
             let (t_start, t_end) =
                 trim.unwrap_or_else(|| curve.domain_with_endpoints(curve_start, curve_end));
             let nc =
-                brepkit_geometry::convert::ellipse_to_nurbs(ell, t_start, t_end).map_err(|e| {
+                remus_geometry::convert::ellipse_to_nurbs(ell, t_start, t_end).map_err(|e| {
                     crate::OperationsError::InvalidInput {
                         reason: format!("ellipse_to_nurbs failed: {e}"),
                     }
@@ -604,7 +601,7 @@ fn nurbs_needs_reversal(
 /// control points: the original curve at `v=0` and the translated curve
 /// at `v=1`.
 fn ruled_nurbs_surface(
-    nc: &brepkit_math::nurbs::curve::NurbsCurve,
+    nc: &remus_math::nurbs::curve::NurbsCurve,
     offset: Vec3,
 ) -> Result<NurbsSurface, crate::OperationsError> {
     let bottom_cps: Vec<Point3> = nc.control_points().to_vec();
@@ -641,11 +638,11 @@ fn normalize_profile_wire_curves(
     wire_id: WireId,
     tol: f64,
 ) -> Result<(), crate::OperationsError> {
-    let edge_ids: Vec<brepkit_topology::edge::EdgeId> = topo
+    let edge_ids: Vec<remus_topology::edge::EdgeId> = topo
         .wire(wire_id)?
         .edges()
         .iter()
-        .map(brepkit_topology::wire::OrientedEdge::edge)
+        .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
     for eid in edge_ids {
         let edge = topo.edge(eid)?;
@@ -666,13 +663,13 @@ fn normalize_profile_wire_curves(
         if !fwd && !rev {
             continue;
         }
-        let new_curve = match brepkit_geometry::convert::recognize_curve(nc, tol * 100.0) {
-            brepkit_geometry::convert::RecognizedCurve::Line { .. }
+        let new_curve = match remus_geometry::convert::recognize_curve(nc, tol * 100.0) {
+            remus_geometry::convert::RecognizedCurve::Line { .. }
                 if (s3 - e3).length() > tol && nurbs_control_polygon_is_linear(nc, a3, b3, tol) =>
             {
                 Some(EdgeCurve::Line)
             }
-            brepkit_geometry::convert::RecognizedCurve::Circle {
+            remus_geometry::convert::RecognizedCurve::Circle {
                 center,
                 normal,
                 radius,
@@ -707,7 +704,7 @@ fn normalize_profile_wire_curves(
                         -normal
                     }
                 };
-                brepkit_math::curves::Circle3D::new(center, n, radius)
+                remus_math::curves::Circle3D::new(center, n, radius)
                     .ok()
                     .map(EdgeCurve::Circle)
             }
@@ -726,7 +723,7 @@ fn normalize_profile_wire_curves(
 /// control points. Checking the control polygon therefore covers every
 /// parameter value, unlike point sampling.
 fn nurbs_control_polygon_is_linear(
-    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    curve: &remus_math::nurbs::curve::NurbsCurve,
     start: Point3,
     end: Point3,
     tol: f64,
@@ -748,7 +745,7 @@ fn nurbs_control_polygon_is_linear(
 /// and, importantly, prevent a high-degree or heavily-knotted curve from
 /// hiding excursions between the recognizer's sixteen global samples.
 fn nurbs_is_quadratic_circle(
-    curve: &brepkit_math::nurbs::curve::NurbsCurve,
+    curve: &remus_math::nurbs::curve::NurbsCurve,
     center: Point3,
     normal: Vec3,
     radius: f64,
@@ -1106,7 +1103,7 @@ pub fn extrude(
                 .iter()
                 .map(|row| row.iter().map(|&p| p + offset).collect())
                 .collect();
-            let translated_surface = brepkit_math::nurbs::surface::NurbsSurface::new(
+            let translated_surface = remus_math::nurbs::surface::NurbsSurface::new(
                 nurbs.degree_u(),
                 nurbs.degree_v(),
                 nurbs.knots_u().to_vec(),
@@ -1142,8 +1139,8 @@ fn open_conic_to_nurbs(
     curve: &EdgeCurve,
     t0: f64,
     t1: f64,
-) -> Result<brepkit_math::nurbs::curve::NurbsCurve, crate::OperationsError> {
-    use brepkit_heal::construct::convert_curve::{hyperbola_to_nurbs, parabola_to_nurbs};
+) -> Result<remus_math::nurbs::curve::NurbsCurve, crate::OperationsError> {
+    use remus_heal::construct::convert_curve::{hyperbola_to_nurbs, parabola_to_nurbs};
     match curve {
         EdgeCurve::Hyperbola(h) => Ok(hyperbola_to_nurbs(h, t0, t1)?),
         EdgeCurve::Parabola(p) => Ok(parabola_to_nurbs(p, t0, t1)?),
@@ -1176,7 +1173,7 @@ fn translate_edge_curve(
         EdgeCurve::Circle(c) => {
             let new_center = c.center() + offset;
             EdgeCurve::Circle(
-                brepkit_math::curves::Circle3D::with_axes(
+                remus_math::curves::Circle3D::with_axes(
                     new_center,
                     c.normal(),
                     c.radius(),
@@ -1189,7 +1186,7 @@ fn translate_edge_curve(
         EdgeCurve::Ellipse(e) => {
             let new_center = e.center() + offset;
             EdgeCurve::Ellipse(
-                brepkit_math::curves::Ellipse3D::with_axes(
+                remus_math::curves::Ellipse3D::with_axes(
                     new_center,
                     e.normal(),
                     e.semi_major(),
@@ -1201,7 +1198,7 @@ fn translate_edge_curve(
             )
         }
         EdgeCurve::Hyperbola(h) => EdgeCurve::Hyperbola(
-            brepkit_math::curves::Hyperbola3D::with_axes(
+            remus_math::curves::Hyperbola3D::with_axes(
                 h.center() + offset,
                 h.normal(),
                 h.u_axis(),
@@ -1211,7 +1208,7 @@ fn translate_edge_curve(
             .map_err(crate::OperationsError::Math)?,
         ),
         EdgeCurve::Parabola(pb) => EdgeCurve::Parabola(
-            brepkit_math::curves::Parabola3D::with_axes(
+            remus_math::curves::Parabola3D::with_axes(
                 pb.vertex() + offset,
                 pb.axis_dir(),
                 pb.u_axis(),
@@ -1223,7 +1220,7 @@ fn translate_edge_curve(
             let translated_cps: Vec<Point3> =
                 nc.control_points().iter().map(|&p| p + offset).collect();
             EdgeCurve::NurbsCurve(
-                brepkit_math::nurbs::curve::NurbsCurve::new(
+                remus_math::nurbs::curve::NurbsCurve::new(
                     nc.degree(),
                     nc.knots().to_vec(),
                     translated_cps,
@@ -1248,7 +1245,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
     Ok(match curve {
         EdgeCurve::Line => EdgeCurve::Line,
         EdgeCurve::Circle(c) => EdgeCurve::Circle(
-            brepkit_math::curves::Circle3D::with_axes(
+            remus_math::curves::Circle3D::with_axes(
                 c.center(),
                 -c.normal(),
                 c.radius(),
@@ -1258,7 +1255,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
             .map_err(crate::OperationsError::Math)?,
         ),
         EdgeCurve::Ellipse(e) => EdgeCurve::Ellipse(
-            brepkit_math::curves::Ellipse3D::with_axes(
+            remus_math::curves::Ellipse3D::with_axes(
                 e.center(),
                 -e.normal(),
                 e.semi_major(),
@@ -1275,7 +1272,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
         // real axis are untouched, so the branch and the opening direction
         // are preserved.
         EdgeCurve::Hyperbola(h) => EdgeCurve::Hyperbola(
-            brepkit_math::curves::Hyperbola3D::with_axes(
+            remus_math::curves::Hyperbola3D::with_axes(
                 h.center(),
                 -h.normal(),
                 h.u_axis(),
@@ -1285,7 +1282,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
             .map_err(crate::OperationsError::Math)?,
         ),
         EdgeCurve::Parabola(pb) => EdgeCurve::Parabola(
-            brepkit_math::curves::Parabola3D::with_axes(
+            remus_math::curves::Parabola3D::with_axes(
                 pb.vertex(),
                 pb.axis_dir(),
                 -pb.u_axis(),
@@ -1300,7 +1297,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
             let new_cps: Vec<Point3> = nc.control_points().iter().rev().copied().collect();
             let new_weights: Vec<f64> = nc.weights().iter().rev().copied().collect();
             EdgeCurve::NurbsCurve(
-                brepkit_math::nurbs::curve::NurbsCurve::new(
+                remus_math::nurbs::curve::NurbsCurve::new(
                     nc.degree(),
                     new_knots,
                     new_cps,

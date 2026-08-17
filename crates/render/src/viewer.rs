@@ -8,7 +8,7 @@
 //!   dollies in/out, and right-drag (or shift + left-drag) pans the target.
 //! - **Click-to-pick:** a left click that does not drag reads the per-pixel
 //!   face-id target under the cursor and highlights the picked
-//!   [`FaceId`](brepkit_topology::face::FaceId) by tinting it in the shader.
+//!   [`FaceId`](remus_topology::face::FaceId) by tinting it in the shader.
 //!
 //! The face-id target is the same `R32Uint` buffer the offscreen renderer
 //! produces, so a click yields the kernel `FaceId` directly — the CAD payoff.
@@ -18,7 +18,7 @@
 //! This needs a display server and the `window` feature:
 //!
 //! ```text
-//! cargo run -p brepkit-render --example viewer --features window
+//! cargo run -p remus-render --example viewer --features window
 //! ```
 //!
 //! It cannot run headlessly (no surface without a display); the offscreen path
@@ -32,9 +32,9 @@
 
 use std::sync::Arc;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -70,7 +70,7 @@ pub struct ViewOpts {
 impl Default for ViewOpts {
     fn default() -> Self {
         Self {
-            title: "brepkit viewer".to_string(),
+            title: "remus viewer".to_string(),
             width: 1024,
             height: 768,
             background: [0.11, 0.12, 0.14, 1.0],
@@ -593,7 +593,7 @@ impl ViewerApp {
             Err(e) => {
                 // Non-fatal: a failed id readback (e.g. device lost) must not
                 // crash the viewer, but surface it so it isn't a silent no-op.
-                log::warn!("brepkit-render: face pick readback failed: {e}");
+                log::warn!("remus-render: face pick readback failed: {e}");
                 return false;
             }
         };

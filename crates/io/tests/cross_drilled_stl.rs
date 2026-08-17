@@ -2,18 +2,18 @@
 
 #![allow(clippy::unwrap_used)]
 
-use brepkit_io::stl::writer::StlFormat;
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::classify::{PointClassification, classify_point};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_operations::tessellate::{TriangleMesh, welded_mesh_quality};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_io::stl::writer::StlFormat;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::classify::{PointClassification, classify_point};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_cylinder;
+use remus_operations::tessellate::{TriangleMesh, welded_mesh_quality};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
-fn cross_drilled_shaft(bore_radius: f64) -> (Topology, brepkit_topology::solid::SolidId) {
+fn cross_drilled_shaft(bore_radius: f64) -> (Topology, remus_topology::solid::SolidId) {
     let mut topo = Topology::new();
     let shaft = make_cylinder(&mut topo, 3.0, 30.0).unwrap();
     let bore = make_cylinder(&mut topo, bore_radius, 40.0).unwrap();
@@ -55,7 +55,7 @@ fn cross_drilled_stl_is_closed_manifold_and_matches_brep_volume() {
         );
 
         let display_mesh =
-            brepkit_operations::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
+            remus_operations::tessellate::tessellate_solid(&topo, solid, 0.05).unwrap();
         let display_quality = welded_mesh_quality(&display_mesh);
         assert_eq!(
             (
@@ -66,8 +66,8 @@ fn cross_drilled_stl_is_closed_manifold_and_matches_brep_volume() {
             "bore r={bore_radius}: source tessellation must be closed and manifold"
         );
 
-        let bytes = brepkit_io::stl::write_stl(&topo, &[solid], 0.05, StlFormat::Ascii).unwrap();
-        let mesh = brepkit_io::stl::read_stl(&bytes).unwrap();
+        let bytes = remus_io::stl::write_stl(&topo, &[solid], 0.05, StlFormat::Ascii).unwrap();
+        let mesh = remus_io::stl::read_stl(&bytes).unwrap();
         let quality = welded_mesh_quality(&mesh);
         assert_eq!(
             (quality.boundary_edges, quality.non_manifold_edges),

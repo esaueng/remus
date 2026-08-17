@@ -5,7 +5,7 @@
 //! AABB center; the f64 center is folded into the view matrix here so the GPU
 //! never sees large absolute coordinates.
 
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point3, Vec3};
 
 /// A perspective camera defined in world space (all coordinates in f64).
 #[derive(Debug, Clone, Copy)]

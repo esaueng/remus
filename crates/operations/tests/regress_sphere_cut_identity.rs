@@ -29,15 +29,15 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::copy::copy_and_transform_solid;
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder, make_sphere};
-use brepkit_operations::tessellate::tessellate_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::copy::copy_and_transform_solid;
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder, make_sphere};
+use remus_operations::tessellate::tessellate_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// Model scales, listed so the ORDER is a rotation of the natural
 /// small-to-large one. A result that only holds at whichever scale runs first

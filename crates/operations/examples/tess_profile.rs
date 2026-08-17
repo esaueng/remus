@@ -5,12 +5,12 @@
     missing_docs
 )]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives;
-use brepkit_operations::tessellate;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives;
+use remus_operations::tessellate;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 use std::time::Instant;
 
 fn main() {
@@ -27,26 +27,26 @@ fn main() {
         }
     }
 
-    let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     eprintln!("Faces: {}", faces.len());
 
-    let edge_map = brepkit_topology::explorer::edge_to_face_map(&topo, result).unwrap();
+    let edge_map = remus_topology::explorer::edge_to_face_map(&topo, result).unwrap();
     eprintln!("Unique edges (from edge_to_face_map): {}", edge_map.len());
 
     // Count actual edges from faces
     let mut total_face_edges = 0;
     for &fid in &faces {
-        let fedges = brepkit_topology::explorer::face_edges(&topo, fid).unwrap();
+        let fedges = remus_topology::explorer::face_edges(&topo, fid).unwrap();
         total_face_edges += fedges.len();
         let face = topo.face(fid).unwrap();
         let inner = face.inner_wires().len();
         let surface_name = match face.surface() {
-            brepkit_topology::face::FaceSurface::Plane { .. } => "Plane",
-            brepkit_topology::face::FaceSurface::Cylinder { .. } => "Cylinder",
-            brepkit_topology::face::FaceSurface::Cone { .. } => "Cone",
-            brepkit_topology::face::FaceSurface::Sphere { .. } => "Sphere",
-            brepkit_topology::face::FaceSurface::Torus { .. } => "Torus",
-            brepkit_topology::face::FaceSurface::Nurbs(_) => "Nurbs",
+            remus_topology::face::FaceSurface::Plane { .. } => "Plane",
+            remus_topology::face::FaceSurface::Cylinder { .. } => "Cylinder",
+            remus_topology::face::FaceSurface::Cone { .. } => "Cone",
+            remus_topology::face::FaceSurface::Sphere { .. } => "Sphere",
+            remus_topology::face::FaceSurface::Torus { .. } => "Torus",
+            remus_topology::face::FaceSurface::Nurbs(_) => "Nurbs",
         };
         eprintln!(
             "  {} face: {} edges, {} inner wires",

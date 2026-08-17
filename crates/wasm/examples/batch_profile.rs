@@ -5,14 +5,14 @@
 //! snapshot, not the modelling.
 //!
 //! ```text
-//! cargo run --release -p brepkit-wasm --example batch_profile
-//! cargo run --release -p brepkit-wasm --example batch_profile -- 15
+//! cargo run --release -p remus-wasm --example batch_profile
+//! cargo run --release -p remus-wasm --example batch_profile -- 15
 //! ```
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
 use std::time::Instant;
 
-use brepkit_wasm::kernel::BrepKernel;
+use remus_wasm::kernel::BrepKernel;
 
 /// Seeds a kernel with `boxes` solids so the arenas are non-trivial before the
 /// measured batch runs.

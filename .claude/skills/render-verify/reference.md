@@ -1,10 +1,10 @@
 # render-verify reference
 
-Deep catalog for `brepkit-render`. Everything here was verified against the repo; when in doubt, re-check with the `rg` patterns given. Line numbers are deliberately absent.
+Deep catalog for `remus-render`. Everything here was verified against the repo; when in doubt, re-check with the `rg` patterns given. Line numbers are deliberately absent.
 
 ## 1. Crate map
 
-`crates/render/` is an L4 leaf crate. Allowed deps: `brepkit-math`, `brepkit-topology`, `brepkit-operations`. `scripts/check-boundaries.sh` also rejects any crate that depends on render (see the `layer-boundaries` skill). Stack: wgpu + pollster; winit only behind the optional `window` feature (`window = ["dep:winit", "dep:log"]` in `crates/render/Cargo.toml`; the `viewer` example declares `required-features = ["window"]`).
+`crates/render/` is an L4 leaf crate. Allowed deps: `remus-math`, `remus-topology`, `remus-operations`. `scripts/check-boundaries.sh` also rejects any crate that depends on render (see the `layer-boundaries` skill). Stack: wgpu + pollster; winit only behind the optional `window` feature (`window = ["dep:winit", "dep:log"]` in `crates/render/Cargo.toml`; the `viewer` example declares `required-features = ["window"]`).
 
 | File | Provides |
 |---|---|
@@ -32,7 +32,7 @@ pub fn render_solid_offscreen(
 - `RenderOpts::new(w, h)` defaults: `edges: true`, `background: [0.11, 0.12, 0.14, 1.0]` (linear RGBA), `ambient: 0.25`, `deflection: DEFAULT_DEFLECTION` (0.05). Zero or oversized dimensions are rejected (tests `invalid_size_is_rejected`, `oversized_render_is_rejected`).
 - `RenderOutput { color: image::RgbaImage, id_buffer: Vec<u32>, width, height }`. `id_buffer` is row-major, `0` = background, else `FaceId.index() + 1`. `face_id_at(x, y) -> Option<u32>` returns the same encoding, `None` for background or out-of-bounds.
 - Formats (`src/pipeline.rs`): color `Rgba8UnormSrgb` (`COLOR_FORMAT_OFFSCREEN`), depth `Depth32Float` (`DEPTH_FORMAT`), id `R32Uint` (`ID_FORMAT`).
-- Mesh path: `RenderMesh::build` calls `brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance` (grouped mesh with `face_offsets`, one range per face plus a sentinel) and `sample_solid_edges` for the edge overlay. Positions are uploaded as f32 relative to the model's f64 AABB center (RTC); `view_proj_rtc` folds the center into the matrix so far-from-origin models stay precise.
+- Mesh path: `RenderMesh::build` calls `remus_operations::tessellate::tessellate_solid_grouped_with_tolerance` (grouped mesh with `face_offsets`, one range per face plus a sentinel) and `sample_solid_edges` for the edge overlay. Positions are uploaded as f32 relative to the model's f64 AABB center (RTC); `view_proj_rtc` folds the center into the matrix so far-from-origin models stay precise.
 
 ### Adapter gating
 
@@ -75,7 +75,7 @@ pub fn view_solid(topo: &Topology, solid: SolidId, opts: &ViewOpts) -> Result<()
 
 Blocks until the window closes. `ViewOpts::new(title)`, default 1024x768. Needs a surface, so it cannot run headlessly; anything assertable belongs in the offscreen path. Face picking reads the same `R32Uint` id target under the cursor and maps back to a kernel `FaceId`.
 
-Run: `cargo run -p brepkit-render --example viewer --features window`.
+Run: `cargo run -p remus-render --example viewer --features window`.
 
 ## 5. Sandbox environment fact sheet (proven here, not code)
 
@@ -97,7 +97,7 @@ Run: `cargo run -p brepkit-render --example viewer --features window`.
 | `extract_cylinder_descriptor` errors | Face is not `FaceSurface::Cylinder` (may have degraded to NURBS upstream) | inspect the face surface type; see the `analytic-preservation` skill |
 | Far-from-origin model shimmers or distorts | RTC path bypassed (raw f32 absolute positions) | positions must be center-relative; `view_proj_rtc` in `src/camera.rs` |
 | Viewer window never appears in `xwininfo` | Still compiling; or it opened as native Wayland | wait for the build; re-launch with `env -u WAYLAND_DISPLAY` |
-| `import` captures a black or wrong image | Wrong window id, or window unmapped | re-run `xwininfo -root -tree`, grep for `brepkit viewer` |
+| `import` captures a black or wrong image | Wrong window id, or window unmapped | re-run `xwininfo -root -tree`, grep for `remus viewer` |
 | Viewer process refuses to die | Self-matching `pkill` killed your shell instead | kill by `target/debug/examples/viewer` path |
 | Render looks perfect but downstream consumers see holes | Rendering does not prove watertightness | `is_watertight` / `boundary_edge_count` in `crates/operations/src/tessellate/mesh_ops.rs` |
 

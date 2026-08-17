@@ -1,6 +1,6 @@
 //! 2D constraint solver for sketch-mode parametric design.
 //!
-//! Thin wrapper around `brepkit-sketch`. Provides the `Sketch` struct
+//! Thin wrapper around `remus-sketch`. Provides the `Sketch` struct
 //! for backwards compatibility and re-exports the full GCS API for new code.
 //!
 //! # Migration Guide
@@ -10,10 +10,10 @@
 //! The old `Sketch` API is preserved for backward compatibility. New code
 //! should use `GcsSystem` directly for full entity and constraint support.
 
-use brepkit_sketch::SketchError;
+use remus_sketch::SketchError;
 
 // Re-export the full GCS API for new code.
-pub use brepkit_sketch::{
+pub use remus_sketch::{
     ArcData, ArcId, CircleData, CircleId, Constraint as GcsConstraint, ConstraintId, DofAnalysis,
     GcsSystem, LineData, LineId, PointData, PointId, SolveResult,
 };

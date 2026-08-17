@@ -1,7 +1,7 @@
 //! Surface analysis — singularity, closure, degeneracy, equivalence.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::face::FaceSurface;
+use remus_math::tolerance::Tolerance;
+use remus_topology::face::FaceSurface;
 
 use crate::status::Status;
 
@@ -99,7 +99,7 @@ pub fn analyze_surface(surface: &FaceSurface, tolerance: &Tolerance) -> SurfaceA
 
 /// Analyze a NURBS surface for closure and degeneracy.
 fn analyze_nurbs_surface(
-    n: &brepkit_math::nurbs::surface::NurbsSurface,
+    n: &remus_math::nurbs::surface::NurbsSurface,
     tolerance: &Tolerance,
 ) -> SurfaceAnalysis {
     let cps = n.control_points();

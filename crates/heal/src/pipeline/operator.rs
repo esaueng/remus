@@ -1,7 +1,7 @@
 //! Heal operator trait for pipeline steps.
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::HealError;
 use crate::context::HealContext;

@@ -2,15 +2,15 @@
 //!
 //! These helpers provide descriptive, tolerance-aware assertions for
 //! volumes, areas, positions, and topological invariants. They are
-//! designed to be used across all test modules in `brepkit-operations`.
+//! designed to be used across all test modules in `remus-operations`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::explorer;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 /// Assert that a solid's volume is within `rel_tol` of `expected`.
 ///
@@ -123,7 +123,7 @@ pub fn assert_euler_genus0(topo: &Topology, solid: SolidId) {
 pub fn assert_manifold(topo: &Topology, solid: SolidId) {
     let s = topo.solid(solid).unwrap();
     let sh = topo.shell(s.outer_shell()).unwrap();
-    brepkit_topology::validation::validate_shell_manifold(sh, topo)
+    remus_topology::validation::validate_shell_manifold(sh, topo)
         .expect("solid should be manifold");
 }
 
@@ -171,7 +171,7 @@ where
     F: Fn(&mut Topology, FaceId) -> SolidId,
 {
     let mut topo = Topology::new();
-    let face = brepkit_topology::test_utils::make_cw_unit_square_face(&mut topo);
+    let face = remus_topology::test_utils::make_cw_unit_square_face(&mut topo);
     let solid = build_solid(&mut topo, face);
     assert_volume_near(&topo, solid, expected_vol, rel_tol);
 }

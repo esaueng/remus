@@ -1,9 +1,9 @@
 //! Face analysis — small faces, degeneracy, wire count.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
 
 use crate::HealError;
 use crate::status::Status;

@@ -963,9 +963,9 @@ fn gridfinity_d1_lip_ring_loft_cut() {
     let v = counts[2] as usize;
     let euler = (v as i64) - (e as i64) + (f as i64);
     eprintln!("D1 lip ring: F={f}, E={e}, V={v}, euler={euler}, vol={vol:.1}, val={val}");
-    if let Ok(report) = brepkit_operations::validate::validate_solid(&k.topo, lip_id) {
+    if let Ok(report) = remus_operations::validate::validate_solid(&k.topo, lip_id) {
         for issue in &report.issues {
-            if issue.severity == brepkit_operations::validate::Severity::Error {
+            if issue.severity == remus_operations::validate::Severity::Error {
                 eprintln!("  ERR: {}", issue.description);
             }
         }
@@ -996,8 +996,8 @@ fn gridfinity_d1_lip_ring_loft_cut() {
                 let s = k.topo.vertex(edge.start()).unwrap().point();
                 let e = k.topo.vertex(edge.end()).unwrap().point();
                 let curve = match edge.curve() {
-                    brepkit_topology::edge::EdgeCurve::Line => "line",
-                    brepkit_topology::edge::EdgeCurve::Circle(_) => "circle",
+                    remus_topology::edge::EdgeCurve::Line => "line",
+                    remus_topology::edge::EdgeCurve::Circle(_) => "circle",
                     _ => "other",
                 };
                 eprintln!(
@@ -1331,7 +1331,7 @@ fn gridfinity_d3_shelled_box_with_lip() {
             k.resolve_face(fh)
                 .ok()
                 .and_then(|fid| k.topo.face(fid).ok())
-                .and_then(brepkit_topology::face::Face::effective_plane_normal)
+                .and_then(remus_topology::face::Face::effective_plane_normal)
                 .is_some_and(|n| n.z() > 0.5 * n.length())
         })
         .expect("extruded box should have a +Z top face");
@@ -1450,7 +1450,7 @@ fn gridfinity_d5_box_with_filleted_lip() {
             k.resolve_face(fh)
                 .ok()
                 .and_then(|fid| k.topo.face(fid).ok())
-                .and_then(brepkit_topology::face::Face::effective_plane_normal)
+                .and_then(remus_topology::face::Face::effective_plane_normal)
                 .is_some_and(|n| n.z() > 0.5 * n.length())
         })
         .expect("extruded box should have a +Z top face");
@@ -1620,7 +1620,7 @@ fn gridfinity_d4_full_1x1_bin() {
             k.resolve_face(fh)
                 .ok()
                 .and_then(|fid| k.topo.face(fid).ok())
-                .and_then(brepkit_topology::face::Face::effective_plane_normal)
+                .and_then(remus_topology::face::Face::effective_plane_normal)
                 // Top face points predominantly +Z. Compare against the
                 // normal's own magnitude rather than assuming unit length,
                 // since `FaceSurface::Plane` normals are not normalized.
@@ -1769,7 +1769,7 @@ fn box_volume_sanity() {
 /// contain the centroid.
 #[test]
 fn rounded_shelled_body_classifies_cavity_outside() {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
     let mut k = BrepKernel::new();
     let bf = make_rounded_rect_face(&mut k, OUTER_DIM, OUTER_DIM, CORNER_R, 0.0);
     let bs = parse_batch(&k.execute_batch(&format!(
@@ -1786,7 +1786,7 @@ fn rounded_shelled_body_classifies_cavity_outside() {
             k.resolve_face(fh)
                 .ok()
                 .and_then(|fid| k.topo.face(fid).ok())
-                .and_then(brepkit_topology::face::Face::effective_plane_normal)
+                .and_then(remus_topology::face::Face::effective_plane_normal)
                 .is_some_and(|n| n.z() > 0.5 * n.length())
         })
         .unwrap();
@@ -1797,18 +1797,15 @@ fn rounded_shelled_body_classifies_cavity_outside() {
         .unwrap() as u32;
     let sid = k.resolve_solid(shelled).unwrap();
     let topo = &*k.topo;
-    let cavity = brepkit_algo::classifier::classify_point(
-        topo,
-        sid,
-        Point3::new(0.0, 0.0, WALL_HEIGHT / 2.0),
-    )
-    .unwrap();
+    let cavity =
+        remus_algo::classifier::classify_point(topo, sid, Point3::new(0.0, 0.0, WALL_HEIGHT / 2.0))
+            .unwrap();
     assert_eq!(
         cavity,
-        brepkit_algo::FaceClass::Outside,
+        remus_algo::FaceClass::Outside,
         "open-cavity centre must classify Outside, got {cavity:?}"
     );
-    let wall = brepkit_algo::classifier::classify_point(
+    let wall = remus_algo::classifier::classify_point(
         topo,
         sid,
         Point3::new(
@@ -1820,7 +1817,7 @@ fn rounded_shelled_body_classifies_cavity_outside() {
     .unwrap();
     assert_eq!(
         wall,
-        brepkit_algo::FaceClass::Inside,
+        remus_algo::FaceClass::Inside,
         "wall-material point must classify Inside, got {wall:?}"
     );
 }

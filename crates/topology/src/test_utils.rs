@@ -4,7 +4,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point3, Vec3};
 
 use crate::edge::{Edge, EdgeCurve, EdgeId};
 use crate::face::{Face, FaceId, FaceSurface};

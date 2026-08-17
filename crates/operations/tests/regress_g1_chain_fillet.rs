@@ -26,17 +26,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_blend::fillet_builder::FilletBuilder;
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::validation::validate_shell_closed;
+use remus_blend::fillet_builder::FilletBuilder;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
+use remus_topology::validation::validate_shell_closed;
 
 const R: f64 = 2.0;
 
@@ -55,20 +55,20 @@ fn l_blank(topo: &mut Topology) -> SolidId {
     // a single ridgeline: without it the plate and wall keep separate side
     // faces, so the column's pieces have different face pairs and are not one
     // G1 chain at all.
-    brepkit_operations::heal::unify_faces(topo, fused).expect("unify");
+    remus_operations::heal::unify_faces(topo, fused).expect("unify");
     fused
 }
 
 /// The lowest piece of the rear corner column at `(cx, 40)`.
 fn rear_column_base(topo: &Topology, solid: SolidId, cx: f64) -> Option<EdgeId> {
-    brepkit_topology::explorer::solid_edges(topo, solid)
+    remus_topology::explorer::solid_edges(topo, solid)
         .expect("edges")
         .into_iter()
         .find(|&eid| {
             let e = topo.edge(eid).expect("edge");
             let a = topo.vertex(e.start()).expect("v").point();
             let b = topo.vertex(e.end()).expect("v").point();
-            let at = |p: &brepkit_math::vec::Point3| {
+            let at = |p: &remus_math::vec::Point3| {
                 (p.x() - cx).abs() < 1e-6 && (p.y() - 40.0).abs() < 1e-6
             };
             at(&a) && at(&b) && a.z().min(b.z()) < 1e-9 && a.z().max(b.z()) < 8.0 - 1e-9
@@ -108,7 +108,7 @@ fn fillet_follows_a_split_corner_column() {
     );
 
     // Exactly one cylindrical wall, and it must reach both end caps.
-    let walls: Vec<_> = brepkit_topology::explorer::solid_faces(&topo, result.solid)
+    let walls: Vec<_> = remus_topology::explorer::solid_faces(&topo, result.solid)
         .expect("faces")
         .into_iter()
         .filter(|&f| {

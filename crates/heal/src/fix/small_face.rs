@@ -5,11 +5,11 @@
 //! boolean operations at near-tangent intersections) and are removed
 //! via the [`ReShape`](crate::reshape::ReShape) tracker.
 
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
+use remus_topology::shell::ShellId;
+use remus_topology::solid::SolidId;
 
 use super::FixResult;
 use super::config::FixConfig;
@@ -132,13 +132,13 @@ fn face_diagonal(topo: &Topology, fid: FaceId) -> Result<f64, HealError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use crate::context::HealContext;
     use crate::fix::FixConfig;

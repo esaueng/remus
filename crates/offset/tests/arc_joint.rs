@@ -13,16 +13,16 @@
 
 use std::f64::consts::PI;
 
-use brepkit_check::properties::{PropertiesOptions, solid_area, solid_volume};
-use brepkit_check::validate::{Severity, ValidateOptions, validate_solid};
-use brepkit_math::mat::Mat4;
-use brepkit_offset::{JointType, OffsetOptions, offset_solid};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_check::properties::{PropertiesOptions, solid_area, solid_volume};
+use remus_check::validate::{Severity, ValidateOptions, validate_solid};
+use remus_math::mat::Mat4;
+use remus_offset::{JointType, OffsetOptions, offset_solid};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 fn arc_opts() -> OffsetOptions {
     OffsetOptions {
@@ -262,8 +262,8 @@ fn every_joint_patch_carries_the_offset_radius_and_holds_its_own_corners() {
 
 /// The public measurement API has to reach the same answer.
 ///
-/// `brepkit-offset` measures through `brepkit-check`'s per-face quadrature,
-/// but callers reach a rounded body through `brepkit-operations`, which routes
+/// `remus-offset` measures through `remus-check`'s per-face quadrature,
+/// but callers reach a rounded body through `remus-operations`, which routes
 /// a solid with no bored quadric to a tessellated boundary integral. An
 /// inscribed mesh under-counts a convex patch, so that route is held to a
 /// looser figure than the quadrature — but to the same closed form, and from
@@ -276,8 +276,8 @@ fn the_operations_measure_api_reaches_the_same_closed_form() {
     let result = offset_solid(&mut topo, solid, d, arc_opts()).unwrap();
 
     let expected = minkowski_box_volume(a, b, c, d);
-    let tessellated = brepkit_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
-    let mass = brepkit_operations::measure::mass_properties(&topo, result)
+    let tessellated = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+    let mass = remus_operations::measure::mass_properties(&topo, result)
         .unwrap()
         .mass;
 
@@ -426,7 +426,7 @@ fn excluding_a_face_refuses_a_rounded_offset() {
         .faces()
         .to_vec();
     let error =
-        brepkit_offset::thick_solid(&mut topo, solid, 0.5, &faces[..1], arc_opts()).unwrap_err();
+        remus_offset::thick_solid(&mut topo, solid, 0.5, &faces[..1], arc_opts()).unwrap_err();
     assert!(
         error.to_string().contains("cannot exclude faces"),
         "an open face has no joint to roll into; must refuse, got {error}"

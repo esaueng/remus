@@ -5,11 +5,9 @@
 //! [`ToroidalSurface`]) and a generic Newton-Raphson solver for any
 //! [`ParametricSurface`].
 
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point3, Vec3};
 
 use super::SurfaceProjection;
 
@@ -355,7 +353,7 @@ pub fn point_to_torus(point: Point3, torus: &ToroidalSurface) -> SurfaceProjecti
 #[allow(clippy::cast_precision_loss)]
 pub fn point_to_nurbs_surface(
     point: Point3,
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
 ) -> SurfaceProjection {
     let (u_min, u_max) = surface.domain_u();
     let (v_min, v_max) = surface.domain_v();
@@ -512,7 +510,7 @@ mod tests {
     use std::f64::consts::{FRAC_PI_2, TAU};
 
     use super::*;
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
 
     // Helpers
     fn approx(a: f64, b: f64, tol: f64) -> bool {

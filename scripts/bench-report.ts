@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * bench-report.ts — Unified brepkit vs OCCT comparison report generator.
+ * bench-report.ts — Unified remus vs OCCT comparison report generator.
  *
  * Reads:
  *   - Criterion JSON from target/criterion/<name>/new/estimates.json (nanoseconds)
@@ -42,9 +42,9 @@ interface JsBenchResult {
 interface ComparisonRow {
   display: string;
   occtMs: number | null;
-  brepkitWasmMs: number | null;
+  remusWasmMs: number | null;
   nativeUs: number | null;
-  wasmOverOcct: number | null;    // ratio: brepkit-wasm / occt
+  wasmOverOcct: number | null;    // ratio: remus-wasm / occt
   wasmOverhead: number | null;    // ratio: wasm / native
   winner: string;
 }
@@ -133,7 +133,7 @@ function readJsResults(jsJsonPath: string): Map<string, JsBenchResult> {
       // The name in the JSON has the [kernel] prefix from benchKernel
       // e.g. "[occt] makeBox(10,20,30)" → kernel='occt', raw name='makeBox(10,20,30)'
       const kernel = r.kernel ?? extractKernelFromName(r.name);
-      const rawName = r.name.replace(/^\[(occt|brepkit)\]\s*/, '');
+      const rawName = r.name.replace(/^\[(occt|remus)\]\s*/, '');
       map.set(`${kernel}:${rawName}`, r);
     }
 
@@ -145,7 +145,7 @@ function readJsResults(jsJsonPath: string): Map<string, JsBenchResult> {
 
 /** Fallback: extract kernel from "[kernel] name" format. */
 function extractKernelFromName(name: string): string {
-  const match = name.match(/^\[(occt|brepkit)\]/);
+  const match = name.match(/^\[(occt|remus)\]/);
   return match ? match[1]! : 'unknown';
 }
 
@@ -178,34 +178,34 @@ function generateReport(
     const occtResult = jsResults.get(`occt:${mapping.js}`);
     const occtMs = occtResult?.median ?? null;
 
-    // JS brepkit-WASM result — milliseconds
-    const brepkitResult = jsResults.get(`brepkit:${mapping.js}`);
-    const brepkitWasmMs = brepkitResult?.median ?? null;
+    // JS remus-WASM result — milliseconds
+    const remusResult = jsResults.get(`remus:${mapping.js}`);
+    const remusWasmMs = remusResult?.median ?? null;
 
     // Ratios
     const wasmOverOcct =
-      brepkitWasmMs !== null && occtMs !== null && occtMs > 0
-        ? brepkitWasmMs / occtMs
+      remusWasmMs !== null && occtMs !== null && occtMs > 0
+        ? remusWasmMs / occtMs
         : null;
 
     const nativeMs = nativeUs !== null ? nativeUs / 1000 : null;
     const wasmOverhead =
-      brepkitWasmMs !== null && nativeMs !== null && nativeMs > 0
-        ? brepkitWasmMs / nativeMs
+      remusWasmMs !== null && nativeMs !== null && nativeMs > 0
+        ? remusWasmMs / nativeMs
         : null;
 
     // Winner determination
     let winner = '—';
-    if (brepkitWasmMs !== null && occtMs !== null) {
-      if (brepkitWasmMs < occtMs * 0.95) winner = 'brepkit';
-      else if (occtMs < brepkitWasmMs * 0.95) winner = 'OCCT';
+    if (remusWasmMs !== null && occtMs !== null) {
+      if (remusWasmMs < occtMs * 0.95) winner = 'remus';
+      else if (occtMs < remusWasmMs * 0.95) winner = 'OCCT';
       else winner = 'tie';
     }
 
     rows.push({
       display: mapping.display,
       occtMs,
-      brepkitWasmMs,
+      remusWasmMs,
       nativeUs,
       wasmOverOcct,
       wasmOverhead,
@@ -215,14 +215,14 @@ function generateReport(
 
   // Build markdown
   const lines: string[] = [];
-  lines.push('# brepkit vs OCCT — Benchmark Comparison');
+  lines.push('# remus vs OCCT — Benchmark Comparison');
   lines.push('');
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push('');
   lines.push('## Results');
   lines.push('');
   lines.push(
-    '| Operation | OCCT (ms) | brepkit-WASM (ms) | Native (µs) | WASM/OCCT | WASM overhead | Winner |'
+    '| Operation | OCCT (ms) | remus-WASM (ms) | Native (µs) | WASM/OCCT | WASM overhead | Winner |'
   );
   lines.push(
     '|-----------|----------:|------------------:|------------:|----------:|--------------:|--------|'
@@ -230,7 +230,7 @@ function generateReport(
 
   for (const r of rows) {
     lines.push(
-      `| ${r.display.padEnd(25)} | ${fmt(r.occtMs, 2).padStart(9)} | ${fmt(r.brepkitWasmMs, 2).padStart(17)} | ${fmt(r.nativeUs, 1).padStart(11)} | ${fmtRatio(r.wasmOverOcct).padStart(9)} | ${fmtRatio(r.wasmOverhead).padStart(13)} | ${r.winner.padEnd(7)}|`
+      `| ${r.display.padEnd(25)} | ${fmt(r.occtMs, 2).padStart(9)} | ${fmt(r.remusWasmMs, 2).padStart(17)} | ${fmt(r.nativeUs, 1).padStart(11)} | ${fmtRatio(r.wasmOverOcct).padStart(9)} | ${fmtRatio(r.wasmOverhead).padStart(13)} | ${r.winner.padEnd(7)}|`
     );
   }
 
@@ -242,11 +242,11 @@ function generateReport(
     lines.push('');
     lines.push('## Bottleneck Analysis');
     lines.push('');
-    lines.push('Operations where brepkit-WASM is slower than OCCT:');
+    lines.push('Operations where remus-WASM is slower than OCCT:');
     lines.push('');
     for (const b of bottlenecks.sort((a, b) => (b.wasmOverOcct ?? 0) - (a.wasmOverOcct ?? 0))) {
       lines.push(
-        `- **${b.display}**: ${fmtRatio(b.wasmOverOcct)} slower (${fmt(b.brepkitWasmMs, 2)} ms vs ${fmt(b.occtMs, 2)} ms)`
+        `- **${b.display}**: ${fmtRatio(b.wasmOverOcct)} slower (${fmt(b.remusWasmMs, 2)} ms vs ${fmt(b.occtMs, 2)} ms)`
       );
     }
   }
@@ -263,13 +263,13 @@ function generateReport(
     lines.push('');
     for (const o of overheadRows.sort((a, b) => (b.wasmOverhead ?? 0) - (a.wasmOverhead ?? 0))) {
       lines.push(
-        `- **${o.display}**: ${fmtRatio(o.wasmOverhead)} (${fmt(o.brepkitWasmMs, 2)} ms WASM, ${fmt(o.nativeUs, 1)} µs native)`
+        `- **${o.display}**: ${fmtRatio(o.wasmOverhead)} (${fmt(o.remusWasmMs, 2)} ms WASM, ${fmt(o.nativeUs, 1)} µs native)`
       );
     }
   }
 
   // Wins summary
-  const brepkitWins = rows.filter((r) => r.winner === 'brepkit').length;
+  const remusWins = rows.filter((r) => r.winner === 'remus').length;
   const occtWins = rows.filter((r) => r.winner === 'OCCT').length;
   const ties = rows.filter((r) => r.winner === 'tie').length;
   const noData = rows.filter((r) => r.winner === '—').length;
@@ -277,7 +277,7 @@ function generateReport(
   lines.push('');
   lines.push('## Summary');
   lines.push('');
-  lines.push(`- **brepkit wins**: ${brepkitWins}`);
+  lines.push(`- **remus wins**: ${remusWins}`);
   lines.push(`- **OCCT wins**: ${occtWins}`);
   lines.push(`- **Ties** (within 5%): ${ties}`);
   if (noData > 0) lines.push(`- **No data**: ${noData}`);
@@ -290,13 +290,13 @@ function generateReport(
     rows: rows.map((r) => ({
       operation: r.display,
       occt_ms: r.occtMs,
-      brepkit_wasm_ms: r.brepkitWasmMs,
+      remus_wasm_ms: r.remusWasmMs,
       native_us: r.nativeUs,
       wasm_over_occt: r.wasmOverOcct,
       wasm_overhead: r.wasmOverhead,
       winner: r.winner,
     })),
-    summary: { brepkit_wins: brepkitWins, occt_wins: occtWins, ties, no_data: noData },
+    summary: { remus_wins: remusWins, occt_wins: occtWins, ties, no_data: noData },
   };
 
   return { rows, markdown, json };

@@ -35,23 +35,23 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::classify::{PointClassification, classify_point_robust};
-use brepkit_operations::measure::mass_properties;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::classify::{PointClassification, classify_point_robust};
+use remus_operations::measure::mass_properties;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 const BOX: (f64, f64, f64) = (30.0, 18.0, 24.0);
 const RADIUS: f64 = 6.0;
 
 struct Fused {
     topo: Topology,
-    solid: brepkit_topology::solid::SolidId,
+    solid: remus_topology::solid::SolidId,
 }
 
 fn fuse(cx: f64, cy: f64, cz: f64, h: f64) -> Fused {
@@ -98,7 +98,7 @@ impl Fused {
     }
 
     fn volume(&self) -> f64 {
-        brepkit_operations::measure::solid_volume(&self.topo, self.solid, 0.02).unwrap()
+        remus_operations::measure::solid_volume(&self.topo, self.solid, 0.02).unwrap()
     }
 }
 
@@ -190,7 +190,7 @@ fn the_protruding_cap_crescent_is_present_at_both_ends() {
         if face.surface().type_tag() != "plane" {
             continue;
         }
-        let area = brepkit_operations::measure::face_area(&f.topo, fid, 0.02).unwrap_or(0.0);
+        let area = remus_operations::measure::face_area(&f.topo, fid, 0.02).unwrap_or(0.0);
         if (area - crescent).abs() < 0.05 {
             found += 1;
         }
@@ -370,7 +370,7 @@ fn the_result_does_not_depend_on_where_the_cylinder_seam_falls() {
             .filter(|f| topo.face(**f).unwrap().surface().type_tag() != "plane")
             .count();
         assert!(curved >= 1, "seam at {deg} deg fell back to a mesh");
-        let got = brepkit_operations::measure::solid_volume(&topo, solid, 0.02).unwrap();
+        let got = remus_operations::measure::solid_volume(&topo, solid, 0.02).unwrap();
         let rel = (got - want).abs() / want;
         assert!(
             rel < 1e-3,

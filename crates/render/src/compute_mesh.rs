@@ -1,6 +1,6 @@
 //! GPU compute-shader mesher for analytic quadric surfaces.
 //!
-//! brepkit emits exact analytic surfaces (cylinder, cone, sphere, torus).
+//! remus emits exact analytic surfaces (cylinder, cone, sphere, torus).
 //! Rather than CPU-tessellating one into thousands of triangles and uploading
 //! them, this path uploads the surface's *parameters* and lets a WGSL compute
 //! shader evaluate the parametric surface into a vertex grid at a caller-chosen
@@ -23,10 +23,10 @@ use std::f64::consts::TAU;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use brepkit_math::surfaces::CylindricalSurface;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::surfaces::CylindricalSurface;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::camera::Camera;
 use crate::error::RenderError;
@@ -263,7 +263,7 @@ impl CylinderDescriptor {
 /// Reads the [`CylindricalSurface`] frame and radius, then derives the axial
 /// trim range `v0..v1` by projecting the face's outer-wire vertices onto the
 /// axis. The angular range is taken as a full revolution (`0..2π`) — the M2
-/// scope is a full cylinder (e.g. [`make_cylinder`](brepkit_operations::primitives::make_cylinder)),
+/// scope is a full cylinder (e.g. [`make_cylinder`](remus_operations::primitives::make_cylinder)),
 /// whose lateral face wraps the entire circle via a degenerate seam wire.
 ///
 /// `center` is set to the descriptor's own AABB center, so the returned
@@ -280,7 +280,7 @@ pub fn extract_cylinder_descriptor(
     let face_data = topo.face(face)?;
     let FaceSurface::Cylinder(cyl) = face_data.surface() else {
         return Err(RenderError::Operations(
-            brepkit_operations::OperationsError::InvalidInput {
+            remus_operations::OperationsError::InvalidInput {
                 reason: "extract_cylinder_descriptor: face is not a cylindrical surface".into(),
             },
         ));
@@ -334,7 +334,7 @@ fn axial_range(
     }
     if !(min_v.is_finite() && max_v.is_finite()) || (max_v - min_v).abs() < f64::EPSILON {
         return Err(RenderError::Operations(
-            brepkit_operations::OperationsError::InvalidInput {
+            remus_operations::OperationsError::InvalidInput {
                 reason: "extract_cylinder_descriptor: degenerate axial range on cylinder face"
                     .into(),
             },
@@ -442,7 +442,7 @@ pub fn render_cylinder_compute_offscreen(
         || index_bytes > limits.max_storage_buffer_binding_size
     {
         return Err(RenderError::Operations(
-            brepkit_operations::OperationsError::InvalidInput {
+            remus_operations::OperationsError::InvalidInput {
                 reason: "compute tessellation exceeds the GPU buffer budget".into(),
             },
         ));

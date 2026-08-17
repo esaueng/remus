@@ -1,4 +1,4 @@
-//! Golden file regression tests for brepkit.
+//! Golden file regression tests for remus.
 //!
 //! These tests compare operation output against known-good reference data
 //! stored in `tests/golden/data/`. Run with `UPDATE_GOLDEN=1` to regenerate.
@@ -13,14 +13,14 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use brepkit_math::mat::Mat4;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_topology::Topology;
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{solid_bounding_box, solid_center_of_mass, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
-use brepkit_operations::tessellate::tessellate_solid;
-use brepkit_operations::transform::transform_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{solid_bounding_box, solid_center_of_mass, solid_volume};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
+use remus_operations::tessellate::tessellate_solid;
+use remus_operations::transform::transform_solid;
 
 // ── Golden file helpers ─────────────────────────────────────────────
 
@@ -72,7 +72,7 @@ struct Measurements {
     com: [f64; 3],
 }
 
-fn measure_solid(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> Measurements {
+fn measure_solid(topo: &Topology, solid: remus_topology::solid::SolidId) -> Measurements {
     let mesh = tessellate_solid(topo, solid, 0.1).unwrap();
     let vol = solid_volume(topo, solid, 0.1).unwrap();
     let bbox = solid_bounding_box(topo, solid).unwrap();
@@ -114,7 +114,7 @@ fn format_measurements(header: &str, m: &Measurements) -> String {
 
 // ── Sorted vertex dump (for small meshes) ───────────────────────────
 
-fn format_sorted_vertices(topo: &Topology, solid: brepkit_topology::solid::SolidId) -> String {
+fn format_sorted_vertices(topo: &Topology, solid: remus_topology::solid::SolidId) -> String {
     let mesh = tessellate_solid(topo, solid, 0.1).unwrap();
     let mut verts: Vec<[f64; 3]> = mesh
         .positions

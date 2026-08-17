@@ -25,11 +25,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,7 +50,7 @@ fn labeltab_attach_fuse_is_watertight() {
     let result = boolean(&mut topo, BooleanOp::Fuse, bin, tab).unwrap();
 
     let faces = solid_faces(&topo, result).unwrap();
-    let mut uses: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
+    let mut uses: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -76,7 +76,7 @@ fn labeltab_attach_fuse_is_watertight() {
         "expected an analytic result with the pocket/cavity cylinders, got {curved} curved faces"
     );
 
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.005).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.005).unwrap();
     // Truth by inclusion-exclusion: 17421.32 + 3046.86 − 5.71 = 20462.5.
     // The band covers coarse-tessellation error on the curved faces; the bad
     // open-shell result measured ~20483 with faces missing and stays outside.

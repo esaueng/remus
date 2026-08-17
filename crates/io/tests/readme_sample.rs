@@ -5,11 +5,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_io::step::write_step;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_topology::Topology;
+use remus_io::step::write_step;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_topology::Topology;
 
 #[test]
 fn readme_rust_example_compiles_and_runs() -> Result<(), Box<dyn std::error::Error>> {

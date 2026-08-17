@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_operations::transform::transform_solid;
+use remus_operations::transform::transform_solid;
 
 use crate::error::{validate_finite, validate_positive, validate_work_count};
 use crate::handles::solid_id_to_u32;
@@ -24,7 +24,7 @@ impl BrepKernel {
         validate_positive(dx, "dx")?;
         validate_positive(dy, "dy")?;
         validate_positive(dz, "dz")?;
-        let solid_id = brepkit_operations::primitives::make_box(self.topo_mut(), dx, dy, dz)?;
+        let solid_id = remus_operations::primitives::make_box(self.topo_mut(), dx, dy, dz)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -40,7 +40,7 @@ impl BrepKernel {
         validate_positive(radius, "radius")?;
         validate_positive(height, "height")?;
         let solid_id =
-            brepkit_operations::primitives::make_cylinder(self.topo_mut(), radius, height)?;
+            remus_operations::primitives::make_cylinder(self.topo_mut(), radius, height)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -56,7 +56,7 @@ impl BrepKernel {
         validate_positive(radius, "radius")?;
         let segments = validate_work_count(segments, "segments")?;
         let solid_id =
-            brepkit_operations::primitives::make_sphere(self.topo_mut(), radius, segments)?;
+            remus_operations::primitives::make_sphere(self.topo_mut(), radius, segments)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -77,7 +77,7 @@ impl BrepKernel {
         validate_finite(bottom_radius, "bottom_radius")?;
         validate_finite(top_radius, "top_radius")?;
         validate_positive(height, "height")?;
-        let solid_id = brepkit_operations::primitives::make_cone(
+        let solid_id = remus_operations::primitives::make_cone(
             self.topo_mut(),
             bottom_radius,
             top_radius,
@@ -103,7 +103,7 @@ impl BrepKernel {
         validate_positive(major_radius, "major_radius")?;
         validate_positive(minor_radius, "minor_radius")?;
         let segments = validate_work_count(segments, "segments")?;
-        let solid_id = brepkit_operations::primitives::make_torus(
+        let solid_id = remus_operations::primitives::make_torus(
             self.topo_mut(),
             major_radius,
             minor_radius,
@@ -125,8 +125,8 @@ impl BrepKernel {
         validate_positive(ry, "ry")?;
         validate_positive(rz, "rz")?;
         // Create a unit sphere, then scale it non-uniformly.
-        let solid_id = brepkit_operations::primitives::make_sphere(self.topo_mut(), 1.0, 16)?;
-        let mat = brepkit_math::mat::Mat4::scale(rx, ry, rz);
+        let solid_id = remus_operations::primitives::make_sphere(self.topo_mut(), 1.0, 16)?;
+        let mat = remus_math::mat::Mat4::scale(rx, ry, rz);
         transform_solid(self.topo_mut(), solid_id, &mat)?;
         Ok(solid_id_to_u32(solid_id))
     }

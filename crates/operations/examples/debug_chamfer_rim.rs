@@ -1,6 +1,6 @@
 //! Repro: chamfering a CLOSED circular edge (a cylinder rim).
 //!
-//! Run: `cargo run --release --example debug_chamfer_rim -p brepkit-operations`
+//! Run: `cargo run --release --example debug_chamfer_rim -p remus-operations`
 
 #![allow(
     clippy::unwrap_used,
@@ -10,10 +10,10 @@
     clippy::print_stderr
 )]
 
-use brepkit_operations::primitives;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::primitives;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn surface_census(topo: &Topology, s: SolidId) -> std::collections::BTreeMap<&'static str, usize> {
     let mut m = std::collections::BTreeMap::new();
@@ -26,7 +26,7 @@ fn surface_census(topo: &Topology, s: SolidId) -> std::collections::BTreeMap<&'s
 
 fn mesh_edges(topo: &Topology, s: SolidId) -> (usize, usize) {
     let Ok(mesh) =
-        brepkit_operations::tessellate::tessellate_solid_with_tolerance(topo, s, 0.01, 0.1)
+        remus_operations::tessellate::tessellate_solid_with_tolerance(topo, s, 0.01, 0.1)
     else {
         return (usize::MAX, usize::MAX);
     };
@@ -62,10 +62,10 @@ fn mesh_edges(topo: &Topology, s: SolidId) -> (usize, usize) {
 }
 
 fn counts(topo: &Topology, s: SolidId) -> (usize, usize, usize) {
-    brepkit_topology::explorer::solid_entity_counts(topo, s).unwrap()
+    remus_topology::explorer::solid_entity_counts(topo, s).unwrap()
 }
 
-fn solid_edges(topo: &Topology, s: SolidId) -> Vec<brepkit_topology::edge::EdgeId> {
+fn solid_edges(topo: &Topology, s: SolidId) -> Vec<remus_topology::edge::EdgeId> {
     let mut seen = Vec::new();
     for fid in solid_faces(topo, s).unwrap() {
         let f = topo.face(fid).unwrap();
@@ -96,9 +96,9 @@ fn main() {
                 ed.start() == ed.end()
             })
             .unwrap();
-        let before = brepkit_operations::measure::solid_volume(&t, c, 0.002).unwrap();
-        if let Ok(res) = brepkit_operations::blend_ops::fillet_v2(&mut t, c, &[rim], r) {
-            let after = brepkit_operations::measure::solid_volume(&t, res.solid, 0.002).unwrap();
+        let before = remus_operations::measure::solid_volume(&t, c, 0.002).unwrap();
+        if let Ok(res) = remus_operations::blend_ops::fillet_v2(&mut t, c, &[rim], r) {
+            let after = remus_operations::measure::solid_volume(&t, res.solid, 0.002).unwrap();
             let big = 45.0_f64;
             let area = r * r * (1.0 - std::f64::consts::PI / 4.0);
             let num = (big - r / 2.0) - (std::f64::consts::PI / 4.0) * (big - r) - r / 3.0;
@@ -138,7 +138,7 @@ fn main() {
             let c = primitives::make_cylinder(&mut t, 45.0, 10.0).unwrap();
             let es = solid_edges(&t, c);
             let before = counts(&t, c);
-            match brepkit_operations::chamfer::chamfer(&mut t, c, &[es[i]], dist) {
+            match remus_operations::chamfer::chamfer(&mut t, c, &[es[i]], dist) {
                 Ok(r) => {
                     let after = counts(&t, r);
                     println!(
@@ -154,10 +154,10 @@ fn main() {
             let c = primitives::make_cylinder(&mut t, 45.0, 10.0).unwrap();
             let es = solid_edges(&t, c);
             let before = counts(&t, c);
-            match brepkit_operations::blend_ops::chamfer_v2(&mut t, c, &[es[i]], dist, dist) {
+            match remus_operations::blend_ops::chamfer_v2(&mut t, c, &[es[i]], dist, dist) {
                 Ok(r) => {
                     let after = counts(&t, r.solid);
-                    let vol = brepkit_operations::measure::solid_volume(&t, r.solid, 0.02)
+                    let vol = remus_operations::measure::solid_volume(&t, r.solid, 0.02)
                         .unwrap_or(f64::NAN);
                     // Pappus: revolving the right triangle (legs d,d) at
                     // centroid radius 45 - d/3 removes this much material.
@@ -180,7 +180,7 @@ fn main() {
             let c = primitives::make_cylinder(&mut t, 45.0, 10.0).unwrap();
             let es = solid_edges(&t, c);
             let before = counts(&t, c);
-            match brepkit_operations::blend_ops::fillet_v2(&mut t, c, &[es[i]], dist) {
+            match remus_operations::blend_ops::fillet_v2(&mut t, c, &[es[i]], dist) {
                 Ok(r) => {
                     let after = counts(&t, r.solid);
                     println!(

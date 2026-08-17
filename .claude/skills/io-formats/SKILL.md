@@ -5,7 +5,7 @@ description: Use when a STEP or other file imports wrong (missing solids, all-NU
 
 # I/O Formats
 
-The `brepkit-io` crate (L3) reads and writes STEP, IGES, STL, 3MF, OBJ, PLY, glTF,
+The `remus-io` crate (L3) reads and writes STEP, IGES, STL, 3MF, OBJ, PLY, glTF,
 and a native binary. Treat it as a product surface: a real file that imports wrong
 poisons every downstream skill, because most debugging fixtures come from importing
 a file. The reader must be trustworthy first.
@@ -80,17 +80,17 @@ bad file. Checkpoints in brackets.
 1. **Read and census.** `let solids = step::reader::read_step(&s, &mut topo)?;`
    [If `solids.len()` is short of the file's `MANIFOLD_SOLID_BREP` count, the rest were
    dropped reps: reader gap, not your geometry.] Census surface types by walking
-   `brepkit_topology::explorer::solid_faces(&topo, sid)?` and matching `face.surface()`
+   `remus_topology::explorer::solid_faces(&topo, sid)?` and matching `face.surface()`
    (or the `type_tag` / `is_analytic` delegates from `math/src/traits.rs`).
    [All-NURBS where you expected analytic means either a lossy source file or the file
    genuinely stored B-splines; go to step 5.]
-2. **Validate.** `brepkit_operations::validate::validate_solid(&topo, sid)?`; check
+2. **Validate.** `remus_operations::validate::validate_solid(&topo, sid)?`; check
    `report.is_valid()`. [Errors here with surfaces that imported fine means unhealed
    geometry, go to step 6.]
-3. **Tessellate and watertight-check.** `brepkit_operations::tessellate::tessellate_solid`
+3. **Tessellate and watertight-check.** `remus_operations::tessellate::tessellate_solid`
    then `is_watertight` / `boundary_edge_count`. See the solid-verification and
    tessellation siblings.
-4. **Classify.** Use ray-cast `brepkit_check::classify::classify_point`
+4. **Classify.** Use ray-cast `remus_check::classify::classify_point`
    (`crates/check/src/classify/mod.rs`). [Never trust `classify_point_winding` /
    `classify_point_robust` on faceted or NURBS solids; that mistake has cost prior
    debuggers a wrong theory.]
@@ -111,7 +111,7 @@ bad file. Checkpoints in brackets.
      recognition is tolerance-driven and can reconstruct slightly different parameters than
      the original (overfit risk), and it is non-transactional (checkpoint first if you need
      atomicity).
-   - `brepkit_heal::upgrade::unify_same_domain::unify_same_domain`: merge coplanar /
+   - `remus_heal::upgrade::unify_same_domain::unify_same_domain`: merge coplanar /
      co-cylindrical adjacent faces (wasm `unifyFaces`).
 
 ## The analytic round-trip check (why the reader must be trustworthy)

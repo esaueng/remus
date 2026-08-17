@@ -10,15 +10,15 @@ use crate::builder::classify_2d::{distance_to_polygon_boundary, point_in_polygon
 use crate::builder::plane_frame::PlaneFrame;
 use crate::ds::{GfaArena, Interference, Pave};
 use crate::error::AlgoError;
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
+use remus_math::aabb::Aabb3;
+use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
 
 use super::helpers::{add_pave_to_edge, find_nearby_pave_vertex as find_nearby_vertex};
 
@@ -26,7 +26,7 @@ use super::helpers::{add_pave_to_edge, find_nearby_pave_vertex as find_nearby_ve
 const N_SAMPLES: usize = 64;
 
 /// Newton tolerance for NURBS point inversion here, matching what
-/// [`ParametricSurface::project_point`](brepkit_math::traits::ParametricSurface::project_point)
+/// [`ParametricSurface::project_point`](remus_math::traits::ParametricSurface::project_point)
 /// hardcodes — the call the pre-gridded path stands in for.
 const NURBS_PROJECT_TOL: f64 = 1e-7;
 
@@ -60,10 +60,10 @@ pub fn perform(
         return Ok(());
     }
 
-    let edges_a = brepkit_topology::explorer::solid_edges(topo, solid_a)?;
-    let edges_b = brepkit_topology::explorer::solid_edges(topo, solid_b)?;
-    let faces_a = brepkit_topology::explorer::solid_faces(topo, solid_a)?;
-    let faces_b = brepkit_topology::explorer::solid_faces(topo, solid_b)?;
+    let edges_a = remus_topology::explorer::solid_edges(topo, solid_a)?;
+    let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
+    let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
+    let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
     // Collect face boundary edge sets to skip edges that are already
     // on the face boundary.
@@ -83,7 +83,7 @@ fn collect_face_boundary_edges(
 ) -> Result<Vec<HashSet<EdgeId>>, AlgoError> {
     let mut result = Vec::with_capacity(faces.len());
     for &fid in faces {
-        let edges = brepkit_topology::explorer::face_edges(topo, fid)?;
+        let edges = remus_topology::explorer::face_edges(topo, fid)?;
         result.push(edges.into_iter().collect());
     }
     Ok(result)
@@ -152,7 +152,7 @@ impl FaceContainment {
 /// scoop+label lip-corner fallback).
 fn sample_wire_outline(
     topo: &Topology,
-    wire_id: brepkit_topology::wire::WireId,
+    wire_id: remus_topology::wire::WireId,
     tol: Tolerance,
 ) -> Result<(Vec<Point3>, f64), AlgoError> {
     let mut points = Vec::new();
@@ -435,13 +435,13 @@ fn check_edge_face_pairs(
             // incidence checks are what make the widened radius safe. The
             // pave parameter is recomputed for Line edges (exact foot);
             // other curve types keep the tight path.
-            let snaps: Vec<Option<(brepkit_topology::vertex::VertexId, f64)>> = crossings
+            let snaps: Vec<Option<(remus_topology::vertex::VertexId, f64)>> = crossings
                 .iter()
                 .zip(&endpoint_windows)
                 .map(|(&(t, pt), &(_, _, snap_window))| {
                     // Only lines can use the exact parameter recomputation
                     // below. Reject other curves before the spatial lookup.
-                    if !matches!(curve, brepkit_topology::edge::EdgeCurve::Line)
+                    if !matches!(curve, remus_topology::edge::EdgeCurve::Line)
                         || snap_window <= tol.linear
                         || find_nearby_vertex(topo, arena, pt, tol).is_some()
                     {
@@ -831,8 +831,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::edge::EdgeCurve;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::EdgeCurve;
 
     #[test]
     fn sampling_detects_tangent_touch() {

@@ -4,8 +4,8 @@
 //! shell assembly with edge connectivity, dihedral angle selection,
 //! and Growth/Hole classification.
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::bop::SelectedFace;
 use crate::error::AlgoError;

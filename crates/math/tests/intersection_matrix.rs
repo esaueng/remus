@@ -10,15 +10,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::analytic_intersection::AnalyticSurface;
-use brepkit_math::context::OperationContext;
-use brepkit_math::intersect::{
+use remus_math::analytic_intersection::AnalyticSurface;
+use remus_math::context::OperationContext;
+use remus_math::intersect::{
     ContactKind, CurveGeometry, IntersectionElement, PlaneOperand, ResultQuality,
     SurfaceIntersection, SurfaceOperand, intersect_surfaces,
 };
-use brepkit_math::surfaces::{CylindricalSurface, SphericalSurface};
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point3, Vec3};
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e3];
 

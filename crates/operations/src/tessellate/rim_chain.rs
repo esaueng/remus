@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::vertex::VertexId;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::vertex::VertexId;
 
 /// One endpoint-connected curved-edge cycle that winds a periodic parameter.
 pub struct RimCycle {
@@ -137,11 +137,11 @@ fn wrap_pi(delta: f64) -> f64 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::vertex::Vertex;
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
 
     use super::*;
 

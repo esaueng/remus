@@ -9,7 +9,7 @@
 //! This module provides shared detection and correction utilities used by
 //! all profile-based operations.
 
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point3, Vec3};
 
 /// Dot-product threshold for winding classification in Newell-normal-based
 /// functions (`is_cw_winding`, `ensure_ccw_profiles`).

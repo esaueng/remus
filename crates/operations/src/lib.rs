@@ -1,8 +1,8 @@
-//! # brepkit-operations
+//! # remus-operations
 //!
 //! CAD modeling operations for B-Rep solids. Layer L3, depending on
-//! `brepkit-math`, `brepkit-topology`, `brepkit-geometry`, `brepkit-algo`,
-//! `brepkit-blend`, `brepkit-heal`, `brepkit-check`, and `brepkit-offset`.
+//! `remus-math`, `remus-topology`, `remus-geometry`, `remus-algo`,
+//! `remus-blend`, `remus-heal`, `remus-check`, and `remus-offset`.
 //!
 //! # Module families
 //!
@@ -20,7 +20,7 @@
 //! | **Tessellation** | [`tessellate`] | Mesh generation |
 //! | **Infrastructure** | [`assembly`], [`compound_ops`], [`evolution`], [`sketch`] | Utilities |
 
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point3, Vec3};
 
 pub mod extrude;
 pub mod helix;
@@ -148,19 +148,19 @@ pub enum OperationsError {
 
     /// A referenced topology entity was not found.
     #[error(transparent)]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math error occurred during the operation.
     #[error(transparent)]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// A GFA algorithm error occurred.
     #[error("algo: {0}")]
-    Algo(#[from] brepkit_algo::error::AlgoError),
+    Algo(#[from] remus_algo::error::AlgoError),
 
     /// A blend (fillet/chamfer v2) error occurred.
     #[error("blend: {0}")]
-    Blend(#[from] brepkit_blend::BlendError),
+    Blend(#[from] remus_blend::BlendError),
 
     /// An exact blend-band resize was refused.
     #[error("resize blend: {0}")]
@@ -168,15 +168,15 @@ pub enum OperationsError {
 
     /// A check (classification/validation/distance) error occurred.
     #[error("check: {0}")]
-    Check(#[from] brepkit_check::CheckError),
+    Check(#[from] remus_check::CheckError),
 
     /// A geometry conversion error occurred.
     #[error("geometry: {0}")]
-    Geometry(#[from] brepkit_geometry::error::GeomError),
+    Geometry(#[from] remus_geometry::error::GeomError),
 
     /// A shape-healing operation failed.
     #[error("heal: {0}")]
-    Heal(#[from] brepkit_heal::HealError),
+    Heal(#[from] remus_heal::HealError),
 
     /// An operation completed only a subset of the requested items.
     #[error("{operation} produced a partial result: {succeeded} succeeded, {failed} failed")]

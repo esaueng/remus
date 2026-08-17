@@ -38,18 +38,18 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean_with_evolution};
-use brepkit_operations::tessellate::{
+use remus_io::arena_io::deserialize_solid;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean_with_evolution};
+use remus_operations::tessellate::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid_with_tolerance,
 };
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::solid::SolidId;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

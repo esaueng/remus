@@ -2,8 +2,8 @@
 //!
 //! [`HealProcess`] executes a sequence of named operators in order.
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use super::builtin::register_builtins;
 use super::registry::OperatorRegistry;
@@ -83,7 +83,7 @@ mod tests {
     use super::*;
     use crate::pipeline::operator::HealOperator;
     use crate::status::Status;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     /// Test-only operator that mutates `topo` in place (so the SolidId
     /// returned matches the input) but reports `actions_taken = 7` and

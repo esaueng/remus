@@ -2,10 +2,10 @@
 //!
 //! Creates a new copy of the solid reflected across the specified plane.
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::transform::transform_solid;
 
@@ -89,9 +89,9 @@ pub fn mirror(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
 
     use super::*;
 

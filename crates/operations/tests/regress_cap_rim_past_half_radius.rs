@@ -28,24 +28,24 @@
 
 use std::collections::HashMap;
 
-use brepkit_blend::BlendError;
-use brepkit_math::vec::Point3;
-use brepkit_operations::OperationsError;
-use brepkit_operations::blend_ops::{blend_failure_code, chamfer_v2, fillet_v2};
-use brepkit_operations::measure;
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_blend::BlendError;
+use remus_math::vec::Point3;
+use remus_operations::OperationsError;
+use remus_operations::blend_ops::{blend_failure_code, chamfer_v2, fillet_v2};
+use remus_operations::measure;
+use remus_operations::primitives::make_cylinder;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 const PI: f64 = std::f64::consts::PI;
 
 /// The one closed circular edge whose points all sit at `z = h`.
 fn top_rim(topo: &Topology, solid: SolidId, h: f64) -> EdgeId {
     let mut found = Vec::new();
-    for eid in brepkit_topology::explorer::solid_edges(topo, solid).unwrap() {
+    for eid in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
         let e = topo.edge(eid).unwrap();
         if e.start() != e.end() || !matches!(e.curve(), EdgeCurve::Circle(_)) {
             continue;
@@ -105,7 +105,7 @@ fn total_area(r: f64, h: f64, f: f64) -> f64 {
 /// `(free edges, non-manifold edges)` counted over the B-rep wires.
 fn brep_edge_health(topo: &Topology, solid: SolidId) -> (usize, usize) {
     let mut usage: HashMap<usize, usize> = HashMap::new();
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid).unwrap() {
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oe in topo.wire(wid).unwrap().edges() {
@@ -157,7 +157,7 @@ fn mesh_edge_health(topo: &Topology, solid: SolidId) -> (usize, usize) {
 }
 
 fn surface_census(topo: &Topology, solid: SolidId) -> Vec<&'static str> {
-    let mut tags: Vec<_> = brepkit_topology::explorer::solid_faces(topo, solid)
+    let mut tags: Vec<_> = remus_topology::explorer::solid_faces(topo, solid)
         .unwrap()
         .into_iter()
         .map(|fid| topo.face(fid).unwrap().surface().type_tag())
@@ -188,7 +188,7 @@ fn round_top_rim_and_check(r: f64, h: f64, f: f64) -> f64 {
     );
 
     // The band's carrier torus is exactly the rolling ball's trace.
-    let torus = brepkit_topology::explorer::solid_faces(&topo, solid)
+    let torus = remus_topology::explorer::solid_faces(&topo, solid)
         .unwrap()
         .into_iter()
         .find_map(|fid| match topo.face(fid).unwrap().surface() {
@@ -205,7 +205,7 @@ fn round_top_rim_and_check(r: f64, h: f64, f: f64) -> f64 {
     );
 
     // Watertight, by three independent readings.
-    let report = brepkit_operations::validate::validate_solid(&topo, solid).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, solid).unwrap();
     assert!(
         report.is_valid(),
         "{what}: validate_solid reported {} error(s)",
@@ -437,7 +437,7 @@ fn every_edge_of_a_rebuilt_wall_lies_on_the_wall() {
             chamfer_v2(&mut topo, cyl, &[rim], f, f).unwrap()
         };
 
-        for fid in brepkit_topology::explorer::solid_faces(&topo, result.solid).unwrap() {
+        for fid in remus_topology::explorer::solid_faces(&topo, result.solid).unwrap() {
             let face = topo.face(fid).unwrap();
             let FaceSurface::Cylinder(cylinder) = face.surface() else {
                 continue;

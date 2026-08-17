@@ -9,10 +9,10 @@
 
 use std::collections::HashSet;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::vertex::VertexId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Interference, PaveBlockId};
 use crate::error::AlgoError;
@@ -151,13 +151,13 @@ fn fill_section_sc(arena: &mut GfaArena) {
 /// convergence failure, which would read as a huge distance and falsely
 /// reject a leaf that genuinely hugs the surface.
 fn dist_to_surface(
-    surface: &brepkit_topology::face::FaceSurface,
-    p: brepkit_math::vec::Point3,
+    surface: &remus_topology::face::FaceSurface,
+    p: remus_math::vec::Point3,
 ) -> Option<f64> {
-    use brepkit_topology::face::FaceSurface;
+    use remus_topology::face::FaceSurface;
     match surface {
         FaceSurface::Plane { normal, d } => {
-            Some((normal.dot(brepkit_math::vec::Vec3::new(p.x(), p.y(), p.z())) - d).abs())
+            Some((normal.dot(remus_math::vec::Vec3::new(p.x(), p.y(), p.z())) - d).abs())
         }
         FaceSurface::Nurbs(_) => None,
         other => other
@@ -230,7 +230,7 @@ fn fill_ef_in(topo: &Topology, arena: &mut GfaArena) {
             // only when it actually hugs the face's surface: the pave
             // endpoints and interior curve samples must all sit within
             // max(weld band, deviation-ratio × chord).
-            let on_band = ON_SURFACE_BAND_FACTOR * brepkit_math::tolerance::Tolerance::new().linear;
+            let on_band = ON_SURFACE_BAND_FACTOR * remus_math::tolerance::Tolerance::new().linear;
             let surface = match topo.face(face_id) {
                 Ok(f) => f.surface(),
                 Err(_) => continue,
@@ -282,7 +282,7 @@ fn fill_ef_in(topo: &Topology, arena: &mut GfaArena) {
                     // calibrated socket-loft corner arcs) hugs via curvature
                     // and legitimately reaches larger absolute deviations at
                     // its span ends; it keeps the pure ratio gate.
-                    let band = if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+                    let band = if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                         (IN_FACE_MAX_DEVIATION_RATIO * chord).min(IN_FACE_MAX_DEVIATION_ABS)
                     } else {
                         IN_FACE_MAX_DEVIATION_RATIO * chord

@@ -1,10 +1,10 @@
 //! Diagnostic: time the intersect(box,sphere) path to find the bottleneck.
 #![allow(clippy::unwrap_used, clippy::print_stdout, clippy::expect_used)]
 
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives;
+use remus_topology::Topology;
+use remus_topology::explorer;
 use std::time::Instant;
 
 #[test]
@@ -14,13 +14,13 @@ fn profile_box_sphere_r7_topology() {
     let bx = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let sp = primitives::make_sphere(&mut topo, 7.0, 16).unwrap();
     let r = boolean(&mut topo, BooleanOp::Intersect, bx, sp).unwrap();
-    let fids = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
-    let v = brepkit_operations::measure::solid_volume(&topo, r, 0.1).unwrap();
+    let fids = remus_topology::explorer::solid_faces(&topo, r).unwrap();
+    let v = remus_operations::measure::solid_volume(&topo, r, 0.1).unwrap();
     println!("volume = {v}, faces = {}", fids.len());
     for fid in fids {
         let face = topo.face(fid).unwrap();
         let kind = match face.surface() {
-            brepkit_topology::face::FaceSurface::Plane { normal, d } => {
+            remus_topology::face::FaceSurface::Plane { normal, d } => {
                 format!(
                     "Plane n=({:.2},{:.2},{:.2}) d={d:.2}",
                     normal.x(),
@@ -28,7 +28,7 @@ fn profile_box_sphere_r7_topology() {
                     normal.z()
                 )
             }
-            brepkit_topology::face::FaceSurface::Sphere(s) => {
+            remus_topology::face::FaceSurface::Sphere(s) => {
                 let c = s.center();
                 format!(
                     "Sphere c=({:.2},{:.2},{:.2}) r={:.2}",
@@ -51,8 +51,8 @@ fn profile_box_sphere_r7_topology() {
             let sv = topo.vertex(e.start()).unwrap();
             let ev = topo.vertex(e.end()).unwrap();
             let curve = match e.curve() {
-                brepkit_topology::edge::EdgeCurve::Line => "Line".to_string(),
-                brepkit_topology::edge::EdgeCurve::Circle(c) => format!(
+                remus_topology::edge::EdgeCurve::Line => "Line".to_string(),
+                remus_topology::edge::EdgeCurve::Circle(c) => format!(
                     "Circle(c=({:.2},{:.2},{:.2}), r={:.2})",
                     c.center().x(),
                     c.center().y(),
@@ -90,25 +90,24 @@ fn profile_gfa_box_sphere_direct() {
     let sph = primitives::make_sphere(&mut topo, 8.0, 16).unwrap();
     println!(
         "box faces: {:?}",
-        brepkit_topology::explorer::solid_faces(&topo, a).unwrap()
+        remus_topology::explorer::solid_faces(&topo, a).unwrap()
     );
     println!(
         "sphere faces: {:?}",
-        brepkit_topology::explorer::solid_faces(&topo, sph).unwrap()
+        remus_topology::explorer::solid_faces(&topo, sph).unwrap()
     );
     // Direct GFA call, bypassing the validation+fallback in boolean().
-    let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Intersect, a, sph)
-            .expect("GFA should not error");
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Intersect, a, sph)
+        .expect("GFA should not error");
+    let face_ids = remus_topology::explorer::solid_faces(&topo, result).unwrap();
     println!("GFA-direct intersect(box,sphere): {} faces", face_ids.len());
     for fid in face_ids {
         let face = topo.face(fid).unwrap();
         let kind = match face.surface() {
-            brepkit_topology::face::FaceSurface::Plane { normal, d } => {
+            remus_topology::face::FaceSurface::Plane { normal, d } => {
                 format!("Plane(n={:?}, d={:.3})", normal, d)
             }
-            brepkit_topology::face::FaceSurface::Sphere(s) => {
+            remus_topology::face::FaceSurface::Sphere(s) => {
                 format!("Sphere(c={:?}, r={:.3})", s.center(), s.radius())
             }
             other => format!("{other:?}"),
@@ -159,17 +158,17 @@ fn profile_intersect_box_sphere() {
     let a = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
     let sph = primitives::make_sphere(&mut topo, 8.0, 16).unwrap();
     let r = boolean(&mut topo, BooleanOp::Intersect, a, sph).unwrap();
-    let face_ids = brepkit_topology::explorer::solid_faces(&topo, r).unwrap();
+    let face_ids = remus_topology::explorer::solid_faces(&topo, r).unwrap();
     let mut counts = std::collections::BTreeMap::new();
     for fid in face_ids {
         let surf = topo.face(fid).unwrap().surface();
         let kind = match surf {
-            brepkit_topology::face::FaceSurface::Plane { .. } => "Plane",
-            brepkit_topology::face::FaceSurface::Sphere(_) => "Sphere",
-            brepkit_topology::face::FaceSurface::Cylinder(_) => "Cylinder",
-            brepkit_topology::face::FaceSurface::Cone(_) => "Cone",
-            brepkit_topology::face::FaceSurface::Torus(_) => "Torus",
-            brepkit_topology::face::FaceSurface::Nurbs(_) => "Nurbs",
+            remus_topology::face::FaceSurface::Plane { .. } => "Plane",
+            remus_topology::face::FaceSurface::Sphere(_) => "Sphere",
+            remus_topology::face::FaceSurface::Cylinder(_) => "Cylinder",
+            remus_topology::face::FaceSurface::Cone(_) => "Cone",
+            remus_topology::face::FaceSurface::Torus(_) => "Torus",
+            remus_topology::face::FaceSurface::Nurbs(_) => "Nurbs",
         };
         *counts.entry(kind).or_insert(0_usize) += 1;
     }

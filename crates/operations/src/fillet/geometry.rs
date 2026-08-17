@@ -1,10 +1,10 @@
 //! Edge sampling and surface normal utilities for fillet operations.
 
-use brepkit_math::nurbs::projection::project_point_to_surface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::FaceSurface;
+use remus_math::nurbs::projection::project_point_to_surface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::FaceSurface;
 
 /// Sample a point along an edge curve at normalised parameter `t` ∈ [0, 1].
 ///

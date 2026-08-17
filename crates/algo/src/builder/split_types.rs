@@ -3,10 +3,10 @@
 //! These types carry edge and face data through the splitting stages:
 //! pcurve computation, wire building, and sub-face construction.
 
-use brepkit_math::curves2d::Curve2D;
-use brepkit_math::vec::{Point2, Point3};
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::curves2d::Curve2D;
+use remus_math::vec::{Point2, Point3};
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use super::plane_frame::PlaneFrame;
 use crate::ds::Rank;
@@ -139,7 +139,7 @@ pub fn sub_trim(
         EdgeCurve::Parabola(parabola) => Some((parabola.project(start), parabola.project(end))),
         EdgeCurve::NurbsCurve(nurbs) => {
             let project = |point| {
-                brepkit_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
+                remus_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
                     .ok()
                     .map(|result| result.parameter)
             };

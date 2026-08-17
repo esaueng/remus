@@ -1,11 +1,11 @@
 //! Edge fixing — vertex-curve alignment, degenerate removal, same-parameter.
 
-use brepkit_math::curves2d::{Curve2D, NurbsCurve2D};
-use brepkit_math::vec::Point2;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::FaceId;
-use brepkit_topology::pcurve::PCurve;
+use remus_math::curves2d::{Curve2D, NurbsCurve2D};
+use remus_math::vec::Point2;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+use remus_topology::pcurve::PCurve;
 
 use super::FixResult;
 use super::config::{FixConfig, FixMode};
@@ -353,15 +353,15 @@ pub fn repair_pcurve_within_budget(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod repair_budget_tests {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::traits::ParametricCurve;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-    use brepkit_topology::face::{Face, FaceId, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::traits::ParametricCurve;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use crate::context::HealContext;
     use crate::error::HealError;

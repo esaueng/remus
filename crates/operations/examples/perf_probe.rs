@@ -9,9 +9,9 @@
 
 use std::time::Instant;
 
-use brepkit_math::vec::Point3;
-use brepkit_operations::{boolean, primitives, tessellate};
-use brepkit_topology::Topology;
+use remus_math::vec::Point3;
+use remus_operations::{boolean, primitives, tessellate};
+use remus_topology::Topology;
 
 struct StampLogger {
     clock: std::sync::Mutex<(Option<Instant>, Option<Instant>)>,

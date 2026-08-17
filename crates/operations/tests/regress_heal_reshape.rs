@@ -3,22 +3,22 @@
 //! cavity as separate shells, and adds one sub-tolerance face to a cavity wall.
 #![allow(clippy::unwrap_used)]
 
-use brepkit_heal::fix::{FixConfig, fix_shape};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::shell_op::shell;
-use brepkit_operations::tessellate::{
+use remus_heal::fix::{FixConfig, fix_shape};
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_box;
+use remus_operations::shell_op::shell;
+use remus_operations::tessellate::{
     TriangleMesh, boundary_edge_count, non_manifold_edge_count, tessellate_solid,
 };
-use brepkit_operations::validate::validate_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::Solid;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_operations::validate::validate_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::Solid;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 fn signed_mesh_volume(mesh: &TriangleMesh) -> f64 {
     mesh.indices

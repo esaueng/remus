@@ -3,10 +3,10 @@
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 
-use brepkit_operations::tessellate;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::tessellate;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// PLY output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,14 +131,14 @@ fn write_ply_binary(positions: &[[f32; 3]], normals: &[[f32; 3]], indices: &[[u3
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     use super::*;
 
     #[test]
     fn write_ascii_ply() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let ply = write_ply(&topo, &[solid], 0.1, PlyFormat::Ascii).unwrap();
         let text = std::str::from_utf8(&ply).unwrap();
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn write_binary_ply() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let ply = write_ply(&topo, &[solid], 0.1, PlyFormat::BinaryLittleEndian).unwrap();
 

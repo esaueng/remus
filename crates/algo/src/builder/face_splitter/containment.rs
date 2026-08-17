@@ -1,7 +1,7 @@
 //! Point containment tests for UV-space hole detection.
 
-use brepkit_math::curves2d::Curve2D;
-use brepkit_math::vec::Point2;
+use remus_math::curves2d::Curve2D;
+use remus_math::vec::Point2;
 
 use super::super::split_types::OrientedPCurveEdge;
 use super::sampling::sample_wire_loop_uv;
@@ -91,7 +91,7 @@ pub(super) fn find_point_outside_holes(
                     Some(f) => f.project(e.start_3d),
                     None => e.start_uv,
                 });
-                if matches!(e.curve_3d, brepkit_topology::edge::EdgeCurve::Line) {
+                if matches!(e.curve_3d, remus_topology::edge::EdgeCurve::Line) {
                     continue;
                 }
                 if let Some(f) = frame {

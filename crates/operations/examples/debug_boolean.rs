@@ -5,12 +5,12 @@
     missing_docs
 )]
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure;
-use brepkit_operations::primitives;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure;
+use remus_operations::primitives;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
 fn main() {
     let mut topo = Topology::new();
@@ -40,7 +40,7 @@ fn main() {
         let area = measure::face_area(&topo, fid, 0.1).unwrap_or(0.0);
 
         let surf_type = match surface {
-            brepkit_topology::face::FaceSurface::Plane { normal, d } => {
+            remus_topology::face::FaceSurface::Plane { normal, d } => {
                 format!(
                     "Plane(n={:.2},{:.2},{:.2} d={:.2})",
                     normal.x(),
@@ -49,11 +49,11 @@ fn main() {
                     d
                 )
             }
-            brepkit_topology::face::FaceSurface::Nurbs(_) => "Nurbs".to_string(),
-            brepkit_topology::face::FaceSurface::Cylinder(_) => "Cylinder".to_string(),
-            brepkit_topology::face::FaceSurface::Cone(_) => "Cone".to_string(),
-            brepkit_topology::face::FaceSurface::Sphere(_) => "Sphere".to_string(),
-            brepkit_topology::face::FaceSurface::Torus(_) => "Torus".to_string(),
+            remus_topology::face::FaceSurface::Nurbs(_) => "Nurbs".to_string(),
+            remus_topology::face::FaceSurface::Cylinder(_) => "Cylinder".to_string(),
+            remus_topology::face::FaceSurface::Cone(_) => "Cone".to_string(),
+            remus_topology::face::FaceSurface::Sphere(_) => "Sphere".to_string(),
+            remus_topology::face::FaceSurface::Torus(_) => "Torus".to_string(),
         };
 
         eprintln!(
@@ -65,14 +65,14 @@ fn main() {
     eprintln!("\nPer-face signed volume (divergence theorem):");
     let mut total_sv = 0.0;
     for (i, &fid) in shell.faces().iter().enumerate() {
-        let mesh = brepkit_operations::tessellate::tessellate(&topo, fid, 0.1).unwrap();
+        let mesh = remus_operations::tessellate::tessellate(&topo, fid, 0.1).unwrap();
         let mut face_vol = 0.0;
         for tri in mesh.indices.chunks_exact(3) {
             let v0 = mesh.positions[tri[0] as usize];
             let v1 = mesh.positions[tri[1] as usize];
             let v2 = mesh.positions[tri[2] as usize];
             // Signed tet volume: v0 · (v1 × v2) / 6
-            let cross = brepkit_math::vec::Vec3::new(
+            let cross = remus_math::vec::Vec3::new(
                 v1.y() * v2.z() - v1.z() * v2.y(),
                 v1.z() * v2.x() - v1.x() * v2.z(),
                 v1.x() * v2.y() - v1.y() * v2.x(),

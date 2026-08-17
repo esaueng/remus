@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::shell::ShellId;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::shell::ShellId;
 
 use crate::HealError;
 
@@ -89,7 +89,7 @@ pub fn sew_shell(
 
                 let curve_j = topo.edge(free_edges[j])?.curve().clone();
                 let ej_mut = topo.edge_mut(free_edges[j])?;
-                *ej_mut = brepkit_topology::edge::Edge::new(
+                *ej_mut = remus_topology::edge::Edge::new(
                     if fwd { target_s } else { target_t },
                     if fwd { target_t } else { target_s },
                     curve_j,

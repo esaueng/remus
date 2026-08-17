@@ -8,12 +8,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{self, BooleanOp, collect_face_signatures};
-use brepkit_operations::evolution::{EvolutionMap, build_evolution_by_geometry};
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{self, BooleanOp, collect_face_signatures};
+use remus_operations::evolution::{EvolutionMap, build_evolution_by_geometry};
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
 /// Two overlapping boxes fused, everything scaled by `s`.
 ///
@@ -23,7 +23,7 @@ fn fused_pair_evolution(s: f64) -> EvolutionMap {
     let mut topo = Topology::new();
     let a = make_box(&mut topo, 10.0 * s, 10.0 * s, 10.0 * s).unwrap();
     let b = make_box(&mut topo, 10.0 * s, 10.0 * s, 10.0 * s).unwrap();
-    let shift = brepkit_math::mat::Mat4::translation(6.0 * s, 0.0, 0.0);
+    let shift = remus_math::mat::Mat4::translation(6.0 * s, 0.0, 0.0);
     transform_solid(&mut topo, b, &shift).unwrap();
 
     let mut inputs = collect_face_signatures(&topo, a).unwrap();
@@ -94,9 +94,9 @@ fn fuse_provenance_is_the_same_at_every_scale() {
 /// are gone.
 #[test]
 fn fuse_of_two_boxes_maps_what_the_construction_says() {
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::explorer::solid_faces;
-    use brepkit_topology::face::{FaceId, FaceSurface};
+    use remus_math::vec::Vec3;
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::{FaceId, FaceSurface};
 
     let mut topo = Topology::new();
     let a = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
@@ -104,7 +104,7 @@ fn fuse_of_two_boxes_maps_what_the_construction_says() {
     transform_solid(
         &mut topo,
         b,
-        &brepkit_math::mat::Mat4::translation(6.0, 0.0, 0.0),
+        &remus_math::mat::Mat4::translation(6.0, 0.0, 0.0),
     )
     .unwrap();
 
@@ -198,8 +198,8 @@ fn fuse_of_two_boxes_maps_what_the_construction_says() {
 ///
 /// Removes the boolean engine from the picture entirely: only the matcher is
 /// under test, and the correct answer is a 1:1 correspondence.
-fn box_signatures(s: f64, base: usize) -> Vec<(usize, brepkit_math::vec::Vec3, Point3)> {
-    use brepkit_math::vec::Vec3;
+fn box_signatures(s: f64, base: usize) -> Vec<(usize, remus_math::vec::Vec3, Point3)> {
+    use remus_math::vec::Vec3;
     let h = 5.0 * s;
     vec![
         (base, Vec3::new(0.0, 0.0, -1.0), Point3::new(h, h, 0.0)),
