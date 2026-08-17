@@ -738,6 +738,10 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                         ),
                     );
                     let new_eid = topo.add_edge(rebuilt);
+                    // Construction lineage: the rebuilt edge IS the source
+                    // edge with merged vertices substituted (Issue 12
+                    // assembly-rebuild records).
+                    lineage.rewrites.insert(new_eid.index(), oe.edge().index());
                     new_oes.push(OrientedEdge::new(new_eid, true));
                     any_changed = true;
                 } else {
