@@ -600,7 +600,7 @@ pub struct EntitySignature {
     /// Structural adjacency counts.
     pub adjacency: AdjacencySignature,
     /// For edges: the `(start, end)` vertex signatures, structural.
-    pub endpoints: Option<Box<(EntitySignature, EntitySignature)>>,
+    pub endpoints: Option<Box<(Self, Self)>>,
 }
 
 impl EntitySignature {
@@ -1023,7 +1023,7 @@ fn vertex_matches(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use crate::TopologyError;
     use crate::journal::{EventDraft, EvolutionDraft, UNJOURNALED_MUTATIONS};
