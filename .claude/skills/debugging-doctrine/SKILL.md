@@ -1,6 +1,6 @@
 ---
 name: debugging-doctrine
-description: The meta-method for debugging hard geometry bugs in brepkit, used when a boolean, fillet, offset, or tessellation produces wrong volume, wrong face count, open or non-manifold shells, mesh fallback, misclassified points, or any failure where the first diagnosis did not immediately hold. Also applies before starting any multi-pass investigation, when a repro behaves differently from the real case, or when successive root-cause theories keep overturning each other.
+description: The meta-method for debugging hard geometry bugs in Remus, used when a boolean, fillet, offset, or tessellation produces wrong volume, wrong face count, open or non-manifold shells, mesh fallback, misclassified points, or any failure where the first diagnosis did not immediately hold. Also applies before starting any multi-pass investigation, when a repro behaves differently from the real case, or when successive root-cause theories keep overturning each other.
 ---
 
 # Debugging Doctrine

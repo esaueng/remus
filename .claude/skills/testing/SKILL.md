@@ -1,9 +1,9 @@
 ---
 name: testing
-description: Use when writing, placing, running, or updating tests in brepkit; when a bug fix needs a regression fixture; when deciding whether a repro is faithful to the real failing geometry; when a golden file mismatches; or when ending a session with unverified work (verify-or-revert). Covers unit, proptest, golden, integration, wasm contract, bench, and ignored ready-repro tests.
+description: Use when writing, placing, running, or updating tests in Remus; when a bug fix needs a regression fixture; when deciding whether a repro is faithful to the real failing geometry; when a golden file mismatches; or when ending a session with unverified work (verify-or-revert). Covers unit, proptest, golden, integration, wasm contract, bench, and ignored ready-repro tests.
 ---
 
-# Testing in brepkit
+# Testing in Remus
 
 ## When to use
 
