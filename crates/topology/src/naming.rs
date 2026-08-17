@@ -425,11 +425,15 @@ pub fn resolve(topo: &Topology, reference: &PersistentRef) -> Resolution {
         }
     }
 
-    // 3. Live index → current arena keys.
+    // 3. Live index → current arena keys. Keys with the
+    // [`EntityKey::UNMAPPED`] placeholder describe entities that are not
+    // present in this session (not exported to, or restored from, the
+    // document) — they are filtered here so a reference to one reports
+    // no match rather than binding an index that resolves nowhere.
     let mut entities: Vec<EntityKey> = current
         .iter()
         .filter_map(|&ordinal| journal.key_of(ordinal))
-        .filter(|key| key.kind == reference.entity_kind)
+        .filter(|key| key.kind == reference.entity_kind && key.index != EntityKey::UNMAPPED)
         .collect();
     entities.sort_unstable();
 

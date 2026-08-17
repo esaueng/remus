@@ -71,6 +71,15 @@ impl OpId {
     pub fn value(self) -> u64 {
         self.0
     }
+
+    /// Rebuilds an id from its raw value (deserialization). A value the
+    /// journal never issued simply resolves
+    /// [`UnknownOperation`](crate::naming::Resolution::UnknownOperation) —
+    /// constructing one cannot forge history.
+    #[must_use]
+    pub fn from_value(value: u64) -> Self {
+        Self(value)
+    }
 }
 
 /// Journal-local stable identity of one entity.
@@ -126,6 +135,16 @@ pub struct EntityKey {
 }
 
 impl EntityKey {
+    /// The placeholder arena index for an entity that exists in journal
+    /// history but not in the current session — an entity that was not
+    /// exported to (or restored from) a serialized document. No live
+    /// entity ever has this index, so lookups through such a key fail
+    /// typed and resolution reports the entity as not present rather
+    /// than binding it. The kind half of the key stays meaningful, which
+    /// keeps `OperationOutput` output ordering replay-stable across a
+    /// round trip.
+    pub const UNMAPPED: usize = usize::MAX;
+
     /// A face key.
     #[must_use]
     pub fn face(index: usize) -> Self {
@@ -668,6 +687,323 @@ impl Journal {
     }
 }
 
+// ─── Serialization snapshots (RFC 0003, Stage 5) ────────────────────────
+
+/// One entity event in a [`JournalSnapshot`], over raw ordinal values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventSnapshot {
+    /// See [`EntityEvent::Preserved`].
+    Preserved {
+        /// The input entity's ordinal value.
+        from: u64,
+    },
+    /// See [`EntityEvent::Modified`].
+    Modified {
+        /// The input entity's ordinal value.
+        from: u64,
+    },
+    /// See [`EntityEvent::Generated`].
+    Generated {
+        /// The source entities' ordinal values.
+        sources: Vec<u64>,
+    },
+    /// See [`EntityEvent::Merged`].
+    Merged {
+        /// The merged inputs' ordinal values.
+        from: Vec<u64>,
+    },
+    /// See [`EntityEvent::Deleted`].
+    Deleted,
+    /// See [`EntityEvent::Unresolved`].
+    Unresolved {
+        /// The candidate inputs' ordinal values.
+        candidates: Vec<u64>,
+    },
+}
+
+/// One entry payload in a [`JournalSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayloadSnapshot {
+    /// See [`EntryPayload::Evolution`].
+    Evolution {
+        /// Whether the events are construction records.
+        construction: bool,
+        /// The entry scope, as ordinal values (sorted).
+        scope: Vec<u64>,
+        /// Subject ordinal value → event, sorted by subject.
+        events: Vec<(u64, EventSnapshot)>,
+    },
+    /// See [`EntryPayload::Barrier`].
+    Barrier {
+        /// The severed entities' ordinal values (sorted).
+        affected: Vec<u64>,
+    },
+    /// See [`EntryPayload::GlobalBarrier`].
+    GlobalBarrier,
+}
+
+/// One entry in a [`JournalSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntrySnapshot {
+    /// The operation's `OpId` value.
+    pub op: u64,
+    /// The stable operation kind name.
+    pub kind: String,
+    /// What the entry records.
+    pub payload: PayloadSnapshot,
+}
+
+/// A plain-data snapshot of the journal's full state, for serialization
+/// (RFC 0003, Stage 5).
+///
+/// Mutation-tick counts are deliberately **not** part of a snapshot: they
+/// are session-local gap-detection state, and
+/// [`Journal::from_snapshot`] re-derives a consistent sequence
+/// (`Topology::load_journal` then syncs the topology's counter so a
+/// clean load is not a gap).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JournalSnapshot {
+    /// The `OpId` high-water counter.
+    pub next_op: u64,
+    /// The ordinal high-water counter.
+    pub next_ordinal: u64,
+    /// The live index: ordinal value → current entity key, sorted by
+    /// ordinal. Keys with index [`EntityKey::UNMAPPED`] describe entities
+    /// that are not present in this session (kind preserved).
+    pub index: Vec<(u64, EntityKey)>,
+    /// The entries, oldest first.
+    pub entries: Vec<EntrySnapshot>,
+}
+
+impl Journal {
+    /// Captures the journal's full state as plain data.
+    #[must_use]
+    pub fn snapshot(&self) -> JournalSnapshot {
+        let mut index: Vec<(u64, EntityKey)> = self
+            .key_by_ordinal
+            .iter()
+            .map(|(&ordinal, &key)| (ordinal, key))
+            .collect();
+        index.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+        let entries = self
+            .entries
+            .iter()
+            .map(|entry| EntrySnapshot {
+                op: entry.op.value(),
+                kind: entry.kind.clone(),
+                payload: match &entry.payload {
+                    EntryPayload::Evolution {
+                        origin,
+                        scope,
+                        events,
+                    } => PayloadSnapshot::Evolution {
+                        construction: *origin == RecordedOrigin::Construction,
+                        scope: scope.iter().map(|o| o.value()).collect(),
+                        events: events
+                            .iter()
+                            .map(|(subject, event)| {
+                                let event = match event {
+                                    EntityEvent::Preserved { from } => {
+                                        EventSnapshot::Preserved { from: from.value() }
+                                    }
+                                    EntityEvent::Modified { from } => {
+                                        EventSnapshot::Modified { from: from.value() }
+                                    }
+                                    EntityEvent::Generated { sources } => {
+                                        EventSnapshot::Generated {
+                                            sources: sources.iter().map(|o| o.value()).collect(),
+                                        }
+                                    }
+                                    EntityEvent::Merged { from } => EventSnapshot::Merged {
+                                        from: from.iter().map(|o| o.value()).collect(),
+                                    },
+                                    EntityEvent::Deleted => EventSnapshot::Deleted,
+                                    EntityEvent::Unresolved { candidates } => {
+                                        EventSnapshot::Unresolved {
+                                            candidates: candidates
+                                                .iter()
+                                                .map(|o| o.value())
+                                                .collect(),
+                                        }
+                                    }
+                                };
+                                (subject.value(), event)
+                            })
+                            .collect(),
+                    },
+                    EntryPayload::Barrier { affected } => PayloadSnapshot::Barrier {
+                        affected: affected.iter().map(|o| o.value()).collect(),
+                    },
+                    EntryPayload::GlobalBarrier => PayloadSnapshot::GlobalBarrier,
+                },
+            })
+            .collect();
+        JournalSnapshot {
+            next_op: self.next_op,
+            next_ordinal: self.next_ordinal,
+            index,
+            entries,
+        }
+    }
+
+    /// Rebuilds a journal from a snapshot, validating its invariants.
+    ///
+    /// Ticks are re-derived (entry position), so a snapshot is
+    /// session-portable; install the result with
+    /// [`Topology::load_journal`](crate::Topology::load_journal), which
+    /// syncs the topology's mutation counter so a clean load does not
+    /// read as an unjournaled gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::JournalSnapshotInvalid`] when the
+    /// snapshot violates a journal invariant: duplicate or out-of-range
+    /// ordinals in the index, duplicate keys (other than
+    /// [`EntityKey::UNMAPPED`] placeholders), non-increasing or
+    /// out-of-range `OpId`s, an event referencing an ordinal absent from
+    /// the index, or one entry claiming a subject twice.
+    #[allow(clippy::too_many_lines)]
+    pub fn from_snapshot(snapshot: JournalSnapshot) -> Result<Self, TopologyError> {
+        let invalid = |reason: &str| TopologyError::JournalSnapshotInvalid {
+            reason: reason.to_owned(),
+        };
+        let mut key_by_ordinal = HashMap::with_capacity(snapshot.index.len());
+        let mut ordinal_by_key = HashMap::new();
+        for &(ordinal, key) in &snapshot.index {
+            if ordinal >= snapshot.next_ordinal {
+                return Err(invalid("index ordinal at or above the high-water counter"));
+            }
+            if key_by_ordinal.insert(ordinal, key).is_some() {
+                return Err(invalid("duplicate ordinal in the index"));
+            }
+            if key.index != EntityKey::UNMAPPED
+                && ordinal_by_key
+                    .insert(key, JournalOrdinal(ordinal))
+                    .is_some()
+            {
+                return Err(invalid("two ordinals share one entity key"));
+            }
+        }
+        let known = |ordinal: u64| key_by_ordinal.contains_key(&ordinal);
+        let resolve = |ordinal: u64| -> Result<JournalOrdinal, TopologyError> {
+            if known(ordinal) {
+                Ok(JournalOrdinal(ordinal))
+            } else {
+                Err(invalid("event references an ordinal absent from the index"))
+            }
+        };
+        let resolve_all = |ordinals: Vec<u64>| -> Result<Vec<JournalOrdinal>, TopologyError> {
+            ordinals.into_iter().map(resolve).collect()
+        };
+
+        let mut entries = Vec::with_capacity(snapshot.entries.len());
+        let mut previous_op: Option<u64> = None;
+        for (position, entry) in snapshot.entries.into_iter().enumerate() {
+            if entry.op >= snapshot.next_op {
+                return Err(invalid("entry op at or above the high-water counter"));
+            }
+            if previous_op.is_some_and(|previous| entry.op <= previous) {
+                return Err(invalid("entry ops must be strictly increasing"));
+            }
+            previous_op = Some(entry.op);
+            let payload = match entry.payload {
+                PayloadSnapshot::Evolution {
+                    construction,
+                    scope,
+                    events,
+                } => {
+                    let mut scope = resolve_all(scope)?;
+                    scope.sort_unstable();
+                    scope.dedup();
+                    let mut rebuilt = Vec::with_capacity(events.len());
+                    for (subject, event) in events {
+                        let subject = resolve(subject)?;
+                        let event = match event {
+                            EventSnapshot::Preserved { from } => EntityEvent::Preserved {
+                                from: resolve(from)?,
+                            },
+                            EventSnapshot::Modified { from } => EntityEvent::Modified {
+                                from: resolve(from)?,
+                            },
+                            EventSnapshot::Generated { sources } => EntityEvent::Generated {
+                                sources: resolve_all(sources)?,
+                            },
+                            EventSnapshot::Merged { from } => EntityEvent::Merged {
+                                from: resolve_all(from)?,
+                            },
+                            EventSnapshot::Deleted => EntityEvent::Deleted,
+                            EventSnapshot::Unresolved { candidates } => EntityEvent::Unresolved {
+                                candidates: resolve_all(candidates)?,
+                            },
+                        };
+                        rebuilt.push((subject, event));
+                    }
+                    rebuilt.sort_by_key(|(subject, _)| *subject);
+                    if let Some(window) =
+                        rebuilt.windows(2).find(|window| window[0].0 == window[1].0)
+                    {
+                        return Err(TopologyError::JournalDuplicateEvent {
+                            ordinal: window[0].0.value(),
+                        });
+                    }
+                    // Every subject and referenced ordinal is in scope.
+                    let mut scope_with_events = scope;
+                    for (subject, event) in &rebuilt {
+                        scope_with_events.push(*subject);
+                        match event {
+                            EntityEvent::Preserved { from } | EntityEvent::Modified { from } => {
+                                scope_with_events.push(*from);
+                            }
+                            EntityEvent::Generated { sources } => {
+                                scope_with_events.extend(sources.iter().copied());
+                            }
+                            EntityEvent::Merged { from } => {
+                                scope_with_events.extend(from.iter().copied());
+                            }
+                            EntityEvent::Unresolved { candidates } => {
+                                scope_with_events.extend(candidates.iter().copied());
+                            }
+                            EntityEvent::Deleted => {}
+                        }
+                    }
+                    scope_with_events.sort_unstable();
+                    scope_with_events.dedup();
+                    EntryPayload::Evolution {
+                        origin: if construction {
+                            RecordedOrigin::Construction
+                        } else {
+                            RecordedOrigin::Geometry
+                        },
+                        scope: scope_with_events,
+                        events: rebuilt,
+                    }
+                }
+                PayloadSnapshot::Barrier { affected } => {
+                    let mut affected = resolve_all(affected)?;
+                    affected.sort_unstable();
+                    affected.dedup();
+                    EntryPayload::Barrier { affected }
+                }
+                PayloadSnapshot::GlobalBarrier => EntryPayload::GlobalBarrier,
+            };
+            let ticks_after = u64::try_from(position).unwrap_or(u64::MAX);
+            entries.push(JournalEntry {
+                op: OpId(entry.op),
+                kind: entry.kind,
+                payload,
+                ticks_after,
+            });
+        }
+        Ok(Self {
+            entries,
+            next_op: snapshot.next_op,
+            next_ordinal: snapshot.next_ordinal,
+            key_by_ordinal,
+            ordinal_by_key,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -887,6 +1223,150 @@ mod tests {
             .propagate_attributes_for_op(rolled_back, false)
             .unwrap_err();
         assert!(matches!(err, TopologyError::RefUnknownOperation { .. }));
+    }
+
+    // ── Serialization snapshots (RFC 0003, Stage 5) ─────────────────────
+
+    #[test]
+    fn snapshot_round_trip_preserves_everything_but_ticks() {
+        let mut topo = Topology::new();
+        let pending = topo.journal_begin("boolean_fuse");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(1),
+            EventDraft::Modified {
+                from: EntityKey::face(0),
+            },
+        );
+        draft.push(
+            EntityKey::edge(2),
+            EventDraft::Generated {
+                sources: vec![EntityKey::face(0)],
+            },
+        );
+        draft.push(EntityKey::vertex(3), EventDraft::Deleted);
+        draft.add_scope([EntityKey::face(9)]);
+        topo.journal_record_evolution(pending, draft).unwrap();
+        let pending = topo.journal_begin("offset_solid");
+        topo.journal_record_barrier(pending, vec![EntityKey::face(1)]);
+
+        let snapshot = topo.journal().snapshot();
+        let rebuilt = Journal::from_snapshot(snapshot.clone()).unwrap();
+        assert_eq!(rebuilt.snapshot(), snapshot, "snapshotting is lossless");
+        assert_eq!(rebuilt.entries().len(), 2);
+        assert_eq!(
+            rebuilt.ordinal_of(EntityKey::face(1)),
+            topo.journal().ordinal_of(EntityKey::face(1))
+        );
+    }
+
+    #[test]
+    fn invalid_snapshots_are_refused_whole() {
+        use crate::journal::{EntrySnapshot, EventSnapshot, JournalSnapshot, PayloadSnapshot};
+
+        let base = |entries: Vec<EntrySnapshot>, index: Vec<(u64, EntityKey)>| JournalSnapshot {
+            next_op: 10,
+            next_ordinal: 10,
+            index,
+            entries,
+        };
+
+        // Duplicate ordinal in the index.
+        let err = Journal::from_snapshot(base(
+            Vec::new(),
+            vec![(0, EntityKey::face(0)), (0, EntityKey::face(1))],
+        ))
+        .unwrap_err();
+        assert!(matches!(err, TopologyError::JournalSnapshotInvalid { .. }));
+
+        // Ordinal at the high-water counter.
+        let err =
+            Journal::from_snapshot(base(Vec::new(), vec![(10, EntityKey::face(0))])).unwrap_err();
+        assert!(matches!(err, TopologyError::JournalSnapshotInvalid { .. }));
+
+        // Event referencing an ordinal absent from the index.
+        let err = Journal::from_snapshot(base(
+            vec![EntrySnapshot {
+                op: 0,
+                kind: "op".into(),
+                payload: PayloadSnapshot::Evolution {
+                    construction: true,
+                    scope: Vec::new(),
+                    events: vec![(0, EventSnapshot::Preserved { from: 7 })],
+                },
+            }],
+            vec![(0, EntityKey::face(0))],
+        ))
+        .unwrap_err();
+        assert!(matches!(err, TopologyError::JournalSnapshotInvalid { .. }));
+
+        // Non-increasing ops.
+        let entry = |op: u64| EntrySnapshot {
+            op,
+            kind: "op".into(),
+            payload: PayloadSnapshot::GlobalBarrier,
+        };
+        let err = Journal::from_snapshot(base(vec![entry(3), entry(3)], Vec::new())).unwrap_err();
+        assert!(matches!(err, TopologyError::JournalSnapshotInvalid { .. }));
+
+        // One entry claiming a subject twice.
+        let err = Journal::from_snapshot(base(
+            vec![EntrySnapshot {
+                op: 0,
+                kind: "op".into(),
+                payload: PayloadSnapshot::Evolution {
+                    construction: true,
+                    scope: Vec::new(),
+                    events: vec![(0, EventSnapshot::Deleted), (0, EventSnapshot::Deleted)],
+                },
+            }],
+            vec![(0, EntityKey::face(0))],
+        ))
+        .unwrap_err();
+        assert!(matches!(err, TopologyError::JournalDuplicateEvent { .. }));
+    }
+
+    #[test]
+    fn load_journal_syncs_ticks_so_a_clean_load_is_not_a_gap() {
+        let mut source = Topology::new();
+        let pending = source.journal_begin("op_a");
+        source
+            .journal_record_evolution(pending, draft_one(EntityKey::face(0), EventDraft::Deleted))
+            .unwrap();
+        let snapshot = source.journal().snapshot();
+
+        let mut fresh = Topology::new();
+        // Simulate the document reader's entity rebuild: mutations before
+        // the journal is installed.
+        fresh.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        fresh.load_journal(Journal::from_snapshot(snapshot).unwrap());
+
+        // A journaled operation right after the load: no false gap.
+        let pending = fresh.journal_begin("op_b");
+        fresh
+            .journal_record_evolution(pending, draft_one(EntityKey::face(1), EventDraft::Deleted))
+            .unwrap();
+        assert!(
+            fresh
+                .journal()
+                .entries()
+                .iter()
+                .all(|entry| entry.kind() != UNJOURNALED_MUTATIONS),
+            "a clean load must not read as an unjournaled gap"
+        );
+
+        // But a real post-load mutation still severs.
+        fresh.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let pending = fresh.journal_begin("op_c");
+        fresh.journal_record_barrier(pending, Vec::new());
+        assert!(
+            fresh
+                .journal()
+                .entries()
+                .iter()
+                .any(|entry| entry.kind() == UNJOURNALED_MUTATIONS),
+            "gap detection must survive the load"
+        );
     }
 
     #[test]
