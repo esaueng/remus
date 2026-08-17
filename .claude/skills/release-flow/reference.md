@@ -226,7 +226,7 @@ Any hit in prose must be rewritten before pushing. A hit that is a literal
 package identifier in brepjs code, or inside a brepkit grandfathered file,
 is acceptable.
 
-## Pushing over HTTPS (SSH blocked)
+## Pushing over HTTPS
 
 On the kernel side this is no longer true: `esaueng/remus`'s `origin` is an
 HTTPS URL with no `insteadOf` rewrite, so plain `git push` works. See the
