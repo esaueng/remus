@@ -231,6 +231,15 @@ pub enum TopologyError {
         reason: String,
     },
 
+    /// A serialized journal snapshot violates a journal invariant
+    /// (RFC 0003, Stage 5): the snapshot is refused whole rather than
+    /// installing history a resolver could mis-follow.
+    #[error("journal snapshot invalid: {reason}")]
+    JournalSnapshotInvalid {
+        /// Which invariant the snapshot violates.
+        reason: String,
+    },
+
     /// A pcurve's endpoints do not map to the edge's bounding vertices
     /// within tolerance (`SameRange`).
     #[error(
@@ -364,6 +373,12 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
                 Diagnostic::new(FailureCategory::InvalidInput, "ref_no_match", message)
                     .with_detail("reason", reason.as_str())
             }
+            Self::JournalSnapshotInvalid { reason } => Diagnostic::new(
+                FailureCategory::InvalidInput,
+                "journal_snapshot_invalid",
+                message,
+            )
+            .with_detail("reason", reason.as_str()),
             Self::SameParameterExceeded {
                 edge,
                 face,
@@ -479,5 +494,12 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::InvalidInput);
         assert_eq!(d.code(), "ref_no_match");
+
+        let d = TopologyError::JournalSnapshotInvalid {
+            reason: "duplicate ordinal in the index".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "journal_snapshot_invalid");
     }
 }
