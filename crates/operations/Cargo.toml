@@ -13,6 +13,8 @@ version = "0.1.0"
 perf-counters = ["remus-algo/perf-counters"]
 
 [dependencies]
+log.workspace = true
+rayon.workspace = true
 remus-algo.workspace = true
 remus-blend.workspace = true
 remus-check.workspace = true
@@ -22,8 +24,6 @@ remus-math.workspace = true
 remus-offset.workspace = true
 remus-sketch.workspace = true
 remus-topology.workspace = true
-log.workspace = true
-rayon.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -31,11 +31,11 @@ thiserror.workspace = true
 # so a versioned dev-requirement would create a same-version publish cycle and
 # cargo strips versionless dev-dependencies from the published manifest. The
 # STEP round-trip probes in tests/ resolve identically in-workspace either way.
-remus-io = {path = "../io"}
-remus-topology = {workspace = true, features = ["test-utils"]}
 criterion.workspace = true
 env_logger.workspace = true
 proptest.workspace = true
+remus-io = {path = "../io"}
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [[bench]]
 harness = false

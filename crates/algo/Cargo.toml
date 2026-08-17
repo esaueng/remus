@@ -21,9 +21,9 @@ thiserror.workspace = true
 perf-counters = []
 
 [dev-dependencies]
+proptest.workspace = true
 remus-check.workspace = true
 remus-topology = {workspace = true, features = ["test-utils"]}
-proptest.workspace = true
 
 [lints]
 workspace = true

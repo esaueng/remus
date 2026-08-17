@@ -15,8 +15,8 @@ smallvec.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-remus-topology = {workspace = true, features = ["test-utils"]}
 proptest.workspace = true
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]
 workspace = true

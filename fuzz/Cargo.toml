@@ -11,12 +11,12 @@ cargo-fuzz = true
 
 [dependencies]
 arbitrary = {version = "1", features = ["derive"]}
+libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 remus-io = {path = "../crates/io"}
 remus-math = {path = "../crates/math"}
 remus-operations = {path = "../crates/operations"}
 remus-topology = {path = "../crates/topology"}
 remus-wasm = {path = "../crates/wasm"}
-libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 
 [[bin]]
 bench = false

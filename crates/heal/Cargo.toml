@@ -9,15 +9,15 @@ version = "0.1.0"
 
 [dependencies]
 bitflags.workspace = true
+log.workspace = true
 remus-geometry.workspace = true
 remus-math.workspace = true
 remus-topology.workspace = true
-log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-remus-topology = {workspace = true, features = ["test-utils"]}
 proptest.workspace = true
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]
 workspace = true

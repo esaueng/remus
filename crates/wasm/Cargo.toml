@@ -17,6 +17,7 @@ default = ["io"]
 io = ["dep:remus-io"]
 
 [dependencies]
+log.workspace = true
 remus-algo.workspace = true
 remus-check.workspace = true
 remus-geometry.workspace = true
@@ -26,7 +27,6 @@ remus-math.workspace = true
 remus-operations.workspace = true
 remus-sketch.workspace = true
 remus-topology.workspace = true
-log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
