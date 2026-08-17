@@ -733,6 +733,7 @@ mod tests {
             Curve2D::Line(Line2D::new(start, dir).expect("non-zero direction for test edge"));
         OrientedPCurveEdge {
             curve_3d: EdgeCurve::Line,
+            trim: None,
             pcurve,
             start_uv: start,
             end_uv: end,

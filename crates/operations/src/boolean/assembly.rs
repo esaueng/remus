@@ -22,6 +22,79 @@ use super::classify::polygon_centroid;
 use super::face_polygon;
 use super::types::{FaceSpec, MIN_SOLID_FACES};
 
+fn edge_with_trim(
+    start: VertexId,
+    end: VertexId,
+    curve: EdgeCurve,
+    tolerance: Option<f64>,
+    trim: Option<(f64, f64)>,
+) -> Edge {
+    let mut edge = Edge::with_tolerance(start, end, curve, tolerance);
+    edge.set_trim(trim);
+    edge
+}
+
+fn sub_trim(
+    curve: &EdgeCurve,
+    parent: Option<(f64, f64)>,
+    start: Point3,
+    end: Point3,
+) -> Option<(f64, f64)> {
+    let parent = parent?;
+    let angular = |start_parameter: f64, end_parameter: f64| {
+        angular_sub_trim(parent, start_parameter, end_parameter)
+    };
+    match curve {
+        EdgeCurve::Line => None,
+        EdgeCurve::Circle(circle) => angular(circle.project(start), circle.project(end)),
+        EdgeCurve::Ellipse(ellipse) => angular(ellipse.project(start), ellipse.project(end)),
+        EdgeCurve::Hyperbola(hyperbola) => Some((hyperbola.project(start), hyperbola.project(end))),
+        EdgeCurve::Parabola(parabola) => Some((parabola.project(start), parabola.project(end))),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let project = |point| {
+                brepkit_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
+                    .ok()
+                    .map(|result| result.parameter)
+            };
+            Some((project(start)?, project(end)?))
+        }
+    }
+}
+
+fn angular_sub_trim(
+    parent: (f64, f64),
+    start_parameter: f64,
+    end_parameter: f64,
+) -> Option<(f64, f64)> {
+    const EPS: f64 = 1e-12;
+    const TAU: f64 = std::f64::consts::TAU;
+    let (lo, hi) = (parent.0.min(parent.1), parent.0.max(parent.1));
+    let lift = |parameter: f64, preferred: f64| {
+        let mut lifted = TAU.mul_add(((preferred - parameter) / TAU).round(), parameter);
+        if lifted < lo - EPS {
+            lifted += TAU;
+        }
+        if lifted > hi + EPS {
+            lifted -= TAU;
+        }
+        (lifted >= lo - EPS && lifted <= hi + EPS).then_some(lifted)
+    };
+
+    let start = lift(start_parameter, parent.0)?;
+    let mut end = lift(end_parameter, start)?;
+    if parent.1 >= parent.0 {
+        if end < start - EPS {
+            end += TAU;
+        }
+        (end <= hi + EPS).then_some((start, end))
+    } else {
+        if end > start + EPS {
+            end -= TAU;
+        }
+        (end >= lo - EPS).then_some((start, end))
+    }
+}
+
 /// Quantize a coordinate to a spatial hash key.
 #[inline]
 #[allow(clippy::cast_possible_truncation)] // coordinate * 1e7 fits in i64
@@ -107,13 +180,19 @@ fn copy_edge(
     if let Some(&existing) = maps.edge_copies.get(&source) {
         return Ok(existing);
     }
-    let (start, end, curve) = {
+    let (start, end, curve, tolerance, trim) = {
         let e = topo.edge(source)?;
-        (e.start(), e.end(), e.curve().clone())
+        (
+            e.start(),
+            e.end(),
+            e.curve().clone(),
+            e.tolerance(),
+            e.trim(),
+        )
     };
     let new_start = copy_vertex(topo, start, maps)?;
     let new_end = copy_vertex(topo, end, maps)?;
-    let new = topo.add_edge(Edge::new(new_start, new_end, curve));
+    let new = topo.add_edge(edge_with_trim(new_start, new_end, curve, tolerance, trim));
     maps.edge_copies.insert(source, new);
     if new_start != new_end {
         let (a, b) = (new_start.index(), new_end.index());
@@ -1412,7 +1491,10 @@ pub(super) fn refine_boundary_edges(
                     Some(&v) => v,
                     None => continue,
                 };
-                let original_curve = topo.edge(oe.edge())?.curve().clone();
+                let (original_curve, original_tolerance, original_trim) = {
+                    let edge = topo.edge(oe.edge())?;
+                    (edge.curve().clone(), edge.tolerance(), edge.trim())
+                };
 
                 // Build vertex chain in traversal order
                 let chain: Vec<VertexId> = if oe.is_forward() {
@@ -1440,15 +1522,31 @@ pub(super) fn refine_boundary_edges(
                     } else {
                         (vb_idx, va_idx)
                     };
-                    let sub_eid = *edge_map.entry((key_min, key_max)).or_insert_with(|| {
+                    let sub_eid = if let Some(&existing) = edge_map.get(&(key_min, key_max)) {
+                        existing
+                    } else {
                         // The chain runs in this wire's traversal order; a
                         // stored Circle arc means CCW start→end around its
                         // axis, so a sub-edge of a reversed traversal must be
                         // stored with swapped endpoints to keep the sub-arc
                         // on the parent arc's span.
                         let (s, e) = if oe.is_forward() { (va, vb) } else { (vb, va) };
-                        topo.add_edge(Edge::new(s, e, original_curve.clone()))
-                    });
+                        let sub_trim = sub_trim(
+                            &original_curve,
+                            original_trim,
+                            topo.vertex(s)?.point(),
+                            topo.vertex(e)?.point(),
+                        );
+                        let created = topo.add_edge(edge_with_trim(
+                            s,
+                            e,
+                            original_curve.clone(),
+                            original_tolerance,
+                            sub_trim,
+                        ));
+                        edge_map.insert((key_min, key_max), created);
+                        created
+                    };
                     let fwd = topo.edge(sub_eid)?.start() == va;
                     // Skip if edge already in wire (prevents duplicates from
                     // vertex merging creating overlapping segments).
@@ -1766,9 +1864,11 @@ pub(super) fn stitch_boundary_edges(
 
                 if new_start.is_some() || new_end.is_some() {
                     let curve = edge.curve().clone();
+                    let tolerance = edge.tolerance();
+                    let trim = edge.trim();
                     let s = new_start.unwrap_or(old_start);
                     let e = new_end.unwrap_or(old_end);
-                    let new_eid = topo.add_edge(Edge::new(s, e, curve));
+                    let new_eid = topo.add_edge(edge_with_trim(s, e, curve, tolerance, trim));
                     new_oriented_edges.push(OrientedEdge::new(new_eid, oe.is_forward()));
                 } else {
                     new_oriented_edges.push(*oe);
@@ -1850,6 +1950,8 @@ pub(super) fn split_nonmanifold_edges(
         let edge_start = topo.edge(edge_id)?.start();
         let edge_end = topo.edge(edge_id)?.end();
         let edge_curve = topo.edge(edge_id)?.curve().clone();
+        let edge_tolerance = topo.edge(edge_id)?.tolerance();
+        let edge_trim = topo.edge(edge_id)?.trim();
         let start_pos = topo.vertex(edge_start)?.point();
         let end_pos = topo.vertex(edge_end)?.point();
 
@@ -1957,7 +2059,13 @@ pub(super) fn split_nonmanifold_edges(
             let new_edge_id = if pair_idx == 0 {
                 edge_id
             } else {
-                topo.add_edge(Edge::new(edge_start, edge_end, edge_curve.clone()))
+                topo.add_edge(edge_with_trim(
+                    edge_start,
+                    edge_end,
+                    edge_curve.clone(),
+                    edge_tolerance,
+                    edge_trim,
+                ))
             };
             edge_replacements.insert((face_angles[i].0, *edge_idx), new_edge_id);
             edge_replacements.insert((face_angles[j].0, *edge_idx), new_edge_id);

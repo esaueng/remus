@@ -1651,7 +1651,7 @@ fn loop_area_3d(topo: &Topology, loop_edges: &[OrientedEdge]) -> f64 {
             (Ok(s), Ok(e)) => (s.point(), e.point()),
             _ => return 0.0,
         };
-        let (t_min, t_max) = edge.curve().domain_with_endpoints(sp, ep);
+        let (t_min, t_max) = edge.domain_with_endpoints(sp, ep);
         // Sample the edge from its oriented start, excluding the final
         // endpoint (the next edge in the loop supplies it).
         for i in 0..SAMPLES_PER_EDGE {

@@ -318,7 +318,7 @@ fn face_boundary_samples(topo: &Topology, face_id: FaceId, per_edge: usize) -> V
                 continue;
             };
             let (p_start, p_end) = (sv.point(), ev.point());
-            let (t0, t1) = edge.curve().domain_with_endpoints(p_start, p_end);
+            let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
             for i in 0..=per_edge {
                 #[allow(clippy::cast_precision_loss)]
                 let frac = (i as f64) / (per_edge as f64);
@@ -781,7 +781,7 @@ fn sample_face_wire_midpoints(
         };
         let p_start = sv.point();
         let p_end = ev.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(p_start, p_end);
+        let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
         for &frac in &[0.25, 0.5, 0.75] {
             let t = t0 + (t1 - t0) * frac;
             let pt = edge.curve().evaluate_with_endpoints(t, p_start, p_end);

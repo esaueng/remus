@@ -631,7 +631,7 @@ fn off_axis_bore_mouth_chamfer_crossing_is_refused() {
         let edge = topo.edge(oriented.edge()).unwrap();
         let start = topo.vertex(edge.start()).unwrap().point();
         let end = topo.vertex(edge.end()).unwrap().point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+        let (t0, t1) = edge.domain_with_endpoints(start, end);
         for k in 0..=8 {
             let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
             let point = edge.curve().evaluate_with_endpoints(t, start, end);

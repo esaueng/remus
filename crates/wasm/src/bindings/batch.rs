@@ -544,7 +544,7 @@ impl BrepKernel {
             let start = self.topo.vertex(edge.start())?.point();
             let end = self.topo.vertex(edge.end())?.point();
             let curve = edge.curve();
-            let (t0, t1) = curve.domain_with_endpoints(start, end);
+            let (t0, t1) = edge.domain_with_endpoints(start, end);
             for i in 0..=EDGE_SAMPLES {
                 let t = t0 + (t1 - t0) * (i as f64 / EDGE_SAMPLES as f64);
                 let p = curve.evaluate_with_endpoints(t, start, end);

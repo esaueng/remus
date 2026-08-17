@@ -2331,6 +2331,16 @@ fn split_arc_edges_at_collinear_vertices(
     use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
     use brepkit_topology::vertex::VertexId;
 
+    struct ArcEdge {
+        edge_id: EdgeId,
+        start_vertex: VertexId,
+        end_vertex: VertexId,
+        start: Point3,
+        end: Point3,
+        curve: EdgeCurve,
+        trim: Option<(f64, f64)>,
+    }
+
     let tol = MERGE_TOL;
     let snap = tol * 10.0;
 
@@ -2341,8 +2351,7 @@ fn split_arc_edges_at_collinear_vertices(
     // conic; an arbitrary selected-face vertex on the carrier curve is not
     // evidence that the edge follows the long endpoint span.
     let mut curve_support_at: HashMap<QPos, Vec<EdgeCurve>> = HashMap::new();
-    // (edge, start_v, end_v, start_p, end_p, curve)
-    let mut arc_edges: Vec<(EdgeId, VertexId, VertexId, Point3, Point3, EdgeCurve)> = Vec::new();
+    let mut arc_edges: Vec<ArcEdge> = Vec::new();
     let mut seen_edges: HashSet<EdgeId> = HashSet::new();
 
     for &fid in face_ids.iter() {
@@ -2374,14 +2383,22 @@ fn split_arc_edges_at_collinear_vertices(
                         .push(edge.curve().clone());
                 }
                 if is_refinable && seen_edges.insert(oe.edge()) {
-                    arc_edges.push((oe.edge(), sv, ev, sp, ep, edge.curve().clone()));
+                    arc_edges.push(ArcEdge {
+                        edge_id: oe.edge(),
+                        start_vertex: sv,
+                        end_vertex: ev,
+                        start: sp,
+                        end: ep,
+                        curve: edge.curve().clone(),
+                        trim: edge.trim(),
+                    });
                 }
             }
         }
     }
 
     // Deterministic order for sub-edge allocation.
-    arc_edges.sort_by_key(|(eid, ..)| eid.index());
+    arc_edges.sort_by_key(|edge| edge.edge_id.index());
 
     // Spatially index the candidate vertices: a vertex can only split an arc if
     // it lies within `snap` of it, so probing the grid cells the arc's AABB
@@ -2395,7 +2412,16 @@ fn split_arc_edges_at_collinear_vertices(
     let grid = PointGrid::new(&positions, snap);
 
     let mut replacements: HashMap<EdgeId, Vec<OrientedEdge>> = HashMap::new();
-    for (eid, sv, ev, sp, ep, curve) in arc_edges {
+    for ArcEdge {
+        edge_id: eid,
+        start_vertex: sv,
+        end_vertex: ev,
+        start: sp,
+        end: ep,
+        curve,
+        trim,
+    } in arc_edges
+    {
         // A closed (full) circle/ellipse CAN be refined — at global vertices
         // that lie on it — but only into 3+ sub-arcs. With a single interior
         // cut the two halves share BOTH endpoints, and the endpoint-keyed
@@ -2503,7 +2529,16 @@ fn split_arc_edges_at_collinear_vertices(
                 // The split parameters are exact by construction; store the
                 // sub-span so the domain never depends on re-projecting the
                 // cut vertices back onto the shared curve (RFC 0002 St. 3).
-                sub.set_trim(Some((w[0].0, w[1].0)));
+                sub.set_trim(if let Some(parent) = trim {
+                    super::split_types::sub_trim(
+                        &curve,
+                        parent,
+                        topo.vertex(w[0].1)?.point(),
+                        topo.vertex(w[1].1)?.point(),
+                    )
+                } else {
+                    Some((w[0].0, w[1].0))
+                });
                 let sub_eid = topo.add_edge(sub);
                 subs.push(OrientedEdge::new(sub_eid, true));
             }
@@ -2637,7 +2672,16 @@ fn split_arc_edges_at_collinear_vertices(
             // exact angular sub-span so the domain never depends on
             // re-projecting the cut vertices (RFC 0002, Stage 3).
             let mut sub = Edge::new(w[0].1, w[1].1, curve.clone());
-            sub.set_trim(Some((w[0].0, w[1].0)));
+            sub.set_trim(if let Some(parent) = trim {
+                super::split_types::sub_trim(
+                    &curve,
+                    parent,
+                    topo.vertex(w[0].1)?.point(),
+                    topo.vertex(w[1].1)?.point(),
+                )
+            } else {
+                Some((w[0].0, w[1].0))
+            });
             let sub_eid = topo.add_edge(sub);
             subs.push(OrientedEdge::new(sub_eid, true));
         }
