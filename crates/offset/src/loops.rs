@@ -7,12 +7,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::data::{OffsetData, OffsetStatus, VertexCache, find_or_create_vertex};
 use crate::error::OffsetError;
@@ -230,7 +230,7 @@ fn try_circle_seam_wire(
 /// degenerate seam edges, wire `a -> b -> a^-1 -> b^-1` (mirrors `make_torus`).
 fn build_torus_wire(
     topo: &mut Topology,
-    tor: &brepkit_math::surfaces::ToroidalSurface,
+    tor: &remus_math::surfaces::ToroidalSurface,
     tol: f64,
 ) -> Result<Vec<WireId>, OffsetError> {
     let seam = tor.evaluate(0.0, 0.0);
@@ -608,7 +608,7 @@ fn build_loops_via_line_intersection(
     };
     let result_reversed = original_reversed ^ !data.excluded_faces.is_empty();
     let desired_normal = if result_reversed {
-        brepkit_math::vec::Vec3::new(
+        remus_math::vec::Vec3::new(
             -surface_normal.x(),
             -surface_normal.y(),
             -surface_normal.z(),
@@ -629,7 +629,7 @@ fn build_loops_via_line_intersection(
 fn orient_loop_to_normal(
     topo: &Topology,
     loop_edges: &mut [OrientedEdge],
-    normal: brepkit_math::vec::Vec3,
+    normal: remus_math::vec::Vec3,
 ) -> Result<(), OffsetError> {
     let points = loop_edges
         .iter()
@@ -646,11 +646,11 @@ fn orient_loop_to_normal(
 
     // Newell's method is stable for convex and mildly non-convex planar
     // polygons and avoids selecting an arbitrary nearly-collinear triple.
-    let mut winding = brepkit_math::vec::Vec3::new(0.0, 0.0, 0.0);
+    let mut winding = remus_math::vec::Vec3::new(0.0, 0.0, 0.0);
     for index in 0..points.len() {
         let current = points[index];
         let next = points[(index + 1) % points.len()];
-        winding = brepkit_math::vec::Vec3::new(
+        winding = remus_math::vec::Vec3::new(
             winding.x() + (current.y() - next.y()) * (current.z() + next.z()),
             winding.y() + (current.z() - next.z()) * (current.x() + next.x()),
             winding.z() + (current.x() - next.x()) * (current.y() + next.y()),
@@ -750,10 +750,10 @@ fn dot3(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
 fn project_boundary_edge(
     p0: Point3,
     p1: Point3,
-    surface: &brepkit_topology::face::FaceSurface,
+    surface: &remus_topology::face::FaceSurface,
 ) -> (Point3, Point3) {
     match surface {
-        brepkit_topology::face::FaceSurface::Plane { normal, d } => {
+        remus_topology::face::FaceSurface::Plane { normal, d } => {
             // Project each point onto the plane: p' = p + (d - n·p) * n
             let project = |p: Point3| -> Point3 {
                 let n_dot_p = normal.x() * p.x() + normal.y() * p.y() + normal.z() * p.z();
@@ -779,8 +779,8 @@ fn project_boundary_edge(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_topology::Topology;
-    use brepkit_topology::solid::SolidId;
+    use remus_topology::Topology;
+    use remus_topology::solid::SolidId;
 
     use crate::data::{OffsetData, OffsetOptions};
 
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn box_each_face_has_one_wire() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_to_7(&mut topo, solid, 0.5);
         assert_eq!(data.face_wires.len(), 6, "each face should have wire loops");
         for wires in data.face_wires.values() {
@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn box_wires_have_4_edges() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_to_7(&mut topo, solid, 0.5);
         for (&face_id, wires) in &data.face_wires {
             for &wire_id in wires {
@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn box_wires_are_closed() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_to_7(&mut topo, solid, 0.5);
         for wires in data.face_wires.values() {
             for &wire_id in wires {
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn box_wire_edges_chain_correctly() {
         let mut topo = Topology::new();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
         let data = run_phases_1_to_7(&mut topo, solid, 0.5);
         for wires in data.face_wires.values() {
             for &wire_id in wires {
@@ -865,7 +865,7 @@ mod tests {
     #[test]
     fn cylinder_each_face_has_one_wire() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+        let solid = remus_operations::primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
         let data = run_phases_1_to_7(&mut topo, solid, 0.5);
         assert_eq!(
             data.face_wires.len(),
@@ -877,7 +877,7 @@ mod tests {
     #[test]
     fn sphere_each_face_has_one_wire() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_sphere(&mut topo, 3.0, 16).unwrap();
+        let solid = remus_operations::primitives::make_sphere(&mut topo, 3.0, 16).unwrap();
         let data = run_phases_1_to_7(&mut topo, solid, 0.5);
         assert_eq!(
             data.face_wires.len(),

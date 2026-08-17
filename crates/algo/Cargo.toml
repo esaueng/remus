@@ -1,15 +1,15 @@
 [package]
-description = "GFA boolean algorithm engine for brepkit"
+description = "GFA boolean algorithm engine for remus"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-algo"
+name = "remus-algo"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-math.workspace = true
-brepkit-topology.workspace = true
+remus-math.workspace = true
+remus-topology.workspace = true
 
 log.workspace = true
 thiserror.workspace = true
@@ -21,8 +21,8 @@ thiserror.workspace = true
 perf-counters = []
 
 [dev-dependencies]
-brepkit-check.workspace = true
-brepkit-topology = {workspace = true, features = ["test-utils"]}
+remus-check.workspace = true
+remus-topology = {workspace = true, features = ["test-utils"]}
 proptest.workspace = true
 
 [lints]

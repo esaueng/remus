@@ -3,10 +3,10 @@
 //! Runs the complete General Fuse Algorithm pipeline:
 //! PaveFiller -> Builder -> BOP -> assemble.
 
-use brepkit_math::context::OperationContext;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::context::OperationContext;
+use remus_math::tolerance::Tolerance;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::bop::BooleanOp;
 use crate::builder::Builder;
@@ -269,8 +269,8 @@ pub fn boolean_with_face_origins(
 /// like a solid but has the wrong geometry — the failure mode that is
 /// hardest to notice downstream. Refusing here fails closed instead.
 fn reject_unsupported_curves(topo: &Topology, solid_id: SolidId) -> Result<(), AlgoError> {
-    use brepkit_topology::edge::EdgeCurve;
-    use brepkit_topology::explorer::solid_faces;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_faces;
 
     for fid in solid_faces(topo, solid_id)? {
         let face = topo.face(fid)?;
@@ -299,7 +299,7 @@ fn reject_unsupported_curves(topo: &Topology, solid_id: SolidId) -> Result<(), A
 mod context_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     use super::*;
 
@@ -326,10 +326,10 @@ mod context_tests {
         )
         .unwrap();
 
-        let faces_legacy = brepkit_topology::explorer::solid_faces(&topo_a, legacy)
+        let faces_legacy = remus_topology::explorer::solid_faces(&topo_a, legacy)
             .unwrap()
             .len();
-        let faces_ctx = brepkit_topology::explorer::solid_faces(&topo_b, ctx)
+        let faces_ctx = remus_topology::explorer::solid_faces(&topo_b, ctx)
             .unwrap()
             .len();
         assert_eq!(faces_legacy, faces_ctx);
@@ -343,7 +343,7 @@ mod context_tests {
         // both runs complete and the context run consumed its tolerance
         // (same outcome as calling boolean_with_tolerance directly).
         let loose =
-            OperationContext::new().with_tolerance(brepkit_math::tolerance::Tolerance::loose());
+            OperationContext::new().with_tolerance(remus_math::tolerance::Tolerance::loose());
 
         let mut topo_a = Topology::new();
         let a1 = make_unit_cube_manifold_at(&mut topo_a, 0.0, 0.0, 0.0);
@@ -358,14 +358,14 @@ mod context_tests {
             BooleanOp::Cut,
             b1,
             b2,
-            brepkit_math::tolerance::Tolerance::loose(),
+            remus_math::tolerance::Tolerance::loose(),
         )
         .unwrap();
 
-        let faces_ctx = brepkit_topology::explorer::solid_faces(&topo_a, via_ctx)
+        let faces_ctx = remus_topology::explorer::solid_faces(&topo_a, via_ctx)
             .unwrap()
             .len();
-        let faces_tol = brepkit_topology::explorer::solid_faces(&topo_b, via_tol)
+        let faces_tol = remus_topology::explorer::solid_faces(&topo_b, via_tol)
             .unwrap()
             .len();
         assert_eq!(faces_ctx, faces_tol);
@@ -599,7 +599,7 @@ pub fn boolean_with_entity_evolution(
 mod entity_evolution_tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     use super::*;
 
@@ -629,7 +629,7 @@ mod entity_evolution_tests {
 
         // Totality: exactly the result's edge and vertex sets, each entity
         // once, every entity in some bucket.
-        let faces = brepkit_topology::explorer::solid_faces(&topo, result).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, result).unwrap();
         let mut result_edges = std::collections::BTreeSet::new();
         let mut result_vertices = std::collections::BTreeSet::new();
         for &fid in &faces {

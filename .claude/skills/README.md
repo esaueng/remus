@@ -21,7 +21,7 @@ only this repo and CLAUDE.md as context.
 | [layer-boundaries](layer-boundaries/SKILL.md) | Adding a workspace dep, placing new code in a crate, adding an `EdgeCurve` or `FaceSurface` variant, or fixing a boundaries CI failure. |
 | [wasm-bindings](wasm-bindings/SKILL.md) | Adding `BrepKernel` methods, wiring `executeBatch`, building the wasm package, or debugging wasm-only failures. |
 | [io-formats](io-formats/SKILL.md) | A STEP or other file imports wrong (dropped solids, all-NURBS, hard entity errors), verifying writer round-trips, capturing a faithful fixture, or adding a format in `crates/io`. |
-| [render-verify](render-verify/SKILL.md) | Working on `brepkit-render` or visually verifying a solid, including headless capture of a live viewer window. |
+| [render-verify](render-verify/SKILL.md) | Working on `remus-render` or visually verifying a solid, including headless capture of a live viewer window. |
 | [testing](testing/SKILL.md) | Writing or placing tests, building a faithful regression fixture, handling golden mismatches, or ending a session with unverified work. |
 | [profiling](profiling/SKILL.md) | An operation or benchmark is slow, a criterion bench misbehaves, or a PR needs before/after perf numbers. |
 | [parity-benchmarking](parity-benchmarking/SKILL.md) | Proving Remus matches or beats the reference kernel, overlaying a local build into the gridfinity tool, or quoting any perf or parity claim. |

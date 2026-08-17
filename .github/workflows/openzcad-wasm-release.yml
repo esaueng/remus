@@ -33,7 +33,7 @@ jobs:
             repository.type=git \
             repository.url=git+https://github.com/esaueng/remus.git \
             homepage=https://github.com/esaueng/remus \
-            brepkitSourceCommit="$GITHUB_SHA"
+            remusSourceCommit="$GITHUB_SHA"
 
       - name: Pack npm-compatible artifact
         id: pack

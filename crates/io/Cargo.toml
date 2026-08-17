@@ -1,16 +1,16 @@
 [package]
-description = "Multi-format B-Rep data exchange for brepkit (STEP, IGES, STL, 3MF, OBJ, PLY, glTF)"
+description = "Multi-format B-Rep data exchange for remus (STEP, IGES, STL, 3MF, OBJ, PLY, glTF)"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-io"
+name = "remus-io"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-math = {workspace = true, features = ["serde"]}
-brepkit-operations.workspace = true
-brepkit-topology.workspace = true
+remus-math = {workspace = true, features = ["serde"]}
+remus-operations.workspace = true
+remus-topology.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,9 +18,9 @@ thiserror.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
-brepkit-algo.workspace = true
-brepkit-check.workspace = true
-brepkit-topology = {workspace = true, features = ["test-utils"]}
+remus-algo.workspace = true
+remus-check.workspace = true
+remus-topology = {workspace = true, features = ["test-utils"]}
 log.workspace = true
 proptest.workspace = true
 

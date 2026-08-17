@@ -10,8 +10,8 @@
 //! and incompatible changes require a new version with a dedicated read
 //! path.
 
-use brepkit_topology::journal::{EntityKind, OpId};
-use brepkit_topology::naming::{
+use remus_topology::journal::{EntityKind, OpId};
+use remus_topology::naming::{
     AdjacencySignature, Anchor, Discriminator, EntitySignature, PersistentRef,
 };
 use serde::{Deserialize, Serialize};

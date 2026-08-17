@@ -1,17 +1,15 @@
 //! Closed-form point-to-surface distance for analytic surfaces.
 //!
-//! These are thin wrappers around `brepkit_geometry::extrema` that extract
+//! These are thin wrappers around `remus_geometry::extrema` that extract
 //! `(distance, point)` from a [`SurfaceProjection`].
 
-use brepkit_geometry::extrema::{
+use remus_geometry::extrema::{
     SurfaceProjection, point_to_cone as geo_point_to_cone,
     point_to_cylinder as geo_point_to_cylinder, point_to_plane as geo_point_to_plane,
     point_to_sphere as geo_point_to_sphere, point_to_torus as geo_point_to_torus,
 };
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
 
 /// Extract `(distance, point)` from a [`SurfaceProjection`].
 fn extract(proj: SurfaceProjection) -> (f64, Point3) {

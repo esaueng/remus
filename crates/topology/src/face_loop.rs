@@ -57,9 +57,9 @@ impl Loop {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::{Point3, Vec3};
 
     use crate::edge::{Edge, EdgeCurve, EdgeId};
     use crate::face::{Face, FaceId, FaceSurface};
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn new_diagnostic_codes_are_pinned() {
-        use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+        use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
 
         let mut topo = Topology::new();
         let (face, _) = triangle_face(&mut topo);

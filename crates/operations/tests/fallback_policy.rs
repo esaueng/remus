@@ -2,17 +2,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_math::context::{FallbackPolicy, OperationContext};
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, BooleanQuality, boolean, boolean_with_context};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
+use remus_math::context::{FallbackPolicy, OperationContext};
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, BooleanQuality, boolean, boolean_with_context};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
 
-fn overlapping_boxes(
-    topo: &mut Topology,
-) -> (brepkit_topology::SolidId, brepkit_topology::SolidId) {
+fn overlapping_boxes(topo: &mut Topology) -> (remus_topology::SolidId, remus_topology::SolidId) {
     let a = make_box(topo, 2.0, 2.0, 2.0).unwrap();
     let b = make_box(topo, 2.0, 2.0, 2.0).unwrap();
     transform_solid(topo, b, &Mat4::translation(1.0, 1.0, 1.0)).unwrap();

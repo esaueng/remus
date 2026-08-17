@@ -20,7 +20,7 @@ cargo build --workspace
 cargo test --workspace
 
 # Build WASM target
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown
+cargo build -p remus-wasm --target wasm32-unknown-unknown
 ```
 
 The MSRV is Rust 1.88. Day-to-day development uses the toolchain pinned in
@@ -33,7 +33,7 @@ The JS surface is the WASM package built from `crates/wasm`. It ships its own
 TypeScript declarations.
 
 **This repository publishes no packages.** There is no npm release and no
-crates.io release; a `brepkit-wasm` package on npm belongs to the historical
+crates.io release; a `remus-wasm` package on npm belongs to the historical
 upstream line, not to this repository. See
 `docs/production-readiness/fork-maintenance.md` for the release-ownership gate.
 Build the package from a checkout instead:
@@ -47,7 +47,7 @@ That writes `crates/wasm/pkg`, which you can consume with `npm install
 ./crates/wasm/pkg` or a workspace link.
 
 ```typescript
-import init, { BrepKernel } from 'brepkit-wasm';
+import init, { BrepKernel } from 'remus-wasm';
 
 await init();
 const kernel = new BrepKernel();

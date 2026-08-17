@@ -1,10 +1,10 @@
 //! Integration tests for the offset pipeline.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_offset::{OffsetOptions, offset_solid};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder, make_sphere, make_torus};
-use brepkit_topology::Topology;
+use remus_offset::{OffsetOptions, offset_solid};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder, make_sphere, make_torus};
+use remus_topology::Topology;
 
 fn offset_opts() -> OffsetOptions {
     OffsetOptions {
@@ -198,7 +198,7 @@ fn thick_solid_box_produces_hollow() {
     let exclude = vec![faces[0]];
 
     let result =
-        brepkit_offset::thick_solid(&mut topo, solid, -0.2, &exclude, offset_opts()).unwrap();
+        remus_offset::thick_solid(&mut topo, solid, -0.2, &exclude, offset_opts()).unwrap();
 
     let result_shell = topo
         .shell(topo.solid(result).unwrap().outer_shell())
@@ -251,7 +251,7 @@ fn offset_torus_stays_analytic() {
         assert!(
             matches!(
                 topo.face(shell.faces()[0]).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Torus(_)
+                remus_topology::face::FaceSurface::Torus(_)
             ),
             "offset torus by {distance} must stay analytic (Torus surface)"
         );

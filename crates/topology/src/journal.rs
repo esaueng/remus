@@ -1008,7 +1008,7 @@ impl Journal {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     use crate::Topology;
     use crate::vertex::Vertex;
@@ -1038,7 +1038,7 @@ mod tests {
             w,
             Vec::new(),
             FaceSurface::Plane {
-                normal: brepkit_math::vec::Vec3::new(0.0, 0.0, 1.0),
+                normal: remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
                 d: 0.0,
             },
         ))

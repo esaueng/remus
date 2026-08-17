@@ -1,6 +1,6 @@
 [package]
 edition = "2024"
-name = "brepkit-fuzz"
+name = "remus-fuzz"
 publish = false
 version = "0.0.0"
 
@@ -11,11 +11,11 @@ cargo-fuzz = true
 
 [dependencies]
 arbitrary = {version = "1", features = ["derive"]}
-brepkit-io = {path = "../crates/io"}
-brepkit-math = {path = "../crates/math"}
-brepkit-operations = {path = "../crates/operations"}
-brepkit-topology = {path = "../crates/topology"}
-brepkit-wasm = {path = "../crates/wasm"}
+remus-io = {path = "../crates/io"}
+remus-math = {path = "../crates/math"}
+remus-operations = {path = "../crates/operations"}
+remus-topology = {path = "../crates/topology"}
+remus-wasm = {path = "../crates/wasm"}
 libfuzzer-sys = {version = "0.4", features = ["arbitrary-derive"]}
 
 [[bin]]

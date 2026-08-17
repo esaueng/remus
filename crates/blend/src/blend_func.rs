@@ -16,8 +16,8 @@
 //! - [`ChamferBlend`] — two-distance chamfer
 //! - [`ChamferAngleBlend`] — distance-angle chamfer
 
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point3, Vec3};
 
 use crate::radius_law::RadiusLaw;
 use crate::section::CircSection;

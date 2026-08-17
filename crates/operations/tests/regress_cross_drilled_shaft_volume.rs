@@ -31,14 +31,14 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::make_cylinder;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_cylinder;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 /// Shaft radius and height.
 const R: f64 = 3.0;
@@ -177,11 +177,11 @@ fn a_cross_drilled_shaft_keeps_the_analytic_integrator() {
 #[test]
 fn the_circle_outside_cone_box_fuse_is_still_declined() {
     let mut topo = Topology::new();
-    let cone = brepkit_operations::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
-    let b = brepkit_operations::primitives::make_box(&mut topo, 6.0, 6.0, 8.0).unwrap();
+    let cone = remus_operations::primitives::make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
+    let b = remus_operations::primitives::make_box(&mut topo, 6.0, 6.0, 8.0).unwrap();
     transform_solid(&mut topo, b, &Mat4::translation(-3.0, -3.0, 6.0)).unwrap();
     let result =
-        brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
+        remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, cone, b).unwrap();
 
     let vol = solid_volume(&topo, result, 0.01).unwrap();
     assert!(
@@ -240,7 +240,7 @@ fn meridian_sample_breakouts_preserve_the_exact_brep() {
         let mut planes = 0;
         let mut cylinders = 0;
         let mut other = 0;
-        for fid in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+        for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
             match topo.face(fid).unwrap().surface() {
                 FaceSurface::Plane { .. } => planes += 1,
                 FaceSurface::Cylinder(_) => cylinders += 1,
@@ -263,7 +263,7 @@ fn meridian_sample_breakouts_are_closed_and_manifold() {
     for bore in MERIDIAN_SAMPLE_RADII {
         let (topo, solid) = cross_drilled_shaft(bore);
         let mut edge_uses = std::collections::BTreeMap::new();
-        for fid in brepkit_topology::explorer::solid_faces(&topo, solid).unwrap() {
+        for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
             let face = topo.face(fid).unwrap();
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
@@ -292,7 +292,7 @@ fn meridian_sample_breakouts_are_closed_and_manifold() {
 /// axis is void, the material beside it is not.
 #[test]
 fn a_cross_drilled_shaft_has_its_bore_carved_out() {
-    use brepkit_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 
     let opts = ClassifyOptions::default();
     for bore in [3.0_f64, 2.95, 2.5, 2.0, 1.0, 0.5] {
@@ -300,18 +300,18 @@ fn a_cross_drilled_shaft_has_its_bore_carved_out() {
         let mut probes = vec![
             // On the bore's axis at mid-height: removed at every radius.
             (
-                brepkit_math::vec::Point3::new(0.0, 0.0, H / 2.0),
+                remus_math::vec::Point3::new(0.0, 0.0, H / 2.0),
                 PointClassification::Outside,
             ),
             // Off-axis but still down the bore: removed too — this is the one
             // that catches a tube whose MIDDLE was dropped.
             (
-                brepkit_math::vec::Point3::new(0.9 * R, 0.0, H / 2.0),
+                remus_math::vec::Point3::new(0.9 * R, 0.0, H / 2.0),
                 PointClassification::Outside,
             ),
             // Well clear of the bore along the shaft: kept.
             (
-                brepkit_math::vec::Point3::new(0.0, 0.0, H / 6.0),
+                remus_math::vec::Point3::new(0.0, 0.0, H / 6.0),
                 PointClassification::Inside,
             ),
         ];
@@ -320,7 +320,7 @@ fn a_cross_drilled_shaft_has_its_bore_carved_out() {
             // the bore is narrower than the shaft — at equal radii the bore's
             // section at mid-height is the shaft's whole disc.
             probes.push((
-                brepkit_math::vec::Point3::new(0.0, f64::midpoint(bore, R), H / 2.0),
+                remus_math::vec::Point3::new(0.0, f64::midpoint(bore, R), H / 2.0),
                 PointClassification::Inside,
             ));
         }

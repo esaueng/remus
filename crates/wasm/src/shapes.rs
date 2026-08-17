@@ -1,6 +1,6 @@
 //! JS-facing shape types via `wasm-bindgen`.
 
-use brepkit_operations::tessellate::{EdgeLines, TriangleMesh};
+use remus_operations::tessellate::{EdgeLines, TriangleMesh};
 use wasm_bindgen::prelude::*;
 
 use crate::error::WasmError;
@@ -346,7 +346,7 @@ impl From<TriangleMesh> for JsMesh {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::vec::{Point3, Vec3};
 
     #[test]
     fn grouped_mesh_packs_f32_moves_indices_and_keeps_offsets() {

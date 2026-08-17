@@ -36,7 +36,7 @@ check_deps() {
   local deps_section
   deps_section=$(sed -n '/^\[dependencies\]/,/^\[/p' "$cargo_toml" 2>/dev/null || true)
 
-  for dep in brepkit-math brepkit-topology brepkit-algo brepkit-blend brepkit-heal brepkit-check brepkit-geometry brepkit-offset brepkit-sketch brepkit-operations brepkit-io brepkit-render; do
+  for dep in remus-math remus-topology remus-algo remus-blend remus-heal remus-check remus-geometry remus-offset remus-sketch remus-operations remus-io remus-render; do
     if echo "$deps_section" | grep -q "${dep}"; then
       local is_allowed=false
       for a in "${allowed[@]}"; do
@@ -56,18 +56,18 @@ check_deps() {
 echo "Checking crate boundary rules..."
 
 check_deps "math"
-check_deps "topology"   "brepkit-math"
-check_deps "geometry"   "brepkit-math"
-check_deps "algo"       "brepkit-math" "brepkit-topology" "brepkit-geometry"
-check_deps "blend"      "brepkit-math" "brepkit-topology" "brepkit-geometry"
-check_deps "heal"       "brepkit-math" "brepkit-topology" "brepkit-geometry"
-check_deps "check"      "brepkit-math" "brepkit-topology" "brepkit-geometry"
-check_deps "offset"     "brepkit-math" "brepkit-topology" "brepkit-geometry"
+check_deps "topology"   "remus-math"
+check_deps "geometry"   "remus-math"
+check_deps "algo"       "remus-math" "remus-topology" "remus-geometry"
+check_deps "blend"      "remus-math" "remus-topology" "remus-geometry"
+check_deps "heal"       "remus-math" "remus-topology" "remus-geometry"
+check_deps "check"      "remus-math" "remus-topology" "remus-geometry"
+check_deps "offset"     "remus-math" "remus-topology" "remus-geometry"
 check_deps "sketch"
-check_deps "operations" "brepkit-math" "brepkit-topology" "brepkit-algo" "brepkit-blend" "brepkit-heal" "brepkit-check" "brepkit-geometry" "brepkit-offset" "brepkit-sketch"
-check_deps "io"         "brepkit-math" "brepkit-topology" "brepkit-operations"
-check_deps "render"     "brepkit-math" "brepkit-topology" "brepkit-operations"
-check_deps "wasm"       "brepkit-math" "brepkit-topology" "brepkit-algo" "brepkit-blend" "brepkit-heal" "brepkit-check" "brepkit-geometry" "brepkit-offset" "brepkit-sketch" "brepkit-operations" "brepkit-io"
+check_deps "operations" "remus-math" "remus-topology" "remus-algo" "remus-blend" "remus-heal" "remus-check" "remus-geometry" "remus-offset" "remus-sketch"
+check_deps "io"         "remus-math" "remus-topology" "remus-operations"
+check_deps "render"     "remus-math" "remus-topology" "remus-operations"
+check_deps "wasm"       "remus-math" "remus-topology" "remus-algo" "remus-blend" "remus-heal" "remus-check" "remus-geometry" "remus-offset" "remus-sketch" "remus-operations" "remus-io"
 
 if [ $FAIL -ne 0 ]; then
   echo "❌ Boundary check failed."

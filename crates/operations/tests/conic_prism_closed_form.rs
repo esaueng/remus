@@ -17,17 +17,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_check::properties::{PropertiesOptions, solid_area, solid_volume};
-use brepkit_math::curves::Parabola3D;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::extrude::extrude;
-use brepkit_topology::Topology;
-use brepkit_topology::adjacency::AdjacencyIndex;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_check::properties::{PropertiesOptions, solid_area, solid_volume};
+use remus_math::curves::Parabola3D;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::extrude::extrude;
+use remus_topology::Topology;
+use remus_topology::adjacency::AdjacencyIndex;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 const SCALES: [f64; 3] = [1.0, 1000.0, 0.001];
 
@@ -38,7 +38,7 @@ const UNIT_SEGMENT_AREA: f64 = 4.0 / 3.0;
 /// Build the closed planar wire: the parabolic arc from `(-w, w)` to
 /// `(w, w)` in the XY plane (the curve `y = x^2 / w`), closed by a straight
 /// chord back along `y = w`.
-fn parabolic_segment_face(topo: &mut Topology, w: f64) -> brepkit_topology::face::FaceId {
+fn parabolic_segment_face(topo: &mut Topology, w: f64) -> remus_topology::face::FaceId {
     // focal length f = w/4 makes the parameterization
     //   P(t) = V + (t^2 / 4f) * axis + t * u = (t, t^2 / w)
     // so t = +-w gives y = w.
@@ -66,7 +66,7 @@ fn parabolic_segment_face(topo: &mut Topology, w: f64) -> brepkit_topology::face
     )
     .unwrap();
     let wid = topo.add_wire(wire);
-    brepkit_topology::builder::make_planar_face_from_wire(topo, wid).unwrap()
+    remus_topology::builder::make_planar_face_from_wire(topo, wid).unwrap()
 }
 
 /// Closed 2-manifold shell, zero free edges, zero non-manifold edges, and
@@ -208,7 +208,7 @@ fn the_parabolic_edge_survives_into_the_extruded_solid() {
     for fid in solid_faces(&topo, solid).unwrap() {
         if !matches!(
             topo.face(fid).unwrap().surface(),
-            brepkit_topology::face::FaceSurface::Plane { .. }
+            remus_topology::face::FaceSurface::Plane { .. }
         ) {
             has_curved_wall = true;
         }
@@ -227,8 +227,8 @@ fn a_boolean_on_a_conic_edged_solid_refuses_by_name() {
     // but geometrically wrong solid — the failure mode hardest to notice
     // downstream. `gfa::reject_unsupported_curves` fails closed instead,
     // and the message names the variant so a caller can act on it.
-    use brepkit_operations::boolean::{BooleanOp, boolean};
-    use brepkit_operations::primitives::make_box;
+    use remus_operations::boolean::{BooleanOp, boolean};
+    use remus_operations::primitives::make_box;
 
     let mut topo = Topology::new();
     let face = parabolic_segment_face(&mut topo, 1.0);

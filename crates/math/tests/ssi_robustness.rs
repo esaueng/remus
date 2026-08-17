@@ -1,5 +1,5 @@
 //! SSI (Surface-Surface Intersection) and CSI (Curve-Surface Intersection)
-//! robustness tests for the brepkit math layer.
+//! robustness tests for the remus math layer.
 //!
 //! Tests cover analytic-analytic, plane-analytic, NURBS-NURBS surface
 //! intersections, and curve-surface intersections with known geometric
@@ -9,19 +9,17 @@
 
 use std::f64::consts::TAU;
 
-use brepkit_math::analytic_intersection::{
+use remus_math::analytic_intersection::{
     AnalyticSurface, ExactIntersectionCurve, exact_plane_analytic, intersect_analytic_analytic,
     intersect_plane_cone, intersect_plane_sphere, intersect_plane_torus,
 };
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::nurbs::intersection::{
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::intersection::{
     intersect_curve_surface, intersect_line_nurbs, intersect_nurbs_nurbs, intersect_plane_nurbs,
 };
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{
-    ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
-};
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

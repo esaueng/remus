@@ -33,9 +33,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -47,7 +47,7 @@ fn fixture(name: &str) -> PathBuf {
 fn oring_nested_hole_face_tessellates_watertight() {
     let text = std::fs::read_to_string(fixture("oring_nested_holes.step")).unwrap();
     let mut topo = Topology::new();
-    let solids = brepkit_io::step::reader::read_step(&text, &mut topo).unwrap();
+    let solids = remus_io::step::reader::read_step(&text, &mut topo).unwrap();
     assert_eq!(solids.len(), 1);
     let sid = solids[0];
 

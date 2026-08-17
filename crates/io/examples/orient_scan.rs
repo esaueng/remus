@@ -6,13 +6,13 @@
 //! orientation-inconsistent faces.
 //!
 //! ```sh
-//! cargo run --release -p brepkit-io --example orient_scan -- /tmp/capture/*.bin
+//! cargo run --release -p remus-io --example orient_scan -- /tmp/capture/*.bin
 //! ```
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::validate::{ValidationOptions, validate_solid_with_options};
-use brepkit_topology::Topology;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::validate::{ValidationOptions, validate_solid_with_options};
+use remus_topology::Topology;
 
 fn main() {
     let opts = ValidationOptions {

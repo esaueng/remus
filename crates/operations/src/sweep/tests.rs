@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::test_utils::make_unit_square_face;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::test_utils::make_unit_square_face;
 
 use super::*;
 
@@ -292,10 +292,10 @@ fn sweep_circle_along_straight_line_is_exact_cylinder() {
     // cylinder (π·r²·L), not an inscribed polygonal prism (~2% low). The
     // straight-sweep fast path delegates to extrude, which builds a true
     // cylinder side face.
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::builder::make_circle_edge;
-    use brepkit_topology::face::Face;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Vec3;
+    use remus_topology::builder::make_circle_edge;
+    use remus_topology::face::Face;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let tol = 1e-7;
     let mut topo = Topology::new();
@@ -710,10 +710,10 @@ fn sweep_closed_circular_path() {
 
 /// Helper: create a square face with a smaller square hole (inner wire).
 fn make_square_face_with_hole(topo: &mut Topology) -> FaceId {
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let lin = Tolerance::new().linear;
 
@@ -820,7 +820,7 @@ fn sweep_cw_profile_produces_correct_solid() {
 /// Translation invariance for CW-wound sweep.
 #[test]
 fn sweep_cw_profile_translation_invariant() {
-    use brepkit_topology::test_utils::make_cw_unit_square_face;
+    use remus_topology::test_utils::make_cw_unit_square_face;
 
     let mut topo1 = Topology::new();
     let face1 = make_cw_unit_square_face(&mut topo1);
@@ -835,7 +835,7 @@ fn sweep_cw_profile_translation_invariant() {
     crate::transform::transform_solid(
         &mut topo2,
         solid2,
-        &brepkit_math::mat::Mat4::translation(1000.0, 1000.0, 1000.0),
+        &remus_math::mat::Mat4::translation(1000.0, 1000.0, 1000.0),
     )
     .unwrap();
     let vol2 = crate::measure::solid_volume(&topo2, solid2, 0.1).unwrap();
@@ -854,10 +854,10 @@ fn sweep_cw_profile_translation_invariant() {
 /// the profile is flipped upside-down.
 #[test]
 fn sweep_cw_profile_nonparallel_axis() {
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     let mut topo = Topology::new();
     let tol_val = 1e-7;
@@ -1589,7 +1589,7 @@ fn path_x_extent(path: &NurbsCurve) -> (f64, f64) {
 
 #[test]
 fn densify_fixes_nonsquare_spine_overshoot() {
-    use brepkit_math::nurbs::fitting::interpolate;
+    use remus_math::nurbs::fitting::interpolate;
 
     // 42 x 126 rounded rect → half 21 x 63, r 3.75. Long edges (~118mm) are
     // sampled only at endpoints, so the raw fit overshoots far past x = ±21.

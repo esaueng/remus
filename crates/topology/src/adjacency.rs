@@ -208,7 +208,7 @@ mod tests {
         use crate::solid::Solid;
         use crate::vertex::Vertex;
         use crate::wire::{OrientedEdge, Wire};
-        use brepkit_math::vec::{Point3, Vec3};
+        use remus_math::vec::{Point3, Vec3};
 
         let mut topo = Topology::new();
 
@@ -325,14 +325,14 @@ mod tests {
             {
                 let mut va: Arena<crate::vertex::Vertex> = Arena::new();
                 va.alloc(crate::vertex::Vertex::new(
-                    brepkit_math::vec::Point3::new(0.0, 0.0, 0.0),
+                    remus_math::vec::Point3::new(0.0, 0.0, 0.0),
                     0.0,
                 ))
             },
             {
                 let mut va: Arena<crate::vertex::Vertex> = Arena::new();
                 va.alloc(crate::vertex::Vertex::new(
-                    brepkit_math::vec::Point3::new(1.0, 0.0, 0.0),
+                    remus_math::vec::Point3::new(1.0, 0.0, 0.0),
                     0.0,
                 ))
             },

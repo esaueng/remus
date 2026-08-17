@@ -1,6 +1,6 @@
 //! Journal ingestion for modeling operations (RFC 0003, Stage 1).
 //!
-//! The journal (`brepkit_topology::journal`) is the persistent history
+//! The journal (`remus_topology::journal`) is the persistent history
 //! spine; this module is where operations feed it:
 //!
 //! - [`boolean_journaled`] runs a GFA boolean and journals its full
@@ -21,12 +21,12 @@
 //! A faces-only entry claims nothing about edges and vertices — absent
 //! claims are gaps, never implicit preservation.
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_algo::gfa::{self, EdgeEvent, EntityEvolution, VertexEvent};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::{solid_edges, solid_faces, solid_vertices};
-use brepkit_topology::journal::{EntityKey, EventDraft, EvolutionDraft, OpId, PendingOp};
-use brepkit_topology::solid::SolidId;
+use remus_algo::bop::BooleanOp;
+use remus_algo::gfa::{self, EdgeEvent, EntityEvolution, VertexEvent};
+use remus_topology::Topology;
+use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft, OpId, PendingOp};
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;

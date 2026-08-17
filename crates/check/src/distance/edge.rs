@@ -1,6 +1,6 @@
 //! Edge-to-edge distance computation.
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 /// Minimum distance between two line segments [p0, p1] and [q0, q1].
 ///
@@ -12,5 +12,5 @@ pub fn segment_segment_distance(
     q0: Point3,
     q1: Point3,
 ) -> (f64, Point3, Point3) {
-    brepkit_geometry::extrema::segment_segment_distance(p0, p1, q0, q1)
+    remus_geometry::extrema::segment_segment_distance(p0, p1, q0, q1)
 }

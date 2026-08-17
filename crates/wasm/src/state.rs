@@ -2,20 +2,20 @@
 
 use std::rc::Rc;
 
-use brepkit_topology::Topology;
+use remus_topology::Topology;
 
 /// A saved snapshot of the kernel state that can be restored.
 #[derive(Clone)]
 pub struct Checkpoint {
     pub topo: Rc<Topology>,
-    pub assemblies: Vec<brepkit_operations::assembly::Assembly>,
+    pub assemblies: Vec<remus_operations::assembly::Assembly>,
     pub sketches: Vec<SketchState>,
     pub gcs_sketches: Vec<GcsSketchState>,
 }
 
 /// State for one sketch in the typed GCS API (`gcs*` bindings).
 ///
-/// Holds a persistent [`brepkit_sketch::GcsSystem`] plus the handle
+/// Holds a persistent [`remus_sketch::GcsSystem`] plus the handle
 /// tables that map the opaque `u32` values held by JS onto the system's
 /// generational handles. Removed entities leave a stale entry in their
 /// table; the generational arena rejects stale handles, so reuse after
@@ -23,17 +23,17 @@ pub struct Checkpoint {
 #[derive(Default, Clone)]
 pub struct GcsSketchState {
     /// The persistent constraint system.
-    pub sys: brepkit_sketch::GcsSystem,
+    pub sys: remus_sketch::GcsSystem,
     /// JS handle → point id.
-    pub points: Vec<brepkit_sketch::PointId>,
+    pub points: Vec<remus_sketch::PointId>,
     /// JS handle → line id.
-    pub lines: Vec<brepkit_sketch::LineId>,
+    pub lines: Vec<remus_sketch::LineId>,
     /// JS handle → circle id.
-    pub circles: Vec<brepkit_sketch::CircleId>,
+    pub circles: Vec<remus_sketch::CircleId>,
     /// JS handle → arc id.
-    pub arcs: Vec<brepkit_sketch::ArcId>,
+    pub arcs: Vec<remus_sketch::ArcId>,
     /// JS handle → constraint id.
-    pub constraints: Vec<brepkit_sketch::ConstraintId>,
+    pub constraints: Vec<remus_sketch::ConstraintId>,
 }
 
 /// Internal state for an in-progress sketch.
@@ -43,8 +43,8 @@ pub struct GcsSketchState {
 #[derive(Default, Clone)]
 pub struct SketchState {
     /// Legacy point/constraint storage for backward-compat API.
-    pub points: Vec<brepkit_operations::sketch::SketchPoint>,
-    pub constraints: Vec<brepkit_operations::sketch::Constraint>,
+    pub points: Vec<remus_operations::sketch::SketchPoint>,
+    pub constraints: Vec<remus_operations::sketch::Constraint>,
     /// Arc definitions: `(center_idx, start_idx, end_idx)` into points.
     pub arcs: Vec<(usize, usize, usize)>,
     /// Circle definitions: `(center_idx, radius)`, where `center_idx` indexes into `points`.

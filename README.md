@@ -17,11 +17,11 @@ Exact B-Rep solid modeling kernel for Rust and WebAssembly.
 One exact-geometry engine, from Rust and from JavaScript. Cut a solid, measure it, export it.
 
 ```rust
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::boolean::{boolean, BooleanOp};
-use brepkit_operations::measure::solid_volume;
-use brepkit_io::step::write_step;
-use brepkit_topology::Topology;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::boolean::{boolean, BooleanOp};
+use remus_operations::measure::solid_volume;
+use remus_io::step::write_step;
+use remus_topology::Topology;
 
 let mut topo = Topology::new();
 
@@ -37,7 +37,7 @@ let step = write_step(&topo, &[notched])?;
 ```
 
 ```js
-import { BrepKernel } from 'brepkit-wasm';
+import { BrepKernel } from 'remus-wasm';
 
 const kernel = new BrepKernel();
 
@@ -51,12 +51,6 @@ const notched = kernel.cut(block, cutter);
 const vol = kernel.volume(notched, 0.1);
 const step = kernel.exportStep(notched); // Uint8Array
 ```
-
-> **Naming.** The project and repository are **Remus**. The crates still carry
-> the `brepkit-` prefix (`brepkit-math`, `brepkit-operations`, …) and the WASM
-> package is still named `brepkit-wasm`; a rename is in flight. Code samples
-> above show today's identifiers. Nothing in the kernel contract depends on the
-> name — see [kernel maturity target](docs/kernel-maturity/target.md).
 
 ## Why a CAD kernel?
 
@@ -110,10 +104,10 @@ Four mechanisms carry that contract in code:
 
 | Mechanism | Where | What it gives you |
 | --- | --- | --- |
-| **Operation context** | `brepkit_math::context::OperationContext` ([RFC 0001](docs/design/rfc-0001-operation-context.md)) | Tolerances and hard work budgets as an explicit, caller-visible argument instead of module-local constants. Defaults reproduce prior behavior exactly; budgets terminate bounded work rather than looping. |
-| **Structured diagnostics** | `brepkit_math::diagnostic` | Every failure carries a stable category plus a stable code, independent of the Rust error type. Codes are explicit literals, never derived from type or variant names, and the registry is additive only. |
-| **Coedges and per-use p-curves** | `brepkit_topology` ([RFC 0002](docs/design/rfc-0002-coedge-architecture.md)) | First-class edge *uses*, so seams, poles, and periodic surfaces are represented correctly. Seam p-curve access is fail-closed rather than silently picking one side. |
-| **Reproduction bundles** | `brepkit_wasm::repro` | Versioned JSON that replays an operation sequence and its expected results through the batch dispatch path — identically on native and WASM. Bundles are the canonical carrier for new regressions; expected *failures* are first-class. |
+| **Operation context** | `remus_math::context::OperationContext` ([RFC 0001](docs/design/rfc-0001-operation-context.md)) | Tolerances and hard work budgets as an explicit, caller-visible argument instead of module-local constants. Defaults reproduce prior behavior exactly; budgets terminate bounded work rather than looping. |
+| **Structured diagnostics** | `remus_math::diagnostic` | Every failure carries a stable category plus a stable code, independent of the Rust error type. Codes are explicit literals, never derived from type or variant names, and the registry is additive only. |
+| **Coedges and per-use p-curves** | `remus_topology` ([RFC 0002](docs/design/rfc-0002-coedge-architecture.md)) | First-class edge *uses*, so seams, poles, and periodic surfaces are represented correctly. Seam p-curve access is fail-closed rather than silently picking one side. |
+| **Reproduction bundles** | `remus_wasm::repro` | Versioned JSON that replays an operation sequence and its expected results through the batch dispatch path — identically on native and WASM. Bundles are the canonical carrier for new regressions; expected *failures* are first-class. |
 
 Structural work lands through versioned RFCs in [`docs/design`](docs/design)
 and incremental vertical slices, not repository-wide rewrites. Tests are not
@@ -163,7 +157,7 @@ evidence each label currently rests on.
 | **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Beta         |
 | **Evolution**           | Face provenance through booleans, blends, and patterns                       | Beta         |
 | **Defeaturing**         | Remove planar faces                                                          | Beta         |
-| **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`brepkit-render`)        | Experimental |
+| **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`remus-render`)        | Experimental |
 
 ## Known Limitations
 
@@ -184,7 +178,7 @@ documented in [WASM face evolution](docs/wasm-face-evolution.md).
 
 Remus deliberately does not:
 
-- **Bundle a viewport into the kernel.** The core emits exact geometry and tessellated meshes; camera, lighting, and shading belong to the caller (Three.js and the like). The optional `brepkit-render` crate provides offscreen wgpu rendering with a face-id buffer, for tests and headless verification, and is not required by any core operation.
+- **Bundle a viewport into the kernel.** The core emits exact geometry and tessellated meshes; camera, lighting, and shading belong to the caller (Three.js and the like). The optional `remus-render` crate provides offscreen wgpu rendering with a face-id buffer, for tests and headless verification, and is not required by any core operation.
 - **Plan toolpaths or slice.** Export STEP, STL, or 3MF and pass the output to a CAM tool or slicer.
 - **Model with meshes.** The kernel operates on exact B-Rep geometry. Subdivision surfaces, polygon meshes, and voxels are out of scope.
 - **Provide a GUI.** Remus is a library. Building a UI around it is the application's job.
@@ -197,19 +191,19 @@ and CI enforces the boundaries with `scripts/check-boundaries.sh`.
 
 | Layer | Crate                | What it does                                                                                        |
 | ----- | -------------------- | --------------------------------------------------------------------------------------------------- |
-| L0    | `brepkit-math`       | Points, vectors, matrices, NURBS curves and surfaces, geometric predicates, CDT, convex hull, operation context, diagnostics |
-| L1    | `brepkit-geometry`   | Curve sampling (uniform, deflection, arc-length, curvature), extrema, analytic-to-NURBS conversion  |
-| L1    | `brepkit-topology`   | Arena-allocated B-Rep: vertex, edge, coedge, loop, wire, face, shell, solid, with an edge-to-face adjacency index |
-| L2    | `brepkit-algo`       | General Fuse boolean engine: pave filler, face classification, solid assembly                       |
-| L2    | `brepkit-blend`      | Walking-based fillet and chamfer with constant, variable, and custom radius laws                    |
-| L2    | `brepkit-heal`       | Shape healing: analysis, fixing, upgrading, sewing, tolerance management, configurable pipeline     |
-| L2    | `brepkit-check`      | Point classification, validation, properties (volume, area, center of mass), distance               |
-| L2    | `brepkit-offset`     | Solid offset and thickening via global face-face intersection                                       |
-| L2    | `brepkit-sketch`     | 2D parametric constraint solver (GCS) using a DogLeg trust-region method                            |
-| L3    | `brepkit-operations` | Booleans, fillet, chamfer, extrude, revolve, sweep, loft, shell, offset, measure, tessellation      |
-| L3    | `brepkit-io`         | Import and export: STEP, IGES, STL, 3MF, OBJ, PLY, glTF                                             |
-| L4    | `brepkit-wasm`       | JavaScript API via wasm-bindgen, with batch execution, checkpoint/restore, and reproduction bundles |
-| L4    | `brepkit-render`     | Offscreen wgpu rendering to a color image plus a face-id buffer. Optional, nothing depends on it    |
+| L0    | `remus-math`       | Points, vectors, matrices, NURBS curves and surfaces, geometric predicates, CDT, convex hull, operation context, diagnostics |
+| L1    | `remus-geometry`   | Curve sampling (uniform, deflection, arc-length, curvature), extrema, analytic-to-NURBS conversion  |
+| L1    | `remus-topology`   | Arena-allocated B-Rep: vertex, edge, coedge, loop, wire, face, shell, solid, with an edge-to-face adjacency index |
+| L2    | `remus-algo`       | General Fuse boolean engine: pave filler, face classification, solid assembly                       |
+| L2    | `remus-blend`      | Walking-based fillet and chamfer with constant, variable, and custom radius laws                    |
+| L2    | `remus-heal`       | Shape healing: analysis, fixing, upgrading, sewing, tolerance management, configurable pipeline     |
+| L2    | `remus-check`      | Point classification, validation, properties (volume, area, center of mass), distance               |
+| L2    | `remus-offset`     | Solid offset and thickening via global face-face intersection                                       |
+| L2    | `remus-sketch`     | 2D parametric constraint solver (GCS) using a DogLeg trust-region method                            |
+| L3    | `remus-operations` | Booleans, fillet, chamfer, extrude, revolve, sweep, loft, shell, offset, measure, tessellation      |
+| L3    | `remus-io`         | Import and export: STEP, IGES, STL, 3MF, OBJ, PLY, glTF                                             |
+| L4    | `remus-wasm`       | JavaScript API via wasm-bindgen, with batch execution, checkpoint/restore, and reproduction bundles |
+| L4    | `remus-render`     | Offscreen wgpu rendering to a color image plus a face-id buffer. Optional, nothing depends on it    |
 
 The layer DAG is a program invariant: preserving it is a constraint on every
 change, and a violation fails both the pre-push hook and CI.
@@ -244,7 +238,7 @@ approach would reach roughly 7,000. The same holds for blends: a straight edge
 filleted between two planar faces keeps an exact cylindrical wall rather than a
 NURBS approximation of one.
 
-> The OCCT comparison uses [occt-wasm](https://www.npmjs.com/package/occt-wasm), an OpenCASCADE build compiled to WebAssembly. Both kernels run single-threaded in Node.js. Boolean and `exportSTEP` rows are timed as batches of ten operations. WASM figures are medians of `kernel-comparison.bench.test.ts` (5 iterations) against a local `cargo xtask wasm-build` package, hash-verified at the require path. Native figures: `cargo bench -p brepkit-operations --bench cad_operations`, except the mesh-sphere row, which is measured at the same parameters as the WASM row (`tessellate_solid_with_tolerance`, deflection 0.01, angular 0.1 rad) via `crates/operations/examples/perf_probe.rs` — the criterion suite's sphere case meshes per-face and is not comparable. Measured 2026-08-06, before the Apache-only line was established, and not re-measured since; treat the figures as indicative and re-run `scripts/bench-compare.sh` before quoting them.
+> The OCCT comparison uses [occt-wasm](https://www.npmjs.com/package/occt-wasm), an OpenCASCADE build compiled to WebAssembly. Both kernels run single-threaded in Node.js. Boolean and `exportSTEP` rows are timed as batches of ten operations. WASM figures are medians of `kernel-comparison.bench.test.ts` (5 iterations) against a local `cargo xtask wasm-build` package, hash-verified at the require path. Native figures: `cargo bench -p remus-operations --bench cad_operations`, except the mesh-sphere row, which is measured at the same parameters as the WASM row (`tessellate_solid_with_tolerance`, deflection 0.01, angular 0.1 rad) via `crates/operations/examples/perf_probe.rs` — the criterion suite's sphere case meshes per-face and is not comparable. Measured 2026-08-06, before the Apache-only line was established, and not re-measured since; treat the figures as indicative and re-run `scripts/bench-compare.sh` before quoting them.
 
 ## Data Exchange
 
@@ -288,7 +282,7 @@ has to be established first; the gate is documented in
 
 Two consequences worth stating plainly:
 
-- A `brepkit-wasm` package on npm does **not** come from this repository. It
+- A `remus-wasm` package on npm does **not** come from this repository. It
   belongs to the historical upstream line, which is no longer permissively
   licensed. Installing it does not get you this kernel.
 - The checked-in `crates/wasm/pkg` directory is a frozen compatibility
@@ -301,10 +295,10 @@ Until packages exist, build from source.
 
 ```toml
 [dependencies]
-brepkit-math = { git = "https://github.com/esaueng/remus" }
-brepkit-topology = { git = "https://github.com/esaueng/remus" }
-brepkit-operations = { git = "https://github.com/esaueng/remus" }
-brepkit-io = { git = "https://github.com/esaueng/remus" }        # optional
+remus-math = { git = "https://github.com/esaueng/remus" }
+remus-topology = { git = "https://github.com/esaueng/remus" }
+remus-operations = { git = "https://github.com/esaueng/remus" }
+remus-io = { git = "https://github.com/esaueng/remus" }        # optional
 ```
 
 Pin a revision (`rev = "..."`) for anything you intend to reproduce: the crate
@@ -326,8 +320,8 @@ cargo fmt --all
 cargo xtask wasm-build
 
 # Plain WASM builds (with and without I/O)
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release
-cargo build -p brepkit-wasm --target wasm32-unknown-unknown --release --no-default-features
+cargo build -p remus-wasm --target wasm32-unknown-unknown --release
+cargo build -p remus-wasm --target wasm32-unknown-unknown --release --no-default-features
 
 # API docs
 cargo doc --workspace --no-deps --open

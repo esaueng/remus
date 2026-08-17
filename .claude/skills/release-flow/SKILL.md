@@ -1,6 +1,6 @@
 ---
 name: release-flow
-description: Shipping a Remus change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the brepkit-wasm pin in brepjs, when running or debugging the type sync (sync:brepkit-types, tsc failures on Brepkit* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
+description: Shipping a Remus change all the way into brepjs. Use when a feature PR has merged and the change must reach npm and the brepjs adapter, when bumping the remus-wasm pin in brepjs, when running or debugging the type sync (sync:remus-types, tsc failures on Remus* types), when a dep-bump branch conflicts with a release-please commit, or when a push fails or hangs in this sandbox.
 ---
 
 # release-flow: Remus merge to brepjs activation
@@ -23,16 +23,16 @@ Each hop is gated on the previous one. Never skip a gate.
 |-----|--------|---------------------|
 | 1 | Feature PR squash-merges to Remus main | Merge lands on main |
 | 2 | release-please opens `chore(main): release X.Y.Z` PR; it auto-merges, tags `vX.Y.Z`, and the release event triggers the publish workflow | GitHub release exists |
-| 3 | Publish workflow builds wasm and runs `npm publish` | `npm view brepkit-wasm versions --json` lists X.Y.Z AND your commit is an ancestor of the tag |
-| 4 | In brepjs: bump the devDependency pin, `npm install`, `npm run sync:brepkit-types` | tsc and knip pass, diff drops no method signatures |
+| 3 | Publish workflow builds wasm and runs `npm publish` | `npm view remus-wasm versions --json` lists X.Y.Z AND your commit is an ancestor of the tag |
+| 4 | In brepjs: bump the devDependency pin, `npm install`, `npm run sync:remus-types` | tsc and knip pass, diff drops no method signatures |
 
 Key commands:
 
 ```bash
-npm view brepkit-wasm versions --json
+npm view remus-wasm versions --json
 cd ~/Git/remus && git fetch --tags
 git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
-cd ~/Git/brepjs && npm install && npm run sync:brepkit-types
+cd ~/Git/brepjs && npm install && npm run sync:remus-types
 ```
 
 ## Procedure
@@ -55,7 +55,7 @@ The GitHub tag and release appear minutes before npm has the version, because
 the publish job is still building wasm. Gate on both of these:
 
 ```bash
-npm view brepkit-wasm versions --json          # array must end with "X.Y.Z"
+npm view remus-wasm versions --json          # array must end with "X.Y.Z"
 git merge-base --is-ancestor <feature-sha> vX.Y.Z && echo in-release
 ```
 
@@ -72,26 +72,26 @@ manual escape hatch.
 In `~/Git/brepjs` (use a worktree if the checkout is busy):
 
 1. Edit `package.json`: set the **devDependencies** entry
-   `"brepkit-wasm": "X.Y.Z"` (exact pin). Leave the **peerDependencies**
+   `"remus-wasm": "X.Y.Z"` (exact pin). Leave the **peerDependencies**
    range alone; it already covers `^2.0.0`. The pin is what brepjs CI tests
    against; the range is what consumers may bring.
 2. `npm install`. Then verify the lockfile kept the three `@emnapi` entries
    (see Pitfalls below).
-3. `npm run sync:brepkit-types`. This regenerates
-   `src/kernel/brepkit/brepkitWasmTypes.ts` from the installed
-   `node_modules/brepkit-wasm/brepkit_wasm.d.ts`. That file is generated;
+3. `npm run sync:remus-types`. This regenerates
+   `src/kernel/remus/remusWasmTypes.ts` from the installed
+   `node_modules/remus-wasm/remus_wasm.d.ts`. That file is generated;
    never hand-edit it.
 4. Checkpoint: `npm run validate && npm run knip`; pass means both exit 0.
    `validate` (`scripts/validate-change.sh`) runs typecheck, lint, boundary
    check, format check, and tests. knip is a separate gate not covered by
    `validate`; do not skip it. If tsc fails on an undefined
-   `Js*` or `Brepkit*` type, you hit the type-sync trap: see
+   `Js*` or `Remus*` type, you hit the type-sync trap: see
    [reference.md](reference.md), "Type-sync internals".
-5. Checkpoint: the diff of `brepkitWasmTypes.ts` may legitimately shrink
+5. Checkpoint: the diff of `remusWasmTypes.ts` may legitimately shrink
    (comment compaction), but it must drop zero real method signatures:
 
    ```bash
-   git diff src/kernel/brepkit/brepkitWasmTypes.ts | grep '^-' | grep -E '\w+\(' 
+   git diff src/kernel/remus/remusWasmTypes.ts | grep '^-' | grep -E '\w+\(' 
    ```
 
    Every removed line here must reappear as a `+` line or be a comment.
@@ -102,7 +102,7 @@ In `~/Git/brepjs` (use a worktree if the checkout is busy):
 |---------|-------|-----|
 | Tag `vX.Y.Z` exists but `npm view` lacks X.Y.Z | Publish job still running or failed | Wait and re-poll; if failed, `workflow_dispatch` publish |
 | tsc: cannot find name `JsFoo` after sync | New return type has no `mapReturnType` case and no emitted interface block | reference.md, "Type-sync internals": both edits are required |
-| New method missing from generated types | Method not listed in `METHOD_SECTIONS` in `scripts/sync-brepkit-types.ts` | Add it to the right section |
+| New method missing from generated types | Method not listed in `METHOD_SECTIONS` in `scripts/sync-remus-types.ts` | Add it to the right section |
 | Dep-bump PR: "merge commit cannot be cleanly created" | release-please bumped package.json/lock on brepjs main right after a merge | reference.md, "Lockfile rebase": rebase, take main's lock, `npm install`, never hand-merge |
 | `gh pr view` says CONFLICTING right after force-push | GitHub computes mergeability async; the value is stale | Re-query after a few seconds before acting |
 | knip flags a src export as unused, blocks push | knip cannot trace usage from `tests/` | `@testOnly` JSDoc tag on the export; `knip.config.ts` already has `tags: ['-testOnly']` |
@@ -121,7 +121,7 @@ In `~/Git/brepjs` (use a worktree if the checkout is busy):
   and regenerate with `npm install`.
 - Peer range needs bumping with the pin: no, only the devDependency pin moves
   per release.
-- `brepkitWasmTypes.ts` needs a small fix, so edit it directly: no, it is
+- `remusWasmTypes.ts` needs a small fix, so edit it directly: no, it is
   regenerated; fix the sync script and re-run.
 
 ## Before any push, in either repo

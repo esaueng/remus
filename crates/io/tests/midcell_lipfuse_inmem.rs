@@ -26,11 +26,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_io::arena_io::deserialize_solid;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -44,7 +44,7 @@ fn load(name: &str, topo: &mut Topology) -> SolidId {
 
 fn edge_use_counts(topo: &Topology, solid: SolidId) -> (usize, usize, usize) {
     let faces = solid_faces(topo, solid).unwrap();
-    let mut uses: HashMap<brepkit_topology::edge::EdgeId, usize> = HashMap::new();
+    let mut uses: HashMap<remus_topology::edge::EdgeId, usize> = HashMap::new();
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -85,7 +85,7 @@ fn midcell_lip_fuse_is_analytic_and_watertight() {
     // result (throat filled by the spurious disc, or a dropped region) moves
     // the volume far beyond this band. Reference: analytic fuse of the
     // captured operands (11983.75), watertight at export deflection.
-    let vol = brepkit_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.05).unwrap();
     assert!(
         (vol - 11983.8).abs() < 15.0,
         "fused volume out of band: got {vol}"

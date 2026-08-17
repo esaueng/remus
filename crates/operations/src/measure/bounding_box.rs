@@ -3,14 +3,14 @@
 use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::nurbs::projection::{project_point_to_surface, project_point_to_surface_seeded};
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::surfaces::{SphericalSurface, ToroidalSurface};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::nurbs::projection::{project_point_to_surface, project_point_to_surface_seeded};
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::{SphericalSurface, ToroidalSurface};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 
@@ -119,7 +119,7 @@ fn aabb_include(aabb: &mut Aabb3, p: Point3) {
 fn expand_aabb_for_face(
     topo: &Topology,
     aabb: &mut Aabb3,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
     surface: &FaceSurface,
 ) {
     // Always sample wire midpoints — captures curvature of curved boundary
@@ -251,7 +251,7 @@ fn limit_nurbs_trim_samples(samples: Vec<Point3>) -> Vec<Point3> {
 
 /// Newton tolerance for inverting a boundary sample onto its NURBS surface.
 ///
-/// The value [`ParametricSurface::project_point`](brepkit_math::traits::ParametricSurface::project_point)
+/// The value [`ParametricSurface::project_point`](remus_math::traits::ParametricSurface::project_point)
 /// hardcodes, which is the solve this replaced.
 const NURBS_PROJECT_TOL: f64 = 1e-7;
 
@@ -436,10 +436,10 @@ fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -
 /// Whether every control point of `nurbs` already lies inside `aabb`.
 ///
 /// A NURBS surface lies within the convex hull of its control points, and
-/// [`NurbsSurface::new`](brepkit_math::nurbs::surface::NurbsSurface::new)
+/// [`NurbsSurface::new`](remus_math::nurbs::surface::NurbsSurface::new)
 /// rejects non-positive weights, so this holds for rational surfaces too. When
 /// it is true no point of the surface — trimmed or not — can grow the box.
-fn control_hull_within(nurbs: &brepkit_math::nurbs::surface::NurbsSurface, aabb: &Aabb3) -> bool {
+fn control_hull_within(nurbs: &remus_math::nurbs::surface::NurbsSurface, aabb: &Aabb3) -> bool {
     nurbs.control_points().iter().flatten().all(|p| {
         p.x() >= aabb.min.x()
             && p.x() <= aabb.max.x()
@@ -466,7 +466,7 @@ fn control_hull_within(nurbs: &brepkit_math::nurbs::surface::NurbsSurface, aabb:
 fn nurbs_patch_domain(
     topo: &Topology,
     face_id: FaceId,
-    nurbs: &brepkit_math::nurbs::surface::NurbsSurface,
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
 ) -> PatchDomain {
     let full_u = nurbs.domain_u();
     let full_v = nurbs.domain_v();
@@ -568,7 +568,7 @@ fn nurbs_patch_domain(
 /// boundary.
 ///
 /// Returns `None` when even the grid search cannot place the sample.
-/// [`ParametricSurface::project_point`](brepkit_math::traits::ParametricSurface::project_point)
+/// [`ParametricSurface::project_point`](remus_math::traits::ParametricSurface::project_point)
 /// answers the domain midpoint there, which would fold a point the face may
 /// not contain into the span; the caller needs to know instead.
 fn invert_boundary_sample(
@@ -757,7 +757,7 @@ fn cos_range(t0: f64, t1: f64) -> (f64, f64) {
 fn sample_face_wire_midpoints(
     topo: &Topology,
     aabb: &mut Aabb3,
-    face_id: brepkit_topology::face::FaceId,
+    face_id: remus_topology::face::FaceId,
 ) -> bool {
     let Ok(face) = topo.face(face_id) else {
         return false;
@@ -770,7 +770,7 @@ fn sample_face_wire_midpoints(
         let Ok(edge) = topo.edge(oe.edge()) else {
             continue;
         };
-        if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+        if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
             has_curved = true;
         }
         let Ok(sv) = topo.vertex(edge.start()) else {
@@ -796,8 +796,8 @@ fn sample_face_wire_midpoints(
 fn expand_cylinder_at_vertices(
     topo: &Topology,
     aabb: &mut Aabb3,
-    face_id: brepkit_topology::face::FaceId,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    face_id: remus_topology::face::FaceId,
+    cyl: &remus_math::surfaces::CylindricalSurface,
 ) {
     let Ok(face) = topo.face(face_id) else {
         return;
@@ -819,7 +819,7 @@ fn expand_cylinder_at_vertices(
             let Ok(v) = topo.vertex(vid) else {
                 continue;
             };
-            let rel = brepkit_math::vec::Vec3::new(
+            let rel = remus_math::vec::Vec3::new(
                 v.point().x() - origin.x(),
                 v.point().y() - origin.y(),
                 v.point().z() - origin.z(),
@@ -842,10 +842,10 @@ fn expand_cylinder_at_vertices(
 fn expand_cone_at_vertices(
     topo: &Topology,
     aabb: &mut Aabb3,
-    face_id: brepkit_topology::face::FaceId,
-    cone: &brepkit_math::surfaces::ConicalSurface,
+    face_id: remus_topology::face::FaceId,
+    cone: &remus_math::surfaces::ConicalSurface,
 ) {
-    use brepkit_math::vec::Vec3;
+    use remus_math::vec::Vec3;
     let Ok(face) = topo.face(face_id) else {
         return;
     };
