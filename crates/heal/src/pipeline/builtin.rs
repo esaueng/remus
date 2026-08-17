@@ -3,8 +3,8 @@
 //! These wrap the analysis/fix/upgrade functions as [`super::operator::HealOperator`]
 //! implementations for use in [`super::process::HealProcess`] pipelines.
 
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use super::operator::HealOperator;
 use super::registry::OperatorRegistry;
@@ -146,7 +146,7 @@ impl HealOperator for SameParameterOp {
             let edge_ids: Vec<_> = wire
                 .edges()
                 .iter()
-                .map(brepkit_topology::wire::OrientedEdge::edge)
+                .map(remus_topology::wire::OrientedEdge::edge)
                 .collect();
             for eid in edge_ids {
                 let r = crate::fix::edge::fix_same_parameter_on_face(topo, eid, fid, ctx, &config)?;

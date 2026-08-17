@@ -16,14 +16,14 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_operations::journal_ops;
-use brepkit_topology::journal::{EntityKind, JournalAttributePropagation, OpId};
+use remus_algo::bop::BooleanOp;
+use remus_operations::journal_ops;
+use remus_topology::journal::{EntityKind, JournalAttributePropagation, OpId};
 // Discriminators are only constructed by the serialized-reference codec,
 // which is `io`-gated.
 #[cfg(feature = "io")]
-use brepkit_topology::naming::Discriminator;
-use brepkit_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
+use remus_topology::naming::Discriminator;
+use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
 use crate::error::StructuredWasmError;
 use crate::helpers::get_u32;
@@ -57,7 +57,7 @@ fn op_to_u32(op: OpId) -> Result<u32, StructuredWasmError> {
     })
 }
 
-fn entity_json(key: brepkit_topology::journal::EntityKey) -> serde_json::Value {
+fn entity_json(key: remus_topology::journal::EntityKey) -> serde_json::Value {
     serde_json::json!({
         "kind": key.kind.as_str(),
         "handle": u32::try_from(key.index).unwrap_or(u32::MAX),
@@ -215,13 +215,13 @@ impl BrepKernel {
 
     #[cfg(feature = "io")]
     fn ref_from_json(reference: &str) -> Result<PersistentRef, StructuredWasmError> {
-        brepkit_io::naming_io::deserialize_persistent_ref(reference.as_bytes())
+        remus_io::naming_io::deserialize_persistent_ref(reference.as_bytes())
             .map_err(StructuredWasmError::from)
     }
 
     #[cfg(feature = "io")]
     fn ref_to_json(reference: &PersistentRef) -> Result<serde_json::Value, StructuredWasmError> {
-        let bytes = brepkit_io::naming_io::serialize_persistent_ref(reference)
+        let bytes = remus_io::naming_io::serialize_persistent_ref(reference)
             .map_err(StructuredWasmError::from)?;
         let text = String::from_utf8(bytes).map_err(|_| {
             StructuredWasmError::invalid_argument("reference encoding was not UTF-8", None)
@@ -236,7 +236,7 @@ impl BrepKernel {
         handle: u32,
         quantum: f64,
     ) -> Result<serde_json::Value, StructuredWasmError> {
-        use brepkit_topology::naming::EntitySignature;
+        use remus_topology::naming::EntitySignature;
         let signature = match parse_entity_kind(kind)? {
             EntityKind::Face => {
                 let id = self
@@ -292,7 +292,7 @@ impl BrepKernel {
         &self,
         reference: &str,
     ) -> Result<serde_json::Value, StructuredWasmError> {
-        use brepkit_topology::naming::resolve_face_attributes;
+        use remus_topology::naming::resolve_face_attributes;
         let parsed = Self::ref_from_json(reference)?;
         let bound =
             resolve_face_attributes(self.topo(), &parsed).map_err(StructuredWasmError::from)?;

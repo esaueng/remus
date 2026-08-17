@@ -3,16 +3,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_blend::BlendFaceOrigins;
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::nurbs::surface_fitting::interpolate_surface;
-use brepkit_math::surfaces::CylindricalSurface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_blend::BlendFaceOrigins;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::nurbs::surface_fitting::interpolate_surface;
+use remus_math::surfaces::CylindricalSurface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
@@ -229,7 +229,7 @@ fn record_strip_contacts(
 #[allow(clippy::too_many_lines)]
 #[deprecated(
     since = "2.44.0",
-    note = "Use brepkit_blend::fillet_builder::FilletBuilder (via blend_ops::fillet_v2) instead."
+    note = "Use remus_blend::fillet_builder::FilletBuilder (via blend_ops::fillet_v2) instead."
 )]
 pub fn fillet_rolling_ball(
     topo: &mut Topology,
@@ -365,7 +365,7 @@ pub fn fillet_rolling_ball_with_origins(
 
     // Phase 2a: G1 chain propagation — automatically expand the edge set to
     // include all G1-continuous neighbors sharing the same face pair.
-    let filtered_edges = brepkit_blend::g1_chain::expand_g1_chain(topo, solid, &user_edges, tol)?;
+    let filtered_edges = remus_blend::g1_chain::expand_g1_chain(topo, solid, &user_edges, tol)?;
     if filtered_edges.len() > user_edges.len() {
         log::info!(
             "G1 chain: expanded {} edges to {} edges",
@@ -852,7 +852,7 @@ pub fn fillet_rolling_ball_with_origins(
     // pre-pass and Phase 4. Edges where the walker can't converge (e.g. a
     // tangent/G1 edge between a fillet face and its neighbour) are left
     // uncached and fall through to the planar path / are skipped.
-    let blend_section_cache: HashMap<usize, Vec<brepkit_blend::fillet_builder::BlendCrossSection>> = {
+    let blend_section_cache: HashMap<usize, Vec<remus_blend::fillet_builder::BlendCrossSection>> = {
         let mut cache = HashMap::new();
         for &edge_id in &filtered_edges {
             let Ok(edge) = topo.edge(edge_id) else {
@@ -884,7 +884,7 @@ pub fn fillet_rolling_ball_with_origins(
             }
             let r1 = face_reversed.get(&f1.index()).copied().unwrap_or(false);
             let r2 = face_reversed.get(&f2.index()).copied().unwrap_or(false);
-            if let Ok(sections) = brepkit_blend::fillet_builder::blend_cross_sections(
+            if let Ok(sections) = remus_blend::fillet_builder::blend_cross_sections(
                 topo, edge_id, s1, r1, s2, r2, radius, &fractions,
             ) {
                 cache.insert(edge_id.index(), sections);
@@ -1030,7 +1030,7 @@ pub fn fillet_rolling_ball_with_origins(
             let Ok(edge) = topo.edge(edge_id) else {
                 continue;
             };
-            if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Circle(_)) {
+            if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                 continue;
             }
             let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
@@ -1982,7 +1982,7 @@ pub fn fillet_rolling_ball_with_origins(
         }
         if !missing.is_empty() {
             return Err(crate::OperationsError::Blend(
-                brepkit_blend::BlendError::EdgesNotBlended {
+                remus_blend::BlendError::EdgesNotBlended {
                     edges: missing,
                     reason: "the rolling-ball engine produced no blend surface for them \
                              (non-manifold edge, unreadable surface normal, or a dihedral \
@@ -2374,7 +2374,7 @@ pub fn fillet_rolling_ball_with_origins(
 
         // Fallback: flat planar blend for non-triangular or degenerate cases.
         log::debug!(
-            target: "brepkit_approx",
+            target: "remus_approx",
             "fillet(rolling-ball): corner patch fell back to flat planar blend (non-triangular/degenerate corner)"
         );
         let blend_d = dot_normal_point(blend_normal, ordered_points[0]);
@@ -2621,7 +2621,7 @@ pub fn fillet_rolling_ball_with_origins(
     // rounds a closed rim correctly. The guard is keyed on actual face area,
     // not edge topology, so a valid fillet (every face has real area) is never
     // rejected.
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid_id)
+    let faces = remus_topology::explorer::solid_faces(topo, solid_id)
         .map_err(crate::OperationsError::Topology)?;
     let area_floor = (radius * radius) * 1e-6;
     for fid in faces {
@@ -2660,7 +2660,7 @@ pub fn fillet_rolling_ball_with_origins(
             survived: Vec::new(),
             deleted: Vec::new(),
             created: Vec::new(),
-            created_unattributed: brepkit_topology::explorer::solid_faces(topo, solid_id)?,
+            created_unattributed: remus_topology::explorer::solid_faces(topo, solid_id)?,
         }
     };
 
@@ -2755,11 +2755,11 @@ fn build_three_edge_sphere_cap(
     // Any direction perpendicular to the patch centre serves as the polar
     // axis; Frame3 supplies one. The seam reference then points at the
     // antipode of the patch.
-    let polar = brepkit_math::frame::Frame3::from_normal(sphere_center, mean_dir)
+    let polar = remus_math::frame::Frame3::from_normal(sphere_center, mean_dir)
         .ok()?
         .x;
     let sphere =
-        brepkit_math::surfaces::SphericalSurface::with_frame(sphere_center, r, polar, -mean_dir)
+        remus_math::surfaces::SphericalSurface::with_frame(sphere_center, r, polar, -mean_dir)
             .ok()?;
 
     Some(FaceSpec::SphereCapFace {

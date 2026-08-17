@@ -12,15 +12,15 @@
 //! would have produced.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_check::validate::{Severity, ValidateOptions, validate_solid};
-use brepkit_math::mat::Mat4;
-use brepkit_offset::{OffsetError, OffsetOptions, offset_solid, thick_solid};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{mass_properties, solid_volume};
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_check::validate::{Severity, ValidateOptions, validate_solid};
+use remus_math::mat::Mat4;
+use remus_offset::{OffsetError, OffsetOptions, offset_solid, thick_solid};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{mass_properties, solid_volume};
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 fn opts() -> OffsetOptions {
     OffsetOptions {

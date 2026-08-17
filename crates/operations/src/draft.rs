@@ -11,14 +11,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
-use brepkit_topology::wire::WireId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
+use remus_topology::wire::WireId;
 
 use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed};
@@ -620,10 +620,7 @@ fn substitute_wire(
     let mut points: Vec<Point3> = Vec::new();
     for vid in wire_vertices(topo, wire)? {
         let p = moved.get(&vid.index()).copied().map_or_else(
-            || {
-                topo.vertex(vid)
-                    .map(brepkit_topology::vertex::Vertex::point)
-            },
+            || topo.vertex(vid).map(remus_topology::vertex::Vertex::point),
             Ok,
         )?;
         if points
@@ -643,11 +640,11 @@ fn substitute_wire(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::Topology;
-    use brepkit_topology::face::FaceSurface;
-    use brepkit_topology::test_utils::make_unit_cube_manifold;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
 

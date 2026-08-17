@@ -26,10 +26,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_algo::bop::BooleanOp;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_algo::bop::BooleanOp;
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -38,7 +38,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn load(name: &str, topo: &mut Topology) -> SolidId {
-    brepkit_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
+    remus_io::arena_io::deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 type Q = (i64, i64, i64);
@@ -49,7 +49,7 @@ fn deepened_notch_cut_pairs_every_brep_edge() {
     let plate = load("snapclip_notch_plate.bin", &mut topo);
     let cutter = load("snapclip_notch_cutter.bin", &mut topo);
 
-    let result = brepkit_algo::gfa::boolean(&mut topo, BooleanOp::Cut, plate, cutter).unwrap();
+    let result = remus_algo::gfa::boolean(&mut topo, BooleanOp::Cut, plate, cutter).unwrap();
 
     // Position-quantized B-Rep edge pairing: every edge must be used exactly
     // twice. The stranded-rim failure left the cone faces unsplit (their old

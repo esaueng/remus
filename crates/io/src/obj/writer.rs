@@ -2,10 +2,10 @@
 
 use std::fmt::Write;
 
-use brepkit_operations::tessellate::{self, TriangleMesh};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_operations::tessellate::{self, TriangleMesh};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 /// Write one or more solids to OBJ format as a UTF-8 string.
 ///
@@ -43,7 +43,7 @@ pub fn write_obj(
     }
 
     let mut output = String::new();
-    let _ = writeln!(output, "# brepkit OBJ export");
+    let _ = writeln!(output, "# remus OBJ export");
     let _ = writeln!(
         output,
         "# {} vertices, {} faces",
@@ -79,18 +79,18 @@ pub fn write_obj(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_topology::Topology;
+    use remus_topology::Topology;
 
     use super::*;
 
     #[test]
     fn write_box_obj() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
 
         let obj = write_obj(&topo, &[solid], 0.1).unwrap();
 
-        assert!(obj.starts_with("# brepkit OBJ export"));
+        assert!(obj.starts_with("# remus OBJ export"));
         assert!(obj.contains("v "));
         assert!(obj.contains("vn "));
         assert!(obj.contains("f "));
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn obj_is_valid_format() {
         let mut topo = Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let obj = write_obj(&topo, &[solid], 0.1).unwrap();
 

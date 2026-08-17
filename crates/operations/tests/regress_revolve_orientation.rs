@@ -40,12 +40,12 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::tessellate::{TriangleMesh, tessellate_solid};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::revolve::revolve;
+use remus_operations::tessellate::{TriangleMesh, tessellate_solid};
+use remus_topology::Topology;
+use remus_topology::face::{Face, FaceId, FaceSurface};
 
 /// Angles swept by every case, in degrees. Deliberately includes two
 /// non-integer angles and both sides of the `is_full` cutoff.
@@ -92,7 +92,7 @@ fn mesh_topology(mesh: &TriangleMesh) -> (usize, usize, i64) {
 /// A planar polygon profile in the z = 0 plane, wound as given.
 fn polygon_face(topo: &mut Topology, pts: &[(f64, f64)], normal_z: f64, tol: f64) -> FaceId {
     let pts3: Vec<Point3> = pts.iter().map(|&(x, y)| Point3::new(x, y, 0.0)).collect();
-    let wire = brepkit_topology::builder::make_polygon_wire(topo, &pts3, tol).unwrap();
+    let wire = remus_topology::builder::make_polygon_wire(topo, &pts3, tol).unwrap();
     topo.add_face(Face::new(
         wire,
         vec![],
@@ -171,7 +171,7 @@ fn check_case(case: &Case, scale: f64) {
         )
         .unwrap_or_else(|e| panic!("{ctx}: revolve failed: {e}"));
 
-        let report = brepkit_operations::validate::validate_solid(&topo, solid).unwrap();
+        let report = remus_operations::validate::validate_solid(&topo, solid).unwrap();
         assert!(report.is_valid(), "{ctx}: invalid solid: {report:?}");
 
         let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
@@ -198,7 +198,7 @@ fn check_case(case: &Case, scale: f64) {
         // integrator is compared to Pappus — NOT to `mass_properties`, which
         // shares `integrate_face` with it and so cannot corroborate anything.
         let expected = pappus_volume(&pts, angle);
-        let kernel = brepkit_operations::measure::solid_volume(&topo, solid, deflection).unwrap();
+        let kernel = remus_operations::measure::solid_volume(&topo, solid, deflection).unwrap();
         let kernel_err = (kernel - expected).abs() / expected;
         // The kernel's linear tolerance is ABSOLUTE (1e-7), so its accuracy is
         // bounded relative to the profile's smallest radius (2 × `scale` here).
@@ -299,10 +299,10 @@ fn holed_profile_revolve_is_wound_outward() {
             let to3 = |pts: &[(f64, f64)]| -> Vec<Point3> {
                 pts.iter().map(|&(x, y)| Point3::new(x, y, 0.0)).collect()
             };
-            let ow = brepkit_topology::builder::make_polygon_wire(&mut topo, &to3(&outer), 1e-9)
-                .unwrap();
-            let iw = brepkit_topology::builder::make_polygon_wire(&mut topo, &to3(&inner), 1e-9)
-                .unwrap();
+            let ow =
+                remus_topology::builder::make_polygon_wire(&mut topo, &to3(&outer), 1e-9).unwrap();
+            let iw =
+                remus_topology::builder::make_polygon_wire(&mut topo, &to3(&inner), 1e-9).unwrap();
             let face = topo.add_face(Face::new(
                 ow,
                 vec![iw],
@@ -332,7 +332,7 @@ fn holed_profile_revolve_is_wound_outward() {
 
             // Pappus on the annular profile: outer sweep minus hole sweep.
             let expected = pappus_volume(&outer, angle) - pappus_volume(&inner, angle);
-            let kernel = brepkit_operations::measure::solid_volume(&topo, solid, 0.01).unwrap();
+            let kernel = remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap();
             let kernel_err = (kernel - expected).abs() / expected;
             assert!(
                 kernel_err < 1e-3,

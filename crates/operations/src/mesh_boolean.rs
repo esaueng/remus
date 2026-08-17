@@ -10,12 +10,12 @@
 
 #![allow(clippy::tuple_array_conversions)]
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::bvh::Bvh;
-use brepkit_math::cdt::Cdt;
-use brepkit_math::det_hash::DetHashMap;
-use brepkit_math::predicates::orient3d;
-use brepkit_math::vec::{Point2, Point3, Vec3};
+use remus_math::aabb::Aabb3;
+use remus_math::bvh::Bvh;
+use remus_math::cdt::Cdt;
+use remus_math::det_hash::DetHashMap;
+use remus_math::predicates::orient3d;
+use remus_math::vec::{Point2, Point3, Vec3};
 
 use crate::OperationsError;
 use crate::boolean::BooleanOp;

@@ -1,27 +1,27 @@
 [package]
-description = "Solid offset engine for brepkit"
+description = "Solid offset engine for remus"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-offset"
+name = "remus-offset"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-geometry.workspace = true
-brepkit-math.workspace = true
-brepkit-topology.workspace = true
+remus-geometry.workspace = true
+remus-math.workspace = true
+remus-topology.workspace = true
 
 log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-brepkit-check.workspace = true
-# Path-only on purpose: brepkit-operations depends on brepkit-offset. Cargo
+remus-check.workspace = true
+# Path-only on purpose: remus-operations depends on remus-offset. Cargo
 # strips versionless dev-dependencies from published manifests, avoiding an
 # initial same-version registry cycle while preserving integration tests.
-brepkit-operations = {path = "../operations"}
-brepkit-topology = {workspace = true, features = ["test-utils"]}
+remus-operations = {path = "../operations"}
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]
 workspace = true

@@ -1,7 +1,7 @@
 //! Adaptive deflection-based curve sampling via recursive midpoint subdivision.
 
-use brepkit_math::traits::ParametricCurve;
-use brepkit_math::vec::{Point3, Vec3};
+use remus_math::traits::ParametricCurve;
+use remus_math::vec::{Point3, Vec3};
 
 /// Maximum recursion depth to guard against degenerate curves.
 const MAX_DEPTH: u32 = 20;
@@ -96,8 +96,8 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::vec::{Point3, Vec3};
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
     use std::f64::consts::TAU;
 
     fn circle(radius: f64) -> Circle3D {

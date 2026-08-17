@@ -3,7 +3,7 @@
 //! The bare-cylinder repro has a disc cap. The flange's caps are ANNULI with
 //! bolt holes, which is a different case for the rim assembler.
 //!
-//! Run: `cargo run --release --example debug_flange_chamfer -p brepkit-operations`
+//! Run: `cargo run --release --example debug_flange_chamfer -p remus-operations`
 
 #![allow(
     clippy::unwrap_used,
@@ -13,18 +13,18 @@
     clippy::print_stderr
 )]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::heal::unify_faces;
-use brepkit_operations::primitives;
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::heal::unify_faces;
+use remus_operations::primitives;
+use remus_operations::revolve::revolve;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const TOL: f64 = 1e-7;
 
@@ -158,10 +158,10 @@ fn main() {
                 }
             }
         }
-        let before = brepkit_operations::measure::solid_volume(&t2, b2, 0.05).unwrap();
-        match brepkit_operations::blend_ops::chamfer_v2(&mut t2, b2, &picks, 1.5, 1.5) {
+        let before = remus_operations::measure::solid_volume(&t2, b2, 0.05).unwrap();
+        match remus_operations::blend_ops::chamfer_v2(&mut t2, b2, &picks, 1.5, 1.5) {
             Ok(r) => {
-                let after = brepkit_operations::measure::solid_volume(&t2, r.solid, 0.05).unwrap();
+                let after = remus_operations::measure::solid_volume(&t2, r.solid, 0.05).unwrap();
                 let mut census = std::collections::BTreeMap::new();
                 for fid in solid_faces(&t2, r.solid).unwrap() {
                     *census
@@ -226,11 +226,11 @@ fn main() {
         }
         if let Some(g) = tgt {
             let r = 1.5_f64;
-            let before = brepkit_operations::measure::solid_volume(&tw, washer, 0.002).unwrap();
-            match brepkit_operations::blend_ops::fillet_v2(&mut tw, washer, &[g], r) {
+            let before = remus_operations::measure::solid_volume(&tw, washer, 0.002).unwrap();
+            match remus_operations::blend_ops::fillet_v2(&mut tw, washer, &[g], r) {
                 Ok(res) => {
                     let after =
-                        brepkit_operations::measure::solid_volume(&tw, res.solid, 0.002).unwrap();
+                        remus_operations::measure::solid_volume(&tw, res.solid, 0.002).unwrap();
                     let area = r * r * (1.0 - std::f64::consts::PI / 4.0);
                     let num =
                         (24.0 - r / 2.0) - (std::f64::consts::PI / 4.0) * (24.0 - r) - r / 3.0;
@@ -269,13 +269,13 @@ fn main() {
                 }
             }
             if let Ok(res) =
-                brepkit_operations::blend_ops::fillet_v2(&mut tw2, w2, &[g2.unwrap()], 1.5)
+                remus_operations::blend_ops::fillet_v2(&mut tw2, w2, &[g2.unwrap()], 1.5)
             {
                 println!("  --- washer after fillet ---");
                 for fid in solid_faces(&tw2, res.solid).unwrap() {
                     let f = tw2.face(fid).unwrap();
                     let extra = match f.surface() {
-                        brepkit_topology::face::FaceSurface::Torus(t) => format!(
+                        remus_topology::face::FaceSurface::Torus(t) => format!(
                             " major={:.3} minor={:.3} c=({:.2},{:.2},{:.2})",
                             t.major_radius(),
                             t.minor_radius(),
@@ -283,7 +283,7 @@ fn main() {
                             t.center().y(),
                             t.center().z()
                         ),
-                        brepkit_topology::face::FaceSurface::Cylinder(c) => {
+                        remus_topology::face::FaceSurface::Cylinder(c) => {
                             format!(" r={:.3}", c.radius())
                         }
                         _ => String::new(),
@@ -338,9 +338,9 @@ fn main() {
         }
         let Some(g) = tgt else { continue };
         let r = 1.5_f64;
-        let before = brepkit_operations::measure::solid_volume(&t2, b2, 0.002).unwrap();
-        if let Ok(res) = brepkit_operations::blend_ops::fillet_v2(&mut t2, b2, &[g], r) {
-            let after = brepkit_operations::measure::solid_volume(&t2, res.solid, 0.002).unwrap();
+        let before = remus_operations::measure::solid_volume(&t2, b2, 0.002).unwrap();
+        if let Ok(res) = remus_operations::blend_ops::fillet_v2(&mut t2, b2, &[g], r) {
+            let after = remus_operations::measure::solid_volume(&t2, res.solid, 0.002).unwrap();
             let area = r * r * (1.0 - std::f64::consts::PI / 4.0);
             let num = (want_r - r / 2.0) - (std::f64::consts::PI / 4.0) * (want_r - r) - r / 3.0;
             let cen = num / (1.0 - std::f64::consts::PI / 4.0);
@@ -413,10 +413,9 @@ fn main() {
                 }
                 v
             };
-            let before = brepkit_operations::measure::solid_volume(&t2, b2, defl).unwrap();
-            if let Ok(res) = brepkit_operations::blend_ops::fillet_v2(&mut t2, b2, &rr, 1.5) {
-                let after =
-                    brepkit_operations::measure::solid_volume(&t2, res.solid, defl).unwrap();
+            let before = remus_operations::measure::solid_volume(&t2, b2, defl).unwrap();
+            if let Ok(res) = remus_operations::blend_ops::fillet_v2(&mut t2, b2, &rr, 1.5) {
+                let after = remus_operations::measure::solid_volume(&t2, res.solid, defl).unwrap();
                 println!(
                     "  fillet defl={defl}: removed {:.3} (analytic 342.81)",
                     before - after
@@ -456,10 +455,10 @@ fn main() {
             })
             .collect();
         let _ = top;
-        let vb = brepkit_operations::measure::solid_volume(&t3, b3, 0.05).unwrap();
-        match brepkit_operations::blend_ops::fillet_v2(&mut t3, b3, &rr[..1], 10.0) {
+        let vb = remus_operations::measure::solid_volume(&t3, b3, 0.05).unwrap();
+        match remus_operations::blend_ops::fillet_v2(&mut t3, b3, &rr[..1], 10.0) {
             Ok(res) => {
-                let va = brepkit_operations::measure::solid_volume(&t3, res.solid, 0.05).unwrap();
+                let va = remus_operations::measure::solid_volume(&t3, res.solid, 0.05).unwrap();
                 let mut cen = std::collections::BTreeMap::new();
                 for fid in solid_faces(&t3, res.solid).unwrap() {
                     *cen.entry(t3.face(fid).unwrap().surface().type_tag())
@@ -504,7 +503,7 @@ fn main() {
             println!("  {label}: could not re-find edge");
             continue;
         };
-        match brepkit_operations::blend_ops::chamfer_v2(&mut t2, b2, &[tg], 1.5, 1.5) {
+        match remus_operations::blend_ops::chamfer_v2(&mut t2, b2, &[tg], 1.5, 1.5) {
             Ok(r) => println!("  {label}: chamfer OK failed={}", r.failed.len()),
             Err(err) => println!("  {label}: chamfer ERR {err}"),
         }
@@ -533,7 +532,7 @@ fn main() {
             }
         }
         if let Some(g3) = tgt3 {
-            match brepkit_operations::blend_ops::fillet_v2(&mut t3, b3, &[g3], 1.5) {
+            match remus_operations::blend_ops::fillet_v2(&mut t3, b3, &[g3], 1.5) {
                 Ok(r) => println!("  {label}: fillet  OK failed={}", r.failed.len()),
                 Err(err) => println!("  {label}: fillet  ERR {err}"),
             }

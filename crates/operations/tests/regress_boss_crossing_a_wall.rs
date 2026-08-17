@@ -33,15 +33,15 @@
 
 use std::f64::consts::PI;
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{mass_properties, solid_volume};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_operations::validate;
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{mass_properties, solid_volume};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_operations::validate;
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 const PLATE_X: f64 = 60.0;
 const PLATE_Y: f64 = 40.0;
@@ -116,7 +116,7 @@ fn expected(op: BooleanOp, d: f64) -> f64 {
 /// `(planes, cylinders, other)` over the result's faces.
 fn surface_census(topo: &Topology, s: SolidId) -> (usize, usize, usize) {
     let mut census = (0, 0, 0);
-    for f in brepkit_topology::explorer::solid_faces(topo, s).unwrap() {
+    for f in remus_topology::explorer::solid_faces(topo, s).unwrap() {
         match topo.face(f).unwrap().surface() {
             FaceSurface::Plane { .. } => census.0 += 1,
             FaceSurface::Cylinder(_) => census.1 += 1,

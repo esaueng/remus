@@ -8,9 +8,9 @@
 //! 4. Small area check (bbox diagonal < tolerance → mark for removal)
 //! 5. Duplicate face detection (stub)
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use super::FixResult;
 use super::config::{FixConfig, FixMode};
@@ -59,13 +59,13 @@ pub fn fix_face(
         // already accessible in step 1, so an error here would
         // indicate an unexpected topology mutation inside
         // `fix_wire_on_face` and shouldn't be silently swallowed.
-        let mut edge_ids: Vec<brepkit_topology::edge::EdgeId> = Vec::new();
+        let mut edge_ids: Vec<remus_topology::edge::EdgeId> = Vec::new();
         for &wid in &wire_ids {
             let w = topo.wire(wid)?;
             edge_ids.extend(
                 w.edges()
                     .iter()
-                    .map(brepkit_topology::wire::OrientedEdge::edge),
+                    .map(remus_topology::wire::OrientedEdge::edge),
             );
         }
         // Resolve each edge to its canonical form (post-replacement),
@@ -76,7 +76,7 @@ pub fn fix_face(
         // keep the original A in the vector, calling
         // `fix_same_parameter_on_face` on a (possibly stale) ID.
         let mut seen = std::collections::HashSet::new();
-        let canonical_edges: Vec<brepkit_topology::edge::EdgeId> = edge_ids
+        let canonical_edges: Vec<remus_topology::edge::EdgeId> = edge_ids
             .into_iter()
             .filter_map(|eid| ctx.reshape.resolve_edge(eid))
             .filter(|&canon| seen.insert(canon))
@@ -271,7 +271,7 @@ mod tests {
     use super::*;
     use crate::context::HealContext;
     use crate::fix::config::{FixConfig, FixMode};
-    use brepkit_topology::test_utils::make_unit_square_face;
+    use remus_topology::test_utils::make_unit_square_face;
 
     fn default_config() -> FixConfig {
         // Disable face-level steps that aren't being exercised
@@ -303,7 +303,7 @@ mod tests {
             let wire = topo.wire(face.outer_wire()).unwrap();
             wire.edges()
                 .iter()
-                .map(brepkit_topology::wire::OrientedEdge::edge)
+                .map(remus_topology::wire::OrientedEdge::edge)
                 .collect()
         };
         for &eid in &edges_before {
@@ -338,7 +338,7 @@ mod tests {
             let wire = topo.wire(face.outer_wire()).unwrap();
             wire.edges()
                 .iter()
-                .map(brepkit_topology::wire::OrientedEdge::edge)
+                .map(remus_topology::wire::OrientedEdge::edge)
                 .collect()
         };
 

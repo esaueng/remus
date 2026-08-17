@@ -2,7 +2,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use brepkit_operations::tessellate;
+use remus_operations::tessellate;
 use wasm_bindgen::prelude::*;
 
 use crate::error::validate_positive;
@@ -18,7 +18,7 @@ fn resolve_angular_tol(angular_tolerance: Option<f64>) -> Result<f64, JsError> {
             validate_positive(a, "angularTolerance")?;
             Ok(a)
         }
-        None => Ok(brepkit_math::chord::DEFAULT_ANGULAR_TOL),
+        None => Ok(remus_math::chord::DEFAULT_ANGULAR_TOL),
     }
 }
 
@@ -175,7 +175,7 @@ impl BrepKernel {
         validate_positive(deflection, "deflection")?;
         let angular_tol = resolve_angular_tol(angular_tolerance)?;
         let solid_id = self.resolve_solid(solid)?;
-        let faces = brepkit_topology::explorer::solid_faces(&self.topo, solid_id)?;
+        let faces = remus_topology::explorer::solid_faces(&self.topo, solid_id)?;
 
         let mut all_positions: Vec<f64> = Vec::new();
         let mut all_normals: Vec<f64> = Vec::new();
@@ -343,15 +343,15 @@ mod tests {
 
     #[test]
     fn tessellate_solid_grouped_via_operations() {
-        let mut topo = brepkit_topology::topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let mut topo = remus_topology::topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
 
         let (mesh, face_offsets) =
-            brepkit_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+            remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
                 &topo,
                 solid,
                 0.1,
-                brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+                remus_math::chord::DEFAULT_ANGULAR_TOL,
             )
             .unwrap();
 
@@ -366,7 +366,7 @@ mod tests {
             assert_eq!((w[1] - w[0]) % 3, 0);
         }
         assert!(
-            brepkit_operations::tessellate::is_watertight(&mesh),
+            remus_operations::tessellate::is_watertight(&mesh),
             "grouped box mesh must be watertight"
         );
     }

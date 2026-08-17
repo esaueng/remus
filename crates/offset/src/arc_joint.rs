@@ -22,16 +22,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brepkit_math::curves::Circle3D;
-use brepkit_math::surfaces::{CylindricalSurface, SphericalSurface};
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::curves::Circle3D;
+use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::data::{EdgeClass, OffsetData};
 use crate::error::OffsetError;
@@ -185,7 +185,7 @@ fn collect_joint_edges(
     data: &OffsetData,
     normals: &BTreeMap<usize, Vec3>,
 ) -> Result<Vec<JointEdge>, OffsetError> {
-    let edge_faces = brepkit_topology::explorer::edge_to_face_map(topo, solid)?;
+    let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
     let mut edge_indices: Vec<usize> = edge_faces.keys().copied().collect();
     edge_indices.sort_unstable();
 

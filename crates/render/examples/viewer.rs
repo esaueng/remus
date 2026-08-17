@@ -3,7 +3,7 @@
 //! Run (needs a display server and the `window` feature):
 //!
 //! ```text
-//! cargo run -p brepkit-render --example viewer --features window
+//! cargo run -p remus-render --example viewer --features window
 //! ```
 //!
 //! Controls:
@@ -15,12 +15,12 @@
 //! Each highlighted face corresponds to a kernel `FaceId`, read back from the
 //! GPU id buffer under the cursor.
 
-use brepkit_math::mat::Mat4;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_operations::transform::transform_solid;
-use brepkit_render::{ViewOpts, view_solid};
-use brepkit_topology::Topology;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::transform::transform_solid;
+use remus_render::{ViewOpts, view_solid};
+use remus_topology::Topology;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A 40x40x20 box with a cylinder rising through its top, fused into one
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let solid = boolean(&mut topo, BooleanOp::Fuse, box_solid, cyl)?;
 
-    let opts = ViewOpts::new("brepkit viewer — box + cylinder (click a face)");
+    let opts = ViewOpts::new("remus viewer — box + cylinder (click a face)");
     view_solid(&topo, solid, &opts)?;
     Ok(())
 }

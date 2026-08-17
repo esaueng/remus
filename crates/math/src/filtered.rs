@@ -6,7 +6,7 @@
 //!
 //! Based on Shewchuk's adaptive precision arithmetic (1997).
 //!
-//! CDT (`cdt.rs`) and mesh booleans (`mesh_boolean.rs` in brepkit-operations)
+//! CDT (`cdt.rs`) and mesh booleans (`mesh_boolean.rs` in remus-operations)
 //! can switch their `orient2d`/`in_circle` calls to these filtered versions
 //! for a significant performance improvement without sacrificing robustness.
 

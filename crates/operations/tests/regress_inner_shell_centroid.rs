@@ -1,6 +1,6 @@
 //! `solid_center_of_mass` must weigh the body, not just its outer shell.
 //!
-//! brepkit#61 widened five VOLUME paths from `solid.outer_shell()` to
+//! remus#61 widened five VOLUME paths from `solid.outer_shell()` to
 //! `explorer::solid_faces`, so a body hollowed by a cavity stopped reading at
 //! its un-hollowed volume. It deliberately left the two CENTROID paths —
 //! `solid_center_of_mass` and its all-planar-triangle fast path
@@ -31,19 +31,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::measure::{solid_center_of_mass, solid_volume};
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::transform::transform_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::mat::Mat4;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{solid_center_of_mass, solid_volume};
+use remus_operations::primitives::make_box;
+use remus_operations::transform::transform_solid;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// Scales, coarsest first so nothing can pass by being swept first. Every
 /// length carries the factor and every tolerance is relative.
@@ -122,7 +122,7 @@ fn triangulated_brick_shell(
     topo: &mut Topology,
     b: Brick,
     reversed: bool,
-) -> brepkit_topology::shell::ShellId {
+) -> remus_topology::shell::ShellId {
     let tol = 1e-9 * b.size[0];
     let corner = |i: usize| {
         let (x, y, z) = (i & 1, (i >> 1) & 1, (i >> 2) & 1);
@@ -156,7 +156,7 @@ fn triangulated_brick_shell(
     // One Edge per undirected corner pair, shared by the two triangles that
     // meet along it — otherwise every edge is a free edge and the shell is not
     // a shell.
-    let mut pool: std::collections::HashMap<(usize, usize), brepkit_topology::edge::EdgeId> =
+    let mut pool: std::collections::HashMap<(usize, usize), remus_topology::edge::EdgeId> =
         std::collections::HashMap::new();
     let mut faces = Vec::with_capacity(12);
     for t in tris {
@@ -329,7 +329,7 @@ fn assert_centroid(got: Point3, want: Point3, outer: Brick, what: &str, route: &
 fn assert_closed_solid(topo: &Topology, solid: SolidId, what: &str) {
     use std::collections::HashMap;
 
-    let faces = brepkit_topology::explorer::solid_faces(topo, solid).unwrap();
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
     let mut uses: HashMap<usize, (usize, usize)> = HashMap::new();
     for fid in faces {
         let face = topo.face(fid).unwrap();

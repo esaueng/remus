@@ -3,7 +3,7 @@
 //! Replaces hardcoded tolerance multipliers with values that scale relative to
 //! local geometry dimensions, preventing unintended vertex merges on small features.
 
-use brepkit_math::vec::Point3;
+use remus_math::vec::Point3;
 
 /// Compute geometry-aware snap tolerance for vertex deduplication.
 ///

@@ -1,6 +1,6 @@
 ---
 name: render-verify
-description: Use when working with brepkit-render (offscreen GPU render, face-id buffer, interactive viewer, compute mesher, screen-space LOD) or when visually verifying a solid in this sandbox, including capturing a live viewer window headlessly, writing image-based render tests, or deciding between render checks and mesh watertightness checks.
+description: Use when working with remus-render (offscreen GPU render, face-id buffer, interactive viewer, compute mesher, screen-space LOD) or when visually verifying a solid in this sandbox, including capturing a live viewer window headlessly, writing image-based render tests, or deciding between render checks and mesh watertightness checks.
 ---
 
 # render-verify: GPU rendering and visual verification
@@ -25,15 +25,15 @@ For mesh manifoldness itself see the `tessellation` and `solid-verification` ski
 | Watertightness | `is_watertight`, `boundary_edge_count`, `non_manifold_edge_count` in `crates/operations/src/tessellate/mesh_ops.rs` | NOT a render question |
 
 ```bash
-cargo test -p brepkit-render                                    # offscreen render tests
-cargo run -p brepkit-render --example viewer --features window  # live viewer (needs display)
+cargo test -p remus-render                                    # offscreen render tests
+cargo run -p remus-render --example viewer --features window  # live viewer (needs display)
 ```
 
 Crate map, full API signatures, LOD math, and the environment fact sheet: [reference.md](reference.md).
 
 ## Procedure A: offscreen verification (default path)
 
-1. Gate on an adapter. `brepkit_render::probe_adapter()` returns `Some("Vulkan / NVIDIA ... (DiscreteGpu)")` style strings, or a software fallback (lavapipe) when no real GPU exists, or `None`. Tests must early-return on `None`, never fail. Copy the `let Some(_) = probe_adapter() else { return; }` pattern from `crates/render/tests/offscreen_render.rs`.
+1. Gate on an adapter. `remus_render::probe_adapter()` returns `Some("Vulkan / NVIDIA ... (DiscreteGpu)")` style strings, or a software fallback (lavapipe) when no real GPU exists, or `None`. Tests must early-return on `None`, never fail. Copy the `let Some(_) = probe_adapter() else { return; }` pattern from `crates/render/tests/offscreen_render.rs`.
 2. Build the scene, render:
    ```rust
    let out = render_solid_offscreen(&topo, solid, &camera, &RenderOpts::new(800, 600))?;
@@ -48,13 +48,13 @@ This sandbox has a real GPU and a live display `:0`. These steps are environment
 
 1. Launch, forcing X11. winit 0.30 prefers Wayland when `WAYLAND_DISPLAY` is set and a native Wayland window is not capturable here (`grim` is absent, `WINIT_UNIX_BACKEND` is ignored by winit 0.30). Run via the Bash tool with `run_in_background: true` (foreground `sleep` is blocked in the agent shell, so never `sleep && capture` in one command):
    ```bash
-   env -u WAYLAND_DISPLAY DISPLAY=:0 cargo run -p brepkit-render --example viewer --features window
+   env -u WAYLAND_DISPLAY DISPLAY=:0 cargo run -p remus-render --example viewer --features window
    ```
 2. Checkpoint: find the window (poll across tool calls until it appears; first launch includes compile time):
    ```bash
-   DISPLAY=:0 xwininfo -root -tree | grep -i 'brepkit viewer'
+   DISPLAY=:0 xwininfo -root -tree | grep -i 'remus viewer'
    ```
-   Expect a line like `0x1c00007 "brepkit viewer ...": ... 1024x768+...`. No match after the build finished: see reference.md, symptom table.
+   Expect a line like `0x1c00007 "remus viewer ...": ... 1024x768+...`. No match after the build finished: see reference.md, symptom table.
 3. Capture with ImageMagick and Read the PNG. Use the window id from step 2, and write into your session scratchpad directory if the system prompt lists one (`${TMPDIR:-/tmp}` works as a fallback):
    ```bash
    DISPLAY=:0 import -window 0x1c00007 "${TMPDIR:-/tmp}/viewer.png"

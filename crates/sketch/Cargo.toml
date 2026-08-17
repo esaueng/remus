@@ -1,8 +1,8 @@
 [package]
-description = "2D parametric constraint solver (GCS) for brepkit sketch mode"
+description = "2D parametric constraint solver (GCS) for remus sketch mode"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-sketch"
+name = "remus-sketch"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"

@@ -29,10 +29,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use brepkit_io::arena_io::deserialize_solid;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeId;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::arena_io::deserialize_solid;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::solid_faces;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -40,12 +40,12 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn load(name: &str, topo: &mut Topology) -> brepkit_topology::solid::SolidId {
+fn load(name: &str, topo: &mut Topology) -> remus_topology::solid::SolidId {
     deserialize_solid(&std::fs::read(fixture(name)).unwrap(), topo).unwrap()
 }
 
 /// (free, over, total faces)
-fn health(topo: &Topology, sid: brepkit_topology::solid::SolidId) -> (usize, usize, usize) {
+fn health(topo: &Topology, sid: remus_topology::solid::SolidId) -> (usize, usize, usize) {
     let faces = solid_faces(topo, sid).unwrap();
     let mut uses: HashMap<EdgeId, usize> = HashMap::new();
     for &fid in &faces {
@@ -75,7 +75,7 @@ fn lattice_band_operands_are_clean_and_outward() {
         assert_eq!(over, 0, "{name}: operand must be manifold, got {over} over");
         assert!(faces > 0, "{name}: operand has no faces");
         assert!(
-            brepkit_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap() > 0.0,
+            remus_operations::measure::oriented_solid_volume(&topo, sid, 0.05).unwrap() > 0.0,
             "{name}: operand must be OUTWARD oriented"
         );
     }
@@ -87,10 +87,10 @@ fn kumiko_lattice_bands_fuse_closed() {
     let a = load("kumiko_lattice_band_a.bin", &mut topo);
     let b = load("kumiko_lattice_band_b.bin", &mut topo);
 
-    let vol_a = brepkit_operations::measure::oriented_solid_volume(&topo, a, 0.01).unwrap();
-    let vol_b = brepkit_operations::measure::oriented_solid_volume(&topo, b, 0.01).unwrap();
+    let vol_a = remus_operations::measure::oriented_solid_volume(&topo, a, 0.01).unwrap();
+    let vol_b = remus_operations::measure::oriented_solid_volume(&topo, b, 0.01).unwrap();
 
-    let result = brepkit_algo::gfa::boolean(&mut topo, brepkit_algo::bop::BooleanOp::Fuse, a, b)
+    let result = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Fuse, a, b)
         .expect("analytic fuse should not abort");
 
     let (free, over, faces) = health(&topo, result);
@@ -98,7 +98,7 @@ fn kumiko_lattice_bands_fuse_closed() {
     assert_eq!(free, 0, "fuse must be closed, got {free} free edges");
 
     // A union is bounded below by the larger operand and above by their sum.
-    let vol = brepkit_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
+    let vol = remus_operations::measure::oriented_solid_volume(&topo, result, 0.01).unwrap();
     assert!(
         vol >= vol_a.max(vol_b) - 1.0 && vol <= vol_a + vol_b + 1.0,
         "fuse volume {vol} outside [{}, {}] for {faces} faces",

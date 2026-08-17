@@ -23,7 +23,7 @@ Release-speed code, debug symbols, no LTO. Plain `release` has `lto = true` and 
 `cargo-flamegraph` is installed. Two targets:
 
 ```bash
-cargo flamegraph --profile profiling --bench <bench_file> -p brepkit-operations \
+cargo flamegraph --profile profiling --bench <bench_file> -p remus-operations \
   -o /tmp/flamegraph.svg -- --bench "<filter>"
 
 cargo flamegraph --profile profiling --example profile_boolean -o /tmp/flame.svg -- honeycomb
@@ -44,8 +44,8 @@ All five files in `crates/operations/benches/`, each `harness = false` in `crate
 Cargo aliases (`.cargo/config.toml`):
 
 ```bash
-cargo bench-fast   # bench -p brepkit-operations --bench cad_operations
-cargo bench-full   # bench -p brepkit-operations
+cargo bench-fast   # bench -p remus-operations --bench cad_operations
+cargo bench-full   # bench -p remus-operations
 ```
 
 Output shape per benchmark:
@@ -60,7 +60,7 @@ The `change:` line appears once `target/criterion/` holds a prior run. That dire
 
 ### CI benchmark tracking
 
-`.github/workflows/benchmark.yml` runs `cargo bench -p brepkit-operations --bench boolean_tracking -- --output-format bencher` and feeds github-action-benchmark with `alert-threshold: '200%'`, `comment-on-alert: true`, `fail-on-alert: false`. Shared runners are noisy, so it comments instead of failing. Consequence: a merged PR can regress perf 1.9x with zero CI signal. The deterministic guard that does hard-fail is the complexity test `scaling_perforated_cut_is_subquadratic` (rg: `fn scaling_` in `crates/operations/src/boolean/tests.rs`), which asserts a growth ratio, not wall clock. Add tests in that style for any scaling fix.
+`.github/workflows/benchmark.yml` runs `cargo bench -p remus-operations --bench boolean_tracking -- --output-format bencher` and feeds github-action-benchmark with `alert-threshold: '200%'`, `comment-on-alert: true`, `fail-on-alert: false`. Shared runners are noisy, so it comments instead of failing. Consequence: a merged PR can regress perf 1.9x with zero CI signal. The deterministic guard that does hard-fail is the complexity test `scaling_perforated_cut_is_subquadratic` (rg: `fn scaling_` in `crates/operations/src/boolean/tests.rs`), which asserts a growth ratio, not wall clock. Add tests in that style for any scaling fix.
 
 ### Profiling examples (`crates/operations/examples/`)
 

@@ -34,9 +34,9 @@ pub(crate) fn install_hook() {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             #[cfg(target_arch = "wasm32")]
-            console_error(&format!("[brepkit] panic: {info}"));
+            console_error(&format!("[remus] panic: {info}"));
             if let Ok(mut slot) = LAST_PANIC.lock() {
-                *slot = Some("brepkit kernel panic".to_string());
+                *slot = Some("remus kernel panic".to_string());
             }
             previous(info);
         }));
@@ -87,7 +87,7 @@ mod tests {
         assert!(caught.is_err());
 
         let msg = last_panic_message().expect("hook should have recorded the panic");
-        assert_eq!(msg, "brepkit kernel panic");
+        assert_eq!(msg, "remus kernel panic");
 
         clear_last_panic_message();
         assert_eq!(last_panic_message(), None);

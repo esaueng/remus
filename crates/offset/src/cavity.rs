@@ -23,12 +23,12 @@
 //! both extents keeps the containment test from passing on geometry it has
 //! not actually looked at.
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::shell::ShellId;
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::ShellId;
+use remus_topology::solid::SolidId;
 
 use crate::error::OffsetError;
 
@@ -305,7 +305,7 @@ fn face_extent(topo: &Topology, face_id: FaceId) -> Result<Aabb3, OffsetError> {
             let axis = cone.axis();
             let apex = cone.apex();
             let mut max_radius: f64 = 0.0;
-            for vid in brepkit_topology::explorer::face_vertices(topo, face_id)? {
+            for vid in remus_topology::explorer::face_vertices(topo, face_id)? {
                 let p = topo.vertex(vid)?.point();
                 let d = p - apex;
                 let along = d.dot(axis);
@@ -321,7 +321,7 @@ fn face_extent(topo: &Topology, face_id: FaceId) -> Result<Aabb3, OffsetError> {
 
 fn vertex_hull(topo: &Topology, face_id: FaceId) -> Result<Aabb3, OffsetError> {
     let mut points = Vec::new();
-    for vid in brepkit_topology::explorer::face_vertices(topo, face_id)? {
+    for vid in remus_topology::explorer::face_vertices(topo, face_id)? {
         points.push(topo.vertex(vid)?.point());
     }
     Aabb3::try_from_points(points).ok_or_else(|| OffsetError::InvalidInput {

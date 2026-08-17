@@ -22,17 +22,17 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use brepkit_io::step::{read_step, write_step};
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::curves::Circle3D;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::measure::{edge_length, solid_volume};
-use brepkit_operations::primitives::make_box;
-use brepkit_operations::tessellate::tessellate;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::EdgeCurve;
-use brepkit_topology::explorer::{solid_edges, solid_faces};
-use brepkit_topology::solid::SolidId;
+use remus_io::step::{read_step, write_step};
+use remus_math::aabb::Aabb3;
+use remus_math::curves::Circle3D;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::measure::{edge_length, solid_volume};
+use remus_operations::primitives::make_box;
+use remus_operations::tessellate::tessellate;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
+use remus_topology::explorer::{solid_edges, solid_faces};
+use remus_topology::solid::SolidId;
 
 /// Tolerance for comparing two spellings of the same solid. They travel
 /// through the same tessellator with the same deflection, so the only slack
@@ -93,7 +93,7 @@ fn direction_components(body: &str) -> [f64; 3] {
     [parts[0], parts[1], parts[2]]
 }
 
-/// Rewrite a brepkit-written STEP into the equivalent `.F.` spelling.
+/// Rewrite a remus-written STEP into the equivalent `.F.` spelling.
 ///
 /// Returns the new text and how many EDGE_CURVEs were flipped.
 fn to_reversed_sense_formulation(step: &str) -> (String, usize) {
@@ -121,7 +121,7 @@ fn to_reversed_sense_formulation(step: &str) -> (String, usize) {
         assert_eq!(placement_ty, "AXIS2_PLACEMENT_3D");
         let axis = refs_in(placement_attrs)[1];
         // The rewrite only stays semantics-preserving while the placement and
-        // its axis belong to this CIRCLE alone. brepkit's writer never shares
+        // its axis belong to this CIRCLE alone. remus's writer never shares
         // them; assert it rather than trust it, so a future writer that
         // starts deduplicating turns this into a loud failure instead of a
         // silently corrupted fixture.
@@ -193,7 +193,7 @@ fn filleted_block(topo: &mut Topology) -> SolidId {
 
     #[allow(deprecated)]
     let filleted =
-        brepkit_operations::fillet::fillet_rolling_ball(topo, block, &vertical, RADIUS).unwrap();
+        remus_operations::fillet::fillet_rolling_ball(topo, block, &vertical, RADIUS).unwrap();
 
     // Four rounded corners remove (4 − π)r² of cross-section.
     let expected = (DX * DY - (4.0 - std::f64::consts::PI) * RADIUS * RADIUS) * DZ;

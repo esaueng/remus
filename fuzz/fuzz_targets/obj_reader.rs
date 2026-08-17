@@ -6,6 +6,6 @@ mod common;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(input) = std::str::from_utf8(data) {
-        let _ = brepkit_io::obj::read_obj_with_limits(input, common::limits());
+        let _ = remus_io::obj::read_obj_with_limits(input, common::limits());
     }
 });

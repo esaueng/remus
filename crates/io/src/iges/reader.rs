@@ -5,14 +5,14 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
@@ -206,7 +206,7 @@ fn build_topology(topo: &mut Topology, entities: &[IgesEntity]) -> Result<Vec<So
 fn build_plane_face(
     topo: &mut Topology,
     params: &str,
-) -> Result<brepkit_topology::face::FaceId, IoError> {
+) -> Result<remus_topology::face::FaceId, IoError> {
     let values = parse_float_params(params);
     if values.len() < 4 {
         return Err(IoError::ParseError {
@@ -317,8 +317,8 @@ fn parse_float_params(params: &str) -> Vec<f64> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_non_manifold;
 
     use super::*;
     use crate::iges::writer;
@@ -343,8 +343,7 @@ mod tests {
     #[test]
     fn roundtrip_box_primitive() {
         let mut write_topo = Topology::new();
-        let solid =
-            brepkit_operations::primitives::make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let solid = remus_operations::primitives::make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
 
         let iges_str = writer::write_iges(&write_topo, &[solid]).unwrap();
 

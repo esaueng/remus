@@ -19,17 +19,17 @@
     clippy::imprecise_flops
 )]
 
-use brepkit_geometry::extrema::{
+use remus_geometry::extrema::{
     point_to_cone as geo_point_to_cone, point_to_cylinder as geo_point_to_cylinder,
     point_to_sphere as geo_point_to_sphere, point_to_torus as geo_point_to_torus,
 };
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::bvh::Bvh;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::bvh::Bvh;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::boolean::face_polygon;
 
@@ -252,13 +252,13 @@ pub fn point_to_face(
 pub fn point_to_edge(
     topo: &Topology,
     point: Point3,
-    edge_id: brepkit_topology::edge::EdgeId,
+    edge_id: remus_topology::edge::EdgeId,
 ) -> Result<DistanceResult, crate::OperationsError> {
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
 
-    if matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
         let closest = closest_point_on_segment(point, start, end);
         let dist = (point - closest).length();
         Ok(DistanceResult {
@@ -268,8 +268,8 @@ pub fn point_to_edge(
         })
     } else {
         let (t0, t1) = match edge.curve() {
-            brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.domain(),
-            brepkit_topology::edge::EdgeCurve::Circle(c) => {
+            remus_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.domain(),
+            remus_topology::edge::EdgeCurve::Circle(c) => {
                 if edge.is_closed() {
                     (0.0, std::f64::consts::TAU)
                 } else {
@@ -285,7 +285,7 @@ pub fn point_to_edge(
                     (t0, t1)
                 }
             }
-            brepkit_topology::edge::EdgeCurve::Ellipse(e) => {
+            remus_topology::edge::EdgeCurve::Ellipse(e) => {
                 if edge.is_closed() {
                     (0.0, std::f64::consts::TAU)
                 } else {
@@ -302,10 +302,10 @@ pub fn point_to_edge(
             }
             // Unbounded branches: `project` inverts the parameterization
             // exactly, so the vertices give the arc's true parameter span.
-            brepkit_topology::edge::EdgeCurve::Hyperbola(h) => (h.project(start), h.project(end)),
-            brepkit_topology::edge::EdgeCurve::Parabola(p) => (p.project(start), p.project(end)),
+            remus_topology::edge::EdgeCurve::Hyperbola(h) => (h.project(start), h.project(end)),
+            remus_topology::edge::EdgeCurve::Parabola(p) => (p.project(start), p.project(end)),
             // Line was handled above (early return via `if` branch).
-            brepkit_topology::edge::EdgeCurve::Line => (0.0, 0.0),
+            remus_topology::edge::EdgeCurve::Line => (0.0, 0.0),
         };
         let n_samples = 64;
         let mut best_dist = f64::INFINITY;
@@ -313,13 +313,13 @@ pub fn point_to_edge(
         for i in 0..=n_samples {
             let t = t0 + (t1 - t0) * (i as f64) / (n_samples as f64);
             let pt = match edge.curve() {
-                brepkit_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.evaluate(t),
-                brepkit_topology::edge::EdgeCurve::Circle(c) => c.evaluate(t),
-                brepkit_topology::edge::EdgeCurve::Ellipse(e) => e.evaluate(t),
-                brepkit_topology::edge::EdgeCurve::Hyperbola(h) => h.evaluate(t),
-                brepkit_topology::edge::EdgeCurve::Parabola(p) => p.evaluate(t),
+                remus_topology::edge::EdgeCurve::NurbsCurve(nc) => nc.evaluate(t),
+                remus_topology::edge::EdgeCurve::Circle(c) => c.evaluate(t),
+                remus_topology::edge::EdgeCurve::Ellipse(e) => e.evaluate(t),
+                remus_topology::edge::EdgeCurve::Hyperbola(h) => h.evaluate(t),
+                remus_topology::edge::EdgeCurve::Parabola(p) => p.evaluate(t),
                 // Line was handled above.
-                brepkit_topology::edge::EdgeCurve::Line => start,
+                remus_topology::edge::EdgeCurve::Line => start,
             };
             let d = (point - pt).length();
             if d < best_dist {
@@ -362,9 +362,8 @@ pub(crate) fn point_to_face_distance(
             Ok(point_to_polygon_distance(point, &verts, *normal, *d, tol))
         }
         FaceSurface::Nurbs(surface) => {
-            let proj = brepkit_math::nurbs::projection::project_point_to_surface(
-                surface, point, tol.linear,
-            );
+            let proj =
+                remus_math::nurbs::projection::project_point_to_surface(surface, point, tol.linear);
             match proj {
                 Ok(p) => Ok(Some((p.distance, p.point))),
                 Err(_) => Ok(None),
@@ -377,19 +376,19 @@ pub(crate) fn point_to_face_distance(
     }
 }
 
-// -- Analytic point-to-surface distance (delegating to brepkit_geometry) ------
+// -- Analytic point-to-surface distance (delegating to remus_geometry) ------
 
 /// Closest point on a cylinder to a given point.
 fn point_to_cylinder(
     point: Point3,
-    cyl: &brepkit_math::surfaces::CylindricalSurface,
+    cyl: &remus_math::surfaces::CylindricalSurface,
 ) -> (f64, Point3) {
     let proj = geo_point_to_cylinder(point, cyl);
     (proj.distance, proj.point)
 }
 
 /// Closest point on a cone to a given point.
-fn point_to_cone(point: Point3, cone: &brepkit_math::surfaces::ConicalSurface) -> (f64, Point3) {
+fn point_to_cone(point: Point3, cone: &remus_math::surfaces::ConicalSurface) -> (f64, Point3) {
     let proj = geo_point_to_cone(point, cone);
     (proj.distance, proj.point)
 }
@@ -397,14 +396,14 @@ fn point_to_cone(point: Point3, cone: &brepkit_math::surfaces::ConicalSurface) -
 /// Closest point on a sphere to a given point.
 fn point_to_sphere(
     point: Point3,
-    sphere: &brepkit_math::surfaces::SphericalSurface,
+    sphere: &remus_math::surfaces::SphericalSurface,
 ) -> (f64, Point3) {
     let proj = geo_point_to_sphere(point, sphere);
     (proj.distance, proj.point)
 }
 
 /// Closest point on a torus to a given point.
-fn point_to_torus(point: Point3, torus: &brepkit_math::surfaces::ToroidalSurface) -> (f64, Point3) {
+fn point_to_torus(point: Point3, torus: &remus_math::surfaces::ToroidalSurface) -> (f64, Point3) {
     let proj = geo_point_to_torus(point, torus);
     (proj.distance, proj.point)
 }
@@ -461,14 +460,14 @@ fn bvh_distance_candidates(bvh: &Bvh, aabbs: &[(usize, Aabb3)], point: Point3) -
 
 /// Compute the minimum distance between two 3D line segments.
 ///
-/// Delegates to [`brepkit_geometry::extrema::segment_segment_distance`].
+/// Delegates to [`remus_geometry::extrema::segment_segment_distance`].
 fn segment_to_segment_distance(
     a1: Point3,
     a2: Point3,
     b1: Point3,
     b2: Point3,
 ) -> (f64, Point3, Point3) {
-    brepkit_geometry::extrema::segment_segment_distance(a1, a2, b1, b2)
+    remus_geometry::extrema::segment_segment_distance(a1, a2, b1, b2)
 }
 
 /// Collect all edge segments from a solid.
@@ -543,8 +542,8 @@ fn point_to_polygon_distance(
 
 /// Point-in-polygon test for 3D (projecting to 2D).
 pub(crate) fn point_in_polygon_3d(point: &Point3, polygon: &[Point3], normal: &Vec3) -> bool {
-    use brepkit_math::predicates::point_in_polygon;
-    use brepkit_math::vec::Point2;
+    use remus_math::predicates::point_in_polygon;
+    use remus_math::vec::Point2;
 
     let ax = normal.x().abs();
     let ay = normal.y().abs();
@@ -620,10 +619,10 @@ fn collect_solid_points(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::tolerance::Tolerance;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_cube_manifold_at;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::Point3;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     use super::*;
 
@@ -705,7 +704,7 @@ mod tests {
     #[test]
     fn point_to_sphere_distance() {
         let sphere =
-            brepkit_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0).unwrap();
+            remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0).unwrap();
         let (dist, closest) = point_to_sphere(Point3::new(10.0, 0.0, 0.0), &sphere);
         let tol = Tolerance::loose();
         assert!(
@@ -721,7 +720,7 @@ mod tests {
 
     #[test]
     fn point_to_cylinder_distance() {
-        let cyl = brepkit_math::surfaces::CylindricalSurface::new(
+        let cyl = remus_math::surfaces::CylindricalSurface::new(
             Point3::new(0.0, 0.0, 0.0),
             Vec3::new(0.0, 0.0, 1.0),
             3.0,

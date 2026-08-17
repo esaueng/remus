@@ -1,21 +1,21 @@
 [package]
-description = "Walking-based fillet and chamfer engine for brepkit"
+description = "Walking-based fillet and chamfer engine for remus"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-blend"
+name = "remus-blend"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-math.workspace = true
-brepkit-topology.workspace = true
+remus-math.workspace = true
+remus-topology.workspace = true
 
 log.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-brepkit-topology = {workspace = true, features = ["test-utils"]}
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]
 workspace = true

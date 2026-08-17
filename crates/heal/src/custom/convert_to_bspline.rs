@@ -5,7 +5,7 @@
 //! curve.
 //!
 //! Surfaces use the rational NURBS representations exposed by
-//! [`brepkit_geometry::convert`]. Curves use the rational quadratic arc form for
+//! [`remus_geometry::convert`]. Curves use the rational quadratic arc form for
 //! Circle/Ellipse and a degree-1 form for Line.
 //!
 //! # Limitation: pcurves are dropped
@@ -20,19 +20,19 @@
 use std::f64::consts::TAU;
 
 use crate::construct::convert_curve::{hyperbola_to_nurbs, parabola_to_nurbs};
-use brepkit_geometry::convert::curve_to_nurbs::{circle_to_nurbs, ellipse_to_nurbs, line_to_nurbs};
-use brepkit_geometry::convert::surface_to_nurbs::{
+use remus_geometry::convert::curve_to_nurbs::{circle_to_nurbs, ellipse_to_nurbs, line_to_nurbs};
+use remus_geometry::convert::surface_to_nurbs::{
     cone_to_nurbs, cylinder_to_nurbs, sphere_to_nurbs, torus_to_nurbs,
 };
 
-use brepkit_math::nurbs::surface::NurbsSurface;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{EdgeCurve, EdgeId};
-use brepkit_topology::explorer::{face_edges, solid_edges, solid_faces};
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::{face_edges, solid_edges, solid_faces};
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::HealError;
 
@@ -313,19 +313,19 @@ fn plane_frame_axes(normal: Vec3) -> (Vec3, Vec3) {
 mod tests {
     use std::f64::consts::PI;
 
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::nurbs::curve::NurbsCurve;
-    use brepkit_math::surfaces::{
+    use remus_math::curves::Circle3D;
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::surfaces::{
         ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface,
     };
-    use brepkit_math::traits::ParametricCurve;
-    use brepkit_math::vec::{Point3, Vec3};
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::{Face, FaceSurface};
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::traits::ParametricCurve;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
 
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn box_solid_all_faces_become_nurbs() {
         let mut topo = Topology::default();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
 
         let n = convert_solid_to_bspline(&mut topo, solid).unwrap();
         assert!(n > 0);
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn idempotent_on_already_nurbs() {
         let mut topo = Topology::default();
-        let solid = brepkit_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let solid = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
 
         let first = convert_solid_to_bspline(&mut topo, solid).unwrap();
         assert!(first > 0);

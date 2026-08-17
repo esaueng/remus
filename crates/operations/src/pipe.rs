@@ -3,24 +3,24 @@
 //! Extends the basic sweep by allowing a guide curve that controls
 //! profile scaling along the path.
 
-use brepkit_math::nurbs::curve::NurbsCurve;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::Vec3;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Vec3;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::dot_normal_point;
 
 /// Data from sweeping a single inner wire through pipe frames.
 struct InnerPipeData {
-    ring_verts: Vec<Vec<brepkit_topology::vertex::VertexId>>,
-    ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>>,
-    path_edges: Vec<Vec<brepkit_topology::edge::EdgeId>>,
+    ring_verts: Vec<Vec<remus_topology::vertex::VertexId>>,
+    ring_edges: Vec<Vec<remus_topology::edge::EdgeId>>,
+    path_edges: Vec<Vec<remus_topology::edge::EdgeId>>,
     n: usize,
 }
 
@@ -60,7 +60,7 @@ pub fn pipe(
 
     let face_data = topo.face(profile)?;
     let input_wire_id = face_data.outer_wire();
-    let inner_wire_ids: Vec<brepkit_topology::wire::WireId> = face_data.inner_wires().to_vec();
+    let inner_wire_ids: Vec<remus_topology::wire::WireId> = face_data.inner_wires().to_vec();
 
     let input_wire = topo.wire(input_wire_id)?;
     let input_oriented: Vec<_> = input_wire.edges().to_vec();
@@ -101,7 +101,7 @@ pub fn pipe(
     let initial_up = orthogonalize(input_normal, initial_tangent);
     let initial_right = initial_tangent.cross(initial_up);
 
-    let mut ring_verts: Vec<Vec<brepkit_topology::vertex::VertexId>> =
+    let mut ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> =
         Vec::with_capacity(num_segments + 1);
 
     for (k, &scale) in scale_factors.iter().enumerate() {
@@ -145,7 +145,7 @@ pub fn pipe(
             iw_verts.push(topo.vertex(vid)?.point());
         }
 
-        let mut iw_ring_verts: Vec<Vec<brepkit_topology::vertex::VertexId>> =
+        let mut iw_ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> =
             Vec::with_capacity(num_segments + 1);
 
         for (k, &scale) in scale_factors.iter().enumerate() {
@@ -170,7 +170,7 @@ pub fn pipe(
             iw_ring_verts.push(ring);
         }
 
-        let mut iw_ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> =
+        let mut iw_ring_edges: Vec<Vec<remus_topology::edge::EdgeId>> =
             Vec::with_capacity(num_segments + 1);
         for ring in &iw_ring_verts {
             let edges: Vec<_> = (0..iw_n)
@@ -182,7 +182,7 @@ pub fn pipe(
             iw_ring_edges.push(edges);
         }
 
-        let mut iw_path_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> =
+        let mut iw_path_edges: Vec<Vec<remus_topology::edge::EdgeId>> =
             Vec::with_capacity(num_segments);
         for seg in 0..num_segments {
             let edges: Vec<_> = (0..iw_n)
@@ -205,7 +205,7 @@ pub fn pipe(
         });
     }
 
-    let mut ring_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> =
+    let mut ring_edges: Vec<Vec<remus_topology::edge::EdgeId>> =
         Vec::with_capacity(num_segments + 1);
     for ring in &ring_verts {
         let edges: Vec<_> = (0..n)
@@ -217,7 +217,7 @@ pub fn pipe(
         ring_edges.push(edges);
     }
 
-    let mut path_edges: Vec<Vec<brepkit_topology::edge::EdgeId>> = Vec::with_capacity(num_segments);
+    let mut path_edges: Vec<Vec<remus_topology::edge::EdgeId>> = Vec::with_capacity(num_segments);
     for seg in 0..num_segments {
         let edges: Vec<_> = (0..n)
             .map(|i| {
@@ -404,10 +404,10 @@ fn orthogonalize(v: Vec3, tangent: Vec3) -> Vec3 {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::nurbs::curve::NurbsCurve;
-    use brepkit_math::vec::Point3;
-    use brepkit_topology::Topology;
-    use brepkit_topology::test_utils::make_unit_square_face;
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::vec::Point3;
+    use remus_topology::Topology;
+    use remus_topology::test_utils::make_unit_square_face;
 
     use super::*;
 
@@ -533,7 +533,7 @@ mod tests {
     /// Translation invariance for CW-wound pipe.
     #[test]
     fn pipe_cw_profile_translation_invariant() {
-        use brepkit_topology::test_utils::make_cw_unit_square_face;
+        use remus_topology::test_utils::make_cw_unit_square_face;
 
         let mut topo1 = Topology::new();
         let face1 = make_cw_unit_square_face(&mut topo1);
@@ -548,7 +548,7 @@ mod tests {
         crate::transform::transform_solid(
             &mut topo2,
             solid2,
-            &brepkit_math::mat::Mat4::translation(1000.0, 1000.0, 1000.0),
+            &remus_math::mat::Mat4::translation(1000.0, 1000.0, 1000.0),
         )
         .unwrap();
         let vol2 = crate::measure::solid_volume(&topo2, solid2, 0.1).unwrap();

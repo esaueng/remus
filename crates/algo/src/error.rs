@@ -5,11 +5,11 @@
 pub enum AlgoError {
     /// A topology entity was not found in the arena.
     #[error("topology error: {0}")]
-    Topology(#[from] brepkit_topology::TopologyError),
+    Topology(#[from] remus_topology::TopologyError),
 
     /// A math operation failed.
     #[error("math error: {0}")]
-    Math(#[from] brepkit_math::MathError),
+    Math(#[from] remus_math::MathError),
 
     /// Intersection computation failed.
     #[error("intersection failed: {0}")]
@@ -34,7 +34,7 @@ pub enum AlgoError {
     /// than deep inside the pipeline, so the operation refuses by name
     /// instead of falling back to a chord or a line and returning a
     /// plausible but wrong solid. `variant` is the
-    /// [`EdgeCurve`](brepkit_topology::edge::EdgeCurve) type tag, e.g.
+    /// [`EdgeCurve`](remus_topology::edge::EdgeCurve) type tag, e.g.
     /// `"hyperbola"`.
     #[error(
         "unsupported edge curve type `{variant}`: the boolean engine cannot \
@@ -46,9 +46,9 @@ pub enum AlgoError {
     },
 }
 
-impl brepkit_math::diagnostic::ToDiagnostic for AlgoError {
-    fn diagnostic(&self) -> brepkit_math::diagnostic::Diagnostic {
-        use brepkit_math::diagnostic::{Diagnostic, FailureCategory};
+impl remus_math::diagnostic::ToDiagnostic for AlgoError {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
         match self {
             // Wrapper variants delegate: one failure, one code, regardless
             // of which layer reports it.
@@ -56,7 +56,7 @@ impl brepkit_math::diagnostic::ToDiagnostic for AlgoError {
             Self::Math(inner) => inner.diagnostic(),
             // Transitional broad codes: these variants carry only prose, so
             // they classify as `internal` until typed context exists
-            // (registry rules in `brepkit_math::diagnostic`).
+            // (registry rules in `remus_math::diagnostic`).
             Self::IntersectionFailed(_) => Diagnostic::new(
                 FailureCategory::Internal,
                 "intersection_failed",
@@ -91,7 +91,7 @@ impl brepkit_math::diagnostic::ToDiagnostic for AlgoError {
 mod diagnostic_registry_tests {
     #![allow(clippy::unwrap_used)]
 
-    use brepkit_math::diagnostic::{FailureCategory, ToDiagnostic};
+    use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
 
     use super::*;
 
@@ -111,7 +111,7 @@ mod diagnostic_registry_tests {
 
     #[test]
     fn wrapped_errors_delegate_to_the_inner_registry() {
-        let d = AlgoError::Math(brepkit_math::MathError::ConvergenceFailure { iterations: 20 })
+        let d = AlgoError::Math(remus_math::MathError::ConvergenceFailure { iterations: 20 })
             .diagnostic();
         assert_eq!(d.category(), FailureCategory::Nonconvergence);
         assert_eq!(d.code(), "newton_nonconvergence");

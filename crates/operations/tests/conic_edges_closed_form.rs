@@ -13,12 +13,12 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use brepkit_math::curves::{Hyperbola3D, Parabola3D};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::measure::edge_length;
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::vertex::Vertex;
+use remus_math::curves::{Hyperbola3D, Parabola3D};
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::measure::edge_length;
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::vertex::Vertex;
 
 /// Model scales the whole suite is swept over.
 const SCALES: [f64; 3] = [1.0, 1000.0, 0.001];

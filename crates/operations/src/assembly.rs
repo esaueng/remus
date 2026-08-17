@@ -8,11 +8,11 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::mat::Mat4;
-use brepkit_math::vec::Point3;
-use brepkit_topology::Topology;
-use brepkit_topology::solid::SolidId;
+use remus_math::aabb::Aabb3;
+use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
+use remus_topology::Topology;
+use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 

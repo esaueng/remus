@@ -5,12 +5,12 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::Edge;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
-use brepkit_topology::vertex::VertexId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::Edge;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
+use remus_topology::vertex::VertexId;
 
 use super::FixResult;
 use super::config::FixConfig;
@@ -121,7 +121,7 @@ fn fix_duplicate_faces(
         let mut points = Vec::with_capacity(wire.edges().len());
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
-            if !matches!(edge.curve(), brepkit_topology::edge::EdgeCurve::Line) {
+            if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
                 points.clear();
                 break;
             }
@@ -200,7 +200,7 @@ fn boundaries_coincide(a: &[Point3], b: &[Point3], tolerance: f64) -> bool {
 /// the higher-index vertex is replaced by the lower-index one. Edge
 /// start/end references are updated via the `ReShape` replacement tracker.
 ///
-/// Ported from `brepkit-operations` `heal::merge_coincident_vertices`.
+/// Ported from `remus-operations` `heal::merge_coincident_vertices`.
 #[allow(clippy::too_many_lines)]
 fn merge_coincident_vertices(
     topo: &mut Topology,
@@ -326,13 +326,13 @@ fn merge_coincident_vertices(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use brepkit_math::vec::Vec3;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     /// Add a planar (+Z) triangle face with the given corner points.
     fn add_triangle(topo: &mut Topology, a: Point3, b: Point3, c: Point3) -> FaceId {

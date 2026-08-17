@@ -9,11 +9,11 @@ use std::f64::consts::PI;
 
 use smallvec::SmallVec;
 
-use brepkit_math::predicates::point_in_polygon;
-use brepkit_math::traits::ParametricSurface;
-use brepkit_math::vec::{Point2, Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{FaceId, FaceSurface};
+use remus_math::predicates::point_in_polygon;
+use remus_math::traits::ParametricSurface;
+use remus_math::vec::{Point2, Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
 use crate::classify::ray_surface;
@@ -381,7 +381,7 @@ fn ray_crossings_nurbs(
     face_id: FaceId,
     origin: Point3,
     direction: Vec3,
-    surface: &brepkit_math::nurbs::surface::NurbsSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
 ) -> Result<u32, CheckError> {
     let hits = ray_surface::ray_nurbs(origin, direction, surface, 20)?;
     if hits.is_empty() {

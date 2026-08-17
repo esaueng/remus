@@ -2,21 +2,21 @@
 description = "Topology algorithms: classification, validation, properties, distance"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-check"
+name = "remus-check"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-geometry.workspace = true
-brepkit-math.workspace = true
-brepkit-topology.workspace = true
+remus-geometry.workspace = true
+remus-math.workspace = true
+remus-topology.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-brepkit-topology = {workspace = true, features = ["test-utils"]}
 proptest.workspace = true
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]
 workspace = true

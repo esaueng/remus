@@ -1,8 +1,8 @@
 //! Face geometric validation checks.
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceId;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceId;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;

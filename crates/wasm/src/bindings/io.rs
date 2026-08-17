@@ -10,7 +10,7 @@ use crate::handles::solid_id_to_u32;
 use crate::helpers::TOL;
 use crate::kernel::BrepKernel;
 
-/// Build [`brepkit_io::ImportLimits`] from optional JS overrides.
+/// Build [`remus_io::ImportLimits`] from optional JS overrides.
 ///
 /// `max_input_bytes` bounds the encoded input size; `max_entities` bounds
 /// format-specific model records (vertices, faces, triangles, STEP entities).
@@ -18,8 +18,8 @@ use crate::kernel::BrepKernel;
 fn import_limits_from(
     max_input_bytes: Option<f64>,
     max_entities: Option<f64>,
-) -> Result<brepkit_io::ImportLimits, JsError> {
-    let mut limits = brepkit_io::ImportLimits::default();
+) -> Result<remus_io::ImportLimits, JsError> {
+    let mut limits = remus_io::ImportLimits::default();
     if let Some(b) = max_input_bytes {
         validate_positive(b, "maxInputBytes")?;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -40,9 +40,9 @@ fn import_limits_from(
 /// Parse optional JSON metadata for STEP export.
 fn step_write_options_from_json(
     options: Option<&str>,
-) -> Result<brepkit_io::step::StepWriteOptions, WasmError> {
+) -> Result<remus_io::step::StepWriteOptions, WasmError> {
     match options {
-        None => Ok(brepkit_io::step::StepWriteOptions::default()),
+        None => Ok(remus_io::step::StepWriteOptions::default()),
         Some(json) => serde_json::from_str(json).map_err(|error| WasmError::InvalidInput {
             reason: format!("invalid STEP write options JSON: {error}"),
         }),
@@ -64,7 +64,7 @@ impl BrepKernel {
     pub fn export_3mf(&self, solid: u32, deflection: f64) -> Result<Vec<u8>, JsError> {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
-        let bytes = brepkit_io::threemf::write_threemf(&self.topo, &[solid_id], deflection)?;
+        let bytes = remus_io::threemf::write_threemf(&self.topo, &[solid_id], deflection)?;
         Ok(bytes)
     }
 
@@ -79,11 +79,11 @@ impl BrepKernel {
     pub fn export_stl(&self, solid: u32, deflection: f64) -> Result<Vec<u8>, JsError> {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
-        let bytes = brepkit_io::stl::writer::write_stl(
+        let bytes = remus_io::stl::writer::write_stl(
             &self.topo,
             &[solid_id],
             deflection,
-            brepkit_io::stl::writer::StlFormat::Binary,
+            remus_io::stl::writer::StlFormat::Binary,
         )?;
         Ok(bytes)
     }
@@ -99,11 +99,11 @@ impl BrepKernel {
     pub fn export_stl_ascii(&self, solid: u32, deflection: f64) -> Result<Vec<u8>, JsError> {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
-        let bytes = brepkit_io::stl::writer::write_stl(
+        let bytes = remus_io::stl::writer::write_stl(
             &self.topo,
             &[solid_id],
             deflection,
-            brepkit_io::stl::writer::StlFormat::Ascii,
+            remus_io::stl::writer::StlFormat::Ascii,
         )?;
         Ok(bytes)
     }
@@ -117,7 +117,7 @@ impl BrepKernel {
     pub fn export_obj(&self, solid: u32, deflection: f64) -> Result<Vec<u8>, JsError> {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
-        let obj_str = brepkit_io::obj::write_obj(&self.topo, &[solid_id], deflection)?;
+        let obj_str = remus_io::obj::write_obj(&self.topo, &[solid_id], deflection)?;
         Ok(obj_str.into_bytes())
     }
 
@@ -130,7 +130,7 @@ impl BrepKernel {
     pub fn export_glb(&self, solid: u32, deflection: f64) -> Result<Vec<u8>, JsError> {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
-        let glb = brepkit_io::gltf::write_glb(&self.topo, &[solid_id], deflection)?;
+        let glb = remus_io::gltf::write_glb(&self.topo, &[solid_id], deflection)?;
         Ok(glb)
     }
 
@@ -143,11 +143,11 @@ impl BrepKernel {
     pub fn export_ply(&self, solid: u32, deflection: f64) -> Result<Vec<u8>, JsError> {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
-        let ply = brepkit_io::ply::write_ply(
+        let ply = remus_io::ply::write_ply(
             &self.topo,
             &[solid_id],
             deflection,
-            brepkit_io::ply::writer::PlyFormat::BinaryLittleEndian,
+            remus_io::ply::writer::PlyFormat::BinaryLittleEndian,
         )?;
         Ok(ply)
     }
@@ -176,8 +176,8 @@ impl BrepKernel {
         let text = std::str::from_utf8(data).map_err(|e| WasmError::InvalidInput {
             reason: format!("OBJ must be valid UTF-8: {e}"),
         })?;
-        let mesh = brepkit_io::obj::read_obj_with_limits(text, limits)?;
-        let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, 1e-7)?;
+        let mesh = remus_io::obj::read_obj_with_limits(text, limits)?;
+        let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), &mesh, 1e-7)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(solid_id.index() as u32)
     }
@@ -199,8 +199,8 @@ impl BrepKernel {
         max_entities: Option<f64>,
     ) -> Result<u32, JsError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
-        let mesh = brepkit_io::gltf::read_glb_with_limits(data, limits)?;
-        let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, 1e-7)?;
+        let mesh = remus_io::gltf::read_glb_with_limits(data, limits)?;
+        let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), &mesh, 1e-7)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(solid_id.index() as u32)
     }
@@ -224,8 +224,8 @@ impl BrepKernel {
         max_entities: Option<f64>,
     ) -> Result<u32, JsError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
-        let mesh = brepkit_io::stl::reader::read_stl_with_limits(data, limits)?;
-        let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
+        let mesh = remus_io::stl::reader::read_stl_with_limits(data, limits)?;
+        let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -248,8 +248,8 @@ impl BrepKernel {
         max_entities: Option<f64>,
     ) -> Result<u32, JsError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
-        let mesh = brepkit_io::ply::read_ply_with_limits(data, limits)?;
-        let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
+        let mesh = remus_io::ply::read_ply_with_limits(data, limits)?;
+        let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -271,10 +271,10 @@ impl BrepKernel {
         max_entities: Option<f64>,
     ) -> Result<Vec<u32>, JsError> {
         let limits = import_limits_from(max_input_bytes, max_entities)?;
-        let meshes = brepkit_io::threemf::reader::read_threemf_with_limits(data, limits)?;
+        let meshes = remus_io::threemf::reader::read_threemf_with_limits(data, limits)?;
         let mut handles = Vec::new();
         for mesh in &meshes {
-            let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), mesh, TOL)?;
+            let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), mesh, TOL)?;
             handles.push(solid_id_to_u32(solid_id));
         }
         Ok(handles)
@@ -295,7 +295,7 @@ impl BrepKernel {
         positions: &[f64],
         indices: &[u32],
     ) -> Result<u32, JsError> {
-        use brepkit_math::vec::Point3;
+        use remus_math::vec::Point3;
 
         if !positions.len().is_multiple_of(3) {
             return Err(WasmError::InvalidInput {
@@ -319,13 +319,13 @@ impl BrepKernel {
             .collect();
         let normals = Vec::new();
 
-        let mesh = brepkit_operations::tessellate::TriangleMesh {
+        let mesh = remus_operations::tessellate::TriangleMesh {
             positions: verts,
             normals,
             indices: indices.to_vec(),
         };
 
-        let solid_id = brepkit_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
+        let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -339,7 +339,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "exportStep")]
     pub fn export_step(&self, solid: u32) -> Result<Vec<u8>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let step_str = brepkit_io::step::writer::write_step(&self.topo, &[solid_id])?;
+        let step_str = remus_io::step::writer::write_step(&self.topo, &[solid_id])?;
         Ok(step_str.into_bytes())
     }
 
@@ -362,7 +362,7 @@ impl BrepKernel {
         let solid_id = self.resolve_solid(solid)?;
         let options = step_write_options_from_json(options.as_deref())?;
         let step =
-            brepkit_io::step::writer::write_step_with_options(&self.topo, &[solid_id], &options)?;
+            remus_io::step::writer::write_step_with_options(&self.topo, &[solid_id], &options)?;
         Ok(step.into_bytes())
     }
 
@@ -384,7 +384,7 @@ impl BrepKernel {
             .iter()
             .map(|&handle| self.resolve_solid(handle))
             .collect::<Result<Vec<_>, _>>()?;
-        let step_str = brepkit_io::step::writer::write_step(&self.topo, &solid_ids)?;
+        let step_str = remus_io::step::writer::write_step(&self.topo, &solid_ids)?;
         Ok(step_str.into_bytes())
     }
 
@@ -409,7 +409,7 @@ impl BrepKernel {
             .collect::<Result<Vec<_>, _>>()?;
         let options = step_write_options_from_json(options.as_deref())?;
         let step =
-            brepkit_io::step::writer::write_step_with_options(&self.topo, &solid_ids, &options)?;
+            remus_io::step::writer::write_step_with_options(&self.topo, &solid_ids, &options)?;
         Ok(step.into_bytes())
     }
 
@@ -434,7 +434,7 @@ impl BrepKernel {
         let text = std::str::from_utf8(data)
             .map_err(|e| JsError::new(&format!("STEP data is not valid UTF-8: {e}")))?;
         let solid_ids =
-            brepkit_io::step::reader::read_step_with_limits(text, self.topo_mut(), limits)?;
+            remus_io::step::reader::read_step_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
     }
 
@@ -450,7 +450,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "exportIges")]
     pub fn export_iges(&self, solid: u32) -> Result<Vec<u8>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let iges_str = brepkit_io::iges::writer::write_iges(&self.topo, &[solid_id])?;
+        let iges_str = remus_io::iges::writer::write_iges(&self.topo, &[solid_id])?;
         Ok(iges_str.into_bytes())
     }
 
@@ -474,7 +474,7 @@ impl BrepKernel {
         let text = std::str::from_utf8(data)
             .map_err(|e| JsError::new(&format!("IGES data is not valid UTF-8: {e}")))?;
         let solid_ids =
-            brepkit_io::iges::reader::read_iges_with_limits(text, self.topo_mut(), limits)?;
+            remus_io::iges::reader::read_iges_with_limits(text, self.topo_mut(), limits)?;
         Ok(solid_ids.iter().map(|id| solid_id_to_u32(*id)).collect())
     }
 
@@ -495,7 +495,7 @@ impl BrepKernel {
             .iter()
             .map(|&handle| self.resolve_solid(handle))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(brepkit_io::arena_io::serialize_solids(
+        Ok(remus_io::arena_io::serialize_solids(
             &self.topo, &solid_ids,
         )?)
     }
@@ -511,7 +511,7 @@ impl BrepKernel {
     /// contains compound roots, or reconstruction fails.
     #[wasm_bindgen(js_name = "deserializeSolids")]
     pub fn deserialize_solids(&mut self, data: &[u8]) -> Result<Vec<u32>, JsError> {
-        let solid_ids = brepkit_io::arena_io::deserialize_solids(data, self.topo_mut())?;
+        let solid_ids = remus_io::arena_io::deserialize_solids(data, self.topo_mut())?;
         Ok(solid_ids.into_iter().map(solid_id_to_u32).collect())
     }
 
@@ -526,7 +526,7 @@ impl BrepKernel {
     ///
     /// This writer emits a single-root version 2 document. Returns a
     /// `Uint8Array` consumable by
-    /// `brepkit_io::arena_io::deserialize_solid`.
+    /// `remus_io::arena_io::deserialize_solid`.
     ///
     /// # Errors
     ///
@@ -534,7 +534,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "serializeSolid")]
     pub fn serialize_solid(&self, solid: u32) -> Result<Vec<u8>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let bytes = brepkit_io::arena_io::serialize_solid(&self.topo, solid_id)?;
+        let bytes = remus_io::arena_io::serialize_solid(&self.topo, solid_id)?;
         Ok(bytes)
     }
 
@@ -545,7 +545,7 @@ impl BrepKernel {
     /// Returns an error if the buffer is malformed or reconstruction fails.
     #[wasm_bindgen(js_name = "deserializeSolid")]
     pub fn deserialize_solid(&mut self, data: &[u8]) -> Result<u32, JsError> {
-        let solid_id = brepkit_io::arena_io::deserialize_solid(data, self.topo_mut())?;
+        let solid_id = remus_io::arena_io::deserialize_solid(data, self.topo_mut())?;
         Ok(solid_id_to_u32(solid_id))
     }
 }
@@ -560,7 +560,7 @@ mod tests {
     fn step_options_json_is_optional_and_supports_partial_overrides() {
         assert_eq!(
             step_write_options_from_json(None).unwrap(),
-            brepkit_io::step::StepWriteOptions::default()
+            remus_io::step::StepWriteOptions::default()
         );
         let options = step_write_options_from_json(Some(
             r#"{"productName":"Custom part","fileName":"part.step"}"#,
@@ -596,7 +596,7 @@ mod tests {
 
         let solid = kernel.import_ply(ply, None, None).unwrap();
         let solid_id = kernel.resolve_solid(solid).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
+        let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
 
         assert_eq!(faces.len(), 4);
     }
@@ -634,14 +634,14 @@ mod tests {
         // Exceeding maxInputBytes must fail before parsing. Route through the
         // io crate's typed error (constructing a JsError would panic on the
         // native test target).
-        let limits = brepkit_io::ImportLimits {
+        let limits = remus_io::ImportLimits {
             max_input_bytes: 4,
             ..Default::default()
         };
         let data = b"solid tiny\nendsolid tiny\n";
-        let result = brepkit_io::stl::reader::read_stl_with_limits(data, limits);
+        let result = remus_io::stl::reader::read_stl_with_limits(data, limits);
         assert!(
-            matches!(result, Err(brepkit_io::IoError::LimitExceeded { .. })),
+            matches!(result, Err(remus_io::IoError::LimitExceeded { .. })),
             "expected LimitExceeded, got {result:?}"
         );
     }

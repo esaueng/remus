@@ -28,7 +28,7 @@ with its `BrepKernel` instance.
 
 Install a supported GPU driver or a software Vulkan implementation such as
 Mesa lavapipe. Set `WGPU_BACKEND=vulkan` when selecting lavapipe. CI additionally
-sets `BREPKIT_REQUIRE_WGPU_ADAPTER=1`, which turns an unavailable adapter into
+sets `REMUS_REQUIRE_WGPU_ADAPTER=1`, which turns an unavailable adapter into
 a hard failure.
 
 ## An importer rejects a large file

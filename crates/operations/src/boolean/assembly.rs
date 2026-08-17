@@ -7,16 +7,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use brepkit_math::aabb::Aabb3;
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve, EdgeId};
-use brepkit_topology::face::{Face, FaceId, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::{Vertex, VertexId};
-use brepkit_topology::wire::{OrientedEdge, Wire, WireId};
+use remus_math::aabb::Aabb3;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use super::classify::polygon_centroid;
 use super::face_polygon;
@@ -52,7 +52,7 @@ fn sub_trim(
         EdgeCurve::Parabola(parabola) => Some((parabola.project(start), parabola.project(end))),
         EdgeCurve::NurbsCurve(nurbs) => {
             let project = |point| {
-                brepkit_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
+                remus_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
                     .ok()
                     .map(|result| result.parameter)
             };
@@ -436,7 +436,7 @@ pub(crate) fn assemble_solid_mixed_with_history(
 
     let mut vertex_map: HashMap<(i64, i64, i64), VertexId> =
         HashMap::with_capacity(face_specs.len() * 4);
-    let mut edge_map: HashMap<(usize, usize), brepkit_topology::edge::EdgeId> =
+    let mut edge_map: HashMap<(usize, usize), remus_topology::edge::EdgeId> =
         HashMap::with_capacity(face_specs.len() * 4);
     let mut edge_copies: HashMap<EdgeId, EdgeId> = HashMap::default();
 
@@ -551,7 +551,7 @@ pub(crate) fn assemble_solid_mixed_with_history(
                         let axis = di.cross(dj);
                         if let (true, Ok(circle)) = (
                             axis.length() > 1e-12 * radius * radius,
-                            brepkit_math::curves::Circle3D::new(center, axis, radius),
+                            remus_math::curves::Circle3D::new(center, axis, radius),
                         ) {
                             topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)))
                         } else {
@@ -662,7 +662,7 @@ pub(crate) fn assemble_solid_mixed_with_history(
                             // Create a Circle3D at the v-level of this edge.
                             let center = cylinder.origin() + cylinder.axis() * ((v1 + v2) * 0.5);
                             if let Ok(circle) =
-                                brepkit_math::curves::Circle3D::new(center, axis, cylinder.radius())
+                                remus_math::curves::Circle3D::new(center, axis, cylinder.radius())
                             {
                                 topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)))
                             } else {
@@ -1027,12 +1027,12 @@ pub(super) fn validate_boolean_result(
     let mut unclosed_wires = 0usize;
     let mut edge_uses: HashMap<usize, usize> = HashMap::default();
     let nm_dump = std::env::var("BK_DUMP_NM").is_ok();
-    let mut edge_by_idx: HashMap<usize, brepkit_topology::edge::EdgeId> = HashMap::default();
-    for fid in brepkit_topology::explorer::solid_faces(topo, solid)? {
+    let mut edge_by_idx: HashMap<usize, remus_topology::edge::EdgeId> = HashMap::default();
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             let wire = topo.wire(wid)?;
-            if brepkit_topology::validation::validate_wire_closed(wire, topo).is_err() {
+            if remus_topology::validation::validate_wire_closed(wire, topo).is_err() {
                 unclosed_wires += 1;
             }
             for oe in wire.edges() {
@@ -1065,8 +1065,7 @@ pub(super) fn validate_boolean_result(
                     pb.y(),
                     pb.z()
                 );
-                for fid in brepkit_topology::explorer::solid_faces(topo, solid).unwrap_or_default()
-                {
+                for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap_or_default() {
                     let Ok(f) = topo.face(fid) else { continue };
                     for wid in
                         std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied())
@@ -1130,7 +1129,7 @@ pub(super) fn validate_boolean_result_lenient(
     }
 
     // Check that we have at least some edges and vertices.
-    let (f, e, v) = brepkit_topology::explorer::solid_entity_counts(topo, solid)?;
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(topo, solid)?;
     if e == 0 || v == 0 {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("boolean result has degenerate topology (F={f}, E={e}, V={v})"),
@@ -2606,8 +2605,8 @@ pub(super) fn register_pcurves(
     topo: &mut Topology,
     face_ids: &[FaceId],
 ) -> Result<(), crate::OperationsError> {
-    use brepkit_algo::compute_pcurve_on_surface;
-    use brepkit_topology::pcurve::PCurve;
+    use remus_algo::compute_pcurve_on_surface;
+    use remus_topology::pcurve::PCurve;
 
     for &fid in face_ids {
         let face = topo.face(fid)?;
@@ -2622,7 +2621,7 @@ pub(super) fn register_pcurves(
                     topo.edge(oe.edge()).ok().and_then(|e| {
                         topo.vertex(e.start())
                             .ok()
-                            .map(brepkit_topology::vertex::Vertex::point)
+                            .map(remus_topology::vertex::Vertex::point)
                     })
                 })
                 .collect()

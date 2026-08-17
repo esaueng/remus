@@ -33,22 +33,22 @@ check_import() {
 
 case "$CRATE" in
   math)
-    check_import "brepkit_topology" "brepkit-topology"
-    check_import "brepkit_operations" "brepkit-operations"
-    check_import "brepkit_io" "brepkit-io"
-    check_import "brepkit_wasm" "brepkit-wasm"
+    check_import "remus_topology" "remus-topology"
+    check_import "remus_operations" "remus-operations"
+    check_import "remus_io" "remus-io"
+    check_import "remus_wasm" "remus-wasm"
     ;;
   topology)
-    check_import "brepkit_operations" "brepkit-operations"
-    check_import "brepkit_io" "brepkit-io"
-    check_import "brepkit_wasm" "brepkit-wasm"
+    check_import "remus_operations" "remus-operations"
+    check_import "remus_io" "remus-io"
+    check_import "remus_wasm" "remus-wasm"
     ;;
   operations)
-    check_import "brepkit_io" "brepkit-io"
-    check_import "brepkit_wasm" "brepkit-wasm"
+    check_import "remus_io" "remus-io"
+    check_import "remus_wasm" "remus-wasm"
     ;;
   io)
-    check_import "brepkit_wasm" "brepkit-wasm"
+    check_import "remus_wasm" "remus-wasm"
     ;;
 esac
 

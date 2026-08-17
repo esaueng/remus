@@ -4,14 +4,14 @@
 
 use wasm_bindgen::prelude::*;
 
-use brepkit_math::vec::Point3;
-use brepkit_operations::measure;
+use remus_math::vec::Point3;
+use remus_operations::measure;
 
 use crate::error::validate_positive;
 use crate::kernel::BrepKernel;
 
 fn detailed_validation_result(
-    report: brepkit_operations::validate::ValidationReport,
+    report: remus_operations::validate::ValidationReport,
 ) -> crate::types::ValidationReportResult {
     #[allow(clippy::cast_possible_truncation)]
     let error_count = report.error_count() as u32;
@@ -22,8 +22,8 @@ fn detailed_validation_result(
         .into_iter()
         .map(|issue| crate::types::ValidationIssueResult {
             severity: match issue.severity {
-                brepkit_operations::validate::Severity::Error => "error".into(),
-                brepkit_operations::validate::Severity::Warning => "warning".into(),
+                remus_operations::validate::Severity::Error => "error".into(),
+                remus_operations::validate::Severity::Warning => "warning".into(),
             },
             description: issue.description,
         })
@@ -127,10 +127,10 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "inertiaTensor")]
     pub fn inertia_tensor(&self, solid: u32) -> Result<Vec<f64>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let properties = brepkit_check::properties::solid_properties(
+        let properties = remus_check::properties::solid_properties(
             &self.topo,
             solid_id,
-            &brepkit_check::properties::PropertiesOptions::default(),
+            &remus_check::properties::PropertiesOptions::default(),
         )?;
         let matrix = properties.matrix_of_inertia();
         Ok(matrix.into_iter().flatten().collect())
@@ -186,8 +186,8 @@ impl BrepKernel {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
         let mesh =
-            brepkit_operations::tessellate::tessellate_solid(&self.topo, solid_id, deflection)?;
-        let quality = brepkit_operations::tessellate::welded_mesh_quality(&mesh);
+            remus_operations::tessellate::tessellate_solid(&self.topo, solid_id, deflection)?;
+        let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
         #[allow(clippy::cast_possible_truncation)]
         let result = crate::types::MeshQualityResult {
             boundary_edges: quality.boundary_edges as u32,
@@ -217,14 +217,14 @@ impl BrepKernel {
         tolerance: f64,
     ) -> Result<String, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let point = brepkit_math::vec::Point3::new(x, y, z);
-        let result = brepkit_operations::classify::classify_point(
+        let point = remus_math::vec::Point3::new(x, y, z);
+        let result = remus_operations::classify::classify_point(
             &self.topo, solid_id, point, 0.1, tolerance,
         )?;
         Ok(match result {
-            brepkit_operations::classify::PointClassification::Inside => "inside".into(),
-            brepkit_operations::classify::PointClassification::Outside => "outside".into(),
-            brepkit_operations::classify::PointClassification::OnBoundary => "boundary".into(),
+            remus_operations::classify::PointClassification::Inside => "inside".into(),
+            remus_operations::classify::PointClassification::Outside => "outside".into(),
+            remus_operations::classify::PointClassification::OnBoundary => "boundary".into(),
         })
     }
 
@@ -260,7 +260,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "validateSolid")]
     pub fn validate_solid(&self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let report = brepkit_operations::validate::validate_solid(&self.topo, solid_id)?;
+        let report = remus_operations::validate::validate_solid(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(report.error_count() as u32)
     }
@@ -281,7 +281,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "validateSolidRelaxed")]
     pub fn validate_solid_relaxed(&self, solid: u32) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let report = brepkit_operations::validate::validate_solid_relaxed(&self.topo, solid_id)?;
+        let report = remus_operations::validate::validate_solid_relaxed(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(report.error_count() as u32)
     }
@@ -304,11 +304,11 @@ impl BrepKernel {
         tolerance_scale: f64,
     ) -> Result<u32, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let options = brepkit_operations::validate::ValidationOptions {
+        let options = remus_operations::validate::ValidationOptions {
             tolerance_scale,
-            ..brepkit_operations::validate::ValidationOptions::default()
+            ..remus_operations::validate::ValidationOptions::default()
         };
-        let report = brepkit_operations::validate::validate_solid_with_options(
+        let report = remus_operations::validate::validate_solid_with_options(
             &self.topo, solid_id, &options,
         )?;
         #[allow(clippy::cast_possible_truncation)]
@@ -328,7 +328,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "validateSolidDetailed")]
     pub fn validate_solid_detailed(&self, solid: u32) -> Result<JsValue, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let report = brepkit_operations::validate::validate_solid(&self.topo, solid_id)?;
+        let report = remus_operations::validate::validate_solid(&self.topo, solid_id)?;
         let result = detailed_validation_result(report);
         Ok(serde_json::to_string(&result)
             .map_err(|error| JsError::new(&error.to_string()))?
@@ -353,11 +353,11 @@ impl BrepKernel {
         tolerance_scale: f64,
     ) -> Result<JsValue, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let options = brepkit_operations::validate::ValidationOptions {
+        let options = remus_operations::validate::ValidationOptions {
             tolerance_scale,
-            ..brepkit_operations::validate::ValidationOptions::default()
+            ..remus_operations::validate::ValidationOptions::default()
         };
-        let report = brepkit_operations::validate::validate_solid_with_options(
+        let report = remus_operations::validate::validate_solid_with_options(
             &self.topo, solid_id, &options,
         )?;
         let result = detailed_validation_result(report);
@@ -384,7 +384,7 @@ impl BrepKernel {
         solid: u32,
     ) -> Result<Vec<f64>, JsError> {
         let solid_id = self.resolve_solid(solid)?;
-        let result = brepkit_operations::distance::point_to_solid_distance(
+        let result = remus_operations::distance::point_to_solid_distance(
             &self.topo,
             Point3::new(px, py, pz),
             solid_id,
@@ -408,7 +408,7 @@ impl BrepKernel {
     pub fn solid_to_solid_distance(&self, a: u32, b: u32) -> Result<Vec<f64>, JsError> {
         let a_id = self.resolve_solid(a)?;
         let b_id = self.resolve_solid(b)?;
-        let result = brepkit_operations::distance::solid_to_solid_distance(&self.topo, a_id, b_id)?;
+        let result = remus_operations::distance::solid_to_solid_distance(&self.topo, a_id, b_id)?;
         Ok(vec![
             result.distance,
             result.point_a.x(),
@@ -436,7 +436,7 @@ impl BrepKernel {
         face: u32,
     ) -> Result<Vec<f64>, JsError> {
         let face_id = self.resolve_face(face)?;
-        let result = brepkit_operations::distance::point_to_face(
+        let result = remus_operations::distance::point_to_face(
             &self.topo,
             Point3::new(px, py, pz),
             face_id,
@@ -465,7 +465,7 @@ impl BrepKernel {
         edge: u32,
     ) -> Result<Vec<f64>, JsError> {
         let edge_id = self.resolve_edge(edge)?;
-        let result = brepkit_operations::distance::point_to_edge(
+        let result = remus_operations::distance::point_to_edge(
             &self.topo,
             Point3::new(px, py, pz),
             edge_id,
@@ -492,14 +492,14 @@ mod tests {
 
     #[test]
     fn detailed_validation_serializes_counts_and_issue_prose() {
-        let report = brepkit_operations::validate::ValidationReport {
+        let report = remus_operations::validate::ValidationReport {
             issues: vec![
-                brepkit_operations::validate::ValidationIssue {
-                    severity: brepkit_operations::validate::Severity::Error,
+                remus_operations::validate::ValidationIssue {
+                    severity: remus_operations::validate::Severity::Error,
                     description: "open shell".into(),
                 },
-                brepkit_operations::validate::ValidationIssue {
-                    severity: brepkit_operations::validate::Severity::Warning,
+                remus_operations::validate::ValidationIssue {
+                    severity: remus_operations::validate::Severity::Warning,
                     description: "small face".into(),
                 },
             ],
@@ -517,9 +517,9 @@ mod tests {
 
     #[test]
     fn detailed_validation_of_box_matches_numeric_validator_counts() {
-        let mut topo = brepkit_topology::topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
-        let report = brepkit_operations::validate::validate_solid(&topo, solid).unwrap();
+        let mut topo = remus_topology::topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let report = remus_operations::validate::validate_solid(&topo, solid).unwrap();
         let expected_errors = report.error_count();
         let expected_warnings = report.warning_count();
 
@@ -839,12 +839,12 @@ mod tests {
     #[test]
     fn box_edge_length_via_operations() {
         // Use operations layer directly to avoid JsError on error paths.
-        let mut topo = brepkit_topology::topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
-        let edges = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap();
+        let mut topo = remus_topology::topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
         assert_eq!(edges.len(), 12, "box must have 12 edges");
         for &e in &edges {
-            let len = brepkit_operations::measure::edge_length(&topo, e).unwrap();
+            let len = remus_operations::measure::edge_length(&topo, e).unwrap();
             assert!(
                 (len - 3.0).abs() < 1e-6,
                 "all edges of a 3x3x3 box should have length 3, got {len}"
@@ -854,12 +854,12 @@ mod tests {
 
     #[test]
     fn edge_length_rectangular_box_has_three_distinct_lengths() {
-        let mut topo = brepkit_topology::topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 2.0, 4.0).unwrap();
-        let edges = brepkit_topology::explorer::solid_edges(&topo, solid).unwrap();
+        let mut topo = remus_topology::topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 2.0, 4.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
         let mut lengths: Vec<f64> = edges
             .iter()
-            .map(|&e| brepkit_operations::measure::edge_length(&topo, e).unwrap())
+            .map(|&e| remus_operations::measure::edge_length(&topo, e).unwrap())
             .collect();
         lengths.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!((lengths[0] - 1.0).abs() < 1e-6);
@@ -925,13 +925,13 @@ mod tests {
 
     #[test]
     fn face_area_of_box_face_is_correct() {
-        let mut topo = brepkit_topology::topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
-        let faces = brepkit_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let mut topo = remus_topology::topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
         assert_eq!(faces.len(), 6);
         let valid_areas = [6.0_f64, 8.0_f64, 12.0_f64];
         for &f in &faces {
-            let area = brepkit_operations::measure::face_area(&topo, f, 0.01).unwrap();
+            let area = remus_operations::measure::face_area(&topo, f, 0.01).unwrap();
             let ok = valid_areas.iter().any(|&a| (area - a).abs() < 0.05);
             assert!(ok, "face area {area} should be one of {valid_areas:?}");
         }
@@ -941,11 +941,11 @@ mod tests {
 
     #[test]
     fn point_to_solid_distance_from_outside() {
-        let mut topo = brepkit_topology::topology::Topology::new();
-        let solid = brepkit_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-        let result = brepkit_operations::distance::point_to_solid_distance(
+        let mut topo = remus_topology::topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let result = remus_operations::distance::point_to_solid_distance(
             &topo,
-            brepkit_math::vec::Point3::new(3.0, 0.5, 0.5),
+            remus_math::vec::Point3::new(3.0, 0.5, 0.5),
             solid,
         )
         .unwrap();

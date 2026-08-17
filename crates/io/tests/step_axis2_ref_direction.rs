@@ -13,17 +13,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brepkit_io::step::{read_step, write_step};
-use brepkit_math::curves::{Ellipse3D, Hyperbola3D, Parabola3D};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::edge::{Edge, EdgeCurve};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::shell::Shell;
-use brepkit_topology::solid::{Solid, SolidId};
-use brepkit_topology::vertex::Vertex;
-use brepkit_topology::wire::{OrientedEdge, Wire};
+use remus_io::step::{read_step, write_step};
+use remus_math::curves::{Ellipse3D, Hyperbola3D, Parabola3D};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
 
 /// Minimal single-face scaffold carrying one conic edge, enough for the
 /// STEP writer to emit an `EDGE_CURVE` for it.
@@ -131,8 +131,8 @@ fn retarget_ref_direction(step: &str, entity: &str, dir: Vec3) -> String {
 /// rotated a quarter turn inside its own plane, swapping which physical
 /// direction carried `semi_major`.
 ///
-/// brepkit's own writer emits the true major axis as `ref_direction`, so
-/// this was a lossy round trip of brepkit's own output, not only of
+/// remus's own writer emits the true major axis as `ref_direction`, so
+/// this was a lossy round trip of remus's own output, not only of
 /// third-party files.
 #[test]
 fn ellipse_major_axis_follows_the_declared_ref_direction() {

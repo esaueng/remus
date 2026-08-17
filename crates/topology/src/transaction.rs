@@ -78,7 +78,7 @@ pub fn run_validated<T, E>(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use brepkit_math::vec::Point3;
+    use remus_math::vec::Point3;
 
     use crate::TopologyError;
     use crate::edge::{Edge, EdgeCurve};

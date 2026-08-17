@@ -17,7 +17,7 @@ iteration limits, ad-hoc epsilons). Consequences:
 
 ## Design
 
-`brepkit_math::context::OperationContext` is the single explicit carrier:
+`remus_math::context::OperationContext` is the single explicit carrier:
 
 - `tolerance: Tolerance` — the existing linear/angular/relative model.
 - `budgets: WorkBudgets` — hard upper bounds for iterative and exploratory

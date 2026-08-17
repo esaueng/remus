@@ -1,14 +1,14 @@
 [package]
-description = "B-Rep topological data structures for brepkit"
+description = "B-Rep topological data structures for remus"
 edition.workspace = true
 license.workspace = true
-name = "brepkit-topology"
+name = "remus-topology"
 repository.workspace = true
 rust-version.workspace = true
 version = "0.1.0"
 
 [dependencies]
-brepkit-math.workspace = true
+remus-math.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 

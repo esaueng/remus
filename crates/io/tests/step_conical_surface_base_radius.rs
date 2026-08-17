@@ -1,6 +1,6 @@
 //! Import of a `CONICAL_SURFACE` whose `base_radius` is not zero.
 //!
-//! ISO 10303-42 states a cone's `radius` on its placement plane; brepkit's
+//! ISO 10303-42 states a cone's `radius` on its placement plane; remus's
 //! `ConicalSurface` is anchored at the apex. The reader dropped the radius
 //! and read the placement origin as the apex, so every non-zero-radius cone
 //! landed `radius*cot(semi_angle)` too far along its own axis with the wrong
@@ -8,9 +8,9 @@
 //! declared a radius were the entire remaining volume error: their trim
 //! circles sat exactly `radius` off their own surfaces.
 //!
-//! A round trip cannot cover this. brepkit's writer anchors on the apex and
+//! A round trip cannot cover this. remus's writer anchors on the apex and
 //! always emits `0.0E0` for the radius, which is a legal and self-consistent
-//! statement of the same cone — so a brepkit-written file never puts a
+//! statement of the same cone — so a remus-written file never puts a
 //! non-zero `base_radius` back through the reader, and the two could not
 //! cancel even if the writer had the mirror-image bug. The hand-written
 //! fixture is the coverage; the round trip here only confirms the corrected
@@ -20,11 +20,11 @@
 
 use std::path::{Path, PathBuf};
 
-use brepkit_operations::measure;
-use brepkit_topology::Topology;
-use brepkit_topology::explorer;
-use brepkit_topology::face::{FaceId, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_operations::measure;
+use remus_topology::Topology;
+use remus_topology::explorer;
+use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::solid::SolidId;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -52,7 +52,7 @@ fn read_fixture() -> (Topology, SolidId) {
         "the fixture must keep its non-zero base_radius"
     );
     let mut topo = Topology::new();
-    let solids = brepkit_io::step::reader::read_step(&text, &mut topo).unwrap();
+    let solids = remus_io::step::reader::read_step(&text, &mut topo).unwrap();
     assert_eq!(solids.len(), 1, "expected exactly one solid");
     let solid = solids[0];
     (topo, solid)
@@ -150,14 +150,14 @@ fn frustum_round_trips_through_the_writer() {
     let volume = measure::solid_volume(&topo, solid, DEFLECTION).unwrap();
     let center = measure::solid_center_of_mass(&topo, solid, DEFLECTION).unwrap();
 
-    let written = brepkit_io::step::write_step(&topo, &[solid]).unwrap();
+    let written = remus_io::step::write_step(&topo, &[solid]).unwrap();
     assert!(
         written.contains("CONICAL_SURFACE"),
         "the written file should carry the cone"
     );
 
     let mut round_topo = Topology::new();
-    let round_solids = brepkit_io::step::reader::read_step(&written, &mut round_topo).unwrap();
+    let round_solids = remus_io::step::reader::read_step(&written, &mut round_topo).unwrap();
     assert_eq!(round_solids.len(), 1);
     assert_eq!(
         explorer::solid_faces(&round_topo, round_solids[0])

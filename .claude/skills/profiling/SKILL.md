@@ -14,8 +14,8 @@ Remus must beat the reference kernel on performance, not merely pass tests. Perf
 ```bash
 cargo bench-fast                                          # kernel-comparison suite (cad_operations, ~2 min)
 cargo bench-full                                          # all 5 bench files
-cargo bench -p brepkit-operations --bench boolean_perf -- "N=64"   # isolate one bench by substring
-cargo flamegraph --profile profiling --bench cad_operations -p brepkit-operations \
+cargo bench -p remus-operations --bench boolean_perf -- "N=64"   # isolate one bench by substring
+cargo flamegraph --profile profiling --bench cad_operations -p remus-operations \
   -o /tmp/flamegraph.svg -- --bench "<filter>"            # flamegraph a specific criterion bench
 cargo run --profile profiling --example profile_boolean -- honeycomb   # per-phase boolean timing
 cargo run --profile profiling --example tess_profile      # tessellation drill-down (64-hole plate)
@@ -36,7 +36,7 @@ Bench files (`crates/operations/benches/`), one line each:
 
 ## Method: the perf loop
 
-1. **Baseline.** `cargo bench -p brepkit-operations --bench <file> -- "<filter>"`. Expect a line like `sequential_cylinder_cuts/N=64  time: [x.xx s x.xx s x.xx s]`. Save it verbatim. Criterion stores history in `target/criterion/`, so later runs print change-% automatically.
+1. **Baseline.** `cargo bench -p remus-operations --bench <file> -- "<filter>"`. Expect a line like `sequential_cylinder_cuts/N=64  time: [x.xx s x.xx s x.xx s]`. Save it verbatim. Criterion stores history in `target/criterion/`, so later runs print change-% automatically.
 2. **Isolate.** Narrow the filter to one benchmark ID. If the bench seems to hang or shows wild run-to-run variance, do not fight criterion: write a plain timed loop that runs the op N times on fresh `Topology` instances and prints per-iteration wall clock. Huge iteration spread is itself the diagnosis (see bug class B).
 3. **Flamegraph that exact workload.** Use the quick-reference command with the same filter, or for boolean work use `--example profile_boolean -- <scenario>` (scenarios: `honeycomb`, `cylinders`, `fuse`, `large-honeycomb`, `scale`, `xl`, `tess`; the example header documents them). Open the SVG in a browser and look for wide frames. Checkpoint: if the widest frames are in `mesh_boolean` on analytic inputs, stop, that is the bug (class D).
 4. **Fix.** Vary one variable at a time. Match the symptom to a known class first (table below) before inventing a new theory.

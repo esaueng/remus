@@ -108,7 +108,7 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Analytic intersections", "Surface-surface intersection",
   "Curve-curve intersection" (all Stable, evidence pending).
-- Qualified result model: `brepkit_math::intersect` (contact kind ×
+- Qualified result model: `remus_math::intersect` (contact kind ×
   quality × source method; `complete` marks certified coverage). The
   matrix harness (`crates/math/tests/intersection_matrix.rs`) generates
   configuration × scale cells with on-surface invariants and
@@ -216,7 +216,7 @@ does not itself promote or demote anything.
   indices are the only handles (and are explicitly not persistent names).
   Design: `docs/design/rfc-0003-persistent-naming.md` (journal + resolver
   over the evolution events, staged; Issue 13).
-  **Evolution journal** (RFC 0003 Stage 1): `brepkit_topology::journal` is
+  **Evolution journal** (RFC 0003 Stage 1): `remus_topology::journal` is
   the append-only per-topology history — journal-local ordinals with a
   live index (entries never hold arena indices), `OpId`s and ordinals
   high-water preserved across restores (never reused), entries truncated
@@ -228,7 +228,7 @@ does not itself promote or demote anything.
   `Topology` counts mutations, and any mutation no entry accounts for
   triggers a synthetic global barrier at the next `journal_begin` — no
   operation can be silently absent from history.
-  **Persistent references** (RFC 0003 Stage 2): `brepkit_topology::naming`
+  **Persistent references** (RFC 0003 Stage 2): `remus_topology::naming`
   — `PersistentRef` (OperationOutput / LineageOf anchors + SurfaceType /
   CurveType discriminators) resolves against the journal by chasing
   identity claims to the present model. Typed outcomes (Bound / BoundMany

@@ -381,7 +381,7 @@ fn assert_solid(
     inside_probes: &[(f64, f64, f64)],
     outside_probes: &[(f64, f64, f64)],
 ) {
-    use brepkit_check::validate::CheckId;
+    use remus_check::validate::CheckId;
 
     let quality = run_all_ok(
         k,
@@ -408,10 +408,10 @@ fn assert_solid(
     );
 
     let solid_id = k.resolve_solid(solid).unwrap();
-    let report = brepkit_check::validate::validate_solid(
+    let report = remus_check::validate::validate_solid(
         &k.topo,
         solid_id,
-        &brepkit_check::validate::ValidateOptions::default(),
+        &remus_check::validate::ValidateOptions::default(),
     )
     .unwrap();
     let unexpected: Vec<_> = report
@@ -446,7 +446,7 @@ fn assert_solid(
         report.issues
     );
 
-    let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
     assert_eq!(
         faces.len(),
         expected_faces,
@@ -500,32 +500,32 @@ fn assert_solid(
 
     // Volume alone cannot tell a solid with a real through-hole from one
     // whose hole was merely subtracted from the integral — probe the hole.
-    let options = brepkit_check::classify::ClassifyOptions::default();
+    let options = remus_check::classify::ClassifyOptions::default();
     for &(x, y, z) in inside_probes {
-        let c = brepkit_check::classify::classify_point(
+        let c = remus_check::classify::classify_point(
             &k.topo,
             solid_id,
-            brepkit_math::vec::Point3::new(x, y, z),
+            remus_math::vec::Point3::new(x, y, z),
             &options,
         )
         .unwrap();
         assert_eq!(
             c,
-            brepkit_check::classify::PointClassification::Inside,
+            remus_check::classify::PointClassification::Inside,
             "({x}, {y}, {z}) should be inside the material"
         );
     }
     for &(x, y, z) in outside_probes {
-        let c = brepkit_check::classify::classify_point(
+        let c = remus_check::classify::classify_point(
             &k.topo,
             solid_id,
-            brepkit_math::vec::Point3::new(x, y, z),
+            remus_math::vec::Point3::new(x, y, z),
             &options,
         )
         .unwrap();
         assert_eq!(
             c,
-            brepkit_check::classify::PointClassification::Outside,
+            remus_check::classify::PointClassification::Outside,
             "({x}, {y}, {z}) should be outside the material — the hole is \
              not actually open"
         );
@@ -696,12 +696,12 @@ fn o_glyph_bezier_cap_band_is_misclassified() {
         3.0,
     );
     let solid_id = k.resolve_solid(solid).unwrap();
-    let options = brepkit_check::classify::ClassifyOptions::default();
+    let options = remus_check::classify::ClassifyOptions::default();
     let classify = |x: f64| {
-        brepkit_check::classify::classify_point(
+        remus_check::classify::classify_point(
             &k.topo,
             solid_id,
-            brepkit_math::vec::Point3::new(x, 0.0, 1.5),
+            remus_math::vec::Point3::new(x, 0.0, 1.5),
             &options,
         )
         .unwrap()
@@ -710,7 +710,7 @@ fn o_glyph_bezier_cap_band_is_misclassified() {
     for x in [2.5, 3.0, 3.5, 4.0] {
         assert_eq!(
             classify(x),
-            brepkit_check::classify::PointClassification::Outside,
+            remus_check::classify::PointClassification::Outside,
             "({x}, 0, 1.5) is inside the counter and must classify Outside"
         );
     }
@@ -718,7 +718,7 @@ fn o_glyph_bezier_cap_band_is_misclassified() {
     for x in [4.5, 5.0, 6.0, 7.0] {
         assert_eq!(
             classify(x),
-            brepkit_check::classify::PointClassification::Inside,
+            remus_check::classify::PointClassification::Inside,
             "({x}, 0, 1.5) is in the material ring and must classify Inside"
         );
     }
@@ -758,13 +758,13 @@ fn glyph_side_walls_are_exact_nurbs_not_faceted() {
         3.0,
     );
     let solid_id = k.resolve_solid(solid).unwrap();
-    let faces = brepkit_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
     let nurbs = faces
         .iter()
         .filter(|&&f| {
             matches!(
                 k.topo.face(f).unwrap().surface(),
-                brepkit_topology::face::FaceSurface::Nurbs(_)
+                remus_topology::face::FaceSurface::Nurbs(_)
             )
         })
         .count();
@@ -798,8 +798,8 @@ fn glyph_side_walls_are_exact_nurbs_not_faceted() {
 /// correctly classified everywhere: see
 /// `o_glyph_bezier_cap_band_is_misclassified`, which the flipped hole-wall
 /// normals are the leading suspect for. It is pre-existing and has nothing to do with the hole-attaching
-/// bindings: `brepkit_operations::extrude` reproduces it on a face built
-/// directly from `brepkit_topology::builder`, with no wasm in the picture.
+/// bindings: `remus_operations::extrude` reproduces it on a face built
+/// directly from `remus_topology::builder`, with no wasm in the picture.
 /// It matters for consumers that read orientation rather than re-derive it
 /// (STEP export, GFA).
 ///
@@ -814,10 +814,10 @@ fn extruded_annulus_shell_orientation_is_inconsistent() {
         5.0,
     );
     let solid_id = k.resolve_solid(solid).unwrap();
-    let report = brepkit_check::validate::validate_solid(
+    let report = remus_check::validate::validate_solid(
         &k.topo,
         solid_id,
-        &brepkit_check::validate::ValidateOptions::default(),
+        &remus_check::validate::ValidateOptions::default(),
     )
     .unwrap();
     assert!(
@@ -1396,7 +1396,7 @@ fn make_face_from_wires_with_no_holes_is_a_plain_planar_face() {
     assert!(face.inner_wires().is_empty());
     assert!(matches!(
         face.surface(),
-        brepkit_topology::face::FaceSurface::Plane { .. }
+        remus_topology::face::FaceSurface::Plane { .. }
     ));
 }
 

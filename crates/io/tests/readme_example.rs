@@ -8,21 +8,21 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use brepkit_io::step::reader::read_step;
-use brepkit_io::step::write_step;
-use brepkit_math::vec::Point3;
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::classify::{PointClassification, classify_point};
-use brepkit_operations::measure::solid_volume;
-use brepkit_operations::primitives::{make_box, make_cylinder};
-use brepkit_topology::Topology;
-use brepkit_topology::explorer::solid_faces;
+use remus_io::step::reader::read_step;
+use remus_io::step::write_step;
+use remus_math::vec::Point3;
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::classify::{PointClassification, classify_point};
+use remus_operations::measure::solid_volume;
+use remus_operations::primitives::{make_box, make_cylinder};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
 use std::collections::BTreeMap;
 
 /// Face census by surface type tag.
 fn face_census(
     topo: &Topology,
-    solid: brepkit_topology::solid::SolidId,
+    solid: remus_topology::solid::SolidId,
 ) -> BTreeMap<&'static str, usize> {
     let mut census = BTreeMap::new();
     for fid in solid_faces(topo, solid).unwrap() {

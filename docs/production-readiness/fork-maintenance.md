@@ -2,9 +2,9 @@
 
 ## Upstream relationship
 
-- Historical upstream: `https://github.com/andymai/brepkit`.
+- Historical upstream: `https://github.com/andymai/remus`.
 - Production fork remote: `https://github.com/esaueng/remus`
-  (renamed from `esaueng/brepkit`; GitHub redirects the old path).
+  (renamed from `esaueng/remus`; GitHub redirects the old path).
 - Permanent Apache branch: `apache-main`.
 - Final permissive upstream release: `v2.129.15` (`a878e2b9`).
 - Last fork commit before the AGPL upstream merge: `1886e873`.

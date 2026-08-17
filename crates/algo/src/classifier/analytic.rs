@@ -9,11 +9,11 @@
 //! logic. Bug fixes should be applied here first; the operations copy
 //! will be deleted during the GFA step 5 switchover.
 
-use brepkit_math::tolerance::Tolerance;
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::{Face, FaceSurface};
-use brepkit_topology::solid::SolidId;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::{Face, FaceSurface};
+use remus_topology::solid::SolidId;
 
 use crate::builder::FaceClass;
 
@@ -532,7 +532,7 @@ pub fn try_build_analytic_classifier(
 fn try_build_planar_classifier(
     topo: &Topology,
     solid: SolidId,
-    faces: &[brepkit_topology::face::FaceId],
+    faces: &[remus_topology::face::FaceId],
     tol: &Tolerance,
 ) -> Option<AnalyticClassifier> {
     // Try axis-aligned box (exactly 6 faces).
@@ -585,7 +585,7 @@ fn try_build_planar_classifier(
 /// Try to build an axis-aligned box classifier from 6 plane faces.
 fn try_build_box_classifier(
     topo: &Topology,
-    faces: &[brepkit_topology::face::FaceId],
+    faces: &[remus_topology::face::FaceId],
     tol: &Tolerance,
 ) -> Option<AnalyticClassifier> {
     let mut planes: Vec<(Vec3, f64)> = Vec::with_capacity(6);
@@ -645,7 +645,7 @@ fn try_build_box_classifier(
 /// guard inline (see `try_build_cone_classifier`).
 fn any_outer_vertex_beyond_radius(
     topo: &Topology,
-    faces: &[brepkit_topology::face::FaceId],
+    faces: &[remus_topology::face::FaceId],
     origin: Point3,
     axis: Vec3,
     r_lo: f64,
@@ -683,7 +683,7 @@ fn any_outer_vertex_beyond_radius(
 /// Try to build a cylinder classifier from cylinder + plane caps.
 fn try_build_cylinder_classifier(
     topo: &Topology,
-    faces: &[brepkit_topology::face::FaceId],
+    faces: &[remus_topology::face::FaceId],
     (origin, axis, radius): (Point3, Vec3, f64),
     tol: &Tolerance,
 ) -> Option<AnalyticClassifier> {
@@ -729,7 +729,7 @@ fn try_build_cylinder_classifier(
 #[allow(clippy::too_many_lines)]
 fn try_build_cone_classifier(
     topo: &Topology,
-    faces: &[brepkit_topology::face::FaceId],
+    faces: &[remus_topology::face::FaceId],
     (apex, axis, _half_angle): (Point3, Vec3, f64),
     tol: &Tolerance,
 ) -> Option<AnalyticClassifier> {
@@ -1168,7 +1168,7 @@ fn try_build_composite_classifier(topo: &Topology, solid: SolidId) -> Option<Ana
 /// Compute axial extent (z_min, z_max) of a wire's vertices along an axis.
 fn wire_axial_extent(
     topo: &Topology,
-    wire: &brepkit_topology::wire::Wire,
+    wire: &remus_topology::wire::Wire,
     origin: Vec3,
     axis: Vec3,
 ) -> Option<(f64, f64)> {
@@ -1195,7 +1195,7 @@ fn wire_axial_extent(
 /// Compute axial extent + radius range for a cone face's wire.
 fn wire_cone_extent(
     topo: &Topology,
-    wire: &brepkit_topology::wire::Wire,
+    wire: &remus_topology::wire::Wire,
     apex: Vec3,
     axis: Vec3,
 ) -> Option<(f64, f64, f64, f64)> {
@@ -1235,14 +1235,14 @@ mod pipe_guard_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use brepkit_math::curves::Circle3D;
-    use brepkit_math::surfaces::CylindricalSurface;
-    use brepkit_topology::edge::{Edge, EdgeCurve};
-    use brepkit_topology::face::Face;
-    use brepkit_topology::shell::Shell;
-    use brepkit_topology::solid::Solid;
-    use brepkit_topology::vertex::Vertex;
-    use brepkit_topology::wire::{OrientedEdge, Wire};
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     /// Build a single-corner solid: one cylinder lateral face (radius 4 at the
     /// origin, axis +Z, z in [0, 10]) plus top/bottom cap planes. When

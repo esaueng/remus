@@ -22,15 +22,15 @@
 
 use std::collections::HashMap;
 
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_operations::boolean::{BooleanOp, boolean};
-use brepkit_operations::heal::unify_faces;
-use brepkit_operations::revolve::revolve;
-use brepkit_operations::tessellate::tessellate_solid_with_tolerance;
-use brepkit_topology::Topology;
-use brepkit_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
-use brepkit_topology::explorer::solid_faces;
-use brepkit_topology::solid::SolidId;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::heal::unify_faces;
+use remus_operations::revolve::revolve;
+use remus_operations::tessellate::tessellate_solid_with_tolerance;
+use remus_topology::Topology;
+use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+use remus_topology::explorer::solid_faces;
+use remus_topology::solid::SolidId;
 
 const TOL: f64 = 1e-7;
 

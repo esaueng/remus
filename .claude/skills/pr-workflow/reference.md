@@ -88,8 +88,8 @@ git ls-remote --heads origin <branch>
 ## Release-please (`.github/workflows/publish.yml`)
 
 - Runs on every push to `main` using `googleapis/release-please-action` v5 with a bot app token.
-- Config: `release-please-config.json`; current version manifest: `.release-please-manifest.json`. Single package rooted at `.`, component `brepkit-wasm`; the version is also bumped in `crates/wasm/Cargo.toml`.
-- Flow: merging a `feat`/`fix`/`perf` PR creates or updates the pending release PR (`chore(main): release X.Y.Z`, head branch `release-please--branches--main--components--brepkit-wasm`). Merging that release PR creates the tag and GitHub release and publishes to npm.
+- Config: `release-please-config.json`; current version manifest: `.release-please-manifest.json`. Single package rooted at `.`, component `remus-wasm`; the version is also bumped in `crates/wasm/Cargo.toml`.
+- Flow: merging a `feat`/`fix`/`perf` PR creates or updates the pending release PR (`chore(main): release X.Y.Z`, head branch `release-please--branches--main--components--remus-wasm`). Merging that release PR creates the tag and GitHub release and publishes to npm.
 - Version-neutral changes: `docs` and `chore` commits are changelog-hidden; changes only under excluded paths (`.github`, `book`, `scripts`, `benches`, `bench-results`, `examples`, `bindings`) do not bump.
 - Manual escape hatch: `workflow_dispatch` on the Publish workflow with a `publish_version` input skips release-please.
 - Cross-repo: brepjs (`andymai/brepjs`) consumes the published wasm package; see the release-flow skill for the two-repo runbook. There is no brepjs checkout on this machine — clone it when you need hop 4.
@@ -126,7 +126,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 
 ### Scheduled workflows
 
-- `.github/workflows/mutants.yml` (Mutation Testing): Sundays 02:00 UTC plus manual dispatch. Runs cargo-mutants on `brepkit-math` and `brepkit-algo` and uploads a report artifact. It never runs on PRs and never gates them; a red scheduled run is a signal to improve tests, not a merge blocker.
+- `.github/workflows/mutants.yml` (Mutation Testing): Sundays 02:00 UTC plus manual dispatch. Runs cargo-mutants on `remus-math` and `remus-algo` and uploads a report artifact. It never runs on PRs and never gates them; a red scheduled run is a signal to improve tests, not a merge blocker.
 - `.github/workflows/osv-scan.yml`: Mondays 06:00 UTC plus main pushes, fail-closed there; report-only on PRs (see above).
 - `benchmark.yml` runs on pushes and PRs, not on a schedule, and is not part of `CI Pass`.
 

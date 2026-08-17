@@ -1,10 +1,10 @@
 //! Mesh validation and boundary operations.
 
-use brepkit_math::det_hash::{DetHashMap, DetHashSet};
-use brepkit_math::vec::{Point3, Vec3};
-use brepkit_topology::Topology;
-use brepkit_topology::face::FaceSurface;
-use brepkit_topology::solid::SolidId;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
 
 use super::TriangleMesh;
 use super::edge_sampling::sample_edge;
@@ -317,7 +317,7 @@ pub struct EdgeLines {
 
 /// Check whether two face surfaces represent the same geometric surface.
 fn surfaces_equivalent(a: &FaceSurface, b: &FaceSurface) -> bool {
-    let tol = brepkit_math::tolerance::Tolerance::new();
+    let tol = remus_math::tolerance::Tolerance::new();
     let lin = tol.linear;
     let ang = tol.angular;
 
@@ -380,7 +380,7 @@ pub fn sample_solid_edges(
         topo,
         solid,
         deflection,
-        brepkit_math::chord::DEFAULT_ANGULAR_TOL,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
         true,
     )
 }
@@ -393,7 +393,7 @@ pub fn sample_solid_edges(
 ///
 /// `angular_tol` caps the per-segment turn angle when discretizing curved
 /// edges (circles, ellipses, NURBS); a smaller value yields smoother polylines.
-/// Pass [`brepkit_math::chord::DEFAULT_ANGULAR_TOL`] for the historical default.
+/// Pass [`remus_math::chord::DEFAULT_ANGULAR_TOL`] for the historical default.
 ///
 /// # Errors
 ///
@@ -405,10 +405,10 @@ pub fn sample_solid_edges_filtered(
     angular_tol: f64,
     filter_smooth: bool,
 ) -> Result<EdgeLines, crate::OperationsError> {
-    let edges = brepkit_topology::explorer::solid_edges(topo, solid)?;
+    let edges = remus_topology::explorer::solid_edges(topo, solid)?;
 
     let edge_face_map = if filter_smooth {
-        Some(brepkit_topology::explorer::edge_to_face_map(topo, solid)?)
+        Some(remus_topology::explorer::edge_to_face_map(topo, solid)?)
     } else {
         None
     };
