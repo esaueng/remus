@@ -101,16 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      HAS_APP_CREDENTIALS: ${{ secrets.REMUS_BOT_APP_ID != '' && secrets.REMUS_BOT_PRIVATE_KEY != '' }}
     steps:
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        if: ${{ env.HAS_APP_CREDENTIALS == 'true' }}
-        with:
-          app-id: ${{ secrets.REMUS_BOT_APP_ID }}
-          private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
@@ -128,9 +119,37 @@ jobs:
           /usr/bin/python3 scripts/install-wasm-package-archive.py \
             committed-wasm-package.tar.gz crates/wasm/pkg
 
-      - name: Commit refreshed package
+      - name: Check whether the package needs publishing
+        id: package-diff
+        run: |
+          # wasm-pack places a `*` .gitignore in its output directory, so force
+          # staging is required for newly generated package files.
+          git add --force crates/wasm/pkg
+          if git diff --cached --quiet -- crates/wasm/pkg; then
+            echo "needs_publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Committed package already matches this build — nothing to publish."
+          else
+            echo "needs_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require publish credentials
+        if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          REMUS_BOT_APP_ID: ${{ secrets.REMUS_BOT_APP_ID }}
+          REMUS_BOT_PRIVATE_KEY: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
+        run: ./scripts/require-publish-credentials.sh
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
+        with:
+          app-id: ${{ secrets.REMUS_BOT_APP_ID }}
+          private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
+
+      - name: Commit refreshed package
+        if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Disable every Git hook while a write token is present. The build
           # runner never sees this token or this checkout.
           GIT_CONFIG_COUNT: 1
@@ -139,13 +158,6 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # wasm-pack places a `*` .gitignore in its output directory, so force
-          # staging is required for newly generated package files.
-          git add --force crates/wasm/pkg
-          if git diff --cached --quiet -- crates/wasm/pkg; then
-            echo "Committed package already matches this build — nothing to do."
-            exit 0
-          fi
           VERSION=$(jq -r .version crates/wasm/pkg/package.json)
           git commit -m "chore(wasm): refresh committed package to v${VERSION} from ${GITHUB_SHA:0:7} [skip ci]"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
