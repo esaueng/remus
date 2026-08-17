@@ -4,68 +4,84 @@ Deep catalog behind SKILL.md. Everything here was verified against the repo; whe
 
 ## CI jobs (`.github/workflows/ci.yml`)
 
-All jobs except `wasm-size` fan into `ci-pass` (display name `CI Pass`), the only check required by branch protection.
+`ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim from `ci.yml`:
 
-| Job | Display name | What it runs |
-|-----|--------------|--------------|
-| `fmt` | Format | `cargo fmt --all -- --check` |
-| `clippy` | Clippy | `cargo clippy --all-targets --all-features -- -D warnings` |
-| `test` | Test | `cargo nextest run --workspace`, doc tests, complexity guards |
-| `coverage` | Coverage | llvm-cov coverage report |
-| `msrv` | MSRV (1.88) | build on the minimum supported Rust |
-| `wasm` | WASM Build & Validate | `cargo xtask wasm-build --skip-opt` (wasm-pack build + validation for `wasm32-unknown-unknown`) |
-| `wasm-size` | WASM Size Report | PR-only size delta comment (informational, not gated by `ci-pass`) |
-| `boundaries` | Layer Boundaries | `./scripts/check-boundaries.sh` |
-| `deny` | Cargo Deny | license/advisory/ban checks |
-| `audit` | Security Audit | `cargo audit` |
-| `docs` | Rustdoc | doc build with warnings denied |
-| `machete` | Unused Dependencies | `cargo machete` |
-| `taplo` | TOML Format | `taplo fmt --check` |
+```
+[fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check,
+ render, boundaries, deny, audit, docs, machete, secrets-scan, taplo]
+```
+
+It asserts every one of those resolved to `success` or `skipped`. It is NOT required by branch protection — `main` has no protection at all (see "Repo merge settings"), so `CI Pass` is advisory unless you choose to honour it.
+
+Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `doc-paths`, and `wasm-size`. Read them yourself.
+
+| Job | Display name | In `CI Pass`? | What it runs |
+|-----|--------------|---------------|--------------|
+| `apache-lineage` | Apache Lineage | no | provenance/lineage guard |
+| `fmt` | Format | yes | `cargo fmt --all -- --check` |
+| `clippy` | Clippy | yes | `cargo clippy --all-targets --all-features -- -D warnings` |
+| `test` | Test | yes | `cargo nextest run --workspace`, doc tests, complexity guards |
+| `platform-test` | Test (macos-latest), Test (windows-latest) | yes | matrix build/test on non-Linux hosts |
+| `coverage` | Coverage | yes | llvm-cov coverage report; usually the slowest job (~40 min) |
+| `msrv` | MSRV (1.88) | yes | build on the minimum supported Rust |
+| `wasm` | WASM Build & Validate | yes | `cargo xtask wasm-build --skip-opt` |
+| `fuzz-check` | Fuzz Targets Compile | yes | fuzz targets still compile |
+| `render` | Software Rendering | yes | headless render smoke test |
+| `boundaries` | Layer Boundaries | yes | `./scripts/check-boundaries.sh` |
+| `deny` | Cargo Deny | yes | license/advisory/ban checks |
+| `audit` | Security Audit | yes | `cargo audit` |
+| `docs` | Documentation | yes | doc build with warnings denied |
+| `machete` | Unused Dependencies | yes | `cargo machete` |
+| `secrets-scan` | Secrets Scan | yes | committed-secret scan |
+| `taplo` | TOML Format | yes | `taplo fmt --check` |
+| `doc-paths` | Doc Paths | **no** | `./scripts/check-doc-paths.sh` |
+| `wasm-size` | WASM Size Report | **no** | PR-only size delta comment (informational) |
+
+`benchmark.yml` contributes `Boolean perf` and `Publish benchmark` on PRs; neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is the CI runner provider, not a reviewer or a quality check.
+
+Note the `wasm-size` baseline is `apache-main`, not your PR base, so a nonzero delta on a change that cannot affect the binary (e.g. a `#[cfg(test)]`-only diff) is usually dependency drift from the gitignored `Cargo.lock`, not your work.
 
 Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only when the binaries are installed (the hook skips them silently otherwise). Everything else (tests, boundaries, deny, docs) first runs in CI unless you run it yourself. Before pushing, run at minimum the tests for touched crates and, on any `Cargo.toml` change, `./scripts/check-boundaries.sh`.
 
 ## Repo merge settings (verified via `gh api repos/esaueng/remus`)
 
-- `allow_squash_merge: true`; merge commits and rebase merges disabled.
-- `allow_auto_merge: true`; `delete_branch_on_merge: true`.
-- Branch protection on `main`: linear history, no force pushes, required check = `CI Pass` only, `required_approving_review_count: 0`.
+- `allow_squash_merge: true`, but `allow_merge_commit: true` and `allow_rebase_merge: true` as well — squash is NOT the only option, so always pass `--squash` explicitly.
+- `allow_auto_merge: **false**` — `gh pr merge --auto` is unavailable. Merge once checks are green.
+- `delete_branch_on_merge: **false**` — the remote branch survives the merge. Delete it yourself: `git push origin --delete <branch>`.
+- Branch protection on `main`: **none**. `gh api repos/esaueng/remus/branches/main/protection` returns 404 "Branch not protected". No required checks, no required approvals, force pushes and direct pushes to `main` are not blocked by GitHub. Not pushing to `main` is a rule you follow, not one the server enforces.
 - Squash commit titles on `main` look like `type(scope): subject (#N)`.
 
-## AI reviewers
+## Code review
 
-| Actor | Surface |
-|-------|---------|
-| `cubic` | Inline findings; posts the `cubic · AI code reviewer` status check (not branch-protection required; concludes `NEUTRAL` when it has no findings) |
-| `copilot-pull-request-reviewer` | Inline review comments |
-| `cubic-dev-ai` | Review plus a `cubic · AI code reviewer` check |
+**No automated reviewer is installed on this repo, and no PR in its history has ever been reviewed by anyone.** Verified by surveying the 20 most recent PRs (`pulls/<N>/reviews` and `pulls/<N>/comments` both empty for every one) and by listing the apps posting check runs on a PR head commit — only `github-actions` and `blacksmith-sh`.
 
-Reading findings:
+Do not wait for, poll for, or cite cubic, Greptile, or Copilot here. Earlier revisions of this skill described a `cubic · AI code reviewer` gate; that belonged to a different remote and never applied to this repo.
+
+If an app is installed later, the two surfaces to read are:
 
 ```bash
 gh api repos/esaueng/remus/pulls/<N>/comments   # inline (diff-anchored) comments
-gh pr view <N> --comments                          # issue-level comments
+gh pr view <N> --comments                        # issue-level comments
 ```
 
-Triage: P0/P1 findings get a fix commit before auto-merge is set. P2 and style findings get a short reply (agree-and-fix, or explain why not). A finding being wrong is fine; ignoring it silently is not.
+Until then, the substitute for review is your own diff read plus the local test run, and honest reporting about which of those actually happened.
 
-## Sandbox push details
+## Push details
 
-- `origin` is `git@github.com:esaueng/remus.git`; SSH to github.com:22 is blocked, so plain `git push` hangs until timeout.
-- Global rewrite trap: `git config --get-regexp 'url\..*insteadof'` shows `url.git@github.com:.insteadof https://github.com/`. This silently converts even an explicit `git push https://github.com/...` back to SSH. The token-embedded URL avoids the rewrite because it does not match the prefix:
+- `origin` is `https://github.com/esaueng/remus.git`. Plain `git push -u origin <branch>` works; credentials come from the `osxkeychain` credential helper.
+- There is **no** `url.*.insteadOf` rewrite in this checkout (`git config --get-regexp 'url\..*insteadOf'` is empty) and no SSH involved, so the old token-embedded-URL workaround is unnecessary. If you do use an explicit URL, redact the token in any output you show:
 
 ```bash
 git push "https://x-access-token:$(gh auth token)@github.com/esaueng/remus.git" <branch> \
   2>&1 | sed 's/x-access-token:[^@]*@/x-access-token:***@/g'
 ```
 
-- Explicit-URL pushes never update local `origin/<branch>` tracking refs. Verify what the remote actually has:
+- Explicit-URL pushes do not update local `origin/<branch>` tracking refs (plain `git push` does). After an explicit-URL push, verify against the remote rather than the tracking ref:
 
 ```bash
 gh pr view <N> --json headRefOid --jq .headRefOid
-gh api repos/esaueng/remus/commits/<branch> --jq .sha
+git ls-remote --heads origin <branch>
 ```
-
-Do not conclude "push failed" or "remote is behind" from `git rev-parse origin/<branch>`; that ref is stale by construction here.
 
 - All `gh` operations (create, view, merge, api) go over HTTPS with the CLI token and work normally.
 
@@ -118,13 +134,17 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `git push` hangs, no output | SSH origin plus blocked port 22; or the `insteadOf` rewrite converted your HTTPS URL | Use the token-embedded HTTPS URL above |
-| `origin/<branch>` does not match what you pushed | Explicit-URL pushes never update tracking refs | Verify with `gh pr view <N> --json headRefOid` |
+| `git push` hangs or is rejected | Not the historical SSH problem: `origin` is HTTPS with no rewrite. Suspect expired keychain credentials or a network block | `git ls-remote origin` to isolate auth from the push itself |
+| `origin/<branch>` does not match what you pushed | You pushed via an explicit URL; those do not update tracking refs | Verify with `gh pr view <N> --json headRefOid` or `git ls-remote` |
 | commitlint prints `✖ found N problems` yet the commit succeeded | The commit-msg hook swallows commitlint failures and exits 0 by design of its fallback | Treat as a rejection: `git commit --amend` to `type(scope): subject` form |
 | pre-commit fails on clippy warnings you did not write | Pre-existing breakage on the branch base | Stop and report; never `--no-verify` |
 | `⚠️ commitlint not available` warning on commit | `node_modules` missing, but only if no `✖` lines print above it; the same warning also follows a real lint failure (see the `✖` row) because the hook's fallback fires on any nonzero commitlint exit | If `✖` lines precede it, fix the message; otherwise `npm install` at repo root. Either way the commit went through unchecked, re-verify the message manually |
-| PR shows mergeable but you have not read reviews | the AI review check is not branch-protection required | Wait for the check to complete, read findings, only then `--auto` |
-| AI review check absent minutes after PR creation | Reviewers take roughly 5 to 7 minutes to post | Keep polling `gh pr checks <N>`; do other work meanwhile |
+| PR shows mergeable with nothing green yet | `main` has no branch protection, so mergeability says nothing about checks | Wait for `CI Pass`; mergeable is not a quality signal here |
+| A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
+| `gh pr merge --auto` errors or is refused | `allow_auto_merge` is false repo-wide | Wait for checks, then plain `gh pr merge <N> --squash` |
+| Merged PR's branch still on the remote | `delete_branch_on_merge` is false | `git push origin --delete <branch>` |
+| `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
+| `WASM Size Report` shows a delta on a test-only diff | Baseline is `apache-main` and `Cargo.lock` is gitignored, so deps re-resolve | Expected drift; confirm your diff cannot reach the binary, then note it |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
 | CI `taplo` or `machete` fails but pre-commit passed | Tool not installed locally; the hook skips it silently | `cargo install taplo-cli cargo-machete`, fix, re-commit |
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
@@ -132,14 +152,16 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | `deny` or `audit` fails on a PR that never touched deps | `Cargo.lock` is gitignored; CI resolved a newly-advisoried or newly-released dep | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | A dep released a version requiring Rust newer than 1.88 | Constrain that dep in `Cargo.toml`; do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |
-| Push rejected on `main` | Branch protection; direct pushes to main are not allowed | Branch and open a PR |
+| You pushed straight to `main` and it succeeded | There is no branch protection to stop you | Nothing rejects this — do not rely on the server. Branch and open a PR; if you already pushed, say so immediately |
 
 ## Anti-patterns (what NOT to conclude)
 
-- "CI is green so the PR is done": review findings do not block CI. The gate is the review check completing plus findings addressed.
+- "The review came back clean": no reviewer runs on this repo. An empty findings list means nobody looked, which is not the same as approval. Report which gate actually passed.
+- "The check I polled never reported problems, so there were none": a filter keyed to a nonexistent check name is silent forever and looks identical to a pass. List the rollup unfiltered before trusting any filter.
 - "The pre-push hook printed one line and passed, so the change is validated": the hook intentionally runs nothing. Validation is CI plus the local tests you ran yourself.
 - "CLAUDE.md says pre-push runs tests and cargo-deny": stale. The hook file delegates to CI; do not re-add local suites to it and do not cite the stale description.
-- "High-risk change, better wait for a human": no human gate exists. Address findings, then auto-merge.
+- "High-risk change, better wait for a human": no gate of any kind will stop you, which is an argument for more self-review, not less.
 - "gh pr view showed no comments, so there are no findings": inline findings live on `pulls/<N>/comments` (the API), check both surfaces.
+- "Branch protection will catch it": there is no branch protection on `main`. Nothing will catch it.
 - "The plan doc helps reviewers, commit it": working plans and specs never get committed.
 - "The commit went through, so the message passed commitlint": the commit-msg hook never blocks. Check the hook output for `✖` lines and amend if any appeared.
