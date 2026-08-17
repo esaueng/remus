@@ -589,6 +589,10 @@ mod naming_contract_tests {
     /// The full journey: name a face, run a journaled fuse, propagate,
     /// resolve through the journal, and read the name back through a
     /// serialized reference.
+    // Exercises io-gated batch ops (makeOperationOutputRef,
+    // captureSignatureRef, addRefDiscriminator), so it only applies to
+    // the build that dispatches them.
+    #[cfg(feature = "io")]
     #[test]
     fn names_survive_a_journaled_fuse_end_to_end() {
         let mut kernel = BrepKernel::new();
@@ -711,6 +715,10 @@ mod naming_contract_tests {
     }
 
     /// Signature references: capture, discriminate, resolve — inferred.
+    // Exercises io-gated batch ops (makeOperationOutputRef,
+    // captureSignatureRef, addRefDiscriminator), so it only applies to
+    // the build that dispatches them.
+    #[cfg(feature = "io")]
     #[test]
     fn signature_refs_capture_and_discriminate() {
         let mut kernel = BrepKernel::new();
