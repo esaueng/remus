@@ -1,8 +1,8 @@
 # RFC 0003: Persistent topological naming
 
-Status: accepted design; Stage 1 (journal) and Stage 2 (resolver)
+Status: accepted design; Stages 1–3 (journal, resolver, signature tier)
 implemented — see "Staging" and the implementation-notes sections.
-Stages 3–5 remain design.
+Stages 4–5 remain design.
 
 ## Problem
 
@@ -214,6 +214,8 @@ per policy whether inferred rebinding is acceptable.
    implementation notes below.
 3. **Signature tier** — `EntitySignature` v1 with `Inferred` provenance
    and ambiguity semantics.
+   **Implemented** (`Anchor::Signature`); see the Stage 3 implementation
+   notes below.
 4. **Attribute store integration** (Issue 14) — attributes keyed by
    references, with per-event propagation driven by the journal. Semantic
    names continue to use STEP representation-item name fields.
@@ -323,6 +325,47 @@ Refinements the resolver implementation added to the design above:
   lands with the operations/WASM evolution-surfacing work. Determinism is
   pinned by native double-run tests (the WASM build shares the same
   deterministic code paths).
+
+## Stage 3 implementation notes
+
+Refinements the signature-tier implementation added to the design above:
+
+- **Signatures are hashable by quantization.** `EntitySignature` stores
+  parameters as integer multiples of a capture quantum (the RFC-designated
+  source is the operation tolerance — `EntitySignature::context_quantum`
+  reads `OperationContext.tolerance.linear`), with the quantum itself kept
+  as `f64` bits. Matching compares a candidate's *raw* parameters against
+  the stored multiples within one quantum — tolerance-aware, never raw
+  float equality, and free of the double-rounding boundary miss that
+  quantize-and-compare would have.
+- **Parameters per type, fixed order.** Plane: normal + signed distance
+  (orientation-bearing, no sign canonicalization). Cylinder: axis
+  (sign-canonicalized), axis anchor nearest the world origin (so two
+  parameterizations of one cylinder sign identically), radius. Cone:
+  axis, apex, half-angle. Sphere: center, radius. Torus: axis
+  (canonicalized), center, radii. Circle/ellipse edges: normal
+  (canonicalized), center, radii. **Line edges carry no parameters** —
+  their geometry is their endpoints, and the mandatory endpoint vertex
+  signatures (structural, position + incident-edge count) do the
+  discriminating; NURBS and the open conics are tag-plus-adjacency only,
+  which usually resolves `Ambiguous` and is meant to.
+- **Adjacency counts are uses, not sets.** Faces: boundary edge uses (a
+  seam edge counts twice) + wire count; edges: face boundary uses;
+  vertices: incident live edge uses. Computed by one model walk at
+  capture and at match, from the same helper.
+- **Ambiguity semantics differ from lineage on purpose.** A signature
+  matching several entities after discriminators is
+  `Ambiguous {candidates, reason}` (`ref_ambiguous`) — an identity
+  question with several answers — never `BoundMany` (which is one
+  lineage's split pieces) and never a first-match or nearest pick.
+  Discriminators filter the candidate set first, so a caller *can* narrow
+  an ambiguity with a type constraint, but identical twins stay ambiguous.
+- **No journal interaction.** Signature anchors resolve against the
+  current model only; they are the recovery path for severed or
+  journal-less references, always `Inferred`, and the integration tests
+  pin exactly that flow (an edge reference severed by a faces-only blend
+  entry, re-anchored by signature, answered as inference or refused as
+  ambiguous — never guessed).
 
 ## Resolved questions
 

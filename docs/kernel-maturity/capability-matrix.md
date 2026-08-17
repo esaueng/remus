@@ -236,8 +236,14 @@ does not itself promote or demote anything.
   NoMatch, each with a pinned `ref_*` diagnostic code), disclosed
   Construction-vs-Inferred provenance, entry scopes so unrelated solids'
   references survive (in-scope-unclaimed severs, out-of-scope carries).
-  Signatures (Stage 3), attribute integration (Stage 4), journal
-  serialization (Stage 5), and the WASM reference API remain queued.
+  **Signature tier** (RFC 0003 Stage 3): `EntitySignature` — quantized
+  analytic parameters (tolerance-derived quantum, never raw float
+  equality), structural adjacency counts, endpoint vertex signatures for
+  edges; `Anchor::Signature` resolves against the current model only,
+  always `Inferred`, `Ambiguous` on several matches (never first-match) —
+  the recovery path for imported or severed references. Attribute
+  integration (Stage 4), journal serialization (Stage 5), and the WASM
+  reference API remain queued.
 
 ### Feature recognition, defeaturing, assemblies, projection, drafting
 
