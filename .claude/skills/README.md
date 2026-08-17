@@ -2,8 +2,34 @@
 
 Distilled working knowledge for building, debugging, and shipping the Remus B-Rep kernel:
 each skill captures the method and traps for one recurring class of task. Written for
-engineers and agents working in this repo (plus `~/Git/brepjs` for cross-repo work), with
+engineers and agents working in this repo (plus the brepjs harness for cross-repo work), with
 only this repo and CLAUDE.md as context.
+
+## Path placeholders
+
+Cross-repo skills refer to sibling repos through shell variables, because none
+of them has a fixed location on any given machine and this repo itself has
+several checkouts (`~/claude/remus`, `~/codex/remus`, plus `.worktrees/*`).
+Export them once per shell and the commands in these skills paste as-is:
+
+```bash
+export REMUS=~/claude/remus
+export BREPJS=/path/to/your/brepjs
+export GRIDFINITY_TOOL=/path/to/your/gridfinity-layout-tool
+```
+
+Variables rather than `<angle>` placeholders on purpose: `<brepjs>` inside a
+shell command is a redirection operator, so a pasted command would fail in a
+confusing way.
+
+| Placeholder | Repo | Notes |
+|-------------|------|-------|
+| `$REMUS` | `esaueng/remus` | This repo. Prefer repo-root-relative commands; the placeholder is only for when another repo's config needs an absolute path. Not to be confused with `esaueng/brepkit`, a separate fork of `andymai/brepkit`. |
+| `$BREPJS` | `andymai/brepjs` | The TS API and benchmark harness. No checkout on this machine — clone it first. |
+| `$GRIDFINITY_TOOL` | `andymai/gridfinity-layout-tool` | Parity target for the kernel swap. No checkout on this machine. |
+
+Earlier revisions hardcoded these under a home-level `Git` directory that does
+not exist. If you reintroduce an absolute path here, it will rot the same way.
 
 ## Index
 

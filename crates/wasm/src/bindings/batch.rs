@@ -133,12 +133,17 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "validateSolid"
         | "resolveOperationOutput"
         | "getFaceName"
-        | "makeOperationOutputRef"
+        | "volume" => Some(BatchOpKind::ReadOnly),
+        // Serialized-reference ops: their dispatch arms in `naming.rs` are
+        // `io`-gated because the reference codec is. Classifying them without
+        // the feature would admit an op that can never dispatch, so the batch
+        // would take a rollback share of the topology only to fail afterwards.
+        #[cfg(feature = "io")]
+        "makeOperationOutputRef"
         | "captureSignatureRef"
         | "addRefDiscriminator"
         | "resolveRef"
-        | "resolveRefFaceAttributes"
-        | "volume" => Some(BatchOpKind::ReadOnly),
+        | "resolveRefFaceAttributes" => Some(BatchOpKind::ReadOnly),
         "makeBox"
         | "fuseJournaled"
         | "cutJournaled"
@@ -2284,6 +2289,29 @@ mod batch_contract_tests {
         assert_eq!(batch_op_kind("projectEdges"), Some(BatchOpKind::ReadOnly));
         assert_eq!(batch_op_kind("makeBox"), Some(BatchOpKind::Mutating));
         assert_eq!(batch_op_kind("notAnOperation"), None);
+    }
+
+    /// Classification must agree with what `dispatch_naming_op` can actually
+    /// run. The serialized-reference arms there are `io`-gated, so without the
+    /// feature these ops must be rejected outright rather than admitted as
+    /// ReadOnly and failed after the batch has taken its rollback share.
+    #[test]
+    fn serialized_reference_ops_are_classified_only_with_io() {
+        const REF_OPS: [&str; 5] = [
+            "makeOperationOutputRef",
+            "captureSignatureRef",
+            "addRefDiscriminator",
+            "resolveRef",
+            "resolveRefFaceAttributes",
+        ];
+        for op in REF_OPS {
+            let kind = batch_op_kind(op);
+            if cfg!(feature = "io") {
+                assert_eq!(kind, Some(BatchOpKind::ReadOnly), "{op} with io");
+            } else {
+                assert_eq!(kind, None, "{op} without io");
+            }
+        }
     }
 
     #[test]

@@ -16,7 +16,7 @@ Repo rule: never write the competing kernel's name in commits, PRs, code, or ski
 
 ## The parity bar
 
-Acceptance, per real gridfinity scenario: triangle-count parity, volume parity, manifold/watertight validity, AND wall-clock at least matching the reference kernel. All four, per case. The end goal is replacing the reference kernel's wasm build in `~/Git/gridfinity-layout-tool`.
+Acceptance, per real gridfinity scenario: triangle-count parity, volume parity, manifold/watertight validity, AND wall-clock at least matching the reference kernel. All four, per case. The end goal is replacing the reference kernel's wasm build in `$GRIDFINITY_TOOL`.
 
 Two traps baked into the bar:
 
@@ -29,7 +29,7 @@ A hang or multi-hour suite runtime is itself a perf-bar defect, not an environme
 
 ```bash
 # Fast head-to-head (no npm install, no lockfile churn)
-cd ~/Git/remus && wasm-pack build crates/wasm --target nodejs --release --out-dir pkg-node-bench
+wasm-pack build crates/wasm --target nodejs --release --out-dir pkg-node-bench
 # then alias-swap in brepjs, see Procedure 1
 
 # Tool overlay build+copy loop (release build with wasm-opt skipped, direct node_modules only)
@@ -39,7 +39,7 @@ cd ~/Git/remus && wasm-pack build crates/wasm --target nodejs --release --out-di
 # binding: rg -n 'getEntityCounts' crates/wasm/src/bindings/query.rs
 
 # Unified criterion + JS report (slow, batteries included)
-./scripts/bench-compare.sh ~/Git/brepjs
+./scripts/bench-compare.sh $BREPJS
 
 # Analytic-vs-approximation census
 cargo run --release --example approx_census -p remus-operations
@@ -50,8 +50,8 @@ cargo run --release --example approx_census -p remus-operations
 The fair fight is remus-wasm vs the reference kernel's wasm build, both driven through brepjs. This recipe needs no `npm install`, so it sidesteps the brepjs lockfile and knip traps entirely.
 
 1. Build: `wasm-pack build crates/wasm --target nodejs --release --out-dir pkg-node-bench` from the Remus root. Dedicated out-dir so `crates/wasm/pkg` is not clobbered. Rename the emitted `.js` entry to `.cjs` (Node loads the bench as CJS; the published package ships `remus_wasm_node.cjs`).
-2. Point brepjs at it: copy `~/Git/brepjs/vitest.bench.config.ts` to a scratch config and change only the `remus-wasm` entry in `resolve.alias` to the absolute path of your `pkg-node-bench/*.cjs`. Do not touch `node_modules`.
-3. Run: `cd ~/Git/brepjs && BENCH_KERNELS=<ids> npx vitest run --config <your-config> kernel-comparison`. The `BENCH_KERNELS` syntax (single id, comma list) is documented in `~/Git/brepjs/benchmarks/setup.ts`; the actual kernel ids are defined in `~/Git/brepjs/tests/helpers/kernelInit.ts`. Include `remus` plus the reference kernel's wasm id.
+2. Point brepjs at it: copy `$BREPJS/vitest.bench.config.ts` to a scratch config and change only the `remus-wasm` entry in `resolve.alias` to the absolute path of your `pkg-node-bench/*.cjs`. Do not touch `node_modules`.
+3. Run: `cd $BREPJS && BENCH_KERNELS=<ids> npx vitest run --config <your-config> kernel-comparison`. The `BENCH_KERNELS` syntax (single id, comma list) is documented in `$BREPJS/benchmarks/setup.ts`; the actual kernel ids are defined in `$BREPJS/tests/helpers/kernelInit.ts`. Include `remus` plus the reference kernel's wasm id.
 4. Checkpoint: the run takes seconds, not minutes, and regenerates `benchmarks/results/latest.md`. If it hangs for minutes, you included a wrong kernel id (see reference.md, Head-to-head).
 5. Before quoting any ratio, verify equivalence: same face counts (via `getEntityCounts`) and volumes within tolerance on both kernels for each quoted row.
 
@@ -64,10 +64,10 @@ Details, bench-file inventory, and iteration multipliers: see reference.md, "Hea
 Heavier: replaces the tool's installed `remus-wasm` in place so the real generators run on your kernel.
 
 1. Get the files: either `npm pack remus-wasm@<ver> --pack-destination <tmp>` and use `<tmp>/package/*`, or build locally with `cargo xtask wasm-build` (add `--skip-opt` for iteration speed) and use `crates/wasm/pkg/*`.
-2. Copy the 6 package files into BOTH locations in `~/Git/gridfinity-layout-tool`: `node_modules/remus-wasm/` AND `node_modules/.pnpm/remus-wasm@<ver>/node_modules/remus-wasm/`. pnpm resolves through `.pnpm`; overlaying only the direct path is the classic wasted-probe mistake.
+2. Copy the 6 package files into BOTH locations in `$GRIDFINITY_TOOL`: `node_modules/remus-wasm/` AND `node_modules/.pnpm/remus-wasm@<ver>/node_modules/remus-wasm/`. pnpm resolves through `.pnpm`; overlaying only the direct path is the classic wasted-probe mistake.
 3. Clear the Vite cache: `rm -rf node_modules/.vite node_modules/.vite-temp` in the tool.
 4. **Verify the overlay took effect before trusting any probe**: `md5sum` the `.wasm` in both locations against your source, or feature-detect a binding that only exists in the new build.
-5. Probe: `BREPJS_KERNEL=remus pnpm exec vitest run --config vitest.profile.config.ts <probe>` (set `BREPJS_KERNEL` to the reference kernel's wasm id for the comparison side).
+5. Probe: `BREPJS_KERNEL=brepkit pnpm exec vitest run --config vitest.profile.config.ts <probe>` (set `BREPJS_KERNEL` to the reference kernel's wasm id for the comparison side).
 6. Restore afterward: `pnpm install --force` in the tool.
 
 `scripts/parity-loop.sh` automates the local-build flavor but copies only the direct `node_modules` location; add the `.pnpm` copy yourself when the probe imports resolve through pnpm. Its built-in probe step targets a test file that no longer exists in the tool, so bring your own probe vitest. File list and probe assets: see reference.md, "Tool overlay".
@@ -93,7 +93,7 @@ Capture gotcha and full patterns: see reference.md, "Fixture capture".
 
 ## Local micro-benchmarks
 
-- `./scripts/bench-compare.sh ~/Git/brepjs`: unified criterion + JS report into `bench-results/`. It runs `npm install` into brepjs, so it is the slow path; use Procedure 1 for iteration.
+- `./scripts/bench-compare.sh $BREPJS`: unified criterion + JS report into `bench-results/`. It runs `npm install` into brepjs, so it is the slow path; use Procedure 1 for iteration.
 - Criterion benches: `crates/operations/benches/` (`cad_operations.rs` is the main suite; also `boolean_perf.rs`, `boolean_tracking.rs`, `compound_cut_perf.rs`, `fuse_perf.rs`). Run one: `cargo bench -p remus-operations --bench cad_operations`.
 - Census: `cargo run --release --example approx_census -p remus-operations` shows which ops stayed analytic vs which approximation path fired, with wall-clock and face counts.
 - Flamegraphs: see the profiling skill and CLAUDE.md, "Profiling".

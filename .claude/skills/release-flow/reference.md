@@ -2,19 +2,19 @@
 
 Deep detail for the hops in SKILL.md.
 
-**Repos and paths.** The kernel side is this repo, `esaueng/remus`; paths
-below are relative to its root, because it is checked out in
+**Repos and paths.** The kernel side is this repo, `esaueng/remus` (the remus
+kernel); paths below are relative to its root, because it is checked out in
 several places (`~/claude/remus`, `~/codex/remus`, plus `.worktrees/*`) and no
 single absolute path is correct. Do not confuse it with `esaueng/brepkit`, a
 separate fork of `andymai/brepkit` checked out at `~/claude/brepkit`.
 
 The consumer side is `andymai/brepjs` — that slug is current, not a leftover.
-There is currently **no brepjs checkout on this machine**: the `~/Git/brepjs`
-path earlier revisions of this skill used does not exist, nor does `~/Git`
-itself. Clone brepjs before starting hop 4 and substitute its path for
-`<brepjs>` below.
+There is currently **no brepjs checkout on this machine**, and the home-level
+`Git` directory that earlier revisions of these skills assumed does not exist
+either. Clone brepjs before starting hop 4 and substitute its path for
+`$BREPJS` below.
 
-## Publish workflow anatomy (Remus)
+## Publish workflow anatomy (remus)
 
 File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
 
@@ -43,8 +43,8 @@ File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
 
 ## Type-sync internals (brepjs)
 
-Script: `<brepjs>/scripts/sync-remus-types.ts`, run via
-`npm run sync:remus-types`.
+Script: `$BREPJS/scripts/sync-brepkit-types.ts`, run via
+`npm run sync:brepkit-types`.
 
 What it does:
 
@@ -52,14 +52,14 @@ What it does:
    `node_modules/remus-wasm/remus_wasm.d.ts` with a regex (the regex
    cannot handle nested-paren parameter types; a method like that will parse
    wrong, check the output).
-2. Emits `src/kernel/remus/remusWasmTypes.ts`. The header records
+2. Emits `src/kernel/brepkit/brepkitWasmTypes.ts`. The header records
    `Synced against remus-wasm@<version>`. The file is AUTO-GENERATED;
    hand edits are clobbered on the next sync.
 3. Only methods listed in `const METHOD_SECTIONS: Section[]` appear in the
    output, grouped by category label. Find it:
-   `rg -n 'const METHOD_SECTIONS' scripts/sync-remus-types.ts`.
+   `rg -n 'const METHOD_SECTIONS' scripts/sync-brepkit-types.ts`.
 4. Methods not referenced from the adapter layer
-   (`src/kernel/remus/*.ts`, excluding the generated file) are tagged
+   (`src/kernel/brepkit/*.ts`, excluding the generated file) are tagged
    `/** @unwired */`.
 
 ### The new-return-type trap
@@ -77,7 +77,7 @@ An unmapped `JsFoo` passes through verbatim into the generated file, where no
 1. A case in `mapReturnType` returning `'RemusFoo'`.
 2. A hardcoded interface block emitted by the script. The existing ones are
    pushed as lines, e.g. `lines.push('export interface RemusMesh {')`.
-   Find them: `rg -n "export interface Remus" scripts/sync-remus-types.ts`.
+   Find them: `rg -n "export interface Remus" scripts/sync-brepkit-types.ts`.
    Add a matching block for the new type, mirroring the fields of the Rust
    struct in `crates/wasm/src/shapes.rs` or `types.rs`.
 
@@ -98,7 +98,7 @@ The regenerated file may shrink for legitimate reasons (JSDoc and formatting
 compaction). What it must never do is silently drop a method. Check:
 
 ```bash
-git diff src/kernel/remus/remusWasmTypes.ts | grep '^-' | grep -E '\w+\('
+git diff src/kernel/brepkit/brepkitWasmTypes.ts | grep '^-' | grep -E '\w+\('
 ```
 
 Eyeball each hit: it must either reappear as an added line or be a comment.
@@ -153,7 +153,7 @@ Notes:
 knip (the unused-export linter, a pre-push gate) cannot trace usage from
 `tests/` (separate tsconfig and import alias), so a src export exercised only
 by tests gets flagged as unused and blocks the push. The sanctioned escape
-hatch, already wired in `<brepjs>/knip.config.ts` via
+hatch, already wired in `$BREPJS/knip.config.ts` via
 `tags: ['-testOnly']`:
 
 ```ts
@@ -184,7 +184,7 @@ rather than hand-editing the lock.
 
 ### Adapter feature-detection
 
-The adapter layer (`src/kernel/remus/*Ops.ts`) guards newer kernel methods
+The adapter layer (`src/kernel/brepkit/*Ops.ts`) guards newer kernel methods
 and keeps a fallback path:
 
 ```ts
@@ -203,9 +203,9 @@ redundant; leave it.
 
 ## Reference-kernel hygiene
 
-The name of the C++ kernel Remus replaces is banned from commits, PR
+The name of the C++ kernel remus replaces is banned from commits, PR
 titles and bodies, and code in both repos. Call it "the reference kernel".
-The Remus-side compliance grep and the grandfathered file list (README,
+The remus-side compliance grep and the grandfathered file list (README,
 the two changelogs, three bench scripts) live in the pr-workflow skill.
 In brepjs, package and adapter identifiers that contain the name are
 legitimate code; the ban targets prose, commit messages, and PR text.
@@ -223,7 +223,7 @@ gh pr view <n> --json title,body -q '.title + .body' | rg -in "$pat"
 Run all three before every push and before merging, in BOTH repos. Expected
 output: nothing (rg exits nonzero on no match, which is the pass state).
 Any hit in prose must be rewritten before pushing. A hit that is a literal
-package identifier in brepjs code, or inside a Remus grandfathered file,
+package identifier in brepjs code, or inside a remus grandfathered file,
 is acceptable.
 
 ## Pushing over HTTPS (SSH blocked)
