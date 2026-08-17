@@ -284,7 +284,12 @@ impl From<brepkit_topology::TopologyError> for StructuredWasmError {
             brepkit_topology::TopologyError::WireNotClosed
             | brepkit_topology::TopologyError::NotPlanar => ("wire", None),
             brepkit_topology::TopologyError::InvalidColorChannel { .. } => ("attributes", None),
-            brepkit_topology::TopologyError::JournalDuplicateEvent { .. } => ("journal", None),
+            brepkit_topology::TopologyError::JournalDuplicateEvent { .. }
+            | brepkit_topology::TopologyError::RefAmbiguous { .. }
+            | brepkit_topology::TopologyError::RefDangling { .. }
+            | brepkit_topology::TopologyError::RefUnresolvedAcrossOperation { .. }
+            | brepkit_topology::TopologyError::RefUnknownOperation { .. }
+            | brepkit_topology::TopologyError::RefNoMatch { .. } => ("journal", None),
             brepkit_topology::TopologyError::LoopNotFound(id) => ("loop", Some(id.index())),
             brepkit_topology::TopologyError::CoedgeNotFound(id) => ("coedge", Some(id.index())),
             brepkit_topology::TopologyError::LoopWireMismatch { face }

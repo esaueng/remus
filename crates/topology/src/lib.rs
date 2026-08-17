@@ -22,6 +22,7 @@ pub mod explorer;
 pub mod face;
 pub mod face_loop;
 pub mod journal;
+pub mod naming;
 
 pub mod pcurve;
 pub mod shell;
@@ -181,6 +182,55 @@ pub enum TopologyError {
         ordinal: u64,
     },
 
+    /// A persistent reference matches several entities that resolution
+    /// will not pick between (RFC 0003).
+    #[error("persistent reference is ambiguous over {candidates} candidates: {reason}")]
+    RefAmbiguous {
+        /// Number of inseparable candidates.
+        candidates: usize,
+        /// Why they cannot be separated.
+        reason: String,
+    },
+
+    /// A persistent reference's target was deleted (RFC 0003).
+    #[error("persistent reference dangles: target deleted by operation {deleted_at}")]
+    RefDangling {
+        /// The journal operation that deleted the last live piece.
+        deleted_at: u64,
+    },
+
+    /// A persistent reference's lineage crosses an operation whose
+    /// records cannot carry it (RFC 0003): a barrier, or an in-scope
+    /// entry with no claim about the entity. The operation's records are
+    /// a declared capability gap.
+    #[error(
+        "persistent reference cannot resolve across operation {op} \
+         ({operation_kind}): its records do not carry this entity"
+    )]
+    RefUnresolvedAcrossOperation {
+        /// The journal operation the lineage could not cross.
+        op: u64,
+        /// That operation's stable kind name.
+        operation_kind: String,
+    },
+
+    /// A persistent reference anchors to an operation the journal does
+    /// not contain — never journaled, or truncated by a rollback
+    /// (RFC 0003).
+    #[error("persistent reference anchors to unknown operation {op}")]
+    RefUnknownOperation {
+        /// The unknown journal operation id.
+        op: u64,
+    },
+
+    /// A persistent reference's anchor or a discriminator eliminated
+    /// every candidate (RFC 0003).
+    #[error("persistent reference matches nothing: {reason}")]
+    RefNoMatch {
+        /// What eliminated the candidates.
+        reason: String,
+    },
+
     /// A pcurve's endpoints do not map to the edge's bounding vertices
     /// within tolerance (`SameRange`).
     #[error(
@@ -284,6 +334,36 @@ impl brepkit_math::diagnostic::ToDiagnostic for TopologyError {
                 message,
             )
             .with_detail("ordinal", usize::try_from(*ordinal).unwrap_or(usize::MAX)),
+            Self::RefAmbiguous { candidates, reason } => {
+                Diagnostic::new(FailureCategory::InvalidInput, "ref_ambiguous", message)
+                    .with_detail("candidates", *candidates)
+                    .with_detail("reason", reason.as_str())
+            }
+            Self::RefDangling { deleted_at } => {
+                Diagnostic::new(FailureCategory::InvalidInput, "ref_dangling", message).with_detail(
+                    "deletedAt",
+                    usize::try_from(*deleted_at).unwrap_or(usize::MAX),
+                )
+            }
+            Self::RefUnresolvedAcrossOperation { op, operation_kind } => Diagnostic::new(
+                // The operation's evolution records are a declared
+                // capability gap, not a bad input.
+                FailureCategory::Unsupported,
+                "ref_unresolved_across_operation",
+                message,
+            )
+            .with_detail("op", usize::try_from(*op).unwrap_or(usize::MAX))
+            .with_detail("operationKind", operation_kind.as_str()),
+            Self::RefUnknownOperation { op } => Diagnostic::new(
+                FailureCategory::InvalidInput,
+                "ref_unknown_operation",
+                message,
+            )
+            .with_detail("op", usize::try_from(*op).unwrap_or(usize::MAX)),
+            Self::RefNoMatch { reason } => {
+                Diagnostic::new(FailureCategory::InvalidInput, "ref_no_match", message)
+                    .with_detail("reason", reason.as_str())
+            }
             Self::SameParameterExceeded {
                 edge,
                 face,
@@ -363,5 +443,41 @@ mod diagnostic_registry_tests {
         assert_eq!(d.category(), FailureCategory::InvalidInput);
         assert_eq!(d.code(), "journal_duplicate_event");
         assert_eq!(d.details()[0], ("ordinal", DetailValue::Int(7)));
+
+        let d = TopologyError::RefAmbiguous {
+            candidates: 2,
+            reason: "signature matches two faces".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "ref_ambiguous");
+
+        let d = TopologyError::RefDangling { deleted_at: 3 }.diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "ref_dangling");
+        assert_eq!(d.details()[0], ("deletedAt", DetailValue::Int(3)));
+
+        let d = TopologyError::RefUnresolvedAcrossOperation {
+            op: 5,
+            operation_kind: "offset_solid".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "ref_unresolved_across_operation");
+        assert_eq!(
+            d.details()[1],
+            ("operationKind", DetailValue::Text("offset_solid".into()))
+        );
+
+        let d = TopologyError::RefUnknownOperation { op: 9 }.diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "ref_unknown_operation");
+
+        let d = TopologyError::RefNoMatch {
+            reason: "discriminator surface_type:plane eliminated every candidate".into(),
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "ref_no_match");
     }
 }

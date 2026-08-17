@@ -1,7 +1,8 @@
 # RFC 0003: Persistent topological naming
 
-Status: accepted design; Stage 1 (journal) implemented — see "Staging" and
-"Stage 1 implementation notes". Stages 2–5 remain design.
+Status: accepted design; Stage 1 (journal) and Stage 2 (resolver)
+implemented — see "Staging" and the implementation-notes sections.
+Stages 3–5 remain design.
 
 ## Problem
 
@@ -209,6 +210,8 @@ per policy whether inferred rebinding is acceptable.
 2. **Resolver** — `PersistentRef` v1 with `OperationOutput` and
    `LineageOf` anchors over the journal; typed resolution results and the
    three diagnostic codes; determinism tests native/WASM.
+   **Implemented** (`brepkit_topology::naming`); see the Stage 2
+   implementation notes below.
 3. **Signature tier** — `EntitySignature` v1 with `Inferred` provenance
    and ambiguity semantics.
 4. **Attribute store integration** (Issue 14) — attributes keyed by
@@ -268,6 +271,58 @@ Refinements the implementation added to the design above:
   format and repro bundles ignore it until Stage 5. Attribute-store writes
   do not count as mutations (they never change which entity an entity
   is), so attaching names and colors does not sever continuity.
+
+## Stage 2 implementation notes
+
+Refinements the resolver implementation added to the design above:
+
+- **Entries gained a declared scope.** Stage 1's "entities an entry does
+  not mention have no continuity across it" is unusable on multi-body
+  models (any entry would sever every other solid's references), so the
+  rule became scoped: every entry carries the set of entities its
+  operation may have touched — captured half before the operation runs
+  (`journal_ops::begin_scoped`, so consumed operand entities are covered)
+  and half at record time (the result solids), always a superset of what
+  the events mention. An entity **outside** the scope carries through
+  unchanged; **inside** the scope it follows its claim or is severed. The
+  scope is a construction claim held to the same honesty standard as the
+  events: omitting a touched entity would fake continuity.
+- **Resolution chases to the present.** Every anchor resolves to what the
+  entity is *now*: the anchor establishes a starting ordinal, and every
+  subsequent entry's claims are applied. Identity flows only through
+  identity claims (`Preserved`/`Modified`/`Merged`); `Generated` is an
+  adjacency claim and is never followed. A split fans the ordinal set out
+  (`BoundMany`, pieces sorted); a piece's deletion ends that branch
+  (survivors continue; all gone → `Dangling{deleted_at}`); an
+  `unresolved` output whose candidates include the entity contests every
+  other claim about it and severs (a wrong binding is worse than none);
+  an entry claiming an entity both deleted and carried is a recording
+  defect and severs. Barriers sever on contact, global barriers always.
+- **Provenance is the meet over the chain.** Anchoring in or hopping
+  through a `Geometry`-origin entry downgrades the resolution to
+  `Inferred`; `Construction` survives only an all-construction chain.
+- **`LineageOf` is pass-through today.** Since every anchor already
+  chases to the present, `LineageOf{base}` adds only its own
+  discriminators; it exists as the composition point for the Stage 3
+  signature tier.
+- **Two codes beyond the three designed.** `ref_unknown_operation`
+  (`invalid_input`): the anchor's `OpId` is not in the journal — never
+  journaled, or truncated by a rollback; because OpIds are never reissued
+  the reference dangles rather than rebinding. `ref_no_match`
+  (`invalid_input`): the anchor or a discriminator eliminated every
+  candidate, naming which. `ref_ambiguous` is reserved for the signature
+  tier (Stage 2 anchors never guess between candidates: splits are
+  `BoundMany`, unresolved events sever).
+- **`OperationOutput` addresses entry subjects.** Outputs are the entry's
+  subjects of the reference's kind except `Deleted` ones (inputs), in the
+  entry's deterministic event order; `Unresolved` subjects count (their
+  existence is a journal fact even when their lineage is not).
+- **Discriminators shipped: `SurfaceType`, `CurveType`.** Adjacency,
+  proximity, and operation-declared roles are queued with Stage 3.
+- **WASM surfacing queued.** References resolve natively; the WASM API
+  lands with the operations/WASM evolution-surfacing work. Determinism is
+  pinned by native double-run tests (the WASM build shares the same
+  deterministic code paths).
 
 ## Resolved questions
 
