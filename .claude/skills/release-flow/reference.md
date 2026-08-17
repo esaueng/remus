@@ -9,10 +9,10 @@ single absolute path is correct. Do not confuse it with `esaueng/brepkit`, a
 separate fork of `andymai/brepkit` checked out at `~/claude/brepkit`.
 
 The consumer side is `andymai/brepjs` — that slug is current, not a leftover.
-There is currently **no brepjs checkout on this machine**: the `~/Git/brepjs`
-path earlier revisions of this skill used does not exist, nor does `~/Git`
-itself. Clone brepjs before starting hop 4 and substitute its path for
-`<brepjs>` below.
+There is currently **no brepjs checkout on this machine**, and the home-level
+`Git` directory that earlier revisions of these skills assumed does not exist
+either. Clone brepjs before starting hop 4 and substitute its path for
+`$BREPJS` below.
 
 ## Publish workflow anatomy (brepkit)
 
@@ -43,7 +43,7 @@ File: `.github/workflows/publish.yml` ("Release & Publish"), in this repo.
 
 ## Type-sync internals (brepjs)
 
-Script: `<brepjs>/scripts/sync-brepkit-types.ts`, run via
+Script: `$BREPJS/scripts/sync-brepkit-types.ts`, run via
 `npm run sync:brepkit-types`.
 
 What it does:
@@ -153,7 +153,7 @@ Notes:
 knip (the unused-export linter, a pre-push gate) cannot trace usage from
 `tests/` (separate tsconfig and import alias), so a src export exercised only
 by tests gets flagged as unused and blocks the push. The sanctioned escape
-hatch, already wired in `<brepjs>/knip.config.ts` via
+hatch, already wired in `$BREPJS/knip.config.ts` via
 `tags: ['-testOnly']`:
 
 ```ts

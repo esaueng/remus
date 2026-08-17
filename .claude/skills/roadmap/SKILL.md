@@ -33,7 +33,7 @@ rg -n -A2 '#\[ignore' crates/    # filter the 3 doc-comment false hits by hand
 
 ## The north star
 
-Replace the incumbent kernel in the gridfinity layout tool (`~/Git/gridfinity-layout-tool`)
+Replace the incumbent kernel in the gridfinity layout tool (`$GRIDFINITY_TOOL`)
 at full parity, across all its generator scenarios: 100% triangle correctness, volume
 correctness, manifold correctness, AND generation performance at least as good. Parity
 first, then beating it, is the acceptance bar. See `parity-benchmarking` for the harness.

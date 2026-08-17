@@ -1,6 +1,6 @@
 # parity-benchmarking reference
 
-Naming rule applies here too: the competing kernel is "the reference kernel". Its ids inside the brepjs harness are defined in `~/Git/brepjs/tests/helpers/kernelInit.ts` (`~/Git/brepjs/benchmarks/setup.ts` only documents the `BENCH_KERNELS` syntax); the tool's ids live in its kernel-test helpers. Do not write them into Remus files.
+Naming rule applies here too: the competing kernel is "the reference kernel". Its ids inside the brepjs harness are defined in `$BREPJS/tests/helpers/kernelInit.ts` (`$BREPJS/benchmarks/setup.ts` only documents the `BENCH_KERNELS` syntax); the tool's ids live in its kernel-test helpers. Do not write them into Remus files.
 
 ## Symptom-to-cause table
 
@@ -19,7 +19,7 @@ Naming rule applies here too: the competing kernel is "the reference kernel". It
 
 ## Head-to-head (brepjs bench harness)
 
-Files in `~/Git/brepjs/benchmarks/`:
+Files in `$BREPJS/benchmarks/`:
 
 - `kernel-comparison.bench.test.ts`: the main comparison suite. Regenerates `benchmarks/results/latest.md` on every run that produced results, including single-kernel runs, which is why one-offs clobber it.
 - `boolean.bench.test.ts`: fuse/cut/intersect through the brepjs top-level API via `benchBoth` from `setup.ts`.
@@ -29,7 +29,7 @@ Files in `~/Git/brepjs/benchmarks/`:
 
 Iteration multipliers inside `kernel-comparison.bench.test.ts` (one measurement wraps a loop): booleans and STEP export x10; translate x1000; rotate, volume, boundingBox, primitives x100; meshing, chamfer, fillet, multi-boolean single-op. Divide accordingly when comparing to criterion numbers.
 
-Config template (`~/Git/brepjs/vitest.bench.config.ts`, verified):
+Config template (`$BREPJS/vitest.bench.config.ts`, verified):
 
 ```ts
 resolve: {
@@ -63,7 +63,7 @@ brepkit_wasm_bg.js  brepkit_wasm_bg.wasm  brepkit_wasm.d.ts
 brepkit_wasm.js     brepkit_wasm_node.cjs package.json
 ```
 
-Both destinations in `~/Git/gridfinity-layout-tool`:
+Both destinations in `$GRIDFINITY_TOOL`:
 
 ```
 node_modules/brepkit-wasm/
@@ -83,8 +83,8 @@ Overlay verification (do this before every probe batch):
 
 ```bash
 md5sum crates/wasm/pkg/brepkit_wasm_bg.wasm \
-  ~/Git/gridfinity-layout-tool/node_modules/brepkit-wasm/brepkit_wasm_bg.wasm \
-  ~/Git/gridfinity-layout-tool/node_modules/.pnpm/brepkit-wasm@*/node_modules/brepkit-wasm/brepkit_wasm_bg.wasm
+  $GRIDFINITY_TOOL/node_modules/brepkit-wasm/brepkit_wasm_bg.wasm \
+  $GRIDFINITY_TOOL/node_modules/.pnpm/brepkit-wasm@*/node_modules/brepkit-wasm/brepkit_wasm_bg.wasm
 ```
 
 All three hashes must match. The documented failure mode is several probes wasted on a half-applied overlay.

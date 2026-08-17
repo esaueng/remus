@@ -77,7 +77,7 @@ The `change:` line appears once `target/criterion/` holds a prior run. That dire
 ### Cross-kernel comparison
 
 ```bash
-./scripts/bench-compare.sh ~/Git/brepjs
+./scripts/bench-compare.sh $BREPJS
 ```
 
 Pipeline: (1) full native criterion run, log to `bench-results/criterion.log`; (2) `wasm-pack build crates/wasm --target nodejs --release`; (3) install the built package into brepjs with `--no-save`; (4) run `benchmarks/kernel-comparison.bench.test.ts` under vitest with `BENCH_OUTPUT_JSON=1`; (5) `npx tsx scripts/bench-report.ts` produces `bench-results/report.md` and `comparison.json`. That report is the only valid evidence for "faster than the reference kernel" claims. See the parity-benchmarking skill for interpreting it and for a lighter one-off head-to-head (wasm-pack build plus a vitest `resolve.alias` swap in brepjs, which avoids the npm install step).

@@ -26,7 +26,7 @@ Output lands in `crates/wasm/pkg/`, git-ignored by wasm-pack's own generated `cr
 | Published package, smoke test, overlay into a real app | `cargo xtask wasm-build` | `crates/wasm/pkg/brepkit_wasm_node.cjs` (node) + `brepkit_wasm.js` (bundler ESM) |
 | Browsers via a bundler | the same xtask package; the bundler resolves the `import` condition | `brepkit_wasm.js` |
 
-Never `--target web` for node: its init path uses `fetch()`. The bundler ESM entry also fails under vitest because Vite resolves the `import` exports condition to an entry that uses the unsupported WASM ESM integration proposal (see the comment in `~/Git/brepjs/vitest.config.ts`). Node and vitest must get the CJS entry.
+Never `--target web` for node: its init path uses `fetch()`. The bundler ESM entry also fails under vitest because Vite resolves the `import` exports condition to an entry that uses the unsupported WASM ESM integration proposal (see the comment in `$BREPJS/vitest.config.ts`). Node and vitest must get the CJS entry.
 
 ## 2. Running a local kernel build inside a JS consumer
 
@@ -38,7 +38,7 @@ brepjs maps `'brepkit-wasm'` to `resolve(__dirname, 'node_modules/brepkit-wasm/b
 wasm-pack build crates/wasm --target nodejs --release
 ```
 
-Then temporarily change the alias target to `~/Git/remus/crates/wasm/pkg/brepkit_wasm.js` (plain nodejs build; only the xtask merge renames the entry to `.cjs`). Run the tests or bench, then revert the alias. This sidesteps npm install and the lockfile and lint-config churn that comes with it.
+Then temporarily change the alias target to `$REMUS/crates/wasm/pkg/brepkit_wasm.js` (plain nodejs build; only the xtask merge renames the entry to `.cjs`). Run the tests or bench, then revert the alias. This sidesteps npm install and the lockfile and lint-config churn that comes with it.
 
 ### Full overlay: pnpm + Vite consumers (e.g. gridfinity-layout-tool)
 
