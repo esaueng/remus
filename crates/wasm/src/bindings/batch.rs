@@ -131,8 +131,21 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "solidToSolidDistance"
         | "surfaceArea"
         | "validateSolid"
+        | "resolveOperationOutput"
+        | "getFaceName"
+        | "makeOperationOutputRef"
+        | "captureSignatureRef"
+        | "addRefDiscriminator"
+        | "resolveRef"
+        | "resolveRefFaceAttributes"
         | "volume" => Some(BatchOpKind::ReadOnly),
         "makeBox"
+        | "fuseJournaled"
+        | "cutJournaled"
+        | "intersectJournaled"
+        | "journalBarrier"
+        | "propagateAttributesForOp"
+        | "setFaceName"
         | "makeCylinder"
         | "makeSphere"
         | "makeCone"
@@ -2160,7 +2173,9 @@ impl BrepKernel {
                 self.free_form_surface_data_parity(face)
                     .map_err(StructuredWasmError::from)
             }
-            _ => Err(StructuredWasmError::unknown_operation(op)),
+            other => self
+                .dispatch_naming_op(other, args)
+                .unwrap_or_else(|| Err(StructuredWasmError::unknown_operation(other))),
         }
     }
 }

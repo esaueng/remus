@@ -1,9 +1,12 @@
 # RFC 0003: Persistent topological naming
 
 Status: implemented — all five stages (journal, resolver, signature
-tier, attribute integration, serialization); see "Staging" and the
-implementation-notes sections. The WASM reference API remains queued
-with the operations/WASM evolution-surfacing work.
+tier, attribute integration, serialization) plus the WASM reference API
+(`wasm/src/bindings/naming.rs`: journaled booleans, barriers,
+journal-driven propagation, resolution, face names, and — with the `io`
+feature — the serialized reference codec; resolution outcomes are data,
+not errors, and every method has an `executeBatch` companion). See
+"Staging" and the implementation-notes sections.
 
 ## Problem
 
