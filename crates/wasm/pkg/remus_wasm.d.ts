@@ -1060,6 +1060,20 @@ export class BrepKernel {
      */
     export3mf(solid: number, deflection: number): Uint8Array;
     /**
+     * Export several solids into one 3MF package.
+     *
+     * The writer already supports multiple objects per package; this is the
+     * multi-solid twin of [`export3mf`](Self::export_3mf), mirroring
+     * [`exportStepMulti`](Self::export_step_multi) so a multi-body model
+     * exports as one file instead of forcing the caller to fuse first.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    export3mfMulti(solids: Uint32Array, deflection: number): Uint8Array;
+    /**
      * Export a solid to glTF binary (.glb) format.
      *
      * # Errors
@@ -1163,6 +1177,19 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or export fails.
      */
     exportStlAscii(solid: number, deflection: number): Uint8Array;
+    /**
+     * Export several solids into one binary STL file.
+     *
+     * The multi-solid twin of [`exportStl`](Self::export_stl): meshes are
+     * merged into a single facet stream, which is what slicers expect from
+     * a one-part-per-file workflow with multiple bodies.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    exportStlMulti(solids: Uint32Array, deflection: number): Uint8Array;
     /**
      * Extrude a planar face along a direction vector to create a solid.
      *

@@ -75,6 +75,7 @@ export const brepkernel_evaluateSurfaceNormal: (a: number, b: number, c: number,
 export const brepkernel_executeBatch: (a: number, b: number, c: number) => [number, number];
 export const brepkernel_executeBatchV2: (a: number, b: number, c: number) => [number, number];
 export const brepkernel_export3mf: (a: number, b: number, c: number) => [number, number, number, number];
+export const brepkernel_export3mfMulti: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_exportGlb: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportIges: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_exportObj: (a: number, b: number, c: number) => [number, number, number, number];
@@ -85,6 +86,7 @@ export const brepkernel_exportStepMultiWithOptions: (a: number, b: number, c: nu
 export const brepkernel_exportStepWithOptions: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_exportStl: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_exportStlAscii: (a: number, b: number, c: number) => [number, number, number, number];
+export const brepkernel_exportStlMulti: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_extrude: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_faceArea: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_facePerimeter: (a: number, b: number) => [number, number, number];
