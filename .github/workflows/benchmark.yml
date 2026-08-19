@@ -45,9 +45,27 @@ jobs:
         # that the `cargo` parser in `publish` understands; build noise stays on
         # stderr. `pipefail` so a bench failure fails the step despite the `tee`
         # (the default `bash -e` shell does NOT set it).
+        #
+        # Discard any criterion state restored from the cache first. In bencher
+        # output mode criterion does not write `base/sample.json`, but it still
+        # tries to READ it when the directory exists — and prints the resulting
+        # error to STDOUT, splitting that benchmark's `test ... bench:` line in
+        # two. The publish step's parser then finds no results at all and fails
+        # the run. A cached `target/` from a previous build is enough to leave
+        # those directories behind, so start from none.
         run: |
           set -o pipefail
+          rm -rf target/criterion
           cargo bench -p remus-operations --bench boolean_tracking -- --output-format bencher | tee bench-output.txt
+          # Belt and braces: every `test` line must be a well-formed bencher
+          # line. A split line still starts with `test`, so compare counts
+          # rather than just asserting one match — otherwise a single corrupted
+          # benchmark hides behind its clean neighbours and the failure
+          # resurfaces in the publish job, far from its cause.
+          total=$(grep -c '^test ' bench-output.txt)
+          parsed=$(grep -cE '^test [^ ]+ \.\.\. bench: +[0-9,]+ ns/iter' bench-output.txt)
+          echo "bencher lines: ${parsed}/${total}"
+          test "$total" -gt 0 && test "$total" -eq "$parsed"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bench-output

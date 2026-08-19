@@ -479,6 +479,11 @@ export class BrepKernel {
      */
     addHolesToFace(face: number, hole_wire_handles: Uint32Array): number;
     /**
+     * Returns a copy of the reference with a type discriminator
+     * (`"surfaceType"` or `"curveType"`) appended.
+     */
+    addRefDiscriminator(reference: string, discriminator: string, tag: string): string;
+    /**
      * Get faces adjacent to a given face within a solid.
      *
      * Returns an array of face handles.
@@ -541,6 +546,13 @@ export class BrepKernel {
      */
     boundingBox(solid: number): Float64Array;
     /**
+     * Captures an entity's geometric signature as a portable reference
+     * string — the inference-tier recovery anchor. `quantum` is the
+     * tolerance-derived quantization (pass the model's linear
+     * tolerance).
+     */
+    captureSignatureRef(kind: string, handle: number, quantum: number): string;
+    /**
      * Compute the center of mass of a solid (uniform density).
      *
      * Returns `[x, y, z]`.
@@ -579,6 +591,10 @@ export class BrepKernel {
      * blend computation fails.
      */
     chamferDistanceAngle(solid: number, edge_handles: Uint32Array, distance: number, angle: number): number;
+    /**
+     * V2 chamfer journaled as one evolution entry (kind `chamfer`).
+     */
+    chamferJournaled(solid: number, edges: Uint32Array, d1: number, d2: number): string;
     /**
      * Chamfer edges with two distances using the v2 blend engine.
      *
@@ -801,6 +817,14 @@ export class BrepKernel {
      * produces an empty or non-manifold result.
      */
     cut(a: number, b: number): number;
+    /**
+     * Cut solid `b` from `a` with journaled construction history.
+     */
+    cutJournaled(a: number, b: number): string;
+    /**
+     * Cut with full entity history; see `fuseWithEntityEvolution`.
+     */
+    cutWithEntityEvolution(a: number, b: number): string;
     /**
      * Cut (subtract) solid `b` from solid `a` and return evolution tracking data.
      *
@@ -1156,6 +1180,12 @@ export class BrepKernel {
      */
     fillet2d(coords: Float64Array, radius: number): Float64Array;
     /**
+     * V2 fillet journaled as one evolution entry (kind `fillet`).
+     *
+     * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
+     */
+    filletJournaled(solid: number, edges: Uint32Array, radius: number): string;
+    /**
      * Fillet edges using the v2 walking-based blend engine.
      *
      * Returns a new solid handle.
@@ -1268,6 +1298,22 @@ export class BrepKernel {
      * or a boolean operation produces an empty or non-manifold result.
      */
     fuseAll(solid_handles: Uint32Array): number;
+    /**
+     * Fuse two solids with journaled construction history.
+     *
+     * Returns JSON `{"solid": handle, "op": journalOp}`; feed `op` to
+     * `resolveOperationOutput` / `propagateAttributesForOp`.
+     */
+    fuseJournaled(a: number, b: number): string;
+    /**
+     * Fuse with full construction-derived vertex/edge/face history.
+     *
+     * Returns JSON `{"solid", "evolution": {"faces", "edges",
+     * "vertices"}}`; edge events are `preserved`/`modified` (with
+     * `from`), `generated` (with the generating `faceA`/`faceB` when
+     * they map), or the honest `unresolved`.
+     */
+    fuseWithEntityEvolution(a: number, b: number): string;
     /**
      * Fuse (union) two solids and return evolution tracking data.
      *
@@ -1475,6 +1521,10 @@ export class BrepKernel {
      */
     getFaceEdges(face: number): Uint32Array;
     /**
+     * A face's semantic name, or null.
+     */
+    getFaceName(face: number): string | undefined;
+    /**
      * Get the face normal of a planar face.
      *
      * Returns `[nx, ny, nz]`.
@@ -1538,7 +1588,7 @@ export class BrepKernel {
     /**
      * Get the orientation of a shape.
      *
-     * Returns `"forward"` for all faces (brepkit faces don't have an
+     * Returns `"forward"` for all faces (remus faces don't have an
      * independent orientation flag; the normal direction is canonical).
      */
     getShapeOrientation(_id: number): string;
@@ -1816,6 +1866,10 @@ export class BrepKernel {
      */
     intersect(a: number, b: number): number;
     /**
+     * Intersect two solids with journaled construction history.
+     */
+    intersectJournaled(a: number, b: number): string;
+    /**
      * Compute the boolean intersection of two 2D polygons.
      *
      * Both polygons are flat arrays `[x,y, x,y, ...]`.
@@ -1825,6 +1879,10 @@ export class BrepKernel {
      * Uses the Sutherland-Hodgman algorithm (convex clipper).
      */
     intersectPolygons2d(coords_a: Float64Array, coords_b: Float64Array): Float64Array;
+    /**
+     * Intersect with full entity history; see `fuseWithEntityEvolution`.
+     */
+    intersectWithEntityEvolution(a: number, b: number): string;
     /**
      * Intersect two solids and return evolution tracking data.
      *
@@ -1859,6 +1917,18 @@ export class BrepKernel {
      */
     isWireClosed(wire: number): boolean;
     /**
+     * Journals an explicit barrier over every entity of `solid` for an
+     * operation without evolution records. Returns the journal op id.
+     */
+    journalBarrier(kind: string, solid: number): number;
+    /**
+     * A read-only summary of the evolution journal: JSON array of
+     * `{"op", "kind", "type", "detail"}` where `type` is `evolution`
+     * (detail: origin, event count), `barrier` (detail: affected
+     * count), or `globalBarrier`.
+     */
+    journalSummary(): string;
+    /**
      * Lift a 2D curve onto a 3D plane, producing an edge.
      *
      * `curve_type`: 0 = Line, 1 = Circle, 2 = Ellipse, 3 = NURBS.
@@ -1879,6 +1949,11 @@ export class BrepKernel {
      * Returns an error if inputs are invalid.
      */
     linearPattern(solid: number, dx: number, dy: number, dz: number, spacing: number, count: number): number;
+    /**
+     * Linear pattern journaled as one evolution entry (kind
+     * `linear_pattern`). Returns JSON `{"compound", "op"}`.
+     */
+    linearPatternJournaled(solid: number, dx: number, dy: number, dz: number, spacing: number, count: number): string;
     /**
      * Loft two or more profile faces into a solid.
      *
@@ -2129,6 +2204,11 @@ export class BrepKernel {
      */
     makeNurbsEdge(start_x: number, start_y: number, start_z: number, end_x: number, end_y: number, end_z: number, degree: number, knots: Float64Array, control_points: Float64Array, weights: Float64Array): number;
     /**
+     * Serializes "the `index`-th `kind` output of journal operation
+     * `op`" as a portable reference string (versioned JSON, opaque).
+     */
+    makeOperationOutputRef(op: number, kind: string, index: number): string;
+    /**
      * Create a strictly planar face from a wire.
      *
      * Fails with a "wire is not planar" error if the wire's geometry does
@@ -2373,7 +2453,7 @@ export class BrepKernel {
     /**
      * Offset all faces of a solid outward or inward (V2 pipeline).
      *
-     * Uses the new `brepkit-offset` engine with intersection-based joints.
+     * Uses the new `remus-offset` engine with intersection-based joints.
      *
      * # Errors
      *
@@ -2522,6 +2602,13 @@ export class BrepKernel {
      */
     projectPointOnSurface(face: number, px: number, py: number, pz: number): Float64Array;
     /**
+     * Propagates face attributes across one journaled operation.
+     *
+     * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
+     * "refusedInferred"}`.
+     */
+    propagateAttributesForOp(op: number, allow_inferred: boolean): string;
+    /**
      * Move a planar face of a solid along its outward normal.
      *
      * A positive `distance` adds material, a negative one removes it.
@@ -2601,6 +2688,26 @@ export class BrepKernel {
      * the edit does not produce a valid solid.
      */
     resizeCylindricalFace(solid: number, face: number, new_radius: number): number;
+    /**
+     * Resolves "the `index`-th `kind` output of journal operation `op`"
+     * against the current model. Returns the resolution JSON (`status`
+     * plus status-specific fields); severed references are data, not
+     * errors.
+     */
+    resolveOperationOutput(op: number, kind: string, index: number): string;
+    /**
+     * Resolves a serialized reference against the current model.
+     * Returns the resolution JSON; severed references are data, not
+     * errors.
+     */
+    resolveRef(reference: string): string;
+    /**
+     * Resolves a serialized reference and reads the bound faces'
+     * attributes: JSON array of `{"kind", "handle", "name"}`. Errors on
+     * non-binding resolutions (`ref_*` diagnostics) — an attribute is
+     * never read through a dangling, severed, or ambiguous reference.
+     */
+    resolveRefFaceAttributes(reference: string): string;
     /**
      * Restore the kernel to a previously saved checkpoint.
      *
@@ -2683,7 +2790,7 @@ export class BrepKernel {
      *
      * This writer emits a single-root version 2 document. Returns a
      * `Uint8Array` consumable by
-     * `brepkit_io::arena_io::deserialize_solid`.
+     * `remus_io::arena_io::deserialize_solid`.
      *
      * # Errors
      *
@@ -2702,6 +2809,11 @@ export class BrepKernel {
      * Returns an error if any solid handle is invalid or serialization fails.
      */
     serializeSolids(solids: Uint32Array): Uint8Array;
+    /**
+     * Sets (or clears, when `name` is null/empty) a face's semantic
+     * name, preserving its other attributes.
+     */
+    setFaceName(face: number, name?: string | null): void;
     /**
      * Sew loose faces into a connected solid.
      *
@@ -2956,7 +3068,7 @@ export class BrepKernel {
      * Export a solid as a JSON-encoded BREP representation.
      *
      * Returns a JSON string with vertices, edges (with curve parameters),
-     * and faces (with surface parameters). This is a brepkit-specific format
+     * and faces (with surface parameters). This is a remus-specific format
      * that preserves all analytic geometry types.
      */
     toBrepJson(solid: number): any;
@@ -3286,7 +3398,7 @@ export function decodeEvolutionPayload(json: string): FaceEvolutionPayloadV1;
 export function lastPanicMessage(): string | undefined;
 
 /**
- * Route brepkit's Rust `log::*` calls to JavaScript `console.{log, warn,
+ * Route remus's Rust `log::*` calls to JavaScript `console.{log, warn,
  * error}`. Without this every `log::warn!` in the engine is silently
  * dropped under wasm-pack.
  *
