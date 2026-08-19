@@ -1416,6 +1416,33 @@ export class BrepKernel {
         return v1;
     }
     /**
+     * Export several solids into one 3MF package.
+     *
+     * The writer already supports multiple objects per package; this is the
+     * multi-solid twin of [`export3mf`](Self::export_3mf), mirroring
+     * [`exportStepMulti`](Self::export_step_multi) so a multi-body model
+     * exports as one file instead of forcing the caller to fuse first.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    export3mfMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_export3mfMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Export a solid to glTF binary (.glb) format.
      *
      * # Errors
@@ -1633,6 +1660,32 @@ export class BrepKernel {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Export several solids into one binary STL file.
+     *
+     * The multi-solid twin of [`exportStl`](Self::export_stl): meshes are
+     * merged into a single facet stream, which is what slicers expect from
+     * a one-part-per-file workflow with multiple bodies.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    exportStlMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportStlMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * Extrude a planar face along a direction vector to create a solid.
