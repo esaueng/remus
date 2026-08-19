@@ -364,8 +364,10 @@ fn boolean_with_policy(
                 // Translate B's z-range into A's axis frame.
                 let za = (*za_min, *za_max);
                 let zb = (*zb_min + along_axis, *zb_max + along_axis);
-                let rim_turn =
-                    exact_circle_turn_on_solid(topo, a)?.or(exact_circle_turn_on_solid(topo, b)?);
+                let rim_turn = match exact_circle_turn_on_solid(topo, a)? {
+                    Some(turn) => Some(turn),
+                    None => exact_circle_turn_on_solid(topo, b)?,
+                };
                 if let Some(result) =
                     coaxial_cylinder_shortcut(topo, op, *oa, *aa, *ra, za, zb, rim_turn, tol)?
                 {
@@ -1062,7 +1064,8 @@ fn boolean_with_policy(
         let components = crate::boolean::assembly::face_components(topo, a);
         if components.len() >= 2
             && components_are_disjoint_pieces(topo, &components)
-            && let Ok(result) = cut_multi_region_input(topo, a, b, components.len())
+            && let Ok(result) =
+                cut_multi_region_input(topo, a, b, components.len(), policy, used_fallback)
         {
             return Ok(result);
         }
@@ -1079,7 +1082,8 @@ fn boolean_with_policy(
         let tool_components = crate::boolean::assembly::face_components(topo, b);
         if (2..=64).contains(&tool_components.len())
             && components_are_disjoint_pieces(topo, &tool_components)
-            && let Ok(result) = fuse_multi_component_tool(topo, a, tool_components)
+            && let Ok(result) =
+                fuse_multi_component_tool(topo, a, tool_components, policy, used_fallback)
         {
             return Ok(result);
         }
@@ -3468,8 +3472,10 @@ fn components_are_disjoint_pieces(topo: &Topology, components: &[Vec<FaceId>]) -
 ///
 /// Each piece is copied into a fresh connected solid (the pavefiller
 /// stumbles on shared vertex IDs across what it considers one "solid B")
-/// and fused via the full `boolean` entry, so every per-piece fuse gets the
-/// analytic path, gates, and fallbacks. Fuse distributes over a
+/// and fused under the caller's fallback policy, so every per-piece fuse
+/// gets the analytic path, gates, and fallbacks — and an `ExactOnly`
+/// caller still gets the typed refusal (with `used_fallback` reported)
+/// instead of a silently degraded piece. Fuse distributes over a
 /// disjoint-union tool, so the fold is exact. Recursion terminates: each
 /// piece is single-component, so the recursive call never re-enters this
 /// path.
@@ -3477,12 +3483,21 @@ fn fuse_multi_component_tool(
     topo: &mut Topology,
     a: SolidId,
     b_components: Vec<Vec<remus_topology::face::FaceId>>,
+    policy: remus_math::context::FallbackPolicy,
+    used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
     let mut result = a;
     for comp_faces in b_components {
         let comp_solid_raw = make_solid_from_face_subset(topo, &comp_faces)?;
         let comp_solid = crate::copy::copy_solid(topo, comp_solid_raw)?;
-        result = boolean(topo, BooleanOp::Fuse, result, comp_solid)?;
+        result = boolean_with_policy(
+            topo,
+            BooleanOp::Fuse,
+            result,
+            comp_solid,
+            policy,
+            used_fallback,
+        )?;
     }
     Ok(result)
 }
@@ -3500,6 +3515,8 @@ fn cut_multi_region_input(
     a: SolidId,
     b: SolidId,
     comp_count: usize,
+    policy: remus_math::context::FallbackPolicy,
+    used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
     let components = crate::boolean::assembly::face_components(topo, a);
     debug_assert_eq!(components.len(), comp_count);
@@ -3514,7 +3531,7 @@ fn cut_multi_region_input(
         // input — GFA's pavefiller can stumble on shared vertex IDs across
         // what it considers a single "solid A".
         let comp_solid = crate::copy::copy_solid(topo, comp_solid_raw)?;
-        match boolean(topo, BooleanOp::Cut, comp_solid, b) {
+        match boolean_with_policy(topo, BooleanOp::Cut, comp_solid, b, policy, used_fallback) {
             Ok(r) => per_component_results.push(r),
             Err(
                 crate::OperationsError::EmptyResult { .. }

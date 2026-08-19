@@ -354,33 +354,40 @@ fn plane_cylinder(
     // Oblique or perpendicular: the legacy closed form already produces the
     // exact circle/ellipse; contact is transversal in every such case.
     let curves = exact_plane_analytic(AnalyticSurface::Cylinder(cyl), p.normal, p.d)?;
-    Ok(SurfaceIntersection::certified(
-        curves
-            .into_iter()
-            .map(|curve| {
-                IntersectionElement::Curve(match curve {
-                    ExactIntersectionCurve::Circle(c) => QualifiedCurve {
-                        geometry: CurveGeometry::Circle(c),
-                        kind: ContactKind::Transversal,
-                        quality: ResultQuality::Exact,
-                        method: SourceMethod::ClosedForm,
-                    },
-                    ExactIntersectionCurve::Ellipse(e) => QualifiedCurve {
-                        geometry: CurveGeometry::Ellipse(e),
-                        kind: ContactKind::Transversal,
-                        quality: ResultQuality::Exact,
-                        method: SourceMethod::ClosedForm,
-                    },
-                    ExactIntersectionCurve::Points(pts) => QualifiedCurve {
-                        geometry: CurveGeometry::Sampled(pts),
-                        kind: ContactKind::Unclassified,
-                        quality: ResultQuality::Unresolved,
-                        method: SourceMethod::LegacyAnalytic,
-                    },
-                })
+    let elements: Vec<IntersectionElement> = curves
+        .into_iter()
+        .map(|curve| {
+            IntersectionElement::Curve(match curve {
+                ExactIntersectionCurve::Circle(c) => QualifiedCurve {
+                    geometry: CurveGeometry::Circle(c),
+                    kind: ContactKind::Transversal,
+                    quality: ResultQuality::Exact,
+                    method: SourceMethod::ClosedForm,
+                },
+                ExactIntersectionCurve::Ellipse(e) => QualifiedCurve {
+                    geometry: CurveGeometry::Ellipse(e),
+                    kind: ContactKind::Transversal,
+                    quality: ResultQuality::Exact,
+                    method: SourceMethod::ClosedForm,
+                },
+                ExactIntersectionCurve::Points(pts) => QualifiedCurve {
+                    geometry: CurveGeometry::Sampled(pts),
+                    kind: ContactKind::Unclassified,
+                    quality: ResultQuality::Unresolved,
+                    method: SourceMethod::LegacyAnalytic,
+                },
             })
-            .collect(),
-    ))
+        })
+        .collect();
+    // The legacy closed form applies its own (coarser, 1e-10) parallel test
+    // and can hand back sampled Points where the branch above judged the
+    // plane oblique; an Unresolved element must never ride in a `complete`
+    // result.
+    let complete = elements.iter().all(|element| match element {
+        IntersectionElement::Curve(c) => c.quality != ResultQuality::Unresolved,
+        _ => true,
+    });
+    Ok(SurfaceIntersection { elements, complete })
 }
 
 fn sphere_sphere(
