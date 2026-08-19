@@ -1,20 +1,20 @@
 {
-  "description": "WebAssembly bindings for brepkit — browser-native B-Rep solid modeling",
+  "description": "WebAssembly bindings for remus — browser-native B-Rep solid modeling",
   "exports": {
     ".": {
-      "node": "./brepkit_wasm_node.cjs",
-      "import": "./brepkit_wasm.js",
-      "default": "./brepkit_wasm.js"
+      "node": "./remus_wasm_node.cjs",
+      "import": "./remus_wasm.js",
+      "default": "./remus_wasm.js"
     },
-    "./brepkit_wasm_bg.wasm": "./brepkit_wasm_bg.wasm"
+    "./remus_wasm_bg.wasm": "./remus_wasm_bg.wasm"
   },
   "files": [
-    "brepkit_wasm_bg.wasm",
-    "brepkit_wasm.js",
-    "brepkit_wasm_bg.js",
-    "brepkit_wasm.d.ts",
+    "remus_wasm_bg.wasm",
+    "remus_wasm.js",
+    "remus_wasm_bg.js",
+    "remus_wasm.d.ts",
     "LICENSE-APACHE",
-    "brepkit_wasm_node.cjs"
+    "remus_wasm_node.cjs"
   ],
   "keywords": [
     "cad",
@@ -24,18 +24,19 @@
     "solid-modeling"
   ],
   "license": "Apache-2.0",
-  "main": "brepkit_wasm_node.cjs",
-  "module": "brepkit_wasm.js",
-  "name": "brepkit-wasm",
+  "main": "remus_wasm_node.cjs",
+  "module": "remus_wasm.js",
+  "name": "remus-wasm",
   "repository": {
     "type": "git",
-    "url": "https://github.com/esaueng/brepkit"
+    "url": "git+https://github.com/esaueng/remus.git"
   },
   "sideEffects": [
-    "./brepkit_wasm.js",
+    "./remus_wasm.js",
     "./snippets/*"
   ],
   "type": "module",
-  "types": "brepkit_wasm.d.ts",
-  "version": "2.130.0"
+  "types": "remus_wasm.d.ts",
+  "version": "2.130.0",
+  "homepage": "https://github.com/esaueng/remus"
 }
