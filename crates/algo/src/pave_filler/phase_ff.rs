@@ -3572,13 +3572,10 @@ fn compute_raw_curves(
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
-            // Deferred to later phases -- analytic-NURBS is complex
-            let _ = nurbs;
-            Ok(Vec::new())
+            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs)
         }
         (FaceSurface::Nurbs(nurbs), analytic_surf) if analytic_surf.as_analytic().is_some() => {
-            let _ = nurbs;
-            Ok(Vec::new())
+            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs)
         }
 
         (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => nurbs_nurbs_intersection(na, nb),
@@ -3990,6 +3987,62 @@ fn plane_nurbs_intersection(
 }
 
 /// NURBS-NURBS intersection.
+/// Analytic (non-plane) × NURBS face pair: convert the analytic side to its
+/// NURBS form and run the NURBS-NURBS marcher.
+///
+/// This arm historically returned `Ok(vec![])` with a "deferred to later
+/// phases" comment — but no later phase existed, so any boolean touching a
+/// blend band against a curved analytic wall silently skipped face splitting
+/// and misbuilt (or leaned on the operations-layer mesh fallback to notice).
+/// A genuine attempt is strictly better on both sides: pairs that truly
+/// intersect now split, and pairs that do not still return empty from a real
+/// computation rather than from a stub. Cylinder conversion is exact
+/// (rational); cone/sphere/torus conversions are sampled fits, in line with
+/// every other non-plane pair in this table, whose curves are already
+/// marched approximations. When a cylinder/cone face has no recoverable
+/// v-range the pair is refused by name instead of silently unsplit.
+fn analytic_nurbs_intersection(
+    analytic: &FaceSurface,
+    v_range: Option<(f64, f64)>,
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
+) -> Result<Vec<RawCurve>, AlgoError> {
+    // The wire-derived v-range under-covers curved faces slightly (5 samples
+    // per edge); pad it so the marcher sees the whole face. Overshoot is
+    // harmless — raw curves are trimmed against face boundaries downstream.
+    let padded = v_range.map(|(a, b)| {
+        let (v0, v1) = if a <= b { (a, b) } else { (b, a) };
+        let margin = ((v1 - v0) * 0.1).max(1e-9);
+        (v0 - margin, v1 + margin)
+    });
+    let bounded = |kind: &'static str| {
+        padded.ok_or_else(|| {
+            AlgoError::IntersectionFailed(format!(
+                "analytic-NURBS pair: no recoverable v-range for the {kind} face"
+            ))
+        })
+    };
+    let converted = match analytic {
+        FaceSurface::Cylinder(c) => {
+            let (v0, v1) = bounded("cylinder")?;
+            c.to_nurbs(v0, v1)?
+        }
+        FaceSurface::Cone(c) => {
+            let (v0, v1) = bounded("cone")?;
+            c.to_nurbs(v0, v1)?
+        }
+        FaceSurface::Sphere(s) => s.to_nurbs()?,
+        FaceSurface::Torus(t) => t.to_nurbs()?,
+        // Plane and Nurbs never reach this helper: planes match earlier arms
+        // and `as_analytic()` is None for Nurbs.
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+            return Err(AlgoError::IntersectionFailed(
+                "analytic-NURBS pair: unexpected surface variant".to_string(),
+            ));
+        }
+    };
+    nurbs_nurbs_intersection(&converted, nurbs)
+}
+
 fn nurbs_nurbs_intersection(
     na: &remus_math::nurbs::surface::NurbsSurface,
     nb: &remus_math::nurbs::surface::NurbsSurface,
@@ -4040,10 +4093,13 @@ fn ellipse_bbox(ellipse: &remus_math::curves::Ellipse3D) -> Aabb3 {
 
 /// Find an existing vertex on a face's boundary within tolerance of a point.
 ///
-/// Iterates the face's outer wire vertices and returns the first one
-/// within `tol.linear` of `point`. This implements the "PutPavesOnCurve"
+/// Iterates the face's outer and inner wire vertices and returns the first
+/// one within `tol.linear` of `point`. This implements the "PutPavesOnCurve"
 /// vertex snapping: intersection curve endpoints at face boundaries reuse
 /// the face's existing boundary vertices instead of creating duplicates.
+/// Inner wires matter as much as the outer one — an intersection curve
+/// ending on a hole boundary would otherwise mint a duplicate vertex within
+/// tolerance of the existing one.
 fn find_nearby_face_vertex(
     topo: &Topology,
     face_id: FaceId,
@@ -4051,13 +4107,18 @@ fn find_nearby_face_vertex(
     tol: Tolerance,
 ) -> Option<remus_topology::vertex::VertexId> {
     let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        for &vid in &[edge.start(), edge.end()] {
-            let vpt = topo.vertex(vid).ok()?.point();
-            if (vpt - point).length() < tol.linear {
-                return Some(vid);
+    let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .collect();
+    for wid in wires {
+        let wire = topo.wire(wid).ok()?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            for &vid in &[edge.start(), edge.end()] {
+                let vpt = topo.vertex(vid).ok()?.point();
+                if (vpt - point).length() < tol.linear {
+                    return Some(vid);
+                }
             }
         }
     }

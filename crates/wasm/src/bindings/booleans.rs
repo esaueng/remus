@@ -46,6 +46,53 @@ pub(crate) fn coincident_face_pairs_to_json(
 impl BrepKernel {
     // ── Boolean operations ──────────────────────────────────────────
 
+    /// Perform a boolean with disclosed result quality.
+    ///
+    /// `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
+    /// `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
+    /// bindings silently accept the mesh (co-refinement) fallback, which
+    /// discards analytic surface types; this binding reports whether that
+    /// happened (`quality: "approximate"` plus the fallback deflection), and
+    /// `exact_only = true` turns the fallback into a typed refusal so an
+    /// exact-or-nothing caller never receives a faceted body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a handle is invalid, the op string is unknown, or
+    /// (under `exact_only`) the exact pipeline cannot produce the result.
+    #[wasm_bindgen(js_name = "booleanWithQuality")]
+    pub fn boolean_with_quality(
+        &mut self,
+        op: &str,
+        a: u32,
+        b: u32,
+        exact_only: Option<bool>,
+    ) -> Result<crate::types::BooleanQualityResult, JsError> {
+        use remus_math::context::{FallbackPolicy, OperationContext};
+        use remus_operations::boolean::{BooleanQuality, boolean_with_context};
+
+        let boolean_op = parse_boolean_op(op)?;
+        let a_id = self.resolve_solid(a)?;
+        let b_id = self.resolve_solid(b)?;
+        let context = if exact_only == Some(true) {
+            OperationContext::new().with_fallback(FallbackPolicy::ExactOnly)
+        } else {
+            OperationContext::new()
+        };
+        let outcome = boolean_with_context(self.topo_mut(), boolean_op, a_id, b_id, &context)?;
+        let (quality, deflection) = match outcome.quality {
+            BooleanQuality::Exact => ("exact".to_string(), None),
+            BooleanQuality::Approximate { deflection } => {
+                ("approximate".to_string(), Some(deflection))
+            }
+        };
+        Ok(crate::types::BooleanQualityResult {
+            solid: solid_id_to_u32(outcome.solid),
+            quality,
+            deflection,
+        })
+    }
+
     /// Fuse (union) two solids into one.
     ///
     /// Returns a new solid handle (`u32`).
@@ -809,5 +856,28 @@ mod tests {
             vol_after < vol_before && vol_after > 0.0,
             "compound_cut must reduce volume: {vol_before} -> {vol_after}"
         );
+    }
+
+    // ── booleanWithQuality ───────────────────────────────────────────
+
+    #[test]
+    fn boolean_with_quality_reports_exact_on_clean_boxes() {
+        let mut k = BrepKernel::new();
+        let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let out = k.boolean_with_quality("fuse", a, b, None).unwrap();
+        assert_eq!(out.quality, "exact");
+        assert!(out.deflection.is_none());
+        let volume = k.volume(out.solid, 0.05).unwrap();
+        assert!((volume - 8.0).abs() < 1e-6, "fused volume {volume}");
+    }
+
+    #[test]
+    fn boolean_with_quality_exact_only_succeeds_on_exact_path() {
+        let mut k = BrepKernel::new();
+        let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let out = k.boolean_with_quality("cut", a, b, Some(true)).unwrap();
+        assert_eq!(out.quality, "exact");
     }
 }
