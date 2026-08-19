@@ -150,6 +150,29 @@ export interface FaceEvolutionPayloadV1 {
 }
 
 /**
+ * Typed result for `booleanWithQuality`: a boolean result with its
+ * disclosed quality, so a consumer can tell an exact result from a
+ * mesh-fallback one instead of silently losing analytic surfaces.
+ */
+export interface BooleanQualityResult {
+    /**
+     * Handle of the result solid.
+     */
+    solid: number;
+    /**
+     * `\"exact\"` when the exact pipeline produced the result; `\"approximate\"`
+     * when the mesh (co-refinement) fallback ran and analytic surface types
+     * were lost.
+     */
+    quality: string;
+    /**
+     * Tessellation deflection the fallback ran at, in model units. Present
+     * only when `quality` is `\"approximate\"`.
+     */
+    deflection?: number;
+}
+
+/**
  * Typed result for `boundingBox`.
  */
 export interface BoundingBoxResult {
@@ -535,6 +558,23 @@ export class BrepKernel {
      * Create a new empty assembly. Returns an assembly index.
      */
     assemblyNew(name: string): number;
+    /**
+     * Perform a boolean with disclosed result quality.
+     *
+     * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
+     * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
+     * bindings silently accept the mesh (co-refinement) fallback, which
+     * discards analytic surface types; this binding reports whether that
+     * happened (`quality: "approximate"` plus the fallback deflection), and
+     * `exact_only = true` turns the fallback into a typed refusal so an
+     * exact-or-nothing caller never receives a faceted body.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the op string is unknown, or
+     * (under `exact_only`) the exact pipeline cannot produce the result.
+     */
+    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null): BooleanQualityResult;
     /**
      * Compute the axis-aligned bounding box of a solid.
      *
@@ -967,9 +1007,11 @@ export class BrepKernel {
      */
     evaluateSurface(face: number, u: number, v: number): Float64Array;
     /**
-     * Evaluate a surface normal at (u, v) on a face.
+     * Evaluate the outward surface normal at (u, v) on a face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * surface normal points inward on those.
      */
     evaluateSurfaceNormal(face: number, u: number, v: number): Float64Array;
     /**
@@ -1525,9 +1567,11 @@ export class BrepKernel {
      */
     getFaceName(face: number): string | undefined;
     /**
-     * Get the face normal of a planar face.
+     * Get the outward face normal of a planar face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * plane normal points inward on those.
      *
      * # Errors
      *

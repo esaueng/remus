@@ -265,6 +265,36 @@ class BrepKernel {
         return ret >>> 0;
     }
     /**
+     * Perform a boolean with disclosed result quality.
+     *
+     * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
+     * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
+     * bindings silently accept the mesh (co-refinement) fallback, which
+     * discards analytic surface types; this binding reports whether that
+     * happened (`quality: "approximate"` plus the fallback deflection), and
+     * `exact_only = true` turns the fallback into a typed refusal so an
+     * exact-or-nothing caller never receives a faceted body.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the op string is unknown, or
+     * (under `exact_only`) the exact pipeline cannot produce the result.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [exact_only]
+     * @returns {BooleanQualityResult}
+     */
+    booleanWithQuality(op, a, b, exact_only) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compute the axis-aligned bounding box of a solid.
      *
      * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
@@ -1282,9 +1312,11 @@ class BrepKernel {
         return v1;
     }
     /**
-     * Evaluate a surface normal at (u, v) on a face.
+     * Evaluate the outward surface normal at (u, v) on a face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * surface normal points inward on those.
      * @param {number} face
      * @param {number} u
      * @param {number} v
@@ -2490,9 +2522,11 @@ class BrepKernel {
         return v1;
     }
     /**
-     * Get the face normal of a planar face.
+     * Get the outward face normal of a planar face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * plane normal points inward on those.
      *
      * # Errors
      *
