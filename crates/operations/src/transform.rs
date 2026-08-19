@@ -218,11 +218,15 @@ pub fn transform_solid(
                     // phase, so map them back before projecting onto the
                     // still-untransformed surface.
                     let inverse = matrix.inverse()?;
-                    let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                    let v_range = analytic_face_v_range(topo, fid, |pt| {
                         cyl.project_point(inverse.mul_point(pt)).1
                     })?;
-                    let transformed =
-                        sampled_transformed_nurbs(|u, v| cyl.evaluate(u, v), matrix, v0, v1)?;
+                    let nurbs =
+                        remus_heal::construct::convert_surface::cylinder_to_nurbs(cyl, v_range)
+                            .map_err(|e| crate::OperationsError::InvalidInput {
+                                reason: format!("cylinder_to_nurbs failed: {e}"),
+                            })?;
+                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
                 }
@@ -241,11 +245,15 @@ pub fn transform_solid(
                     // Vertex phase already moved the boundary; project its
                     // inverse image onto the untransformed cone.
                     let inverse = matrix.inverse()?;
-                    let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                    let v_range = analytic_face_v_range(topo, fid, |pt| {
                         cone.project_point(inverse.mul_point(pt)).1
                     })?;
-                    let transformed =
-                        sampled_transformed_nurbs(|u, v| cone.evaluate(u, v), matrix, v0, v1)?;
+                    let nurbs =
+                        remus_heal::construct::convert_surface::cone_to_nurbs(cone, v_range)
+                            .map_err(|e| crate::OperationsError::InvalidInput {
+                                reason: format!("cone_to_nurbs failed: {e}"),
+                            })?;
+                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
                 }
@@ -283,15 +291,14 @@ pub fn transform_solid(
                     )?;
                     topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
                 } else {
-                    // Sample-and-refit over the full closed v-range; see
-                    // `sampled_transformed_nurbs` for why the exact rational
-                    // converter route is wrong here.
-                    let transformed = sampled_transformed_nurbs(
-                        |u, v| tor.evaluate(u, v),
-                        matrix,
-                        0.0,
-                        std::f64::consts::TAU,
-                    )?;
+                    // Heal's exact rational 9x9 torus converter is
+                    // param-matched to the analytic torus and keeps the
+                    // surface rational through STEP round-trips.
+                    let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(tor)
+                        .map_err(|e| crate::OperationsError::InvalidInput {
+                            reason: format!("torus_to_nurbs failed: {e}"),
+                        })?;
+                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
                 }
@@ -535,11 +542,14 @@ pub(crate) fn transform_face_surface(
                 // rather than keep a circular surface with a wrong radius.
                 // Vertices were already moved; probe with their inverse image.
                 let inverse = matrix.inverse()?;
-                let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                let v_range = analytic_face_v_range(topo, fid, |pt| {
                     cyl.project_point(inverse.mul_point(pt)).1
                 })?;
-                let transformed =
-                    sampled_transformed_nurbs(|u, v| cyl.evaluate(u, v), matrix, v0, v1)?;
+                let nurbs = remus_heal::construct::convert_surface::cylinder_to_nurbs(cyl, v_range)
+                    .map_err(|e| crate::OperationsError::InvalidInput {
+                        reason: format!("cylinder_to_nurbs failed: {e}"),
+                    })?;
+                let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(transformed));
             }
@@ -556,11 +566,14 @@ pub(crate) fn transform_face_surface(
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
             } else {
                 let inverse = matrix.inverse()?;
-                let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                let v_range = analytic_face_v_range(topo, fid, |pt| {
                     cone.project_point(inverse.mul_point(pt)).1
                 })?;
-                let transformed =
-                    sampled_transformed_nurbs(|u, v| cone.evaluate(u, v), matrix, v0, v1)?;
+                let nurbs = remus_heal::construct::convert_surface::cone_to_nurbs(cone, v_range)
+                    .map_err(|e| crate::OperationsError::InvalidInput {
+                        reason: format!("cone_to_nurbs failed: {e}"),
+                    })?;
+                let transformed = transform_nurbs_surface(&nurbs, matrix)?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(transformed));
             }
@@ -698,13 +711,13 @@ fn sphere_to_transformed_nurbs(
 /// Sample an analytic surface over (u ∈ [0, τ], v ∈ [v_min, v_max]), map the
 /// samples through `matrix`, and refit as a NURBS surface.
 ///
-/// This sample-and-refit route is the one that demonstrably keeps the face
-/// consistent after an anisotropic transform (spheres have used it all
-/// along). The tempting alternative — heal's exact rational converters
-/// followed by a control-point transform — produces a surface over a
-/// *different parameter domain* than the source analytic surface, which
-/// desynchronizes the face's seam/trim references and tessellates garbage
-/// (measured: a scaled cone read one seventh of its true volume).
+/// Used by the sphere path (its heal-side converter has pole singularities
+/// that the sampled fit sidesteps). Cylinder/cone/torus use heal's exact
+/// rational converters instead — those are param-matched to the analytic
+/// surfaces and keep rationality through STEP round-trips. Note when
+/// verifying any of these paths: measure by sampling the surface, never by
+/// tessellated volume — seam-carrying NURBS walls have a pre-existing
+/// mesher defect (see the ignored ready-repro in transform/tests.rs).
 fn sampled_transformed_nurbs(
     evaluate: impl Fn(f64, f64) -> remus_math::vec::Point3,
     matrix: &Mat4,
