@@ -308,6 +308,34 @@ pub(super) fn circle_param_range(
     }
 }
 
+/// The shorter of the two arcs an untrimmed open circle edge's endpoints
+/// subtend: CCW when the forward span is at most a half turn, otherwise CW
+/// (returned with `t_end < t_start` so interpolation runs backward).
+///
+/// Only for edges WITHOUT a stored trim — a trim states the intended arc
+/// exactly, including intentional major arcs this heuristic would flip.
+///
+/// # Errors
+///
+/// Returns an error if vertex lookup fails.
+fn shorter_arc_range(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    circle: &remus_math::curves::Circle3D,
+) -> Result<(f64, f64), crate::OperationsError> {
+    let sp = topo.vertex(edge.start())?.point();
+    let ep = topo.vertex(edge.end())?.point();
+    let ts = circle.project(sp);
+    let te_raw = circle.project(ep);
+    let fwd_span = (te_raw - ts).rem_euclid(std::f64::consts::TAU);
+    if fwd_span <= std::f64::consts::PI {
+        Ok((ts, ts + fwd_span))
+    } else {
+        let rev_span = std::f64::consts::TAU - fwd_span;
+        Ok((ts, ts - rev_span))
+    }
+}
+
 /// Sample an edge curve to produce a list of 3D points (start to end).
 ///
 /// The sampling density is driven by `deflection`. For a `Line`, only the
@@ -498,7 +526,16 @@ pub(super) fn sample_wire_positions(
         let edge = topo.edge(oe.edge())?;
         match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
+                // An untrimmed open arc's span is ambiguous (the endpoints
+                // subtend two complementary arcs, and `circle_param_range`
+                // always picks the CCW one). Legacy models without stored
+                // trims relied on the shortest-arc heuristic here, so keep
+                // it for them; a stored trim is exact and wins.
+                let (t_start, t_end) = if edge.trim().is_some() || edge.is_closed() {
+                    circle_param_range(topo, edge, circle)?
+                } else {
+                    shorter_arc_range(topo, edge, circle)?
+                };
                 let arc_range = (t_end - t_start).abs();
                 let n_samples = segments_for_chord_deviation_a(
                     circle.radius(),
