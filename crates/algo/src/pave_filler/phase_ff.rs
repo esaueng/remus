@@ -4040,10 +4040,13 @@ fn ellipse_bbox(ellipse: &remus_math::curves::Ellipse3D) -> Aabb3 {
 
 /// Find an existing vertex on a face's boundary within tolerance of a point.
 ///
-/// Iterates the face's outer wire vertices and returns the first one
-/// within `tol.linear` of `point`. This implements the "PutPavesOnCurve"
+/// Iterates the face's outer and inner wire vertices and returns the first
+/// one within `tol.linear` of `point`. This implements the "PutPavesOnCurve"
 /// vertex snapping: intersection curve endpoints at face boundaries reuse
 /// the face's existing boundary vertices instead of creating duplicates.
+/// Inner wires matter as much as the outer one — an intersection curve
+/// ending on a hole boundary would otherwise mint a duplicate vertex within
+/// tolerance of the existing one.
 fn find_nearby_face_vertex(
     topo: &Topology,
     face_id: FaceId,
@@ -4051,13 +4054,18 @@ fn find_nearby_face_vertex(
     tol: Tolerance,
 ) -> Option<remus_topology::vertex::VertexId> {
     let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        for &vid in &[edge.start(), edge.end()] {
-            let vpt = topo.vertex(vid).ok()?.point();
-            if (vpt - point).length() < tol.linear {
-                return Some(vid);
+    let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .collect();
+    for wid in wires {
+        let wire = topo.wire(wid).ok()?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            for &vid in &[edge.start(), edge.end()] {
+                let vpt = topo.vertex(vid).ok()?.point();
+                if (vpt - point).length() < tol.linear {
+                    return Some(vid);
+                }
             }
         }
     }
