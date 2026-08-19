@@ -414,6 +414,11 @@ impl BrepKernel {
         edge_handles: Vec<u32>,
         radius: f64,
     ) -> Result<u32, JsError> {
+        if self.poisoned {
+            return Err(JsError::new(
+                "Kernel poisoned after panic. Create a new BrepKernel instance.",
+            ));
+        }
         validate_positive(radius, "radius")?;
         let solid_id = self.resolve_solid(solid)?;
         let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
@@ -422,9 +427,11 @@ impl BrepKernel {
             .collect::<Result<_, _>>()?;
         // `fillet_whole_selection` runs the engine chain and enforces the rule
         // that the answer covers every edge named (see its doc comment for what
-        // used to happen instead). Wrap in catch_unwind to prevent panics from
-        // propagating across the WASM FFI boundary, which would abort the
-        // entire WASM instance.
+        // used to happen instead). The catch_unwind helps on native targets
+        // only: wasm32 is panic=abort, where the hook in `panics.rs` records
+        // the message and the instance is unrecoverable. On native, a caught
+        // unwind leaves a half-mutated topology, so poison the kernel exactly
+        // as `compoundCut` does instead of serving further calls from it.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::helpers::fillet_whole_selection(self.topo_mut(), solid_id, &edge_ids, radius)
         }));
@@ -432,6 +439,7 @@ impl BrepKernel {
             Ok(Ok(solid)) => Ok(solid_id_to_u32(solid)),
             Ok(Err(e)) => Err(fillet_failure_js_error(&e)),
             Err(panic_info) => {
+                self.poisoned = true;
                 let msg = panic_message(&panic_info, "Fillet");
                 Err(JsError::new(&msg))
             }
@@ -467,6 +475,11 @@ impl BrepKernel {
         edge_handles: Vec<u32>,
         radius: f64,
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
+        if self.poisoned {
+            return Err(JsError::new(
+                "Kernel poisoned after panic. Create a new BrepKernel instance.",
+            ));
+        }
         validate_positive(radius, "radius")?;
         let solid_id = self.resolve_solid(solid)?;
         let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
@@ -474,8 +487,9 @@ impl BrepKernel {
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, _>>()?;
 
-        // Wrap in catch_unwind like `fillet` does: a fillet panic must not
-        // abort the whole WASM instance.
+        // catch_unwind like `fillet` does. As there, it only helps on native
+        // targets (wasm32 is panic=abort); a caught unwind leaves a
+        // half-mutated topology, so the panic arm below poisons the kernel.
         let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
             .into_iter()
             .map(face_id_to_u32)
@@ -503,7 +517,10 @@ impl BrepKernel {
         ));
         match result {
             Ok(inner) => inner,
-            Err(panic_info) => Err(JsError::new(&panic_message(&panic_info, "Fillet"))),
+            Err(panic_info) => {
+                self.poisoned = true;
+                Err(JsError::new(&panic_message(&panic_info, "Fillet")))
+            }
         }
     }
 
