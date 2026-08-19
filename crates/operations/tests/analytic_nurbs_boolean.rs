@@ -10,13 +10,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use remus_math::mat::Mat4;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::heal::convert_to_bspline;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
-use remus_operations::validate::validate_solid;
-use remus_math::mat::Mat4;
 use remus_operations::transform::transform_solid;
+use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 
 /// Cylinder (analytic wall) minus a box whose every face is a B-spline:
@@ -31,15 +31,15 @@ fn cylinder_cut_by_bspline_box_splits_the_wall() {
     let slab = make_box(&mut topo, 20.0, 20.0, 5.0).unwrap();
     transform_solid(&mut topo, slab, &Mat4::translation(-10.0, -10.0, 7.5)).unwrap();
     let converted = convert_to_bspline(&mut topo, slab).unwrap();
-    assert!(converted > 0, "slab faces should have converted to B-spline");
+    assert!(
+        converted > 0,
+        "slab faces should have converted to B-spline"
+    );
 
     let result = boolean(&mut topo, BooleanOp::Cut, cyl, slab).unwrap();
 
     let report = validate_solid(&topo, result).unwrap();
-    assert!(
-        report.is_valid(),
-        "cut result should validate: {report:?}"
-    );
+    assert!(report.is_valid(), "cut result should validate: {report:?}");
     // Closed form: the surviving cylinder is r=5, h=7.5.
     let expected = std::f64::consts::PI * 25.0 * 7.5;
     let volume = solid_volume(&topo, result, 0.05).unwrap();

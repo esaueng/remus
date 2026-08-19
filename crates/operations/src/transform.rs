@@ -199,15 +199,33 @@ pub fn transform_solid(
                     .set_surface(FaceSurface::Nurbs(new_surface?));
             }
             FaceSurface::Cylinder(cyl) => {
-                let new_origin = matrix.mul_point(cyl.origin());
-                let new_axis = transform_direction(matrix, cyl.axis())?;
-                // Scale radius: measure how the matrix scales a direction perpendicular to axis
-                let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
-                let new_cyl = remus_math::surfaces::CylindricalSurface::new(
-                    new_origin, new_axis, new_radius,
-                )?;
-                topo.face_mut(fid)?
-                    .set_surface(FaceSurface::Cylinder(new_cyl));
+                if is_uniform_scale(matrix) {
+                    let new_origin = matrix.mul_point(cyl.origin());
+                    let new_axis = transform_direction(matrix, cyl.axis())?;
+                    let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
+                    let new_cyl = remus_math::surfaces::CylindricalSurface::new(
+                        new_origin, new_axis, new_radius,
+                    )?;
+                    topo.face_mut(fid)?
+                        .set_surface(FaceSurface::Cylinder(new_cyl));
+                } else {
+                    // Anisotropic scale turns a circular cylinder into an
+                    // elliptic one, which `FaceSurface` cannot carry; keeping
+                    // it circular with a radius sampled along one arbitrary
+                    // perpendicular was silently wrong geometry. Convert to
+                    // NURBS exactly (rational) like cone/sphere/torus do.
+                    // Boundary vertices were already moved in the vertex
+                    // phase, so map them back before projecting onto the
+                    // still-untransformed surface.
+                    let inverse = matrix.inverse()?;
+                    let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                        cyl.project_point(inverse.mul_point(pt)).1
+                    })?;
+                    let transformed =
+                        sampled_transformed_nurbs(|u, v| cyl.evaluate(u, v), matrix, v0, v1)?;
+                    topo.face_mut(fid)?
+                        .set_surface(FaceSurface::Nurbs(transformed));
+                }
             }
             FaceSurface::Cone(cone) => {
                 if is_uniform_scale(matrix) {
@@ -220,18 +238,14 @@ pub fn transform_solid(
                     )?;
                     topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
                 } else {
-                    let v_range = analytic_face_v_range(topo, fid, |pt| cone.project_point(pt).1)?;
-                    let cone_clone = cone.clone();
-                    // Use heal's exact rational cone converter (geometry's
-                    // delegates to math's sampled approximation; heal's is
-                    // geometrically exact). v_range is the cone-generator
-                    // distance from apex.
-                    let nurbs =
-                        remus_heal::construct::convert_surface::cone_to_nurbs(&cone_clone, v_range)
-                            .map_err(|e| crate::OperationsError::InvalidInput {
-                                reason: format!("cone_to_nurbs failed: {e}"),
-                            })?;
-                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
+                    // Vertex phase already moved the boundary; project its
+                    // inverse image onto the untransformed cone.
+                    let inverse = matrix.inverse()?;
+                    let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                        cone.project_point(inverse.mul_point(pt)).1
+                    })?;
+                    let transformed =
+                        sampled_transformed_nurbs(|u, v| cone.evaluate(u, v), matrix, v0, v1)?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
                 }
@@ -248,8 +262,10 @@ pub fn transform_solid(
                         .set_surface(FaceSurface::Sphere(new_sph));
                 } else {
                     // Non-uniform scale: sample the face's v-range of the
-                    // sphere and refit as NURBS.
-                    let (v_min, v_max) = sphere_face_v_range(topo, fid, sph)?;
+                    // sphere and refit as NURBS. Boundary vertices were
+                    // already moved; probe with their inverse image.
+                    let inverse = matrix.inverse()?;
+                    let (v_min, v_max) = sphere_face_v_range(topo, fid, sph, &inverse)?;
                     let sph_clone = sph.clone();
                     let nurbs = sphere_to_transformed_nurbs(&sph_clone, matrix, v_min, v_max)?;
                     topo.face_mut(fid)?.set_surface(FaceSurface::Nurbs(nurbs));
@@ -267,15 +283,15 @@ pub fn transform_solid(
                     )?;
                     topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
                 } else {
-                    let tor_clone = tor.clone();
-                    // Use heal's exact rational torus converter (geometry's
-                    // delegates to math's sampled approximation; heal's is
-                    // geometrically exact 9×9 tensor product).
-                    let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
-                        .map_err(|e| crate::OperationsError::InvalidInput {
-                            reason: format!("torus_to_nurbs failed: {e}"),
-                        })?;
-                    let transformed = transform_nurbs_surface(&nurbs, matrix)?;
+                    // Sample-and-refit over the full closed v-range; see
+                    // `sampled_transformed_nurbs` for why the exact rational
+                    // converter route is wrong here.
+                    let transformed = sampled_transformed_nurbs(
+                        |u, v| tor.evaluate(u, v),
+                        matrix,
+                        0.0,
+                        std::f64::consts::TAU,
+                    )?;
                     topo.face_mut(fid)?
                         .set_surface(FaceSurface::Nurbs(transformed));
                 }
@@ -295,6 +311,10 @@ fn sphere_face_v_range(
     topo: &Topology,
     face_id: FaceId,
     sph: &remus_math::surfaces::SphericalSurface,
+    // The vertex phase has already moved boundary points; this maps them back
+    // into the still-untransformed sphere's frame before any projection or
+    // hemisphere heuristic. Pass identity when vertices are untouched.
+    inverse: &Mat4,
 ) -> Result<(f64, f64), crate::OperationsError> {
     use std::f64::consts::FRAC_PI_2;
 
@@ -304,7 +324,7 @@ fn sphere_face_v_range(
 
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        let pt = topo.vertex(edge.start())?.point();
+        let pt = inverse.mul_point(topo.vertex(edge.start())?.point());
         let (_u, v) = sph.project_point(pt);
         v_vals.push(v);
     }
@@ -333,7 +353,7 @@ fn sphere_face_v_range(
         let mut sum = 0.0;
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
-            let pt = topo.vertex(edge.start())?.point();
+            let pt = inverse.mul_point(topo.vertex(edge.start())?.point());
             sum += pt.z() - center.z();
         }
         sum / wire.edges().len() as f64
@@ -353,7 +373,7 @@ fn sphere_face_v_range(
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
             if edge.start() == edge.end() {
-                let pt = topo.vertex(edge.start())?.point();
+                let pt = inverse.mul_point(topo.vertex(edge.start())?.point());
                 let dz = pt.z() - center.z();
                 if dz > 0.0 {
                     has_pole_north = true;
@@ -390,6 +410,32 @@ fn sphere_face_v_range(
 /// Check whether a transform matrix has uniform scaling (all axis scale
 /// factors are approximately equal). Non-uniform scaling distorts spheres
 /// into ellipsoids, so analytic representations must be converted to NURBS.
+/// Refuse a circle/ellipse image whose transformed axes are no longer
+/// orthogonal. The transformed axes are conjugate diameters of the image
+/// ellipse; only when they remain orthogonal are they its principal axes,
+/// which is what `Circle3D::with_axes`/`Ellipse3D::with_axes` require (they
+/// never validate orthogonality themselves). Recovering principal axes from
+/// skewed conjugates (Rytz's construction) also re-parameterizes the curve
+/// and every trim on it — until that is implemented, failing by name beats
+/// silently wrong exact geometry.
+pub(crate) fn ensure_orthogonal_conjugate_axes(
+    u: Vec3,
+    v: Vec3,
+    kind: &str,
+) -> Result<(), crate::OperationsError> {
+    let scale = u.length() * v.length();
+    if u.dot(v).abs() > scale * 1e-9 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "transform maps a {kind} edge to a skewed ellipse (non-orthogonal image \
+                 axes); this exact frame cannot represent it — apply the transform to a \
+                 B-spline-converted body instead"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Compute the scaled radius of a circle perpendicular to `axis` after transform.
 fn scaled_radius(matrix: &Mat4, axis: Vec3, radius: f64) -> f64 {
     // Pick a direction perpendicular to the axis
@@ -417,7 +463,7 @@ fn scaled_radius(matrix: &Mat4, axis: Vec3, radius: f64) -> f64 {
 ///
 /// The `normal_matrix` should be `matrix.inverse()?.transpose()`.
 #[allow(clippy::too_many_lines)]
-fn transform_face_surface(
+pub(crate) fn transform_face_surface(
     topo: &mut Topology,
     fid: FaceId,
     matrix: &Mat4,
@@ -474,13 +520,29 @@ fn transform_face_surface(
                 .set_surface(FaceSurface::Nurbs(new_surface?));
         }
         FaceSurface::Cylinder(cyl) => {
-            let new_origin = matrix.mul_point(cyl.origin());
-            let new_axis = transform_direction(matrix, cyl.axis())?;
-            let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
-            let new_cyl =
-                remus_math::surfaces::CylindricalSurface::new(new_origin, new_axis, new_radius)?;
-            topo.face_mut(fid)?
-                .set_surface(FaceSurface::Cylinder(new_cyl));
+            if is_uniform_scale(matrix) {
+                let new_origin = matrix.mul_point(cyl.origin());
+                let new_axis = transform_direction(matrix, cyl.axis())?;
+                let new_radius = scaled_radius(matrix, cyl.axis(), cyl.radius());
+                let new_cyl = remus_math::surfaces::CylindricalSurface::new(
+                    new_origin, new_axis, new_radius,
+                )?;
+                topo.face_mut(fid)?
+                    .set_surface(FaceSurface::Cylinder(new_cyl));
+            } else {
+                // Same reasoning as the sibling arm above: an anisotropic
+                // scale makes the cylinder elliptic, so convert to NURBS
+                // rather than keep a circular surface with a wrong radius.
+                // Vertices were already moved; probe with their inverse image.
+                let inverse = matrix.inverse()?;
+                let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                    cyl.project_point(inverse.mul_point(pt)).1
+                })?;
+                let transformed =
+                    sampled_transformed_nurbs(|u, v| cyl.evaluate(u, v), matrix, v0, v1)?;
+                topo.face_mut(fid)?
+                    .set_surface(FaceSurface::Nurbs(transformed));
+            }
         }
         FaceSurface::Cone(cone) => {
             if is_uniform_scale(matrix) {
@@ -493,14 +555,12 @@ fn transform_face_surface(
                 )?;
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
             } else {
-                let v_range = analytic_face_v_range(topo, fid, |pt| cone.project_point(pt).1)?;
-                let cone_clone = cone.clone();
-                let nurbs =
-                    remus_heal::construct::convert_surface::cone_to_nurbs(&cone_clone, v_range)
-                        .map_err(|e| crate::OperationsError::InvalidInput {
-                            reason: format!("cone_to_nurbs failed: {e}"),
-                        })?;
-                let transformed = transform_nurbs_surface(&nurbs, matrix)?;
+                let inverse = matrix.inverse()?;
+                let (v0, v1) = analytic_face_v_range(topo, fid, |pt| {
+                    cone.project_point(inverse.mul_point(pt)).1
+                })?;
+                let transformed =
+                    sampled_transformed_nurbs(|u, v| cone.evaluate(u, v), matrix, v0, v1)?;
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(transformed));
             }
@@ -515,7 +575,8 @@ fn transform_face_surface(
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
             } else {
-                let (v_min, v_max) = sphere_face_v_range(topo, fid, sph)?;
+                let inverse = matrix.inverse()?;
+                let (v_min, v_max) = sphere_face_v_range(topo, fid, sph, &inverse)?;
                 let sph_clone = sph.clone();
                 let nurbs = sphere_to_transformed_nurbs(&sph_clone, matrix, v_min, v_max)?;
                 topo.face_mut(fid)?.set_surface(FaceSurface::Nurbs(nurbs));
@@ -595,13 +656,30 @@ fn transform_nurbs_surface(
 
 fn is_uniform_scale(matrix: &Mat4) -> bool {
     let m = &matrix.0;
-    // Column vector magnitudes of the upper-left 3×3
-    let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
-    let sy = (m[0][1] * m[0][1] + m[1][1] * m[1][1] + m[2][1] * m[2][1]).sqrt();
-    let sz = (m[0][2] * m[0][2] + m[1][2] * m[1][2] + m[2][2] * m[2][2]).sqrt();
-    let avg = (sx + sy + sz) / 3.0;
-    let rel = 0.01; // 1% tolerance
-    (sx - avg).abs() < avg * rel && (sy - avg).abs() < avg * rel && (sz - avg).abs() < avg * rel
+    // A map preserves analytic shapes exactly when its linear part is
+    // conformal: MᵀM = s²I. Equal column norms alone are not enough — a
+    // shear, or a single-axis scale at 45° to the columns, can keep the
+    // norms equal while distorting circles into ellipses — and the old 1%
+    // tolerance waved through deliberate small scales (a 1.009× stretch kept
+    // a sphere "analytic" with a wrong radius). Check both column-norm
+    // equality and mutual orthogonality at float-noise tolerance: composed
+    // rotations carry ~1e-15 error, real anisotropy sits many orders above.
+    let col = |j: usize| Vec3::new(m[0][j], m[1][j], m[2][j]);
+    let (cx, cy, cz) = (col(0), col(1), col(2));
+    let (nx, ny, nz) = (cx.length(), cy.length(), cz.length());
+    let avg = (nx + ny + nz) / 3.0;
+    if avg <= 0.0 {
+        return false;
+    }
+    let rel = 1e-9;
+    let norms_equal = (nx - avg).abs() < avg * rel
+        && (ny - avg).abs() < avg * rel
+        && (nz - avg).abs() < avg * rel;
+    let scale_sq = avg * avg;
+    let orthogonal = cx.dot(cy).abs() < scale_sq * rel
+        && cy.dot(cz).abs() < scale_sq * rel
+        && cz.dot(cx).abs() < scale_sq * rel;
+    norms_equal && orthogonal
 }
 
 /// Sample a spherical surface over a given v-range, transform the points
@@ -614,10 +692,29 @@ fn sphere_to_transformed_nurbs(
     v_min: f64,
     v_max: f64,
 ) -> Result<NurbsSurface, crate::OperationsError> {
+    sampled_transformed_nurbs(|u, v| sph.evaluate(u, v), matrix, v_min, v_max)
+}
+
+/// Sample an analytic surface over (u ∈ [0, τ], v ∈ [v_min, v_max]), map the
+/// samples through `matrix`, and refit as a NURBS surface.
+///
+/// This sample-and-refit route is the one that demonstrably keeps the face
+/// consistent after an anisotropic transform (spheres have used it all
+/// along). The tempting alternative — heal's exact rational converters
+/// followed by a control-point transform — produces a surface over a
+/// *different parameter domain* than the source analytic surface, which
+/// desynchronizes the face's seam/trim references and tessellates garbage
+/// (measured: a scaled cone read one seventh of its true volume).
+fn sampled_transformed_nurbs(
+    evaluate: impl Fn(f64, f64) -> remus_math::vec::Point3,
+    matrix: &Mat4,
+    v_min: f64,
+    v_max: f64,
+) -> Result<NurbsSurface, crate::OperationsError> {
     use std::f64::consts::TAU;
 
-    let n_u = 33; // Longitude samples (0 to 2π)
-    let n_v = 17; // Latitude samples
+    let n_u = 33; // Angular samples (0 to 2π; endpoints coincide at the seam)
+    let n_v = 17;
 
     let mut rows: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(n_v);
     for iv in 0..n_v {
@@ -625,8 +722,7 @@ fn sphere_to_transformed_nurbs(
         let mut row = Vec::with_capacity(n_u);
         for iu in 0..n_u {
             let u = TAU * (iu as f64) / ((n_u - 1) as f64);
-            let pt = sph.evaluate(u, v);
-            row.push(matrix.mul_point(pt));
+            row.push(matrix.mul_point(evaluate(u, v)));
         }
         rows.push(row);
     }
@@ -693,6 +789,13 @@ fn transform_edges(
                 let new_v = transform_dir(c.v_axis());
                 let su = new_u.length();
                 let sv = new_v.length();
+                // The transformed axes are conjugate diameters of the image
+                // ellipse, not its principal axes. When they stay orthogonal
+                // they ARE principal and the arms below are exact; when they
+                // do not (a shear, or an anisotropic scale oblique to the
+                // circle plane), building a Circle/Ellipse from them silently
+                // emits a skewed frame — refuse instead.
+                ensure_orthogonal_conjugate_axes(new_u, new_v, "circular")?;
                 let new_normal = new_u.cross(new_v).normalize()?;
                 if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
                     (
@@ -742,6 +845,8 @@ fn transform_edges(
                 let new_center = matrix.mul_point(e.center());
                 let new_u = transform_dir(e.u_axis());
                 let new_v = transform_dir(e.v_axis());
+                // Same conjugate-diameter reasoning as the Circle arm above.
+                ensure_orthogonal_conjugate_axes(new_u, new_v, "elliptical")?;
                 let new_normal = new_u.cross(new_v).normalize()?;
                 (
                     Some(EdgeCurve::Ellipse(
