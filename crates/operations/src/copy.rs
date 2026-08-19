@@ -429,34 +429,10 @@ pub fn copy_and_transform_solid(
     solid_id: SolidId,
     matrix: &remus_math::mat::Mat4,
 ) -> Result<SolidId, crate::OperationsError> {
-    use remus_math::nurbs::{NurbsCurve, NurbsSurface};
-    use remus_math::vec::Vec3;
+    use remus_math::nurbs::NurbsCurve;
 
     crate::transform::reject_degenerate_transform(matrix)?;
     let normal_matrix = matrix.inverse()?.transpose();
-
-    let transform_dir = |dir: Vec3| -> Result<Vec3, crate::OperationsError> {
-        let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
-        let tip = matrix.mul_point(Point3::new(dir.x(), dir.y(), dir.z()));
-        let raw = Vec3::new(
-            tip.x() - origin.x(),
-            tip.y() - origin.y(),
-            tip.z() - origin.z(),
-        );
-        Ok(raw.normalize()?)
-    };
-
-    // Transform a plane normal via inverse transpose.
-    let transform_normal = |n: Vec3| -> Result<Vec3, crate::OperationsError> {
-        let transformed = normal_matrix.mul_point(Point3::new(n.x(), n.y(), n.z()));
-        let origin = normal_matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
-        let raw = Vec3::new(
-            transformed.x() - origin.x(),
-            transformed.y() - origin.y(),
-            transformed.z() - origin.z(),
-        );
-        Ok(raw.normalize()?)
-    };
 
     // Read phase mirrors copy_solid.
     let solid = topo.solid(solid_id)?;
@@ -607,6 +583,10 @@ pub fn copy_and_transform_solid(
                 let new_v = transform_dir(c.v_axis());
                 let su = new_u.length();
                 let sv = new_v.length();
+                // Transformed axes are conjugate diameters of the image
+                // ellipse; only orthogonal images keep them principal (see
+                // `transform::ensure_orthogonal_conjugate_axes`).
+                crate::transform::ensure_orthogonal_conjugate_axes(new_u, new_v, "circular")?;
                 let new_normal = new_u.cross(new_v).normalize()?;
                 if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
                     EdgeCurve::Circle(Circle3D::with_axes(
@@ -645,6 +625,7 @@ pub fn copy_and_transform_solid(
                 };
                 let new_u = transform_dir(e.u_axis());
                 let new_v = transform_dir(e.v_axis());
+                crate::transform::ensure_orthogonal_conjugate_axes(new_u, new_v, "elliptical")?;
                 let new_normal = new_u.cross(new_v).normalize()?;
                 EdgeCurve::Ellipse(Ellipse3D::with_axes(
                     new_center,
@@ -691,82 +672,13 @@ pub fn copy_and_transform_solid(
                 .map(|idx| wire_map[idx])
                 .collect();
 
-            let new_surface = match &fsnap.surface {
-                FaceSurface::Plane { normal, .. } => {
-                    let new_normal = transform_normal(*normal)?;
-                    // Recompute d from a transformed vertex on this face.
-                    let wire_ow = &wire_snaps
-                        .iter()
-                        .find(|w| w.old_index == fsnap.outer_wire_index);
-                    let first_edge_idx = wire_ow.map(|w| w.edges[0].0).ok_or_else(|| {
-                        crate::OperationsError::InvalidInput {
-                            reason: "face has no outer wire edges".into(),
-                        }
-                    })?;
-                    let esnap = edge_snaps.iter().find(|e| e.old_index == first_edge_idx);
-                    let ref_old_vertex = esnap.map(|e| e.start_index).ok_or_else(|| {
-                        crate::OperationsError::InvalidInput {
-                            reason: "wire references unknown edge".into(),
-                        }
-                    })?;
-                    let ref_vid = vertex_map[&ref_old_vertex];
-                    let ref_point = topo.vertex(ref_vid)?.point();
-                    let new_d =
-                        new_normal.dot(Vec3::new(ref_point.x(), ref_point.y(), ref_point.z()));
-                    FaceSurface::Plane {
-                        normal: new_normal,
-                        d: new_d,
-                    }
-                }
-                FaceSurface::Nurbs(s) => {
-                    let new_cps: Vec<Vec<_>> = s
-                        .control_points()
-                        .iter()
-                        .map(|row| row.iter().map(|pt| matrix.mul_point(*pt)).collect())
-                        .collect();
-                    FaceSurface::Nurbs(NurbsSurface::new(
-                        s.degree_u(),
-                        s.degree_v(),
-                        s.knots_u().to_vec(),
-                        s.knots_v().to_vec(),
-                        new_cps,
-                        s.weights().to_vec(),
-                    )?)
-                }
-                FaceSurface::Cylinder(cyl) => {
-                    let new_origin = matrix.mul_point(cyl.origin());
-                    let new_axis = transform_dir(cyl.axis())?;
-                    FaceSurface::Cylinder(remus_math::surfaces::CylindricalSurface::new(
-                        new_origin,
-                        new_axis,
-                        cyl.radius(),
-                    )?)
-                }
-                FaceSurface::Cone(cone) => {
-                    let new_apex = matrix.mul_point(cone.apex());
-                    let new_axis = transform_dir(cone.axis())?;
-                    FaceSurface::Cone(remus_math::surfaces::ConicalSurface::new(
-                        new_apex,
-                        new_axis,
-                        cone.half_angle(),
-                    )?)
-                }
-                FaceSurface::Sphere(sph) => {
-                    let new_center = matrix.mul_point(sph.center());
-                    FaceSurface::Sphere(remus_math::surfaces::SphericalSurface::new(
-                        new_center,
-                        sph.radius(),
-                    )?)
-                }
-                FaceSurface::Torus(tor) => {
-                    let new_center = matrix.mul_point(tor.center());
-                    FaceSurface::Torus(remus_math::surfaces::ToroidalSurface::new(
-                        new_center,
-                        tor.major_radius(),
-                        tor.minor_radius(),
-                    )?)
-                }
-            };
+            // Copy the surface verbatim; the shared transformer below rewrites
+            // it once the face exists. The old inline math here diverged from
+            // `transform_solid` — it never scaled cylinder/sphere/torus radii
+            // and had no anisotropic-scale handling at all, so "equivalent to
+            // copy_solid followed by transform_solid" was untrue for any
+            // scaling matrix.
+            let new_surface = fsnap.surface.clone();
 
             let new_face = if fsnap.reversed {
                 Face::new_reversed(new_outer, new_inner, new_surface)
@@ -774,6 +686,11 @@ pub fn copy_and_transform_solid(
                 Face::new(new_outer, new_inner, new_surface)
             };
             let new_fid = topo.add_face(new_face);
+            // Vertices and edge curves were written at their transformed
+            // positions above, which is exactly the state
+            // `transform_face_surface` expects (its non-uniform branches map
+            // boundary probes back through the inverse).
+            crate::transform::transform_face_surface(topo, new_fid, matrix, &normal_matrix)?;
             if let Some(attributes) = fsnap.attributes.clone() {
                 topo.set_face_attributes(new_fid, attributes)?;
             }

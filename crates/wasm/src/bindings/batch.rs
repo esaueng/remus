@@ -1301,6 +1301,7 @@ impl BrepKernel {
                 let result = match chamfer_result {
                     Ok(inner) => inner.map_err(StructuredWasmError::from)?,
                     Err(panic_info) => {
+                        self.poisoned = true;
                         return Err(StructuredWasmError::operation_failed(panic_message(
                             &panic_info,
                             "Chamfer",
@@ -1331,6 +1332,7 @@ impl BrepKernel {
                 let result = match fillet_result {
                     Ok(inner) => inner.map_err(StructuredWasmError::from)?,
                     Err(panic_info) => {
+                        self.poisoned = true;
                         return Err(StructuredWasmError::operation_failed(panic_message(
                             &panic_info,
                             "Fillet",

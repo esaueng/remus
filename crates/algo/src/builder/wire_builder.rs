@@ -151,7 +151,16 @@ pub fn build_wire_loops_with_winding(
 
             // Find best outgoing edge at end_vertex.
             let Some(entries) = adj.get(&end_vertex) else {
-                // Dead end -- discard this incomplete loop.
+                // Dead end -- discard this incomplete loop. A discarded loop
+                // means a region silently vanishes from the face partition
+                // (misclassified or open result downstream), so say so loudly:
+                // this is the earliest warning a corrupted boolean gives.
+                log::warn!(
+                    "wire_builder: discarding incomplete loop of {} edge(s) at dead-end vertex {:?} \
+                     (quantized key has no adjacency entry; possible tolerance-boundary split)",
+                    current_loop.len(),
+                    end_vertex
+                );
                 break;
             };
 
@@ -198,7 +207,15 @@ pub fn build_wire_loops_with_winding(
                     current_idx = fb.edge_idx;
                     continue;
                 }
-                // Truly no way out -- discard loop.
+                // Truly no way out -- discard loop. Same downstream stakes as
+                // the dead-end case above: a dropped region, reported nowhere
+                // else, so log it here.
+                log::warn!(
+                    "wire_builder: discarding incomplete loop of {} edge(s) with no outgoing edge \
+                     at vertex {:?} (all candidates used or reverse-only)",
+                    current_loop.len(),
+                    end_vertex
+                );
                 break;
             };
 
