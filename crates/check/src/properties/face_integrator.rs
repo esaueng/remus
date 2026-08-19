@@ -267,7 +267,7 @@ fn face_boundary_v_extent<S: ParametricSurface>(
             let edge = topo.edge(oe.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+            let (t0, t1) = edge.domain_with_endpoints(start, end);
             for k in 0..=EXTENT_SAMPLES {
                 #[allow(clippy::cast_precision_loss)]
                 let f = k as f64 / EXTENT_SAMPLES as f64;
@@ -1162,7 +1162,7 @@ fn planar_wire_monomial_moments(
             EdgeCurve::Circle(c) => {
                 // Angular arc span from the edge's own endpoints; the
                 // derivative magnitude is the radius.
-                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                let (t0, t1) = edge.domain_with_endpoints(start, end);
                 let r = c.radius();
                 // Split the span so each chunk is ≤ π/2; 16-point Gauss on
                 // a ≤ π/2 trig span of frequency ≤ 5 is exact to machine
@@ -1191,7 +1191,7 @@ fn planar_wire_monomial_moments(
                 // Gauss rule is exact through degree 31, so a single
                 // segment integrates the arc exactly — no chunking, and no
                 // dependence on the arc's extent or on model scale.
-                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                let (t0, t1) = edge.domain_with_endpoints(start, end);
                 accumulate_green_segment(
                     &mut moments,
                     (t0, t1),
@@ -1313,7 +1313,7 @@ fn wire_newell_normal(
         match edge.curve() {
             EdgeCurve::Line => pts.push(if forward { start } else { end }),
             EdgeCurve::Circle(c) => {
-                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                let (t0, t1) = edge.domain_with_endpoints(start, end);
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
@@ -1321,7 +1321,7 @@ fn wire_newell_normal(
                 }
             }
             EdgeCurve::Parabola(p) => {
-                let (t0, t1) = edge.curve().domain_with_endpoints(start, end);
+                let (t0, t1) = edge.domain_with_endpoints(start, end);
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;

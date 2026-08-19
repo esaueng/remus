@@ -6784,7 +6784,15 @@ fn fuse_multi_component_tool_folds_each_piece() {
     let components = super::assembly::face_components(&topo, tool);
     assert_eq!(components.len(), 2, "tool must split into two pieces");
 
-    let result = super::fuse_multi_component_tool(&mut topo, base, components).unwrap();
+    let mut used_fallback = false;
+    let result = super::fuse_multi_component_tool(
+        &mut topo,
+        base,
+        components,
+        super::default_fallback_policy(),
+        &mut used_fallback,
+    )
+    .unwrap();
 
     let vol = solid_volume(&topo, result, 0.05).unwrap();
     // 10*10*2 + 2 posts' above-slab parts (2*2*2 each).
