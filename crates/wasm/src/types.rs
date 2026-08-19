@@ -845,3 +845,22 @@ pub struct GcsDofResult {
     /// Total constraint equations.
     pub num_equations: u32,
 }
+
+/// Typed result for `booleanWithQuality`: a boolean result with its
+/// disclosed quality, so a consumer can tell an exact result from a
+/// mesh-fallback one instead of silently losing analytic surfaces.
+#[derive(serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct BooleanQualityResult {
+    /// Handle of the result solid.
+    pub solid: u32,
+    /// `"exact"` when the exact pipeline produced the result; `"approximate"`
+    /// when the mesh (co-refinement) fallback ran and analytic surface types
+    /// were lost.
+    pub quality: String,
+    /// Tessellation deflection the fallback ran at, in model units. Present
+    /// only when `quality` is `"approximate"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deflection: Option<f64>,
+}

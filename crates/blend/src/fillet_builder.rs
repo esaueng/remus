@@ -443,7 +443,12 @@ impl<'a> FilletBuilder<'a> {
             }
         }
 
-        for &fid in &touched_faces {
+        // Shell face order is downstream-visible (face indexing, provenance,
+        // replay determinism); iterating the HashSet here made it vary run to
+        // run, so fix the order by id before appending.
+        let mut touched_in_order: Vec<FaceId> = touched_faces.iter().copied().collect();
+        touched_in_order.sort_unstable();
+        for fid in touched_in_order {
             let replacement = face_replacements.get(&fid).copied();
             result_faces.push(replacement.unwrap_or(fid));
         }
