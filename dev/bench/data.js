@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787176281793,
+  "lastUpdate": 1787179147557,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -269,6 +269,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40694689,
             "range": "± 452997",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "105b99ef74a8d0c7cf3a2a2c4471447377838748",
+          "message": "feat(wasm): multi-solid 3MF and binary STL export bindings (#53)\n\nThe io writers have always taken a solid slice, but the bindings\nrestricted 3MF and binary STL to one solid each — a multi-body model\ncould only ship as one file via STEP or the ASCII STL fallback the\nconsumer hand-assembles. export3mfMulti and exportStlMulti mirror\nexportStepMulti so OpenZCAD's export pack can offer 3MF (the modern\nslicer standard) and binary STL (5-10x smaller than ASCII) for\nmulti-body documents without fusing first. Contract tests pin the zip\nmagic and the merged facet count.\n\n\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-19T18:36:29-04:00",
+          "tree_id": "28623130e34ae35e0145f450f94cf3f7e067432d",
+          "url": "https://github.com/esaueng/remus/commit/105b99ef74a8d0c7cf3a2a2c4471447377838748"
+        },
+        "date": 1787179146469,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1133176,
+            "range": "± 41596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1306799,
+            "range": "± 49794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 11960,
+            "range": "± 597",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 853270,
+            "range": "± 33754",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 37334777,
+            "range": "± 541148",
             "unit": "ns/iter"
           }
         ]
