@@ -158,6 +158,8 @@ impl BrepKernel {
         spacing: f64,
         count: u32,
     ) -> Result<serde_json::Value, StructuredWasmError> {
+        let count =
+            crate::error::validate_work_count(count, "count").map_err(StructuredWasmError::from)?;
         let solid_id = self
             .resolve_solid(solid)
             .map_err(StructuredWasmError::from)?;
@@ -166,7 +168,7 @@ impl BrepKernel {
             solid_id,
             remus_math::vec::Vec3::new(direction[0], direction[1], direction[2]),
             spacing,
-            count as usize,
+            count,
         )
         .map_err(StructuredWasmError::from)?;
         Ok(serde_json::json!({
