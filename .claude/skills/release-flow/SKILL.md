@@ -11,7 +11,8 @@ A Remus change is not in a consumer's hands when its PR merges. This repository
 **publishes nothing** — no crates.io, no npm, no GitHub releases — so the only
 channel that reaches a consumer is the WASM package committed at
 `crates/wasm/pkg`, installed by git path. This skill covers that channel: how
-to refresh it, how to validate it, and what is deliberately not automated.
+it is refreshed, how to validate a build, and what publishing is still gated
+on.
 
 For getting the feature PR merged, see `pr-workflow`. For benchmark
 comparisons, see `parity-benchmarking`. To test an unreleased build inside a
@@ -40,10 +41,11 @@ from their presence; verify with
 |-----|--------|---------------------|
 | 1 | Feature PR squash-merges to `main` | `CI Pass` green on the merge |
 | 2 | Build and validate the package locally | `cargo xtask wasm-build` succeeds; both consumer harnesses pass |
-| 3 | Refresh the committed snapshot (manual dispatch) | New `chore(wasm): refresh committed package` commit on `main` |
+| 3 | The refresh workflow rebuilds and commits the snapshot | New `chore(wasm): refresh committed package` commit on `main` |
 | 4 | Consumer reinstalls from the git path | Consumer's own tests pass against the new snapshot |
 
-Hops 3 and 4 are **not automatic**. See "Why hop 3 is manual" below.
+Hop 3 runs automatically on every push to `main`; hop 4 is the consumer's move,
+whenever one exists.
 
 ## Hop 2: build and validate
 
@@ -68,7 +70,7 @@ get a build out.**
 ## Hop 3: refreshing the committed snapshot
 
 Workflow: **Refresh Apache Staging Package** (`.github/workflows/publish.yml`),
-`workflow_dispatch` only, on `main`.
+on every push to `main`, and by `workflow_dispatch`.
 
 Two jobs. `build-committed-package` runs `cargo xtask wasm-build --skip-opt`,
 stamps fork provenance into `package.json`, and uploads the result as an
@@ -86,14 +88,17 @@ Notes that matter:
 - The commit is `[skip ci]`, so the refreshed snapshot is not itself re-tested
   by CI. Hop 2 is where the validation happens.
 
-### Why hop 3 is manual
+### Why it refreshes on every push
 
-The push trigger was removed deliberately, not lost. Automatic refresh on every
-push to `main` would regenerate `crates/wasm/pkg` under the current package
-name — and after the rename that means the snapshot stops being the package the
-existing consumer imports. `fork-maintenance.md` keeps the snapshot frozen
-until the consumer migrates. **Restore the push trigger in the same change that
-repoints the consumer, not before.**
+A committed package that lags its source is worse than none: it serves old
+kernel behavior while the Rust source reads as current, and nothing about the
+repository shows the drift. The bot's own commit carries `[skip ci]`, and the
+job guard skips those, so the refresh cannot loop.
+
+This ran manual-only for one cycle, while the snapshot still carried the
+pre-rename package name and a consumer might have been importing it. With the
+snapshot regenerated under the current name and nothing pinned to the old one,
+that reason is spent.
 
 ## Hop 4: the consumer
 
@@ -103,11 +108,11 @@ The documented consumer installs the snapshot by git path:
 "remus-wasm": "github:esaueng/remus#main&path:/crates/wasm/pkg"
 ```
 
-⚠️ **Verify this pin before relying on it.** It previously referenced
-`apache-main`, a branch that has since been deleted, so any consumer still
-holding the old pin has a broken install. The `#main` form above is what the
-repository now documents; whether the consumer has repinned is not observable
-from inside this repository. Confirm with whoever owns it.
+No consumer is pinned to this today. The form above is what the repository
+documents; an older pin naming `apache-main` will not resolve, because that
+branch was deleted. A git-path install resolves the ref at install time, so a
+consumer picks up each refresh on its next install unless its lockfile pins an
+older commit.
 
 There is also a manual **Build OpenZCAD WASM Candidate** workflow
 (`.github/workflows/openzcad-wasm-release.yml`). It is validation-only: it
@@ -121,10 +126,10 @@ tarball without touching `main`.
 |---|---|---|
 | "Where is the npm package?" | There isn't one; this fork publishes nothing | Build from source, or use the committed snapshot by git path |
 | A release-please PR is expected but never appears | The config exists; no workflow runs it | Do not wait for it; there is no release automation |
-| Refresh workflow does nothing | It is `workflow_dispatch` only, and the job also requires `sync_package` and `github.ref == refs/heads/main` | Dispatch it against `main` with the input enabled |
-| Snapshot commit succeeds but the consumer sees nothing | Consumer pin points at a deleted branch, or its lockfile pins an older commit | Check the pin; git-path installs resolve at install time |
+| Refresh workflow does nothing | A `[skip ci]` message skips it by design; a dispatch additionally requires `sync_package` and `github.ref == refs/heads/main` | Check the commit message; dispatch against `main` with the input enabled |
+| Snapshot commit succeeds but a consumer sees nothing | Its pin names a deleted branch, or its lockfile pins an older commit | Check the pin; git-path installs resolve the ref at install time |
 | App-token step silently skipped | `REMUS_BOT_APP_ID` / `REMUS_BOT_PRIVATE_KEY` unset; `HAS_APP_CREDENTIALS` evaluates false without failing | Set both secrets; the job degrades quietly by design |
 | Consumer regressions fail only through the tarball | A `files` omission or entry-point error in the generated `package.json` | Fix the package metadata; do not skip the tarball test |
 
 See [reference.md](reference.md) for the package layout, the provenance stamp,
-and what "frozen snapshot" means for the binary itself.
+and the build anatomy.

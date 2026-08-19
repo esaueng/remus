@@ -46,18 +46,21 @@ LICENSE-APACHE
 The `.cjs` rename matters: the node entry is CommonJS, and `package.json` sets
 `"type": "module"`, so without the extension change Node would misparse it.
 
-### The snapshot is frozen, and why that is not laziness
+### Renaming the package is a regeneration, never a file rename
 
 The committed binary embeds its own glue module path in the wasm import
-section. Renaming the files without regenerating breaks the package outright;
-regenerating changes the package name, which breaks a consumer importing the
-old one. So the snapshot stays as-is until the consumer migrates, and
-`scripts/check-remus-rename.sh` allowlists `crates/wasm/pkg` for exactly that
-reason. Check the embedded paths before assuming a rename is safe:
+section, so renaming the files leaves the binary importing a module that no
+longer exists. Check before assuming otherwise:
 
 ```bash
-rg -a --count-matches 'wasm_bg\.js' crates/wasm/pkg/*.wasm   # currently 15
+rg -a --count-matches 'wasm_bg\.js' crates/wasm/pkg/*.wasm
 ```
+
+Every hit is an import the binary expects to resolve by that exact name. A
+rename therefore means rebuilding the package, not moving files — and because
+the refresh workflow rebuilds from source on every push to `main`, that happens
+on its own once the crate name changes. `scripts/check-remus-rename.sh` no
+longer exempts this directory, so a stale name here fails the naming job.
 
 ## Build anatomy
 
@@ -117,9 +120,11 @@ not just the workspace.
 
 ## Snapshot refresh mechanics
 
-Workflow: `.github/workflows/publish.yml`, "Refresh Apache Staging Package",
-`workflow_dispatch` only. The job additionally requires `sync_package` and
-`github.ref == 'refs/heads/main'`, so a dispatch from another ref no-ops.
+Workflow: `.github/workflows/publish.yml`, "Refresh Apache Staging Package".
+Runs on every push to `main`, and on `workflow_dispatch` — where the job
+additionally requires `sync_package` and `github.ref == 'refs/heads/main'`, so a
+dispatch from another ref no-ops. Push runs skip a `[skip ci]` message, which is
+what stops the bot's own refresh commit from triggering another refresh.
 
 - `install-wasm-package-archive.py` is a deliberate airlock: it accepts only
   regular files and directories beneath `crates/wasm/pkg`, so a build-produced
