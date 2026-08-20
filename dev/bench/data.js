@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787234907260,
+  "lastUpdate": 1787239152888,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -701,6 +701,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38546061,
             "range": "± 69980",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bc0822c9711aa154da20df7c0bfbe7562c6f458c",
+          "message": "fix(operations): concave-planar inner faces keep source winding in shell_op (#61)\n\nTwo stacked roots left a shelled cup's cavity lateral traversing both of\nits rims in the same effective sense as the faces meeting them — 64\nsame-sense rim pairs on the fuse_ring fixture's cup operand:\n\n* Phase 4 handed the flagged FaceSpec variants (cylinder, sphere,\n  surface) a REVERSED winding on top of `reversed: !concave` — a double\n  flip whose effective traversal lands back on the source wall's side.\n  Inner faces now keep the source wire order and carry the flip in the\n  flag alone; the un-flagged planar spec reverses its winding only for\n  convex sources, since a concave plane keeps both its surface normal\n  and its source winding.\n* Phase 5's rim opposed each boundary edge's RAW stored sense, which on\n  a REVERSED neighbour (the cavity lateral) is the same effective side.\n  The rim now opposes the neighbour's effective sense.\n\nshell_op joins the orientation-emission campaign's strict-clean list.\nThe fuse_ring fixture's \"fuse adds no same-sense pairs\" allowance\ntightens to strict zero, and two new pins cover the cup (convex arms +\nrim closing) and a hollowed bored+pocketed block (concave cylinder +\nconcave planar arms).\n\nRoadmap maintenance: the shell_op same-sense discovery row is CLOSED,\nand the stale \"mesh-boolean fallback consumes open meshes\" row is\ncorrected to CLOSED — the watertight-or-rejected gate shipped in PR\n#117 (welded_health position-welded counts, NonManifoldResult rejection\nin mesh_boolean_fallback).\n\n\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T11:16:22-04:00",
+          "tree_id": "493a5453e966133fe60192506a1c92e76fbd90f8",
+          "url": "https://github.com/esaueng/remus/commit/bc0822c9711aa154da20df7c0bfbe7562c6f458c"
+        },
+        "date": 1787239152216,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1356233,
+            "range": "± 4481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1447916,
+            "range": "± 3152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13926,
+            "range": "± 150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1032309,
+            "range": "± 1378",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41153394,
+            "range": "± 86175",
             "unit": "ns/iter"
           }
         ]
