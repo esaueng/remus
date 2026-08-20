@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787230145987,
+  "lastUpdate": 1787234907260,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -647,6 +647,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39120524,
             "range": "± 127691",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2f84ceb13c0a6f30e4894b5efc89defc7fa537b",
+          "message": "docs(roadmap): retire the upstream tool harness, re-aim at OpenZCAD; reconcile stale rows (#60)\n\n* docs(roadmap): mark tangency family stale-verified closed, reconcile census\n\nAll four diag_*tangency* landscape probes pass CLEAN on this fork\n(tangency counts 0/1/2/4, the epsilon band from -1e-3 through +1e-3\nincluding exact tangency and +1e-9, the cone sweep, and the cylinder\n4-wall case) with analytic face counts, and\ncone_union_box_should_be_analytic runs un-ignored and green - so the\n'only remaining primitive-boolean fallback' row and its '2-wall case\nneeds its own trigger' caution are history. approx_census carries no\nboolean fallback rows at all; every remaining FALLBACK is a\nfilter-excluded approximation class.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WoUqjtwDnw1ar4b3vZyrQQ\n\n* docs(roadmap): retire the upstream tool harness, re-aim the north star at OpenZCAD\n\nThe gridfinity layout tool, its scenario matrices, the overlay\nworkflow, and the brepjs head-to-head bench were the UPSTREAM\nproject's consumer and harness - not part of this fork's goals or\ntoolchain (maintainer decision). The roadmap's north star now names\nOpenZCAD, this fork's actual consumer, with verification defined\nin-repo: workspace suites (including the wasm gridfinity contract\ntests), the io fixture corpus, approx_census, and criterion. Every\n'tool-side re-probe pending' note is closed-as-not-applicable; the\nscenario baselines stay as history because their defect maps still\ndescribe this codebase. The parity-benchmarking skill carries a\nRETIRED-HISTORICAL banner and description pointing at what still\napplies (fixture-capture recipes, fallback tells, criterion). The\ngridfinity-derived test corpus stays untouched - it is generic\nhard-geometry regression coverage with zero external dependency.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WoUqjtwDnw1ar4b3vZyrQQ\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T10:05:27-04:00",
+          "tree_id": "ab51095b3bf5195478b5ebc6dc31b52c977670a1",
+          "url": "https://github.com/esaueng/remus/commit/d2f84ceb13c0a6f30e4894b5efc89defc7fa537b"
+        },
+        "date": 1787234906062,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1289043,
+            "range": "± 15904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1377211,
+            "range": "± 41613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13072,
+            "range": "± 379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 984828,
+            "range": "± 12627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38546061,
+            "range": "± 69980",
             "unit": "ns/iter"
           }
         ]
