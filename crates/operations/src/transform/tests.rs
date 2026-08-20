@@ -1010,10 +1010,10 @@ fn anisotropic_scale_converts_cylinder_wall_to_true_elliptic_nurbs() {
     // Cylinder with a radius measured along one arbitrary perpendicular.
     transform_solid(&mut topo, solid, &Mat4::scale(2.0, 1.0, 1.0)).unwrap();
 
-    // Assert the surface geometry directly rather than via mesh volume:
-    // tessellation of seam-carrying NURBS walls has its own pre-existing
-    // defect (see `bspline_cylinder_tessellated_volume_is_wrong` below),
-    // which would mask what this test pins.
+    // Assert the surface geometry directly rather than via mesh volume, so
+    // this test pins the transform alone; the seam-carrying NURBS wall
+    // tessellation is pinned separately by
+    // `bspline_cylinder_tessellated_volume_is_correct` below.
     let mut nurbs_walls = 0;
     for f in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
         let face = topo.face(f).unwrap();
@@ -1051,16 +1051,19 @@ fn anisotropic_scale_converts_cylinder_wall_to_true_elliptic_nurbs() {
     assert_eq!(nurbs_walls, 1, "expected exactly one NURBS wall face");
 }
 
-/// Ready repro for a pre-existing tessellation defect this branch did NOT
-/// introduce: a seam-carrying NURBS wall face contributes nothing (or
-/// garbage) to the tessellated mesh, so the measured volume of an
-/// all-B-spline cylinder collapses. Discovered while trying to verify the
-/// anisotropic-transform fix through mesh volume: `convert_to_bspline` on an
-/// UNTRANSFORMED unit cylinder already reads ~2.07 instead of 2π ≈ 6.28.
-/// Un-ignore when the NURBS face mesher handles seam wires.
+/// Regression pin for the NURBS seam-face tessellation defect (originally an
+/// `#[ignore]` ready-repro reading ~2.07 instead of 2π): a converted
+/// B-spline cylinder's wall is a closed-u NURBS surface whose face seam and
+/// curve origins sit a quarter turn from the surface's parameterization
+/// seam. Four stacked roots, all fixed: closed NURBS edge sampling now
+/// starts at the start vertex and wraps the knot domain; Newton surface
+/// projection wraps across a periodic seam instead of clamping (silent
+/// half-period-wrong answers); the CDT boundary unwrap covers closed-u
+/// NURBS with period = knot-domain width (with out-of-domain evaluation
+/// wrapped); and the CDT interior grid converts periodic knot spans to
+/// angular spans so a full turn is not sampled as one knot unit.
 #[test]
-#[ignore = "pre-existing NURBS seam-face tessellation defect; volume reads ~2.07 instead of 6.28"]
-fn bspline_cylinder_tessellated_volume_is_wrong() {
+fn bspline_cylinder_tessellated_volume_is_correct() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
     crate::heal::convert_to_bspline(&mut topo, solid).unwrap();
