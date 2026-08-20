@@ -4,7 +4,7 @@
 //! every solve, no constraint removal), the `gcs*` surface holds a persistent
 //! [`remus_sketch::GcsSystem`] per sketch and speaks typed entity
 //! handles: points, lines, circles, and arcs are created explicitly and
-//! constraints reference them by handle. All 24 GCS constraint types are
+//! constraints reference them by handle. All 26 GCS constraint types are
 //! reachable, constraints can be removed, and solving does not lose state.
 //!
 //! Handle model: JS holds opaque `u32` values that index per-sketch handle
@@ -64,6 +64,8 @@ fn table_get<T: Copy>(table: &[T], entity: &'static str, idx: u32) -> Result<T, 
 /// | `equalLength` | `l1`, `l2` |
 /// | `midpoint` | `point`, `line` |
 /// | `symmetric` | `a`, `b` (points), `axis` (line) |
+/// | `tangentLineCircle` | `line`, `circle` (point-free tangency) |
+/// | `symmetricAboutPoint` | `a`, `b`, `center` (points) |
 fn parse_gcs_constraint(
     sk: &GcsSketchState,
     val: &serde_json::Value,
@@ -185,6 +187,15 @@ fn parse_gcs_constraint(
             point("a")?,
             point("b")?,
             line("axis")?,
+        )),
+        "tangentLineCircle" => Ok(Constraint::TangentLineCircle(
+            line("line")?,
+            circle("circle")?,
+        )),
+        "symmetricAboutPoint" => Ok(Constraint::SymmetricAboutPoint(
+            point("a")?,
+            point("b")?,
+            point("center")?,
         )),
         other => Err(WasmError::InvalidInput {
             reason: format!("unknown constraint type: '{other}'"),
@@ -558,7 +569,7 @@ impl BrepKernel {
     /// Add a constraint from a JSON object string and return a constraint
     /// handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
     ///
-    /// All 24 constraint types are supported. Entity fields are `u32`
+    /// All 26 constraint types are supported. Entity fields are `u32`
     /// handles from the `gcsAdd*` calls. Types and fields:
     /// `coincident{a,b}`, `distance{a,b,value}`,
     /// `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -680,6 +691,70 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use crate::kernel::BrepKernel;
+
+    /// Point-free line–circle tangency: the line's endpoints move until the
+    /// center's distance to the line equals the radius, with no shared
+    /// contact-point entity in the system.
+    #[test]
+    fn tangent_line_circle_solves_without_contact_point() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+
+        let c = k.gcs_add_point_impl(s, 5.0, 4.0, true).unwrap();
+        let circle = k.gcs_add_circle_impl(s, c, 3.0).unwrap();
+        // A horizontal-ish line below the circle, close but not tangent.
+        let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
+        let b = k.gcs_add_point_impl(s, 10.0, 0.5, false).unwrap();
+        let line = k.gcs_add_line_impl(s, a, b).unwrap();
+
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"tangentLineCircle","line":{line},"circle":{circle}}}"#),
+        )
+        .unwrap();
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"circleRadius","circle":{circle},"value":3.0}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 200, 1e-10).unwrap();
+        assert!(r.converged, "tangency solve did not converge: {r:?}");
+
+        // Distance from the center to the solved line equals the radius.
+        let pa = k.gcs_point_position_impl(s, a).unwrap();
+        let pb = k.gcs_point_position_impl(s, b).unwrap();
+        let (ax, ay) = (pa[0], pa[1]);
+        let (bx, by) = (pb[0], pb[1]);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len = dx.hypot(dy);
+        let dist = ((dx * (4.0 - ay) - dy * (5.0 - ax)) / len).abs();
+        assert!((dist - 3.0).abs() < 1e-8, "center distance {dist} != 3");
+    }
+
+    /// Two free points forced symmetric about a fixed center point.
+    #[test]
+    fn symmetric_about_point_solves() {
+        let mut k = BrepKernel::new();
+        let s = k.gcs_new();
+
+        let center = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
+        let p1 = k.gcs_add_point_impl(s, -4.0, 0.0, true).unwrap();
+        let p2 = k.gcs_add_point_impl(s, 3.0, 3.0, false).unwrap();
+
+        k.gcs_add_constraint_impl(
+            s,
+            &format!(r#"{{"type":"symmetricAboutPoint","a":{p1},"b":{p2},"center":{center}}}"#),
+        )
+        .unwrap();
+
+        let r = k.gcs_solve_impl(s, 100, 1e-12).unwrap();
+        assert!(r.converged, "point symmetry did not converge: {r:?}");
+        let solved = k.gcs_point_position_impl(s, p2).unwrap();
+        // Reflection of (-4, 0) about (1, 2) is (6, 4).
+        assert!((solved[0] - 6.0).abs() < 1e-9, "x: {solved:?}");
+        assert!((solved[1] - 4.0).abs() < 1e-9, "y: {solved:?}");
+    }
 
     /// A line tangent to an arc — the flagship case the legacy typed surface
     /// could not express directly.
