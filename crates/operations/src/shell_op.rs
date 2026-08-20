@@ -375,25 +375,44 @@ pub fn shell(
         let concave = face.is_reversed();
 
         let displaced = |p: Point3| inner_pos.get(&quantize_pt(p)).copied().unwrap_or(p);
-        // Reversed winding gives the inner face an inward-pointing normal.
-        let inner_verts: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).rev().collect();
+        // The inner face is the source face mirrored: SAME wire order, with
+        // the orientation flip carried by the spec's `reversed` flag (or, for
+        // planes, the negated normal). Reversing the winding AS WELL cancels
+        // the flag into a double flip — the cavity face then traverses its
+        // rims in the same effective sense as its neighbours (64 same-sense
+        // rim pairs on a shelled cup's cavity lateral).
+        let inner_verts: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).collect();
         // The holes travel with the face, through the same miter vectors, so
         // a bore's mouth in the inner cap meets the rim of the offset bore
         // wall rather than floating a wall thickness away from it.
         let inner_holes: Vec<Vec<Point3>> = holes
             .iter()
-            .map(|rim| rim.iter().map(|v| displaced(*v)).rev().collect())
+            .map(|rim| rim.iter().map(|v| displaced(*v)).collect())
             .collect();
+        // The planar spec has no reversal flag, so its flip is a reversed
+        // winding about the negated normal — needed exactly when the passed
+        // normal is the negated one (a convex source). A concave source's
+        // effective normal is already the surface normal's negative, so its
+        // inner face keeps both the surface normal and the source winding.
+        let mirrored = |verts: &[Point3]| -> Vec<Point3> { verts.iter().rev().copied().collect() };
 
         match face.surface() {
             FaceSurface::Plane { normal, .. } => {
                 let inner_normal = if concave { *normal } else { -*normal };
-                let inner_d = dot_normal_point(inner_normal, inner_verts[0]);
+                let (planar_verts, planar_holes) = if concave {
+                    (inner_verts.clone(), inner_holes.clone())
+                } else {
+                    (
+                        mirrored(&inner_verts),
+                        inner_holes.iter().map(|rim| mirrored(rim)).collect(),
+                    )
+                };
+                let inner_d = dot_normal_point(inner_normal, planar_verts[0]);
                 result_specs.push(FaceSpec::Planar {
-                    vertices: inner_verts,
+                    vertices: planar_verts,
                     normal: inner_normal,
                     d: inner_d,
-                    inner_wires: inner_holes,
+                    inner_wires: planar_holes,
                 });
             }
             FaceSurface::Cylinder(cyl) => {
@@ -539,17 +558,22 @@ pub fn shell(
         return gate(topo, solid);
     }
 
-    // Determine the oriented direction of each boundary edge relative to its single face.
-    // The rim face must use the OPPOSITE orientation so the edge is shared correctly.
+    // Determine the oriented direction of each boundary edge relative to its
+    // single face. The rim face (built un-reversed) must use the opposite
+    // EFFECTIVE sense — a reversed neighbour like the cavity lateral already
+    // traverses its stored senses backwards, so flipping the raw flag alone
+    // lands the rim on the neighbour's effective side (32 same-sense pairs
+    // around a shelled cup's inner rim).
     let mut boundary_oriented: Vec<OrientedEdge> = Vec::new();
     for &eid in &boundary_edge_ids {
         let face_id = edge_face_map[&eid.index()][0];
         let face = topo.face(face_id)?;
+        let opposed = |oe: &OrientedEdge| oe.is_forward() == face.is_reversed();
         let wire = topo.wire(face.outer_wire())?;
         let mut found = false;
         for oe in wire.edges() {
             if oe.edge() == eid {
-                boundary_oriented.push(OrientedEdge::new(eid, !oe.is_forward()));
+                boundary_oriented.push(OrientedEdge::new(eid, opposed(oe)));
                 found = true;
                 break;
             }
@@ -559,7 +583,7 @@ pub fn shell(
                 let iw = topo.wire(iw_id)?;
                 for oe in iw.edges() {
                     if oe.edge() == eid {
-                        boundary_oriented.push(OrientedEdge::new(eid, !oe.is_forward()));
+                        boundary_oriented.push(OrientedEdge::new(eid, opposed(oe)));
                         found = true;
                         break;
                     }

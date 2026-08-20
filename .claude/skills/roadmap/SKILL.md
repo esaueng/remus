@@ -436,12 +436,12 @@ nozzle nm 1→15, clip volume 46.78→46.70 vs 46.6±0.05). Dovetail residuals:
   sub-resolution (0.0016 u-width < the 1e-3 fit band) and drops — the
   corner-lens residual class. Export-level verification = the tool 4-suite
   re-probe after release.
-- **Mesh-boolean fallback emits OPEN meshes that get CONSUMED — OPEN
-  (discovered 2026-07-16):** on the dblcorner nub operands the co-refinement
-  fallback produced bnd=5/6 output (warn-logged, then used anyway, poisoning
-  every downstream boolean into a 1400-face fallback export). The safety net
-  must be watertight or rejected. Repro: the dblcorner fixture operands with
-  the analytic path disabled, or any pre-fix build.
+- **Mesh-boolean fallback emits OPEN meshes that get CONSUMED — CLOSED
+  (this fork, PR #117):** `mesh_boolean_fallback` now rejects any output with
+  nonzero position-welded boundary or non-manifold edge counts
+  (`operations/src/boolean/mod.rs`, the `NonManifoldResult` return right
+  after `mesh_boolean`; counts measured by `welded_health` in
+  `mesh_boolean.rs`). Watertight-or-rejected, as demanded.
 
 - **A universal smarter merge-key for duplicate edges. PROVEN UNBUILDABLE.** The
   gridfinity lip corner (chord + arc, same endpoints) MUST merge; the torus-box in-tube
@@ -633,10 +633,13 @@ quadric wire is positive evidence of full-period coverage (it takes 30+ samples
 spread around the whole period), so collect a full-period Cylinder/Cone instead of
 falling back. Fuse now returns both bodies watertight at the exact volume sum;
 in-cavity disjoint Cut returns the blank; Intersect returns empty — all pinned.
-DISCOVERED, open: `shell_op` output itself carries 64 same-sense rim pairs on the
-cavity lateral (the orientation-emission campaign banner in `boolean/tests.rs` lists
-extrude/revolve/sweep/loft/pipe as strict-clean; shell_op is not clean), so the new
-test pins "fuse adds no same-sense pairs", not zero. DURABLE: a wire with no
+The shell_op 64-same-sense-rim-pair discovery is CLOSED (fixture
+`boolean::tests::shelled_cup_is_orientation_consistent`): two stacked roots — Phase 4
+passed reversed winding AND `reversed: !concave` to the flagged FaceSpec variants (a
+double flip; the planar arm now reverses only for convex sources), and Phase 5's rim
+opposed each boundary edge's RAW sense instead of its EFFECTIVE sense, so rims landed
+same-sense against the reversed cavity lateral. shell_op is on the strict-clean
+banner list and the fuse_ring fixture pins zero pairs end-to-end. DURABLE: a wire with no
 angular gap is a wrapped face — any consumer that polygon-approximates it inherits
 the parity flip; and a volume band wide enough to hide an operand is not an oracle.
 
