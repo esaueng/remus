@@ -430,6 +430,8 @@ fn refine_from(
         u_max,
         v_min,
         v_max,
+        surface.is_periodic_u(),
+        surface.is_periodic_v(),
         tolerance,
         max_iterations,
     )?;
@@ -500,9 +502,24 @@ fn surface_newton_refine(
     u_max: f64,
     v_min: f64,
     v_max: f64,
+    closed_u: bool,
+    closed_v: bool,
     tolerance: f64,
     max_iterations: usize,
 ) -> Result<(f64, f64, Point3), MathError> {
+    // On a closed (periodic) direction the domain bound is a seam, not a
+    // boundary: clamping there pins Newton on the wrong side of the seam and
+    // the small-step exit then returns the clamped point as a silent wrong
+    // answer (a near-seam query projects up to half a period off). Wrap the
+    // parameter across the seam instead so the walk reaches the true foot.
+    let advance = |t: f64, delta: f64, lo: f64, hi: f64, closed: bool| {
+        let t_new = t + delta;
+        if closed && hi > lo {
+            lo + (t_new - lo).rem_euclid(hi - lo)
+        } else {
+            t_new.clamp(lo, hi)
+        }
+    };
     let mut u = u_init;
     let mut v = v_init;
 
@@ -578,10 +595,12 @@ fn surface_newton_refine(
             )
         };
 
-        let u_new = (u + delta_u).clamp(u_min, u_max);
-        let v_new = (v + delta_v).clamp(v_min, v_max);
+        let u_new = advance(u, delta_u, u_min, u_max, closed_u);
+        let v_new = advance(v, delta_v, v_min, v_max, closed_v);
 
-        // Convergence check 3: parameter step negligible.
+        // Convergence check 3: parameter step negligible. A seam wrap makes
+        // (u_new - u) span nearly the whole period, which reads as a large
+        // step — never a spurious convergence, so the check stays sound.
         let step = (deriv_u * (u_new - u) + deriv_v * (v_new - v)).length();
         if step < tolerance {
             let pt = surface.evaluate(u_new, v_new);

@@ -2819,29 +2819,29 @@ fn fuse_ring_inside_shelled_box() {
     );
 }
 
-/// Ignored: this fuse does not produce a usable solid, and the assertion below
-/// is only a 0.35 relative-volume band.
+/// Disjoint-body boolean with NESTED bounding boxes: a ring floating in the
+/// open cavity of a shelled cup. The AABB-gap fast paths cannot see this
+/// configuration (the ring's box nests inside the cup's), so all three ops
+/// route through GFA's no-interference path end to end.
 ///
-/// The ring is disjoint from the cup — cavity radius 8.8 vs ring outer 7,
-/// touching only the z=16 plane where their regions do not overlap. Before the
-/// containment fix, the boolean concluded the ring was INSIDE the cup (its AABB
-/// nests, and the old single centre-probe could not disprove it) and returned
-/// the cup unchanged: measured `fused - cup == 0.0000`, same five faces, ring
-/// gone entirely. The band passed only because the missing ring is 226 of 1725
-/// units, a 13% error under a 35% allowance — the same false-containment that
-/// silently dropped the tool when growing a boss.
+/// Regression history, two stacked roots both pinned here:
+/// - The old containment shortcut concluded the ring was INSIDE the cup
+///   (nested AABB + a single centre probe) and returned the cup unchanged;
+///   the then 0.35 relative-volume band could not see the wholly-absent 13%
+///   operand.
+/// - With containment disproved, the algo ray-cast classifier dropped the
+///   cup's cavity lateral — a full-period cylinder whose rims are CHAINS of
+///   arcs from the shell op, no closed circle edge — to the planar
+///   Newell-polygon fallback, whose crossing parity is wrong by construction
+///   on a wrapped surface. Every cavity point then read Inside, three of the
+///   ring's four faces were dropped at selection, and the fuse again returned
+///   the cup alone. The direct `classify_ray_cast` assertion below pins that
+///   classifier fix at its own layer.
 ///
-/// With containment disproved correctly the boolean now attempts the fuse for
-/// real, and fusing disjoint bodies is genuinely unimplemented: the result is
-/// five disconnected shell components with ~80 shared edges whose face
-/// orientations disagree, so the acceptance gate rejects it and the mesh
-/// fallback cannot recover it either.
-///
-/// Un-ignore when fusing disjoint bodies produces a real multi-shell result.
-/// The check to assert then is shell connectivity and orientation consistency —
-/// not this volume band, which a wholly-absent operand satisfies.
+/// Per the old ignore note, the oracles are connectivity, orientation
+/// consistency, and point classification — plus a volume band tight enough
+/// that a missing operand can never satisfy it.
 #[test]
-#[ignore = "disjoint-body fuse is unimplemented; the volume band passed only while the ring was silently dropped"]
 fn fuse_ring_inside_shelled_cylinder() {
     let mut topo = Topology::new();
 
@@ -2891,19 +2891,87 @@ fn fuse_ring_inside_shelled_cylinder() {
     let ring = boolean(&mut topo, BooleanOp::Cut, ring_outer, ring_inner).unwrap();
     let ring_vol = crate::measure::solid_volume(&topo, ring, 0.01).unwrap();
 
+    // The classifier root cause, pinned at its own layer: a point in the open
+    // cavity (inside the ring's eventual position) must read Outside the cup.
+    let cavity_pt = remus_math::vec::Point3::new(5.5, -2.3, 13.0);
+    assert_eq!(
+        remus_algo::classifier::classify_ray_cast(&topo, shelled, cavity_pt).unwrap(),
+        remus_algo::FaceClass::Outside,
+        "cavity air must classify Outside the shelled cup"
+    );
+
+    let edge_health = |topo: &Topology, sid: SolidId| -> (usize, usize) {
+        use std::collections::HashMap;
+        let mut uses: HashMap<EdgeId, usize> = HashMap::new();
+        for fid in remus_topology::explorer::solid_faces(topo, sid).unwrap() {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    *uses.entry(oe.edge()).or_insert(0) += 1;
+                }
+            }
+        }
+        let free = uses.values().filter(|&&c| c == 1).count();
+        let over = uses.values().filter(|&&c| c > 2).count();
+        (free, over)
+    };
+
+    // Fuse: both bodies present, connected shells, consistent orientation.
     let expected = shell_vol + ring_vol;
     let fused = boolean(&mut topo, BooleanOp::Fuse, shelled, ring).unwrap();
     let fused_vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
-
     let rel_err = (fused_vol - expected).abs() / expected;
-    // TODO: re-tighten to 0.05 once boolean engine volume accuracy is fixed.
-    // Known boolean engine issue: fuse on shelled solids produces ~20-33%
-    // volume error due to topology explosion in the boolean operation.
-    // Tolerance is 0.35 because coverage instrumentation inflates the error.
     assert!(
-        rel_err < 0.35,
-        "fuse ring inside shelled cylinder: vol={fused_vol:.1} expected={expected:.1} \
-         (shell={shell_vol:.1}, ring={ring_vol:.1}, rel_err={rel_err:.3})"
+        rel_err < 1e-6,
+        "fuse ring inside shelled cylinder: vol={fused_vol:.4} expected={expected:.4} \
+         (shell={shell_vol:.4}, ring={ring_vol:.4}, rel_err={rel_err:.6})"
+    );
+    let (free, over) = edge_health(&topo, fused);
+    assert_eq!((free, over), (0, 0), "fused result must be edge-manifold");
+    // The shell op's cavity lateral arrives with same-sense rim pairs of its
+    // own (the orientation-emission campaign, see the banner further down);
+    // the disjoint fuse must not ADD any beyond what the operands carry.
+    let operand_pairs =
+        same_sense_pairs(&topo, shelled).len() + same_sense_pairs(&topo, ring).len();
+    let fused_pairs = same_sense_pairs(&topo, fused).len();
+    assert!(
+        fused_pairs <= operand_pairs,
+        "disjoint fuse must not introduce same-sense edge pairs: \
+         operands carry {operand_pairs}, fused has {fused_pairs}"
+    );
+    // Ring material is now part of the result; cavity air is not.
+    let ring_material = remus_math::vec::Point3::new(6.0, 0.0, h - 1.5);
+    assert_eq!(
+        crate::classify::classify_point(&topo, fused, ring_material, 0.01, 1e-7).unwrap(),
+        crate::classify::PointClassification::Inside,
+        "ring material must be inside the fused result"
+    );
+    // Clear of BOTH bodies: below the ring (z 13..16), well inside the
+    // cavity wall (r 8.8), above the cavity floor (z 1.2).
+    let cavity_air = remus_math::vec::Point3::new(3.0, 1.0, 8.0);
+    assert_eq!(
+        crate::classify::classify_point(&topo, fused, cavity_air, 0.01, 1e-7).unwrap(),
+        crate::classify::PointClassification::Outside,
+        "cavity air between ring and wall must stay outside"
+    );
+
+    // Cut: a disjoint tool removes nothing.
+    let cut = boolean(&mut topo, BooleanOp::Cut, shelled, ring).unwrap();
+    let cut_vol = crate::measure::solid_volume(&topo, cut, 0.01).unwrap();
+    assert!(
+        (cut_vol - shell_vol).abs() / shell_vol < 1e-6,
+        "disjoint cut must return the blank: vol={cut_vol:.4} expected={shell_vol:.4}"
+    );
+    assert_eq!(edge_health(&topo, cut), (0, 0));
+
+    // Intersect: disjoint bodies share nothing.
+    let intersected = boolean(&mut topo, BooleanOp::Intersect, shelled, ring).unwrap();
+    let int_faces = remus_topology::explorer::solid_faces(&topo, intersected).unwrap();
+    assert!(
+        int_faces.is_empty(),
+        "disjoint intersect must be empty, got {} faces",
+        int_faces.len()
     );
 }
 

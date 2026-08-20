@@ -1851,29 +1851,41 @@ pub(super) fn tessellate_nonplanar_cdt(
         .collect::<Result<Vec<_>, _>>()?;
 
     // Step 2a: Unwrap periodic u across the seam for polyline boundaries.
+    //
+    // Analytic revolution surfaces have period TAU; a NURBS surface that is
+    // closed in u (a converted or imported cylinder/cone wall) has period
+    // equal to its u knot-domain width, and its face wire's seam meridian
+    // need not coincide with the surface's parameterization seam — the
+    // unwrapped rectangle can straddle the knot-domain boundary, which is
+    // why interior evaluation below wraps u back into the domain.
     {
-        let is_periodic = matches!(
-            face_data.surface(),
+        let u_periodic = match face_data.surface() {
             FaceSurface::Cylinder(_)
-                | FaceSurface::Cone(_)
-                | FaceSurface::Sphere(_)
-                | FaceSurface::Torus(_)
-        );
-        if is_periodic && !boundary_uv.is_empty() {
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => Some((std::f64::consts::TAU, std::f64::consts::PI)),
+            FaceSurface::Nurbs(s) if s.is_periodic_u() => {
+                let (du0, du1) = s.domain_u();
+                (du1 > du0).then(|| (du1 - du0, f64::midpoint(du0, du1)))
+            }
+            _ => None,
+        };
+        if let Some((period, target_mid)) = u_periodic
+            && !boundary_uv.is_empty()
+        {
             for i in 1..boundary_uv.len() {
                 let prev_u = boundary_uv[i - 1].0;
                 let mut u = boundary_uv[i].0;
                 let diff = u - prev_u;
-                let shifts = (diff / std::f64::consts::TAU + 0.5).floor();
-                u -= shifts * std::f64::consts::TAU;
+                let shifts = (diff / period + 0.5).floor();
+                u -= shifts * period;
                 boundary_uv[i].0 = u;
             }
             let first_u = boundary_uv[0].0;
             let last_u = boundary_uv.last().map_or(first_u, |p| p.0);
             let close_diff = first_u - last_u;
-            if close_diff.abs() > std::f64::consts::PI {
+            if close_diff.abs() > period * 0.5 {
                 let u_mid = boundary_uv.iter().map(|p| p.0).sum::<f64>() / boundary_uv.len() as f64;
-                let target_mid = std::f64::consts::PI;
                 let shift = target_mid - u_mid;
                 for pt in &mut boundary_uv {
                     pt.0 += shift;
@@ -2108,8 +2120,23 @@ pub(super) fn tessellate_nonplanar_cdt(
         if let Some(gid) = cdt_to_global[i] {
             final_global_ids[i] = gid;
         } else if i >= 3 {
-            let (pu, pv) = from_cdt(cdt_verts[i]);
+            let (pu_raw, pv) = from_cdt(cdt_verts[i]);
             let surface = face_data.surface();
+            // The unwrapped rectangle of a closed-u NURBS face can straddle
+            // its knot-domain boundary; NURBS evaluation clamps out-of-domain
+            // parameters, which would collapse every straddling vertex onto
+            // the seam meridian. Wrap by the period instead. Analytic
+            // surfaces evaluate trigonometrically and need no wrap.
+            let pu = if let FaceSurface::Nurbs(s) = surface {
+                let (du0, du1) = s.domain_u();
+                if s.is_periodic_u() && du1 > du0 && (pu_raw < du0 || pu_raw > du1) {
+                    du0 + (pu_raw - du0).rem_euclid(du1 - du0)
+                } else {
+                    pu_raw
+                }
+            } else {
+                pu_raw
+            };
             let pt3 = eval_surface_point(surface, pu, pv);
             let nrm = surface.normal(pu, pv);
 
@@ -2273,13 +2300,76 @@ fn interior_grid_resolution(
             let n_u = segments_for_chord_deviation_a(r, du, deflection, angular_tol, true).max(2);
             (n_u, 2)
         }
-        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+        FaceSurface::Nurbs(s) => {
+            // A NURBS parameter span is in knot units, not radians. On a
+            // closed (periodic) direction — a converted or imported
+            // cylinder/cone wall — feeding the raw knot span to the chord
+            // formula undersamples by the turn count: du = 1 knot unit can be
+            // a full 2π turn, and 3 interior columns leave wall triangles
+            // whose planes cut deep through the solid (full mesh area, ~13%
+            // volume deficit on a unit B-spline cylinder). Convert the span
+            // to its angular equivalent and size against the control net's
+            // radius, at the edge sampler's halved angular tolerance so the
+            // interior matches the boundary's density.
+            let r = nurbs_estimated_radius(s);
+            let (angular_u, tol_u) = {
+                let (du0, du1) = s.domain_u();
+                if s.is_periodic_u() && du1 > du0 {
+                    (du / (du1 - du0) * std::f64::consts::TAU, angular_tol * 0.5)
+                } else {
+                    (du, angular_tol)
+                }
+            };
+            let (angular_v, tol_v) = {
+                let (dv0, dv1) = s.domain_v();
+                if s.is_periodic_v() && dv1 > dv0 {
+                    (dv / (dv1 - dv0) * std::f64::consts::TAU, angular_tol * 0.5)
+                } else {
+                    (dv, angular_tol)
+                }
+            };
+            let n_u = segments_for_chord_deviation_a(r, angular_u, deflection, tol_u, true).max(2);
+            let n_v = segments_for_chord_deviation_a(r, angular_v, deflection, tol_v, true).max(2);
+            (n_u, n_v)
+        }
+        FaceSurface::Plane { .. } => {
             let r = estimate_surface_radius(surface);
             let n_u = segments_for_chord_deviation_a(r, du, deflection, angular_tol, true).max(2);
             let n_v = segments_for_chord_deviation_a(r, dv, deflection, angular_tol, true).max(2);
             (n_u, n_v)
         }
     }
+}
+
+/// Estimate a curvature radius for a NURBS surface from its control net: the
+/// maximum control-point distance from the net centroid. For a converted
+/// revolution surface this overestimates the true radius (the off-surface
+/// mid-arc control points sit at r/cos(Δ/2)), which errs toward denser
+/// interior sampling — the safe direction.
+fn nurbs_estimated_radius(s: &remus_math::nurbs::surface::NurbsSurface) -> f64 {
+    let mut n = 0.0_f64;
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    let mut cz = 0.0;
+    for row in s.control_points() {
+        for p in row {
+            cx += p.x();
+            cy += p.y();
+            cz += p.z();
+            n += 1.0;
+        }
+    }
+    if n < 1.0 {
+        return 1.0;
+    }
+    let centroid = Point3::new(cx / n, cy / n, cz / n);
+    let mut r: f64 = 0.0;
+    for row in s.control_points() {
+        for p in row {
+            r = r.max((*p - centroid).length());
+        }
+    }
+    r.max(1e-9)
 }
 
 /// Fill a spherical polar cap from a shared constant-latitude boundary.
