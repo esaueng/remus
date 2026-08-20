@@ -423,14 +423,40 @@ pub(super) fn sample_edge(
             let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             let (u0, u1) = nurbs.domain();
             let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
-            let mut pts = sample_uniform(nurbs, t0, t1, n);
-            // Normalize to edge (start→end vertex) order so every consumer's
-            // `is_forward` walk holds even for section edges whose stored
-            // curve runs end→start. Sub-spans are already endpoint-ordered.
-            if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs)? {
-                pts.reverse();
+            if !is_subspan && edge.is_closed() {
+                // A CLOSED NURBS edge still has a start vertex, and the
+                // polyline has to begin there (the circle arm's
+                // `circle_param_range` rationale). The curve's own parameter
+                // origin can sit anywhere on the ring — e.g. a converted
+                // rim circle whose NURBS origin is a quarter turn from the
+                // seam vertex — and the endpoint overwrite below would then
+                // replace the first and last samples with a point far off
+                // the sampled arc, folding the ring back across itself.
+                // Rotate the sampling to start at the vertex's parameter and
+                // walk one full period, wrapping at the knot-domain seam.
+                let width = u1 - u0;
+                let t_v = remus_math::nurbs::projection::project_point_to_curve(nurbs, sp, 1e-9)
+                    .map(|proj| proj.parameter)
+                    .unwrap_or(t0);
+                #[allow(clippy::cast_precision_loss)]
+                (0..n)
+                    .map(|i| {
+                        let offset = width * (i as f64) / ((n - 1).max(1) as f64);
+                        let t = u0 + (t_v - u0 + offset).rem_euclid(width.max(1e-300));
+                        nurbs.evaluate(t)
+                    })
+                    .collect()
+            } else {
+                let mut pts = sample_uniform(nurbs, t0, t1, n);
+                // Normalize to edge (start→end vertex) order so every
+                // consumer's `is_forward` walk holds even for section edges
+                // whose stored curve runs end→start. Sub-spans are already
+                // endpoint-ordered.
+                if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs)? {
+                    pts.reverse();
+                }
+                pts
             }
-            pts
         }
     };
 
