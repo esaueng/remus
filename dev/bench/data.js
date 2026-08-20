@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787239152888,
+  "lastUpdate": 1787242892860,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -755,6 +755,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41153394,
             "range": "± 86175",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "18786e0cdc30fcf75ff6fae082dcbb982130cf25",
+          "message": "test(io): resolve the K0.1 spline-accuracy question — Remus reports the file (#62)\n\nThe OpenZCAD corpus pins e-nurbs-fillet-plate at +0.16% and\nboolean-on-nurbs-import at +0.12% over the closed-form intent, with a\nstanding hypothesis that \"something in NURBS surface evaluation or\ntrimming differs\". Measured kernel-side, the hypothesis closes with no\nRemus defect:\n\nThe file encodes its four corner fillet bands as degree-2 NON-RATIONAL\nB-splines — parabolas, since a quadratic Bezier cannot carry a circular\narc. Per corner the parabola removes 1.5 mm² (tangent triangle 4.5\nminus the parabola-chord area 3) where the true r=3 arc removes\n9·(1 − π/4) ≈ 1.9314 mm², so the FILE's exact content is\n40·24·10 − 4·1.5·10 = 9540.0 mm³, +0.181% above the 9522.7433 intent.\nRemus's tessellated volume converges on exactly that (9539.6 at\ndeflection 1e-4 and rising); the pinned +0.16% is the file deviation\nminus a small inscribed-mesh undercount. OCCT's 9500.0 matches neither\nthe file nor the intent.\n\nThe new fixture pins the resolution: the four bands import as\ndegree-(2,1) non-rational NURBS, the fine-mesh volume lands on the\nfile's 9540.0 (and distinctly above the intent — measuring ~9522.74\nwould mean the reader refit the bands to arcs), and the wasm-facing\nsolid_volume stays within 0.05% of the file content. The\nstep_volume_convergence example is the generic probe for future\nvolume-accuracy questions. Roadmap row added.\n\n\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T12:18:45-04:00",
+          "tree_id": "c26e2c2e3f7024f39b93388d0406b5e708615368",
+          "url": "https://github.com/esaueng/remus/commit/18786e0cdc30fcf75ff6fae082dcbb982130cf25"
+        },
+        "date": 1787242891548,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1356516,
+            "range": "± 16865",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1448534,
+            "range": "± 19581",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13838,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1019477,
+            "range": "± 1946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41044005,
+            "range": "± 91943",
             "unit": "ns/iter"
           }
         ]
