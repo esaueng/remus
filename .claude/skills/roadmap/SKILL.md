@@ -616,10 +616,80 @@ failure), and the 2 structural passes over 60s are the per-test-timeout PERF
 item. Any future panic self-reports via `lastPanicMessage()` (row above).
 
 
-The remaining `#[ignore]` entries are diagnostics or slow perf cases, not open bugs:
-the `profile_intersect.rs` box-sphere probes are stale leftovers (box-sphere shipped
-analytic in #1006), `staircase_fuse_with_cylinders` is a ~2 min perf run, and the two
-`#696` dovetail entries plus `diverge_first_cut` are print-only diagnostics.
+Disjoint-body boolean with NESTED boxes (a ring floating in a shelled cup's open
+cavity) — CLOSED (2026-08-20, fixture
+`boolean::tests::fuse_ring_inside_shelled_cylinder`, un-ignored + rewritten to the
+connectivity/orientation/classification oracles its ignore note demanded). Root was
+NOT assembly (multi-region Fuse already worked) and NOT the disjoint fast path (the
+AABB-gap witness correctly cannot see nested boxes): the algo ray-cast classifier
+dropped any full-period cylinder/cone face whose rims are CHAINS of arcs with no
+closed circle edge (the shell op's cavity lateral is exactly that) to the planar
+Newell-polygon fallback, whose crossing parity is wrong by construction on a wrapped
+surface — every cavity point read Inside, GFA's selection dropped 3 of the ring's 4
+faces, and Fuse returned the cup unchanged (the old 0.35 relative-volume band passed
+with the 13%-of-volume operand entirely absent). Fix in
+`classifier/ray_cast.rs::collect_face_geoms`: `largest_u_gap == None` on a hole-free
+quadric wire is positive evidence of full-period coverage (it takes 30+ samples
+spread around the whole period), so collect a full-period Cylinder/Cone instead of
+falling back. Fuse now returns both bodies watertight at the exact volume sum;
+in-cavity disjoint Cut returns the blank; Intersect returns empty — all pinned.
+DISCOVERED, open: `shell_op` output itself carries 64 same-sense rim pairs on the
+cavity lateral (the orientation-emission campaign banner in `boolean/tests.rs` lists
+extrude/revolve/sweep/loft/pipe as strict-clean; shell_op is not clean), so the new
+test pins "fuse adds no same-sense pairs", not zero. DURABLE: a wire with no
+angular gap is a wrapped face — any consumer that polygon-approximates it inherits
+the parity flip; and a volume band wide enough to hide an operand is not an oracle.
+
+STALE-ROW CORRECTIONS (2026-08-20, this fork): the kumiko corner-wedge and
+lattice-fuse fixtures (`crates/io/tests/kumiko_{corner_wedge,lattice_fuse}_inmem.rs`)
+are un-ignored and GREEN — the corner-wedge cut runs analytic and watertight on the
+2026-08-04 re-captured outward wedges, and the two-band fuse closes; the long kumiko
+narrative above is history, not open work. `cone_union_box_should_be_analytic` is
+likewise un-ignored and green (the tangency family shipped), and `boolean()` now has
+disjoint Cut/Fuse fast paths (`solids_provably_disjoint` + `merge_disjoint_solids`),
+so the "disjointness is not handled" line in the goma dig is stale too.
+
+The remaining `#[ignore]` entries (inventory regenerated 2026-08-20): two
+fork-policy pins (`regress_chamfer_obtuse_ridge`,
+`regress_fillet_concave_notch` — blocked on the trim-contract reconciliation, PR
+#126, not on missing engine work), the ~2 min `staircase_fuse_with_cylinders` perf
+run, and print-only diagnostics (`profile_intersect.rs` ×3, the two #696 dovetail
+entries, the four `diag_*tangency*` probes). The two extrude-orientation
+ready-repros in `wasm/src/bindings/holed_face_tests.rs` were STALE ignores —
+both pass deterministically on this fork (likely fixed by the per-use-pcurve or
+trim-interval replays); un-ignored 2026-08-20 as
+`extruded_annulus_shell_orientation_is_consistent` and
+`o_glyph_bezier_cap_band_classifies_correctly`. Residual, deliberately pinned
+rather than open: ruled-NURBS hole walls still raise one
+`FaceOrientationConsistency` warning each (`dot = −1.000`,
+`expected_flipped_faces = 4` in that file's `assert_solid`) while shell
+orientation and classification are correct — plausibly a validator convention
+on reversed ruled surfaces, not a geometry defect.
+
+NURBS seam-face tessellation volume defect — CLOSED (2026-08-20, this fork;
+pins `transform/tests.rs::bspline_cylinder_tessellated_volume_is_correct` +
+`tessellate/tests.rs::tessellate_bspline_cylinder_seam_wall_watertight_and_correct`).
+A `convert_to_bspline` cylinder read vol ~2.07 (caps only) with bd=74: the
+wall is a closed-u NURBS whose FACE seam sits a quarter turn from the
+SURFACE's parameterization seam (`CylindricalSurface::new` derives x_axis
+from `Frame3::from_normal`, while `make_cylinder` pins the seam vertex at
+(r,0,0) — legal geometry any boolean or STEP import can also produce, so the
+fix is in the meshing machinery, not the primitive). FOUR stacked roots:
+(1) `sample_edge` force-overwrites first/last samples with the edge vertices,
+which on a closed NURBS edge whose curve origin ≠ start vertex folds the ring
+(closed NURBS edges now sample vertex-anchored, wrapping the knot domain —
+the `circle_param_range` rationale extended); (2) Newton surface projection
+CLAMPED at the domain bound of a periodic surface and the small-step exit
+returned the clamped point as a silent wrong answer up to half a period off
+(`surface_newton_refine` now wraps across a closed seam — `is_periodic_u/v`);
+(3) the CDT boundary unwrap was analytic-only and hardcoded TAU (now
+period-aware for closed-u NURBS, with out-of-domain u wrapped before
+evaluation since NURBS eval clamps); (4) `interior_grid_resolution` fed raw
+knot spans (du=1 per full turn) to the radians chord formula → 3 interior
+columns, full mesh area but ~13% volume deficit from deep-cutting wide
+triangles (periodic knot spans now convert to angular spans, radius from the
+control net). DIAGNOSTIC LESSON: full area + zero bd/nm + volume deficit +
+zero inverted normals = sparse-interior deep chords, not winding.
 
 CLOSED, do not re-open as deferred: honeycomb wall-pattern cut (#925/#928,
 `crates/io/tests/gridfinity_honeycomb_cut_inmem.rs` passes), reversed-edge periodic-copy

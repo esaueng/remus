@@ -3055,3 +3055,31 @@ fn welded_mesh_quality_rejects_out_of_range_indices_without_panicking() {
     assert!(!quality.is_watertight());
     assert_eq!(quality.boundary_edges, usize::MAX);
 }
+
+/// A converted all-B-spline cylinder: the wall is a closed-u NURBS surface
+/// whose face seam sits a quarter turn from the surface's parameterization
+/// seam, and the closed rim curves' NURBS origins likewise differ from the
+/// edge vertices. Pins the four seam-machinery fixes (vertex-anchored closed
+/// NURBS edge sampling, seam-wrapping Newton projection, period-aware CDT
+/// boundary unwrap with wrapped evaluation, angular interior-grid density)
+/// at two deflections — sampling off-by-ones are deflection dependent.
+#[test]
+fn tessellate_bspline_cylinder_seam_wall_watertight_and_correct() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, solid).unwrap();
+    let expected = 2.0 * std::f64::consts::PI;
+    for deflection in [0.1, 0.02] {
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        assert_eq!(
+            (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh)),
+            (0, 0),
+            "deflection {deflection}: B-spline cylinder mesh must be closed and manifold"
+        );
+        let volume = signed_volume_raw(&mesh);
+        assert!(
+            (volume - expected).abs() / expected < 0.02,
+            "deflection {deflection}: mesh volume {volume:.4} vs exact {expected:.4}"
+        );
+    }
+}
