@@ -1462,6 +1462,31 @@ export class BrepKernel {
         return v1;
     }
     /**
+     * Export several solids into one glTF binary (.glb) file.
+     *
+     * The multi-solid twin of [`exportGlb`](Self::export_glb): every
+     * solid's facets merge into one mesh in a single GLB.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    exportGlbMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportGlbMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Export a solid to IGES format.
      *
      * Returns the IGES file as a UTF-8 encoded byte vector.
@@ -1499,6 +1524,33 @@ export class BrepKernel {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Export several solids into one OBJ file.
+     *
+     * The multi-solid twin of [`exportObj`](Self::export_obj), completing
+     * the set [`export3mfMulti`](Self::export_3mf_multi) started: every
+     * solid's facets merge into one vertex stream, which is what OBJ
+     * consumers expect from a single-file export.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    exportObjMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportObjMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * Export a solid to PLY format (binary little-endian).
