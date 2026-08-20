@@ -33,10 +33,25 @@ rg -n -A2 '#\[ignore' crates/    # filter the 3 doc-comment false hits by hand
 
 ## The north star
 
-Replace the incumbent kernel in the gridfinity layout tool (`$GRIDFINITY_TOOL`)
-at full parity, across all its generator scenarios: 100% triangle correctness, volume
-correctness, manifold correctness, AND generation performance at least as good. Parity
-first, then beating it, is the acceptance bar. See `parity-benchmarking` for the harness.
+**Serve OpenZCAD.** Remus's consumer is the OpenZCAD web/desktop CAD application
+(`esaueng/OpenZCAD`, `packages/kernel-adapter` pins `remus-wasm` from this repo's
+committed package). The bar is the one OpenZCAD's users feel: exact analytic results,
+watertight manifold output, correct volumes, and interactive-speed booleans on real
+modeling chains. Verification is IN-REPO: the full workspace suites (including the
+wasm contract tests), the `crates/io/tests` fixture corpus, `approx_census`, and the
+criterion benches.
+
+**TOOL RETIREMENT (2026-08-20, maintainer decision):** the gridfinity layout tool
+(`$GRIDFINITY_TOOL`), its scenario matrices, overlay workflow, and the brepjs
+head-to-head bench were the UPSTREAM project's consumer and harness — they are not
+part of this fork's goals or toolchain. Every "tool-side re-probe pending" note in
+this file is closed-as-not-applicable: the engine-side fixture named next to it is
+the verification bar. The scenario-matrix baselines and tool scores below are
+HISTORY — kept because the defect maps and durable lessons in them still describe
+this codebase. The `parity-benchmarking` skill is retired-as-historical for the same
+reason. The gridfinity-derived test corpus (the `*_inmem` fixtures and the wasm
+`gridfinity_tests` module) STAYS — it is generic hard-geometry regression coverage
+pinning dozens of closed roots, with zero external dependency.
 
 Campaign history, one paragraph: gridfinity bin parity reached (10/11 kernel-suite
 cases, PRs through #938); the four primitive-boolean mesh-fallbacks eliminated and made
@@ -76,9 +91,11 @@ received-below-expected as benign density difference, received-10x-above as a de
    The four primitive-boolean cases (stable repros in
    `crates/operations/examples/approx_census.rs`) were picked over the tooling-blocked
    scoop case for exactly this reason.
-4. **After ANY GFA or boolean change, re-probe scenario face counts before claiming
-   anything.** Scorecards rot silently; a stale one once hid a regression through a
-   whole release. This is mandatory, not optional (see `parity-benchmarking`).
+4. **After ANY GFA or boolean change, run the FULL workspace suite (including the
+   wasm gridfinity contract tests) plus `approx_census` before claiming anything.**
+   Scorecards rot silently; a stale one once hid a regression through a whole
+   release. (Historically this filter demanded a tool-side scenario re-probe; the
+   tool is retired — the in-repo fixture corpus is the scoreboard now.)
 
 ## TERMINAL cases: do not re-attempt without the named missing primitive
 
@@ -1185,8 +1202,9 @@ Every box before "closed":
 - [ ] **Regression fixture shipped** with the fix (STEP or arena `.bin`; see `testing`).
 - [ ] **Census clean or improved:** the row flips FALLBACK to analytic
       (`cargo run --release --example approx_census -p remus-operations`).
-- [ ] **Head-to-head timing at least parity** (the brepjs wasm bench; see
-      `parity-benchmarking`).
+- [ ] **No perf regression** on the criterion benches touching the changed path
+      (`cargo bench -p remus-operations` — compare against the prior run's saved
+      baselines; the retired tool-side head-to-head is no longer part of the bar).
 - [ ] **Release published** when user-facing (see `release-flow`).
 
 ## Anti-patterns
@@ -1202,7 +1220,8 @@ Every box before "closed":
 
 ## Related skills
 
-`analytic-preservation` (the chase filters in depth), `parity-benchmarking` (the
-scenario re-probe and head-to-head), `debugging-doctrine` (before any multi-pass dig),
+`analytic-preservation` (the chase filters in depth), `parity-benchmarking`
+(RETIRED-HISTORICAL — capture recipes and past scenario context only),
+`debugging-doctrine` (before any multi-pass dig),
 `solid-verification` (the acceptance oracles), `testing` (fixtures and ready-repros),
 `fillet-blend` (the blend traps), `release-flow` (shipping a user-facing close).
