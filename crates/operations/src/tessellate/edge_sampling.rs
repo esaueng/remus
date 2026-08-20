@@ -340,7 +340,7 @@ fn shorter_arc_range(
 ///
 /// The sampling density is driven by `deflection`. For a `Line`, only the
 /// two endpoints are returned. For curves, the point count is proportional
-/// to curvature. `circle_floor` is forwarded to [`edge_sample_count`].
+/// to curvature. `circle_floor` is forwarded to `edge_sample_count`.
 ///
 /// # Errors
 ///
