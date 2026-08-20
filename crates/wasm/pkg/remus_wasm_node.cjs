@@ -433,6 +433,36 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Distance-angle chamfer with versioned face-evolution tracking data.
+     *
+     * Runs the same engine routing as
+     * [`chamferDistanceAngle`](Self::chamfer_distance_angle) — the planar
+     * bevel for planar-line selections, the walking builder otherwise — so
+     * the returned solid is the same exact B-Rep the non-evolution entry
+     * point produces. Both engines report construction history; when one
+     * cannot, the payload carries explicit unresolved source/result sets
+     * instead of inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * the angle is outside `(0, π/2)`, or the chamfer fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {number} angle
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    chamferDistanceAngleWithEvolution(solid, edge_handles, distance, angle) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_chamferDistanceAngleWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance, angle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * V2 chamfer journaled as one evolution entry (kind `chamfer`).
      * @param {number} solid
      * @param {Uint32Array} edges
