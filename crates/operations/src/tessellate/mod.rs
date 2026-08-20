@@ -35,6 +35,7 @@ use remus_topology::Topology;
 use remus_topology::face::FaceId;
 
 // Re-export all public items.
+pub use edge_sampling::edge_param_span;
 pub use face::{tessellate_with_uvs, tessellate_with_uvs_a};
 pub(crate) use mesh_ops::COINCIDENT_DEDUPE_GRID;
 pub use mesh_ops::{
@@ -181,4 +182,27 @@ pub(super) fn position_based_boundary_count(mesh: &TriangleMesh) -> usize {
         .iter()
         .filter(|&&(a, b)| !half_edges.contains(&(b, a)))
         .count()
+}
+
+/// Sample a single edge's polyline at the given deflection.
+///
+/// Walks exactly the edge's own parameter span (stored trim, closed-edge
+/// full period, or the endpoint-trimmed convention) — the same sampler the
+/// solid wireframe uses, exposed for consumers that rebuild one edge's
+/// geometry outside the kernel (e.g. a 2D drawing export's spline
+/// fallback). Sampling the raw curve domain instead traces a closed
+/// section's whole parent curve.
+///
+/// # Errors
+///
+/// Returns an error if the edge lookup fails or the sampling budget is
+/// exceeded at this deflection.
+pub fn sample_edge_polyline(
+    topo: &remus_topology::Topology,
+    edge: remus_topology::edge::EdgeId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<Vec<remus_math::vec::Point3>, crate::OperationsError> {
+    let edge_data = topo.edge(edge)?;
+    edge_sampling::sample_edge(topo, edge_data, deflection, angular_tol, false)
 }
