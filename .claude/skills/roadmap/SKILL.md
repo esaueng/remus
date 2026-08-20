@@ -436,12 +436,17 @@ nozzle nm 1→15, clip volume 46.78→46.70 vs 46.6±0.05). Dovetail residuals:
   sub-resolution (0.0016 u-width < the 1e-3 fit band) and drops — the
   corner-lens residual class. Export-level verification = the tool 4-suite
   re-probe after release.
-- **Mesh-boolean fallback emits OPEN meshes that get CONSUMED — OPEN
-  (discovered 2026-07-16):** on the dblcorner nub operands the co-refinement
-  fallback produced bnd=5/6 output (warn-logged, then used anyway, poisoning
-  every downstream boolean into a 1400-face fallback export). The safety net
-  must be watertight or rejected. Repro: the dblcorner fixture operands with
-  the analytic path disabled, or any pre-fix build.
+- **Mesh-boolean fallback emits OPEN meshes that get CONSUMED — STALE, the
+  consumption half is CLOSED on this fork (verified 2026-08-20):**
+  `mesh_boolean_fallback` now hard-rejects non-watertight co-refinement
+  output (`boundary_edge_count > 0 || non_manifold_edge_count > 0` →
+  `Err(NonManifoldResult)`, boolean/mod.rs ~2873) — the product call was
+  made and implemented; open output can no longer poison a chain. The
+  residual (make the co-refinement itself watertight on the dblcorner
+  operands so the fallback SUCCEEDS there) is below the chase filter until
+  a live case needs that fallback: every current fixture passes on the
+  analytic path, so a failing repro would first have to route through the
+  mesh path at all.
 
 - **A universal smarter merge-key for duplicate edges. PROVEN UNBUILDABLE.** The
   gridfinity lip corner (chord + arc, same endpoints) MUST merge; the torus-box in-tube
