@@ -265,7 +265,7 @@ Quick reference — find the right file for any task:
 | Task | File(s) |
 |------|---------|
 | GCS system (CRUD, solve orchestration, `solve_detailed`) | `gcs/system.rs` |
-| Constraint types (24 variants, Jacobians) | `gcs/constraint.rs` |
+| Constraint types (26 variants, Jacobians) | `gcs/constraint.rs` |
 | Entity arena (Points, Lines, Circles) | `gcs/entity.rs` |
 | DogLeg trust-region solver | `gcs/solver.rs` |
 | QR factorization (rank detection) | `gcs/qr.rs` |
