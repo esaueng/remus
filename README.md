@@ -59,9 +59,12 @@ WebAssembly, so the same kernel runs in the browser and on the desktop.
 `unsafe` is denied by lint, as are `unwrap` and `panic`. Every public operation
 returns a `Result`.
 
-It grew out of building [gridfinitylayouttool.com](https://gridfinitylayouttool.com),
-where the options for parametric CAD in the browser were proprietary or
-compiled from large C++ codebases.
+Parametric CAD in the browser has long meant choosing between proprietary
+kernels and large C++ codebases compiled to WASM. Remus exists to be the third
+option: a from-scratch Rust kernel with exact geometry and a permanent
+Apache-2.0 license. It is maintained by Esau Engineering as the Apache-2.0
+continuation of an upstream kernel that relicensed at v3 — see
+[Provenance](#provenance) for how that boundary is enforced.
 
 The geometry is exact. Booleans run on analytic and NURBS surfaces and keep
 those surfaces through the operation, so a cylinder stays a cylinder instead of
@@ -301,8 +304,8 @@ remus-operations = { git = "https://github.com/esaueng/remus" }
 remus-io = { git = "https://github.com/esaueng/remus" }        # optional
 ```
 
-Pin a revision (`rev = "..."`) for anything you intend to reproduce: the crate
-names change when the rename lands.
+Pin a revision (`rev = "..."`) for anything you intend to reproduce: nothing
+is versioned or published yet, so `main` moves.
 
 ### Building from source
 
@@ -382,8 +385,9 @@ native builds already do per face.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md). Contributions are inbound under
 Apache-2.0 and require a Developer Certificate of Origin sign-off. Commits are
-conventional commits, enforced by commitlint; `cargo fmt`, clippy, the test
-suite, and the boundary checks all gate the pre-push hook.
+conventional commits, enforced by commitlint; the pre-commit hook runs
+`cargo fmt` and clippy, and CI gates the full test suite, the layer-boundary
+check, and the license-lineage check on every push.
 
 New regressions should land as [reproduction bundles](crates/wasm/src/repro.rs)
 where the failure is expressible through the batch API — every discovered
@@ -393,26 +397,25 @@ Security reports: see [SECURITY.md](./SECURITY.md).
 
 ## Provenance
 
-Remus is the permanent Apache-2.0 continuation of a codebase whose upstream
-relicensed to AGPL at v3. That boundary is enforced, not merely stated:
+Remus continues a codebase whose upstream relicensed to AGPL at v3. This
+repository is the permanent Apache-2.0 line of that work, maintained by
+Esau Engineering. The last permissive upstream release is `v2.129.15`;
+nothing from v3 or later is merged, and behavior from those releases enters
+only under an explicit Apache-2.0 grant or as an independent implementation
+proven by a regression test.
 
-- The final permissive upstream release is `v2.129.15`; nothing from v3 or
-  later is merged. Behavior from those releases enters only under an explicit
-  Apache-2.0 grant, or is specified and independently implemented with a
-  regression proving the contract.
-- `scripts/check-apache-lineage.sh` runs in CI and before every push.
-- Every replayed contribution is recorded, PR by PR, in
-  [`apache-replay-provenance.json`](docs/production-readiness/apache-replay-provenance.json)
-  with a validator that checks the ledger offline. The narrative record is in
-  [Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
+That boundary is enforced in CI and every replayed contribution is recorded
+in an auditable ledger — see
+[Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
 
 The project's use of AI tooling is disclosed in
 [AI-DISCLOSURE.md](./AI-DISCLOSURE.md).
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](./LICENSE-APACHE).
-
-This Apache line is permanently based on the last permissive upstream series.
-It does not merge code from upstream releases published under the AGPL.
+Remus is licensed under the [Apache License, Version 2.0](./LICENSE-APACHE),
+permanently — see [Provenance](#provenance) for how the AGPL boundary with
+the historical upstream is enforced. Attribution is in [NOTICE](./NOTICE),
+and contributions come in under the same license
+(see [CONTRIBUTING.md](./CONTRIBUTING.md)).
 </content>

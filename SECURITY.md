@@ -1,13 +1,34 @@
 # Security Policy
 
+## Supported Versions
+
+Remus publishes no packages yet — no crates.io releases, no npm packages, no
+GitHub releases. Report issues against `main`; fixes land there.
+
+## Scope
+
+Remus is a library that parses untrusted input: STEP, IGES, STL, 3MF, OBJ,
+PLY, and glTF files may come from anywhere. The reports we care most about:
+
+- Panics, unbounded memory growth, or hangs triggered by crafted import
+  files, especially anything that gets past the `ImportLimits` budgets.
+- Memory-safety issues (the workspace denies `unsafe`, so any would come
+  through a dependency).
+- Supply-chain issues in the dependency tree or CI workflows.
+
+Wrong geometry from valid input is a correctness bug, not a vulnerability —
+file a regular issue for those.
+
 ## Reporting a Vulnerability
 
-To report a security vulnerability, use [GitHub Security Advisories](https://github.com/esaueng/remus/security/advisories/new) for private disclosure.
+Use [GitHub Security Advisories](https://github.com/esaueng/remus/security/advisories/new)
+for private disclosure. Please do not open a public issue for anything
+security-sensitive.
 
 Include:
 
 - Description of the vulnerability
-- Steps to reproduce
+- Steps to reproduce (a crafted input file is ideal)
 - Potential impact
 - Suggested fix (if any)
 
