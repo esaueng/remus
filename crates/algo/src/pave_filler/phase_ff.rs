@@ -2336,6 +2336,36 @@ fn trim_closed_curve_to_inboth_arc(
             one_arc(t0, raw.t_range.1),
             one_arc(raw.t_range.0, t1_wrapped),
         ]
+    } else if matches!(raw.curve, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+        && (t1 - t0) >= std::f64::consts::PI * 0.999
+    {
+        // Downstream consumers interpret an open Circle/Ellipse edge as the
+        // SHORTER arc between its endpoints (`evaluate_edge_at_t`,
+        // `find_splits_on_section_arc/_ellipse`), so a single emitted span
+        // ≥ π would flip to the complementary arc at every split site. The
+        // exact-crossing emitter already splits such windows into < π
+        // sub-arcs; mirror it here. Measured unreachable on the whole io
+        // fixture corpus today (no chain trims a > π window through this
+        // path), so this cannot perturb any calibrated chain — it guards
+        // future large-cutout geometry.
+        let span = t1 - t0;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n_sub = (span / (std::f64::consts::PI * 0.999)).ceil().max(2.0) as usize;
+        #[allow(clippy::cast_precision_loss)]
+        let step = span / n_sub as f64;
+        (0..n_sub)
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let ta = t0 + step * k as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let tb = if k + 1 == n_sub {
+                    t1
+                } else {
+                    t0 + step * (k + 1) as f64
+                };
+                one_arc(ta, tb)
+            })
+            .collect()
     } else {
         // Periodic curve (any run) or non-wrapping NURBS: a single arc. For a
         // periodic curve `t1` may exceed the domain — that is intentional and
@@ -5511,7 +5541,9 @@ mod tests {
     fn trim_partial_ellipse_to_single_open_arc() {
         // A closed Ellipse whose in-both run is a genuine NON-wrapping partial
         // (b0..b1 strictly inside [0, N]) trims to ONE open arc with those exact
-        // parameters — NOT kept whole. Domain [0, 2π], N=24, run = samples 6..18.
+        // parameters — NOT kept whole. Domain [0, 2π], N=24, run = samples 6..17
+        // (span < π; a run of ≥ π splits into sub-arcs per the shorter-arc
+        // contract — see `sampled_trim_never_emits_open_conic_arc_spanning_pi`).
         use remus_math::curves::Ellipse3D;
         let e = Ellipse3D::new(
             Point3::new(0.0, 0.0, 0.0),
@@ -5530,11 +5562,11 @@ mod tests {
             p_start: Point3::new(0.0, 0.0, 0.0),
             p_end: Point3::new(0.0, 0.0, 0.0),
         };
-        let out = trim_closed_curve_to_inboth_arc(&raw, 6, 18, 24);
+        let out = trim_closed_curve_to_inboth_arc(&raw, 6, 17, 24);
         assert_eq!(out.len(), 1, "non-wrapping partial → one open arc");
         let tau = std::f64::consts::TAU;
         assert!((out[0].t_range.0 - tau * 6.0 / 24.0).abs() < 1e-9);
-        assert!((out[0].t_range.1 - tau * 18.0 / 24.0).abs() < 1e-9);
+        assert!((out[0].t_range.1 - tau * 17.0 / 24.0).abs() < 1e-9);
         // The arc is OPEN (endpoints differ), so the splitter trims it rather
         // than treating it as a closed internal loop.
         assert!((out[0].p_start - out[0].p_end).length() > 1e-6);
@@ -5947,5 +5979,73 @@ mod tests {
             w.p_end.y()
         );
         assert!(w.p_start.y().abs() < 1e-9 || w.p_end.y().abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod ellipse_span_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::EdgeCurve;
+
+    use super::{RawCurve, trim_closed_curve_to_inboth_arc};
+
+    /// The shorter-arc contract (#1150): an OPEN Circle/Ellipse section edge
+    /// is interpreted downstream as the SHORTER arc between its endpoints,
+    /// so the sampled closed-section trim must never emit a single arc
+    /// spanning ≥ π. Circle sections were already covered by the FF
+    /// closed-circle emitter; this pins the ellipse (and circle) guarantee
+    /// on the sampled path, where a large cutout can leave a > π in-both
+    /// window. Unreachable on the current fixture corpus (measured), so this
+    /// is the guard for future large-cutout geometry.
+    #[test]
+    fn sampled_trim_never_emits_open_conic_arc_spanning_pi() {
+        let ellipse = remus_math::curves::Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            2.0,
+        )
+        .unwrap();
+        let curve = EdgeCurve::Ellipse(ellipse.clone());
+        let raw = RawCurve {
+            curve,
+            bbox: remus_math::aabb::Aabb3::from_points([
+                Point3::new(-4.0, -2.0, 0.0),
+                Point3::new(4.0, 2.0, 0.0),
+            ]),
+            t_range: (0.0, std::f64::consts::TAU),
+            p_start: ellipse.evaluate(0.0),
+            p_end: ellipse.evaluate(std::f64::consts::TAU),
+        };
+        // A large in-both window: samples 10..58 of 64 → span ≈ 4.71 (> π).
+        let arcs = trim_closed_curve_to_inboth_arc(&raw, 10, 58, 64);
+        assert!(
+            arcs.len() >= 2,
+            "a > π window must be split into < π sub-arcs, got {} arc(s)",
+            arcs.len()
+        );
+        for arc in &arcs {
+            let span = arc.t_range.1 - arc.t_range.0;
+            assert!(
+                span < std::f64::consts::PI,
+                "emitted open conic arc spans {span:.4} ≥ π"
+            );
+            // Endpoints stay on the curve and chain contiguously.
+            let start = ellipse.evaluate(arc.t_range.0);
+            assert!((start - arc.p_start).length() < 1e-9);
+        }
+        // Chained coverage: sub-arcs abut exactly and cover the window.
+        for w in arcs.windows(2) {
+            assert!((w[0].t_range.1 - w[1].t_range.0).abs() < 1e-12);
+        }
+        let total: f64 = arcs.iter().map(|a| a.t_range.1 - a.t_range.0).sum();
+        let expected = (58.0 - 10.0) / 64.0 * std::f64::consts::TAU;
+        assert!((total - expected).abs() < 1e-9);
+
+        // A small window stays ONE arc (no perturbation of the normal case).
+        let small = trim_closed_curve_to_inboth_arc(&raw, 10, 20, 64);
+        assert_eq!(small.len(), 1);
     }
 }
