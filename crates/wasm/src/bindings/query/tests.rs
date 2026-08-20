@@ -604,3 +604,93 @@ fn make_planar_face_from_wire_rejects_noncoplanar() {
         "error must mention 'not planar', got {msg}"
     );
 }
+
+// ── get_edge_param_span / sample_edge (span-true) ─────────────
+
+#[test]
+fn box_line_edge_span_is_zero_to_length() {
+    let (k, solid) = kernel_with_box();
+    let edge = k.get_solid_edges(solid).unwrap()[0];
+    let span = k.get_edge_param_span(edge).unwrap();
+    assert_eq!(span.len(), 2);
+    assert!((span[0] - 0.0).abs() < 1e-12);
+    assert!(
+        (span[1] - 1.0).abs() < 1e-9,
+        "unit box edge length, got {span:?}"
+    );
+}
+
+#[test]
+fn cylinder_rim_circle_span_is_one_full_period() {
+    let (k, solid) = kernel_with_cylinder();
+    let circle_edge = k
+        .get_solid_edges(solid)
+        .unwrap()
+        .into_iter()
+        .find(|&e| k.get_edge_curve_type(e).unwrap() == "CIRCLE")
+        .expect("cylinder must have a circular rim edge");
+    let span = k.get_edge_param_span(circle_edge).unwrap();
+    assert!(
+        (span[1] - span[0] - std::f64::consts::TAU).abs() < 1e-9,
+        "closed rim must span one full period, got {span:?}"
+    );
+}
+
+#[test]
+fn fillet_arc_span_is_the_quarter_arc_not_the_complement() {
+    // Fillet one box edge: the band's rim arcs subtend ~a quarter turn.
+    // Endpoint reconstruction cannot tell that arc from its 3/4 complement;
+    // the span can — that is this binding's whole reason to exist.
+    let (mut k, solid) = kernel_with_box();
+    let edge = k.get_solid_edges(solid).unwrap()[0];
+    let filleted = k.fillet_solid(solid, vec![edge], 0.3).unwrap();
+    let arc_edge = k
+        .get_solid_edges(filleted)
+        .unwrap()
+        .into_iter()
+        .find(|&e| {
+            k.get_edge_curve_type(e).unwrap() == "CIRCLE" && {
+                let v = k.get_edge_vertices(e).unwrap();
+                let d =
+                    ((v[0] - v[3]).powi(2) + (v[1] - v[4]).powi(2) + (v[2] - v[5]).powi(2)).sqrt();
+                d > 1e-6 // open arc, not a closed rim
+            }
+        })
+        .expect("filleted box must carry an open arc edge");
+    let span = k.get_edge_param_span(arc_edge).unwrap();
+    let sweep = span[1] - span[0];
+    assert!(
+        (sweep.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+        "fillet rim arc must sweep a quarter turn, got {sweep}"
+    );
+
+    // The span-true sampler stays on that quarter arc: every sample within
+    // the fillet radius of the cylinder axis region, endpoints anchored on
+    // the edge's own vertices.
+    let pts = k.sample_edge_polyline(arc_edge, 0.001).unwrap();
+    assert!(pts.len() >= 6 && pts.len() % 3 == 0);
+    let v = k.get_edge_vertices(arc_edge).unwrap();
+    let d_start =
+        ((pts[0] - v[0]).powi(2) + (pts[1] - v[1]).powi(2) + (pts[2] - v[2]).powi(2)).sqrt();
+    let last = pts.len() - 3;
+    let d_end = ((pts[last] - v[3]).powi(2)
+        + (pts[last + 1] - v[4]).powi(2)
+        + (pts[last + 2] - v[5]).powi(2))
+    .sqrt();
+    assert!(
+        d_start < 1e-9 && d_end < 1e-9,
+        "polyline must anchor on the edge vertices"
+    );
+    // A complement-arc trace would wander ~2·r beyond the band: bound every
+    // sample to the arc's chord neighbourhood instead.
+    let chord = ((v[0] - v[3]).powi(2) + (v[1] - v[4]).powi(2) + (v[2] - v[5]).powi(2)).sqrt();
+    for p in pts.chunks(3) {
+        let to_start =
+            ((p[0] - v[0]).powi(2) + (p[1] - v[1]).powi(2) + (p[2] - v[2]).powi(2)).sqrt();
+        let to_end = ((p[0] - v[3]).powi(2) + (p[1] - v[4]).powi(2) + (p[2] - v[5]).powi(2)).sqrt();
+        assert!(
+            to_start <= chord + 1e-9 && to_end <= chord + 1e-9,
+            "sample strayed off the quarter arc: {p:?}"
+        );
+    }
+}

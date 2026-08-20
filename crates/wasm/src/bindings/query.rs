@@ -584,6 +584,56 @@ impl BrepKernel {
         }
     }
 
+    /// The parameter span the edge ACTUALLY covers on its stored curve.
+    ///
+    /// Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
+    /// one full period anchored at its start vertex, and an open edge via the
+    /// endpoint-trimmed convention. This differs from
+    /// [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
+    /// reports the raw curve domain (`[0, TAU]` for every circle): a circle
+    /// edge's endpoints subtend TWO arcs, and only this span says which one
+    /// the edge is — reconstructing it from endpoints alone flips
+    /// intentional major arcs. Evaluate points on the span with
+    /// [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
+    /// prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
+    /// closed-curve wrapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the edge handle is invalid.
+    #[wasm_bindgen(js_name = "getEdgeParamSpan")]
+    pub fn get_edge_param_span(&self, edge: u32) -> Result<Vec<f64>, JsError> {
+        let edge_id = self.resolve_edge(edge)?;
+        let edge_data = self.topo.edge(edge_id)?;
+        let (t0, t1) = remus_operations::tessellate::edge_param_span(&self.topo, edge_data)?;
+        Ok(vec![t0, t1])
+    }
+
+    /// Span-true polyline of one edge at the given chordal deflection.
+    ///
+    /// Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
+    /// own parameter span — the same sampler the solid wireframe uses.
+    /// Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
+    /// or closed-NURBS edge yields its actual arc (vertex-anchored), never a
+    /// full-period trace of the parent curve.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the edge handle is invalid, `deflection` is not
+    /// positive, or the sampling budget is exceeded at this deflection.
+    #[wasm_bindgen(js_name = "sampleEdge")]
+    pub fn sample_edge_polyline(&self, edge: u32, deflection: f64) -> Result<Vec<f64>, JsError> {
+        crate::error::validate_positive(deflection, "deflection")?;
+        let edge_id = self.resolve_edge(edge)?;
+        let points = remus_operations::tessellate::sample_edge_polyline(
+            &self.topo,
+            edge_id,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
+        Ok(points.iter().flat_map(|p| [p.x(), p.y(), p.z()]).collect())
+    }
+
     /// Evaluate a point on an edge curve at parameter `t`.
     ///
     /// Returns `[x, y, z]`.
