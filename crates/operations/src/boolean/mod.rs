@@ -242,8 +242,108 @@ const fn default_fallback_policy() -> remus_math::context::FallbackPolicy {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn boolean_with_policy(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    policy: remus_math::context::FallbackPolicy,
+    used_fallback: &mut bool,
+) -> Result<SolidId, crate::OperationsError> {
+    let result = boolean_with_policy_impl(topo, op, a, b, policy, used_fallback)?;
+    normalize_hole_windings(topo, result)?;
+    Ok(result)
+}
+
+/// Rewind plane-face hole wires that wind the same way as their outer wire.
+///
+/// The GFA builder attaches hole wires by geometric containment and can emit
+/// a hole wound like its outer — tessellation and classification were made
+/// winding-agnostic for exactly that reason, so the result's material is
+/// correct either way. The stored convention, though (and what
+/// `check_shell_orientation`'s shared-edge sense test verifies), is that a
+/// hole winds opposite its outer around the stored normal. Canonicalize at
+/// the result boundary so validation and downstream consumers can rely on
+/// it. Only plane faces are touched: rewinding is decided by arc-true 3D
+/// sampling against the stored normal, and periodic-surface holes are left
+/// exactly as built.
+fn normalize_hole_windings(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<(), crate::OperationsError> {
+    let solid_data = topo.solid(solid)?;
+    let mut shells = vec![solid_data.outer_shell()];
+    shells.extend(solid_data.inner_shells().iter().copied());
+
+    let mut flips: Vec<remus_topology::wire::WireId> = Vec::new();
+    for shell_id in shells {
+        for fid in topo.shell(shell_id)?.faces().to_vec() {
+            let face = topo.face(fid)?;
+            if face.inner_wires().is_empty() {
+                continue;
+            }
+            let FaceSurface::Plane { normal, .. } = *face.surface() else {
+                continue;
+            };
+            let outer = face.outer_wire();
+            let inners = face.inner_wires().to_vec();
+            let outer_sign = wire_winding_sign(topo, outer, normal)?;
+            if outer_sign.abs() <= f64::EPSILON {
+                continue;
+            }
+            for wid in inners {
+                if wire_winding_sign(topo, wid, normal)? * outer_sign > 0.0 {
+                    flips.push(wid);
+                }
+            }
+        }
+    }
+    for wid in flips {
+        let wire = topo.wire_mut(wid)?;
+        let edges = wire.edges_mut();
+        edges.reverse();
+        for oe in edges.iter_mut() {
+            *oe = remus_topology::wire::OrientedEdge::new(oe.edge(), !oe.is_forward());
+        }
+    }
+    Ok(())
+}
+
+/// The signed winding of `wire` around `normal`: positive when the loop runs
+/// counter-clockwise around it. Curved edges are sampled arc-true from the
+/// 3D curve in traversal order; pcurves are never consulted.
+fn wire_winding_sign(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+    normal: Vec3,
+) -> Result<f64, crate::OperationsError> {
+    const CURVE_SAMPLES: usize = 16;
+    let mut pts: Vec<Point3> = Vec::new();
+    for oe in topo.wire(wire)?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let sv = topo.vertex(edge.start())?.point();
+        let ev = topo.vertex(edge.end())?.point();
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            pts.push(if oe.is_forward() { sv } else { ev });
+            continue;
+        }
+        let (t0, t1) = edge.domain_with_endpoints(sv, ev);
+        for i in 0..CURVE_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let f = i as f64 / CURVE_SAMPLES as f64;
+            let t = if oe.is_forward() {
+                t0 + (t1 - t0) * f
+            } else {
+                t1 - (t1 - t0) * f
+            };
+            pts.push(edge.curve().evaluate_with_endpoints(t, sv, ev));
+        }
+    }
+    Ok(crate::winding::newell_normal(&pts).dot(normal))
+}
+
+#[allow(clippy::too_many_lines)]
+fn boolean_with_policy_impl(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
@@ -1391,7 +1491,8 @@ pub fn boolean_with_evolution(
             // orphaned topology, which is harmless in the arena).
             let tol = remus_math::tolerance::Tolerance::default();
             let healed_ok = crate::heal::remove_degenerate_edges(topo, result, tol.linear).is_ok()
-                && crate::heal::remove_wire_spurs(topo, result).is_ok();
+                && crate::heal::remove_wire_spurs(topo, result).is_ok()
+                && normalize_hole_windings(topo, result).is_ok();
 
             // Apply the same semantic safety checks as the standard GFA path.
             // Structural validation alone cannot detect a closed Cut result

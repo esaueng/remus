@@ -29,7 +29,7 @@
     clippy::used_underscore_binding
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
 
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
@@ -399,7 +399,11 @@ fn get_node_planar_normal(
     topo.face(node.face).ok()?.effective_plane_normal()
 }
 
-/// Detect fillet-like faces by small area relative to the average.
+/// Detect fillet-like faces: small curved faces relative to the average.
+///
+/// A fillet is a curved band by definition, so planar faces are never
+/// claimed here — a small planar bevel is the chamfer detector's cell, and
+/// small planar walls of pockets or slots are ordinary geometry.
 fn detect_fillet_like_fag(fag: &FaceAdjacencyGraph, features: &mut Vec<Feature>) {
     if fag.nodes.is_empty() {
         return;
@@ -411,7 +415,10 @@ fn detect_fillet_like_fag(fag: &FaceAdjacencyGraph, features: &mut Vec<Feature>)
     let threshold = avg_area * 0.25;
 
     for node in fag.nodes.values() {
-        if node.area < threshold && node.area > 0.0 {
+        if node.surface_class != SurfaceClass::Planar
+            && node.area < threshold
+            && node.area > 0.0
+        {
             features.push(Feature::FilletLike {
                 face: node.face,
                 area: node.area,
@@ -671,31 +678,46 @@ fn detect_pockets_fag(fag: &FaceAdjacencyGraph, features: &mut Vec<Feature>) {
             }
         }
 
-        // Classify component: floor = planar, walls = non-planar or
-        // perpendicular planar faces.
-        let mut floor = None;
-        let mut walls = Vec::new();
+        // Classify component: the floor is the planar member with the most
+        // concave in-component adjacencies — a pocket floor meets every wall
+        // concavely, while each wall meets only the floor and its two
+        // neighbouring walls. Every other member, planar or curved, is a
+        // wall: an all-planar rectangular pocket is the textbook case and
+        // must classify exactly like a curved-wall one.
+        let concave_degree = |i: usize| -> usize {
+            fag.adjacency.get(&i).map_or(0, |adj| {
+                adj.iter()
+                    .filter(|(n, e)| {
+                        component.contains(n) && e.concavity == EdgeConcavity::Concave
+                    })
+                    .count()
+            })
+        };
+        let floor = component
+            .iter()
+            .copied()
+            .filter(|i| {
+                fag.nodes
+                    .get(i)
+                    .is_some_and(|n| n.surface_class == SurfaceClass::Planar)
+            })
+            .max_by_key(|&i| (concave_degree(i), std::cmp::Reverse(i)));
 
-        for &ci in &component {
-            if let Some(n) = fag.nodes.get(&ci) {
-                if n.surface_class == SurfaceClass::Planar {
-                    if floor.is_none() {
-                        floor = Some(n.face);
-                    }
-                } else {
-                    walls.push(n.face);
-                }
+        if let Some(floor_idx) = floor {
+            let walls: Vec<FaceId> = component
+                .iter()
+                .filter(|&&ci| ci != floor_idx)
+                .filter_map(|ci| fag.nodes.get(ci).map(|n| n.face))
+                .collect();
+            if walls.len() >= 2
+                && let Some(floor_node) = fag.nodes.get(&floor_idx)
+            {
+                features.push(Feature::Pocket {
+                    floor: floor_node.face,
+                    walls,
+                });
+                visited.extend(&component);
             }
-        }
-
-        if let Some(floor_face) = floor
-            && walls.len() >= 2
-        {
-            features.push(Feature::Pocket {
-                floor: floor_face,
-                walls,
-            });
-            visited.extend(&component);
         }
     }
 }
