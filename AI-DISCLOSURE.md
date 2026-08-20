@@ -1,13 +1,36 @@
-I solemnly swear that the entirety of this text has been written by myself with absolutely no AI assistance or even proofreading.
+# AI Disclosure
 
-Most, if not all, of this project has been created with the assistance of AI tooling. I am a builder / software engineer at heart with decades of experience and I genuinely love what AI has enabled me to pursue.
+This project is developed with substantial AI assistance. Most of the code,
+tests, and documentation in this repository were written by AI coding agents
+working under my direction. I set the goals, review the direction, and decide
+what ships; the agents do most of the typing.
 
-It’s allowed me to spend more time with my family while still building (what I think is) cool shit. AI has helped tremendously with the “how” but I am still firmly in control of the “what” and the “why”. I apologize in advance whenever you see a piece of code or text that does not pass your Turing test. This is not because of a lack of care or laziness, but instead a doctrine of getting things into a state of reasonable context and clarity so that I can continue iterating without getting bogged down by semantics.
+I want to be straightforward about that rather than let you discover it and
+wonder what else isn't being said. A solid modeling kernel lives or dies on
+correctness, so the honest question isn't "was AI involved?" — it's "how do
+you know the result is right?" This repository's answer is that nothing is
+trusted because it compiles or because an agent said it works:
 
-I hope you read this knowing there is still a human behind all this AI generated work (although I completely understand that the state of things often doesn’t make it feel like so).
+- Every operation is gated by tests: unit, property-based, golden-file,
+  integration, and replayable reproduction bundles that turn discovered
+  defects into permanent regressions.
+- CI enforces the architecture (layer boundaries), the lints (`unsafe`,
+  `unwrap`, and `panic` are all denied), the license lineage, and the full
+  test suite on every change.
+- Feature labels are backed by the [capability matrix](docs/kernel-maturity/capability-matrix.md)
+  and [stability matrix](docs/production-readiness/stability-matrix.md), not
+  by optimism. Where the evidence is thin, the label says so.
+- Results are verified against ground truth — measured volumes, watertight
+  manifold checks, and head-to-head comparison with an established kernel —
+  not against the code's own opinion of itself.
 
-I genuinely hope that you find value in the work that was created here and not be dissuaded by the means in which it was created.
+The upstream project this fork continues was also built AI-first, and its
+author was equally open about it. I've kept that spirit: the process is
+disclosed, the guardrails are in the repository where you can read them, and
+the standard the code is held to doesn't depend on who — or what — wrote it.
 
-Thanks for taking the time to read this.
+If you find something that fails that standard, that's a bug and I want to
+know: open an issue, or see [SECURITY.md](./SECURITY.md) for anything
+security-relevant.
 
-- Andy
+— Peter, Esau Engineering
