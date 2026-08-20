@@ -392,18 +392,39 @@ pub fn shell(
         // wall rather than floating a wall thickness away from it.
         let inner_holes: Vec<Vec<Point3>> = holes
             .iter()
-            .map(|rim| rim.iter().map(|v| displaced(*v)).rev().collect())
+            .map(|rim| rim.iter().map(|v| displaced(*v)).collect())
             .collect();
-
         match face.surface() {
             FaceSurface::Plane { normal, .. } => {
-                let inner_normal = if concave { *normal } else { -*normal };
-                let inner_d = dot_normal_point(inner_normal, inner_verts[0]);
+                // The planar flip is the reversed winding about the negated
+                // normal — needed exactly when the passed normal IS the
+                // negated one (a convex source). A concave source's effective
+                // normal is already the surface normal's negative, so its
+                // inner face keeps the surface normal and the SOURCE winding;
+                // reversing it too re-creates the double flip on cavity
+                // planes (a hollowed pocket's floor and walls).
+                // The flip applies to the WHOLE face: a convex cap's hole
+                // rims (a bore's mouth, a pocket's outline) mirror with the
+                // outer boundary, or they stay same-sense against the cavity
+                // wall that shares them.
+                let (inner_normal, planar_verts, planar_holes) = if concave {
+                    (*normal, inner_verts_fwd, inner_holes)
+                } else {
+                    (
+                        -*normal,
+                        inner_verts,
+                        inner_holes
+                            .iter()
+                            .map(|rim| rim.iter().rev().copied().collect())
+                            .collect(),
+                    )
+                };
+                let inner_d = dot_normal_point(inner_normal, planar_verts[0]);
                 result_specs.push(FaceSpec::Planar {
-                    vertices: inner_verts,
+                    vertices: planar_verts,
                     normal: inner_normal,
                     d: inner_d,
-                    inner_wires: inner_holes,
+                    inner_wires: planar_holes,
                 });
             }
             FaceSurface::Cylinder(cyl) => {
