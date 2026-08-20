@@ -1449,7 +1449,7 @@ export class BrepKernel {
      * Add a constraint from a JSON object string and return a constraint
      * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
      *
-     * All 24 constraint types are supported. Entity fields are `u32`
+     * All 26 constraint types are supported. Entity fields are `u32`
      * handles from the `gcsAdd*` calls. Types and fields:
      * `coincident{a,b}`, `distance{a,b,value}`,
      * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
