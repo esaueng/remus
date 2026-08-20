@@ -102,6 +102,9 @@ feature label.
 - **[Stability matrix](docs/production-readiness/stability-matrix.md)** — the
   audited disposition of each label shipping *today*, including the rows whose
   advertised domain is not yet fully evidenced.
+- **[Stabilization plan](docs/kernel-maturity/stabilization-plan.md)** — the
+  working plan for promoting every Beta/Experimental row below to Stable,
+  sequenced under the capability-matrix promotion rules.
 
 Four mechanisms carry that contract in code:
 
