@@ -1520,3 +1520,215 @@ fn symmetric_degenerate_axis_is_finite() {
         "degenerate axis must not poison the Jacobian: {jac:?}"
     );
 }
+
+/// Snapshot with one line (points 0-1) and one circle (center point 2).
+fn tangent_snap(
+    scale: f64,
+    a: (f64, f64),
+    b: (f64, f64),
+    center: (f64, f64),
+    radius: f64,
+) -> (LineId, CircleId, [PointId; 3], EntitySnapshot) {
+    use super::super::entity::{CircleData, GenArena, LineData, PointData};
+    let coords = [
+        (a.0 * scale, a.1 * scale),
+        (b.0 * scale, b.1 * scale),
+        (center.0 * scale, center.1 * scale),
+    ];
+    let mut pts = GenArena::new();
+    let ids: Vec<PointId> = coords
+        .iter()
+        .map(|&(x, y)| pts.insert(PointData { x, y, fixed: false }))
+        .collect();
+    let mut lines = GenArena::new();
+    let line = lines.insert(LineData {
+        p1: ids[0],
+        p2: ids[1],
+    });
+    let mut circles = GenArena::new();
+    let circle = circles.insert(CircleData {
+        center: ids[2],
+        radius: radius * scale,
+    });
+    let snap = EntitySnapshot {
+        points: ids.iter().copied().zip(coords).collect(),
+        lines: [(line, (ids[0], ids[1]))].into_iter().collect(),
+        circles: [(circle, (ids[2], radius * scale))].into_iter().collect(),
+        arcs: HashMap::new(),
+    };
+    (line, circle, [ids[0], ids[1], ids[2]], snap)
+}
+
+/// Tangency is unsigned: the circle may sit on either side of the line.
+#[test]
+fn tangent_line_circle_zero_at_tangency_on_both_sides() {
+    for scale in SCALES {
+        for center_y in [3.0, -3.0] {
+            let (line, circle, _, snap) =
+                tangent_snap(scale, (0.0, 0.0), (10.0, 0.0), (5.0, center_y), 3.0);
+            let mut r = Vec::new();
+            eval_residuals(&Constraint::TangentLineCircle(line, circle), &snap, &mut r);
+            assert_eq!(r.len(), 1);
+            let tol = 1e-10 * scale.max(1.0);
+            assert!(
+                r[0].abs() < tol,
+                "tangent circle at scale {scale}, side {center_y}: residual {r:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tangent_line_circle_fires_when_secant_or_clear() {
+    // Center 1 above the line with radius 3: the line cuts the circle.
+    let (line, circle, _, snap) = tangent_snap(1.0, (0.0, 0.0), (10.0, 0.0), (5.0, 1.0), 3.0);
+    let mut r = Vec::new();
+    eval_residuals(&Constraint::TangentLineCircle(line, circle), &snap, &mut r);
+    assert!((r[0] - (1.0 - 3.0)).abs() < 1e-12, "secant residual: {r:?}");
+
+    // Center 7 above with radius 3: the circle is clear of the line.
+    let (line2, circle2, _, snap2) = tangent_snap(1.0, (0.0, 0.0), (10.0, 0.0), (5.0, 7.0), 3.0);
+    let mut r2 = Vec::new();
+    eval_residuals(
+        &Constraint::TangentLineCircle(line2, circle2),
+        &snap2,
+        &mut r2,
+    );
+    assert!(
+        (r2[0] - (7.0 - 3.0)).abs() < 1e-12,
+        "clear residual: {r2:?}"
+    );
+}
+
+#[test]
+fn tangent_line_circle_jacobian_matches_finite_differences() {
+    for scale in SCALES {
+        // Off-tangency and skew, so every partial is exercised.
+        let (line, circle, pts, snap) =
+            tangent_snap(scale, (-2.0, 1.0), (7.0, 4.5), (3.0, 6.0), 2.5);
+        let mut params: Vec<ParamRef> = pts
+            .iter()
+            .flat_map(|&id| [ParamRef::PointX(id), ParamRef::PointY(id)])
+            .collect();
+        params.push(ParamRef::CircleRadius(circle));
+        check_jacobian_central(
+            &Constraint::TangentLineCircle(line, circle),
+            &snap,
+            &params,
+            scale,
+        );
+    }
+}
+
+/// A degenerate line (coincident endpoints) has no direction; residual and
+/// Jacobian stay finite instead of dividing by zero.
+#[test]
+fn tangent_line_circle_degenerate_line_is_finite() {
+    let (line, circle, pts, snap) = tangent_snap(1.0, (2.0, 2.0), (2.0, 2.0), (5.0, 6.0), 2.5);
+    let c = Constraint::TangentLineCircle(line, circle);
+    let mut r = Vec::new();
+    eval_residuals(&c, &snap, &mut r);
+    assert_eq!(r.len(), 1, "residual count must not change when degenerate");
+    assert!(
+        r[0].is_finite(),
+        "degenerate line must not produce NaN: {r:?}"
+    );
+
+    let mut params: Vec<ParamRef> = pts
+        .iter()
+        .flat_map(|&id| [ParamRef::PointX(id), ParamRef::PointY(id)])
+        .collect();
+    params.push(ParamRef::CircleRadius(circle));
+    let param_index: HashMap<ParamRef, usize> =
+        params.iter().enumerate().map(|(i, p)| (*p, i)).collect();
+    let n = params.len();
+    let mut jac = vec![0.0; n];
+    let mut jw = JacobianWriter {
+        data: &mut jac,
+        ncols: n,
+        param_index: &param_index,
+    };
+    eval_jacobian(&c, &snap, &mut jw, 0);
+    assert!(
+        jac.iter().all(|v| v.is_finite()),
+        "degenerate line must not poison the Jacobian: {jac:?}"
+    );
+}
+
+/// Snapshot with three free points for point-symmetry cases.
+fn three_point_snap(
+    scale: f64,
+    a: (f64, f64),
+    b: (f64, f64),
+    center: (f64, f64),
+) -> ([PointId; 3], EntitySnapshot) {
+    use super::super::entity::{GenArena, PointData};
+    let coords = [
+        (a.0 * scale, a.1 * scale),
+        (b.0 * scale, b.1 * scale),
+        (center.0 * scale, center.1 * scale),
+    ];
+    let mut pts = GenArena::new();
+    let ids: Vec<PointId> = coords
+        .iter()
+        .map(|&(x, y)| pts.insert(PointData { x, y, fixed: false }))
+        .collect();
+    let snap = EntitySnapshot {
+        points: ids.iter().copied().zip(coords).collect(),
+        lines: HashMap::new(),
+        circles: HashMap::new(),
+        arcs: HashMap::new(),
+    };
+    ([ids[0], ids[1], ids[2]], snap)
+}
+
+#[test]
+fn symmetric_about_point_zero_at_point_mirror() {
+    for scale in SCALES {
+        let ([p1, p2, center], snap) =
+            three_point_snap(scale, (-3.0, 2.0), (7.0, -6.0), (2.0, -2.0));
+        let mut r = Vec::new();
+        eval_residuals(
+            &Constraint::SymmetricAboutPoint(p1, p2, center),
+            &snap,
+            &mut r,
+        );
+        assert_eq!(r.len(), 2);
+        let tol = 1e-10 * scale.max(1.0);
+        assert!(
+            r[0].abs() < tol && r[1].abs() < tol,
+            "point-mirrored pair at scale {scale}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn symmetric_about_point_fires_off_mirror() {
+    let ([p1, p2, center], snap) = three_point_snap(1.0, (-3.0, 2.0), (7.0, -6.0), (0.0, 0.0));
+    let mut r = Vec::new();
+    eval_residuals(
+        &Constraint::SymmetricAboutPoint(p1, p2, center),
+        &snap,
+        &mut r,
+    );
+    assert!((r[0] - 2.0).abs() < 1e-12, "x residual: {r:?}");
+    assert!((r[1] - (-2.0)).abs() < 1e-12, "y residual: {r:?}");
+}
+
+#[test]
+fn symmetric_about_point_jacobian_matches_finite_differences() {
+    for scale in SCALES {
+        let ([p1, p2, center], snap) =
+            three_point_snap(scale, (-2.0, 1.0), (4.0, 3.5), (0.5, -1.0));
+        let params: Vec<ParamRef> = [p1, p2, center]
+            .iter()
+            .flat_map(|&id| [ParamRef::PointX(id), ParamRef::PointY(id)])
+            .collect();
+        check_jacobian_central(
+            &Constraint::SymmetricAboutPoint(p1, p2, center),
+            &snap,
+            &params,
+            scale,
+        );
+    }
+}

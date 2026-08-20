@@ -758,6 +758,15 @@ impl GcsSystem {
                 self.check_point(*p2)?;
                 self.check_line(*axis)?;
             }
+            Constraint::TangentLineCircle(line, circ) => {
+                self.check_line(*line)?;
+                self.check_circle(*circ)?;
+            }
+            Constraint::SymmetricAboutPoint(p1, p2, center) => {
+                self.check_point(*p1)?;
+                self.check_point(*p2)?;
+                self.check_point(*center)?;
+            }
         }
         Ok(())
     }
@@ -889,6 +898,7 @@ fn constraint_references_point(c: &Constraint, id: PointId) -> bool {
         }
         Constraint::Midpoint(pt, _) => *pt == id,
         Constraint::Symmetric(p1, p2, _) => *p1 == id || *p2 == id,
+        Constraint::SymmetricAboutPoint(p1, p2, center) => *p1 == id || *p2 == id || *center == id,
         Constraint::Horizontal(_)
         | Constraint::Vertical(_)
         | Constraint::Angle(_, _, _)
@@ -901,7 +911,8 @@ fn constraint_references_point(c: &Constraint, id: PointId) -> bool {
         | Constraint::ConcentricArcCircle(_, _)
         | Constraint::CircleRadius(_, _)
         | Constraint::EqualRadiusCircleCircle(_, _)
-        | Constraint::EqualLength(_, _) => false,
+        | Constraint::EqualLength(_, _)
+        | Constraint::TangentLineCircle(_, _) => false,
     }
 }
 
@@ -910,7 +921,7 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
     match c {
         Constraint::Horizontal(l) | Constraint::Vertical(l) => *l == id,
         Constraint::PointLineDistance(_, l, _) => *l == id,
-        Constraint::TangentLineArc(l, _, _) => *l == id,
+        Constraint::TangentLineArc(l, _, _) | Constraint::TangentLineCircle(l, _) => *l == id,
         Constraint::Midpoint(_, l) | Constraint::Symmetric(_, _, l) => *l == id,
         Constraint::Angle(l1, l2, _)
         | Constraint::Perpendicular(l1, l2)
@@ -929,14 +940,15 @@ fn constraint_references_line(c: &Constraint, id: LineId) -> bool {
         | Constraint::ConcentricArcArc(_, _)
         | Constraint::ConcentricArcCircle(_, _)
         | Constraint::CircleRadius(_, _)
-        | Constraint::EqualRadiusCircleCircle(_, _) => false,
+        | Constraint::EqualRadiusCircleCircle(_, _)
+        | Constraint::SymmetricAboutPoint(_, _, _) => false,
     }
 }
 
 /// Check if a constraint references a specific circle.
 fn constraint_references_circle(c: &Constraint, id: CircleId) -> bool {
     match c {
-        Constraint::PointOnCircle(_, circ) => *circ == id,
+        Constraint::PointOnCircle(_, circ) | Constraint::TangentLineCircle(_, circ) => *circ == id,
         Constraint::EqualRadiusArcCircle(_, circ) | Constraint::ConcentricArcCircle(_, circ) => {
             *circ == id
         }
@@ -960,7 +972,8 @@ fn constraint_references_circle(c: &Constraint, id: CircleId) -> bool {
         | Constraint::ConcentricArcArc(_, _)
         | Constraint::EqualLength(_, _)
         | Constraint::Midpoint(_, _)
-        | Constraint::Symmetric(_, _, _) => false,
+        | Constraint::Symmetric(_, _, _)
+        | Constraint::SymmetricAboutPoint(_, _, _) => false,
     }
 }
 
@@ -990,7 +1003,9 @@ fn constraint_references_arc(c: &Constraint, id: ArcId) -> bool {
         | Constraint::EqualRadiusCircleCircle(_, _)
         | Constraint::EqualLength(_, _)
         | Constraint::Midpoint(_, _)
-        | Constraint::Symmetric(_, _, _) => false,
+        | Constraint::Symmetric(_, _, _)
+        | Constraint::TangentLineCircle(_, _)
+        | Constraint::SymmetricAboutPoint(_, _, _) => false,
     }
 }
 
