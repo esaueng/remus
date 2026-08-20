@@ -7659,12 +7659,12 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Orientation-emission campaign: the boolean assembler frontier.
-// Construction ops (extrude/revolve/sweep/loft/pipe/shell_op) are
-// strict-clean; GFA boolean outputs still emit same-sense edge pairs.
-// Probe repro:
-// the gridfinity D1 lip-ring loft cut (wasm gridfinity_tests), cloned
-// natively here. check_orientation defaults ON only when this closes.
+// Orientation-emission campaign: CLOSED as a default gate. Construction
+// ops (extrude/revolve/sweep/loft/pipe/shell_op) are strict-clean, GFA
+// boolean outputs emit consistent shells, and `check_orientation` in
+// ValidationOptions defaults ON. The tests below pin the frontier cases
+// that closed it (the gridfinity D1 lip-ring loft cut cloned natively,
+// rim fillets, pocket cuts).
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Reversal-corrected traversal check: shared edges whose two face uses
