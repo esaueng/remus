@@ -7867,6 +7867,40 @@ fn lip_ring_loft_cut_is_orientation_consistent() {
     );
 }
 
+#[test]
+fn shelled_concave_bodies_are_orientation_consistent() {
+    // The concave (reversed-source) inner-face arms: a bore exercises the
+    // flagged cylinder path, a pocket the planar path, whose flip is a
+    // reversed winding only for CONVEX sources — a concave plane keeps both
+    // its surface normal and its source winding.
+    let mut topo = Topology::new();
+    let blank = crate::primitives::make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
+    let drill = crate::primitives::make_cylinder(&mut topo, 4.0, 14.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        drill,
+        &remus_math::mat::Mat4::translation(12.0, 12.0, -2.0),
+    )
+    .unwrap();
+    let bored = boolean(&mut topo, BooleanOp::Cut, blank, drill).unwrap();
+    let pocket = crate::primitives::make_box(&mut topo, 10.0, 10.0, 4.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        pocket,
+        &remus_math::mat::Mat4::translation(24.0, 24.0, 7.0),
+    )
+    .unwrap();
+    let body = boolean(&mut topo, BooleanOp::Cut, bored, pocket).unwrap();
+
+    let hollow = crate::shell_op::shell(&mut topo, body, 1.0, &[]).unwrap();
+    let pairs = same_sense_pairs(&topo, hollow);
+    assert!(
+        pairs.is_empty(),
+        "hollowed bored+pocketed block must have no same-sense edge pairs, got {}: {pairs:?}",
+        pairs.len()
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Bench-equivalence ready-repros: found by the wasm head-to-head output
 // verification (2026-08-05). The bench harness times ops without checking

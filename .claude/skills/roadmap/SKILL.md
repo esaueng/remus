@@ -667,7 +667,7 @@ normal), while `CylindricalFace`/`Surface` flip via the face flag and must keep 
 original winding. (2) Phase 5's rim-annulus mirror negated the neighbor's raw
 `is_forward` without correcting for the neighbor's reversal flag — mirror the
 EFFECTIVE sense (`is_forward == is_reversed` for an un-reversed rim face). shell_op
-now joins extrude/revolve/sweep/loft/pipe as strict-clean in the campaign banner. DURABLE: a wire with no
+now joins extrude/revolve/sweep/loft/pipe as strict-clean in the campaign banner. ADDENDUM (same day): the planar arm's reversal was OVER-BROAD — a concave (reversed) planar source, a pocket floor or wall, must keep the SOURCE winding with the un-negated surface normal; the reversed-winding flip belongs to convex sources only, where the passed normal is the negated one. Blanket reversal re-created the double flip on cavity planes. Pin: `boolean::tests::shelled_concave_bodies_are_orientation_consistent` (bored + pocketed block, hollowed closed). DURABLE: a wire with no
 angular gap is a wrapped face — any consumer that polygon-approximates it inherits
 the parity flip; and a volume band wide enough to hide an operand is not an oracle.
 
