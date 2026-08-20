@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787242892860,
+  "lastUpdate": 1787253909606,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -809,6 +809,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41044005,
             "range": "± 91943",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a41faed09da3fd55ff336de0dcd36f580cadddb0",
+          "message": "feat(wasm): span-true edge queries — getEdgeParamSpan and sampleEdge (#63)\n\n* feat(wasm): span-true edge queries — getEdgeParamSpan and sampleEdge\n\nA circle edge's endpoints subtend TWO arcs, and nothing on the query\nsurface said which one the edge is: getEdgeCurveParameters reports the\nraw curve domain ([0, TAU] for every circle), and tessellateEdge\nfull-period-samples circles, ellipses, and closed NURBS. Any consumer\nrebuilding one edge's geometry outside the kernel — the OpenZCAD\nDXF-of-a-face export this ships for — had to reconstruct the span from\nendpoints alone, which flips intentional major arcs.\n\noperations gains edge_param_span, the extracted single source of the\nspan rules every sampler in tessellate already walks (stored trim\nverbatim, closed edge as one vertex-anchored full period, open edge via\ndomain_with_endpoints honouring the endpoint-trimmed NURBS convention);\nsample_edge's ellipse arm now consumes it, and sample_edge_polyline\nexposes the span-true single-edge sampler publicly.\n\nThe wasm surface binds both: getEdgeParamSpan returns [t_start, t_end],\nand sampleEdge returns a span-true polyline at a chordal deflection —\nunlike tessellateEdge, a circle, ellipse, or closed-NURBS edge yields\nits actual arc, never a full-period trace of the parent curve.\n\nTests pin the contract where it bites: a filleted box's rim arc reports\na quarter-turn sweep (not the 3/4 complement endpoint reconstruction\ncannot rule out), and its sampled polyline anchors on the edge's own\nvertices with every sample inside the arc's chord neighbourhood; a\nclosed cylinder rim spans one full period; a line spans (0, length).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\n* docs(operations): de-link private edge_sample_count reference\n\nThe public re-export of edge_param_span put edge_sampling's docs on a\npublic page, where the doc link to the crate-private edge_sample_count\ntrips rustdoc's private-intra-doc-links lint. Plain code formatting\ncarries the same information.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T15:22:31-04:00",
+          "tree_id": "81ff0eeb023b89bed0684e0083a0971ba66b169a",
+          "url": "https://github.com/esaueng/remus/commit/a41faed09da3fd55ff336de0dcd36f580cadddb0"
+        },
+        "date": 1787253908723,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1354540,
+            "range": "± 1991",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1451134,
+            "range": "± 2852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14055,
+            "range": "± 321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1020228,
+            "range": "± 6458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40939994,
+            "range": "± 164821",
             "unit": "ns/iter"
           }
         ]
