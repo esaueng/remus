@@ -649,16 +649,24 @@ likewise un-ignored and green (the tangency family shipped), and `boolean()` now
 disjoint Cut/Fuse fast paths (`solids_provably_disjoint` + `merge_disjoint_solids`),
 so the "disjointness is not handled" line in the goma dig is stale too.
 
-The remaining `#[ignore]` entries (inventory regenerated 2026-08-20): two OPEN
-extrude-orientation ready-repros in `wasm/src/bindings/holed_face_tests.rs`
-(bezier-cap band classifies inverted along y=0; cap↔hole-wall shared edges
-co-oriented), the NURBS seam-face tessellation volume defect
+The remaining `#[ignore]` entries (inventory regenerated 2026-08-20): the NURBS
+seam-face tessellation volume defect
 (`transform/tests.rs::bspline_cylinder_tessellated_volume_is_wrong`, reads ~2.07
 instead of 6.28), two fork-policy pins (`regress_chamfer_obtuse_ridge`,
 `regress_fillet_concave_notch` — blocked on the trim-contract reconciliation, PR
 #126, not on missing engine work), the ~2 min `staircase_fuse_with_cylinders` perf
 run, and print-only diagnostics (`profile_intersect.rs` ×3, the two #696 dovetail
-entries, the four `diag_*tangency*` probes).
+entries, the four `diag_*tangency*` probes). The two extrude-orientation
+ready-repros in `wasm/src/bindings/holed_face_tests.rs` were STALE ignores —
+both pass deterministically on this fork (likely fixed by the per-use-pcurve or
+trim-interval replays); un-ignored 2026-08-20 as
+`extruded_annulus_shell_orientation_is_consistent` and
+`o_glyph_bezier_cap_band_classifies_correctly`. Residual, deliberately pinned
+rather than open: ruled-NURBS hole walls still raise one
+`FaceOrientationConsistency` warning each (`dot = −1.000`,
+`expected_flipped_faces = 4` in that file's `assert_solid`) while shell
+orientation and classification are correct — plausibly a validator convention
+on reversed ruled surfaces, not a geometry defect.
 
 CLOSED, do not re-open as deferred: honeycomb wall-pattern cut (#925/#928,
 `crates/io/tests/gridfinity_honeycomb_cut_inmem.rs` passes), reversed-edge periodic-copy
