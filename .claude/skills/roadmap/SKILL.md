@@ -671,6 +671,20 @@ now joins extrude/revolve/sweep/loft/pipe as strict-clean in the campaign banner
 angular gap is a wrapped face — any consumer that polygon-approximates it inherits
 the parity flip; and a volume band wide enough to hide an operand is not an oracle.
 
+K0.1 spline-accuracy question (the OpenZCAD corpus pins `e-nurbs-fillet-plate`
++0.16% / `boolean-on-nurbs-import` +0.12% vs closed form) — RESOLVED, NOT a
+Remus defect (2026-08-20, this fork; fixture
+`crates/io/tests/openzcad_step_validity.rs::openzcad_nurbs_fillet_plate_volume_reports_the_files_parabolic_content`,
+probe `crates/io/examples/step_volume_convergence.rs`): the file encodes its
+four corner fillet bands as degree-2 NON-RATIONAL B-splines — parabolas, which
+remove 1.5 mm² per corner where the true r=3 arc removes 1.9314 —
+so the FILE's exact content is 9540.0 mm³ (+0.181% over the 9522.7433 intent).
+Remus's tessellated volume converges on 9540 (the +0.16% pin = file deviation
+minus a small inscribed-mesh undercount); OCCT's 9500.0 matches neither the
+file nor the intent. The pin notes in OpenZCAD's corpus-pins.ts hypothesized a
+NURBS-evaluation/trimming difference; that hypothesis is closed — Remus
+measures the file faithfully, and there is nothing to chase kernel-side.
+
 STALE-ROW CORRECTIONS (2026-08-20, this fork): the kumiko corner-wedge and
 lattice-fuse fixtures (`crates/io/tests/kumiko_{corner_wedge,lattice_fuse}_inmem.rs`)
 are un-ignored and GREEN — the corner-wedge cut runs analytic and watertight on the
