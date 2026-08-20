@@ -182,6 +182,60 @@ impl BrepKernel {
         Ok(glb)
     }
 
+    /// Export several solids into one OBJ file.
+    ///
+    /// The multi-solid twin of [`exportObj`](Self::export_obj), completing
+    /// the set [`export3mfMulti`](Self::export_3mf_multi) started: every
+    /// solid's facets merge into one vertex stream, which is what OBJ
+    /// consumers expect from a single-file export.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the
+    /// deflection is non-positive, or export fails.
+    #[wasm_bindgen(js_name = "exportObjMulti")]
+    pub fn export_obj_multi(&self, solids: &[u32], deflection: f64) -> Result<Vec<u8>, JsError> {
+        validate_positive(deflection, "deflection")?;
+        if solids.is_empty() {
+            return Err(WasmError::InvalidInput {
+                reason: "exportObjMulti requires at least one solid".to_string(),
+            }
+            .into());
+        }
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let obj_str = remus_io::obj::write_obj(&self.topo, &solid_ids, deflection)?;
+        Ok(obj_str.into_bytes())
+    }
+
+    /// Export several solids into one glTF binary (.glb) file.
+    ///
+    /// The multi-solid twin of [`exportGlb`](Self::export_glb): every
+    /// solid's facets merge into one mesh in a single GLB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the
+    /// deflection is non-positive, or export fails.
+    #[wasm_bindgen(js_name = "exportGlbMulti")]
+    pub fn export_glb_multi(&self, solids: &[u32], deflection: f64) -> Result<Vec<u8>, JsError> {
+        validate_positive(deflection, "deflection")?;
+        if solids.is_empty() {
+            return Err(WasmError::InvalidInput {
+                reason: "exportGlbMulti requires at least one solid".to_string(),
+            }
+            .into());
+        }
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let glb = remus_io::gltf::write_glb(&self.topo, &solid_ids, deflection)?;
+        Ok(glb)
+    }
+
     /// Export a solid to PLY format (binary little-endian).
     ///
     /// # Errors
@@ -661,6 +715,38 @@ mod tests {
         // boxes carry exactly twice one box's facets.
         let count = |bytes: &[u8]| u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]);
         assert_eq!(count(&merged), 2 * count(&single));
+    }
+
+    #[test]
+    fn multi_body_obj_merges_vertex_streams() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let merged = String::from_utf8(kernel.export_obj_multi(&[a, b], 0.1).unwrap()).unwrap();
+        let single = String::from_utf8(kernel.export_obj(a, 0.1).unwrap()).unwrap();
+        // Two boxes carry exactly twice one box's vertex lines.
+        let vertex_lines = |obj: &str| obj.lines().filter(|line| line.starts_with("v ")).count();
+        assert_eq!(vertex_lines(&merged), 2 * vertex_lines(&single));
+    }
+
+    #[test]
+    fn multi_body_glb_is_one_valid_container() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let merged = kernel.export_glb_multi(&[a, b], 0.1).unwrap();
+        // GLB header: magic "glTF", then version 2, then the total length.
+        assert_eq!(&merged[0..4], b"glTF");
+        assert_eq!(
+            u32::from_le_bytes([merged[4], merged[5], merged[6], merged[7]]),
+            2
+        );
+        assert_eq!(
+            u32::from_le_bytes([merged[8], merged[9], merged[10], merged[11]]) as usize,
+            merged.len()
+        );
+        let single = kernel.export_glb(a, 0.1).unwrap();
+        assert!(merged.len() > single.len());
     }
 
     #[test]
