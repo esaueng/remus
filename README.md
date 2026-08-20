@@ -304,8 +304,8 @@ remus-operations = { git = "https://github.com/esaueng/remus" }
 remus-io = { git = "https://github.com/esaueng/remus" }        # optional
 ```
 
-Pin a revision (`rev = "..."`) for anything you intend to reproduce: the crate
-names change when the rename lands.
+Pin a revision (`rev = "..."`) for anything you intend to reproduce: nothing
+is versioned or published yet, so `main` moves.
 
 ### Building from source
 

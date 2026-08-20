@@ -12,8 +12,8 @@ you know the result is right?" This repository's answer is that nothing is
 trusted because it compiles or because an agent said it works:
 
 - Every operation is gated by tests: unit, property-based, golden-file,
-  integration, and replayable reproduction bundles for every discovered
-  defect.
+  integration, and replayable reproduction bundles that turn discovered
+  defects into permanent regressions.
 - CI enforces the architecture (layer boundaries), the lints (`unsafe`,
   `unwrap`, and `panic` are all denied), the license lineage, and the full
   test suite on every change.
