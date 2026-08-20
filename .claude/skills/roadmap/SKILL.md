@@ -668,12 +668,19 @@ ready-repros in `wasm/src/bindings/holed_face_tests.rs` were STALE ignores —
 both pass deterministically on this fork (likely fixed by the per-use-pcurve or
 trim-interval replays); un-ignored 2026-08-20 as
 `extruded_annulus_shell_orientation_is_consistent` and
-`o_glyph_bezier_cap_band_classifies_correctly`. Residual, deliberately pinned
-rather than open: ruled-NURBS hole walls still raise one
-`FaceOrientationConsistency` warning each (`dot = −1.000`,
-`expected_flipped_faces = 4` in that file's `assert_solid`) while shell
-orientation and classification are correct — plausibly a validator convention
-on reversed ruled surfaces, not a geometry defect.
+`o_glyph_bezier_cap_band_classifies_correctly`. The old residual — ruled-NURBS hole
+walls raising one `FaceOrientationConsistency` warning each at `dot = −1.000`
+— is CLOSED (2026-08-20, this fork): it WAS a validator convention bug, not a
+geometry defect. `check_face_orientation` compared the stored-wire Newell
+winding against the REVERSAL-CORRECTED surface normal, which scores every
+correctly wound reversed OPEN face at exactly −1 by construction (the flag
+mirrors the effective normal and the effective traversal TOGETHER, so stored
+winding always tracks the STORED normal — the same convention the shell_op
+fix re-established); reversed WRAPPED walls stayed silent only because Newell
+on a wrapped polygon is near-degenerate. The check now compares stored vs
+stored, `expected_flipped_faces` pins 0, and
+`validate/face.rs::stored_winding_vs_stored_normal_decides_regardless_of_flag`
+pins detection of genuinely flipped faces under both flag values.
 
 NURBS seam-face tessellation volume defect — CLOSED (2026-08-20, this fork;
 pins `transform/tests.rs::bspline_cylinder_tessellated_volume_is_correct` +
