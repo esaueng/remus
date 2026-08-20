@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787186672977,
+  "lastUpdate": 1787193910535,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -377,6 +377,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 26567472,
             "range": "± 711483",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1e3eef7426c43be0e94366f4cc7767ef180add38",
+          "message": "feat(sketch): tangent-line-circle and symmetric-about-point constraints (#56)\n\nTwo constraint variants the sketch environment needs and the existing\nset could not express: TangentLineCircle is point-free tangency (the\nunsigned center-to-line distance equals the radius, keeping the circle\non whichever side it starts — no shared contact-point entity, unlike\nthe arc tangencies), and SymmetricAboutPoint pins two points' midpoint\nto a center point with an exact constant Jacobian. Both are exposed to\nJS as tangentLineCircle and symmetricAboutPoint constraint JSON.\n\nFinite-difference Jacobian checks run at all three coordinate scales;\ndegenerate-line, both-sides tangency, secant/clear residual, and\npoint-mirror cases are pinned, plus wasm contract solves for each.\n\n\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-19T22:42:31-04:00",
+          "tree_id": "399ed655dc7fd03482a27979663657f8ceb2506b",
+          "url": "https://github.com/esaueng/remus/commit/1e3eef7426c43be0e94366f4cc7767ef180add38"
+        },
+        "date": 1787193909892,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1282019,
+            "range": "± 10098",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1365265,
+            "range": "± 2744",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12928,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 980222,
+            "range": "± 43846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38392370,
+            "range": "± 70965",
             "unit": "ns/iter"
           }
         ]
