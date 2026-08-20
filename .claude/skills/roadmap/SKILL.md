@@ -33,10 +33,25 @@ rg -n -A2 '#\[ignore' crates/    # filter the 3 doc-comment false hits by hand
 
 ## The north star
 
-Replace the incumbent kernel in the gridfinity layout tool (`$GRIDFINITY_TOOL`)
-at full parity, across all its generator scenarios: 100% triangle correctness, volume
-correctness, manifold correctness, AND generation performance at least as good. Parity
-first, then beating it, is the acceptance bar. See `parity-benchmarking` for the harness.
+**Serve OpenZCAD.** Remus's consumer is the OpenZCAD web/desktop CAD application
+(`esaueng/OpenZCAD`, `packages/kernel-adapter` pins `remus-wasm` from this repo's
+committed package). The bar is the one OpenZCAD's users feel: exact analytic results,
+watertight manifold output, correct volumes, and interactive-speed booleans on real
+modeling chains. Verification is IN-REPO: the full workspace suites (including the
+wasm contract tests), the `crates/io/tests` fixture corpus, `approx_census`, and the
+criterion benches.
+
+**TOOL RETIREMENT (2026-08-20, maintainer decision):** the gridfinity layout tool
+(`$GRIDFINITY_TOOL`), its scenario matrices, overlay workflow, and the brepjs
+head-to-head bench were the UPSTREAM project's consumer and harness — they are not
+part of this fork's goals or toolchain. Every "tool-side re-probe pending" note in
+this file is closed-as-not-applicable: the engine-side fixture named next to it is
+the verification bar. The scenario-matrix baselines and tool scores below are
+HISTORY — kept because the defect maps and durable lessons in them still describe
+this codebase. The `parity-benchmarking` skill is retired-as-historical for the same
+reason. The gridfinity-derived test corpus (the `*_inmem` fixtures and the wasm
+`gridfinity_tests` module) STAYS — it is generic hard-geometry regression coverage
+pinning dozens of closed roots, with zero external dependency.
 
 Campaign history, one paragraph: gridfinity bin parity reached (10/11 kernel-suite
 cases, PRs through #938); the four primitive-boolean mesh-fallbacks eliminated and made
@@ -76,9 +91,11 @@ received-below-expected as benign density difference, received-10x-above as a de
    The four primitive-boolean cases (stable repros in
    `crates/operations/examples/approx_census.rs`) were picked over the tooling-blocked
    scoop case for exactly this reason.
-4. **After ANY GFA or boolean change, re-probe scenario face counts before claiming
-   anything.** Scorecards rot silently; a stale one once hid a regression through a
-   whole release. This is mandatory, not optional (see `parity-benchmarking`).
+4. **After ANY GFA or boolean change, run the FULL workspace suite (including the
+   wasm gridfinity contract tests) plus `approx_census` before claiming anything.**
+   Scorecards rot silently; a stale one once hid a regression through a whole
+   release. (Historically this filter demanded a tool-side scenario re-probe; the
+   tool is retired — the in-repo fixture corpus is the scoreboard now.)
 
 ## TERMINAL cases: do not re-attempt without the named missing primitive
 
@@ -128,7 +145,7 @@ Current genuine `#[ignore]` items worth work:
 
 | Item (repro) | Layer | Symptom / first probe |
 |---|---|---|
-| **Tangent section circle on a quadric lateral vs. box walls** — surfaces in the census as `cone ∪ box`, the ONLY remaining primitive-boolean fallback (repros `boolean::tests::cone_union_box_should_be_analytic` + `diag_cone_box_tangency_sweep` / `diag_cylinder_box_tangency` / `diag_tangency_count` / `diag_tangency_epsilon_band`, all `#[ignore]`; their doc comments carry the detail) | algo/GFA | Root-mapped 2026-07-24 (#1213). NOT cone-specific — a plain cylinder r=4 vs a tangent d=8 box fails identically. TRIGGER IS THE COUNT of tangency points: 0 or 1 is CLEAN, 2 gives 4 free edges, 4 gives 4 nm. FAILURE BAND is sub-tolerance only (gross crossing and any clearance both work), because `intersect_segment`'s near-tangent collapse returns ONE hit per wall — that collapse is CORRECT and load-bearing for the intwidth closure, do NOT touch it; the box-side splits are also REQUIRED (its square-minus-inscribed-circle region is genuinely pinched). The defect is the quadric side treating >=2 touch-splits as an open chain instead of one closed rim. CAUTION: the 2-wall and 4-wall cases are NOT proven to share a root — at 4 the quadric face survives mis-wired (outer wire == inner wire), at 2 it is DROPPED entirely. FIX SHAPE: add "inner wire whose edge set duplicates the outer wire's" as a `greedy_broken` trigger so the existing `split_cylinder_band_by_arrangement` rescue fires (face_splitter/mod.rs ~5007). Pre-validated: that signature appears on the 4-wall case and NOWHERE else across the remus-io fixtures or remus-operations lib tests, so it cannot demote a passing case — but it is INCOMPLETE, the 2-wall case carries no such signature and needs its own trigger. |
+| **Tangent section circle on a quadric lateral vs. box walls — STALE-VERIFIED CLOSED (2026-08-20, this fork): the whole landscape is clean.** All four `diag_*tangency*` probes pass CLEAN (`diag_tangency_count` 0/1/2/4 walls, `diag_tangency_epsilon_band` −1e-3→+1e-3 including exact 0 and +1e-9, `diag_cone_box_tangency_sweep`, `diag_cylinder_box_tangency`) with analytic face counts, and `cone_union_box_should_be_analytic` is un-ignored and green — the 2-wall AND 4-wall cases both closed with the shipped tangency family, so the old "2-wall needs its own trigger" caution is history. The diag probes stay `#[ignore]` as print-only landscape diagnostics; re-run them (`-- --ignored --nocapture`) before ever re-opening this row. | algo/GFA | Census reconciled the same day: approx_census carries NO boolean fallback rows at all on this fork; every remaining FALLBACK is a filter-excluded approximation class (NURBS-loft offset refit, fillet-v2 torus vertex blend, chamfer-v2 torus, offset_face SSI trim, pyramid corner patch) — none is chaseable under filter 1. |
 | **Ellipse sections spanning > π — CLOSED as a guarded contract (2026-08-20, this fork; pin `phase_ff.rs::sampled_trim_never_emits_open_conic_arc_spanning_pi`)** | algo/GFA | The named durable fix shipped: `trim_closed_curve_to_inboth_arc`'s periodic branch (the SAMPLED closed-section trim — the exact-crossing emitter already split) now splits any ≥ π Circle/Ellipse window into < π sub-arcs. REACHABILITY MEASURED FIRST: an env-gated trace over the ENTIRE remus-io fixture corpus plus an oblique large-cutout sweep emitted ZERO > π arcs, so the split cannot perturb any calibrated chain (it never executes on them) — that measurement, not review, is the safety proof; re-measure the same way before touching this branch again. No failing repro ever existed; the close is the contract guard, not a defect fix. |
 | **Compartment manifold roots (six) — CLOSED; the 13/13 tool score was measured on pre-loft geometry (live matrix: fractional-width row below)** | algo/GFA | Two roots CLOSED: the grazing-EF lip-corner vertex (`phase_ef` angle-scaled endpoint window, `crates/io/tests/lipcorner_tangent_inmem.rs`) and the boundary-re-trace section family (`section_on_existing_boundary` in `fill_images_faces.rs` + straightness-aware hole weave + crossing-midpoint hole probes in `face_splitter/mod.rs`; fixtures `crates/io/tests/lipfuse_boundary_retrace_inmem.rs` — that fix un-masked 3 halfSockets-tilt cases that only "passed" via a watertight mesh fallback, then fixed them for real). The retrace guard's discriminant: an exact whole-edge duplicate section is KEPT (threading it routes the face through the split/rebuild that aligns coincident-face partitions — dropping it regressed the plain shelled-cup lip fuses d3/d4/d5 to mesh fallback), while a SUB-SPAN re-trace (45deg-split half-arc, straight run split at a divider crossing) is dropped. A third root CLOSED (chord-sagitta classifier seed, `find_point_outside_holes` in `face_splitter/containment.rs`; fixture `crates/io/tests/halfsockets_clipcut_inmem.rs`): the halfSockets base-clip cut's 1.2mm ring floor got its seed in the corner-arc sagitta gap of the chord-approximated hole polygon → ring classified Inside → open shell → mesh fallback poisoned the whole export chain. Closed `2×2 crossing tilts` outright and took `2×6 halfSockets ±40` 26→1 NM; 10/13 pass. A FOURTH root CLOSED (corner-crescent hole promotion, `loop_containment` in `face_splitter/mod.rs`; fixtures `crates/io/tests/socket_assembly_fuse_inmem.rs`): the bin×socket-assembly fuse at the z=5 base interface leaves a ~0.1mm crescent of bin bottom overhanging each corner socket's chamfered outline; the wire builder hands the crescents back as CW loops, the hole-promotion pass's SINGLE interior probe slipped across the thin boundary into the adjacent socket-square outer, so the crescents stayed "holes", were first-vertex-matched into nothing, and got dumped onto an arbitrary first sub-face that same-domain-dropping then erased — free edges at all four bin corners; the compartments variant went further into a GFA-reject + non-manifold mesh fallback. Fixed by whole-boundary containment (promote only loops with points STRICTLY outside every outer; boundary-coincident re-trace loops must stay holes — promoting or dropping them un-threads the d3/d4/d5 shelled-cup lip fuse). Closed `1×4 2×8-comps` (now analytic, 5× faster) and `1.5×6 no-halfSockets ±40`; 12/13 pass. A FIFTH root CLOSED the family (hole-winding normalization, `split_face_2d` in `face_splitter/mod.rs`; fixture `crates/io/tests/halfsockets_lipfuse_inmem.rs`): the halfSockets body's cavity cut emits its top-ledge hole wire wound the SAME way as the outer wire; `integrate_holes_plane` trusts stored orientation, so where the lip's inner profile crossed the hole's divider diagonal mid-span, the angular wire builder traced a double-cover — a membrane across the bin throat (kept) + the real throat-ledge region wound CW (erased) → free=11 propagating into the final socket fuse's 1 NM edge. Fix: normalize inner-wire winding opposite the outer in UV at the splitter entrance. `2×6 halfSockets ±40` closed; **compartments 13/13 (pre-loft geometry)**. Detection heuristics for the mis-weave (residual-CW-hole triggers, area balance, containment) all FAILED to separate it from the load-bearing re-trace weaves (d4, honeycomb pcut3) — the winding NORMALIZATION at the input was the only clean cut. Probe recipe: instrumented-kernel capture in `all` mode (hooks `boolean_with_evolution` — the tool's export fuses ALL go through the provenance path, invisible to a `boolean()`-only hook) + `VERTEX_WATCH` backtrace trap in `Vertex::new` (probe branch `probe/boolean-capture-2`, rebased onto post-#1045 main). CAVEAT: 13/13 was measured with the PRE-loft faceted sockets; the analytic sockets (#1045) changed every bin's base geometry and un-masked a NEW family (row below) — the 13 closed roots stay closed (their captured chains replay clean), but the tool matrix number from that era is historical — the six closed roots are the durable claim, not the 13/13. |
 | **halfSockets loft faceting — CLOSED (#1045)** (`binGenerator.scenario.halfSockets`; the old "zero-triangle" read was a MISREAD — the scenario runner logs `triangleCount:0` for ANY failure) | operations/loft + algo | TWO stacked roots. (1) Every gridfinity socket loft came out ALL-PLANE (z-histogram: 1.2–2.5% bin-volume deficit entirely in the z0–5 feet); loft fix LANDED (recognize NURBS profile edges back to analytic + reverse downward-stacked CCW sketches instead of bailing; arc reversal must NEGATE the circle normal; unit tests in `crates/operations/src/loft/tests.rs`). (2) The fix un-masked the disconnected-loop arrangement defect (row below, CLOSED in #1043): the hs2×2 socket fuse showed bnd=314 + −13% mesh volume, initially misdiagnosed as a wire-orientation/traversal bug. With both fixed, both hs capture chains replay fully clean (every op bnd=0 nm=0, analytic). Tool-verified post-merge (#1045): halfSockets suite 8/11 — the 3 fails are kernel-pin snapshots (benign); Remus triangle counts now run ~45% ABOVE the reference pins (7512 vs 5176) because analytic feet replace sparse faceted planes — possible tessellation-density follow-up on small socket cones, not a defect class. Remaining halfSockets-suite work lives in the fractional-width row below. |
@@ -1185,8 +1202,9 @@ Every box before "closed":
 - [ ] **Regression fixture shipped** with the fix (STEP or arena `.bin`; see `testing`).
 - [ ] **Census clean or improved:** the row flips FALLBACK to analytic
       (`cargo run --release --example approx_census -p remus-operations`).
-- [ ] **Head-to-head timing at least parity** (the brepjs wasm bench; see
-      `parity-benchmarking`).
+- [ ] **No perf regression** on the criterion benches touching the changed path
+      (`cargo bench -p remus-operations` — compare against the prior run's saved
+      baselines; the retired tool-side head-to-head is no longer part of the bar).
 - [ ] **Release published** when user-facing (see `release-flow`).
 
 ## Anti-patterns
@@ -1202,7 +1220,8 @@ Every box before "closed":
 
 ## Related skills
 
-`analytic-preservation` (the chase filters in depth), `parity-benchmarking` (the
-scenario re-probe and head-to-head), `debugging-doctrine` (before any multi-pass dig),
+`analytic-preservation` (the chase filters in depth), `parity-benchmarking`
+(RETIRED-HISTORICAL — capture recipes and past scenario context only),
+`debugging-doctrine` (before any multi-pass dig),
 `solid-verification` (the acceptance oracles), `testing` (fixtures and ready-repros),
 `fillet-blend` (the blend traps), `release-flow` (shipping a user-facing close).
