@@ -363,11 +363,12 @@ const VOLUME_DEFLECTION_FINE: f64 = 1e-4;
 
 /// `validate_solid` is run too, and asserted against an explicit allow-list
 /// covering EVERY severity, not just `Error`. The shell-level orientation
-/// defect is fixed. Line-bounded annuli now report no orientation issues;
-/// ruled NURBS walls in the glyph fixture still report one
-/// `FaceOrientationConsistency` warning per hole-wall face.
-/// `expected_flipped_faces` pins that exact remaining count, so a regression
-/// that flips one more face inside out still fails the test.
+/// defect is fixed, and `check_face_orientation` now compares the stored
+/// wire winding against the STORED surface normal (the reversal flag
+/// mirrors normal and traversal together), so correctly wound reversed
+/// ruled-NURBS hole walls no longer warn. `expected_flipped_faces` pins the
+/// count at zero, so a regression that flips any face inside out still
+/// fails the test.
 #[allow(clippy::too_many_arguments)]
 fn assert_solid(
     k: &mut BrepKernel,
@@ -653,7 +654,7 @@ fn o_glyph_contour_mixing_lines_and_beziers_extrudes_to_a_valid_solid() {
         &mut k,
         solid,
         10,
-        4,
+        0,
         expected_volume,
         2e-3,
         0.005,
@@ -729,7 +730,7 @@ fn o_glyph_contour_via_add_holes_to_face_matches_make_face_from_wires() {
         &mut k,
         solid,
         10,
-        4,
+        0,
         expected_volume,
         2e-3,
         0.005,
