@@ -399,18 +399,14 @@ Security reports: see [SECURITY.md](./SECURITY.md).
 
 Remus continues a codebase whose upstream relicensed to AGPL at v3. This
 repository is the permanent Apache-2.0 line of that work, maintained by
-Esau Engineering, and the boundary is enforced by tooling rather than
-promises:
+Esau Engineering. The last permissive upstream release is `v2.129.15`;
+nothing from v3 or later is merged, and behavior from those releases enters
+only under an explicit Apache-2.0 grant or as an independent implementation
+proven by a regression test.
 
-- The last permissive upstream release is `v2.129.15`, and nothing from v3 or
-  later is merged. Behavior from those releases enters only under an explicit
-  Apache-2.0 grant from its copyright holder, or as an independent
-  implementation with a regression test proving the contract.
-- `scripts/check-apache-lineage.sh` runs in CI on every push and pull request.
-- Every replayed contribution is recorded, PR by PR, in
-  [`apache-replay-provenance.json`](docs/production-readiness/apache-replay-provenance.json),
-  with a validator that checks the ledger offline. The narrative record is in
-  [Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
+That boundary is enforced in CI and every replayed contribution is recorded
+in an auditable ledger — see
+[Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
 
 The project's use of AI tooling is disclosed in
 [AI-DISCLOSURE.md](./AI-DISCLOSURE.md).
