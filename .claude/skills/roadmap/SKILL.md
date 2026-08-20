@@ -649,10 +649,8 @@ likewise un-ignored and green (the tangency family shipped), and `boolean()` now
 disjoint Cut/Fuse fast paths (`solids_provably_disjoint` + `merge_disjoint_solids`),
 so the "disjointness is not handled" line in the goma dig is stale too.
 
-The remaining `#[ignore]` entries (inventory regenerated 2026-08-20): the NURBS
-seam-face tessellation volume defect
-(`transform/tests.rs::bspline_cylinder_tessellated_volume_is_wrong`, reads ~2.07
-instead of 6.28), two fork-policy pins (`regress_chamfer_obtuse_ridge`,
+The remaining `#[ignore]` entries (inventory regenerated 2026-08-20): two
+fork-policy pins (`regress_chamfer_obtuse_ridge`,
 `regress_fillet_concave_notch` — blocked on the trim-contract reconciliation, PR
 #126, not on missing engine work), the ~2 min `staircase_fuse_with_cylinders` perf
 run, and print-only diagnostics (`profile_intersect.rs` ×3, the two #696 dovetail
@@ -667,6 +665,31 @@ rather than open: ruled-NURBS hole walls still raise one
 `expected_flipped_faces = 4` in that file's `assert_solid`) while shell
 orientation and classification are correct — plausibly a validator convention
 on reversed ruled surfaces, not a geometry defect.
+
+NURBS seam-face tessellation volume defect — CLOSED (2026-08-20, this fork;
+pins `transform/tests.rs::bspline_cylinder_tessellated_volume_is_correct` +
+`tessellate/tests.rs::tessellate_bspline_cylinder_seam_wall_watertight_and_correct`).
+A `convert_to_bspline` cylinder read vol ~2.07 (caps only) with bd=74: the
+wall is a closed-u NURBS whose FACE seam sits a quarter turn from the
+SURFACE's parameterization seam (`CylindricalSurface::new` derives x_axis
+from `Frame3::from_normal`, while `make_cylinder` pins the seam vertex at
+(r,0,0) — legal geometry any boolean or STEP import can also produce, so the
+fix is in the meshing machinery, not the primitive). FOUR stacked roots:
+(1) `sample_edge` force-overwrites first/last samples with the edge vertices,
+which on a closed NURBS edge whose curve origin ≠ start vertex folds the ring
+(closed NURBS edges now sample vertex-anchored, wrapping the knot domain —
+the `circle_param_range` rationale extended); (2) Newton surface projection
+CLAMPED at the domain bound of a periodic surface and the small-step exit
+returned the clamped point as a silent wrong answer up to half a period off
+(`surface_newton_refine` now wraps across a closed seam — `is_periodic_u/v`);
+(3) the CDT boundary unwrap was analytic-only and hardcoded TAU (now
+period-aware for closed-u NURBS, with out-of-domain u wrapped before
+evaluation since NURBS eval clamps); (4) `interior_grid_resolution` fed raw
+knot spans (du=1 per full turn) to the radians chord formula → 3 interior
+columns, full mesh area but ~13% volume deficit from deep-cutting wide
+triangles (periodic knot spans now convert to angular spans, radius from the
+control net). DIAGNOSTIC LESSON: full area + zero bd/nm + volume deficit +
+zero inverted normals = sparse-interior deep chords, not winding.
 
 CLOSED, do not re-open as deferred: honeycomb wall-pattern cut (#925/#928,
 `crates/io/tests/gridfinity_honeycomb_cut_inmem.rs` passes), reversed-edge periodic-copy
