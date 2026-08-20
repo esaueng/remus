@@ -1599,6 +1599,26 @@ export class BrepKernel {
      */
     getEdgeNurbsData(edge: number): any;
     /**
+     * The parameter span the edge ACTUALLY covers on its stored curve.
+     *
+     * Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
+     * one full period anchored at its start vertex, and an open edge via the
+     * endpoint-trimmed convention. This differs from
+     * [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
+     * reports the raw curve domain (`[0, TAU]` for every circle): a circle
+     * edge's endpoints subtend TWO arcs, and only this span says which one
+     * the edge is — reconstructing it from endpoints alone flips
+     * intentional major arcs. Evaluate points on the span with
+     * [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
+     * prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
+     * closed-curve wrapping.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     */
+    getEdgeParamSpan(edge: number): Float64Array;
+    /**
      * Get the vertex *handles* (not positions) of an edge.
      *
      * Returns `[start_vertex_handle, end_vertex_handle]`.
@@ -2881,6 +2901,21 @@ export class BrepKernel {
      * failed}] }` (see the `HealPipelineResult` TypeScript type).
      */
     runHealPipeline(solid: number, steps: string[]): any;
+    /**
+     * Span-true polyline of one edge at the given chordal deflection.
+     *
+     * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
+     * own parameter span — the same sampler the solid wireframe uses.
+     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
+     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
+     * full-period trace of the parent curve.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid, `deflection` is not
+     * positive, or the sampling budget is exceeded at this deflection.
+     */
+    sampleEdge(edge: number, deflection: number): Float64Array;
     /**
      * Section a solid with a plane, returning cross-section face handles.
      *
