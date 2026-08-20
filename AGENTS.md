@@ -44,7 +44,7 @@ Enforced by `scripts/check-boundaries.sh` — run before pushing:
 | `render` | `math`, `topology`, `operations` (L4 leaf — the script also rejects any crate that depends on `render`) |
 | `wasm` | all crates (`blend` only transitively, via `operations`) |
 
-The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the pre-push hook.
+The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the `boundaries` job in CI.
 
 **Allowed `use` paths per crate:**
 - `math/src/**` → only `std`, external crates
@@ -656,8 +656,8 @@ Workspace-level strict lints:
 ## Git Conventions
 
 - Conventional commits enforced by commitlint
-- Pre-commit: fmt + clippy (parallel) → test
-- Pre-push: full test + cargo-deny
+- Pre-commit: fmt + clippy + taplo + machete in parallel (no tests)
+- Pre-push: delegates validation to CI (full test, deny, boundaries, lineage)
 - Branch: `main` is the primary Apache-2.0 branch
 - Never merge upstream v3 or later. Future upstream behavior must arrive under
   an explicit Apache-2.0 grant or be independently implemented.
