@@ -1082,6 +1082,18 @@ export class BrepKernel {
      */
     exportGlb(solid: number, deflection: number): Uint8Array;
     /**
+     * Export several solids into one glTF binary (.glb) file.
+     *
+     * The multi-solid twin of [`exportGlb`](Self::export_glb): every
+     * solid's facets merge into one mesh in a single GLB.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    exportGlbMulti(solids: Uint32Array, deflection: number): Uint8Array;
+    /**
      * Export a solid to IGES format.
      *
      * Returns the IGES file as a UTF-8 encoded byte vector.
@@ -1099,6 +1111,20 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
     exportObj(solid: number, deflection: number): Uint8Array;
+    /**
+     * Export several solids into one OBJ file.
+     *
+     * The multi-solid twin of [`exportObj`](Self::export_obj), completing
+     * the set [`export3mfMulti`](Self::export_3mf_multi) started: every
+     * solid's facets merge into one vertex stream, which is what OBJ
+     * consumers expect from a single-file export.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    exportObjMulti(solids: Uint32Array, deflection: number): Uint8Array;
     /**
      * Export a solid to PLY format (binary little-endian).
      *
