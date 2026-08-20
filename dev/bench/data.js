@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787179147557,
+  "lastUpdate": 1787186672977,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -323,6 +323,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 37334777,
             "range": "± 541148",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e2a715a884070a9f89eaf2348d91e3e983643b7",
+          "message": "feat(wasm): multi-solid OBJ and glTF export bindings (#54)\n\nCompletes the multi-solid export set started with export3mfMulti and\nexportStlMulti: exportObjMulti and exportGlbMulti merge every solid's\nfacets into one vertex stream / one GLB mesh, so OpenZCAD's mesh export\ndialog can offer OBJ and glTF for multi-body documents without fusing\nfirst. Contract tests pin the doubled OBJ vertex count and the GLB\ncontainer header (magic, version, declared length).\n\n\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-19T20:42:01-04:00",
+          "tree_id": "98cc1a0e1d8da0377554fb489fd7a81558d11e5b",
+          "url": "https://github.com/esaueng/remus/commit/7e2a715a884070a9f89eaf2348d91e3e983643b7"
+        },
+        "date": 1787186672343,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 865434,
+            "range": "± 1991",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 931703,
+            "range": "± 1723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 9118,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 664495,
+            "range": "± 80308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26567472,
+            "range": "± 711483",
             "unit": "ns/iter"
           }
         ]
