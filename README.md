@@ -397,16 +397,18 @@ Security reports: see [SECURITY.md](./SECURITY.md).
 
 ## Provenance
 
-Remus is the permanent Apache-2.0 continuation of a codebase whose upstream
-relicensed to AGPL at v3. That boundary is enforced, not merely stated:
+Remus continues a codebase whose upstream relicensed to AGPL at v3. This
+repository is the permanent Apache-2.0 line of that work, maintained by
+Esau Engineering, and the boundary is enforced by tooling rather than
+promises:
 
-- The final permissive upstream release is `v2.129.15`; nothing from v3 or
+- The last permissive upstream release is `v2.129.15`, and nothing from v3 or
   later is merged. Behavior from those releases enters only under an explicit
-  Apache-2.0 grant, or is specified and independently implemented with a
-  regression proving the contract.
-- `scripts/check-apache-lineage.sh` runs in CI and before every push.
+  Apache-2.0 grant from its copyright holder, or as an independent
+  implementation with a regression test proving the contract.
+- `scripts/check-apache-lineage.sh` runs in CI on every push and pull request.
 - Every replayed contribution is recorded, PR by PR, in
-  [`apache-replay-provenance.json`](docs/production-readiness/apache-replay-provenance.json)
+  [`apache-replay-provenance.json`](docs/production-readiness/apache-replay-provenance.json),
   with a validator that checks the ledger offline. The narrative record is in
   [Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
 
@@ -415,8 +417,9 @@ The project's use of AI tooling is disclosed in
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](./LICENSE-APACHE).
-
-This Apache line is permanently based on the last permissive upstream series.
-It does not merge code from upstream releases published under the AGPL.
+Remus is licensed under the [Apache License, Version 2.0](./LICENSE-APACHE),
+permanently — see [Provenance](#provenance) for how the AGPL boundary with
+the historical upstream is enforced. Attribution is in [NOTICE](./NOTICE),
+and contributions come in under the same license
+(see [CONTRIBUTING.md](./CONTRIBUTING.md)).
 </content>
