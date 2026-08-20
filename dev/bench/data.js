@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787206907429,
+  "lastUpdate": 1787230145987,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -593,6 +593,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38662009,
             "range": "± 61280",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dfe78b759265e2f215ee1cadb0227245e6298a65",
+          "message": "fix: orientation-emission consistency — shell_op winding and the face-orientation validator (#59)\n\n* fix(shell): wind cavity laterals and rim annuli consistently\n\nshell_op emitted 64 same-sense rim pairs on a shelled cylinder's\ncavity lateral (every rim arc traversed in the same effective sense\nfrom both sides) — two independent orientation-emission defects:\n\n- Phase 4 gave the curved inner-face specs BOTH a reversed vertex\n  winding AND the reversed face flag, double-flipping the effective\n  traversal (is_forward != is_reversed). The reversed winding is the\n  flip mechanism only for FaceSpec::Planar, which is assembled\n  un-reversed with an explicit flipped normal; CylindricalFace and\n  Surface specs flip via their face flag and now keep the original\n  winding.\n- Phase 5's rim-annulus mirror negated the neighbor's raw is_forward\n  without correcting for the neighbor face's reversal flag. The rim\n  faces are built un-reversed, so the mirror of a reversed neighbor's\n  use is is_forward == is_reversed, not !is_forward.\n\nshell_op now joins extrude/revolve/sweep/loft/pipe as strict-clean in\nthe orientation-emission campaign banner. Pins: new\nshell_emits_no_same_sense_edge_pairs covering the Planar (box),\nCylindricalFace (cylinder cup), and Surface (hollow sphere) arms with\nexact volumes; fuse_ring_inside_shelled_cylinder's pair assertion\nstrengthened from \"fuse adds none\" to zero everywhere. Also marks\nthe roadmap's algo-classifier Torus-arm row stale (the arm exists on\nthis fork). Full workspace suite green.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WoUqjtwDnw1ar4b3vZyrQQ\n\n* fix(check): compare stored winding to stored normal in face orientation\n\ncheck_face_orientation compared the outer wire's Newell winding\nagainst the REVERSAL-CORRECTED surface normal, which scores every\ncorrectly wound reversed open face at exactly dot = -1 by\nconstruction: the reversal flag mirrors the effective normal and the\neffective edge traversal (is_forward != is_reversed) together, so a\ncorrectly emitted reversed face keeps its stored winding matched to\nits STORED normal. Reversed wrapped walls stayed silent only because\nNewell on a wrapped polygon is near-degenerate. This was the pinned\nruled-NURBS hole-wall residual (dot = -1.000, four warnings per\nextruded glyph) from the extrude-orientation closures - a validator\nconvention bug, not a geometry defect.\n\nThe check now compares stored winding against the stored surface\nnormal, so it flags genuinely flipped faces under either flag value\nand stays silent on correct ones. Pins: the two glyph assert_solid\nsites go from expected_flipped_faces = 4 to 0, and a new unit test\n(stored_winding_vs_stored_normal_decides_regardless_of_flag) pins\ndetection of both flip directions with reversed = false and true.\nFull workspace suite green.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WoUqjtwDnw1ar4b3vZyrQQ\n\n* fix(algo): split sampled closed-section conic windows at the pi contract\n\nThe sampled closed-section trim (trim_closed_curve_to_inboth_arc)\nemitted a > pi in-both window of a Circle/Ellipse section as ONE open\narc, while every downstream consumer (evaluate_edge_at_t,\nfind_splits_on_section_arc/_ellipse) interprets an open conic edge as\nthe SHORTER arc between its endpoints - the #1150-flagged theoretical\ngap. The exact-crossing emitter already split such windows; the\nsampled path now mirrors it, splitting any >= pi window into < pi\nsub-arcs (the at-pi threshold matches the exact emitter's rationale:\na diametric pair collides in the endpoint-keyed edge merge).\n\nReachability was measured before changing anything: an env-gated\ntrace across the entire remus-io fixture corpus plus an oblique\nlarge-cutout sweep emitted zero > pi arcs through this path, so the\nsplit provably does not perturb any calibrated chain - it guards\nfuture large-cutout geometry where an unsplit window is\nguaranteed-wrong. The one adjusted test\n(trim_partial_ellipse_to_single_open_arc) pinned an exactly-pi span\nincidentally; its intent (partial run -> open arc, not kept whole) is\npreserved at a sub-pi span, and the new pin\nsampled_trim_never_emits_open_conic_arc_spanning_pi covers the\nsplit-and-chain contract.\n\nAlso corrects the stale orientation-emission campaign banner in\nboolean/tests.rs (check_orientation already defaults ON) and updates\nthe roadmap rows. Full workspace suite green.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WoUqjtwDnw1ar4b3vZyrQQ\n\n* docs(roadmap): mark mesh-fallback consumption hazard closed on this fork\n\nmesh_boolean_fallback hard-rejects non-watertight co-refinement output\n(Err(NonManifoldResult)) rather than warn-and-consume; the 2026-07-16\nopen row described pre-fork behavior. The co-refinement-quality\nresidual stays recorded but below the chase filter until a live case\nroutes through the mesh path.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01WoUqjtwDnw1ar4b3vZyrQQ\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T08:46:15-04:00",
+          "tree_id": "e0885cf650324281ba70c41d72fedb37e733cff1",
+          "url": "https://github.com/esaueng/remus/commit/dfe78b759265e2f215ee1cadb0227245e6298a65"
+        },
+        "date": 1787230145315,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1283111,
+            "range": "± 1600",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1367615,
+            "range": "± 2267",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12953,
+            "range": "± 257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 983058,
+            "range": "± 1362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39120524,
+            "range": "± 127691",
             "unit": "ns/iter"
           }
         ]
