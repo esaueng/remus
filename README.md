@@ -59,9 +59,12 @@ WebAssembly, so the same kernel runs in the browser and on the desktop.
 `unsafe` is denied by lint, as are `unwrap` and `panic`. Every public operation
 returns a `Result`.
 
-It grew out of building [gridfinitylayouttool.com](https://gridfinitylayouttool.com),
-where the options for parametric CAD in the browser were proprietary or
-compiled from large C++ codebases.
+Parametric CAD in the browser has long meant choosing between proprietary
+kernels and large C++ codebases compiled to WASM. Remus exists to be the third
+option: a from-scratch Rust kernel with exact geometry and a permanent
+Apache-2.0 license. It is maintained by Esau Engineering as the Apache-2.0
+continuation of an upstream kernel that relicensed at v3 — see
+[Provenance](#provenance) for how that boundary is enforced.
 
 The geometry is exact. Booleans run on analytic and NURBS surfaces and keep
 those surfaces through the operation, so a cylinder stays a cylinder instead of
@@ -382,8 +385,9 @@ native builds already do per face.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md). Contributions are inbound under
 Apache-2.0 and require a Developer Certificate of Origin sign-off. Commits are
-conventional commits, enforced by commitlint; `cargo fmt`, clippy, the test
-suite, and the boundary checks all gate the pre-push hook.
+conventional commits, enforced by commitlint; the pre-commit hook runs
+`cargo fmt` and clippy, and CI gates the full test suite, the layer-boundary
+check, and the license-lineage check on every push.
 
 New regressions should land as [reproduction bundles](crates/wasm/src/repro.rs)
 where the failure is expressible through the batch API — every discovered
