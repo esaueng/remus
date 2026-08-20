@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787200669058,
+  "lastUpdate": 1787205141593,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -485,6 +485,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40776780,
             "range": "± 83154",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7e6b840765d24f0730a93b2aa7bae9b6879f488",
+          "message": "docs: rewrite AI disclosure, contributing, security, and readme in maintainer voice (#57)\n\n* docs: rewrite AI disclosure, contributing, security, and readme in maintainer voice\n\nReplace the upstream author's personal AI disclosure with this fork's own,\ngrounded in the repository's actual verification gates. Rewrite CONTRIBUTING\nto describe the real workflow: DCO sign-off, the Apache-lineage rule, actual\nhook behavior (pre-commit fast checks, CI-gated push), reproduction bundles,\nand ground-truth testing expectations. Add scope and supported-versions\nsections to SECURITY. Rework the README origin story to reflect Esau\nEngineering's ownership of the continuation and correct the stale pre-push\nhook description.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018EciwEJmuzpdU1TEFaBy55\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs(readme): rework provenance and license sections\n\nState Esau Engineering's maintainership in the provenance section, correct\nthe stale claim that the lineage check runs in a local pre-push hook (it\nruns in CI), and trim the license section to stop duplicating the provenance\nstory — the permanence promise stays, the lineage details live in one place.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018EciwEJmuzpdU1TEFaBy55\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs(readme): condense provenance section\n\nKeep the relicense boundary claim and the v2.129.15 line, but move the\nenforcement machinery (script name, ledger format) behind the existing\nprovenance doc link instead of listing it in the README.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018EciwEJmuzpdU1TEFaBy55\nSigned-off-by: Claude <noreply@anthropic.com>\n\n* docs: fix stale claims found in full doc review\n\nCorrect the README rev-pinning rationale (the crate rename already landed;\nthe real reason to pin is that nothing is versioned yet), update the AGENTS\ngit-conventions bullets to match actual hook behavior (pre-commit runs no\ntests; pre-push delegates to CI, where boundary violations fail), and align\nthe AI disclosure's reproduction-bundle claim with the wording used in the\nREADME and CONTRIBUTING.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_018EciwEJmuzpdU1TEFaBy55\nSigned-off-by: Claude <noreply@anthropic.com>\n\n---------\n\nSigned-off-by: Claude <noreply@anthropic.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T01:49:37-04:00",
+          "tree_id": "f73fdeabe335034e9400299601b3d7d0dc44a18f",
+          "url": "https://github.com/esaueng/remus/commit/c7e6b840765d24f0730a93b2aa7bae9b6879f488"
+        },
+        "date": 1787205140208,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1411841,
+            "range": "± 25344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1447472,
+            "range": "± 3052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14008,
+            "range": "± 277",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1020261,
+            "range": "± 6322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41019987,
+            "range": "± 58591",
             "unit": "ns/iter"
           }
         ]
