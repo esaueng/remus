@@ -30,6 +30,7 @@ export const brepkernel_centerOfMass: (a: number, b: number, c: number) => [numb
 export const brepkernel_chamfer: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_chamfer2d: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_chamferDistanceAngle: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const brepkernel_chamferDistanceAngleWithEvolution: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_chamferJournaled: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const brepkernel_chamferV2: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const brepkernel_chamferWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
