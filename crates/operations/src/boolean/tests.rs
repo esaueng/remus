@@ -2929,16 +2929,24 @@ fn fuse_ring_inside_shelled_cylinder() {
     );
     let (free, over) = edge_health(&topo, fused);
     assert_eq!((free, over), (0, 0), "fused result must be edge-manifold");
-    // The shell op's cavity lateral arrives with same-sense rim pairs of its
-    // own (the orientation-emission campaign, see the banner further down);
-    // the disjoint fuse must not ADD any beyond what the operands carry.
-    let operand_pairs =
-        same_sense_pairs(&topo, shelled).len() + same_sense_pairs(&topo, ring).len();
-    let fused_pairs = same_sense_pairs(&topo, fused).len();
-    assert!(
-        fused_pairs <= operand_pairs,
-        "disjoint fuse must not introduce same-sense edge pairs: \
-         operands carry {operand_pairs}, fused has {fused_pairs}"
+    // shell_op is strict-clean since the cavity-lateral winding fix (the
+    // orientation-emission campaign, see the banner further down), so the
+    // operands carry zero same-sense pairs and the disjoint fuse must
+    // preserve that.
+    assert_eq!(
+        same_sense_pairs(&topo, shelled).len(),
+        0,
+        "shelled cup operand must have no same-sense edge pairs"
+    );
+    assert_eq!(
+        same_sense_pairs(&topo, ring).len(),
+        0,
+        "ring operand must have no same-sense edge pairs"
+    );
+    assert_eq!(
+        same_sense_pairs(&topo, fused).len(),
+        0,
+        "disjoint fuse must not introduce same-sense edge pairs"
     );
     // Ring material is now part of the result; cavity air is not.
     let ring_material = remus_math::vec::Point3::new(6.0, 0.0, h - 1.5);
@@ -7651,11 +7659,12 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Orientation-emission campaign: the boolean assembler frontier.
-// Construction ops (extrude/revolve/sweep/loft/pipe) are strict-clean;
-// GFA boolean outputs still emit same-sense edge pairs. Probe repro:
-// the gridfinity D1 lip-ring loft cut (wasm gridfinity_tests), cloned
-// natively here. check_orientation defaults ON only when this closes.
+// Orientation-emission campaign: CLOSED as a default gate. Construction
+// ops (extrude/revolve/sweep/loft/pipe/shell_op) are strict-clean, GFA
+// boolean outputs emit consistent shells, and `check_orientation` in
+// ValidationOptions defaults ON. The tests below pin the frontier cases
+// that closed it (the gridfinity D1 lip-ring loft cut cloned natively,
+// rim fillets, pocket cuts).
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Reversal-corrected traversal check: shared edges whose two face uses
