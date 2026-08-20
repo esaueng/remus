@@ -375,13 +375,18 @@ pub fn shell(
         let concave = face.is_reversed();
 
         let displaced = |p: Point3| inner_pos.get(&quantize_pt(p)).copied().unwrap_or(p);
-        // The inner face is the source face mirrored: SAME wire order, with
-        // the orientation flip carried by the spec's `reversed` flag (or, for
-        // planes, the negated normal). Reversing the winding AS WELL cancels
-        // the flag into a double flip — the cavity face then traverses its
-        // rims in the same effective sense as its neighbours (64 same-sense
-        // rim pairs on a shelled cup's cavity lateral).
-        let inner_verts: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).collect();
+        // Reversed winding gives the inner face an inward-pointing normal.
+        // This is the mechanism ONLY for `FaceSpec::Planar`, whose assembly
+        // is always un-reversed with an explicit flipped normal. The curved
+        // specs (`CylindricalFace`/`Surface`) flip via their `reversed` face
+        // flag instead, so they must keep the ORIGINAL winding: reversing
+        // both the winding and the flag double-flips the effective traversal
+        // (`is_forward != is_reversed`), leaving every rim edge traversed in
+        // the SAME sense as the caps that share it — 64 same-sense pairs on
+        // a shelled cylinder's cavity lateral, the orientation-emission
+        // campaign's shell_op entry.
+        let inner_verts: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).rev().collect();
+        let inner_verts_fwd: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).collect();
         // The holes travel with the face, through the same miter vectors, so
         // a bore's mouth in the inner cap meets the rim of the offset bore
         // wall rather than floating a wall thickness away from it.
@@ -389,22 +394,29 @@ pub fn shell(
             .iter()
             .map(|rim| rim.iter().map(|v| displaced(*v)).collect())
             .collect();
-        // The planar spec has no reversal flag, so its flip is a reversed
-        // winding about the negated normal — needed exactly when the passed
-        // normal is the negated one (a convex source). A concave source's
-        // effective normal is already the surface normal's negative, so its
-        // inner face keeps both the surface normal and the source winding.
-        let mirrored = |verts: &[Point3]| -> Vec<Point3> { verts.iter().rev().copied().collect() };
-
         match face.surface() {
             FaceSurface::Plane { normal, .. } => {
-                let inner_normal = if concave { *normal } else { -*normal };
-                let (planar_verts, planar_holes) = if concave {
-                    (inner_verts.clone(), inner_holes.clone())
+                // The planar flip is the reversed winding about the negated
+                // normal — needed exactly when the passed normal IS the
+                // negated one (a convex source). A concave source's effective
+                // normal is already the surface normal's negative, so its
+                // inner face keeps the surface normal and the SOURCE winding;
+                // reversing it too re-creates the double flip on cavity
+                // planes (a hollowed pocket's floor and walls).
+                // The flip applies to the WHOLE face: a convex cap's hole
+                // rims (a bore's mouth, a pocket's outline) mirror with the
+                // outer boundary, or they stay same-sense against the cavity
+                // wall that shares them.
+                let (inner_normal, planar_verts, planar_holes) = if concave {
+                    (*normal, inner_verts_fwd, inner_holes)
                 } else {
                     (
-                        mirrored(&inner_verts),
-                        inner_holes.iter().map(|rim| mirrored(rim)).collect(),
+                        -*normal,
+                        inner_verts,
+                        inner_holes
+                            .iter()
+                            .map(|rim| rim.iter().rev().copied().collect())
+                            .collect(),
                     )
                 };
                 let inner_d = dot_normal_point(inner_normal, planar_verts[0]);
@@ -473,7 +485,7 @@ pub fn shell(
                     // second traversal as a duplicate edge and leave the rims
                     // as free chords.
                     result_specs.push(FaceSpec::CylindricalFace {
-                        vertices: inner_verts,
+                        vertices: inner_verts_fwd,
                         cylinder: new_cyl,
                         reversed: !concave,
                         inner_wires: inner_holes,
@@ -487,7 +499,7 @@ pub fn shell(
                 let inner_fid = crate::offset_face::offset_face(topo, fid, along_surface, 8)?;
                 let inner_face = topo.face(inner_fid)?;
                 result_specs.push(FaceSpec::Surface {
-                    vertices: inner_verts,
+                    vertices: inner_verts_fwd,
                     surface: inner_face.surface().clone(),
                     reversed: !concave,
                     inner_wires: inner_holes,
@@ -511,7 +523,7 @@ pub fn shell(
                 let new_sph = remus_math::surfaces::SphericalSurface::new(sphere.center(), new_r)
                     .map_err(crate::OperationsError::Math)?;
                 result_specs.push(FaceSpec::Surface {
-                    vertices: inner_verts,
+                    vertices: inner_verts_fwd,
                     surface: FaceSurface::Sphere(new_sph),
                     reversed: !concave,
                     inner_wires: inner_holes,
@@ -559,21 +571,23 @@ pub fn shell(
     }
 
     // Determine the oriented direction of each boundary edge relative to its
-    // single face. The rim face (built un-reversed) must use the opposite
-    // EFFECTIVE sense — a reversed neighbour like the cavity lateral already
-    // traverses its stored senses backwards, so flipping the raw flag alone
-    // lands the rim on the neighbour's effective side (32 same-sense pairs
-    // around a shelled cup's inner rim).
+    // single face. The rim face must traverse the edge in the OPPOSITE
+    // EFFECTIVE sense (`is_forward != is_reversed`) so the edge is shared
+    // consistently: the rim faces below are built un-reversed, so their
+    // stored flag IS their effective sense, while the neighbor's raw
+    // `is_forward` must be corrected by its face's reversal flag — the
+    // cavity lateral is a reversed face, and mirroring its raw flag left
+    // every top-rim arc traversed in the same sense from both sides.
     let mut boundary_oriented: Vec<OrientedEdge> = Vec::new();
     for &eid in &boundary_edge_ids {
         let face_id = edge_face_map[&eid.index()][0];
         let face = topo.face(face_id)?;
-        let opposed = |oe: &OrientedEdge| oe.is_forward() == face.is_reversed();
+        let rev = face.is_reversed();
         let wire = topo.wire(face.outer_wire())?;
         let mut found = false;
         for oe in wire.edges() {
             if oe.edge() == eid {
-                boundary_oriented.push(OrientedEdge::new(eid, opposed(oe)));
+                boundary_oriented.push(OrientedEdge::new(eid, oe.is_forward() == rev));
                 found = true;
                 break;
             }
@@ -583,7 +597,7 @@ pub fn shell(
                 let iw = topo.wire(iw_id)?;
                 for oe in iw.edges() {
                     if oe.edge() == eid {
-                        boundary_oriented.push(OrientedEdge::new(eid, opposed(oe)));
+                        boundary_oriented.push(OrientedEdge::new(eid, oe.is_forward() == rev));
                         found = true;
                         break;
                     }

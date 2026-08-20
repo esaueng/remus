@@ -2929,20 +2929,24 @@ fn fuse_ring_inside_shelled_cylinder() {
     );
     let (free, over) = edge_health(&topo, fused);
     assert_eq!((free, over), (0, 0), "fused result must be edge-manifold");
-    // Both operands are strict-clean (shell_op joined the orientation-emission
-    // campaign's clean list — see the banner further down), so the disjoint
-    // fuse must be too.
-    let operand_pairs =
-        same_sense_pairs(&topo, shelled).len() + same_sense_pairs(&topo, ring).len();
+    // shell_op is strict-clean since the cavity-lateral winding fix (the
+    // orientation-emission campaign, see the banner further down), so the
+    // operands carry zero same-sense pairs and the disjoint fuse must
+    // preserve that.
     assert_eq!(
-        operand_pairs, 0,
-        "shelled cup and ring operands must be strict-clean"
+        same_sense_pairs(&topo, shelled).len(),
+        0,
+        "shelled cup operand must have no same-sense edge pairs"
     );
-    let fused_pairs = same_sense_pairs(&topo, fused).len();
     assert_eq!(
-        fused_pairs, 0,
-        "disjoint fuse of clean operands must not introduce same-sense edge pairs, \
-         got {fused_pairs}"
+        same_sense_pairs(&topo, ring).len(),
+        0,
+        "ring operand must have no same-sense edge pairs"
+    );
+    assert_eq!(
+        same_sense_pairs(&topo, fused).len(),
+        0,
+        "disjoint fuse must not introduce same-sense edge pairs"
     );
     // Ring material is now part of the result; cavity air is not.
     let ring_material = remus_math::vec::Point3::new(6.0, 0.0, h - 1.5);
@@ -7655,12 +7659,12 @@ fn fuse_annulus_into_complex_bore_is_not_an_aabb_containment() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Orientation-emission campaign: the boolean assembler frontier.
-// Construction ops (extrude/revolve/sweep/loft/pipe) and shell_op are
-// strict-clean; GFA boolean outputs still emit same-sense edge pairs.
-// Probe repro: the gridfinity D1 lip-ring loft cut (wasm
-// gridfinity_tests), cloned natively here. check_orientation defaults
-// ON only when this closes.
+// Orientation-emission campaign: CLOSED as a default gate. Construction
+// ops (extrude/revolve/sweep/loft/pipe/shell_op) are strict-clean, GFA
+// boolean outputs emit consistent shells, and `check_orientation` in
+// ValidationOptions defaults ON. The tests below pin the frontier cases
+// that closed it (the gridfinity D1 lip-ring loft cut cloned natively,
+// rim fillets, pocket cuts).
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Reversal-corrected traversal check: shared edges whose two face uses
@@ -7860,54 +7864,6 @@ fn lip_ring_loft_cut_is_orientation_consistent() {
     assert!(
         pairs.is_empty(),
         "lip-ring cut must have no same-sense edge pairs, got {pairs:?}"
-    );
-}
-
-#[test]
-fn shelled_cup_is_orientation_consistent() {
-    // The shell op emits the cavity through assemble_solid_mixed like the
-    // construction ops do, so it belongs on the strict-clean list: the
-    // fuse_ring_inside_shelled_cylinder fixture found its cavity lateral
-    // carrying 64 same-sense rim pairs of its own.
-    let mut topo = Topology::new();
-    let cyl = crate::primitives::make_cylinder(&mut topo, 10.0, 16.0).unwrap();
-    let top_faces: Vec<FaceId> = remus_topology::explorer::solid_faces(&topo, cyl)
-        .unwrap()
-        .into_iter()
-        .filter(|&fid| {
-            matches!(
-                topo.face(fid).unwrap().surface(),
-                FaceSurface::Plane { normal, .. } if (normal.z() - 1.0).abs() < 1e-9
-            )
-        })
-        .collect();
-    let shelled = crate::shell_op::shell(&mut topo, cyl, 1.2, &top_faces).unwrap();
-    let pairs = same_sense_pairs(&topo, shelled);
-    let detail: Vec<String> = pairs
-        .iter()
-        .map(|&(eid, fa, fb)| {
-            let edge = topo.edge(eid).unwrap();
-            let s = topo.vertex(edge.start()).unwrap().point();
-            let e = topo.vertex(edge.end()).unwrap().point();
-            format!(
-                "edge#{} ({:.2},{:.2},{:.2})->({:.2},{:.2},{:.2}) faces {}({}, rev={}) / {}({}, rev={})",
-                eid.index(),
-                s.x(), s.y(), s.z(),
-                e.x(), e.y(), e.z(),
-                fa.index(),
-                topo.face(fa).unwrap().surface().type_tag(),
-                topo.face(fa).unwrap().is_reversed(),
-                fb.index(),
-                topo.face(fb).unwrap().surface().type_tag(),
-                topo.face(fb).unwrap().is_reversed(),
-            )
-        })
-        .collect();
-    assert!(
-        pairs.is_empty(),
-        "shelled cup must have no same-sense edge pairs, got {}:\n{}",
-        pairs.len(),
-        detail.join("\n")
     );
 }
 
