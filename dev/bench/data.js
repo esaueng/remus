@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787193910535,
+  "lastUpdate": 1787200669058,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -431,6 +431,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38392370,
             "range": "± 70965",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a53d31f9ce6f686a380ddbb19162d8a547e45e61",
+          "message": "fix(algo): classify arc-chained full-period quadrics analytically in ray-cast (#55)\n\nThe algo ray-cast classifier fell back to the planar Newell-polygon\npath on full-period cylinder/cone faces whose rims are arc chains\n(no closed circle edge), misclassifying every cavity point and\nsilently dropping a body fused inside another solid's open cavity.\nlargest_u_gap == None on a hole-free quadric wire is positive\nevidence of full-period coverage; such faces are now collected as\nfull-period analytic geoms.\n\nfix(tessellate): mesh closed-u NURBS seam walls watertight and volume-true\n\nA convert_to_bspline cylinder tessellated to ~2.07 volume instead of\n2*pi with 74 boundary edges. Closed NURBS edges now sample anchored\nat the start vertex; Newton surface projection wraps across periodic\nseams instead of clamping; the CDT boundary unwrap covers closed-u\nNURBS; the interior grid converts periodic knot spans to angular\nspans.\n\ntest(wasm): un-ignore the two fixed extrude-orientation ready-repros",
+          "timestamp": "2026-08-20T00:35:10-04:00",
+          "tree_id": "acdfaa75a8632ea849f5065666e4e9e0c2b5e1af",
+          "url": "https://github.com/esaueng/remus/commit/a53d31f9ce6f686a380ddbb19162d8a547e45e61"
+        },
+        "date": 1787200668465,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1407289,
+            "range": "± 2810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1441897,
+            "range": "± 14075",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14047,
+            "range": "± 115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1022575,
+            "range": "± 2459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40776780,
+            "range": "± 83154",
             "unit": "ns/iter"
           }
         ]
