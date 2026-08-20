@@ -345,6 +345,48 @@ fn shorter_arc_range(
 /// # Errors
 ///
 /// Returns an error if vertex lookup fails for edge endpoints.
+/// The parameter span an edge actually covers on its stored curve — the
+/// span every sampler in this module walks: a stored trim verbatim, a
+/// closed edge as one full period anchored at its start vertex, and an
+/// open edge via `domain_with_endpoints` (which honours the
+/// endpoint-trimmed NURBS convention). Lines report `(0, length)` to match
+/// the query surface's parameterization of line edges.
+///
+/// This is the authoritative span for consumers that rebuild edge geometry
+/// outside the kernel (e.g. a 2D drawing export choosing between the two
+/// arcs a circle edge's endpoints subtend) — reconstructing it from
+/// endpoints alone flips intentional major arcs.
+///
+/// # Errors
+///
+/// Returns an error if vertex lookup fails.
+pub fn edge_param_span(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+) -> Result<(f64, f64), crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let sp = topo.vertex(edge.start())?.point();
+    let ep = topo.vertex(edge.end())?.point();
+    match edge.curve() {
+        EdgeCurve::Line => Ok((0.0, (ep - sp).length())),
+        EdgeCurve::Circle(circle) => circle_param_range(topo, edge, circle),
+        EdgeCurve::Ellipse(ellipse) => {
+            if let Some(trim) = edge.trim() {
+                Ok(trim)
+            } else if edge.is_closed() {
+                let start = ellipse.project(sp);
+                Ok((start, start + std::f64::consts::TAU))
+            } else {
+                Ok(edge.domain_with_endpoints(sp, ep))
+            }
+        }
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) | EdgeCurve::NurbsCurve(_) => {
+            Ok(edge.domain_with_endpoints(sp, ep))
+        }
+    }
+}
+
 pub(super) fn sample_edge(
     topo: &Topology,
     edge: &remus_topology::edge::Edge,
@@ -377,16 +419,7 @@ pub(super) fn sample_edge(
             sample_uniform(circle, t_start, t_end, n)
         }
         EdgeCurve::Ellipse(ellipse) => {
-            let sp = topo.vertex(edge.start())?.point();
-            let ep = topo.vertex(edge.end())?.point();
-            let (t_start, t_end) = if let Some(trim) = edge.trim() {
-                trim
-            } else if edge.is_closed() {
-                let start = ellipse.project(sp);
-                (start, start + std::f64::consts::TAU)
-            } else {
-                edge.domain_with_endpoints(sp, ep)
-            };
+            let (t_start, t_end) = edge_param_span(topo, edge)?;
             sample_uniform(ellipse, t_start, t_end, n)
         }
         EdgeCurve::Hyperbola(h) => {
