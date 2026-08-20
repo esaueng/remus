@@ -1,9 +1,20 @@
 ---
 name: parity-benchmarking
-description: Use when proving Remus matches or beats the reference kernel, running the brepjs wasm head-to-head benchmark, overlaying a local kernel build into the gridfinity tool, re-probing scenario face counts after a GFA or boolean change, capturing faithful fixtures (STEP or arena .bin) from a failing tool scenario, or running local criterion micro-benchmarks. Also use whenever a speedup or parity claim is about to be quoted anywhere.
+description: RETIRED-HISTORICAL (2026-08-20) — the gridfinity tool and brepjs head-to-head were the upstream project's consumer and harness, not part of this fork's toolchain. Consult only for historical context on past parity campaigns, the fixture-capture recipes, or the criterion micro-bench section; never treat its tool-side re-probe mandates as current process. Current verification is in-repo: workspace suites, the io fixture corpus, approx_census, criterion.
 ---
 
 # Parity benchmarking
+
+> **STATUS: RETIRED-HISTORICAL (2026-08-20, maintainer decision).** The gridfinity
+> layout tool (`$GRIDFINITY_TOOL`), its scenario matrices, the overlay workflow, and
+> the brepjs head-to-head bench belonged to the UPSTREAM project this kernel was
+> forked from; they are not part of this fork's goals or toolchain, and the tool is
+> not available in its environments. Nothing below is current process. Still useful
+> here: the fixture-capture recipes (STEP / arena `.bin` from real geometry), the
+> mesh-fallback tells, and the criterion micro-bench section — all of which apply
+> in-repo. Current verification: the workspace suites (including the wasm
+> gridfinity contract tests), the `crates/io/tests` fixture corpus,
+> `approx_census`, and `cargo bench`. See the roadmap skill's TOOL RETIREMENT note.
 
 Repo rule: never write the competing kernel's name in commits, PRs, code, or skill files. Call it "the reference kernel". The brepjs bench harness and the gridfinity tool already know it by their own internal kernel ids, so you never need to spell it out.
 
