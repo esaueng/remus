@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787205141593,
+  "lastUpdate": 1787206907429,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -539,6 +539,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41019987,
             "range": "± 58591",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f260956cc2d898a570d06e5a49a9a18f0f41769",
+          "message": "feat(wasm): chamferDistanceAngleWithEvolution binding (#58)\n\nDistance-angle chamfers could only be built through the plain\nchamferDistanceAngle entry point, so consumers tracking face lineage\nhad to fall back to hash-only identity for them. The new binding runs\nthe same blend_ops::chamfer_distance_angle routing — planar bevel for\nplanar-line selections, the walking builder otherwise — and wraps the\nengine's construction history in the versioned FaceEvolutionPayloadV1,\nexactly like chamferWithEvolution does for symmetric chamfers.\n\nThe test pins that the evolution variant returns the same exact bevel\nas the plain entry point (closed-form volume for a 60-degree bevel of\ndepth 2 on a box edge, then bit-identical volume across both entry\npoints) and that the payload reports construction provenance with a\ncomplete claim set.\n\n\nClaude-Session: https://claude.ai/code/session_01AudkhzKHYXEe9iV114i3jj\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-20T02:19:06-04:00",
+          "tree_id": "1e091972ac15236287a7f7bd1e4adf3316e85261",
+          "url": "https://github.com/esaueng/remus/commit/7f260956cc2d898a570d06e5a49a9a18f0f41769"
+        },
+        "date": 1787206906883,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1283525,
+            "range": "± 905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1371038,
+            "range": "± 3833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12996,
+            "range": "± 73",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 990501,
+            "range": "± 2138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38662009,
+            "range": "± 61280",
             "unit": "ns/iter"
           }
         ]
