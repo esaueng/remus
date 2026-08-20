@@ -376,7 +376,17 @@ pub fn shell(
 
         let displaced = |p: Point3| inner_pos.get(&quantize_pt(p)).copied().unwrap_or(p);
         // Reversed winding gives the inner face an inward-pointing normal.
+        // This is the mechanism ONLY for `FaceSpec::Planar`, whose assembly
+        // is always un-reversed with an explicit flipped normal. The curved
+        // specs (`CylindricalFace`/`Surface`) flip via their `reversed` face
+        // flag instead, so they must keep the ORIGINAL winding: reversing
+        // both the winding and the flag double-flips the effective traversal
+        // (`is_forward != is_reversed`), leaving every rim edge traversed in
+        // the SAME sense as the caps that share it — 64 same-sense pairs on
+        // a shelled cylinder's cavity lateral, the orientation-emission
+        // campaign's shell_op entry.
         let inner_verts: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).rev().collect();
+        let inner_verts_fwd: Vec<Point3> = outer_verts.iter().map(|v| displaced(*v)).collect();
         // The holes travel with the face, through the same miter vectors, so
         // a bore's mouth in the inner cap meets the rim of the offset bore
         // wall rather than floating a wall thickness away from it.
@@ -454,7 +464,7 @@ pub fn shell(
                     // second traversal as a duplicate edge and leave the rims
                     // as free chords.
                     result_specs.push(FaceSpec::CylindricalFace {
-                        vertices: inner_verts,
+                        vertices: inner_verts_fwd,
                         cylinder: new_cyl,
                         reversed: !concave,
                         inner_wires: inner_holes,
@@ -468,7 +478,7 @@ pub fn shell(
                 let inner_fid = crate::offset_face::offset_face(topo, fid, along_surface, 8)?;
                 let inner_face = topo.face(inner_fid)?;
                 result_specs.push(FaceSpec::Surface {
-                    vertices: inner_verts,
+                    vertices: inner_verts_fwd,
                     surface: inner_face.surface().clone(),
                     reversed: !concave,
                     inner_wires: inner_holes,
@@ -492,7 +502,7 @@ pub fn shell(
                 let new_sph = remus_math::surfaces::SphericalSurface::new(sphere.center(), new_r)
                     .map_err(crate::OperationsError::Math)?;
                 result_specs.push(FaceSpec::Surface {
-                    vertices: inner_verts,
+                    vertices: inner_verts_fwd,
                     surface: FaceSurface::Sphere(new_sph),
                     reversed: !concave,
                     inner_wires: inner_holes,
@@ -539,17 +549,24 @@ pub fn shell(
         return gate(topo, solid);
     }
 
-    // Determine the oriented direction of each boundary edge relative to its single face.
-    // The rim face must use the OPPOSITE orientation so the edge is shared correctly.
+    // Determine the oriented direction of each boundary edge relative to its
+    // single face. The rim face must traverse the edge in the OPPOSITE
+    // EFFECTIVE sense (`is_forward != is_reversed`) so the edge is shared
+    // consistently: the rim faces below are built un-reversed, so their
+    // stored flag IS their effective sense, while the neighbor's raw
+    // `is_forward` must be corrected by its face's reversal flag — the
+    // cavity lateral is a reversed face, and mirroring its raw flag left
+    // every top-rim arc traversed in the same sense from both sides.
     let mut boundary_oriented: Vec<OrientedEdge> = Vec::new();
     for &eid in &boundary_edge_ids {
         let face_id = edge_face_map[&eid.index()][0];
         let face = topo.face(face_id)?;
+        let rev = face.is_reversed();
         let wire = topo.wire(face.outer_wire())?;
         let mut found = false;
         for oe in wire.edges() {
             if oe.edge() == eid {
-                boundary_oriented.push(OrientedEdge::new(eid, !oe.is_forward()));
+                boundary_oriented.push(OrientedEdge::new(eid, oe.is_forward() == rev));
                 found = true;
                 break;
             }
@@ -559,7 +576,7 @@ pub fn shell(
                 let iw = topo.wire(iw_id)?;
                 for oe in iw.edges() {
                     if oe.edge() == eid {
-                        boundary_oriented.push(OrientedEdge::new(eid, !oe.is_forward()));
+                        boundary_oriented.push(OrientedEdge::new(eid, oe.is_forward() == rev));
                         found = true;
                         break;
                     }

@@ -1053,3 +1053,75 @@ fn shell_thickness_past_corner_radius_gives_a_sharp_corner() {
         "each swallowed corner cylinder must leave a 45-degree chamfer strip"
     );
 }
+
+/// Reversal-corrected traversal: shared edges whose two face uses carry the
+/// SAME effective sense (`is_forward != is_reversed`). A consistently wound
+/// closed shell has zero.
+fn same_sense_pair_count(topo: &Topology, solid: SolidId) -> usize {
+    use std::collections::HashMap;
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
+    let mut uses: HashMap<remus_topology::edge::EdgeId, Vec<bool>> = HashMap::new();
+    for &fid in &faces {
+        let face = topo.face(fid).unwrap();
+        let rev = face.is_reversed();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                uses.entry(oe.edge())
+                    .or_default()
+                    .push(oe.is_forward() != rev);
+            }
+        }
+    }
+    uses.values()
+        .filter(|u| u.len() == 2 && u[0] == u[1])
+        .count()
+}
+
+/// The orientation-emission campaign pin: shell_op is strict-clean across
+/// its face arms. The cavity lateral (a reversed CylindricalFace) used to
+/// double-flip — reversed vertex winding AND the reversed face flag — so all
+/// 64 rim arcs paired same-sense with the caps; the Phase-5 rim annulus
+/// additionally mirrored the raw `is_forward` without correcting for the
+/// neighbor face's reversal flag. Covers the Planar (box), CylindricalFace
+/// (cylinder), and Surface (sphere) arms.
+#[test]
+fn shell_emits_no_same_sense_edge_pairs() {
+    // Open-top cylinder cup: reversed cavity lateral + Phase-5 rim annulus.
+    let mut topo = Topology::new();
+    let cyl = crate::primitives::make_cylinder(&mut topo, 10.0, 16.0).unwrap();
+    let tops = find_faces_by_normal(&topo, cyl, Vec3::new(0.0, 0.0, 1.0));
+    let shelled = shell(&mut topo, cyl, 1.2, &tops).unwrap();
+    assert_eq!(
+        same_sense_pair_count(&topo, shelled),
+        0,
+        "shelled cylinder cup must be strictly consistently wound"
+    );
+    let vol = crate::measure::solid_volume(&topo, shelled, 0.01).unwrap();
+    let expected = std::f64::consts::PI * ((100.0 - 8.8 * 8.8) * 16.0 + 8.8 * 8.8 * 1.2);
+    assert!(
+        (vol - expected).abs() / expected < 0.01,
+        "cup volume {vol:.3} vs exact {expected:.3}"
+    );
+
+    // Closed hollow sphere: the Surface arm, inner shell in its own right.
+    let mut t2 = Topology::new();
+    let sph = crate::primitives::make_sphere(&mut t2, 8.0, 16).unwrap();
+    let hollow = shell(&mut t2, sph, 1.0, &[]).unwrap();
+    assert_eq!(
+        same_sense_pair_count(&t2, hollow),
+        0,
+        "hollow sphere must be strictly consistently wound"
+    );
+
+    // Open-top box: the all-Planar arm (regression guard for the shared
+    // winding change).
+    let mut t3 = Topology::new();
+    let bx = crate::primitives::make_box(&mut t3, 10.0, 10.0, 10.0).unwrap();
+    let tops = find_faces_by_normal(&t3, bx, Vec3::new(0.0, 0.0, 1.0));
+    let shelled_box = shell(&mut t3, bx, 1.0, &tops).unwrap();
+    assert_eq!(
+        same_sense_pair_count(&t3, shelled_box),
+        0,
+        "shelled box must be strictly consistently wound"
+    );
+}
