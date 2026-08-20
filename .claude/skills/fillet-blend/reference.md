@@ -39,6 +39,7 @@ If `filter_filletable_edges` drops all edges, or no engine yields a closed shell
 | `filletV2` | `fillet_v2` | v2 `blend_ops::fillet_v2` |
 | `chamferV2` | `chamfer_v2` | v2 `blend_ops::chamfer_v2` |
 | `chamferDistanceAngle` | `chamfer_distance_angle` | v2 `blend_ops::chamfer_distance_angle` |
+| `chamferDistanceAngleWithEvolution` | `chamfer_distance_angle_with_evolution` | v2 `blend_ops::chamfer_distance_angle` (same routing, plus construction history) |
 
 `executeBatch` (`bindings/batch.rs`) mirrors this: op `"fillet"` → `try_fillet`, `"chamfer"` → `chamfer::chamfer`, `"filletVariable"` → `fillet::fillet_variable`.
 

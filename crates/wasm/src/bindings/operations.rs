@@ -2017,6 +2017,67 @@ impl BrepKernel {
         )?;
         Ok(solid_id_to_u32(result.solid))
     }
+
+    /// Distance-angle chamfer with versioned face-evolution tracking data.
+    ///
+    /// Runs the same engine routing as
+    /// [`chamferDistanceAngle`](Self::chamfer_distance_angle) — the planar
+    /// bevel for planar-line selections, the walking builder otherwise — so
+    /// the returned solid is the same exact B-Rep the non-evolution entry
+    /// point produces. Both engines report construction history; when one
+    /// cannot, the payload carries explicit unresolved source/result sets
+    /// instead of inferring lineage geometrically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a handle is invalid, the distance is non-positive,
+    /// the angle is outside `(0, π/2)`, or the chamfer fails.
+    #[wasm_bindgen(js_name = "chamferDistanceAngleWithEvolution")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn chamfer_distance_angle_with_evolution(
+        &mut self,
+        solid: u32,
+        edge_handles: Vec<u32>,
+        distance: f64,
+        angle: f64,
+    ) -> Result<FaceEvolutionPayloadV1, JsError> {
+        validate_positive(distance, "distance")?;
+        validate_positive(angle, "angle")?;
+        if angle >= std::f64::consts::FRAC_PI_2 {
+            return Err(JsError::new("angle must be less than π/2"));
+        }
+        let solid_id = self.resolve_solid(solid)?;
+        let edge_ids: Vec<remus_topology::edge::EdgeId> = edge_handles
+            .iter()
+            .map(|&handle| self.resolve_edge(handle))
+            .collect::<Result<_, _>>()?;
+        let source_faces: Vec<u32> = remus_topology::explorer::solid_faces(&self.topo, solid_id)?
+            .into_iter()
+            .map(face_id_to_u32)
+            .collect();
+        let result = remus_operations::blend_ops::chamfer_distance_angle(
+            self.topo_mut(),
+            solid_id,
+            &edge_ids,
+            distance,
+            angle,
+        )?;
+        let evolution =
+            wasm_blend_evolution(&self.topo, result.solid, result.face_origins.as_ref())?;
+        let result_faces: Vec<u32> =
+            remus_topology::explorer::solid_faces(&self.topo, result.solid)?
+                .into_iter()
+                .map(face_id_to_u32)
+                .collect();
+        FaceEvolutionPayloadV1::from_map(
+            solid,
+            solid_id_to_u32(result.solid),
+            source_faces,
+            result_faces,
+            &evolution,
+        )
+        .map_err(|error| JsError::new(&error))
+    }
 }
 
 #[cfg(test)]
@@ -2290,6 +2351,46 @@ mod tests {
         let payload = kernel
             .chamfer_with_evolution(solid, vec![edge], 1.0)
             .unwrap();
+        assert_eq!(
+            payload.evolution.provenance,
+            crate::types::EvolutionProvenanceV1::Construction
+        );
+        let bevels: HashSet<u32> = payload
+            .evolution
+            .generated
+            .iter()
+            .flat_map(|claim| claim.results.iter().copied())
+            .collect();
+        assert_eq!(bevels.len(), 1);
+        assert_complete_evolution(&payload);
+    }
+
+    #[test]
+    fn chamfer_distance_angle_evolution_matches_plain_geometry() {
+        // The evolution variant must return the SAME exact bevel the plain
+        // entry point builds, plus construction history. Pinned against the
+        // closed form: a 60° bevel of depth 2 on one edge of a 10³ box cuts
+        // a triangular prism of legs 2 and 2·tan60° along the 10-long edge.
+        let angle = std::f64::consts::FRAC_PI_3;
+        let expected = 1000.0 - (2.0 * 2.0 * angle.tan() / 2.0) * 10.0;
+
+        let mut plain = BrepKernel::new();
+        let plain_solid = plain.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let plain_edge = plain.get_solid_edges(plain_solid).unwrap()[0];
+        let plain_result = plain
+            .chamfer_distance_angle(plain_solid, vec![plain_edge], 2.0, angle)
+            .unwrap();
+        let plain_volume = plain.volume(plain_result, 0.1).unwrap();
+        assert!((plain_volume - expected).abs() < 1e-6);
+
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let payload = kernel
+            .chamfer_distance_angle_with_evolution(solid, vec![edge], 2.0, angle)
+            .unwrap();
+        let volume = kernel.volume(payload.result.solid, 0.1).unwrap();
+        assert!((volume - plain_volume).abs() < 1e-9);
         assert_eq!(
             payload.evolution.provenance,
             crate::types::EvolutionProvenanceV1::Construction
