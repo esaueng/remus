@@ -115,17 +115,24 @@ fn tilted_plane_through_centre_halves_torus() {
 /// Concentric sphere through the tube centres: fuse, intersect, and cut
 /// volumes must satisfy inclusion–exclusion against the operand volumes.
 ///
-/// Ready-repro: phase FF now emits the two exact section circles (see
-/// `exact_torus_sphere`), but carving the closed torus face into its two
-/// tube bands has no splitter arm — the generic paths cannot weave a face
-/// with a degenerate point boundary, the analytic result fails validation,
-/// and the mesh fallback exceeds its classification work budget (a typed,
-/// bounded refusal). The missing primitive is the closed-torus band split;
-/// a 2026-08-21 attempt (two-rim bands with doubled tube-meridian seams)
-/// assembled free-edged and is parked — the rim/seam vertex identities
-/// must match whatever the partner face's splitter emits.
+/// Ready-repro, ADVANCED not closed: the closed-torus band split now exists
+/// (`split_closed_torus_into_bands`, reached via the seam anchor that takes a
+/// torus's seam u from its degenerate seam vertex). Fuse and Intersect are
+/// analytic, watertight and exact — 4632.67 and 344.60 against closed-form
+/// 4633 and 344.6, and their sum matches vol(torus)+vol(sphere) to 0.02%.
+///
+/// CUT is the remaining defect and the reason this stays ignored: it selects
+/// the correct outer band (its seam arcs run through the outer equator at
+/// (12,0,0)) and reports free=0 over=0, but the shell validates as inside out
+/// and encloses 833.56 where torus∖sphere is 444.97 — an excess of 388.59 that
+/// is NOT explained by an orientation flip alone, since flipping the sign
+/// still misses the closed form. Do NOT chase it by flipping the band winding:
+/// that was measured and it breaks the shared section circles instead
+/// ("2 shared edges have inconsistent face orientations"), so the +u lower-rim
+/// convention is right and the defect is elsewhere — start at the sphere
+/// annulus's reversed orientation in the Cut assembly, not at this splitter.
 #[test]
-#[ignore = "needs the closed-torus band split; exact section circles already emitted"]
+#[ignore = "closed-torus band split landed; Cut still inside-out and over-encloses by 388.59"]
 fn concentric_sphere_inclusion_exclusion() {
     let build = |op: BooleanOp| -> f64 {
         let mut topo = Topology::new();

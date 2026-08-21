@@ -93,7 +93,8 @@ fn dump(topo: &Topology, s: SolidId, label: &str) {
         *mix.entry(kind(topo.face(f).unwrap().surface()))
             .or_default() += 1;
     }
-    println!("--- {label}: F={} mix={mix:?}", faces.len());
+    let vol = remus_operations::measure::solid_volume(topo, s, 0.02).unwrap_or(f64::NAN);
+    println!("--- {label}: F={} vol={vol:.2} mix={mix:?}", faces.len());
     edge_census(topo, s);
     for &f in &faces {
         let fa = topo.face(f).unwrap();
@@ -140,6 +141,20 @@ fn main() {
         match remus_algo::gfa::boolean(&mut work, op, t2, s2) {
             Ok(r) => dump(&work, r, &format!("raw {op:?}")),
             Err(e) => println!("    Err: {e}"),
+        }
+        let mut ow = Topology::new();
+        let t3 = make_torus(&mut ow, 10.0, 2.0, 32).unwrap();
+        let s3 = make_sphere(&mut ow, 10.0, 32).unwrap();
+        let ops_op = match op {
+            remus_algo::bop::BooleanOp::Fuse => remus_operations::boolean::BooleanOp::Fuse,
+            remus_algo::bop::BooleanOp::Intersect => {
+                remus_operations::boolean::BooleanOp::Intersect
+            }
+            remus_algo::bop::BooleanOp::Cut => remus_operations::boolean::BooleanOp::Cut,
+        };
+        match remus_operations::boolean::boolean(&mut ow, ops_op, t3, s3) {
+            Ok(r) => dump(&ow, r, &format!("OPS {op:?}")),
+            Err(e) => println!("    OPS Err: {e}"),
         }
     }
 }

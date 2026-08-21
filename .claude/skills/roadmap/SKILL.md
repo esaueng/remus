@@ -1196,22 +1196,29 @@ ledger, details in the named fixtures:
 - Coaxial torus×cylinder and axis-centred torus×sphere sections are EXACT circles
   (`exact_torus_cylinder` / `exact_torus_sphere` in math, preferred by phase FF). The quartic
   marcher + dense `gauss_solve` NURBS fits made these hang for minutes-to-forever; now seconds.
-- OPEN, sanctioned failing repro EXISTS: the closed-torus band split. Exact circles are emitted,
-  but a whole torus face (degenerate point boundary) cut by two axis-circles has no splitter arm →
-  analytic result invalid → fallback (cylinder case, 2% volume) or bounded work-budget refusal
-  (sphere fuse). Ready-repro: `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`
-  (#[ignore]). ATTEMPTED AND REVERTED (do not blind-retry): two-rim bands with doubled tube-meridian
-  seam arcs assembled all-free — rim/seam vertex identity must match whatever the PARTNER face's
-  splitter emits (the cylinder side anchors sections at its own seam u); solve the shared-vertex
-  contract first, not the wire shape. ROOT LOCATED 2026-08-21, no fix yet — probe
-  `crates/operations/examples/debug_torus_band.rs` carries the full map; summary: the two gaps are
-  ONE contract, `compute_seam_anchors`/`seam_anchor_on_circle` skip non-Cylinder/Cone AND require a
-  NON-degenerate seam Line (a torus has neither — its whole boundary is 2 zero-length seam edges at
-  one vertex), and `split_periodic_face_into_bands` rejects Torus on line 1 with a 2-boundary-circle
-  precondition no doubly-periodic face can meet. The anchor point IS the band seam segment's shared
-  vertex, which is why fixing the split alone assembled free-edged. Partner is compatible: the
-  sphere legitimately keeps each circle as a 1-edge inner wire (caps), and opening a circle adds a
-  vertex without splitting the edge, so one edge serves both.
+- ADVANCED 2026-08-21, Fuse/Intersect CLOSED, CUT still open: the closed-torus band split. It is
+  TWO parts and they are ONE contract — `seam_anchor_on_circle` now takes a torus's seam u from its
+  DEGENERATE seam vertex (a doubly-periodic face has no extended seam Line, so the old search found
+  nothing and section circles anchored wherever the intersection curve's own frame began — MEASURED
+  at u=90° against a seam at u=0, which is exactly why the earlier attempt assembled free-edged and
+  could not share a VertexId with the partner), and `split_closed_torus_into_bands`
+  (`face_splitter/special_cases.rs`) emits the cyclic bands: N separators → N bands, not N+1, with
+  seam segments as sub-arcs of the TUBE MERIDIAN under π rather than Lines (a torus band spanning
+  more than half the tube would otherwise emit one arc its endpoints cannot determine). Fuse and
+  Intersect are now analytic, watertight and exact: 4632.67 and 344.60 against closed-form 4633 and
+  344.6, free=0 over=0, and their sum matches vol(torus)+vol(sphere) to 0.02%.
+  CUT REMAINS OPEN: it selects the correct outer band (seam arcs run through the outer equator at
+  (12,0,0)) and reports free=0 over=0, but validates inside-out and encloses 833.56 where
+  torus∖sphere is 444.97 — an excess of 388.59 that an orientation flip alone does not explain.
+  REFUTED, do not retry: flipping the band's lower-rim winding. It breaks the shared section circles
+  instead ("2 shared edges have inconsistent face orientations"), so the +u lower-rim convention is
+  right and the defect is elsewhere — start at the sphere annulus's reversed orientation in the Cut
+  assembly, not at this splitter. Ready-repro:
+  `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion` (#[ignore]); probe
+  `crates/operations/examples/debug_torus_band.rs` dumps operands, raw GFA and ops side by side.
+  Partner compatibility (why this is solvable at all): the sphere legitimately keeps each circle as
+  a 1-edge inner wire, and opening a circle adds a vertex without splitting the edge, so one edge
+  serves both sides.
 - Micron-scale boolean gap FILED: at model scale 1e-3 a plain box∖box through-cut carries the tool
   walls untrimmed and the volume EXCEEDS the blank (ignored ready-repro
   `crates/operations/tests/boolean_scale_gap.rs`). Fix altitude: scaled tolerance through OperationContext
