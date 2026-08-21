@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787317146344,
+  "lastUpdate": 1787330214070,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -971,6 +971,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41176783,
             "range": "± 138270",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "208997ff35d8b8e54cfd32f6e8d22096c2f2eab3",
+          "message": "test(wasm): pin assembly-rebuild typing on a corner-overlap fuse (#50)\n\nAdds assert_assembly_rebuilds_are_typed and a corner-overlap fuse fixture\n(two 10mm cubes offset by 5,5,5) that the existing evolution fixtures did\nnot cover, plus applies the helper to the existing cube-fuse fixture.\n\nTest-only: +32 lines in crates/wasm/src/bindings/evolution.rs. The\nproduction lineage work this branch originally carried landed in #49;\nthe conflict was resolved onto that design.",
+          "timestamp": "2026-08-21T12:33:30-04:00",
+          "tree_id": "6ca84af6f7bb16326f25ed0f4d335b20e6404b9e",
+          "url": "https://github.com/esaueng/remus/commit/208997ff35d8b8e54cfd32f6e8d22096c2f2eab3"
+        },
+        "date": 1787330213303,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1275559,
+            "range": "± 1691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1368182,
+            "range": "± 9892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13209,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 961732,
+            "range": "± 29566",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38360487,
+            "range": "± 97672",
             "unit": "ns/iter"
           }
         ]
