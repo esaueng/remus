@@ -292,6 +292,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check-remus-rename.sh
 
+  workflow-contracts:
+    name: Workflow Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/test-publish-credentials.sh
+
   deny:
     name: Cargo Deny
     runs-on: ubuntu-latest
@@ -376,7 +383,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, deny, audit, docs, machete, secrets-scan, taplo]
+    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, workflow-contracts, deny, audit, docs, machete, secrets-scan, taplo]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
