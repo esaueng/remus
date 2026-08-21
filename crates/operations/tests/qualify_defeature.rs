@@ -6,7 +6,7 @@
 //! refusals from both sides of each declared boundary. Every positive case
 //! restores a closed-form volume and passes full validation.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
@@ -51,9 +51,7 @@ fn faces_within(topo: &Topology, solid: SolidId, lo: Point3, hi: Point3) -> Vec<
             let f = topo.face(fid).unwrap();
             let mut all_in = true;
             let mut saw_vertex = false;
-            for wid in
-                std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied())
-            {
+            for wid in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
                 for oe in topo.wire(wid).unwrap().edges() {
                     let e = topo.edge(oe.edge()).unwrap();
                     for vid in [e.start(), e.end()] {

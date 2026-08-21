@@ -6,7 +6,7 @@
 //! nodes with their own solids, BOM determinism, bounding boxes, and typed
 //! errors for empty assemblies and invalid parents.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_math::mat::Mat4;
 use remus_math::vec::Point3;

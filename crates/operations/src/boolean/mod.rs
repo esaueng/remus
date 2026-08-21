@@ -2746,6 +2746,45 @@ fn detect_trivial_relation(
                 }
             }
         }
+        // Near-surface interior samples of `inner`'s faces. Vertices alone
+        // are blind for low-vertex analytic solids: a torus carries only a
+        // seam vertex (and degenerate point-line seam edges), so a cut
+        // plane through that seam read the whole torus as "contained" in a
+        // half-space whose boundary the seam happened to ride. A raw
+        // surface sample is NOT necessarily on the face's trimmed region (a
+        // plane's or cone's parameterization runs past the face, and
+        // distance-to-solid measures the untrimmed surface, so an off-face
+        // sample reads "on the solid"), which once falsely refuted a TRUE
+        // cone-in-box containment. So each sample is nudged INWARD along
+        // the face's outward normal and tagged unverified: it only counts
+        // after classifying strictly Inside `inner`, which an off-face
+        // nudge fails. Like every other witness these can only refute a
+        // FALSE containment, never reject a true one.
+        if let Some((lo, hi)) = *bb
+            && let Ok(fids) = remus_topology::explorer::solid_faces(topo, inner)
+        {
+            let diag = (hi - lo).length();
+            let nudge = (diag * 1e-3).max(1e-6);
+            let step = (fids.len() / CONTAINMENT_PROBES).max(1);
+            for fid in fids.iter().step_by(step).take(CONTAINMENT_PROBES) {
+                if let Ok(face) = topo.face(*fid) {
+                    let surf = face.surface();
+                    let flip = if face.is_reversed() { -1.0 } else { 1.0 };
+                    for (u, v) in [
+                        (0.0, 0.0),
+                        (std::f64::consts::PI, 0.0),
+                        (0.0, std::f64::consts::PI),
+                        (std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
+                    ] {
+                        if let Some(sample) = surf.evaluate(u, v)
+                            && let Ok(n) = (surf.normal(u, v) * flip).normalize()
+                        {
+                            pts.push((sample - n * nudge, false));
+                        }
+                    }
+                }
+            }
+        }
         pts
     };
     let center_outside =

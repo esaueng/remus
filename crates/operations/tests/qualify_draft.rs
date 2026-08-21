@@ -9,7 +9,7 @@
 //! Every positive case is checked against a closed-form volume, not a prior
 //! run's output.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
@@ -291,11 +291,7 @@ fn cavity_solid_refused_typed() {
     transform_solid(&mut topo, void, &Mat4::translation(0.3, 0.3, 0.3)).unwrap();
     let hollow = boolean(&mut topo, BooleanOp::Cut, cube, void).unwrap();
     assert!(
-        !topo
-            .solid(hollow)
-            .unwrap()
-            .inner_shells()
-            .is_empty(),
+        !topo.solid(hollow).unwrap().inner_shells().is_empty(),
         "test setup: the cut must carry the void as a cavity shell"
     );
 
@@ -329,12 +325,7 @@ fn non_planar_target_refused_typed() {
         .unwrap()
         .faces()
         .iter()
-        .filter(|&&fid| {
-            !matches!(
-                topo.face(fid).unwrap().surface(),
-                FaceSurface::Plane { .. }
-            )
-        })
+        .filter(|&&fid| !matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. }))
         .copied()
         .collect();
     assert!(!lateral.is_empty());

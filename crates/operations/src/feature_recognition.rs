@@ -415,10 +415,7 @@ fn detect_fillet_like_fag(fag: &FaceAdjacencyGraph, features: &mut Vec<Feature>)
     let threshold = avg_area * 0.25;
 
     for node in fag.nodes.values() {
-        if node.surface_class != SurfaceClass::Planar
-            && node.area < threshold
-            && node.area > 0.0
-        {
+        if node.surface_class != SurfaceClass::Planar && node.area < threshold && node.area > 0.0 {
             features.push(Feature::FilletLike {
                 face: node.face,
                 area: node.area,
@@ -687,9 +684,7 @@ fn detect_pockets_fag(fag: &FaceAdjacencyGraph, features: &mut Vec<Feature>) {
         let concave_degree = |i: usize| -> usize {
             fag.adjacency.get(&i).map_or(0, |adj| {
                 adj.iter()
-                    .filter(|(n, e)| {
-                        component.contains(n) && e.concavity == EdgeConcavity::Concave
-                    })
+                    .filter(|(n, e)| component.contains(n) && e.concavity == EdgeConcavity::Concave)
                     .count()
             })
         };

@@ -1556,8 +1556,7 @@ pub fn revolve(
 
         let bottom_normal = -input_normal;
         let fid = if caps_planar {
-            let wire =
-                Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?;
+            let wire = Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?;
             let wid = topo.add_wire(wire);
             let bottom_d = dot_normal_point(bottom_normal, input_positions[0]);
             topo.add_face(Face::new(

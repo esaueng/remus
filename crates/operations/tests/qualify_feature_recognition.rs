@@ -9,7 +9,7 @@
 //! "Not recognized" is a first-class outcome: the declared set is what these
 //! tests pin, and anything outside it is absence of a claim, not an error.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_math::mat::Mat4;
 use remus_math::vec::Point3;

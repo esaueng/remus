@@ -46,12 +46,7 @@ fn wall_by_normal(k: &mut BrepKernel, solid: u32, target: [f64; 3]) -> u32 {
         k,
         &[op("getSolidFaces", serde_json::json!({"solid": solid}))],
     );
-    let handles: Vec<u32> = faces[0]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(as_u32)
-        .collect();
+    let handles: Vec<u32> = faces[0].as_array().unwrap().iter().map(as_u32).collect();
     let mut best = (f64::MIN, 0u32);
     for h in handles {
         let n = run_all_ok(k, &[op("getFaceNormal", serde_json::json!({"face": h}))]);
@@ -158,12 +153,7 @@ fn batch_defeature_restores_plain_box() {
         &mut k,
         &[op("getSolidFaces", serde_json::json!({"solid": holed}))],
     );
-    let handles: Vec<u32> = faces[0]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(as_u32)
-        .collect();
+    let handles: Vec<u32> = faces[0].as_array().unwrap().iter().map(as_u32).collect();
     let mut walls = Vec::new();
     for h in handles {
         let vs = run_all_ok(

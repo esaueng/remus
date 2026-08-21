@@ -37,8 +37,8 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
-use crate::evolution::EvolutionMap;
 use crate::dot_normal_point;
+use crate::evolution::EvolutionMap;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
 const OP: &str = "split";

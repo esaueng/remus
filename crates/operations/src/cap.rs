@@ -84,7 +84,7 @@ pub fn bilinear_cap_patch(corners: &[Point3]) -> Result<NurbsSurface, remus_math
 /// # Errors
 ///
 /// Returns an error if the ring cannot form a valid patch.
-pub(crate) fn nonplanar_ring_surface(
+pub fn nonplanar_ring_surface(
     cap_verts: &[Point3],
 ) -> Result<NurbsSurface, crate::OperationsError> {
     if cap_verts.len() == 4 {

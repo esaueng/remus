@@ -463,8 +463,7 @@ pub fn shell_journaled(
     open_faces: &[remus_topology::FaceId],
 ) -> Result<JournaledSolidOp, OperationsError> {
     let pending = begin_scoped(topo, "shell", &[solid])?;
-    let (result, map) =
-        crate::shell_op::shell_with_evolution(topo, solid, thickness, open_faces)?;
+    let (result, map) = crate::shell_op::shell_with_evolution(topo, solid, thickness, open_faces)?;
     let op = record_face_evolution(topo, pending, &map, &[result])?;
     Ok(JournaledSolidOp {
         solid: result,
@@ -500,8 +499,7 @@ pub fn split_journaled(
     plane_normal: remus_math::vec::Vec3,
 ) -> Result<JournaledSplit, OperationsError> {
     let pending = begin_scoped(topo, "split", &[solid])?;
-    let (result, evo) =
-        crate::split::split_with_evolution(topo, solid, plane_point, plane_normal)?;
+    let (result, evo) = crate::split::split_with_evolution(topo, solid, plane_point, plane_normal)?;
     let mut combined = EvolutionMap::exact();
     for map in [&evo.positive, &evo.negative] {
         for (&input, outputs) in &map.modified {

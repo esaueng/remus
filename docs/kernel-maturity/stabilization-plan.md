@@ -285,6 +285,50 @@ Blockers are contract and CI, not geometry:
 
 Effort: **M**.
 
+## Dispositions (2026-08-21)
+
+Executed in one campaign; per the maintenance rule, each item's outcome:
+
+- **A1 Draft — done, promoted.** Qualification suite + WASM batch contract
+  tests; label flipped with the matrices.
+- **A2 Defeaturing — done, promoted.** Cap and extend strategies qualified;
+  the micron-scale boolean input gap discovered en route is filed as the
+  ignored ready-repro `boolean_scale_gap.rs` (an OperationContext-tolerance
+  item, not a defeature cell).
+- **A3 Assemblies — done, promoted.** Determinism defects fixed on the way
+  (hash-ordered storage, leaf-only flatten, unordered BOM, sentinel bbox).
+- **A4 Feature recognition — done, promoted** for the declared set. Two
+  recognizer defects fixed: planar `FilletLike` false positives, all-planar
+  pockets undetectable.
+- **B3 Evolution — done, promoted.** Draft/defeature/split/shell now record
+  construction-derived face evolution with journaled wrappers; offset and
+  direct edits remain declared barriers.
+- **B2 Non-planar caps — workstreams 1 and 3 done, promoted** with declared
+  bounds (Coons n-sided caps; partial-revolve polygonal caps). Workstream 2
+  (holes) and 4 (miter) stay typed refusals.
+- **B1 Torus booleans — evidence improved, label retained (Beta).** Exact
+  coaxial torus×cylinder and axis-centred torus×sphere circles (the marching
+  hang is gone), a containment-shortcut unsoundness fixed (seam-vertex-only
+  witnesses), volume oracles pinned. The closed-torus band split is the
+  named missing primitive (ready-repro:
+  `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`); a
+  first attempt (doubled tube-meridian seam bands) assembled free-edged and
+  was reverted — rim/seam vertex identity with the partner face's splitter
+  output is the open problem.
+- **C1 Curved blends — item 1 done** (the blind-hole floor rim defect no
+  longer reproduces; domain widened to `r < r_c` with closed-form pins).
+  Items 2–3 (closed-rim chamfers, v2 trimmer completion) not started.
+- **C2 resize_blend — verified, refusal kept.** Heal-to-sharp works for
+  cylinder/cone; the closed-rim assembler cannot rebuild that rim, so the
+  typed `unsupported-support-pair` stays as the more precise contract. Waits
+  on C1's assembler work.
+- **C3 IGES — decision gate resolved: Option 2.** STEP is the exchange path;
+  IGES stays Experimental by decision, recorded in the stability matrix.
+- **C4 Rendering — evidence added, label retained (Experimental).** CI
+  already gates software rendering with a required adapter; a bit-identical
+  determinism pin for the color and face-id buffers was added. Promotion via
+  Beta remains for a later release cycle per the original plan.
+
 ## Sequencing
 
 Dependency-driven order, not calendar-driven. Phases overlap freely except

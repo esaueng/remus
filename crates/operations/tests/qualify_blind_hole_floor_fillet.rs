@@ -14,7 +14,7 @@
 //! quarter-tube collar cut from it is sound. `r ≥ r_c` is refused as a
 //! typed `RadiusTooLarge`, both sides of the bound tested.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f64::consts::PI;
 

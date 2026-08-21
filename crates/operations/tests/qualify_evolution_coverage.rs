@@ -6,7 +6,7 @@
 //! result face claimed exactly once, every input face accounted for — and
 //! that the map's origin is `Construction`, never geometric inference.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 
@@ -79,7 +79,10 @@ fn draft_evolution_is_total_and_exact() {
     )
     .unwrap();
 
-    assert!(map.origin.is_exact(), "draft evolution must be construction-derived");
+    assert!(
+        map.origin.is_exact(),
+        "draft evolution must be construction-derived"
+    );
     assert!(map.deleted.is_empty());
     assert!(map.unresolved.is_empty());
 
@@ -113,10 +116,12 @@ fn split_evolution_accounts_for_both_halves() {
     )
     .unwrap();
 
-    for (half, map) in [(result.positive, &evo.positive), (result.negative, &evo.negative)] {
+    for (half, map) in [
+        (result.positive, &evo.positive),
+        (result.negative, &evo.negative),
+    ] {
         assert!(map.origin.is_exact());
-        let outputs: BTreeSet<usize> =
-            outer_faces(&topo, half).iter().map(|f| f.index()).collect();
+        let outputs: BTreeSet<usize> = outer_faces(&topo, half).iter().map(|f| f.index()).collect();
         assert_eq!(claimed_outputs(map), outputs);
         assert_eq!(
             map.unresolved.len(),
