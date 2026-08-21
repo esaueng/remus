@@ -863,16 +863,17 @@ pub fn plane_cylinder_fillet(
         let tol = remus_math::tolerance::Tolerance::new();
         tol.linear.max(tol.relative * r_c)
     };
-    let inward_convex = inward && convex;
-    let max_radius = if inward_convex {
-        r_c - cap_floor
-    } else if inward {
-        r_c * 0.5
-    } else {
-        r_c
-    };
+    // Inward contacts — a bare cap's own rim (convex) and a blind hole's
+    // floor rim (concave) — share the geometry AND the bound: the rolling
+    // ball must fit inside the cylinder (`r < r_c`), less the sliver where
+    // the remaining cap/floor face would be under the vertex tolerance. The
+    // concave lane's historical `r_c/2` cap guarded a rim-assembly defect
+    // that no longer reproduces (the r = 3 hole rounded at r = 1 now ADDS
+    // its exact 3.746 collar, pinned by `blind_hole_floor_rim_*` in
+    // fillet/tests.rs), so both inward lanes refuse past `r_c` by name.
+    let max_radius = if inward { r_c - cap_floor } else { r_c };
     if radius >= max_radius {
-        if !inward_convex {
+        if !inward {
             return Ok(None);
         }
         // No engine below can fit a ball that does not fit, so this is a

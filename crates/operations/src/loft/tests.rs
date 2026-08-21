@@ -924,10 +924,12 @@ fn loft_nonplanar_surface_planar_boundary_makes_flat_caps() {
 }
 
 #[test]
-fn loft_nonplanar_boundary_over_4_edges_is_unsupported() {
-    // A genuinely non-planar section boundary with >4 edges has no supported cap
-    // fill yet, so loft rejects it rather than emit overfilled/non-watertight
-    // geometry.
+fn loft_nonplanar_boundary_over_4_edges_caps_with_coons() {
+    // A genuinely non-planar 5-edge section boundary is capped by a Coons
+    // patch whose boundary iso-curves are exactly the ring chords. The two
+    // sections are identical warps 5 apart, so every side ruling is vertical
+    // and the solid is a translation sweep: volume = 5 × (XY shoelace area),
+    // exactly.
     let mut topo = Topology::new();
     let mk = |topo: &mut Topology, z: f64| -> FaceId {
         let pts = [
@@ -961,9 +963,45 @@ fn loft_nonplanar_boundary_over_4_edges_is_unsupported() {
     };
     let p0 = mk(&mut topo, 0.0);
     let p1 = mk(&mut topo, 5.0);
+    let solid = loft(&mut topo, &[p0, p1]).unwrap();
+
+    let sh = topo
+        .shell(topo.solid(solid).unwrap().outer_shell())
+        .unwrap();
+    assert_eq!(sh.faces().len(), 7, "5 side walls + 2 Coons caps");
+    let nurbs_caps = sh
+        .faces()
+        .iter()
+        .filter(|&&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .count();
+    assert!(nurbs_caps >= 2, "both caps are NURBS Coons fills");
+
     assert!(
-        loft(&mut topo, &[p0, p1]).is_err(),
-        "non-planar >4-edge section boundary must be rejected"
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid(),
+        "Coons-capped loft must be a valid solid"
+    );
+
+    // Shoelace area of the pentagon's XY projection.
+    let xy = [
+        (2.0, 0.0),
+        (0.6, 1.9),
+        (-1.6, 1.2),
+        (-1.6, -1.2),
+        (0.6, -1.9),
+    ];
+    let mut area2: f64 = 0.0;
+    for i in 0..5 {
+        let (x0, y0) = xy[i];
+        let (x1, y1) = xy[(i + 1) % 5];
+        area2 += x0 * y1 - x1 * y0;
+    }
+    let expected = 5.0 * area2.abs() / 2.0;
+    let vol = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(
+        ((vol - expected) / expected).abs() < 0.005,
+        "translation-sweep volume should be {expected}, got {vol}"
     );
 }
 

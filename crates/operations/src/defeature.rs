@@ -86,6 +86,48 @@ pub fn defeature(
     Ok(defeature_impl(topo, solid, faces_to_remove)?.solid)
 }
 
+/// [`defeature`] with construction-derived face evolution.
+///
+/// The heal already tracks which healed face each kept input face became;
+/// that mapping is reported as `modified`, the removed feature faces as
+/// `deleted`, and any input face the heal absorbed without a successor
+/// (a face merged away by the closure) as `deleted` too. Nothing is
+/// recovered by geometric matching.
+///
+/// # Errors
+///
+/// Exactly [`defeature`]'s errors.
+pub fn defeature_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces_to_remove: &[FaceId],
+) -> Result<(SolidId, crate::evolution::EvolutionMap), OperationsError> {
+    let input_faces: Vec<usize> = {
+        let solid_data = topo.solid(solid)?;
+        let shell = topo.shell(solid_data.outer_shell())?;
+        shell.faces().iter().map(|f| f.index()).collect()
+    };
+    let outcome = defeature_impl(topo, solid, faces_to_remove)?;
+
+    let mut evolution = crate::evolution::EvolutionMap::exact();
+    let mut mapped: Vec<(usize, usize)> = outcome
+        .face_map
+        .iter()
+        .map(|(&src, out)| (src, out.index()))
+        .collect();
+    mapped.sort_unstable();
+    let accounted: BTreeSet<usize> = mapped.iter().map(|&(src, _)| src).collect();
+    for (src, out) in mapped {
+        evolution.add_modified(src, out);
+    }
+    for src in input_faces {
+        if !accounted.contains(&src) {
+            evolution.add_deleted(src);
+        }
+    }
+    Ok((outcome.solid, evolution))
+}
+
 /// Exact defeature result used by operations that must compose face history.
 pub(crate) struct DefeatureOutcome {
     /// Healed solid.

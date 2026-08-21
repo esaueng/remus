@@ -3526,6 +3526,81 @@ fn compute_raw_curves(
             }
         }
 
+        (FaceSurface::Torus(torus), FaceSurface::Cylinder(cyl))
+        | (FaceSurface::Cylinder(cyl), FaceSurface::Torus(torus)) => {
+            // A coaxial torus and cylinder meet at one or two exact circles
+            // of the cylinder's radius, offset symmetrically from the torus
+            // centre plane. Emitting them exactly spares the quartic marcher
+            // — whose NURBS fits made this configuration crawl — and gives
+            // the closed-circle FF split real circles to carve with.
+            // Non-coaxial (None) falls through to the general marcher.
+            match analytic_intersection::exact_torus_cylinder(torus, cyl)? {
+                Some(exacts) => {
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        if let analytic_intersection::ExactIntersectionCurve::Circle(circle) = exact
+                        {
+                            let bbox = circle_bbox(&circle);
+                            let domain = (0.0, std::f64::consts::TAU);
+                            let p_start = ParametricCurve::evaluate(&circle, domain.0);
+                            let p_end = ParametricCurve::evaluate(&circle, domain.1);
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Circle(circle),
+                                bbox,
+                                t_range: domain,
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
+        (FaceSurface::Torus(torus), FaceSurface::Sphere(sphere))
+        | (FaceSurface::Sphere(sphere), FaceSurface::Torus(torus)) => {
+            // An axis-centred sphere and a torus meet at exact circles about
+            // the shared axis (closed form in the tube angle); the quartic
+            // marcher only runs for off-axis spheres.
+            match analytic_intersection::exact_torus_sphere(torus, sphere)? {
+                Some(exacts) => {
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        if let analytic_intersection::ExactIntersectionCurve::Circle(circle) = exact
+                        {
+                            let bbox = circle_bbox(&circle);
+                            let domain = (0.0, std::f64::consts::TAU);
+                            let p_start = ParametricCurve::evaluate(&circle, domain.0);
+                            let p_end = ParametricCurve::evaluate(&circle, domain.1);
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Circle(circle),
+                                bbox,
+                                t_range: domain,
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
         (FaceSurface::Sphere(sphere), FaceSurface::Cylinder(cyl))
         | (FaceSurface::Cylinder(cyl), FaceSurface::Sphere(sphere)) => {
             // A coaxial sphere and cylinder meet at one or two circles (the
