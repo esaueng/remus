@@ -1,6 +1,6 @@
 ---
 name: pr-workflow
-description: Use when committing, pushing, opening, reviewing, or merging a pull request in this repo (esaueng/remus, the Remus B-Rep kernel), or when a git hook fails, a push fails, commitlint flags a message, or parallel work needs a worktree. Covers hooks, conventional commits, the self-imposed merge gate, and release-please.
+description: Use when committing, pushing, opening, reviewing, or merging a pull request in this repo (esaueng/remus, the Remus B-Rep kernel), or when a git hook fails, a push fails, commitlint flags a message, or parallel work needs a worktree. Covers hooks, conventional commits, the self-imposed merge gate, and the committed-package release channel.
 ---
 
 # PR Workflow
@@ -29,7 +29,7 @@ End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squa
 Hooks live in `.husky/`. Read the hook files themselves when in doubt; the "Git Conventions" section of CLAUDE.md describes an older pre-push behavior and the hook file is authoritative.
 
 - `pre-commit`: fmt, clippy, taplo, and cargo-machete run in parallel. No tests. Expect `✅ Pre-commit checks passed.` If it fails, fix and re-commit. Caveat: the hook silently skips taplo and cargo-machete when the binaries are not installed (`command -v` guards in `.husky/pre-commit`), so a passing hook does not prove TOML formatting or unused-dep cleanliness. Install both with `cargo install taplo-cli cargo-machete`.
-- `commit-msg`: runs commitlint (`@commitlint/config-conventional`, `commitlint.config.js`) but always exits 0: its not-installed fallback also swallows real lint failures, so violations print `✖` lines without blocking the commit. Treat any `✖` output as a hard failure and `git commit --amend` the message. Shape: `type(scope): subject`, e.g. `feat(render): screen-space adaptive LOD`. Nothing in CI lints messages either, and release-please parses the squash-commit title (the PR title), so a malformed title silently skips the version bump.
+- `commit-msg`: runs commitlint (`@commitlint/config-conventional`, `commitlint.config.js`) but always exits 0: its not-installed fallback also swallows real lint failures, so violations print `✖` lines without blocking the commit. Treat any `✖` output as a hard failure and `git commit --amend` the message. Shape: `type(scope): subject`, e.g. `feat(render): screen-space adaptive LOD`. Nothing in CI lints messages either, so the hook's `✖` output is the only signal you get — the conventional-commit history is a repo contract (nothing mechanical consumes the titles today; there is no release-please in this fork, see "Release flow").
 - `pre-push`: prints one info line and exits 0. Validation is deliberately delegated to CI (`.github/workflows/ci.yml`). Do not re-add local test runs to this hook, and do not treat its emptiness as a reason to skip local testing: run touched-crate tests yourself before pushing.
 
 Hard rules:
@@ -73,7 +73,7 @@ So `CI Pass` is an *aggregate* check, not a *required* one, and nothing stops a 
 2. **Confirm `CI Pass` is SUCCESS**, and separately read the three checks outside its fan-in: `Apache Lineage`, `Doc Paths`, `WASM Size Report`.
 3. **Check both comment surfaces anyway** — `gh api repos/esaueng/remus/pulls/<N>/comments` (inline) and `gh pr view <N> --comments` (issue-level). Expect zero from reviewers; the WASM size bot posts here. Cheap insurance in case an app is installed later.
 4. **Confirm the head you tested is the head being merged**: `gh pr view <N> --json headRefOid` vs `git rev-parse HEAD`.
-5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly or release-please will not parse the title.
+5. **Merge:** `gh pr merge <N> --squash`. Squash is not the repo default — merge commits and rebase merges are both enabled — so pass `--squash` explicitly: it keeps `main` at one conventional-titled commit per PR, which the history conventions assume.
 
 Because no second pair of eyes exists, the diff you push is the diff that lands. On high-risk changes (GFA boolean engine, public WASM API), self-review the full diff before merging and say plainly in the PR body what you verified and what you did not.
 
@@ -109,7 +109,9 @@ Ignore the older `../feat-branch` sibling-directory form in CLAUDE.md; in-repo `
 
 ## Release flow
 
-release-please (`.github/workflows/publish.yml`) maintains a pending `chore(main): release X.Y.Z` PR. Merging a `feat`/`fix`/`perf` PR updates it; merging the release PR itself tags, creates the GitHub release, and publishes the wasm package to npm. `docs`/`chore` commits and changes under excluded paths (`.github`, `scripts`, `benches`, `examples`, and similar) do not bump the version. Cross-repo consumption by brepjs: see the release-flow skill. Details and manual escape hatch: [reference.md](reference.md), "Release-please".
+**There is no release-please and no release PR in this fork** (verified 2026-08-21: `rg -l 'release-please' .github/workflows/` is empty; the leftover `release-please-config.json` / `.release-please-manifest.json` in the tree are inert upstream residue — the release-flow skill says the same). Do not wait for, look for, or promise a `chore(main): release X.Y.Z` PR.
+
+The actual release channel is the committed package: `.github/workflows/publish.yml` ("Refresh Apache Staging Package") runs on every push to `main`, rebuilds `crates/wasm/pkg` with `cargo xtask wasm-build --skip-opt`, and — when the output differs — commits it back as `chore(wasm): refresh committed package to vX.Y.Z from <sha> [skip ci]`. Consumers install by git path (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so that auto-commit IS the release: merging a kernel PR ships it within minutes, no further merge needed. Nothing publishes to npm or crates.io. Cross-repo consumption and the validation harness: see the release-flow skill. Details and the manual refresh dispatch: [reference.md](reference.md), "Committed-package refresh".
 
 ## CI failures you did not cause
 
@@ -117,4 +119,4 @@ release-please (`.github/workflows/publish.yml`) maintains a pending `chore(main
 
 ## Symptoms
 
-Symptom-to-cause table (push hangs, commitlint rejects, review check missing, release PR not updating): see [reference.md](reference.md), "Symptom table".
+Symptom-to-cause table (push hangs, commitlint rejects, review check missing, package refresh not landing): see [reference.md](reference.md), "Symptom table".
