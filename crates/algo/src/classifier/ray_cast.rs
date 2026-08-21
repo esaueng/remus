@@ -242,6 +242,22 @@ fn votes_from_geoms(face_data: &[FaceGeom], point: Point3) -> Result<u8, AlgoErr
             let mut suspicious = false;
             for geom in face_data {
                 let (c, s) = ray_geom_crossings(point, *ray_dir, geom, tol);
+                if traced {
+                    let kind = match geom {
+                        FaceGeom::Planar { verts, .. } => format!("Planar({})", verts.len()),
+                        FaceGeom::Cylinder { v_min, v_max, .. } => {
+                            format!("Cylinder(v {v_min:.2}..{v_max:.2})")
+                        }
+                        FaceGeom::Cone { .. } => "Cone".into(),
+                        FaceGeom::Torus { .. } => "Torus".into(),
+                    };
+                    log::debug!(
+                        "RAYTRACE   {label} dir=({:.1},{:.1},{:.1}) geom={kind} c={c} s={s}",
+                        ray_dir.x(),
+                        ray_dir.y(),
+                        ray_dir.z()
+                    );
+                }
                 crossings += c;
                 suspicious |= s;
             }
@@ -367,7 +383,7 @@ fn wire_polygon(
         let raw_end = topo.vertex(edge.end())?.point();
         let mut pts = vec![raw_start];
         if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-            let (t0, t1) = edge.curve().domain_with_endpoints(raw_start, raw_end);
+            let (t0, t1) = edge.domain_with_endpoints(raw_start, raw_end);
             let is_closed = (raw_start - raw_end).length() < 1e-9;
             let n_samples = if is_closed { 16_i32 } else { 3_i32 };
             for k in 1..=n_samples {
@@ -502,16 +518,22 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                         pv_max = pv_max.max(v);
                         u_samples.push(u);
                     }
-                    if pv_min.is_finite()
-                        && pv_max > pv_min
-                        && let Some(gap) = largest_u_gap(&u_samples)
-                    {
+                    if pv_min.is_finite() && pv_max > pv_min {
+                        // `largest_u_gap` returning `None` means the boundary
+                        // samples leave no angular gap above threshold — that
+                        // takes 30+ samples spread around the whole period, so
+                        // it is positive evidence of a full-period lateral
+                        // whose rims are CHAINS of arcs instead of one closed
+                        // circle (e.g. a shell-op cavity wall). Falling to the
+                        // planar polygon fallback there flips crossing parity
+                        // by construction; collect it as a full-period
+                        // cylinder instead.
                         result.push(FaceGeom::Cylinder {
                             surface: cyl.clone(),
                             v_min: pv_min,
                             v_max: pv_max,
                             hole_bands: Vec::new(),
-                            u_gap: Some(gap),
+                            u_gap: largest_u_gap(&u_samples),
                         });
                         continue;
                     }
@@ -550,20 +572,22 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                     u_samples.push(u);
                 }
                 if pv_min.is_finite() && pv_max > pv_min {
+                    // As in the cylinder path above: no closed circle edge
+                    // plus no angular gap in the samples is a full-period band
+                    // with arc-chained rims, not a partial patch — `None` from
+                    // `largest_u_gap` means "no trim", never "fall back".
                     let u_gap = if has_closed_circle {
-                        Some(None)
+                        None
                     } else {
-                        largest_u_gap(&u_samples).map(Some)
+                        largest_u_gap(&u_samples)
                     };
-                    if let Some(u_gap) = u_gap {
-                        result.push(FaceGeom::Cone {
-                            surface: cone.clone(),
-                            v_min: pv_min,
-                            v_max: pv_max,
-                            u_gap,
-                        });
-                        continue;
-                    }
+                    result.push(FaceGeom::Cone {
+                        surface: cone.clone(),
+                        v_min: pv_min,
+                        v_max: pv_max,
+                        u_gap,
+                    });
+                    continue;
                 }
             }
         }
@@ -1191,7 +1215,7 @@ pub fn compute_solid_bbox(
             points.push(end_pos);
             // Curved edges can bulge beyond their endpoints
             if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-                let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+                let (t0, t1) = edge.domain_with_endpoints(start_pos, end_pos);
                 let t_mid = 0.5_f64.mul_add(t1 - t0, t0);
                 let mid = edge
                     .curve()

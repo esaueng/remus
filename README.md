@@ -59,9 +59,12 @@ WebAssembly, so the same kernel runs in the browser and on the desktop.
 `unsafe` is denied by lint, as are `unwrap` and `panic`. Every public operation
 returns a `Result`.
 
-It grew out of building [gridfinitylayouttool.com](https://gridfinitylayouttool.com),
-where the options for parametric CAD in the browser were proprietary or
-compiled from large C++ codebases.
+Parametric CAD in the browser has long meant choosing between proprietary
+kernels and large C++ codebases compiled to WASM. Remus exists to be the third
+option: a from-scratch Rust kernel with exact geometry and a permanent
+Apache-2.0 license. It is maintained by Esau Engineering as the Apache-2.0
+continuation of an upstream kernel that relicensed at v3 — see
+[Provenance](#provenance) for how that boundary is enforced.
 
 The geometry is exact. Booleans run on analytic and NURBS surfaces and keep
 those surfaces through the operation, so a cylinder stays a cylinder instead of
@@ -99,6 +102,9 @@ feature label.
 - **[Stability matrix](docs/production-readiness/stability-matrix.md)** — the
   audited disposition of each label shipping *today*, including the rows whose
   advertised domain is not yet fully evidenced.
+- **[Stabilization plan](docs/kernel-maturity/stabilization-plan.md)** — the
+  working plan for promoting every Beta/Experimental row below to Stable,
+  sequenced under the capability-matrix promotion rules.
 
 Four mechanisms carry that contract in code:
 
@@ -133,11 +139,11 @@ evidence each label currently rests on.
 | **Modifiers**           | Resize or remove an analytic blend band (`resize_blend`)                     | Experimental |
 | **Modifiers**           | Shell (hollow solid)                                                         | Stable       |
 | **Modifiers**           | Offset face, offset solid, thicken, mirror, pattern                          | Stable       |
-| **Modifiers**           | Draft (planar faces)                                                         | Beta         |
+| **Modifiers**           | Draft (planar faces)                                                         | Stable       |
 | **Sweeps**              | Extrude (planar + NURBS profiles)                                            | Stable       |
 | **Sweeps**              | Revolve, sweep, loft, pipe (planar profiles)                                 | Stable       |
 | **Sweeps**              | Helical sweep                                                                | Stable       |
-| **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Beta         |
+| **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Stable       |
 | **Construction**        | Coons-patch face fill, sew, untrim                                           | Stable       |
 | **Sectioning**          | Cross-section faces, split by plane                                          | Stable       |
 | **Measurement**         | Bounding box, area, volume, center of mass, inertia tensor + principal axes  | Stable       |
@@ -153,10 +159,10 @@ evidence each label currently rests on.
 | **I/O**                 | STL, 3MF, OBJ, PLY, glTF (`.glb`) import/export                              | Stable       |
 | **I/O**                 | IGES import/export                                                           | Experimental |
 | **Sketching**           | 2D constraint solver (DogLeg)                                                | Stable       |
-| **Feature Recognition** | Holes, pockets, chamfers, fillets                                            | Beta         |
-| **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Beta         |
-| **Evolution**           | Face provenance through booleans, blends, and patterns                       | Beta         |
-| **Defeaturing**         | Remove planar faces                                                          | Beta         |
+| **Feature Recognition** | Holes, pockets, chamfers, fillets                                            | Stable       |
+| **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Stable       |
+| **Evolution**           | Face provenance (booleans, blends, patterns, draft, defeature, split, shell) | Stable       |
+| **Defeaturing**         | Remove planar faces                                                          | Stable       |
 | **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`remus-render`)        | Experimental |
 
 ## Known Limitations
@@ -165,11 +171,11 @@ A few areas are still maturing. Worth knowing before you build on them:
 
 - **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid. Exact tangency and sliver crossings are the two contact configurations that still fall over to that path rather than being answered analytically.
 - **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities. Radii the rolling ball cannot fit are refused as typed errors naming the edge and the limit, not delivered as a partial result.
-- **Torus booleans.** Box-with-torus and coaxial-torus cases work and give correct volumes. General torus-to-torus and torus-with-other-surface intersections have known gaps and may fall back to meshing.
-- **Non-planar profiles.** Loft, sweep, and pipe accept profiles with non-planar surfaces, and close non-planar section boundaries with bilinear caps for four-sided rings (boundaries with more than four edges, or holes on a non-planar section, are not yet supported). Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, but a partial revolution still requires a planar boundary for its caps. The smooth, scaled/guided, and multi-section sweep variants accept non-planar profiles too; only the miter-corner variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
-- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, and patterns. Offset, shell, draft, split, defeature, and direct edits produce none, and there is no edge or vertex provenance yet.
+- **Torus booleans.** Box-with-torus, coaxial-torus, plane-through-centre, and coaxial-cylinder cases give correct volumes, and coaxial torus×cylinder / axis-centred torus×sphere sections are exact circles. Carving a closed torus face into tube bands is not implemented yet, so those configurations resolve through the bounded mesh fallback (torus×sphere fuse currently refuses on its work budget); general torus-to-torus intersections have known gaps.
+- **Non-planar profiles.** Loft, sweep, and pipe close non-planar section boundaries with bilinear (4-sided) or Coons (5-or-more-sided) caps whose boundary iso-curves are exactly the ring chords; holes on a non-planar section remain a typed refusal. Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, and a partial revolution closes non-planar polygonal boundaries with the same caps (curved-edge non-planar boundaries and holes stay typed refusals). Only the miter-corner sweep variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
+- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, patterns, draft, defeature, plane split, and shell. Offset and direct edits still journal as explicit barriers, and edge/vertex provenance beyond the boolean path is roadmap work.
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
-- **Beta subsystems.** Feature recognition, assemblies, evolution tracking, and defeaturing work but are still maturing. Defeaturing handles planar faces only.
+- **Declared domains.** Feature recognition claims only its declared feature set (holes, rectangular pockets, chamfers, curved fillet bands) — outside it, absence of a claim is the contract. Defeaturing removes features whose wound lies on planar kept faces (the removed feature itself may be curved); draft targets planar faces. Each refuses outside its domain by name.
 
 The versioned WASM fillet/chamfer provenance payload and its strict decoder are
 documented in [WASM face evolution](docs/wasm-face-evolution.md).
@@ -301,8 +307,8 @@ remus-operations = { git = "https://github.com/esaueng/remus" }
 remus-io = { git = "https://github.com/esaueng/remus" }        # optional
 ```
 
-Pin a revision (`rev = "..."`) for anything you intend to reproduce: the crate
-names change when the rename lands.
+Pin a revision (`rev = "..."`) for anything you intend to reproduce: nothing
+is versioned or published yet, so `main` moves.
 
 ### Building from source
 
@@ -382,8 +388,9 @@ native builds already do per face.
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md). Contributions are inbound under
 Apache-2.0 and require a Developer Certificate of Origin sign-off. Commits are
-conventional commits, enforced by commitlint; `cargo fmt`, clippy, the test
-suite, and the boundary checks all gate the pre-push hook.
+conventional commits, enforced by commitlint; the pre-commit hook runs
+`cargo fmt` and clippy, and CI gates the full test suite, the layer-boundary
+check, and the license-lineage check on every push.
 
 New regressions should land as [reproduction bundles](crates/wasm/src/repro.rs)
 where the failure is expressible through the batch API — every discovered
@@ -393,26 +400,25 @@ Security reports: see [SECURITY.md](./SECURITY.md).
 
 ## Provenance
 
-Remus is the permanent Apache-2.0 continuation of a codebase whose upstream
-relicensed to AGPL at v3. That boundary is enforced, not merely stated:
+Remus continues a codebase whose upstream relicensed to AGPL at v3. This
+repository is the permanent Apache-2.0 line of that work, maintained by
+Esau Engineering. The last permissive upstream release is `v2.129.15`;
+nothing from v3 or later is merged, and behavior from those releases enters
+only under an explicit Apache-2.0 grant or as an independent implementation
+proven by a regression test.
 
-- The final permissive upstream release is `v2.129.15`; nothing from v3 or
-  later is merged. Behavior from those releases enters only under an explicit
-  Apache-2.0 grant, or is specified and independently implemented with a
-  regression proving the contract.
-- `scripts/check-apache-lineage.sh` runs in CI and before every push.
-- Every replayed contribution is recorded, PR by PR, in
-  [`apache-replay-provenance.json`](docs/production-readiness/apache-replay-provenance.json)
-  with a validator that checks the ledger offline. The narrative record is in
-  [Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
+That boundary is enforced in CI and every replayed contribution is recorded
+in an auditable ledger — see
+[Apache contribution provenance](docs/production-readiness/apache-replay-provenance.md).
 
 The project's use of AI tooling is disclosed in
 [AI-DISCLOSURE.md](./AI-DISCLOSURE.md).
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](./LICENSE-APACHE).
-
-This Apache line is permanently based on the last permissive upstream series.
-It does not merge code from upstream releases published under the AGPL.
+Remus is licensed under the [Apache License, Version 2.0](./LICENSE-APACHE),
+permanently — see [Provenance](#provenance) for how the AGPL boundary with
+the historical upstream is enforced. Attribution is in [NOTICE](./NOTICE),
+and contributions come in under the same license
+(see [CONTRIBUTING.md](./CONTRIBUTING.md)).
 </content>

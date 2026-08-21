@@ -108,6 +108,54 @@ impl BrepKernel {
         Ok(bytes)
     }
 
+    /// Export several solids into one 3MF package.
+    ///
+    /// The writer already supports multiple objects per package; this is the
+    /// multi-solid twin of [`export3mf`](Self::export_3mf), mirroring
+    /// [`exportStepMulti`](Self::export_step_multi) so a multi-body model
+    /// exports as one file instead of forcing the caller to fuse first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the
+    /// deflection is non-positive, or export fails.
+    #[wasm_bindgen(js_name = "export3mfMulti")]
+    pub fn export_3mf_multi(&self, solids: &[u32], deflection: f64) -> Result<Vec<u8>, JsError> {
+        validate_positive(deflection, "deflection")?;
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let bytes = remus_io::threemf::write_threemf(&self.topo, &solid_ids, deflection)?;
+        Ok(bytes)
+    }
+
+    /// Export several solids into one binary STL file.
+    ///
+    /// The multi-solid twin of [`exportStl`](Self::export_stl): meshes are
+    /// merged into a single facet stream, which is what slicers expect from
+    /// a one-part-per-file workflow with multiple bodies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the
+    /// deflection is non-positive, or export fails.
+    #[wasm_bindgen(js_name = "exportStlMulti")]
+    pub fn export_stl_multi(&self, solids: &[u32], deflection: f64) -> Result<Vec<u8>, JsError> {
+        validate_positive(deflection, "deflection")?;
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let bytes = remus_io::stl::writer::write_stl(
+            &self.topo,
+            &solid_ids,
+            deflection,
+            remus_io::stl::writer::StlFormat::Binary,
+        )?;
+        Ok(bytes)
+    }
+
     /// Export a solid to OBJ format (UTF-8 string as bytes).
     ///
     /// # Errors
@@ -131,6 +179,60 @@ impl BrepKernel {
         validate_positive(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
         let glb = remus_io::gltf::write_glb(&self.topo, &[solid_id], deflection)?;
+        Ok(glb)
+    }
+
+    /// Export several solids into one OBJ file.
+    ///
+    /// The multi-solid twin of [`exportObj`](Self::export_obj), completing
+    /// the set [`export3mfMulti`](Self::export_3mf_multi) started: every
+    /// solid's facets merge into one vertex stream, which is what OBJ
+    /// consumers expect from a single-file export.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the
+    /// deflection is non-positive, or export fails.
+    #[wasm_bindgen(js_name = "exportObjMulti")]
+    pub fn export_obj_multi(&self, solids: &[u32], deflection: f64) -> Result<Vec<u8>, JsError> {
+        validate_positive(deflection, "deflection")?;
+        if solids.is_empty() {
+            return Err(WasmError::InvalidInput {
+                reason: "exportObjMulti requires at least one solid".to_string(),
+            }
+            .into());
+        }
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let obj_str = remus_io::obj::write_obj(&self.topo, &solid_ids, deflection)?;
+        Ok(obj_str.into_bytes())
+    }
+
+    /// Export several solids into one glTF binary (.glb) file.
+    ///
+    /// The multi-solid twin of [`exportGlb`](Self::export_glb): every
+    /// solid's facets merge into one mesh in a single GLB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `solids` is empty, a handle is invalid, the
+    /// deflection is non-positive, or export fails.
+    #[wasm_bindgen(js_name = "exportGlbMulti")]
+    pub fn export_glb_multi(&self, solids: &[u32], deflection: f64) -> Result<Vec<u8>, JsError> {
+        validate_positive(deflection, "deflection")?;
+        if solids.is_empty() {
+            return Err(WasmError::InvalidInput {
+                reason: "exportGlbMulti requires at least one solid".to_string(),
+            }
+            .into());
+        }
+        let solid_ids = solids
+            .iter()
+            .map(|&handle| self.resolve_solid(handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let glb = remus_io::gltf::write_glb(&self.topo, &solid_ids, deflection)?;
         Ok(glb)
     }
 
@@ -587,6 +689,64 @@ mod tests {
         let step = String::from_utf8(bytes).unwrap();
         assert!(step.contains("PRODUCT('Custom part', 'Custom part'"));
         assert!(step.contains("FILE_NAME('part.step', '2026-08-03T00:00:00'"));
+    }
+
+    #[test]
+    fn multi_body_3mf_packages_every_solid() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let bytes = kernel.export_3mf_multi(&[a, b], 0.1).unwrap();
+        // A 3MF is a zip package (PK magic), and the two-body export must be
+        // strictly larger than either single-body export.
+        assert_eq!(&bytes[0..2], b"PK");
+        let single = kernel.export_3mf(a, 0.1).unwrap();
+        assert!(bytes.len() > single.len());
+    }
+
+    #[test]
+    fn multi_body_binary_stl_merges_facets() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let merged = kernel.export_stl_multi(&[a, b], 0.1).unwrap();
+        let single = kernel.export_stl(a, 0.1).unwrap();
+        // Binary STL: bytes 80..84 hold the little-endian facet count. Two
+        // boxes carry exactly twice one box's facets.
+        let count = |bytes: &[u8]| u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]);
+        assert_eq!(count(&merged), 2 * count(&single));
+    }
+
+    #[test]
+    fn multi_body_obj_merges_vertex_streams() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let merged = String::from_utf8(kernel.export_obj_multi(&[a, b], 0.1).unwrap()).unwrap();
+        let single = String::from_utf8(kernel.export_obj(a, 0.1).unwrap()).unwrap();
+        // Two boxes carry exactly twice one box's vertex lines.
+        let vertex_lines = |obj: &str| obj.lines().filter(|line| line.starts_with("v ")).count();
+        assert_eq!(vertex_lines(&merged), 2 * vertex_lines(&single));
+    }
+
+    #[test]
+    fn multi_body_glb_is_one_valid_container() {
+        let mut kernel = BrepKernel::new();
+        let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let merged = kernel.export_glb_multi(&[a, b], 0.1).unwrap();
+        // GLB header: magic "glTF", then version 2, then the total length.
+        assert_eq!(&merged[0..4], b"glTF");
+        assert_eq!(
+            u32::from_le_bytes([merged[4], merged[5], merged[6], merged[7]]),
+            2
+        );
+        assert_eq!(
+            u32::from_le_bytes([merged[8], merged[9], merged[10], merged[11]]) as usize,
+            merged.len()
+        );
+        let single = kernel.export_glb(a, 0.1).unwrap();
+        assert!(merged.len() > single.len());
     }
 
     #[test]

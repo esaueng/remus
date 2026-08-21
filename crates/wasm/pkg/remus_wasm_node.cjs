@@ -1,4 +1,4 @@
-/* @ts-self-types="./brepkit_wasm.d.ts" */
+/* @ts-self-types="./remus_wasm.d.ts" */
 
 /**
  * The B-Rep modeling kernel.
@@ -48,6 +48,38 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Returns a copy of the reference with a type discriminator
+     * (`"surfaceType"` or `"curveType"`) appended.
+     * @param {string} reference
+     * @param {string} discriminator
+     * @param {string} tag
+     * @returns {string}
+     */
+    addRefDiscriminator(reference, discriminator, tag) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(discriminator, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(tag, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_addRefDiscriminator(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
     }
     /**
      * Get faces adjacent to a given face within a solid.
@@ -233,6 +265,36 @@ class BrepKernel {
         return ret >>> 0;
     }
     /**
+     * Perform a boolean with disclosed result quality.
+     *
+     * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
+     * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
+     * bindings silently accept the mesh (co-refinement) fallback, which
+     * discards analytic surface types; this binding reports whether that
+     * happened (`quality: "approximate"` plus the fallback deflection), and
+     * `exact_only = true` turns the fallback into a typed refusal so an
+     * exact-or-nothing caller never receives a faceted body.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the op string is unknown, or
+     * (under `exact_only`) the exact pipeline cannot produce the result.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [exact_only]
+     * @returns {BooleanQualityResult}
+     */
+    booleanWithQuality(op, a, b, exact_only) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compute the axis-aligned bounding box of a solid.
      *
      * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
@@ -251,6 +313,36 @@ class BrepKernel {
         var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v1;
+    }
+    /**
+     * Captures an entity's geometric signature as a portable reference
+     * string — the inference-tier recovery anchor. `quantum` is the
+     * tolerance-derived quantization (pass the model's linear
+     * tolerance).
+     * @param {string} kind
+     * @param {number} handle
+     * @param {number} quantum
+     * @returns {string}
+     */
+    captureSignatureRef(kind, handle, quantum) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_captureSignatureRef(this.__wbg_ptr, ptr0, len0, handle, quantum);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Compute the center of mass of a solid (uniform density).
@@ -339,6 +431,64 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Distance-angle chamfer with versioned face-evolution tracking data.
+     *
+     * Runs the same engine routing as
+     * [`chamferDistanceAngle`](Self::chamfer_distance_angle) — the planar
+     * bevel for planar-line selections, the walking builder otherwise — so
+     * the returned solid is the same exact B-Rep the non-evolution entry
+     * point produces. Both engines report construction history; when one
+     * cannot, the payload carries explicit unresolved source/result sets
+     * instead of inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * the angle is outside `(0, π/2)`, or the chamfer fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {number} angle
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    chamferDistanceAngleWithEvolution(solid, edge_handles, distance, angle) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_chamferDistanceAngleWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance, angle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * V2 chamfer journaled as one evolution entry (kind `chamfer`).
+     * @param {number} solid
+     * @param {Uint32Array} edges
+     * @param {number} d1
+     * @param {number} d2
+     * @returns {string}
+     */
+    chamferJournaled(solid, edges, d1, d2) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_chamferJournaled(this.__wbg_ptr, solid, ptr0, len0, d1, d2);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Chamfer edges with two distances using the v2 blend engine.
@@ -828,6 +978,54 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Cut solid `b` from `a` with journaled construction history.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    cutJournaled(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_cutJournaled(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Cut with full entity history; see `fuseWithEntityEvolution`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    cutWithEntityEvolution(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_cutWithEntityEvolution(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Cut (subtract) solid `b` from solid `a` and return evolution tracking data.
      *
      * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
@@ -1144,9 +1342,11 @@ class BrepKernel {
         return v1;
     }
     /**
-     * Evaluate a surface normal at (u, v) on a face.
+     * Evaluate the outward surface normal at (u, v) on a face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * surface normal points inward on those.
      * @param {number} face
      * @param {number} u
      * @param {number} v
@@ -1248,6 +1448,33 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Export several solids into one 3MF package.
+     *
+     * The writer already supports multiple objects per package; this is the
+     * multi-solid twin of [`export3mf`](Self::export_3mf), mirroring
+     * [`exportStepMulti`](Self::export_step_multi) so a multi-body model
+     * exports as one file instead of forcing the caller to fuse first.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    export3mfMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_export3mfMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Export a solid to glTF binary (.glb) format.
      *
      * # Errors
@@ -1265,6 +1492,31 @@ class BrepKernel {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Export several solids into one glTF binary (.glb) file.
+     *
+     * The multi-solid twin of [`exportGlb`](Self::export_glb): every
+     * solid's facets merge into one mesh in a single GLB.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    exportGlbMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportGlbMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * Export a solid to IGES format.
@@ -1304,6 +1556,33 @@ class BrepKernel {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Export several solids into one OBJ file.
+     *
+     * The multi-solid twin of [`exportObj`](Self::export_obj), completing
+     * the set [`export3mfMulti`](Self::export_3mf_multi) started: every
+     * solid's facets merge into one vertex stream, which is what OBJ
+     * consumers expect from a single-file export.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    exportObjMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportObjMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * Export a solid to PLY format (binary little-endian).
@@ -1467,6 +1746,32 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Export several solids into one binary STL file.
+     *
+     * The multi-solid twin of [`exportStl`](Self::export_stl): meshes are
+     * merged into a single facet stream, which is what slicers expect from
+     * a one-part-per-file workflow with multiple bodies.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     * @param {Uint32Array} solids
+     * @param {number} deflection
+     * @returns {Uint8Array}
+     */
+    exportStlMulti(solids, deflection) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_exportStlMulti(this.__wbg_ptr, ptr0, len0, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Extrude a planar face along a direction vector to create a solid.
      *
      * Returns a solid handle (`u32`).
@@ -1600,6 +1905,35 @@ class BrepKernel {
         var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v2;
+    }
+    /**
+     * V2 fillet journaled as one evolution entry (kind `fillet`).
+     *
+     * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
+     * @param {number} solid
+     * @param {Uint32Array} edges
+     * @param {number} radius
+     * @returns {string}
+     */
+    filletJournaled(solid, edges, radius) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_filletJournaled(this.__wbg_ptr, solid, ptr0, len0, radius);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Fillet edges using the v2 walking-based blend engine.
@@ -1798,6 +2132,62 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Fuse two solids with journaled construction history.
+     *
+     * Returns JSON `{"solid": handle, "op": journalOp}`; feed `op` to
+     * `resolveOperationOutput` / `propagateAttributesForOp`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    fuseJournaled(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_fuseJournaled(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Fuse with full construction-derived vertex/edge/face history.
+     *
+     * Returns JSON `{"solid", "evolution": {"faces", "edges",
+     * "vertices"}}`; edge events are `preserved`/`modified` (with
+     * `from`), `generated` (with the generating `faceA`/`faceB` when
+     * they map), or the honest `unresolved`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    fuseWithEntityEvolution(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_fuseWithEntityEvolution(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Fuse (union) two solids and return evolution tracking data.
      *
      * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
@@ -1877,7 +2267,7 @@ class BrepKernel {
      * Add a constraint from a JSON object string and return a constraint
      * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
      *
-     * All 24 constraint types are supported. Entity fields are `u32`
+     * All 26 constraint types are supported. Entity fields are `u32`
      * handles from the `gcsAdd*` calls. Types and fields:
      * `coincident{a,b}`, `distance{a,b,value}`,
      * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -2176,6 +2566,36 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * The parameter span the edge ACTUALLY covers on its stored curve.
+     *
+     * Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
+     * one full period anchored at its start vertex, and an open edge via the
+     * endpoint-trimmed convention. This differs from
+     * [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
+     * reports the raw curve domain (`[0, TAU]` for every circle): a circle
+     * edge's endpoints subtend TWO arcs, and only this span says which one
+     * the edge is — reconstructing it from endpoints alone flips
+     * intentional major arcs. Evaluate points on the span with
+     * [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
+     * prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
+     * closed-curve wrapping.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     * @param {number} edge
+     * @returns {Float64Array}
+     */
+    getEdgeParamSpan(edge) {
+        const ret = wasm.brepkernel_getEdgeParamSpan(this.__wbg_ptr, edge);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * Get the vertex *handles* (not positions) of an edge.
      *
      * Returns `[start_vertex_handle, end_vertex_handle]`.
@@ -2250,9 +2670,28 @@ class BrepKernel {
         return v1;
     }
     /**
-     * Get the face normal of a planar face.
+     * A face's semantic name, or null.
+     * @param {number} face
+     * @returns {string | undefined}
+     */
+    getFaceName(face) {
+        const ret = wasm.brepkernel_getFaceName(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+    /**
+     * Get the outward face normal of a planar face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * plane normal points inward on those.
      *
      * # Errors
      *
@@ -2408,7 +2847,7 @@ class BrepKernel {
     /**
      * Get the orientation of a shape.
      *
-     * Returns `"forward"` for all faces (brepkit faces don't have an
+     * Returns `"forward"` for all faces (remus faces don't have an
      * independent orientation flag; the normal direction is canonical).
      * @param {number} _id
      * @returns {string}
@@ -3022,6 +3461,30 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Intersect two solids with journaled construction history.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    intersectJournaled(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_intersectJournaled(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Compute the boolean intersection of two 2D polygons.
      *
      * Both polygons are flat arrays `[x,y, x,y, ...]`.
@@ -3045,6 +3508,30 @@ class BrepKernel {
         var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v3;
+    }
+    /**
+     * Intersect with full entity history; see `fuseWithEntityEvolution`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    intersectWithEntityEvolution(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_intersectWithEntityEvolution(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Intersect two solids and return evolution tracking data.
@@ -3116,6 +3603,41 @@ class BrepKernel {
         return ret[0] !== 0;
     }
     /**
+     * Journals an explicit barrier over every entity of `solid` for an
+     * operation without evolution records. Returns the journal op id.
+     * @param {string} kind
+     * @param {number} solid
+     * @returns {number}
+     */
+    journalBarrier(kind, solid) {
+        const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_journalBarrier(this.__wbg_ptr, ptr0, len0, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * A read-only summary of the evolution journal: JSON array of
+     * `{"op", "kind", "type", "detail"}` where `type` is `evolution`
+     * (detail: origin, event count), `barrier` (detail: affected
+     * count), or `globalBarrier`.
+     * @returns {string}
+     */
+    journalSummary() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.brepkernel_journalSummary(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Lift a 2D curve onto a 3D plane, producing an edge.
      *
      * `curve_type`: 0 = Line, 1 = Circle, 2 = Ellipse, 3 = NURBS.
@@ -3170,6 +3692,35 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Linear pattern journaled as one evolution entry (kind
+     * `linear_pattern`). Returns JSON `{"compound", "op"}`.
+     * @param {number} solid
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} spacing
+     * @param {number} count
+     * @returns {string}
+     */
+    linearPatternJournaled(solid, dx, dy, dz, spacing, count) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_linearPatternJournaled(this.__wbg_ptr, solid, dx, dy, dz, spacing, count);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Loft two or more profile faces into a solid.
@@ -3681,6 +4232,34 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Serializes "the `index`-th `kind` output of journal operation
+     * `op`" as a portable reference string (versioned JSON, opaque).
+     * @param {number} op
+     * @param {string} kind
+     * @param {number} index
+     * @returns {string}
+     */
+    makeOperationOutputRef(op, kind, index) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_makeOperationOutputRef(this.__wbg_ptr, op, ptr0, len0, index);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
     }
     /**
      * Create a strictly planar face from a wire.
@@ -4216,7 +4795,7 @@ class BrepKernel {
     /**
      * Offset all faces of a solid outward or inward (V2 pipeline).
      *
-     * Uses the new `brepkit-offset` engine with intersection-based joints.
+     * Uses the new `remus-offset` engine with intersection-based joints.
      *
      * # Errors
      *
@@ -4552,6 +5131,33 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Propagates face attributes across one journaled operation.
+     *
+     * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
+     * "refusedInferred"}`.
+     * @param {number} op
+     * @param {boolean} allow_inferred
+     * @returns {string}
+     */
+    propagateAttributesForOp(op, allow_inferred) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_propagateAttributesForOp(this.__wbg_ptr, op, allow_inferred);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Move a planar face of a solid along its outward normal.
      *
      * A positive `distance` adds material, a negative one removes it.
@@ -4719,6 +5325,91 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Resolves "the `index`-th `kind` output of journal operation `op`"
+     * against the current model. Returns the resolution JSON (`status`
+     * plus status-specific fields); severed references are data, not
+     * errors.
+     * @param {number} op
+     * @param {string} kind
+     * @param {number} index
+     * @returns {string}
+     */
+    resolveOperationOutput(op, kind, index) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_resolveOperationOutput(this.__wbg_ptr, op, ptr0, len0, index);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Resolves a serialized reference against the current model.
+     * Returns the resolution JSON; severed references are data, not
+     * errors.
+     * @param {string} reference
+     * @returns {string}
+     */
+    resolveRef(reference) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_resolveRef(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Resolves a serialized reference and reads the bound faces'
+     * attributes: JSON array of `{"kind", "handle", "name"}`. Errors on
+     * non-binding resolutions (`ref_*` diagnostics) — an attribute is
+     * never read through a dangling, severed, or ambiguous reference.
+     * @param {string} reference
+     * @returns {string}
+     */
+    resolveRefFaceAttributes(reference) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_resolveRefFaceAttributes(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Restore the kernel to a previously saved checkpoint.
      *
      * All state created after the checkpoint is discarded. The checkpoint
@@ -4818,6 +5509,32 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Span-true polyline of one edge at the given chordal deflection.
+     *
+     * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
+     * own parameter span — the same sampler the solid wireframe uses.
+     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
+     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
+     * full-period trace of the parent curve.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid, `deflection` is not
+     * positive, or the sampling budget is exceeded at this deflection.
+     * @param {number} edge
+     * @param {number} deflection
+     * @returns {Float64Array}
+     */
+    sampleEdge(edge, deflection) {
+        const ret = wasm.brepkernel_sampleEdge(this.__wbg_ptr, edge, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * Section a solid with a plane, returning cross-section face handles.
      *
      * Returns an array of face handles (`u32[]`).
@@ -4856,7 +5573,7 @@ class BrepKernel {
      *
      * This writer emits a single-root version 2 document. Returns a
      * `Uint8Array` consumable by
-     * `brepkit_io::arena_io::deserialize_solid`.
+     * `remus_io::arena_io::deserialize_solid`.
      *
      * # Errors
      *
@@ -4896,6 +5613,20 @@ class BrepKernel {
         var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
+    }
+    /**
+     * Sets (or clears, when `name` is null/empty) a face's semantic
+     * name, preserving its other attributes.
+     * @param {number} face
+     * @param {string | null} [name]
+     */
+    setFaceName(face, name) {
+        var ptr0 = isLikeNone(name) ? 0 : passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_setFaceName(this.__wbg_ptr, face, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Sew loose faces into a connected solid.
@@ -5458,7 +6189,7 @@ class BrepKernel {
      * Export a solid as a JSON-encoded BREP representation.
      *
      * Returns a JSON string with vertices, edges (with curve parameters),
-     * and faces (with surface parameters). This is a brepkit-specific format
+     * and faces (with surface parameters). This is a remus-specific format
      * that preserves all analytic geometry types.
      * @param {number} solid
      * @returns {any}
@@ -6166,7 +6897,7 @@ function lastPanicMessage() {
 exports.lastPanicMessage = lastPanicMessage;
 
 /**
- * Route brepkit's Rust `log::*` calls to JavaScript `console.{log, warn,
+ * Route remus's Rust `log::*` calls to JavaScript `console.{log, warn,
  * error}`. Without this every `log::warn!` in the engine is silently
  * dropped under wasm-pack.
  *
@@ -6224,10 +6955,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_error_f9bdac4c0b4e0785: function(arg0, arg1) {
+        __wbg_error_ebbe9b6d5bd7b88e: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_log_ec0bb1af9c6701a8: function(arg0, arg1) {
+        __wbg_log_fc92db315690f47f: function(arg0, arg1) {
             console.log(getStringFromWasm0(arg0, arg1));
         },
         __wbg_new_32b398fb48b6d94a: function() {
@@ -6244,7 +6975,7 @@ function __wbg_get_imports() {
         __wbg_set_8a16b38e4805b298: function(arg0, arg1, arg2) {
             arg0[arg1 >>> 0] = arg2;
         },
-        __wbg_warn_f1728d2785e70aeb: function(arg0, arg1) {
+        __wbg_warn_4d0da266285725b4: function(arg0, arg1) {
             console.warn(getStringFromWasm0(arg0, arg1));
         },
         __wbindgen_cast_0000000000000001: function(arg0) {
@@ -6269,7 +7000,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./brepkit_wasm_bg.js": import0,
+        "./remus_wasm_bg.js": import0,
     };
 }
 
@@ -6537,7 +7268,7 @@ if (!('encodeInto' in cachedTextEncoder)) {
 
 let WASM_VECTOR_LEN = 0;
 
-const wasmPath = `${__dirname}/brepkit_wasm_bg.wasm`;
+const wasmPath = `${__dirname}/remus_wasm_bg.wasm`;
 const wasmBytes = require('fs').readFileSync(wasmPath);
 const wasmModule = new WebAssembly.Module(wasmBytes);
 let wasmInstance = new WebAssembly.Instance(wasmModule, __wbg_get_imports());

@@ -1,14 +1,13 @@
 name: Refresh Apache Staging Package
 
-# Manual only, deliberately. The push trigger named `apache-main`, a branch that
-# no longer exists, so this workflow could never fire. Simply repointing it at
-# `main` would do more than restore it: it would start regenerating
-# `crates/wasm/pkg` on every push, and after the remus rename that rewrites the
-# snapshot under the new package name — breaking the downstream that installs it
-# by git path and imports the old one. `fork-maintenance.md` keeps that snapshot
-# frozen until the consumer migrates, so the refresh stays a deliberate act.
-# Re-add the push trigger in the same change that repoints the consumer.
+# Keeps the committed package at `crates/wasm/pkg` in step with the source on
+# `main`. That directory is a real distribution channel: it is installed
+# directly by git path, so whatever is committed there is what a consumer gets.
+# A stale snapshot silently serves old kernel behavior while the Rust source
+# looks current, which is why this runs on every push rather than on request.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       sync_package:
@@ -42,9 +41,11 @@ jobs:
     # is no way to refresh the package — or to prove a change here works —
     # until some unrelated PR happens to land.
     if: >-
-      ${{ github.event_name == 'workflow_dispatch'
-          && inputs.sync_package
-          && github.ref == 'refs/heads/main' }}
+      ${{ (github.event_name == 'push'
+           && !contains(github.event.head_commit.message, '[skip ci]'))
+          || (github.event_name == 'workflow_dispatch'
+              && inputs.sync_package
+              && github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
     steps:

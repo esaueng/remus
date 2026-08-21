@@ -131,6 +131,25 @@ pub enum Constraint {
     /// direction; the constraint reports zero residual and zero gradient rather
     /// than dividing by zero, matching [`Constraint::PointLineDistance`].
     Symmetric(PointId, PointId, LineId),
+
+    /// A line must be tangent to a circle. Produces 1 residual:
+    /// `|cross(line_dir, center - p1)| / |line_dir| - radius`.
+    ///
+    /// Point-free, unlike the arc tangencies: the unsigned point-line
+    /// distance keeps the circle on whichever side of the line it starts,
+    /// so no shared contact-point entity is needed.
+    ///
+    /// A degenerate line (endpoints coincident) has no direction; the
+    /// residual is then `-radius` and the gradient is dropped, matching
+    /// [`Constraint::PointLineDistance`].
+    TangentLineCircle(LineId, CircleId),
+
+    /// Two points must be symmetric about a center point. Produces 2
+    /// residuals: `[(x1 + x2)/2 - cx, (y1 + y2)/2 - cy]`.
+    ///
+    /// Both residuals are linear in the parameters, so the Jacobian is
+    /// exact and constant, like [`Constraint::Midpoint`].
+    SymmetricAboutPoint(PointId, PointId, PointId),
 }
 
 /// Entity data snapshot used during residual/Jacobian evaluation.
@@ -216,7 +235,8 @@ pub const fn residual_count(c: &Constraint) -> usize {
         | Constraint::ConcentricArcArc(_, _)
         | Constraint::ConcentricArcCircle(_, _)
         | Constraint::Midpoint(_, _)
-        | Constraint::Symmetric(_, _, _) => 2,
+        | Constraint::Symmetric(_, _, _)
+        | Constraint::SymmetricAboutPoint(_, _, _) => 2,
         Constraint::Distance(_, _, _)
         | Constraint::PointLineDistance(_, _, _)
         | Constraint::FixX(_, _)
@@ -235,7 +255,8 @@ pub const fn residual_count(c: &Constraint) -> usize {
         | Constraint::ArcLength(_, _)
         | Constraint::CircleRadius(_, _)
         | Constraint::EqualRadiusCircleCircle(_, _)
-        | Constraint::EqualLength(_, _) => 1,
+        | Constraint::EqualLength(_, _)
+        | Constraint::TangentLineCircle(_, _) => 1,
     }
 }
 
@@ -489,6 +510,30 @@ pub fn eval_residuals(c: &Constraint, snap: &EntitySnapshot, out: &mut Vec<f64>)
             let ex = x2 - x1;
             let ey = y2 - y1;
             out.push((dx * ex + dy * ey) * inv_l);
+        }
+        Constraint::TangentLineCircle(line, circ) => {
+            let (lp1, lp2) = snap.line(*line);
+            let (x1, y1) = snap.point(lp1);
+            let (x2, y2) = snap.point(lp2);
+            let (center_id, radius) = snap.circle(*circ);
+            let (cx, cy) = snap.point(center_id);
+            let ldx = x2 - x1;
+            let ldy = y2 - y1;
+            let len = ldx.hypot(ldy);
+            if len < 1e-300 {
+                out.push(-radius);
+                return;
+            }
+            // Unsigned point-line distance of the center minus the radius.
+            let cross = ldx * (cy - y1) - ldy * (cx - x1);
+            out.push(cross.abs() / len - radius);
+        }
+        Constraint::SymmetricAboutPoint(p1, p2, center) => {
+            let (x1, y1) = snap.point(*p1);
+            let (x2, y2) = snap.point(*p2);
+            let (cx, cy) = snap.point(*center);
+            out.push(0.5 * (x1 + x2) - cx);
+            out.push(0.5 * (y1 + y2) - cy);
         }
     }
 }
@@ -1145,6 +1190,75 @@ pub fn eval_jacobian(
             jw.add(row1, ParamRef::PointY(ap1), (-ey - r1 * dl_day) * inv_l);
             jw.add(row1, ParamRef::PointX(ap2), (ex - r1 * dl_dbx) * inv_l);
             jw.add(row1, ParamRef::PointY(ap2), (ey - r1 * dl_dby) * inv_l);
+        }
+        Constraint::TangentLineCircle(line, circ) => {
+            // r = |cross| / L - radius, where
+            // cross = ldx*(cy-y1) - ldy*(cx-x1) and L = |line_dir|.
+            // The partials of cross/L are PointLineDistance's with the
+            // circle center as the point, multiplied by sign(cross); the
+            // radius contributes a constant -1.
+            let (lp1, lp2) = snap.line(*line);
+            let (x1, y1) = snap.point(lp1);
+            let (x2, y2) = snap.point(lp2);
+            let (center_id, _radius) = snap.circle(*circ);
+            let (cx, cy) = snap.point(center_id);
+            let ldx = x2 - x1;
+            let ldy = y2 - y1;
+            let len = ldx.hypot(ldy);
+            jw.add(row_offset, ParamRef::CircleRadius(*circ), -1.0);
+            if len < 1e-300 {
+                // Degenerate line: no direction, gradient dropped.
+                return;
+            }
+            let inv_l = 1.0 / len;
+            let cross = ldx * (cy - y1) - ldy * (cx - x1);
+            let sign = if cross < 0.0 { -1.0 } else { 1.0 };
+            let inv_l_sq = inv_l * inv_l;
+
+            // Center partials: ∂(cross/L)/∂cx = -ldy/L, ∂/∂cy = ldx/L.
+            jw.add(row_offset, ParamRef::PointX(center_id), sign * -ldy * inv_l);
+            jw.add(row_offset, ParamRef::PointY(center_id), sign * ldx * inv_l);
+
+            // Endpoint partials via the quotient rule, as in
+            // PointLineDistance with (px, py) = (cx, cy).
+            let dc_dx1 = -(cy - y2);
+            let dl_dx1 = -ldx * inv_l;
+            jw.add(
+                row_offset,
+                ParamRef::PointX(lp1),
+                sign * (len * dc_dx1 - cross * dl_dx1) * inv_l_sq,
+            );
+            let dc_dy1 = -ldx + (cx - x1);
+            let dl_dy1 = -ldy * inv_l;
+            jw.add(
+                row_offset,
+                ParamRef::PointY(lp1),
+                sign * (len * dc_dy1 - cross * dl_dy1) * inv_l_sq,
+            );
+            let dc_dx2 = cy - y1;
+            let dl_dx2 = ldx * inv_l;
+            jw.add(
+                row_offset,
+                ParamRef::PointX(lp2),
+                sign * (len * dc_dx2 - cross * dl_dx2) * inv_l_sq,
+            );
+            let dc_dy2 = -(cx - x1);
+            let dl_dy2 = ldy * inv_l;
+            jw.add(
+                row_offset,
+                ParamRef::PointY(lp2),
+                sign * (len * dc_dy2 - cross * dl_dy2) * inv_l_sq,
+            );
+        }
+        Constraint::SymmetricAboutPoint(p1, p2, center) => {
+            // Both residuals are linear: the Jacobian is exact and constant.
+            jw.add(row_offset, ParamRef::PointX(*p1), 0.5);
+            jw.add(row_offset, ParamRef::PointX(*p2), 0.5);
+            jw.add(row_offset, ParamRef::PointX(*center), -1.0);
+            let row1 = row_offset + 1;
+            jw.add(row1, ParamRef::PointY(*p1), 0.5);
+            jw.add(row1, ParamRef::PointY(*p2), 0.5);
+            jw.add(row1, ParamRef::PointY(*center), -1.0);
         }
     }
 }
