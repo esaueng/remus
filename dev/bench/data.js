@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787331640456,
+  "lastUpdate": 1787348885020,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1079,6 +1079,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38541889,
             "range": "± 115773",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c004a0dc8a6c7a269f24220615b50b1ea53555d1",
+          "message": "ci(publish): fail closed on missing publish credentials (#48)\n\nThe App-token step was conditional on both credentials being present while\nthe write step used `steps.app-token.outputs.token || github.token`, so a\nmissing or partially configured credential silently degraded the package\nrefresh to the workflow token. The release path now fails closed, naming\nwhat is missing, and acquires the App token only when the rebuilt package\nhas a diff to publish.\n\nCredential storage follows what each value is: the App ID is an identifier\nGitHub renders in plain text, so it lives in a repository variable and is\nread via `vars`; only the private key is a secret. A value placed in the\nwrong tab reads as empty to the other context with no error of its own,\nso the preflight names the store per item and the contract test pins both,\nrejecting any future `secrets.REMUS_BOT_APP_ID` reference.\n\nThe credential path is gated on a package diff, so docs- and test-only\nmerges never reach it; the live App-token push is first exercised by the\nnext kernel change that lands on main.",
+          "timestamp": "2026-08-21T17:44:37-04:00",
+          "tree_id": "e733dcb8ea4dd3383be27723e8553cf0e77db0e8",
+          "url": "https://github.com/esaueng/remus/commit/c004a0dc8a6c7a269f24220615b50b1ea53555d1"
+        },
+        "date": 1787348884379,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1285548,
+            "range": "± 4572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1376749,
+            "range": "± 4025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13646,
+            "range": "± 80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 961134,
+            "range": "± 22673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39015799,
+            "range": "± 139030",
             "unit": "ns/iter"
           }
         ]
