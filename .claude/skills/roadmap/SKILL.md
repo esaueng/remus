@@ -1203,7 +1203,15 @@ ledger, details in the named fixtures:
   (#[ignore]). ATTEMPTED AND REVERTED (do not blind-retry): two-rim bands with doubled tube-meridian
   seam arcs assembled all-free — rim/seam vertex identity must match whatever the PARTNER face's
   splitter emits (the cylinder side anchors sections at its own seam u); solve the shared-vertex
-  contract first, not the wire shape.
+  contract first, not the wire shape. ROOT LOCATED 2026-08-21, no fix yet — probe
+  `crates/operations/examples/debug_torus_band.rs` carries the full map; summary: the two gaps are
+  ONE contract, `compute_seam_anchors`/`seam_anchor_on_circle` skip non-Cylinder/Cone AND require a
+  NON-degenerate seam Line (a torus has neither — its whole boundary is 2 zero-length seam edges at
+  one vertex), and `split_periodic_face_into_bands` rejects Torus on line 1 with a 2-boundary-circle
+  precondition no doubly-periodic face can meet. The anchor point IS the band seam segment's shared
+  vertex, which is why fixing the split alone assembled free-edged. Partner is compatible: the
+  sphere legitimately keeps each circle as a 1-edge inner wire (caps), and opening a circle adds a
+  vertex without splitting the edge, so one edge serves both.
 - Micron-scale boolean gap FILED: at model scale 1e-3 a plain box∖box through-cut carries the tool
   walls untrimmed and the volume EXCEEDS the blank (ignored ready-repro
   `crates/operations/tests/boolean_scale_gap.rs`). Fix altitude: scaled tolerance through OperationContext
