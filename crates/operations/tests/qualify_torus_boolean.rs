@@ -121,16 +121,28 @@ fn tilted_plane_through_centre_halves_torus() {
 /// analytic, watertight and exact — 4632.67 and 344.60 against closed-form
 /// 4633 and 344.6, and their sum matches vol(torus)+vol(sphere) to 0.02%.
 ///
-/// CUT is the remaining defect and the reason this stays ignored: it selects
-/// the correct outer band (its seam arcs run through the outer equator at
-/// (12,0,0)) and reports free=0 over=0, but the shell validates as inside out
-/// and encloses 833.56 where torus∖sphere is 444.97 — an excess of 388.59 that
-/// is NOT explained by an orientation flip alone, since flipping the sign
-/// still misses the closed form. Do NOT chase it by flipping the band winding:
-/// that was measured and it breaks the shared section circles instead
-/// ("2 shared edges have inconsistent face orientations"), so the +u lower-rim
-/// convention is right and the defect is elsewhere — start at the sphere
-/// annulus's reversed orientation in the Cut assembly, not at this splitter.
+/// CUT is the remaining defect and the reason this stays ignored — but the
+/// defect is ORIENTATION METADATA, not geometry. Three measurements pin that:
+///
+/// 1. The region is CORRECT by ray-cast ground truth (`classify_point`):
+///    (11.9,0,0) in the tube outside the sphere reads Inside, (8.1,0,0) in
+///    the tube inside the sphere reads Outside, the sphere core and far field
+///    read Outside. So the solid Cut bounds is exactly torus∖sphere.
+/// 2. The SAME outer band face appears in Fuse, which measures 4632.67
+///    exactly — so the band's tessellation is sound; it is only wrong here.
+/// 3. The excess is 833.56 − 444.97 = 388.59 = 2 × 194.30, the signature of
+///    one face group contributing with a flipped SIGN, not a distorted mesh.
+///
+/// So do not re-verify the band or the split: measure per-face signed
+/// contributions in the Cut shell and find which group carries the wrong
+/// sign (the reversed sphere annulus and the shell's outward decision are the
+/// two candidates). Note `solid_volume_from_faces` returns NaN on all of
+/// these — including plain torus and sphere operands — so it is not usable as
+/// the second oracle; ray-cast classification is.
+///
+/// REFUTED, do not retry: flipping the band's lower-rim winding. It breaks
+/// the shared section circles instead ("2 shared edges have inconsistent face
+/// orientations"), so the +u convention is right.
 #[test]
 #[ignore = "closed-torus band split landed; Cut still inside-out and over-encloses by 388.59"]
 fn concentric_sphere_inclusion_exclusion() {

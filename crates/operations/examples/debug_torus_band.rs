@@ -94,8 +94,38 @@ fn dump(topo: &Topology, s: SolidId, label: &str) {
             .or_default() += 1;
     }
     let vol = remus_operations::measure::solid_volume(topo, s, 0.02).unwrap_or(f64::NAN);
-    println!("--- {label}: F={} vol={vol:.2} mix={mix:?}", faces.len());
+    let volf =
+        remus_operations::measure::solid_volume_from_faces(topo, s, 0.02).unwrap_or(f64::NAN);
+    println!(
+        "--- {label}: F={} vol_tess={vol:.2} vol_faces={volf:.2} mix={mix:?}",
+        faces.len()
+    );
     edge_census(topo, s);
+    // Ground-truth region probes (ray-cast), per the debugging doctrine.
+    //   outer tube ring, outside the sphere  -> in Cut/Fuse, not Intersect
+    //   inner tube ring, inside the sphere   -> in Intersect/Fuse, not Cut
+    //   sphere core, outside the tube        -> in Fuse only
+    for (name, pt) in [
+        (
+            "tube_outer(11.9,0,0)",
+            remus_math::vec::Point3::new(11.9, 0.0, 0.0),
+        ),
+        (
+            "tube_inner(8.1,0,0)",
+            remus_math::vec::Point3::new(8.1, 0.0, 0.0),
+        ),
+        (
+            "sphere_core(3,0,0)",
+            remus_math::vec::Point3::new(3.0, 0.0, 0.0),
+        ),
+        (
+            "far_outside(30,0,0)",
+            remus_math::vec::Point3::new(30.0, 0.0, 0.0),
+        ),
+    ] {
+        let c = remus_operations::classify::classify_point(topo, s, pt, 0.02, 1e-7);
+        println!("        probe {name}: {c:?}");
+    }
     for &f in &faces {
         let fa = topo.face(f).unwrap();
         let ow = topo.wire(fa.outer_wire()).unwrap();

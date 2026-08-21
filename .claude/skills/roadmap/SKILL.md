@@ -1207,13 +1207,19 @@ ledger, details in the named fixtures:
   more than half the tube would otherwise emit one arc its endpoints cannot determine). Fuse and
   Intersect are now analytic, watertight and exact: 4632.67 and 344.60 against closed-form 4633 and
   344.6, free=0 over=0, and their sum matches vol(torus)+vol(sphere) to 0.02%.
-  CUT REMAINS OPEN: it selects the correct outer band (seam arcs run through the outer equator at
-  (12,0,0)) and reports free=0 over=0, but validates inside-out and encloses 833.56 where
-  torus∖sphere is 444.97 — an excess of 388.59 that an orientation flip alone does not explain.
-  REFUTED, do not retry: flipping the band's lower-rim winding. It breaks the shared section circles
-  instead ("2 shared edges have inconsistent face orientations"), so the +u lower-rim convention is
-  right and the defect is elsewhere — start at the sphere annulus's reversed orientation in the Cut
-  assembly, not at this splitter. Ready-repro:
+  CUT REMAINS OPEN, and it is an ORIENTATION-METADATA defect, not geometry — three measurements pin
+  that and should stop the next pass re-verifying the splitter. (a) The REGION is correct by
+  ray-cast ground truth: (11.9,0,0) in the tube outside the sphere reads Inside, (8.1,0,0) in the
+  tube inside the sphere reads Outside, sphere core and far field Outside — exactly torus∖sphere.
+  (b) The SAME outer band face appears in Fuse, which measures 4632.67 exactly, so the band's
+  tessellation is sound and only Cut is wrong. (c) The excess is 833.56 − 444.97 = 388.59 =
+  2 × 194.30, the signature of ONE face group carrying a flipped sign rather than a distorted mesh.
+  Next step: per-face signed contributions in the Cut shell; the reversed sphere annulus and the
+  shell's outward/inward decision are the two candidates. TOOLING NOTE: `solid_volume_from_faces`
+  returns NaN on all of these, including plain torus and sphere operands, so it is NOT the second
+  oracle here — ray-cast classification is. REFUTED, do not retry: flipping the band's lower-rim
+  winding. It breaks the shared section circles instead ("2 shared edges have inconsistent face
+  orientations"), so the +u lower-rim convention is right. Ready-repro:
   `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion` (#[ignore]); probe
   `crates/operations/examples/debug_torus_band.rs` dumps operands, raw GFA and ops side by side.
   Partner compatibility (why this is solvable at all): the sphere legitimately keeps each circle as
