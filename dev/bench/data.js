@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787330214070,
+  "lastUpdate": 1787331640456,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1025,6 +1025,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38360487,
             "range": "± 97672",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "46f7db68d52f674d4915901c44d03b638da88024",
+          "message": "docs(skills): correct the wasm-size baseline claim (#44)\n\npr-workflow/reference.md asserted the wasm-size baseline is `apache-main`\nrather than the PR base. ci.yml:201 checks out `ref: ${{ github.base_ref }}`\n— the actual base; only the comment table's column header is the hardcoded\nstring `main` (ci.yml:244).\n\nThe wrong claim carried a triage rule that hides problems: it told you to\nwave off a size delta on a diff that cannot reach the binary as expected\ndrift against a stale branch. With the baseline correct, such a delta is\nunexplained and is now documented as unexplained.\n\nBoth claims re-verified against main's ci.yml before merge.",
+          "timestamp": "2026-08-21T12:57:59-04:00",
+          "tree_id": "4c8538ef7d5b34c92a53aa816149ee5785b2c25a",
+          "url": "https://github.com/esaueng/remus/commit/46f7db68d52f674d4915901c44d03b638da88024"
+        },
+        "date": 1787331639880,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1285924,
+            "range": "± 25199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1375589,
+            "range": "± 34004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13093,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 967665,
+            "range": "± 4187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38541889,
+            "range": "± 115773",
             "unit": "ns/iter"
           }
         ]
