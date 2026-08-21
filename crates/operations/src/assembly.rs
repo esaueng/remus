@@ -6,7 +6,7 @@
 //!
 //! Provides a product structure for managing multi-component assemblies.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use remus_math::aabb::Aabb3;
 use remus_math::mat::Mat4;
@@ -44,8 +44,9 @@ pub struct Component {
 /// - Flattening to a list of positioned solids
 #[derive(Debug, Default, Clone)]
 pub struct Assembly {
-    /// All components, indexed by their ID.
-    components: HashMap<ComponentId, Component>,
+    /// All components, indexed by their ID. Ordered so every traversal —
+    /// flatten, BOM, serialization — is deterministic.
+    components: BTreeMap<ComponentId, Component>,
     /// Root-level component IDs (no parent).
     roots: Vec<ComponentId>,
     /// Next available component ID.
@@ -169,8 +170,11 @@ impl Assembly {
 
     /// Flattens the assembly to a list of `(solid, world_transform)` pairs.
     ///
-    /// This resolves the full hierarchy, computing the accumulated
-    /// transform for each leaf component.
+    /// This resolves the full hierarchy, computing the accumulated transform
+    /// for **every** component — a sub-assembly node's own solid is an
+    /// instance too, exactly as [`Self::bill_of_materials`] counts it. Order
+    /// is deterministic: depth-first from the roots in insertion order,
+    /// parent before children.
     #[must_use]
     pub fn flatten(&self) -> Vec<(SolidId, Mat4)> {
         let mut result = Vec::new();
@@ -191,21 +195,24 @@ impl Assembly {
         };
 
         let world = parent_transform * comp.transform;
-
-        if comp.children.is_empty() {
-            result.push((comp.solid, world));
-        } else {
-            for &child_id in &comp.children {
-                self.flatten_recursive(child_id, world, result);
-            }
+        result.push((comp.solid, world));
+        for &child_id in &comp.children {
+            self.flatten_recursive(child_id, world, result);
         }
     }
 
     /// Computes the bounding box of the entire assembly.
     ///
     /// # Errors
-    /// Returns an error if any solid's bounding box computation fails.
+    /// Returns [`OperationsError::InvalidInput`] for an empty assembly — an
+    /// inverted sentinel box is not a bounding box — and propagates any
+    /// solid's bounding-box failure.
     pub fn bounding_box(&self, topo: &Topology) -> Result<Aabb3, OperationsError> {
+        if self.components.is_empty() {
+            return Err(OperationsError::InvalidInput {
+                reason: "an empty assembly has no bounding box".into(),
+            });
+        }
         let mut min_x = f64::MAX;
         let mut min_y = f64::MAX;
         let mut min_z = f64::MAX;
@@ -245,10 +252,14 @@ impl Assembly {
         })
     }
 
-    /// Generate a bill of materials: list of unique solids and their instance count.
+    /// Generate a bill of materials: list of unique solids and their
+    /// instance count.
+    ///
+    /// Deterministic: entries are ordered by solid arena index, and each
+    /// entry carries the name of the lowest-ID component using that solid.
     #[must_use]
     pub fn bill_of_materials(&self) -> Vec<BomEntry> {
-        let mut solid_counts: HashMap<usize, (String, usize)> = HashMap::new();
+        let mut solid_counts: BTreeMap<usize, (String, usize)> = BTreeMap::new();
 
         for comp in self.components.values() {
             let entry = solid_counts

@@ -85,14 +85,37 @@ git ls-remote --heads origin <branch>
 
 - All `gh` operations (create, view, merge, api) go over HTTPS with the CLI token and work normally.
 
-## Release-please (`.github/workflows/publish.yml`)
+## Committed-package refresh (`.github/workflows/publish.yml`)
 
-- Runs on every push to `main` using `googleapis/release-please-action` v5 with a bot app token.
-- Config: `release-please-config.json`; current version manifest: `.release-please-manifest.json`. Single package rooted at `.`, component `remus-wasm`; the version is also bumped in `crates/wasm/Cargo.toml`.
-- Flow: merging a `feat`/`fix`/`perf` PR creates or updates the pending release PR (`chore(main): release X.Y.Z`, head branch `release-please--branches--main--components--remus-wasm`). Merging that release PR creates the tag and GitHub release and publishes to npm.
-- Version-neutral changes: `docs` and `chore` commits are changelog-hidden; changes only under excluded paths (`.github`, `book`, `scripts`, `benches`, `bench-results`, `examples`, `bindings`) do not bump.
-- Manual escape hatch: `workflow_dispatch` on the Publish workflow with a `publish_version` input skips release-please.
-- Cross-repo: brepjs (`andymai/brepjs`) consumes the published wasm package; see the release-flow skill for the two-repo runbook. There is no brepjs checkout on this machine — clone it when you need hop 4.
+This section previously described the upstream release-please pipeline; that
+does not exist in this fork (no workflow references release-please — verify
+with `rg -l 'release-please' .github/workflows/`, and note the leftover
+`release-please-config.json` / `.release-please-manifest.json` are inert).
+What actually runs, verified against the workflow file and a live merge
+(2026-08-21, merge `932748e` → auto-commit `b107040` two minutes later):
+
+- Workflow name "Refresh Apache Staging Package"; runs on every push to
+  `main`, skipping its own `[skip ci]` commits so it cannot loop.
+- Rebuilds `crates/wasm/pkg` with `cargo xtask wasm-build --skip-opt`,
+  stamps stable provenance fields (never the commit SHA — that would dirty
+  every run), and when the rebuilt package differs, commits it back as
+  `chore(wasm): refresh committed package to vX.Y.Z from <sha> [skip ci]`.
+  The version comes from `crates/wasm/Cargo.toml`, not from PR titles.
+- That auto-commit IS the release: consumers install by git path
+  (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so whatever is
+  committed there on `main` is what they get. There is no tag, no GitHub
+  release, and no npm or crates.io publish.
+- Manual refresh: `workflow_dispatch` with the `sync_package` boolean input
+  (needed because pushes that only edit `.github/workflows` do not trigger
+  workflow runs, so a change to this workflow takes effect only on the next
+  ordinary commit unless dispatched).
+- Credentials caveat: the write-back step's token handling is the subject of
+  open PR #48 ("fail closed on missing publish credentials") — if a refresh
+  run succeeds but no `chore(wasm): refresh...` commit lands on `main` when
+  the package should have changed, suspect missing `REMUS_BOT_*` secrets
+  before suspecting the build.
+- Cross-repo consumption and the package validation harness: see the
+  release-flow skill (its account of this channel was already correct).
 
 ## CI failures you did not cause
 
@@ -149,7 +172,8 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
 | CI `taplo` or `machete` fails but pre-commit passed | Tool not installed locally; the hook skips it silently | `cargo install taplo-cli cargo-machete`, fix, re-commit |
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
-| Release PR did not update after merge | Commit type was `docs`/`chore`, or all changes fell under excluded paths | Expected; only `feat`/`fix`/`perf` in versioned paths bump |
+| Expecting a release PR after merging | There is no release-please in this fork; the leftover config files are inert | Nothing to wait for — the package-refresh auto-commit on `main` is the release (see "Committed-package refresh") |
+| No `chore(wasm): refresh...` commit landed on `main` after a kernel merge | Either the rebuilt package was byte-identical (docs/test-only diffs), or the write-back credentials are missing (open PR #48) | Diff `crates/wasm/pkg` expectations first; if the kernel changed and no commit came, check the refresh run's write step and `REMUS_BOT_*` secrets |
 | `deny` or `audit` fails on a PR that never touched deps | `Cargo.lock` is gitignored; CI resolved a newly-advisoried or newly-released dep | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | A dep released a version requiring Rust newer than 1.88 | Constrain that dep in `Cargo.toml`; do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |

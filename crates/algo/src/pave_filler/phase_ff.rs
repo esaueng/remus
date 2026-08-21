@@ -2336,6 +2336,36 @@ fn trim_closed_curve_to_inboth_arc(
             one_arc(t0, raw.t_range.1),
             one_arc(raw.t_range.0, t1_wrapped),
         ]
+    } else if matches!(raw.curve, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+        && (t1 - t0) >= std::f64::consts::PI * 0.999
+    {
+        // Downstream consumers interpret an open Circle/Ellipse edge as the
+        // SHORTER arc between its endpoints (`evaluate_edge_at_t`,
+        // `find_splits_on_section_arc/_ellipse`), so a single emitted span
+        // ≥ π would flip to the complementary arc at every split site. The
+        // exact-crossing emitter already splits such windows into < π
+        // sub-arcs; mirror it here. Measured unreachable on the whole io
+        // fixture corpus today (no chain trims a > π window through this
+        // path), so this cannot perturb any calibrated chain — it guards
+        // future large-cutout geometry.
+        let span = t1 - t0;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n_sub = (span / (std::f64::consts::PI * 0.999)).ceil().max(2.0) as usize;
+        #[allow(clippy::cast_precision_loss)]
+        let step = span / n_sub as f64;
+        (0..n_sub)
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let ta = t0 + step * k as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let tb = if k + 1 == n_sub {
+                    t1
+                } else {
+                    t0 + step * (k + 1) as f64
+                };
+                one_arc(ta, tb)
+            })
+            .collect()
     } else {
         // Periodic curve (any run) or non-wrapping NURBS: a single arc. For a
         // periodic curve `t1` may exceed the domain — that is intentional and
@@ -3496,6 +3526,81 @@ fn compute_raw_curves(
             }
         }
 
+        (FaceSurface::Torus(torus), FaceSurface::Cylinder(cyl))
+        | (FaceSurface::Cylinder(cyl), FaceSurface::Torus(torus)) => {
+            // A coaxial torus and cylinder meet at one or two exact circles
+            // of the cylinder's radius, offset symmetrically from the torus
+            // centre plane. Emitting them exactly spares the quartic marcher
+            // — whose NURBS fits made this configuration crawl — and gives
+            // the closed-circle FF split real circles to carve with.
+            // Non-coaxial (None) falls through to the general marcher.
+            match analytic_intersection::exact_torus_cylinder(torus, cyl)? {
+                Some(exacts) => {
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        if let analytic_intersection::ExactIntersectionCurve::Circle(circle) = exact
+                        {
+                            let bbox = circle_bbox(&circle);
+                            let domain = (0.0, std::f64::consts::TAU);
+                            let p_start = ParametricCurve::evaluate(&circle, domain.0);
+                            let p_end = ParametricCurve::evaluate(&circle, domain.1);
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Circle(circle),
+                                bbox,
+                                t_range: domain,
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
+        (FaceSurface::Torus(torus), FaceSurface::Sphere(sphere))
+        | (FaceSurface::Sphere(sphere), FaceSurface::Torus(torus)) => {
+            // An axis-centred sphere and a torus meet at exact circles about
+            // the shared axis (closed form in the tube angle); the quartic
+            // marcher only runs for off-axis spheres.
+            match analytic_intersection::exact_torus_sphere(torus, sphere)? {
+                Some(exacts) => {
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        if let analytic_intersection::ExactIntersectionCurve::Circle(circle) = exact
+                        {
+                            let bbox = circle_bbox(&circle);
+                            let domain = (0.0, std::f64::consts::TAU);
+                            let p_start = ParametricCurve::evaluate(&circle, domain.0);
+                            let p_end = ParametricCurve::evaluate(&circle, domain.1);
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Circle(circle),
+                                bbox,
+                                t_range: domain,
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
         (FaceSurface::Sphere(sphere), FaceSurface::Cylinder(cyl))
         | (FaceSurface::Cylinder(cyl), FaceSurface::Sphere(sphere)) => {
             // A coaxial sphere and cylinder meet at one or two circles (the
@@ -3572,13 +3677,10 @@ fn compute_raw_curves(
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
-            // Deferred to later phases -- analytic-NURBS is complex
-            let _ = nurbs;
-            Ok(Vec::new())
+            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs)
         }
         (FaceSurface::Nurbs(nurbs), analytic_surf) if analytic_surf.as_analytic().is_some() => {
-            let _ = nurbs;
-            Ok(Vec::new())
+            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs)
         }
 
         (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => nurbs_nurbs_intersection(na, nb),
@@ -3990,6 +4092,62 @@ fn plane_nurbs_intersection(
 }
 
 /// NURBS-NURBS intersection.
+/// Analytic (non-plane) × NURBS face pair: convert the analytic side to its
+/// NURBS form and run the NURBS-NURBS marcher.
+///
+/// This arm historically returned `Ok(vec![])` with a "deferred to later
+/// phases" comment — but no later phase existed, so any boolean touching a
+/// blend band against a curved analytic wall silently skipped face splitting
+/// and misbuilt (or leaned on the operations-layer mesh fallback to notice).
+/// A genuine attempt is strictly better on both sides: pairs that truly
+/// intersect now split, and pairs that do not still return empty from a real
+/// computation rather than from a stub. Cylinder conversion is exact
+/// (rational); cone/sphere/torus conversions are sampled fits, in line with
+/// every other non-plane pair in this table, whose curves are already
+/// marched approximations. When a cylinder/cone face has no recoverable
+/// v-range the pair is refused by name instead of silently unsplit.
+fn analytic_nurbs_intersection(
+    analytic: &FaceSurface,
+    v_range: Option<(f64, f64)>,
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
+) -> Result<Vec<RawCurve>, AlgoError> {
+    // The wire-derived v-range under-covers curved faces slightly (5 samples
+    // per edge); pad it so the marcher sees the whole face. Overshoot is
+    // harmless — raw curves are trimmed against face boundaries downstream.
+    let padded = v_range.map(|(a, b)| {
+        let (v0, v1) = if a <= b { (a, b) } else { (b, a) };
+        let margin = ((v1 - v0) * 0.1).max(1e-9);
+        (v0 - margin, v1 + margin)
+    });
+    let bounded = |kind: &'static str| {
+        padded.ok_or_else(|| {
+            AlgoError::IntersectionFailed(format!(
+                "analytic-NURBS pair: no recoverable v-range for the {kind} face"
+            ))
+        })
+    };
+    let converted = match analytic {
+        FaceSurface::Cylinder(c) => {
+            let (v0, v1) = bounded("cylinder")?;
+            c.to_nurbs(v0, v1)?
+        }
+        FaceSurface::Cone(c) => {
+            let (v0, v1) = bounded("cone")?;
+            c.to_nurbs(v0, v1)?
+        }
+        FaceSurface::Sphere(s) => s.to_nurbs()?,
+        FaceSurface::Torus(t) => t.to_nurbs()?,
+        // Plane and Nurbs never reach this helper: planes match earlier arms
+        // and `as_analytic()` is None for Nurbs.
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {
+            return Err(AlgoError::IntersectionFailed(
+                "analytic-NURBS pair: unexpected surface variant".to_string(),
+            ));
+        }
+    };
+    nurbs_nurbs_intersection(&converted, nurbs)
+}
+
 fn nurbs_nurbs_intersection(
     na: &remus_math::nurbs::surface::NurbsSurface,
     nb: &remus_math::nurbs::surface::NurbsSurface,
@@ -4040,10 +4198,13 @@ fn ellipse_bbox(ellipse: &remus_math::curves::Ellipse3D) -> Aabb3 {
 
 /// Find an existing vertex on a face's boundary within tolerance of a point.
 ///
-/// Iterates the face's outer wire vertices and returns the first one
-/// within `tol.linear` of `point`. This implements the "PutPavesOnCurve"
+/// Iterates the face's outer and inner wire vertices and returns the first
+/// one within `tol.linear` of `point`. This implements the "PutPavesOnCurve"
 /// vertex snapping: intersection curve endpoints at face boundaries reuse
 /// the face's existing boundary vertices instead of creating duplicates.
+/// Inner wires matter as much as the outer one — an intersection curve
+/// ending on a hole boundary would otherwise mint a duplicate vertex within
+/// tolerance of the existing one.
 fn find_nearby_face_vertex(
     topo: &Topology,
     face_id: FaceId,
@@ -4051,13 +4212,18 @@ fn find_nearby_face_vertex(
     tol: Tolerance,
 ) -> Option<remus_topology::vertex::VertexId> {
     let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        for &vid in &[edge.start(), edge.end()] {
-            let vpt = topo.vertex(vid).ok()?.point();
-            if (vpt - point).length() < tol.linear {
-                return Some(vid);
+    let wires: Vec<remus_topology::wire::WireId> = std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .collect();
+    for wid in wires {
+        let wire = topo.wire(wid).ok()?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            for &vid in &[edge.start(), edge.end()] {
+                let vpt = topo.vertex(vid).ok()?.point();
+                if (vpt - point).length() < tol.linear {
+                    return Some(vid);
+                }
             }
         }
     }
@@ -5450,7 +5616,9 @@ mod tests {
     fn trim_partial_ellipse_to_single_open_arc() {
         // A closed Ellipse whose in-both run is a genuine NON-wrapping partial
         // (b0..b1 strictly inside [0, N]) trims to ONE open arc with those exact
-        // parameters — NOT kept whole. Domain [0, 2π], N=24, run = samples 6..18.
+        // parameters — NOT kept whole. Domain [0, 2π], N=24, run = samples 6..17
+        // (span < π; a run of ≥ π splits into sub-arcs per the shorter-arc
+        // contract — see `sampled_trim_never_emits_open_conic_arc_spanning_pi`).
         use remus_math::curves::Ellipse3D;
         let e = Ellipse3D::new(
             Point3::new(0.0, 0.0, 0.0),
@@ -5469,11 +5637,11 @@ mod tests {
             p_start: Point3::new(0.0, 0.0, 0.0),
             p_end: Point3::new(0.0, 0.0, 0.0),
         };
-        let out = trim_closed_curve_to_inboth_arc(&raw, 6, 18, 24);
+        let out = trim_closed_curve_to_inboth_arc(&raw, 6, 17, 24);
         assert_eq!(out.len(), 1, "non-wrapping partial → one open arc");
         let tau = std::f64::consts::TAU;
         assert!((out[0].t_range.0 - tau * 6.0 / 24.0).abs() < 1e-9);
-        assert!((out[0].t_range.1 - tau * 18.0 / 24.0).abs() < 1e-9);
+        assert!((out[0].t_range.1 - tau * 17.0 / 24.0).abs() < 1e-9);
         // The arc is OPEN (endpoints differ), so the splitter trims it rather
         // than treating it as a closed internal loop.
         assert!((out[0].p_start - out[0].p_end).length() > 1e-6);
@@ -5886,5 +6054,73 @@ mod tests {
             w.p_end.y()
         );
         assert!(w.p_start.y().abs() < 1e-9 || w.p_end.y().abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod ellipse_span_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::EdgeCurve;
+
+    use super::{RawCurve, trim_closed_curve_to_inboth_arc};
+
+    /// The shorter-arc contract (#1150): an OPEN Circle/Ellipse section edge
+    /// is interpreted downstream as the SHORTER arc between its endpoints,
+    /// so the sampled closed-section trim must never emit a single arc
+    /// spanning ≥ π. Circle sections were already covered by the FF
+    /// closed-circle emitter; this pins the ellipse (and circle) guarantee
+    /// on the sampled path, where a large cutout can leave a > π in-both
+    /// window. Unreachable on the current fixture corpus (measured), so this
+    /// is the guard for future large-cutout geometry.
+    #[test]
+    fn sampled_trim_never_emits_open_conic_arc_spanning_pi() {
+        let ellipse = remus_math::curves::Ellipse3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            2.0,
+        )
+        .unwrap();
+        let curve = EdgeCurve::Ellipse(ellipse.clone());
+        let raw = RawCurve {
+            curve,
+            bbox: remus_math::aabb::Aabb3::from_points([
+                Point3::new(-4.0, -2.0, 0.0),
+                Point3::new(4.0, 2.0, 0.0),
+            ]),
+            t_range: (0.0, std::f64::consts::TAU),
+            p_start: ellipse.evaluate(0.0),
+            p_end: ellipse.evaluate(std::f64::consts::TAU),
+        };
+        // A large in-both window: samples 10..58 of 64 → span ≈ 4.71 (> π).
+        let arcs = trim_closed_curve_to_inboth_arc(&raw, 10, 58, 64);
+        assert!(
+            arcs.len() >= 2,
+            "a > π window must be split into < π sub-arcs, got {} arc(s)",
+            arcs.len()
+        );
+        for arc in &arcs {
+            let span = arc.t_range.1 - arc.t_range.0;
+            assert!(
+                span < std::f64::consts::PI,
+                "emitted open conic arc spans {span:.4} ≥ π"
+            );
+            // Endpoints stay on the curve and chain contiguously.
+            let start = ellipse.evaluate(arc.t_range.0);
+            assert!((start - arc.p_start).length() < 1e-9);
+        }
+        // Chained coverage: sub-arcs abut exactly and cover the window.
+        for w in arcs.windows(2) {
+            assert!((w[0].t_range.1 - w[1].t_range.0).abs() < 1e-12);
+        }
+        let total: f64 = arcs.iter().map(|a| a.t_range.1 - a.t_range.0).sum();
+        let expected = (58.0 - 10.0) / 64.0 * std::f64::consts::TAU;
+        assert!((total - expected).abs() < 1e-9);
+
+        // A small window stays ONE arc (no perturbation of the normal case).
+        let small = trim_closed_curve_to_inboth_arc(&raw, 10, 20, 64);
+        assert_eq!(small.len(), 1);
     }
 }

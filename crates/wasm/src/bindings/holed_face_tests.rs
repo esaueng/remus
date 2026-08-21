@@ -17,16 +17,15 @@
 //! hole as outside the material — volume alone cannot distinguish a real
 //! through-hole from one merely subtracted from the integral.
 //!
-//! `validate_solid` is asserted against an explicit allow-list of the two
-//! pre-existing extrude orientation defects, at every severity rather than
-//! errors only: see [`assert_solid`],
-//! `extruded_annulus_shell_orientation_is_inconsistent` and
-//! `o_glyph_bezier_cap_band_is_misclassified`.
+//! `validate_solid` is asserted against an explicit allow-list, at every
+//! severity rather than errors only: see [`assert_solid`]. The two extrude
+//! orientation defects this file originally carried as `#[ignore]`
+//! ready-repros are fixed and their tests now run as regression pins:
+//! `extruded_annulus_shell_orientation_is_consistent` and
+//! `o_glyph_bezier_cap_band_classifies_correctly`.
 //!
 //! The classification probes are placed where the answer is derivable by
-//! hand from the profile definition, and only where the kernel currently
-//! gets it right; the band where it does not is an `#[ignore]` ready-repro
-//! rather than an assertion of the wrong answer.
+//! hand from the profile definition.
 //!
 //! Every kernel call goes through `execute_batch`: `JsError` cannot be
 //! constructed on non-wasm targets, so the `#[wasm_bindgen]` methods are
@@ -364,11 +363,12 @@ const VOLUME_DEFLECTION_FINE: f64 = 1e-4;
 
 /// `validate_solid` is run too, and asserted against an explicit allow-list
 /// covering EVERY severity, not just `Error`. The shell-level orientation
-/// defect is fixed. Line-bounded annuli now report no orientation issues;
-/// ruled NURBS walls in the glyph fixture still report one
-/// `FaceOrientationConsistency` warning per hole-wall face.
-/// `expected_flipped_faces` pins that exact remaining count, so a regression
-/// that flips one more face inside out still fails the test.
+/// defect is fixed, and `check_face_orientation` now compares the stored
+/// wire winding against the STORED surface normal (the reversal flag
+/// mirrors normal and traversal together), so correctly wound reversed
+/// ruled-NURBS hole walls no longer warn. `expected_flipped_faces` pins the
+/// count at zero, so a regression that flips any face inside out still
+/// fails the test.
 #[allow(clippy::too_many_arguments)]
 fn assert_solid(
     k: &mut BrepKernel,
@@ -648,14 +648,13 @@ fn o_glyph_contour_mixing_lines_and_beziers_extrudes_to_a_valid_solid() {
     //
     // Every probe below is on the x = 0 axis, where both contours are bounded
     // by their straight sides: material for 3 < |y| < 6, void for |y| < 3.
-    // Probes in the bezier-cap band (|x| > 2) are deliberately absent — the
-    // classifier answers them wrongly today, see
-    // `o_glyph_bezier_cap_band_is_misclassified`.
+    // The bezier-cap band (|x| > 2) is probed separately by
+    // `o_glyph_bezier_cap_band_classifies_correctly`.
     assert_solid(
         &mut k,
         solid,
         10,
-        4,
+        0,
         expected_volume,
         2e-3,
         0.005,
@@ -666,29 +665,24 @@ fn o_glyph_contour_mixing_lines_and_beziers_extrudes_to_a_valid_solid() {
     );
 }
 
-/// Ready-repro for a second defect this work uncovered but did not fix.
+/// Regression pin for a classification defect in the bezier-cap band,
+/// originally an `#[ignore]` ready-repro; the defect is fixed and this
+/// test now passes unmodified (its original acceptance target).
 ///
 /// Along `y = 0` the 'O' is bounded by the two bezier caps, and both
 /// contours' caps are computable by hand: the hole's right cap is the cubic
 /// `P0=(2,3) P1=(5,3) P2=(5,−3) P3=(2,−3)`, which at `t = 0.5` reaches
 /// `x = (2 + 3·5 + 3·5 + 2)/8 = 4.25`; the outer's reaches `7.75` the same
 /// way. So at `y = 0` the void is `|x| < 4.25` and the material ring is
-/// `4.25 < |x| < 7.75`. The solid classifies the opposite way round, and
-/// then scrambles further out: sweeping `x` at `y = 0, z = 1.5` gives
-/// Inside at 2.0–4.0 (all void), Outside at 4.5–6.0 (all material), then
-/// Inside at 6.5, Outside at 7.0, Inside at 7.5.
+/// `4.25 < |x| < 7.75`.
 ///
-/// This is NOT caught by any other rung of the ladder: the same solid is
-/// watertight, has exactly 10 faces, and matches the independent shoelace
-/// volume oracle to 7e-5. The four `FaceOrientationConsistency` warnings
-/// that [`assert_solid`] allow-lists — hole-wall normals at `dot = −1.000` —
-/// are the strongest lead on the cause, and are plausibly the same root
-/// cause as `extruded_annulus_shell_orientation_is_inconsistent`.
-///
-/// Acceptance target for the eventual fix: this test passes unmodified.
+/// When broken, the solid classified the opposite way round and then
+/// scrambled further out (Inside at 2.0–4.0, Outside at 4.5–6.0, then
+/// alternating) while STILL being watertight, 10-faced, and matching the
+/// independent shoelace volume oracle to 7e-5 — no other rung of the
+/// ladder catches this class, which is why the probes are pinned here.
 #[test]
-#[ignore = "open: extruded bezier-cap walls classify inverted along y = 0"]
-fn o_glyph_bezier_cap_band_is_misclassified() {
+fn o_glyph_bezier_cap_band_classifies_correctly() {
     let (k, solid) = extrude_holed_face(
         &capsule(4.0, 6.0, 5.0, true),
         &[capsule(2.0, 3.0, 3.0, false)],
@@ -736,7 +730,7 @@ fn o_glyph_contour_via_add_holes_to_face_matches_make_face_from_wires() {
         &mut k,
         solid,
         10,
-        4,
+        0,
         expected_volume,
         2e-3,
         0.005,
@@ -776,37 +770,24 @@ fn glyph_side_walls_are_exact_nurbs_not_faceted() {
     );
 }
 
-// ── known-open: extrude's shell orientation on holed profiles ─────
+// ── regression pins: extrude's shell orientation on holed profiles ─
 
-/// Ready-repro for a defect this work uncovered but did not fix.
+/// Regression pin for extrude's shell orientation on holed profiles,
+/// originally an `#[ignore]` ready-repro; the defect is fixed and this
+/// test now passes unmodified (its original acceptance target).
 ///
-/// Extruding a face with an inner wire produces a shell in which edges shared
-/// between two adjacent faces are traversed in the SAME direction by both,
-/// where a closed oriented shell requires opposite directions.
-/// `validate_solid` reports it as `ShellOrientationConsistent`.
-///
-/// The defect is wider than the cap↔hole-wall seams alone: this annulus
-/// reports 8 inconsistent shared edges (four at each cap), but the 'O' glyph,
-/// which has the same four hole walls, reports 16 — so the vertical
-/// hole-wall↔hole-wall edges are inconsistent too. Alongside it,
-/// `validate_solid` raises one `FaceOrientationConsistency` warning per
-/// hole wall (`dot = −1.000`), which is what [`assert_solid`] allow-lists
-/// and counts.
-///
-/// The result is nonetheless watertight and of the right volume — the
-/// geometry is right and the orientation bookkeeping is not. It is NOT
-/// correctly classified everywhere: see
-/// `o_glyph_bezier_cap_band_is_misclassified`, which the flipped hole-wall
-/// normals are the leading suspect for. It is pre-existing and has nothing to do with the hole-attaching
-/// bindings: `remus_operations::extrude` reproduces it on a face built
-/// directly from `remus_topology::builder`, with no wasm in the picture.
-/// It matters for consumers that read orientation rather than re-derive it
-/// (STEP export, GFA).
-///
-/// Acceptance target for the eventual fix: this test passes unmodified.
+/// When broken, extruding a face with an inner wire produced a shell in
+/// which edges shared between two adjacent faces were traversed in the
+/// SAME direction by both, where a closed oriented shell requires opposite
+/// directions (`validate_solid` reported `ShellOrientationConsistent`
+/// errors — 8 on this annulus, 16 on the 'O' glyph — plus one
+/// `FaceOrientationConsistency` warning per hole wall at `dot = −1.000`).
+/// The result was nonetheless watertight and of the right volume, so this
+/// full `validate_solid` is_valid pin is the only rung that catches the
+/// class. It matters for consumers that read orientation rather than
+/// re-derive it (STEP export, GFA).
 #[test]
-#[ignore = "open: extrude leaves cap<->hole-wall shared edges co-oriented"]
-fn extruded_annulus_shell_orientation_is_inconsistent() {
+fn extruded_annulus_shell_orientation_is_consistent() {
     let (k, solid) = extrude_holed_face(
         &square(10.0, true),
         &[square(5.0, false)],

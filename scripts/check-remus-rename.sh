@@ -19,14 +19,6 @@ set -euo pipefail
 #       The lineage ledger. It pins the upstream repository, the fork cutoff,
 #       and per-PR replay records by name and SHA. These are historical facts.
 #
-#   crates/wasm/pkg/
-#       A frozen compatibility snapshot of the pre-rename package, consumed by
-#       an existing downstream by git path. Renaming its files without
-#       regenerating the artifact would break it outright: the .wasm binary
-#       embeds its glue module path (brepkit_wasm_bg.js) in the import section.
-#       Regenerate it, as a deliberate consumer migration, to lift this.
-#       See docs/production-readiness/fork-maintenance.md.
-#
 #   crates/io/tests/data/*.step
 #       Captured fixtures. These are byte-faithful records of files real
 #       exporters produced, headers included. Editing one makes it a forgery
@@ -42,7 +34,6 @@ readonly ALLOWED_HISTORY=(
   "docs/production-readiness/apache-replay-provenance.md"
   "scripts/check-apache-replay-provenance.py"
   "scripts/check-remus-rename.sh"
-  "crates/wasm/pkg/**"
   "crates/io/tests/data/*.step"
 )
 
@@ -75,7 +66,7 @@ if stale_content=$(rg -n -i --hidden --glob '!.git' 'brepkit|brep-kit' "${search
   status=1
 fi
 
-if stale_paths=$(git ls-files | rg -i 'brepkit|brep-kit' | rg -v '^crates/wasm/pkg/' 2>/dev/null); then
+if stale_paths=$(git ls-files | rg -i 'brepkit|brep-kit' 2>/dev/null); then
   echo "Remus rename violation: stale product identity found in tracked paths"
   echo "$stale_paths"
   status=1

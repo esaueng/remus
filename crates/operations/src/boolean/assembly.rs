@@ -40,59 +40,7 @@ fn sub_trim(
     start: Point3,
     end: Point3,
 ) -> Option<(f64, f64)> {
-    let parent = parent?;
-    let angular = |start_parameter: f64, end_parameter: f64| {
-        angular_sub_trim(parent, start_parameter, end_parameter)
-    };
-    match curve {
-        EdgeCurve::Line => None,
-        EdgeCurve::Circle(circle) => angular(circle.project(start), circle.project(end)),
-        EdgeCurve::Ellipse(ellipse) => angular(ellipse.project(start), ellipse.project(end)),
-        EdgeCurve::Hyperbola(hyperbola) => Some((hyperbola.project(start), hyperbola.project(end))),
-        EdgeCurve::Parabola(parabola) => Some((parabola.project(start), parabola.project(end))),
-        EdgeCurve::NurbsCurve(nurbs) => {
-            let project = |point| {
-                remus_math::nurbs::projection::project_point_to_curve(nurbs, point, 1e-9)
-                    .ok()
-                    .map(|result| result.parameter)
-            };
-            Some((project(start)?, project(end)?))
-        }
-    }
-}
-
-fn angular_sub_trim(
-    parent: (f64, f64),
-    start_parameter: f64,
-    end_parameter: f64,
-) -> Option<(f64, f64)> {
-    const EPS: f64 = 1e-12;
-    const TAU: f64 = std::f64::consts::TAU;
-    let (lo, hi) = (parent.0.min(parent.1), parent.0.max(parent.1));
-    let lift = |parameter: f64, preferred: f64| {
-        let mut lifted = TAU.mul_add(((preferred - parameter) / TAU).round(), parameter);
-        if lifted < lo - EPS {
-            lifted += TAU;
-        }
-        if lifted > hi + EPS {
-            lifted -= TAU;
-        }
-        (lifted >= lo - EPS && lifted <= hi + EPS).then_some(lifted)
-    };
-
-    let start = lift(start_parameter, parent.0)?;
-    let mut end = lift(end_parameter, start)?;
-    if parent.1 >= parent.0 {
-        if end < start - EPS {
-            end += TAU;
-        }
-        (end <= hi + EPS).then_some((start, end))
-    } else {
-        if end > start + EPS {
-            end -= TAU;
-        }
-        (end >= lo - EPS).then_some((start, end))
-    }
+    remus_algo::sub_trim(curve, parent?, start, end)
 }
 
 /// Quantize a coordinate to a spatial hash key.

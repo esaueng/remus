@@ -134,6 +134,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resolveOperationOutput"
         | "journalSummary"
         | "getFaceName"
+        | "getSolidFaces"
+        | "getFaceNormal"
+        | "getFaceVertexPositions"
         | "volume" => Some(BatchOpKind::ReadOnly),
         // Serialized-reference ops: their dispatch arms in `naming.rs` are
         // `io`-gated because the reference codec is. Classifying them without
@@ -1301,6 +1304,7 @@ impl BrepKernel {
                 let result = match chamfer_result {
                     Ok(inner) => inner.map_err(StructuredWasmError::from)?,
                     Err(panic_info) => {
+                        self.poisoned = true;
                         return Err(StructuredWasmError::operation_failed(panic_message(
                             &panic_info,
                             "Chamfer",
@@ -1331,6 +1335,7 @@ impl BrepKernel {
                 let result = match fillet_result {
                     Ok(inner) => inner.map_err(StructuredWasmError::from)?,
                     Err(panic_info) => {
+                        self.poisoned = true;
                         return Err(StructuredWasmError::operation_failed(panic_message(
                             &panic_info,
                             "Fillet",
@@ -1674,6 +1679,72 @@ impl BrepKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(compound_id_to_u32(compound)))
+            }
+            "getSolidFaces" => {
+                let s = get_u32(args, "solid")?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let faces = remus_topology::explorer::solid_faces(self.topo(), solid_id)
+                    .map_err(crate::error::WasmError::from)
+                    .map_err(StructuredWasmError::from)?;
+                let handles: Vec<u32> = faces.iter().map(|f| face_id_to_u32(*f)).collect();
+                Ok(serde_json::json!(handles))
+            }
+            "getFaceNormal" => {
+                // The face's stored surface normal at its outer-wire start (a
+                // plane's constant normal; curved surfaces report the normal
+                // at parameter-space origin). Enough to pick a wall by
+                // direction from a batch script.
+                let f = get_u32(args, "face")?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let face = self
+                    .topo()
+                    .face(face_id)
+                    .map_err(crate::error::WasmError::from)
+                    .map_err(StructuredWasmError::from)?;
+                let normal = match face.surface() {
+                    remus_topology::face::FaceSurface::Plane { normal, .. } => *normal,
+                    other => other.normal(0.0, 0.0),
+                };
+                Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
+            }
+            "getFaceVertexPositions" => {
+                // Flat [x, y, z, ...] positions of every vertex the face's
+                // wires reference (outer first, then holes), in wire order.
+                // Enough to select faces by region from a batch script.
+                let f = get_u32(args, "face")?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let mut coords: Vec<f64> = Vec::new();
+                let (outer, inners) = {
+                    let face = self
+                        .topo()
+                        .face(face_id)
+                        .map_err(crate::error::WasmError::from)
+                        .map_err(StructuredWasmError::from)?;
+                    (face.outer_wire(), face.inner_wires().to_vec())
+                };
+                for wid in std::iter::once(outer).chain(inners) {
+                    let wire = self
+                        .topo()
+                        .wire(wid)
+                        .map_err(crate::error::WasmError::from)
+                        .map_err(StructuredWasmError::from)?;
+                    for oe in wire.edges() {
+                        let edge = self
+                            .topo()
+                            .edge(oe.edge())
+                            .map_err(crate::error::WasmError::from)
+                            .map_err(StructuredWasmError::from)?;
+                        let vid = oe.oriented_start(edge);
+                        let p = self
+                            .topo()
+                            .vertex(vid)
+                            .map_err(crate::error::WasmError::from)
+                            .map_err(StructuredWasmError::from)?
+                            .point();
+                        coords.extend([p.x(), p.y(), p.z()]);
+                    }
+                }
+                Ok(serde_json::json!(coords))
             }
             "defeature" => {
                 let s = get_u32(args, "solid")?;

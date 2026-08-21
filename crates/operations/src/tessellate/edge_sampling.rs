@@ -308,15 +308,85 @@ pub(super) fn circle_param_range(
     }
 }
 
+/// The shorter of the two arcs an untrimmed open circle edge's endpoints
+/// subtend: CCW when the forward span is at most a half turn, otherwise CW
+/// (returned with `t_end < t_start` so interpolation runs backward).
+///
+/// Only for edges WITHOUT a stored trim — a trim states the intended arc
+/// exactly, including intentional major arcs this heuristic would flip.
+///
+/// # Errors
+///
+/// Returns an error if vertex lookup fails.
+fn shorter_arc_range(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    circle: &remus_math::curves::Circle3D,
+) -> Result<(f64, f64), crate::OperationsError> {
+    let sp = topo.vertex(edge.start())?.point();
+    let ep = topo.vertex(edge.end())?.point();
+    let ts = circle.project(sp);
+    let te_raw = circle.project(ep);
+    let fwd_span = (te_raw - ts).rem_euclid(std::f64::consts::TAU);
+    if fwd_span <= std::f64::consts::PI {
+        Ok((ts, ts + fwd_span))
+    } else {
+        let rev_span = std::f64::consts::TAU - fwd_span;
+        Ok((ts, ts - rev_span))
+    }
+}
+
 /// Sample an edge curve to produce a list of 3D points (start to end).
 ///
 /// The sampling density is driven by `deflection`. For a `Line`, only the
 /// two endpoints are returned. For curves, the point count is proportional
-/// to curvature. `circle_floor` is forwarded to [`edge_sample_count`].
+/// to curvature. `circle_floor` is forwarded to `edge_sample_count`.
 ///
 /// # Errors
 ///
 /// Returns an error if vertex lookup fails for edge endpoints.
+/// The parameter span an edge actually covers on its stored curve — the
+/// span every sampler in this module walks: a stored trim verbatim, a
+/// closed edge as one full period anchored at its start vertex, and an
+/// open edge via `domain_with_endpoints` (which honours the
+/// endpoint-trimmed NURBS convention). Lines report `(0, length)` to match
+/// the query surface's parameterization of line edges.
+///
+/// This is the authoritative span for consumers that rebuild edge geometry
+/// outside the kernel (e.g. a 2D drawing export choosing between the two
+/// arcs a circle edge's endpoints subtend) — reconstructing it from
+/// endpoints alone flips intentional major arcs.
+///
+/// # Errors
+///
+/// Returns an error if vertex lookup fails.
+pub fn edge_param_span(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+) -> Result<(f64, f64), crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let sp = topo.vertex(edge.start())?.point();
+    let ep = topo.vertex(edge.end())?.point();
+    match edge.curve() {
+        EdgeCurve::Line => Ok((0.0, (ep - sp).length())),
+        EdgeCurve::Circle(circle) => circle_param_range(topo, edge, circle),
+        EdgeCurve::Ellipse(ellipse) => {
+            if let Some(trim) = edge.trim() {
+                Ok(trim)
+            } else if edge.is_closed() {
+                let start = ellipse.project(sp);
+                Ok((start, start + std::f64::consts::TAU))
+            } else {
+                Ok(edge.domain_with_endpoints(sp, ep))
+            }
+        }
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) | EdgeCurve::NurbsCurve(_) => {
+            Ok(edge.domain_with_endpoints(sp, ep))
+        }
+    }
+}
+
 pub(super) fn sample_edge(
     topo: &Topology,
     edge: &remus_topology::edge::Edge,
@@ -349,16 +419,7 @@ pub(super) fn sample_edge(
             sample_uniform(circle, t_start, t_end, n)
         }
         EdgeCurve::Ellipse(ellipse) => {
-            let sp = topo.vertex(edge.start())?.point();
-            let ep = topo.vertex(edge.end())?.point();
-            let (t_start, t_end) = if let Some(trim) = edge.trim() {
-                trim
-            } else if edge.is_closed() {
-                let start = ellipse.project(sp);
-                (start, start + std::f64::consts::TAU)
-            } else {
-                edge.domain_with_endpoints(sp, ep)
-            };
+            let (t_start, t_end) = edge_param_span(topo, edge)?;
             sample_uniform(ellipse, t_start, t_end, n)
         }
         EdgeCurve::Hyperbola(h) => {
@@ -395,14 +456,40 @@ pub(super) fn sample_edge(
             let (t0, t1) = edge.domain_with_endpoints(sp, ep);
             let (u0, u1) = nurbs.domain();
             let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
-            let mut pts = sample_uniform(nurbs, t0, t1, n);
-            // Normalize to edge (start→end vertex) order so every consumer's
-            // `is_forward` walk holds even for section edges whose stored
-            // curve runs end→start. Sub-spans are already endpoint-ordered.
-            if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs)? {
-                pts.reverse();
+            if !is_subspan && edge.is_closed() {
+                // A CLOSED NURBS edge still has a start vertex, and the
+                // polyline has to begin there (the circle arm's
+                // `circle_param_range` rationale). The curve's own parameter
+                // origin can sit anywhere on the ring — e.g. a converted
+                // rim circle whose NURBS origin is a quarter turn from the
+                // seam vertex — and the endpoint overwrite below would then
+                // replace the first and last samples with a point far off
+                // the sampled arc, folding the ring back across itself.
+                // Rotate the sampling to start at the vertex's parameter and
+                // walk one full period, wrapping at the knot-domain seam.
+                let width = u1 - u0;
+                let t_v = remus_math::nurbs::projection::project_point_to_curve(nurbs, sp, 1e-9)
+                    .map(|proj| proj.parameter)
+                    .unwrap_or(t0);
+                #[allow(clippy::cast_precision_loss)]
+                (0..n)
+                    .map(|i| {
+                        let offset = width * (i as f64) / ((n - 1).max(1) as f64);
+                        let t = u0 + (t_v - u0 + offset).rem_euclid(width.max(1e-300));
+                        nurbs.evaluate(t)
+                    })
+                    .collect()
+            } else {
+                let mut pts = sample_uniform(nurbs, t0, t1, n);
+                // Normalize to edge (start→end vertex) order so every
+                // consumer's `is_forward` walk holds even for section edges
+                // whose stored curve runs end→start. Sub-spans are already
+                // endpoint-ordered.
+                if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs)? {
+                    pts.reverse();
+                }
+                pts
             }
-            pts
         }
     };
 
@@ -498,7 +585,16 @@ pub(super) fn sample_wire_positions(
         let edge = topo.edge(oe.edge())?;
         match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                let (t_start, t_end) = circle_param_range(topo, edge, circle)?;
+                // An untrimmed open arc's span is ambiguous (the endpoints
+                // subtend two complementary arcs, and `circle_param_range`
+                // always picks the CCW one). Legacy models without stored
+                // trims relied on the shortest-arc heuristic here, so keep
+                // it for them; a stored trim is exact and wins.
+                let (t_start, t_end) = if edge.trim().is_some() || edge.is_closed() {
+                    circle_param_range(topo, edge, circle)?
+                } else {
+                    shorter_arc_range(topo, edge, circle)?
+                };
                 let arc_range = (t_end - t_start).abs();
                 let n_samples = segments_for_chord_deviation_a(
                     circle.radius(),

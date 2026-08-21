@@ -275,15 +275,70 @@ does not itself promote or demote anything.
   vertex/edge/face event payload as stable JSON, `filletJournaled` /
   `chamferJournaled` / `linearPatternJournaled`, and the read-only
   `journalSummary`, all with executeBatch companions and contract
-  tests. Remaining evolution queue: assembly-rebuild lineage records
-  (the Unresolved minority in GFA edge events) and evolution for the
+  tests.
+  **Assembly-rebuild lineage records**: every GFA result-assembly path
+  that rebuilds edges records construction lineage — the perform-phase
+  vertex-merge wire rebuild, welds, and the collinear line/arc splits —
+  and `build_result_with_origins` returns the complete log. A cube
+  fuse's edge history is total construction fact (pinned: zero
+  unresolved). Remaining evolution queue: real evolution for the
   declared-gap operations (offset, shell, draft, split, defeature —
-  journaled as barriers until each grows real records).
+  journaled as barriers until each grows records) and cap-synthesis
+  edges (absent from planar boolean fixtures).
 
-### Feature recognition, defeaturing, assemblies, projection, drafting
+### Draft
 
-- Ledger rows: all Beta or evidence-pending. Axes to be declared when first
-  worked on; all cells Unqualified.
+- Ledger row: "Draft" (Stable, planar faces; promoted 2026-08-21).
+- Declared axes: face selection (single wall, multi-wall, holed neighbours) ×
+  pull/neutral placement × angle sign and near-zero boundary × scale
+  (1e-3/1/1e3) × body type (plain, holed, cavity-bearing).
+- Qualified cells: planar targets across the axes above, with closed-form
+  volume oracles and native + WASM-batch determinism
+  (`crates/operations/tests/qualify_draft.rs`, wasm `qualify_ops_tests`).
+- Unsupported-typed cells (both-sides tested): zero angle, non-planar target,
+  drafted face carrying a hole rim, cavity-bearing solid, foreign face,
+  parting-plane target, moved inner wires, curved re-trim neighbours.
+
+### Defeaturing
+
+- Ledger row: "Planar face removal" (Stable, declared domain; promoted
+  2026-08-21).
+- Declared axes: feature class (through-hole, blind pocket, boss, cylindrical
+  bore wall, chamfer) × heal strategy (cap, extend) × scale.
+- Qualified cells: the classes above with exact restored volumes and full
+  validation (`qualify_defeature.rs`); construction-derived evolution
+  (`defeature_with_evolution`).
+- Unsupported-typed cells: cavity solids, wounds crossing curved kept faces,
+  removals leaving fewer than four faces, empty/foreign selections.
+
+### Assemblies
+
+- Ledger row: "Hierarchy, transforms, BOM" (Stable; promoted 2026-08-21).
+- Declared axes: hierarchy depth × transform composition × instance sharing ×
+  BOM/flatten determinism.
+- Qualified cells: deep chains verified against direct matrix products,
+  rotation+translation bounding boxes against transformed corners,
+  sub-assembly nodes' own solids counted consistently by flatten and BOM,
+  deterministic ordering across rebuilds (`qualify_assembly.rs`).
+- Unsupported-typed cells: empty-assembly bounding box, invalid parents.
+  Cycles cannot be constructed (no re-parenting API).
+
+### Feature recognition
+
+- Ledger row: "Holes, pockets, chamfers, fillets" (Stable, declared set;
+  promoted 2026-08-21).
+- Declared axes: feature type × geometry (planar/cylindrical walls,
+  through/blind) × post-boolean noise.
+- Qualified cells: precision (plain bodies yield no features; `FilletLike`
+  never claims planar faces), recall on constructed ground truth (holes with
+  diameter and through-ness, all-planar rectangular pockets, chamfers),
+  deterministic output (`qualify_feature_recognition.rs`).
+- Outside the declared set, absence of a claim is the declared contract.
+
+### Projection, drafting (2D)
+
+- Ledger rows: evidence-pending. Axes to be declared when first worked on;
+  cells Unqualified.
 
 ## Known representation-level limitations (cross-family)
 

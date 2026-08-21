@@ -32,8 +32,9 @@ pub fn assemble_solid(
     topo: &mut Topology,
     selected: &[SelectedFace],
     cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<SolidId, AlgoError> {
-    super::builder_solid::build_solid(topo, selected, cap_planes)
+    super::builder_solid::build_solid(topo, selected, cap_planes, lineage)
 }
 
 /// Like [`assemble_solid`], but also returns each result face's input-source
@@ -48,6 +49,7 @@ pub fn assemble_solid_with_origins(
     topo: &mut Topology,
     selected: &[SelectedFace],
     cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(SolidId, super::FaceProvenance), AlgoError> {
-    super::builder_solid::build_solid_with_origins(topo, selected, cap_planes)
+    super::builder_solid::build_solid_with_origins(topo, selected, cap_planes, lineage)
 }
