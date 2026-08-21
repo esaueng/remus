@@ -1479,6 +1479,15 @@ fn try_algebraic_intersection(
         | (AnalyticSurface::Cylinder(c), AnalyticSurface::Sphere(s)) => {
             algebraic_sphere_cylinder(s, c)
         }
+        // Coaxial torus-cylinder (both orderings): exact circles; the
+        // quartic marcher only runs for the non-coaxial configurations.
+        (AnalyticSurface::Torus(t), AnalyticSurface::Cylinder(c))
+        | (AnalyticSurface::Cylinder(c), AnalyticSurface::Torus(t)) => {
+            algebraic_torus_cylinder(t, c)
+        }
+        // Axis-centred torus-sphere (both orderings): exact circles.
+        (AnalyticSurface::Torus(t), AnalyticSurface::Sphere(s))
+        | (AnalyticSurface::Sphere(s), AnalyticSurface::Torus(t)) => algebraic_torus_sphere(t, s),
         (AnalyticSurface::Cone(c1), AnalyticSurface::Cone(c2)) => algebraic_cone_cone(c1, c2),
         _ => Ok(None),
     }
@@ -1773,6 +1782,214 @@ fn algebraic_sphere_cylinder(
         curves.push(IntersectionCurve { curve, points });
     }
 
+    Ok(Some(curves))
+}
+
+/// Exact coaxial torus-cylinder intersection: the shared circle(s).
+///
+/// A torus (major `R`, minor `r_t`) and a cylinder of radius `r_c` on the
+/// same axis meet where the tube cross-section `(ρ − R)² + z² = r_t²` has
+/// `ρ = r_c`: at `z = ±sqrt(r_t² − (r_c − R)²)` from the torus centre
+/// plane, each a full circle of radius `r_c` about the shared axis. A
+/// proper crossing yields two circles, tangency (`|r_c − R| = r_t`) one,
+/// and a cylinder outside the tube's radial reach none — all exact, so the
+/// quartic marcher (and its NURBS fits) never runs for this configuration.
+/// Non-coaxial pairs defer (`None`).
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_torus_cylinder(
+    torus: &ToroidalSurface,
+    cyl: &CylindricalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let axis_t = torus.z_axis();
+    let axis_c = cyl.axis();
+    if axis_t.dot(axis_c).abs() < 1.0 - 1e-10 {
+        return Ok(None);
+    }
+    let delta = torus.center() - cyl.origin();
+    let delta_vec = Vec3::new(delta.x(), delta.y(), delta.z());
+    let along = delta_vec.dot(axis_c);
+    if (delta_vec - axis_c * along).length() > 1e-7 {
+        return Ok(None);
+    }
+
+    let dr = cyl.radius() - torus.major_radius();
+    let h_sq = torus
+        .minor_radius()
+        .mul_add(torus.minor_radius(), -(dr * dr));
+    if h_sq < -1e-12 {
+        // The cylinder misses the tube entirely — exactly no intersection.
+        return Ok(Some(vec![]));
+    }
+    let h = h_sq.max(0.0).sqrt();
+
+    let c0 = torus.center();
+    let offsets: &[f64] = if h < 1e-10 { &[0.0] } else { &[h, -h] };
+    let mut circles = Vec::new();
+    for &z in offsets {
+        let center = Point3::new(
+            axis_t.x().mul_add(z, c0.x()),
+            axis_t.y().mul_add(z, c0.y()),
+            axis_t.z().mul_add(z, c0.z()),
+        );
+        circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+            center,
+            axis_c,
+            cyl.radius(),
+        )?));
+    }
+    Ok(Some(circles))
+}
+
+/// Exact axis-centred sphere-torus intersection: the shared circle(s).
+///
+/// For a sphere whose centre lies on the torus axis at signed offset `d`
+/// from the torus centre plane, substituting the tube parameterization
+/// `ρ = R + r·cos v`, `z = r·sin v` into the sphere equation gives
+/// `A·cos v + B·sin v = C` with `A = 2Rr`, `B = −2dr`,
+/// `C = R_s² − R² − r² − d²` — zero, one (tangent), or two tube angles,
+/// each an exact circle of radius `R + r·cos v` about the shared axis.
+/// A sphere centred off the axis defers (`None`).
+///
+/// # Errors
+///
+/// Returns [`MathError`] if a shared `Circle3D` cannot be constructed.
+pub fn exact_torus_sphere(
+    torus: &ToroidalSurface,
+    sphere: &SphericalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let axis = torus.z_axis();
+    let delta = sphere.center() - torus.center();
+    let delta_vec = Vec3::new(delta.x(), delta.y(), delta.z());
+    let d = delta_vec.dot(axis);
+    if (delta_vec - axis * d).length() > 1e-7 {
+        return Ok(None);
+    }
+
+    let big_r = torus.major_radius();
+    let r = torus.minor_radius();
+    let r_s = sphere.radius();
+    let a = 2.0 * big_r * r;
+    let b = -2.0 * d * r;
+    let c = r_s.mul_add(r_s, -big_r.mul_add(big_r, r.mul_add(r, d * d)));
+    let amp = a.hypot(b);
+    if amp < 1e-12 {
+        // Degenerate torus (R = 0 and d = 0) — defer.
+        return Ok(None);
+    }
+    let ratio = c / amp;
+    if ratio.abs() > 1.0 + 1e-12 {
+        // The sphere misses the tube entirely — exactly no intersection.
+        return Ok(Some(vec![]));
+    }
+    let phase = b.atan2(a);
+    let spread = ratio.clamp(-1.0, 1.0).acos();
+    let vs: &[f64] = if spread.abs() < 1e-10 || (std::f64::consts::PI - spread).abs() < 1e-10 {
+        &[phase]
+    } else {
+        // v = phase ± spread — two distinct tube angles.
+        &[0.0, 1.0]
+    };
+    let mut circles = Vec::new();
+    let mut emit = |v: f64| -> Result<(), MathError> {
+        let radius = r.mul_add(v.cos(), big_r);
+        if radius <= 1e-12 {
+            return Ok(());
+        }
+        let z = r * v.sin();
+        let c0 = torus.center();
+        let center = Point3::new(
+            axis.x().mul_add(z, c0.x()),
+            axis.y().mul_add(z, c0.y()),
+            axis.z().mul_add(z, c0.z()),
+        );
+        circles.push(ExactIntersectionCurve::Circle(Circle3D::new(
+            center, axis, radius,
+        )?));
+        Ok(())
+    };
+    if vs.len() == 1 {
+        emit(phase)?;
+    } else {
+        emit(phase + spread)?;
+        emit(phase - spread)?;
+    }
+    Ok(Some(circles))
+}
+
+/// Algebraic axis-centred torus-sphere intersection (NURBS form for the
+/// general bounded path). Delegates to [`exact_torus_sphere`]; phase FF
+/// prefers the exact circle form directly.
+fn algebraic_torus_sphere(
+    torus: &ToroidalSurface,
+    sphere: &SphericalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_torus_sphere(torus, sphere)? else {
+        return Ok(None);
+    };
+    let mut curves = Vec::new();
+    for exact in exacts {
+        let ExactIntersectionCurve::Circle(circle) = exact else {
+            continue;
+        };
+        let n_samples = 33;
+        let mut points = Vec::with_capacity(n_samples);
+        let mut positions = Vec::with_capacity(n_samples);
+        #[allow(clippy::cast_precision_loss)]
+        for i in 0..n_samples {
+            let theta = TAU * i as f64 / (n_samples - 1) as f64;
+            let pt = crate::traits::ParametricCurve::evaluate(&circle, theta);
+            positions.push(pt);
+            points.push(IntersectionPoint {
+                point: pt,
+                param1: (0.0, 0.0),
+                param2: (0.0, 0.0),
+            });
+        }
+        let degree = 3.min(positions.len() - 1);
+        let curve = interpolate(&positions, degree)?;
+        curves.push(IntersectionCurve { curve, points });
+    }
+    Ok(Some(curves))
+}
+
+/// Algebraic coaxial torus-cylinder intersection (NURBS form for the
+/// general bounded path). Delegates to [`exact_torus_cylinder`] and samples
+/// each exact circle into an interpolated NURBS `IntersectionCurve`,
+/// mirroring the sphere-cylinder algebraic path. phase FF prefers the exact
+/// circle form directly.
+fn algebraic_torus_cylinder(
+    torus: &ToroidalSurface,
+    cyl: &CylindricalSurface,
+) -> Result<Option<Vec<IntersectionCurve>>, MathError> {
+    let Some(exacts) = exact_torus_cylinder(torus, cyl)? else {
+        return Ok(None);
+    };
+    let mut curves = Vec::new();
+    for exact in exacts {
+        let ExactIntersectionCurve::Circle(circle) = exact else {
+            continue;
+        };
+        let n_samples = 33;
+        let mut points = Vec::with_capacity(n_samples);
+        let mut positions = Vec::with_capacity(n_samples);
+        #[allow(clippy::cast_precision_loss)]
+        for i in 0..n_samples {
+            let theta = TAU * i as f64 / (n_samples - 1) as f64;
+            let pt = crate::traits::ParametricCurve::evaluate(&circle, theta);
+            positions.push(pt);
+            points.push(IntersectionPoint {
+                point: pt,
+                param1: (0.0, 0.0),
+                param2: (0.0, 0.0),
+            });
+        }
+        let degree = 3.min(positions.len() - 1);
+        let curve = interpolate(&positions, degree)?;
+        curves.push(IntersectionCurve { curve, points });
+    }
     Ok(Some(curves))
 }
 

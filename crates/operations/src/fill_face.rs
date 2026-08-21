@@ -57,29 +57,95 @@ pub fn fill_coons_patch(
         });
     }
 
-    // Build the Coons patch: P(u,v) = Lc(u,v) + Ld(u,v) - B(u,v)
-    // where:
-    //   Lc = (1-v)*bottom(u) + v*top(u)      (linear blend of u-curves)
-    //   Ld = (1-u)*left(v) + u*right(v)       (linear blend of v-curves)
-    //   B  = bilinear interpolation of corners
-    let mut control_points = Vec::with_capacity(n_v);
-    let mut weights = Vec::with_capacity(n_v);
+    let surface = coons_surface(bottom, right, top, left)?;
 
     let p00 = bottom[0];
     let p10 = bottom[n_u - 1];
     let p01 = top[0];
     let p11 = top[n_u - 1];
 
-    for j in 0..n_v {
+    let corners = [p00, p10, p11, p01];
+    let verts: Vec<_> = corners
+        .iter()
+        .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+        .collect();
+
+    let n_corners = verts.len();
+    let edges: Vec<_> = (0..n_corners)
+        .map(|i| {
+            let next = (i + 1) % n_corners;
+            topo.add_edge(Edge::new(verts[i], verts[next], EdgeCurve::Line))
+        })
+        .collect();
+
+    let oriented: Vec<_> = edges
+        .iter()
+        .map(|&eid| OrientedEdge::new(eid, true))
+        .collect();
+    let wire = Wire::new(oriented, true).map_err(OperationsError::Topology)?;
+    let wire_id = topo.add_wire(wire);
+
+    let face = Face::new(wire_id, vec![], FaceSurface::Nurbs(surface));
+    Ok(topo.add_face(face))
+}
+
+/// The bilinearly-blended Coons NURBS surface of four boundary polylines.
+///
+/// Degree 1 in both directions with uniform clamped knots, so the surface
+/// interpolates the boundary polylines exactly: the `v = 0` iso-curve is the
+/// piecewise-linear `bottom`, `v = 1` is `top`, and likewise `left`/`right`
+/// at `u = 0`/`u = 1`. Curves run: bottom and top left→right, left and right
+/// bottom→top. `bottom`/`top` must share a point count, as must
+/// `left`/`right`.
+///
+/// # Errors
+///
+/// Returns an error on mismatched point counts or an invalid NURBS net.
+pub(crate) fn coons_surface(
+    bottom: &[Point3],
+    right: &[Point3],
+    top: &[Point3],
+    left: &[Point3],
+) -> Result<NurbsSurface, OperationsError> {
+    let n_u = bottom.len();
+    let n_v = right.len();
+    if top.len() != n_u || left.len() != n_v {
+        return Err(OperationsError::InvalidInput {
+            reason: "Coons patch boundary curves must have consistent point counts".into(),
+        });
+    }
+    if n_u < 2 || n_v < 2 {
+        return Err(OperationsError::InvalidInput {
+            reason: "boundary curves must have at least 2 points each".into(),
+        });
+    }
+
+    // Build the Coons patch: P(u,v) = Lc(u,v) + Ld(u,v) - B(u,v)
+    // where:
+    //   Lc = (1-v)*bottom(u) + v*top(u)      (linear blend of u-curves)
+    //   Ld = (1-u)*left(v) + u*right(v)       (linear blend of v-curves)
+    //   B  = bilinear interpolation of corners
+    // `NurbsSurface` control nets are indexed `[u_row][v_col]`, so the outer
+    // loop runs over u. (The original loop nested the other way round — a
+    // transpose that square grids masked and a 3×2 net rejects.)
+    let mut control_points = Vec::with_capacity(n_u);
+    let mut weights = Vec::with_capacity(n_u);
+
+    let p00 = bottom[0];
+    let p10 = bottom[n_u - 1];
+    let p01 = top[0];
+    let p11 = top[n_u - 1];
+
+    for i in 0..n_u {
         #[allow(clippy::cast_precision_loss)]
-        let v = j as f64 / (n_v - 1) as f64;
+        let u = i as f64 / (n_u - 1) as f64;
 
-        let mut row = Vec::with_capacity(n_u);
-        let mut weight_row = Vec::with_capacity(n_u);
+        let mut row = Vec::with_capacity(n_v);
+        let mut weight_row = Vec::with_capacity(n_v);
 
-        for i in 0..n_u {
+        for j in 0..n_v {
             #[allow(clippy::cast_precision_loss)]
-            let u = i as f64 / (n_u - 1) as f64;
+            let v = j as f64 / (n_v - 1) as f64;
 
             // Lc: linear blend along v
             let lc = blend(bottom[i], top[i], v);
@@ -112,38 +178,14 @@ pub fn fill_coons_patch(
     let knots_u = build_clamped_knots(n_u, degree_u);
     let knots_v = build_clamped_knots(n_v, degree_v);
 
-    let surface = NurbsSurface::new(
+    Ok(NurbsSurface::new(
         degree_u,
         degree_v,
         knots_u,
         knots_v,
         control_points,
         weights,
-    )?;
-
-    let corners = [p00, p10, p11, p01];
-    let verts: Vec<_> = corners
-        .iter()
-        .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
-        .collect();
-
-    let n_corners = verts.len();
-    let edges: Vec<_> = (0..n_corners)
-        .map(|i| {
-            let next = (i + 1) % n_corners;
-            topo.add_edge(Edge::new(verts[i], verts[next], EdgeCurve::Line))
-        })
-        .collect();
-
-    let oriented: Vec<_> = edges
-        .iter()
-        .map(|&eid| OrientedEdge::new(eid, true))
-        .collect();
-    let wire = Wire::new(oriented, true).map_err(OperationsError::Topology)?;
-    let wire_id = topo.add_wire(wire);
-
-    let face = Face::new(wire_id, vec![], FaceSurface::Nurbs(surface));
-    Ok(topo.add_face(face))
+    )?)
 }
 
 /// Linear blend: (1-t)*a + t*b

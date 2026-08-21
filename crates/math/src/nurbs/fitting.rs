@@ -227,37 +227,21 @@ fn solve_interpolation(
         }
     }
 
-    let mut rhs_x: Vec<f64> = points.iter().map(|p| p.x()).collect();
-    let mut rhs_y: Vec<f64> = points.iter().map(|p| p.y()).collect();
-    let mut rhs_z: Vec<f64> = points.iter().map(|p| p.z()).collect();
+    let mut rhs = [
+        points.iter().map(|p| p.x()).collect::<Vec<f64>>(),
+        points.iter().map(|p| p.y()).collect::<Vec<f64>>(),
+        points.iter().map(|p| p.z()).collect::<Vec<f64>>(),
+    ];
 
-    gauss_solve(&mut matrix, &mut rhs_x)?;
-    // Re-build matrix (it was modified in-place).
-    let mut matrix2 = vec![vec![0.0; n]; n];
-    for (i, &t) in params.iter().enumerate() {
-        let span = find_span(t, degree, knots, n);
-        let basis = basis_funs(span, t, degree, knots);
-        for (k, &b) in basis.iter().enumerate() {
-            let col = span - degree + k;
-            if col < n {
-                matrix2[i][col] = b;
-            }
-        }
-    }
-    gauss_solve(&mut matrix2, &mut rhs_y)?;
-
-    let mut matrix3 = vec![vec![0.0; n]; n];
-    for (i, &t) in params.iter().enumerate() {
-        let span = find_span(t, degree, knots, n);
-        let basis = basis_funs(span, t, degree, knots);
-        for (k, &b) in basis.iter().enumerate() {
-            let col = span - degree + k;
-            if col < n {
-                matrix3[i][col] = b;
-            }
-        }
-    }
-    gauss_solve(&mut matrix3, &mut rhs_z)?;
+    // The collocation matrix is banded: row i's basis functions are nonzero
+    // only in columns span−degree..=span, and spans are nondecreasing in i,
+    // so both bandwidths are at most `degree`. One banded factorization
+    // solves all three coordinate systems in O(n·degree²) — the dense
+    // O(n³) solve here (run three times, rebuilding the matrix each time)
+    // made every marched-section NURBS fit a hot spot and long torus
+    // marches effectively hang.
+    banded_gauss_solve_multi(&mut matrix, &mut rhs, degree)?;
+    let [rhs_x, rhs_y, rhs_z] = rhs;
 
     Ok(rhs_x
         .iter()
@@ -265,6 +249,69 @@ fn solve_interpolation(
         .zip(rhs_z.iter())
         .map(|((&x, &y), &z)| Point3::new(x, y, z))
         .collect())
+}
+
+/// Banded Gaussian elimination with partial pivoting confined to the band,
+/// solving several right-hand sides against one factorization.
+///
+/// `band` is the matrix's one-sided bandwidth: `a[i][j] == 0` whenever
+/// `|i − j| > band`. Row pivoting within the lower band can spread fill to
+/// `2·band` above the diagonal, which the column loops account for.
+fn banded_gauss_solve_multi(
+    a: &mut [Vec<f64>],
+    rhs: &mut [Vec<f64>],
+    band: usize,
+) -> Result<(), MathError> {
+    let n = a.len();
+    if n == 0 {
+        return Ok(());
+    }
+    let bw = band.max(1);
+    for k in 0..n {
+        let row_end = (k + bw).min(n - 1);
+        let mut max_row = k;
+        let mut max_val = a[k][k].abs();
+        for i in (k + 1)..=row_end {
+            if a[i][k].abs() > max_val {
+                max_val = a[i][k].abs();
+                max_row = i;
+            }
+        }
+        if max_val < 1e-15 {
+            return Err(MathError::SingularMatrix);
+        }
+        if max_row != k {
+            a.swap(k, max_row);
+            for r in rhs.iter_mut() {
+                r.swap(k, max_row);
+            }
+        }
+        let col_end = (k + 2 * bw).min(n - 1);
+        for i in (k + 1)..=row_end {
+            let factor = a[i][k] / a[k][k];
+            if factor == 0.0 {
+                continue;
+            }
+            a[i][k] = 0.0;
+            for j in (k + 1)..=col_end {
+                a[i][j] -= factor * a[k][j];
+            }
+            for r in rhs.iter_mut() {
+                r[i] -= factor * r[k];
+            }
+        }
+    }
+    for k in (0..n).rev() {
+        let col_end = (k + 2 * bw).min(n - 1);
+        for r in rhs.iter_mut() {
+            let mut sum = r[k];
+            for j in (k + 1)..=col_end {
+                sum -= a[k][j] * r[j];
+            }
+            r[k] = sum / a[k][k];
+        }
+    }
+    Ok(())
 }
 
 /// Solve least-squares approximation for control points.
