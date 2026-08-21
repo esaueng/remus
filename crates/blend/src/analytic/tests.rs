@@ -509,23 +509,27 @@ fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
         }
     }
 
-    // Concave inward (a reversed cylinder, i.e. a blind hole's floor) is held
-    // at the old bound on purpose, until its own assembly is right.
+    // Concave inward (a reversed cylinder, i.e. a blind hole's floor) shares
+    // the convex bound now: the rim assembly's wrong-direction defect no
+    // longer reproduces (the collar volume is pinned against the closed form
+    // in `crates/operations/tests/qualify_blind_hole_floor_fillet.rs`), so
+    // the historical r_c/2 cap would only refuse sound geometry.
     let mut topo = Topology::new();
     let (spine, cyl, fp, fc) = setup(&mut topo, true);
     let n_p_inward = Vec3::new(0.0, 0.0, -1.0);
-    assert!(
-        plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, 0.9, fp, fc)
-            .unwrap()
-            .is_some(),
-        "a blind-hole floor still rounds below r_c/2"
-    );
-    for radius in [r_c * 0.5, 1.1, 1.999, r_c] {
+    for radius in [0.9, r_c * 0.5, 1.1, 1.999] {
         assert!(
             plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, radius, fp, fc)
                 .unwrap()
-                .is_none(),
-            "a blind-hole floor must still decline r = {radius} >= r_c/2"
+                .is_some(),
+            "a blind-hole floor must accept r = {radius} < r_c"
+        );
+    }
+    for radius in [r_c, r_c * 1.5] {
+        let outcome = plane_cylinder_fillet(n_p_inward, 0.0, &cyl, &spine, &topo, radius, fp, fc);
+        assert!(
+            matches!(outcome, Err(BlendError::RadiusTooLarge { .. })),
+            "a blind-hole floor must refuse r = {radius} >= r_c by name"
         );
     }
 }

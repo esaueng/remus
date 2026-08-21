@@ -1182,6 +1182,41 @@ CAUTION on counting: the baseline's classified kinds (23 boundary-edge, 2 non-ma
 1 timeout) sum to 30 of 43, so ~13 failures carry no recognised error form — probably cascade
 casualties, unconfirmed. Never quote the raw failure count as a defect count.
 
+2026-08-21 stabilization campaign (branch claude/readme-unstable-functions-07cwn4) — one-line
+ledger, details in the named fixtures:
+- Boolean result hole-wire winding is now CANONICALIZED at the ops boundary
+  (`normalize_hole_windings` in `crates/operations/src/boolean/mod.rs`): plane-face hole wires wind opposite
+  their outer. The square-through-hole cut used to fail `check_shell_orientation` (8 same-sense rim
+  edges); consumers stay winding-agnostic, the producer is just canonical now.
+- Containment-shortcut UNSOUNDNESS fixed (`detect_trivial_relation`): a torus's only witnesses were
+  its seam vertex + degenerate point-line seam edges, so any cut plane through the seam read the
+  torus as "fully contained" → EmptyResult. Witnesses now include face-surface samples gated by a
+  point-to-solid distance on-inner test (refutation-only, still sound). Pin:
+  `qualify_torus_boolean.rs::tilted_plane_through_centre_halves_torus`.
+- Coaxial torus×cylinder and axis-centred torus×sphere sections are EXACT circles
+  (`exact_torus_cylinder` / `exact_torus_sphere` in math, preferred by phase FF). The quartic
+  marcher + dense `gauss_solve` NURBS fits made these hang for minutes-to-forever; now seconds.
+- OPEN, sanctioned failing repro EXISTS: the closed-torus band split. Exact circles are emitted,
+  but a whole torus face (degenerate point boundary) cut by two axis-circles has no splitter arm →
+  analytic result invalid → fallback (cylinder case, 2% volume) or bounded work-budget refusal
+  (sphere fuse). Ready-repro: `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`
+  (#[ignore]). ATTEMPTED AND REVERTED (do not blind-retry): two-rim bands with doubled tube-meridian
+  seam arcs assembled all-free — rim/seam vertex identity must match whatever the PARTNER face's
+  splitter emits (the cylinder side anchors sections at its own seam u); solve the shared-vertex
+  contract first, not the wire shape.
+- Micron-scale boolean gap FILED: at model scale 1e-3 a plain box∖box through-cut carries the tool
+  walls untrimmed and the volume EXCEEDS the blank (ignored ready-repro
+  `crates/operations/tests/boolean_scale_gap.rs`). Fix altitude: scaled tolerance through OperationContext
+  into the GFA bands, not a splitter patch.
+- Blind-hole floor rim fillet: the stability matrix's wrong-direction defect NO LONGER REPRODUCES;
+  concave inward plane/cylinder now shares the convex `r < r_c` bound with closed-form collar pins
+  (`qualify_blind_hole_floor_fillet.rs`). resize_blend cylinder/cone positive radius stays a typed
+  refusal: heal-to-sharp works, the closed-rim assembler cannot rebuild a cylinder-wall×cone-wall
+  rim (verified on the Shapr3D fixture — "0 succeeded, 1 failed" from fillet_v2).
+- Draft/defeature/split/shell now carry construction-derived face evolution (+ journaled wrappers);
+  assemblies/feature-recognition/draft/defeature qualified and promoted (see
+  `docs/kernel-maturity/stabilization-plan.md` Dispositions).
+
 ## Subsystem trap notes (crates without their own skill)
 
 - **heal `fix_duplicate_faces` IS implemented** (solid-scoped, `crates/heal/src/fix/solid.rs`,

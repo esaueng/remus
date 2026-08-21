@@ -28,7 +28,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::wire::OrientedEdge;
 
-use crate::boolean::{FaceSpec, assemble_solid_mixed};
+use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
 
 /// Operation name carried by [`crate::OperationsError::Unsupported`] refusals.
@@ -171,13 +171,34 @@ fn compute_miter_offset(outer: Point3, unique_normals: &[(Vec3, bool)], thicknes
 /// no exact construction: an opened face that is not planar, a free boundary
 /// that lies in none of the opened faces' planes or does not close into a
 /// loop, or a result that comes back open, invalid or enclosing no volume.
-#[allow(clippy::too_many_lines)]
 pub fn shell(
     topo: &mut Topology,
     solid: SolidId,
     thickness: f64,
     open_faces: &[FaceId],
 ) -> Result<SolidId, crate::OperationsError> {
+    Ok(shell_with_evolution(topo, solid, thickness, open_faces)?.0)
+}
+
+/// [`shell`] with construction-derived face evolution.
+///
+/// Recorded while the hollow body is built, never recovered geometrically:
+/// each kept outer face is `modified` (copied through), each inner-skin face
+/// is `generated` from the source face it offsets, each opened face is
+/// `deleted`, and each rim annulus — synthesised from the open boundary
+/// rather than any one face — is `unresolved` with the opened faces as its
+/// candidates.
+///
+/// # Errors
+///
+/// Exactly [`shell`]'s errors.
+#[allow(clippy::too_many_lines)]
+pub fn shell_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    thickness: f64,
+    open_faces: &[FaceId],
+) -> Result<(SolidId, crate::evolution::EvolutionMap), crate::OperationsError> {
     let tol = Tolerance::new();
 
     if thickness <= tol.linear {
@@ -220,6 +241,10 @@ pub fn shell(
     }
 
     let mut result_specs: Vec<FaceSpec> = Vec::new();
+    // In step with `result_specs`: which input face each spec derives from,
+    // and whether it is a fresh inner-skin face (`generated`) or the outer
+    // face carried through (`modified`).
+    let mut spec_sources: Vec<(usize, bool)> = Vec::new();
 
     // ─── Phase 1: Build vertex→normals map using ALL face types ───────────
     //
@@ -355,6 +380,7 @@ pub fn shell(
             face: fid,
             outer: None,
         });
+        spec_sources.push((fid.index(), false));
     }
 
     // ─── Phase 4: Inner faces (offset of non-open faces) ──────────────────
@@ -426,6 +452,7 @@ pub fn shell(
                     d: inner_d,
                     inner_wires: planar_holes,
                 });
+                spec_sources.push((fid.index(), true));
             }
             FaceSurface::Cylinder(cyl) => {
                 let new_radius = if concave {
@@ -471,6 +498,7 @@ pub fn shell(
                             d: inner_d,
                             inner_wires: vec![],
                         });
+                        spec_sources.push((fid.index(), true));
                     }
                 } else if let Ok(new_cyl) = remus_math::surfaces::CylindricalSurface::new(
                     cyl.origin(),
@@ -490,6 +518,7 @@ pub fn shell(
                         reversed: !concave,
                         inner_wires: inner_holes,
                     });
+                    spec_sources.push((fid.index(), true));
                 }
             }
             FaceSurface::Cone(_) | FaceSurface::Nurbs(_) | FaceSurface::Torus(_) => {
@@ -504,6 +533,7 @@ pub fn shell(
                     reversed: !concave,
                     inner_wires: inner_holes,
                 });
+                spec_sources.push((fid.index(), true));
             }
             FaceSurface::Sphere(sphere) => {
                 let new_r = if concave {
@@ -528,6 +558,7 @@ pub fn shell(
                     reversed: !concave,
                     inner_wires: inner_holes,
                 });
+                spec_sources.push((fid.index(), true));
             }
         }
     }
@@ -546,7 +577,22 @@ pub fn shell(
         });
     }
 
-    let solid = assemble_solid_mixed(topo, &result_specs, tol)?;
+    debug_assert_eq!(result_specs.len(), spec_sources.len());
+    let assembly = assemble_solid_mixed_with_history(topo, &result_specs, tol)?;
+    let solid = assembly.solid;
+    let mut evolution = crate::evolution::EvolutionMap::exact();
+    for (i, out) in assembly.faces_by_spec.iter().enumerate() {
+        if let (Some(out), Some(&(src, generated))) = (out, spec_sources.get(i)) {
+            if generated {
+                evolution.add_generated(src, out.index());
+            } else {
+                evolution.add_modified(src, out.index());
+            }
+        }
+    }
+    for opened in open_faces {
+        evolution.add_deleted(opened.index());
+    }
 
     let edge_face_map = remus_topology::explorer::edge_to_face_map(topo, solid)?;
     let mut boundary_edge_ids: Vec<remus_topology::edge::EdgeId> = Vec::new();
@@ -567,7 +613,7 @@ pub fn shell(
 
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).
-        return gate(topo, solid);
+        return Ok((gate(topo, solid)?, evolution));
     }
 
     // Determine the oriented direction of each boundary edge relative to its
@@ -740,6 +786,12 @@ pub fn shell(
         }
     }
 
+    // Rim annuli are synthesised from the open boundary loops rather than
+    // derived from any one face; report them unresolved with the opened
+    // faces as candidates.
+    for rim in &rim_face_ids {
+        evolution.add_unresolved(rim.index(), open_faces.iter().map(|f| f.index()).collect());
+    }
     let solid_data = topo.solid(solid)?;
     let shell_id = solid_data.outer_shell();
     let shell = topo.shell(shell_id)?;
@@ -749,7 +801,7 @@ pub fn shell(
         remus_topology::shell::Shell::new(new_faces).map_err(crate::OperationsError::Topology)?;
     *topo.shell_mut(shell_id)? = new_shell;
 
-    gate(topo, solid)
+    Ok((gate(topo, solid)?, evolution))
 }
 
 /// An orthonormal pair spanning the plane with normal `n`.
