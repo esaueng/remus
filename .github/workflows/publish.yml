@@ -136,7 +136,7 @@ jobs:
       - name: Require publish credentials
         if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
         env:
-          REMUS_BOT_APP_ID: ${{ secrets.REMUS_BOT_APP_ID }}
+          REMUS_BOT_APP_ID: ${{ vars.REMUS_BOT_APP_ID }}
           REMUS_BOT_PRIVATE_KEY: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
         run: ./scripts/require-publish-credentials.sh
 
@@ -144,7 +144,7 @@ jobs:
         id: app-token
         if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
         with:
-          app-id: ${{ secrets.REMUS_BOT_APP_ID }}
+          app-id: ${{ vars.REMUS_BOT_APP_ID }}
           private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
 
       - name: Commit refreshed package

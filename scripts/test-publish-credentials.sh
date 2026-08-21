@@ -24,7 +24,7 @@ assert_failure() {
     echo "expected credential check to fail"
     return 1
   fi
-  if [[ $output != *"repository secrets: ${expected}"* ]]; then
+  if [[ $output != *"This release requires: ${expected}"* ]]; then
     echo "unexpected credential error: ${output}"
     return 1
   fi
@@ -34,9 +34,9 @@ assert_failure() {
   fi
 }
 
-assert_failure "REMUS_BOT_APP_ID, REMUS_BOT_PRIVATE_KEY"
-assert_failure "REMUS_BOT_PRIVATE_KEY" test-app-id
-assert_failure "REMUS_BOT_APP_ID" "" test-private-key
+assert_failure "REMUS_BOT_APP_ID (repository variable), REMUS_BOT_PRIVATE_KEY (repository secret)"
+assert_failure "REMUS_BOT_PRIVATE_KEY (repository secret)" test-app-id
+assert_failure "REMUS_BOT_APP_ID (repository variable)" "" test-private-key
 
 output=$(REMUS_BOT_APP_ID=test-app-id REMUS_BOT_PRIVATE_KEY=test-private-key "$CHECK_SCRIPT")
 if [[ -n $output ]]; then
@@ -50,6 +50,18 @@ if grep -Fq '|| github.token' "$PUBLISH_WORKFLOW"; then
 fi
 if ! grep -Fq "GH_TOKEN: \${{ steps.app-token.outputs.token }}" "$PUBLISH_WORKFLOW"; then
   echo "publish workflow must use only the GitHub App token for writes"
+  exit 1
+fi
+if ! grep -Fq 'app-id: ${{ vars.REMUS_BOT_APP_ID }}' "$PUBLISH_WORKFLOW"; then
+  echo "publish workflow must read the App ID from the repository variable"
+  exit 1
+fi
+if ! grep -Fq 'private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}' "$PUBLISH_WORKFLOW"; then
+  echo "publish workflow must read the private key from the repository secret"
+  exit 1
+fi
+if grep -Fq 'secrets.REMUS_BOT_APP_ID' "$PUBLISH_WORKFLOW"; then
+  echo "App ID must not be read from the secrets context — it is a variable"
   exit 1
 fi
 if ! grep -Fq 'run: ./scripts/require-publish-credentials.sh' "$PUBLISH_WORKFLOW"; then
