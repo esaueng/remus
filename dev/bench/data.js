@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787313267367,
+  "lastUpdate": 1787317146344,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -917,6 +917,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38315888,
             "range": "± 65854",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6fee7cef1554039e86098576aa86351b997fe195",
+          "message": "docs(skills): correct pr-workflow's release-flow account to the committed-package channel (#65)\n\nThe skill still described the upstream release-please pipeline: a pending\n'chore(main): release X.Y.Z' PR, npm publish on merging it, version bumps\nparsed from squash titles, and a publish_version dispatch input. None of\nthat exists in this fork (no workflow references release-please; the\nconfig files in the tree are inert), and the release-flow skill already\nsaid so — pr-workflow contradicted it, which this session followed into\npromising a phantom release PR.\n\nReplaced with the verified reality: publish.yml refreshes the committed\ncrates/wasm/pkg on every push to main and that auto-commit is the release\n(consumers install by git path); the dispatch input is sync_package; the\nversion comes from crates/wasm/Cargo.toml, not PR titles. Symptom-table\nrows updated to match, including the missing-refresh-commit case and its\ncredentials caveat (open PR #48).\n\n\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-21T08:56:18-04:00",
+          "tree_id": "fa66d61a6139b1628fd36a2124e0932b8aed49df",
+          "url": "https://github.com/esaueng/remus/commit/6fee7cef1554039e86098576aa86351b997fe195"
+        },
+        "date": 1787317145226,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1413079,
+            "range": "± 27585",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1442737,
+            "range": "± 13141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14085,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 989909,
+            "range": "± 1367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41176783,
+            "range": "± 138270",
             "unit": "ns/iter"
           }
         ]
