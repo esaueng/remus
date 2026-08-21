@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787253909606,
+  "lastUpdate": 1787313267367,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -863,6 +863,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40939994,
             "range": "± 164821",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "932748e41aa6ecaf010fac0a8f3d2dbd830bbb0e",
+          "message": "feat: stabilization campaign — qualify and promote the Beta/Experimental rows (#64)\n\n* docs(kernel-maturity): add stabilization plan for all Beta/Experimental rows\n\nAdds docs/kernel-maturity/stabilization-plan.md: a sequenced, per-feature\nplan for promoting the eleven non-Stable README Status rows (torus\nbooleans, draft, non-planar profiles, feature recognition, assemblies,\nevolution, defeaturing, curved blends, resize_blend, IGES, rendering)\nunder the capability-matrix promotion rules, with effort tiers,\ndependencies, and an IGES scope decision gate. Links the plan from the\nREADME kernel-contract section.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\n* feat(operations): qualification evidence for draft, defeature, assembly, feature recognition\n\nPhase A of the stabilization plan (docs/kernel-maturity/stabilization-plan.md):\n\n- boolean: canonicalize plane-face hole-wire winding at the result boundary\n  (normalize_hole_windings). The GFA can emit a hole wound like its outer;\n  consumers were winding-agnostic but validate_solid's shared-edge sense\n  check flags it, and every downstream qualification tripped over it.\n- assembly: deterministic component storage (BTreeMap), flatten now emits\n  every component's solid (sub-assembly nodes were silently dropped, BOM\n  disagreed), BOM ordered by solid index, empty-assembly bbox is a typed\n  error.\n- feature_recognition: ordered maps for deterministic output; FilletLike no\n  longer claims planar faces; pocket detection classifies all-planar\n  rectangular pockets (floor = max concave degree member).\n- qualification suites: qualify_draft, qualify_defeature, qualify_assembly,\n  qualify_feature_recognition — closed-form volume oracles, scale matrix,\n  typed-refusal both-sides tests, determinism pins.\n- boolean_scale_gap: ignored ready-repro filing the micron-scale cut defect\n  (tool walls carried untrimmed at 1e-3 scale; needs scaled tolerance via\n  OperationContext).\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\n* feat(operations): construction-derived face evolution for draft, defeature, split, shell\n\nStabilization plan item B3: the four declared-gap operations now record\nreal face provenance at construction time instead of journaling as\nbarriers — draft (every face modified 1:1 through assembly history),\ndefeature (heal's face_map + deletions), split (per-half maps, caps\nhonestly unresolved), shell (outer copies modified, inner skins generated,\nopened faces deleted, rim annuli unresolved with candidates). Journaled\nwrappers draft_journaled / defeature_journaled / split_journaled /\nshell_journaled record them as real journal entries; offset and direct\nedits remain the declared barrier gaps. Qualification suite\nqualify_evolution_coverage pins total attribution (every result face\nclaimed exactly once) and construction origin for each.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\n* feat(operations): Coons caps for n-sided and partial-revolve non-planar section boundaries\n\nStabilization plan item B2 (workstreams 1 and 3):\n\n- fill_face: factor coons_surface out of fill_coons_patch, and fix a\n  latent control-net transpose (NurbsSurface nets are [u][v]; the Coons\n  grid was built [v][u], invisible on the square grids the tests used and\n  rejected on any m-by-n net).\n- cap: n-sided (>= 5) non-planar hole-free rings are capped by a Coons\n  patch of the ring's chord chains — opposite chains refined to matching\n  counts by collinear midpoint insertion, so every boundary iso-curve is\n  exactly a run of ring chords and the cap cannot overfill.\n- revolve: a partial revolution of a non-planar POLYGONAL (all-line,\n  hole-free) boundary now closes with bilinear/Coons caps instead of\n  refusing; curved-edge and holed non-planar boundaries keep their typed\n  refusals. Loft/sweep/pipe pick the same caps up through build_cap_face.\n- flipped pins: loft >4-edge non-planar boundary (translation-sweep\n  volume oracle, exact shoelace closed form), revolve partial non-planar\n  boundary (half-of-full-revolution volume oracle).\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\n* feat(blend): widen the blind-hole floor rim fillet to the full r < r_c domain\n\nStabilization plan item C1.1. The stability matrix carried the concave\ninward plane/cylinder lane as wrong-direction ('r=3 hole rounded at r=1\nloses 7.93 where the closed form adds 3.74') and capped it at r_c/2. The\ndefect no longer reproduces: the assembler builds the exact toroidal\ncollar, matching the closed form 2pi[r^2(r_c - r/2) - (pi r^2/4)(r_c - r\n+ 4r/3pi)] across the whole sweep including the horn/spindle carrier\nregimes past r_c/2. The concave lane now shares the convex bound\n(refuse r >= r_c as typed RadiusTooLarge instead of declining to the\nwalker). Also: wasm getSolidFaces / getFaceNormal /\ngetFaceVertexPositions read-only batch ops + Phase A batch contract\ntests (draft, defeature, determinism); resize_blend keeps its typed\ncylinder/cone positive-radius refusal with the verified reason recorded.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\n* feat: torus boolean exact arms, banded NURBS interpolation, containment soundness, label promotions\n\nStabilization plan items B1, C1.1 follow-ups, and the promotion pass:\n\n- math: exact_torus_cylinder and exact_torus_sphere — coaxial/axis-centred\n  sections are exact circles; phase FF prefers them, so the quartic\n  marcher (whose NURBS fits made these configurations effectively hang)\n  no longer runs for them. approx census unchanged.\n- math: solve_interpolation now uses one banded multi-RHS factorization\n  (the collocation matrix has bandwidth = degree) instead of three dense\n  O(n^3) Gauss solves with matrix rebuilds — coaxial_torus went from a\n  20-minute hang to 15 s.\n- boolean: detect_trivial_relation's containment vote gains near-surface\n  interior witnesses (nudged inward, counted only when classifying\n  strictly Inside). A torus's only prior witnesses were its seam vertex\n  and degenerate point-line seam edges, so any cut plane through the seam\n  read the whole torus as contained and returned EmptyResult; a naive\n  surface-sample version falsely refuted a true cone-in-box containment\n  (distance-to-solid measures the untrimmed surface), hence the strict\n  inside gate. Pins in qualify_torus_boolean.rs and curved_properties.\n- qualification: qualify_torus_boolean (closed-form + central-symmetry +\n  determinism oracles; the closed-torus band split is the named parked\n  follow-up with an ignored ready-repro), render determinism pin.\n- promotions, matrices updated together per the promotion rule: draft,\n  defeaturing, assemblies, feature recognition, non-planar profiles, and\n  evolution to Stable with declared bounds; torus booleans stay Beta with\n  improved evidence; IGES retained Experimental by decision; blend\n  floor-rim and resize_blend dispositions refreshed; roadmap skill ledger\n  updated; stabilization plan carries per-item dispositions.\n\nFull workspace suites green (ops, algo, io, wasm incl. gridfinity, math,\nblend, topology, geometry, check, heal, offset, sketch); census clean;\nclippy -D warnings clean.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Y9tmryWkduUKgrWtoMxB6Z\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-21T07:51:49-04:00",
+          "tree_id": "6beacc014d8bc9d398e2645fba8a4d1a8a24f34c",
+          "url": "https://github.com/esaueng/remus/commit/932748e41aa6ecaf010fac0a8f3d2dbd830bbb0e"
+        },
+        "date": 1787313266491,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1276200,
+            "range": "± 1450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1364627,
+            "range": "± 974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13234,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 954731,
+            "range": "± 5151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38315888,
+            "range": "± 65854",
             "unit": "ns/iter"
           }
         ]
