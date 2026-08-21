@@ -30,3 +30,5 @@ pub mod transforms;
 mod gridfinity_tests;
 #[cfg(test)]
 mod holed_face_tests;
+#[cfg(test)]
+mod qualify_ops_tests;

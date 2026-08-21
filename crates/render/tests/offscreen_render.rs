@@ -272,3 +272,31 @@ fn pixel_budget_render_is_rejected_without_adapter() {
         Ok(_) => panic!("expected PixelBudgetExceeded, got Ok"),
     }
 }
+
+/// Rendering is deterministic: the same scene rendered twice yields a
+/// bit-identical face-id buffer and color image. The id buffer is the
+/// contract surface picking tools depend on — a nondeterministic buffer
+/// breaks stable selection.
+#[test]
+fn offscreen_render_is_deterministic() {
+    let Some(adapter) = probe_adapter() else {
+        println!(
+            "SKIP offscreen_render_is_deterministic: no wgpu adapter available (no GPU or software fallback in this environment)"
+        );
+        return;
+    };
+    println!("using wgpu adapter: {adapter}");
+
+    let render_once = || {
+        let mut topo = Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 30.0, 20.0, 10.0).unwrap();
+        let cam = iso_camera(Point3::new(15.0, 10.0, 5.0), 20.0);
+        let opts = RenderOpts::new(256, 256);
+        let out = render_solid_offscreen(&topo, solid, &cam, &opts).unwrap();
+        (out.color.clone().into_raw(), out.id_buffer)
+    };
+    let (color_a, ids_a) = render_once();
+    let (color_b, ids_b) = render_once();
+    assert_eq!(ids_a, ids_b, "face-id buffer must be bit-identical");
+    assert_eq!(color_a, color_b, "color image must be bit-identical");
+}
