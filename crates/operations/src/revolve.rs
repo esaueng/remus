@@ -1322,48 +1322,76 @@ pub fn revolve(
                 .normalize()
                 .unwrap_or(axis)
         } else {
-            // A partial revolution closes its ends with planar caps, so the
-            // boundary must be a planar polygon.
+            // A partial revolution closes its ends with cap faces. A planar
+            // boundary gets exact Plane caps; a non-planar polygonal (all
+            // line-edge, hole-free) boundary gets bilinear/Coons caps whose
+            // boundary iso-curves are exactly the ring chords. A non-planar
+            // boundary with curved edges or holes has no exact cap fill and
+            // stays a typed refusal.
             if wire_positions.len() < 3 {
                 return Err(crate::OperationsError::InvalidInput {
                     reason: "partial revolve of a non-planar profile requires a polygonal boundary"
                         .into(),
                 });
             }
-            let normal = crate::winding::newell_normal(&wire_positions).normalize()?;
-            let plane_pt = wire_positions[0];
-            let max_dev = wire_positions
-                .iter()
-                .map(|p| (*p - plane_pt).dot(normal).abs())
-                .fold(0.0, f64::max);
-            let scale = wire_positions
-                .iter()
-                .map(|p| (*p - plane_pt).length())
-                .fold(0.0, f64::max);
-            if max_dev > PLANARITY_REL_TOL * scale {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "partial revolve of a non-planar profile boundary is not supported"
-                        .into(),
-                });
-            }
-            normal
+            crate::winding::newell_normal(&wire_positions).normalize()?
         }
     };
 
-    if !is_full {
-        let plane_point = wire_positions[0];
+    // Whether the end caps can be exact planes. Decided from the boundary
+    // itself: the stored surface may be non-planar while the boundary ring is
+    // planar (a sphere patch on a planar ring).
+    let caps_planar = if is_full {
+        true
+    } else {
+        let plane_pt = wire_positions[0];
+        let max_dev = wire_positions
+            .iter()
+            .map(|p| (*p - plane_pt).dot(input_normal).abs())
+            .fold(0.0, f64::max);
         let scale = wire_positions
             .iter()
-            .map(|point| (*point - plane_point).length())
+            .map(|p| (*p - plane_pt).length())
             .fold(0.0, f64::max);
-        let cap_tolerance = (PLANARITY_REL_TOL * scale).max(tol.linear);
-        validate_cap_wires_planar(
-            topo,
-            std::iter::once(input_wire_id).chain(inner_wire_ids.iter().copied()),
-            plane_point,
-            input_normal,
-            cap_tolerance,
-        )?;
+        max_dev <= PLANARITY_REL_TOL * scale
+    };
+
+    if !is_full {
+        if caps_planar {
+            let plane_point = wire_positions[0];
+            let scale = wire_positions
+                .iter()
+                .map(|point| (*point - plane_point).length())
+                .fold(0.0, f64::max);
+            let cap_tolerance = (PLANARITY_REL_TOL * scale).max(tol.linear);
+            validate_cap_wires_planar(
+                topo,
+                std::iter::once(input_wire_id).chain(inner_wire_ids.iter().copied()),
+                plane_point,
+                input_normal,
+                cap_tolerance,
+            )?;
+        } else {
+            if !inner_wire_ids.is_empty() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "partial revolve of a non-planar profile boundary with holes \
+                             is not supported"
+                        .into(),
+                });
+            }
+            for oe in topo.wire(input_wire_id)?.edges() {
+                if !matches!(
+                    topo.edge(oe.edge())?.curve(),
+                    remus_topology::edge::EdgeCurve::Line
+                ) {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "partial revolve of a non-planar profile boundary with \
+                                 curved edges is not supported"
+                            .into(),
+                    });
+                }
+            }
+        }
     }
 
     // The sweep runs in +θ = axis × e_r, so a profile whose traversal is CCW in
@@ -1512,8 +1540,6 @@ pub fn revolve(
             .rev()
             .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
             .collect();
-        let wire = Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?;
-        let wid = topo.add_wire(wire);
 
         // Create inner wire holes for the bottom cap.
         let mut bottom_inner_wires = Vec::new();
@@ -1529,15 +1555,42 @@ pub fn revolve(
         }
 
         let bottom_normal = -input_normal;
-        let bottom_d = dot_normal_point(bottom_normal, input_positions[0]);
-        let fid = topo.add_face(Face::new(
-            wid,
-            bottom_inner_wires,
-            FaceSurface::Plane {
-                normal: bottom_normal,
-                d: bottom_d,
-            },
-        ));
+        let fid = if caps_planar {
+            let wire =
+                Wire::new(reversed_edges, true).map_err(crate::OperationsError::Topology)?;
+            let wid = topo.add_wire(wire);
+            let bottom_d = dot_normal_point(bottom_normal, input_positions[0]);
+            topo.add_face(Face::new(
+                wid,
+                bottom_inner_wires,
+                FaceSurface::Plane {
+                    normal: bottom_normal,
+                    d: bottom_d,
+                },
+            ))
+        } else {
+            // Non-planar polygonal boundary: bilinear/Coons patch, exact on
+            // the ring chords. Stored winding tracks the stored normal, so
+            // when the patch normal opposes the cap's outward side the face
+            // carries the forward wire with the reversal flag instead.
+            let surf = crate::cap::nonplanar_ring_surface(&input_positions)?;
+            let aligned = surf
+                .normal(0.5, 0.5)
+                .map(|nrm| nrm.dot(bottom_normal) > 0.0)
+                .unwrap_or(true);
+            let edges = if aligned {
+                reversed_edges
+            } else {
+                outer.input_oriented.clone()
+            };
+            let wire = Wire::new(edges, true).map_err(crate::OperationsError::Topology)?;
+            let wid = topo.add_wire(wire);
+            let mut face = Face::new(wid, bottom_inner_wires, FaceSurface::Nurbs(surf));
+            if !aligned {
+                face.set_reversed(true);
+            }
+            topo.add_face(face)
+        };
         all_faces.push(fid);
     }
 
@@ -1695,16 +1748,43 @@ pub fn revolve(
 
         let rotated_normal = rotate_vec(input_normal, axis, angle);
         let top_pos = topo.vertex(outer.ring_verts[last_ring][0])?.point();
-        let top_d = dot_normal_point(rotated_normal, top_pos);
 
-        let fid = topo.add_face(Face::new(
-            top_wire_id,
-            top_inner_wires,
-            FaceSurface::Plane {
-                normal: rotated_normal,
-                d: top_d,
-            },
-        ));
+        let fid = if caps_planar {
+            let top_d = dot_normal_point(rotated_normal, top_pos);
+            topo.add_face(Face::new(
+                top_wire_id,
+                top_inner_wires,
+                FaceSurface::Plane {
+                    normal: rotated_normal,
+                    d: top_d,
+                },
+            ))
+        } else {
+            let top_positions: Vec<Point3> = outer.ring_verts[last_ring]
+                .iter()
+                .map(|&vid| topo.vertex(vid).map(remus_topology::vertex::Vertex::point))
+                .collect::<Result<_, _>>()?;
+            let surf = crate::cap::nonplanar_ring_surface(&top_positions)?;
+            let aligned = surf
+                .normal(0.5, 0.5)
+                .map(|nrm| nrm.dot(rotated_normal) > 0.0)
+                .unwrap_or(true);
+            let wire_id = if aligned {
+                top_wire_id
+            } else {
+                let reversed: Vec<OrientedEdge> = outer.ring_edges[last_ring]
+                    .iter()
+                    .rev()
+                    .map(|&eid| OrientedEdge::new(eid, false))
+                    .collect();
+                topo.add_wire(Wire::new(reversed, true).map_err(crate::OperationsError::Topology)?)
+            };
+            let mut face = Face::new(wire_id, top_inner_wires, FaceSurface::Nurbs(surf));
+            if !aligned {
+                face.set_reversed(true);
+            }
+            topo.add_face(face)
+        };
         all_faces.push(fid);
     }
 
@@ -3042,38 +3122,52 @@ mod tests {
     }
 
     #[test]
-    fn revolve_partial_nonplanar_boundary_is_rejected() {
-        // A genuinely non-planar boundary (corners lifted off z=0) can't be
-        // closed by a planar cap, so a partial revolve is rejected.
-        let mut topo = Topology::new();
-        let pts = vec![
-            Point3::new(2.0, 0.0, 0.0),
-            Point3::new(4.0, 0.0, 0.6),
-            Point3::new(4.0, 3.0, 0.0),
-            Point3::new(2.0, 3.0, 0.6),
-        ];
-        let wire = remus_topology::builder::make_polygon_wire(&mut topo, &pts, 1e-7).unwrap();
-        let cyl = remus_math::surfaces::CylindricalSurface::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-            1.0,
-        )
-        .unwrap();
-        let face = topo.add_face(remus_topology::face::Face::new(
-            wire,
-            vec![],
-            FaceSurface::Cylinder(cyl),
-        ));
-        let result = revolve(
-            &mut topo,
-            face,
-            Point3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            PI,
-        );
+    fn revolve_partial_nonplanar_boundary_gets_patch_caps() {
+        // A genuinely non-planar polygonal boundary (corners lifted off z=0)
+        // is closed by bilinear/Coons caps that are exact on the ring chords.
+        // Oracle: a 180-degree sweep encloses exactly half the volume of the
+        // full revolution of the same profile.
+        let build = |angle: f64| -> f64 {
+            let mut topo = Topology::new();
+            let pts = vec![
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(4.0, 0.0, 0.6),
+                Point3::new(4.0, 3.0, 0.0),
+                Point3::new(2.0, 3.0, 0.6),
+            ];
+            let wire = remus_topology::builder::make_polygon_wire(&mut topo, &pts, 1e-7).unwrap();
+            let cyl = remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+            )
+            .unwrap();
+            let face = topo.add_face(remus_topology::face::Face::new(
+                wire,
+                vec![],
+                FaceSurface::Cylinder(cyl),
+            ));
+            let solid = revolve(
+                &mut topo,
+                face,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                angle,
+            )
+            .unwrap();
+            assert!(
+                crate::validate::validate_solid(&topo, solid)
+                    .unwrap()
+                    .is_valid(),
+                "partial non-planar revolve must be a valid solid"
+            );
+            crate::measure::solid_volume(&topo, solid, 0.05).unwrap()
+        };
+        let half = build(PI);
+        let full = build(2.0 * PI);
         assert!(
-            result.is_err(),
-            "partial revolve of a non-planar boundary must be rejected"
+            (half - full / 2.0).abs() / full < 0.01,
+            "half sweep should be half the full revolution: {half} vs {full}"
         );
     }
 
