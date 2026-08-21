@@ -387,11 +387,150 @@ pub fn linear_pattern_journaled(
     Ok(JournaledPattern { compound, op, map })
 }
 
+/// A journaled single-solid operation's result.
+#[derive(Debug)]
+pub struct JournaledSolidOp {
+    /// The result solid.
+    pub solid: SolidId,
+    /// The journal entry recording the operation's face evolution.
+    pub op: OpId,
+    /// The recorded face-evolution map.
+    pub map: EvolutionMap,
+}
+
+/// Runs a draft and journals its construction-derived face evolution as
+/// one entry (kind `draft`).
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the draft or the recording fails.
+pub fn draft_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    draft_faces: &[remus_topology::FaceId],
+    pull_direction: remus_math::vec::Vec3,
+    neutral_point: remus_math::vec::Point3,
+    angle_radians: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    let pending = begin_scoped(topo, "draft", &[solid])?;
+    let (result, map) = crate::draft::draft_with_evolution(
+        topo,
+        solid,
+        draft_faces,
+        pull_direction,
+        neutral_point,
+        angle_radians,
+    )?;
+    let op = record_face_evolution(topo, pending, &map, &[result])?;
+    Ok(JournaledSolidOp {
+        solid: result,
+        op,
+        map,
+    })
+}
+
+/// Runs a defeature and journals its construction-derived face evolution
+/// as one entry (kind `defeature`).
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the defeature or the recording fails.
+pub fn defeature_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces_to_remove: &[remus_topology::FaceId],
+) -> Result<JournaledSolidOp, OperationsError> {
+    let pending = begin_scoped(topo, "defeature", &[solid])?;
+    let (result, map) = crate::defeature::defeature_with_evolution(topo, solid, faces_to_remove)?;
+    let op = record_face_evolution(topo, pending, &map, &[result])?;
+    Ok(JournaledSolidOp {
+        solid: result,
+        op,
+        map,
+    })
+}
+
+/// Runs a shell (hollow) and journals its construction-derived face
+/// evolution as one entry (kind `shell`).
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the shell or the recording fails.
+pub fn shell_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    thickness: f64,
+    open_faces: &[remus_topology::FaceId],
+) -> Result<JournaledSolidOp, OperationsError> {
+    let pending = begin_scoped(topo, "shell", &[solid])?;
+    let (result, map) = crate::shell_op::shell_with_evolution(topo, solid, thickness, open_faces)?;
+    let op = record_face_evolution(topo, pending, &map, &[result])?;
+    Ok(JournaledSolidOp {
+        solid: result,
+        op,
+        map,
+    })
+}
+
+/// A journaled split's result.
+#[derive(Debug)]
+pub struct JournaledSplit {
+    /// The two halves.
+    pub result: crate::split::SplitResult,
+    /// The journal entry recording both halves' face evolution.
+    pub op: OpId,
+    /// The positive half's face-evolution map.
+    pub positive_map: EvolutionMap,
+    /// The negative half's face-evolution map.
+    pub negative_map: EvolutionMap,
+}
+
+/// Runs a plane split and journals both halves' construction-derived face
+/// evolution as one entry (kind `split`), scoped over the input and both
+/// halves.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`] if the split or the recording fails.
+pub fn split_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    plane_point: remus_math::vec::Point3,
+    plane_normal: remus_math::vec::Vec3,
+) -> Result<JournaledSplit, OperationsError> {
+    let pending = begin_scoped(topo, "split", &[solid])?;
+    let (result, evo) = crate::split::split_with_evolution(topo, solid, plane_point, plane_normal)?;
+    let mut combined = EvolutionMap::exact();
+    for map in [&evo.positive, &evo.negative] {
+        for (&input, outputs) in &map.modified {
+            for &output in outputs {
+                combined.add_modified(input, output);
+            }
+        }
+        for (&output, candidates) in &map.unresolved {
+            combined.add_unresolved(output, candidates.clone());
+        }
+    }
+    let op = record_face_evolution(
+        topo,
+        pending,
+        &combined,
+        &[result.positive, result.negative],
+    )?;
+    Ok(JournaledSplit {
+        result,
+        op,
+        positive_map: evo.positive,
+        negative_map: evo.negative,
+    })
+}
+
 /// Journals an explicit barrier over every entity of `solid`.
 ///
 /// This is the honest entry for an operation that produces no evolution
-/// records (offset, shell, draft, defeature, direct edits — the stability
-/// matrix's declared gaps): the result solid's faces, edges, and vertices
+/// records (offset and direct edits — the stability matrix's remaining
+/// declared gaps; draft, defeature, split, and shell journal real
+/// evolution via their `*_journaled` wrappers): the result solid's faces, edges, and vertices
 /// are all unresolved across it, and a resolver chasing a reference
 /// through this entry fails closed naming the operation. Coverage grows
 /// operation by operation by replacing barriers with real evolution.

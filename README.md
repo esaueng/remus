@@ -102,6 +102,9 @@ feature label.
 - **[Stability matrix](docs/production-readiness/stability-matrix.md)** — the
   audited disposition of each label shipping *today*, including the rows whose
   advertised domain is not yet fully evidenced.
+- **[Stabilization plan](docs/kernel-maturity/stabilization-plan.md)** — the
+  working plan for promoting every Beta/Experimental row below to Stable,
+  sequenced under the capability-matrix promotion rules.
 
 Four mechanisms carry that contract in code:
 
@@ -136,11 +139,11 @@ evidence each label currently rests on.
 | **Modifiers**           | Resize or remove an analytic blend band (`resize_blend`)                     | Experimental |
 | **Modifiers**           | Shell (hollow solid)                                                         | Stable       |
 | **Modifiers**           | Offset face, offset solid, thicken, mirror, pattern                          | Stable       |
-| **Modifiers**           | Draft (planar faces)                                                         | Beta         |
+| **Modifiers**           | Draft (planar faces)                                                         | Stable       |
 | **Sweeps**              | Extrude (planar + NURBS profiles)                                            | Stable       |
 | **Sweeps**              | Revolve, sweep, loft, pipe (planar profiles)                                 | Stable       |
 | **Sweeps**              | Helical sweep                                                                | Stable       |
-| **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Beta         |
+| **Sweeps**              | Non-planar profiles for loft, sweep, pipe, revolve                           | Stable       |
 | **Construction**        | Coons-patch face fill, sew, untrim                                           | Stable       |
 | **Sectioning**          | Cross-section faces, split by plane                                          | Stable       |
 | **Measurement**         | Bounding box, area, volume, center of mass, inertia tensor + principal axes  | Stable       |
@@ -156,10 +159,10 @@ evidence each label currently rests on.
 | **I/O**                 | STL, 3MF, OBJ, PLY, glTF (`.glb`) import/export                              | Stable       |
 | **I/O**                 | IGES import/export                                                           | Experimental |
 | **Sketching**           | 2D constraint solver (DogLeg)                                                | Stable       |
-| **Feature Recognition** | Holes, pockets, chamfers, fillets                                            | Beta         |
-| **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Beta         |
-| **Evolution**           | Face provenance through booleans, blends, and patterns                       | Beta         |
-| **Defeaturing**         | Remove planar faces                                                          | Beta         |
+| **Feature Recognition** | Holes, pockets, chamfers, fillets                                            | Stable       |
+| **Assemblies**          | Hierarchy, transforms, bill of materials                                     | Stable       |
+| **Evolution**           | Face provenance (booleans, blends, patterns, draft, defeature, split, shell) | Stable       |
+| **Defeaturing**         | Remove planar faces                                                          | Stable       |
 | **Rendering**           | Offscreen wgpu render to image plus face-id buffer (`remus-render`)        | Experimental |
 
 ## Known Limitations
@@ -168,11 +171,11 @@ A few areas are still maturing. Worth knowing before you build on them:
 
 - **Boolean fallback.** Most booleans run on an exact path that preserves analytic and NURBS surfaces. Hard configurations may use a bounded mesh-based fallback, which tessellates curved faces. If its input/work budgets are exceeded or the welded result is open, non-manifold, or invalid, the operation returns an error instead of a partial solid. Exact tangency and sliver crossings are the two contact configurations that still fall over to that path rather than being answered analytically.
 - **Walking fillet/chamfer and offset.** The v2 modifier APIs validate completed topology and reject partial results. Unsupported/no-op trimming and offsetting a solid that already contains cavity shells return explicit errors; they do not silently drop faces or cavities. Radii the rolling ball cannot fit are refused as typed errors naming the edge and the limit, not delivered as a partial result.
-- **Torus booleans.** Box-with-torus and coaxial-torus cases work and give correct volumes. General torus-to-torus and torus-with-other-surface intersections have known gaps and may fall back to meshing.
-- **Non-planar profiles.** Loft, sweep, and pipe accept profiles with non-planar surfaces, and close non-planar section boundaries with bilinear caps for four-sided rings (boundaries with more than four edges, or holes on a non-planar section, are not yet supported). Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, but a partial revolution still requires a planar boundary for its caps. The smooth, scaled/guided, and multi-section sweep variants accept non-planar profiles too; only the miter-corner variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
-- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, and patterns. Offset, shell, draft, split, defeature, and direct edits produce none, and there is no edge or vertex provenance yet.
+- **Torus booleans.** Box-with-torus, coaxial-torus, plane-through-centre, and coaxial-cylinder cases give correct volumes, and coaxial torus×cylinder / axis-centred torus×sphere sections are exact circles. Carving a closed torus face into tube bands is not implemented yet, so those configurations resolve through the bounded mesh fallback (torus×sphere fuse currently refuses on its work budget); general torus-to-torus intersections have known gaps.
+- **Non-planar profiles.** Loft, sweep, and pipe close non-planar section boundaries with bilinear (4-sided) or Coons (5-or-more-sided) caps whose boundary iso-curves are exactly the ring chords; holes on a non-planar section remain a typed refusal. Revolve accepts non-planar profile surfaces; a full revolution takes any boundary, and a partial revolution closes non-planar polygonal boundaries with the same caps (curved-edge non-planar boundaries and holes stay typed refusals). Only the miter-corner sweep variant still requires planar profiles (its bisector-plane joint faces would otherwise be non-planar).
+- **Evolution coverage.** Face provenance is exact and construction-derived for booleans, the walking and planar blend builders, patterns, draft, defeature, plane split, and shell. Offset and direct edits still journal as explicit barriers, and edge/vertex provenance beyond the boolean path is roadmap work.
 - **IGES is experimental.** Export writes planar and NURBS surfaces but skips analytic surfaces and approximates circular and elliptical edges as polylines. Import reconstructs planar placeholder faces only. Use STEP for B-Rep exchange.
-- **Beta subsystems.** Feature recognition, assemblies, evolution tracking, and defeaturing work but are still maturing. Defeaturing handles planar faces only.
+- **Declared domains.** Feature recognition claims only its declared feature set (holes, rectangular pockets, chamfers, curved fillet bands) — outside it, absence of a claim is the contract. Defeaturing removes features whose wound lies on planar kept faces (the removed feature itself may be curved); draft targets planar faces. Each refuses outside its domain by name.
 
 The versioned WASM fillet/chamfer provenance payload and its strict decoder are
 documented in [WASM face evolution](docs/wasm-face-evolution.md).
