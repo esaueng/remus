@@ -401,7 +401,12 @@ impl Builder {
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
-        let solid_id = assemble::assemble_solid(&mut self.topo, &selected, &cap_planes)?;
+        let solid_id = assemble::assemble_solid(
+            &mut self.topo,
+            &selected,
+            &cap_planes,
+            &mut self.edge_lineage,
+        )?;
         Ok((self.topo, solid_id))
     }
 
@@ -410,30 +415,6 @@ impl Builder {
     /// face IDs are in this builder's (store-local) topology — callers crossing
     /// the GFA shape-store boundary must translate them to caller IDs.
     pub fn build_result_with_origins(
-        mut self,
-        op: BooleanOp,
-    ) -> Result<(Topology, SolidId, FaceProvenance), AlgoError> {
-        let selected = bop::select_faces(
-            &self.sub_faces,
-            op,
-            &self.sd_pairs,
-            &self.sd_within_rank_dups,
-        );
-        if op == BooleanOp::Fuse {
-            orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
-        }
-        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
-        log_source_face_partition(&self.topo, &self.sub_faces, &selected);
-        let cap_planes = self.partial_overlap_cap_planes(&selected);
-        let (solid_id, origins) =
-            assemble::assemble_solid_with_origins(&mut self.topo, &selected, &cap_planes)?;
-        Ok((self.topo, solid_id, origins))
-    }
-
-    /// Like [`Self::build_result_with_origins`], returning the complete edge
-    /// construction log after final shell assembly has appended its explicit
-    /// weld and split rewrites.
-    pub fn build_result_with_origins_and_lineage(
         mut self,
         op: BooleanOp,
     ) -> Result<
@@ -457,7 +438,7 @@ impl Builder {
         log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
-        let (solid_id, origins) = assemble::assemble_solid_with_origins_and_lineage(
+        let (solid_id, origins) = assemble::assemble_solid_with_origins(
             &mut self.topo,
             &selected,
             &cap_planes,
@@ -933,7 +914,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
     }
 
     orient_selected_fuse_analytic_holes(&mut topo, &sub_faces, &selected);
-    let solid_id = assemble::assemble_solid(&mut topo, &selected, &[])?;
+    let solid_id = assemble::assemble_solid(&mut topo, &selected, &[], &mut nway_lineage)?;
     Ok((topo, solid_id))
 }
 

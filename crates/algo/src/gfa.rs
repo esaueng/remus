@@ -231,7 +231,8 @@ pub fn boolean_with_face_origins(
     );
     builder.perform()?;
 
-    let (store_topo, store_result, store_origins) = builder.build_result_with_origins(op)?;
+    let (store_topo, store_result, store_origins, _lineage) =
+        builder.build_result_with_origins(op)?;
     store.topo = store_topo;
 
     let (result, export_map) = store.export_solid_with_face_map(topo, store_result)?;
@@ -377,10 +378,9 @@ mod context_tests {
 /// Claims follow the evolution discipline: `Preserved`/`Modified` bind a
 /// result edge to a caller input edge and are made only from construction
 /// records (copy maps and pave blocks); `Generated` names the caller faces
-/// whose intersection created the edge; face-assembly canonicalization plus
-/// final shell weld/split rebuilds follow explicit `new → prior` records.
-/// `Unresolved` is the honest bucket when no construction chain reaches an
-/// origin — never a geometric guess.
+/// whose intersection created the edge; `Unresolved` is the honest bucket
+/// for edges the builder rebuilt without construction records — never
+/// guessed from geometry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdgeEvent {
     /// The result edge IS a caller input edge, carried through unchanged
@@ -398,7 +398,8 @@ pub enum EdgeEvent {
         /// Caller face index of the second generating face, when it maps.
         face_b: Option<usize>,
     },
-    /// No construction record reaches this edge.
+    /// No construction record reaches this edge (builder rebuild paths are
+    /// not yet recorded).
     Unresolved,
 }
 
@@ -425,68 +426,15 @@ pub struct EntityEvolution {
     pub vertices: Vec<(usize, VertexEvent)>,
 }
 
-struct EdgeLineageResolver<'a> {
-    input_edges: &'a std::collections::HashMap<usize, usize>,
-    input_faces: &'a std::collections::HashMap<usize, usize>,
-    section_origins: &'a std::collections::BTreeMap<usize, (usize, usize)>,
-    lineage: &'a crate::builder::split_types::EdgeLineageLog,
-    pave_block_originals: &'a std::collections::HashMap<usize, usize>,
-    split_parents: &'a std::collections::HashMap<usize, usize>,
-}
-
-impl EdgeLineageResolver<'_> {
-    /// Resolves only through explicit construction records. An edge whose
-    /// chain ends without reaching an input or section origin stays unknown.
-    fn resolve(&self, store_idx: usize) -> EdgeEvent {
-        let mut current = store_idx;
-        let mut transformed = false;
-        for _ in 0..64 {
-            if let Some(&caller) = self.input_edges.get(&current) {
-                return if transformed {
-                    EdgeEvent::Modified(caller)
-                } else {
-                    EdgeEvent::Preserved(caller)
-                };
-            }
-            if let Some(&(fa, fb)) = self.section_origins.get(&current) {
-                return EdgeEvent::Generated {
-                    face_a: self.input_faces.get(&fa).copied(),
-                    face_b: self.input_faces.get(&fb).copied(),
-                };
-            }
-            if let Some(&old) = self.lineage.rewrites.get(&current) {
-                current = old;
-                transformed = true;
-                continue;
-            }
-            if let Some(&pb) = self.lineage.to_pave_block.get(&current) {
-                if let Some(&original) = self.pave_block_originals.get(&pb) {
-                    current = original;
-                    transformed = true;
-                    continue;
-                }
-                break;
-            }
-            if let Some(&parent) = self.split_parents.get(&current) {
-                current = parent;
-                transformed = true;
-                continue;
-            }
-            break;
-        }
-        EdgeEvent::Unresolved
-    }
-}
-
 /// Run a GFA boolean, returning construction-derived vertex, edge, and face
 /// history alongside the result (Issue 12).
 ///
 /// Lineage sources, all construction records: the store copy maps
 /// (input identity across the isolation copy), the pave filler's pave
 /// blocks (`original edge → split edge`), the FF phase's section-edge
-/// origin table (`section edge → generating face pair`), face-assembly and
-/// final-shell rewrites, and the export maps. Result entities no record reaches
-/// are reported [`EdgeEvent::Unresolved`] — never bound by geometric guessing.
+/// origin table (`section edge → generating face pair`), and the export
+/// maps. Result entities no record reaches are reported
+/// [`EdgeEvent::Unresolved`] — never bound by geometric guessing.
 ///
 /// Like [`boolean_with_face_origins`], there is no identical-operand fast
 /// path; callers handle `A == B`.
@@ -547,8 +495,11 @@ pub fn boolean_with_entity_evolution(
     );
     builder.perform()?;
 
+    // The returned log includes both the perform-phase records and the
+    // assembly-rebuild records (weld and collinear splits), so result
+    // edges rebuilt during assembly chase back to their parents.
     let (store_topo, store_result, store_origins, lineage) =
-        builder.build_result_with_origins_and_lineage(op)?;
+        builder.build_result_with_origins(op)?;
     store.topo = store_topo;
 
     let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
@@ -570,15 +521,47 @@ pub fn boolean_with_entity_evolution(
         faces.push((caller_out, caller_src));
     }
 
-    // Resolve result edges through explicit construction records only.
-    // Split/rebuild chains are bounded so malformed records cannot loop.
-    let edge_lineage = EdgeLineageResolver {
-        input_edges: &store.input_edge_to_caller,
-        input_faces: &store.input_face_to_caller,
-        section_origins: &section_origins,
-        lineage: &lineage,
-        pave_block_originals: &pb_original,
-        split_parents: &split_parent,
+    // Resolve one store edge index through the construction records.
+    // Chases split chains (a split of a split, and splits OF section
+    // edges) with a hard bound so a malformed record cannot loop.
+    let resolve_edge = |store_idx: usize| -> EdgeEvent {
+        let mut current = store_idx;
+        let mut transformed = false;
+        for _ in 0..64 {
+            if let Some(&caller) = store.input_edge_to_caller.get(&current) {
+                return if transformed {
+                    EdgeEvent::Modified(caller)
+                } else {
+                    EdgeEvent::Preserved(caller)
+                };
+            }
+            if let Some(&(fa, fb)) = section_origins.get(&current) {
+                return EdgeEvent::Generated {
+                    face_a: store.input_face_to_caller.get(&fa).copied(),
+                    face_b: store.input_face_to_caller.get(&fb).copied(),
+                };
+            }
+            if let Some(&old) = lineage.rewrites.get(&current) {
+                current = old;
+                transformed = true;
+                continue;
+            }
+            if let Some(&pb) = lineage.to_pave_block.get(&current) {
+                if let Some(&original) = pb_original.get(&pb) {
+                    current = original;
+                    transformed = true;
+                    continue;
+                }
+                break;
+            }
+            if let Some(&parent) = split_parent.get(&current) {
+                current = parent;
+                transformed = true;
+                continue;
+            }
+            break;
+        }
+        EdgeEvent::Unresolved
     };
 
     // The export edge map is store idx → caller edge: total over the
@@ -587,7 +570,7 @@ pub fn boolean_with_entity_evolution(
     let mut edges: Vec<(usize, EdgeEvent)> = export
         .edges
         .iter()
-        .map(|(&store_idx, caller_edge)| (caller_edge.index(), edge_lineage.resolve(store_idx)))
+        .map(|(&store_idx, caller_edge)| (caller_edge.index(), resolve_edge(store_idx)))
         .collect();
     edges.sort_by_key(|(idx, _)| *idx);
 
@@ -638,29 +621,6 @@ mod entity_evolution_tests {
             }
         }
         (preserved, modified, generated, unresolved)
-    }
-
-    #[test]
-    fn explicit_rebuild_chains_resolve_without_guessing() {
-        let input_edges = std::collections::HashMap::from([(3, 103)]);
-        let input_faces = std::collections::HashMap::new();
-        let section_origins = std::collections::BTreeMap::new();
-        let pave_block_originals = std::collections::HashMap::new();
-        let split_parents = std::collections::HashMap::new();
-        let mut lineage = crate::builder::split_types::EdgeLineageLog::default();
-        lineage.rewrites.insert(9, 7);
-        lineage.rewrites.insert(7, 3);
-        let resolver = EdgeLineageResolver {
-            input_edges: &input_edges,
-            input_faces: &input_faces,
-            section_origins: &section_origins,
-            lineage: &lineage,
-            pave_block_originals: &pave_block_originals,
-            split_parents: &split_parents,
-        };
-
-        assert_eq!(resolver.resolve(9), EdgeEvent::Modified(103));
-        assert_eq!(resolver.resolve(99), EdgeEvent::Unresolved);
     }
 
     #[test]
@@ -716,9 +676,15 @@ mod entity_evolution_tests {
                 );
             }
         }
-        // Every final-assembly weld/split edge in this fixture has an explicit
-        // construction chain. A missing link must not regress to Unresolved.
-        assert_eq!(unresolved, 0, "cube assembly rebuilds must resolve exactly");
+        // Every assembly-rebuild path records lineage (perform-phase wire
+        // images, vertex-merge rebuilds, welds, collinear splits), so a cube
+        // fuse's edge history is total construction fact: any regression
+        // that reintroduces an unrecorded rebuild fails here.
+        assert_eq!(
+            unresolved, 0,
+            "every result edge must chase to a construction record \
+             (preserved={preserved} modified={modified} generated={generated})"
+        );
 
         // Vertices: both preserved corners and created intersections exist.
         let created = evolution

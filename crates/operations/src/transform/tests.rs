@@ -972,3 +972,213 @@ fn the_degeneracy_verdict_does_not_move_with_the_units() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Anisotropic-scale geometry (not just acceptance) — regression for the
+// silently-wrong cylinder/circle family: the cylinder arm skipped the
+// uniform-scale gate entirely, and circle/ellipse frames were rebuilt from
+// non-orthogonal conjugate axes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn uniform_scale_keeps_cylinder_analytic_and_scales_volume() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    transform_solid(&mut topo, solid, &Mat4::scale(2.0, 2.0, 2.0)).unwrap();
+
+    let walls = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .count();
+    assert_eq!(walls, 1, "uniform scale must keep the wall analytic");
+
+    let volume = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    let expected = std::f64::consts::PI * 4.0 * 4.0; // pi * (2r)^2 * 2h
+    assert!(
+        (volume - expected).abs() / expected < 0.01,
+        "volume {volume} should be ~{expected}"
+    );
+}
+
+#[test]
+fn anisotropic_scale_converts_cylinder_wall_to_true_elliptic_nurbs() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    // x-only stretch: the wall becomes an elliptic cylinder, which the
+    // analytic FaceSurface cannot carry. The old code kept it a circular
+    // Cylinder with a radius measured along one arbitrary perpendicular.
+    transform_solid(&mut topo, solid, &Mat4::scale(2.0, 1.0, 1.0)).unwrap();
+
+    // Assert the surface geometry directly rather than via mesh volume, so
+    // this test pins the transform alone; the seam-carrying NURBS wall
+    // tessellation is pinned separately by
+    // `bspline_cylinder_tessellated_volume_is_correct` below.
+    let mut nurbs_walls = 0;
+    for f in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+        let face = topo.face(f).unwrap();
+        match face.surface() {
+            FaceSurface::Cylinder(_) => {
+                panic!("anisotropically scaled wall must not remain a circular cylinder")
+            }
+            FaceSurface::Nurbs(surface) => {
+                nurbs_walls += 1;
+                // Every point of the wall must satisfy the elliptic-cylinder
+                // implicit (x/2)^2 + y^2 = 1 to fit tolerance.
+                let (u0, u1) = surface.domain_u();
+                let (v0, v1) = surface.domain_v();
+                for iu in 0..9 {
+                    for iv in 0..5 {
+                        let u = u0 + (u1 - u0) * f64::from(iu) / 8.0;
+                        let v = v0 + (v1 - v0) * f64::from(iv) / 4.0;
+                        let p = surface.evaluate(u, v);
+                        let r = (p.x() / 2.0).powi(2) + p.y().powi(2);
+                        assert!(
+                            (r - 1.0).abs() < 1e-3,
+                            "wall sample ({u:.2},{v:.2}) off the elliptic cylinder: {r}"
+                        );
+                        assert!(
+                            (-1e-9..=2.0 + 1e-9).contains(&p.z()),
+                            "wall sample z out of range: {}",
+                            p.z()
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(nurbs_walls, 1, "expected exactly one NURBS wall face");
+}
+
+/// Regression pin for the NURBS seam-face tessellation defect (originally an
+/// `#[ignore]` ready-repro reading ~2.07 instead of 2π): a converted
+/// B-spline cylinder's wall is a closed-u NURBS surface whose face seam and
+/// curve origins sit a quarter turn from the surface's parameterization
+/// seam. Four stacked roots, all fixed: closed NURBS edge sampling now
+/// starts at the start vertex and wraps the knot domain; Newton surface
+/// projection wraps across a periodic seam instead of clamping (silent
+/// half-period-wrong answers); the CDT boundary unwrap covers closed-u
+/// NURBS with period = knot-domain width (with out-of-domain evaluation
+/// wrapped); and the CDT interior grid converts periodic knot spans to
+/// angular spans so a full turn is not sampled as one knot unit.
+#[test]
+fn bspline_cylinder_tessellated_volume_is_correct() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, solid).unwrap();
+    let volume = crate::measure::solid_volume(&topo, solid, 0.02).unwrap();
+    let expected = 2.0 * std::f64::consts::PI;
+    assert!(
+        (volume - expected).abs() / expected < 0.01,
+        "volume {volume} should be ~{expected}"
+    );
+}
+
+#[test]
+fn oblique_anisotropic_scale_refuses_skewed_circle_frames() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    // Rotate the rim circles' axes 45 degrees off the scale axes, then
+    // stretch x: the image axes are non-orthogonal conjugate diameters. The
+    // exact Circle/Ellipse frame cannot represent that; the transform must
+    // refuse rather than emit a skewed frame.
+    let matrix = Mat4::scale(2.0, 1.0, 1.0).mul(Mat4::rotation_z(std::f64::consts::FRAC_PI_4));
+    let result = transform_solid(&mut topo, solid, &matrix);
+    assert!(
+        result.is_err(),
+        "skewed circle image must be refused, got {result:?}"
+    );
+}
+
+#[test]
+fn is_uniform_scale_rejects_small_anisotropy_and_shear() {
+    // The old 1% tolerance accepted a deliberate 1.009x single-axis scale.
+    assert!(!is_uniform_scale(&Mat4::scale(1.009, 1.0, 1.0)));
+    // Equal column norms alone are not conformality: a shear can match norms
+    // while destroying angles. Column-swap-with-shear proxy: build a matrix
+    // with orthonormal-length columns that are not mutually orthogonal.
+    let shear = Mat4([
+        [1.0, 0.5, 0.0, 0.0],
+        [0.0, (1.0f64 - 0.25).sqrt(), 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    assert!(!is_uniform_scale(&shear));
+    // Rigid motions and true uniform scales still pass.
+    assert!(is_uniform_scale(
+        &Mat4::rotation_z(0.7).mul(Mat4::scale(3.0, 3.0, 3.0))
+    ));
+}
+
+#[test]
+fn copy_and_transform_matches_transform_solid_for_scaled_cylinders() {
+    // The doc promise: copy_and_transform_solid == copy then transform. The
+    // old inline surface math never scaled cylinder/sphere radii at all.
+    let mut topo = Topology::new();
+    let source = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let copied =
+        crate::copy::copy_and_transform_solid(&mut topo, source, &Mat4::scale(2.0, 2.0, 2.0))
+            .unwrap();
+
+    let volume = crate::measure::solid_volume(&topo, copied, 0.05).unwrap();
+    let expected = std::f64::consts::PI * 4.0 * 4.0;
+    assert!(
+        (volume - expected).abs() / expected < 0.01,
+        "copied volume {volume} should be ~{expected}"
+    );
+    // And the source must be untouched.
+    let source_volume = crate::measure::solid_volume(&topo, source, 0.05).unwrap();
+    let source_expected = std::f64::consts::PI * 2.0;
+    assert!(
+        (source_volume - source_expected).abs() / source_expected < 0.01,
+        "source volume {source_volume} should stay ~{source_expected}"
+    );
+}
+
+#[test]
+fn anisotropic_scale_converts_cone_wall_to_true_elliptic_nurbs() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cone(&mut topo, 1.0, 0.5, 2.0).unwrap();
+    transform_solid(&mut topo, solid, &Mat4::scale(2.0, 1.0, 1.0)).unwrap();
+
+    // As with the cylinder test above, assert surface geometry directly. At
+    // height z the unscaled frustum radius is r(z) = 1 - z/4 (r0=1, r1=0.5,
+    // h=2); after the x-stretch the section is an ellipse a=2r(z), b=r(z).
+    let mut nurbs_walls = 0;
+    for f in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+        let face = topo.face(f).unwrap();
+        if let FaceSurface::Nurbs(surface) = face.surface() {
+            nurbs_walls += 1;
+            let (u0, u1) = surface.domain_u();
+            let (v0, v1) = surface.domain_v();
+            for iu in 0..9 {
+                for iv in 0..5 {
+                    let u = u0 + (u1 - u0) * f64::from(iu) / 8.0;
+                    let v = v0 + (v1 - v0) * f64::from(iv) / 4.0;
+                    let p = surface.evaluate(u, v);
+                    let r = 1.0 - p.z() / 4.0;
+                    let implicit = (p.x() / (2.0 * r)).powi(2) + (p.y() / r).powi(2);
+                    assert!(
+                        (implicit - 1.0).abs() < 1e-2,
+                        "cone wall sample ({u:.2},{v:.2}) off the elliptic frustum: {implicit}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(nurbs_walls, 1, "expected exactly one NURBS wall face");
+}
+
+#[test]
+fn anisotropic_scale_gives_sphere_the_true_ellipsoid_volume() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_sphere(&mut topo, 1.0, 32).unwrap();
+    transform_solid(&mut topo, solid, &Mat4::scale(2.0, 1.0, 1.0)).unwrap();
+    let volume = crate::measure::solid_volume(&topo, solid, 0.02).unwrap();
+    let expected = 4.0 / 3.0 * std::f64::consts::PI * 2.0; // ellipsoid abc = 2
+    assert!(
+        (volume - expected).abs() / expected < 0.01,
+        "sphere scaled volume {volume} should be ~{expected}"
+    );
+}

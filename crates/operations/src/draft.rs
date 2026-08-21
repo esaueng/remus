@@ -21,8 +21,9 @@ use remus_topology::vertex::VertexId;
 use remus_topology::wire::WireId;
 
 use crate::OperationsError;
-use crate::boolean::{FaceSpec, assemble_solid_mixed};
+use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
+use crate::evolution::EvolutionMap;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
 const OP: &str = "draft";
@@ -126,6 +127,36 @@ pub fn draft(
     neutral_point: Point3,
     angle_radians: f64,
 ) -> Result<SolidId, OperationsError> {
+    Ok(draft_with_evolution(
+        topo,
+        solid,
+        draft_faces,
+        pull_direction,
+        neutral_point,
+        angle_radians,
+    )?
+    .0)
+}
+
+/// [`draft`] with construction-derived face evolution.
+///
+/// Every result face derives from exactly one input face — drafted faces are
+/// rebuilt on their tilted plane, re-trimmed neighbours keep their surface
+/// with a substituted boundary, and untouched faces are copied — so the map
+/// records each as `modified`, straight from the construction, never from
+/// geometric matching.
+///
+/// # Errors
+///
+/// Exactly [`draft`]'s errors.
+pub fn draft_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    draft_faces: &[FaceId],
+    pull_direction: Vec3,
+    neutral_point: Point3,
+    angle_radians: f64,
+) -> Result<(SolidId, EvolutionMap), OperationsError> {
     let tol = Tolerance::new();
 
     if angle_radians.abs() <= tol.angular {
@@ -238,7 +269,15 @@ pub fn draft(
     }
 
     let specs = build_specs(topo, &all_faces, &drafted, &planes, &moved, eps, tol)?;
-    let result = assemble_solid_mixed(topo, &specs, tol)?;
+    debug_assert_eq!(specs.len(), all_faces.len());
+    let assembly = assemble_solid_mixed_with_history(topo, &specs, tol)?;
+    let result = assembly.solid;
+    let mut evolution = EvolutionMap::exact();
+    for (i, out) in assembly.faces_by_spec.iter().enumerate() {
+        if let (Some(out), Some(src)) = (out, all_faces.get(i)) {
+            evolution.add_modified(src.index(), out.index());
+        }
+    }
 
     let report = crate::validate::validate_solid(topo, result)?;
     if !report.is_valid() {
@@ -262,7 +301,7 @@ pub fn draft(
         )));
     }
 
-    Ok(result)
+    Ok((result, evolution))
 }
 
 /// Every face's outward plane, or `None` where the face is not planar.

@@ -150,6 +150,29 @@ export interface FaceEvolutionPayloadV1 {
 }
 
 /**
+ * Typed result for `booleanWithQuality`: a boolean result with its
+ * disclosed quality, so a consumer can tell an exact result from a
+ * mesh-fallback one instead of silently losing analytic surfaces.
+ */
+export interface BooleanQualityResult {
+    /**
+     * Handle of the result solid.
+     */
+    solid: number;
+    /**
+     * `\"exact\"` when the exact pipeline produced the result; `\"approximate\"`
+     * when the mesh (co-refinement) fallback ran and analytic surface types
+     * were lost.
+     */
+    quality: string;
+    /**
+     * Tessellation deflection the fallback ran at, in model units. Present
+     * only when `quality` is `\"approximate\"`.
+     */
+    deflection?: number;
+}
+
+/**
  * Typed result for `boundingBox`.
  */
 export interface BoundingBoxResult {
@@ -479,6 +502,11 @@ export class BrepKernel {
      */
     addHolesToFace(face: number, hole_wire_handles: Uint32Array): number;
     /**
+     * Returns a copy of the reference with a type discriminator
+     * (`"surfaceType"` or `"curveType"`) appended.
+     */
+    addRefDiscriminator(reference: string, discriminator: string, tag: string): string;
+    /**
      * Get faces adjacent to a given face within a solid.
      *
      * Returns an array of face handles.
@@ -531,6 +559,23 @@ export class BrepKernel {
      */
     assemblyNew(name: string): number;
     /**
+     * Perform a boolean with disclosed result quality.
+     *
+     * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
+     * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
+     * bindings silently accept the mesh (co-refinement) fallback, which
+     * discards analytic surface types; this binding reports whether that
+     * happened (`quality: "approximate"` plus the fallback deflection), and
+     * `exact_only = true` turns the fallback into a typed refusal so an
+     * exact-or-nothing caller never receives a faceted body.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the op string is unknown, or
+     * (under `exact_only`) the exact pipeline cannot produce the result.
+     */
+    booleanWithQuality(op: string, a: number, b: number, exact_only?: boolean | null): BooleanQualityResult;
+    /**
      * Compute the axis-aligned bounding box of a solid.
      *
      * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
@@ -540,6 +585,13 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or has no vertices.
      */
     boundingBox(solid: number): Float64Array;
+    /**
+     * Captures an entity's geometric signature as a portable reference
+     * string — the inference-tier recovery anchor. `quantum` is the
+     * tolerance-derived quantization (pass the model's linear
+     * tolerance).
+     */
+    captureSignatureRef(kind: string, handle: number, quantum: number): string;
     /**
      * Compute the center of mass of a solid (uniform density).
      *
@@ -579,6 +631,27 @@ export class BrepKernel {
      * blend computation fails.
      */
     chamferDistanceAngle(solid: number, edge_handles: Uint32Array, distance: number, angle: number): number;
+    /**
+     * Distance-angle chamfer with versioned face-evolution tracking data.
+     *
+     * Runs the same engine routing as
+     * [`chamferDistanceAngle`](Self::chamfer_distance_angle) — the planar
+     * bevel for planar-line selections, the walking builder otherwise — so
+     * the returned solid is the same exact B-Rep the non-evolution entry
+     * point produces. Both engines report construction history; when one
+     * cannot, the payload carries explicit unresolved source/result sets
+     * instead of inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * the angle is outside `(0, π/2)`, or the chamfer fails.
+     */
+    chamferDistanceAngleWithEvolution(solid: number, edge_handles: Uint32Array, distance: number, angle: number): FaceEvolutionPayloadV1;
+    /**
+     * V2 chamfer journaled as one evolution entry (kind `chamfer`).
+     */
+    chamferJournaled(solid: number, edges: Uint32Array, d1: number, d2: number): string;
     /**
      * Chamfer edges with two distances using the v2 blend engine.
      *
@@ -802,6 +875,14 @@ export class BrepKernel {
      */
     cut(a: number, b: number): number;
     /**
+     * Cut solid `b` from `a` with journaled construction history.
+     */
+    cutJournaled(a: number, b: number): string;
+    /**
+     * Cut with full entity history; see `fuseWithEntityEvolution`.
+     */
+    cutWithEntityEvolution(a: number, b: number): string;
+    /**
      * Cut (subtract) solid `b` from solid `a` and return evolution tracking data.
      *
      * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
@@ -943,9 +1024,11 @@ export class BrepKernel {
      */
     evaluateSurface(face: number, u: number, v: number): Float64Array;
     /**
-     * Evaluate a surface normal at (u, v) on a face.
+     * Evaluate the outward surface normal at (u, v) on a face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * surface normal points inward on those.
      */
     evaluateSurfaceNormal(face: number, u: number, v: number): Float64Array;
     /**
@@ -994,6 +1077,20 @@ export class BrepKernel {
      */
     export3mf(solid: number, deflection: number): Uint8Array;
     /**
+     * Export several solids into one 3MF package.
+     *
+     * The writer already supports multiple objects per package; this is the
+     * multi-solid twin of [`export3mf`](Self::export_3mf), mirroring
+     * [`exportStepMulti`](Self::export_step_multi) so a multi-body model
+     * exports as one file instead of forcing the caller to fuse first.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    export3mfMulti(solids: Uint32Array, deflection: number): Uint8Array;
+    /**
      * Export a solid to glTF binary (.glb) format.
      *
      * # Errors
@@ -1001,6 +1098,18 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
     exportGlb(solid: number, deflection: number): Uint8Array;
+    /**
+     * Export several solids into one glTF binary (.glb) file.
+     *
+     * The multi-solid twin of [`exportGlb`](Self::export_glb): every
+     * solid's facets merge into one mesh in a single GLB.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    exportGlbMulti(solids: Uint32Array, deflection: number): Uint8Array;
     /**
      * Export a solid to IGES format.
      *
@@ -1019,6 +1128,20 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
     exportObj(solid: number, deflection: number): Uint8Array;
+    /**
+     * Export several solids into one OBJ file.
+     *
+     * The multi-solid twin of [`exportObj`](Self::export_obj), completing
+     * the set [`export3mfMulti`](Self::export_3mf_multi) started: every
+     * solid's facets merge into one vertex stream, which is what OBJ
+     * consumers expect from a single-file export.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    exportObjMulti(solids: Uint32Array, deflection: number): Uint8Array;
     /**
      * Export a solid to PLY format (binary little-endian).
      *
@@ -1098,6 +1221,19 @@ export class BrepKernel {
      */
     exportStlAscii(solid: number, deflection: number): Uint8Array;
     /**
+     * Export several solids into one binary STL file.
+     *
+     * The multi-solid twin of [`exportStl`](Self::export_stl): meshes are
+     * merged into a single facet stream, which is what slicers expect from
+     * a one-part-per-file workflow with multiple bodies.
+     *
+     * # Errors
+     *
+     * Returns an error if `solids` is empty, a handle is invalid, the
+     * deflection is non-positive, or export fails.
+     */
+    exportStlMulti(solids: Uint32Array, deflection: number): Uint8Array;
+    /**
      * Extrude a planar face along a direction vector to create a solid.
      *
      * Returns a solid handle (`u32`).
@@ -1155,6 +1291,12 @@ export class BrepKernel {
      * Returns a flat array of the filleted polygon coordinates.
      */
     fillet2d(coords: Float64Array, radius: number): Float64Array;
+    /**
+     * V2 fillet journaled as one evolution entry (kind `fillet`).
+     *
+     * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
+     */
+    filletJournaled(solid: number, edges: Uint32Array, radius: number): string;
     /**
      * Fillet edges using the v2 walking-based blend engine.
      *
@@ -1269,6 +1411,22 @@ export class BrepKernel {
      */
     fuseAll(solid_handles: Uint32Array): number;
     /**
+     * Fuse two solids with journaled construction history.
+     *
+     * Returns JSON `{"solid": handle, "op": journalOp}`; feed `op` to
+     * `resolveOperationOutput` / `propagateAttributesForOp`.
+     */
+    fuseJournaled(a: number, b: number): string;
+    /**
+     * Fuse with full construction-derived vertex/edge/face history.
+     *
+     * Returns JSON `{"solid", "evolution": {"faces", "edges",
+     * "vertices"}}`; edge events are `preserved`/`modified` (with
+     * `from`), `generated` (with the generating `faceA`/`faceB` when
+     * they map), or the honest `unresolved`.
+     */
+    fuseWithEntityEvolution(a: number, b: number): string;
+    /**
      * Fuse (union) two solids and return evolution tracking data.
      *
      * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
@@ -1308,7 +1466,7 @@ export class BrepKernel {
      * Add a constraint from a JSON object string and return a constraint
      * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
      *
-     * All 24 constraint types are supported. Entity fields are `u32`
+     * All 26 constraint types are supported. Entity fields are `u32`
      * handles from the `gcsAdd*` calls. Types and fields:
      * `coincident{a,b}`, `distance{a,b,value}`,
      * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
@@ -1441,6 +1599,26 @@ export class BrepKernel {
      */
     getEdgeNurbsData(edge: number): any;
     /**
+     * The parameter span the edge ACTUALLY covers on its stored curve.
+     *
+     * Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
+     * one full period anchored at its start vertex, and an open edge via the
+     * endpoint-trimmed convention. This differs from
+     * [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
+     * reports the raw curve domain (`[0, TAU]` for every circle): a circle
+     * edge's endpoints subtend TWO arcs, and only this span says which one
+     * the edge is — reconstructing it from endpoints alone flips
+     * intentional major arcs. Evaluate points on the span with
+     * [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
+     * prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
+     * closed-curve wrapping.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     */
+    getEdgeParamSpan(edge: number): Float64Array;
+    /**
      * Get the vertex *handles* (not positions) of an edge.
      *
      * Returns `[start_vertex_handle, end_vertex_handle]`.
@@ -1475,9 +1653,15 @@ export class BrepKernel {
      */
     getFaceEdges(face: number): Uint32Array;
     /**
-     * Get the face normal of a planar face.
+     * A face's semantic name, or null.
+     */
+    getFaceName(face: number): string | undefined;
+    /**
+     * Get the outward face normal of a planar face.
      *
-     * Returns `[nx, ny, nz]`.
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * plane normal points inward on those.
      *
      * # Errors
      *
@@ -1538,7 +1722,7 @@ export class BrepKernel {
     /**
      * Get the orientation of a shape.
      *
-     * Returns `"forward"` for all faces (brepkit faces don't have an
+     * Returns `"forward"` for all faces (remus faces don't have an
      * independent orientation flag; the normal direction is canonical).
      */
     getShapeOrientation(_id: number): string;
@@ -1816,6 +2000,10 @@ export class BrepKernel {
      */
     intersect(a: number, b: number): number;
     /**
+     * Intersect two solids with journaled construction history.
+     */
+    intersectJournaled(a: number, b: number): string;
+    /**
      * Compute the boolean intersection of two 2D polygons.
      *
      * Both polygons are flat arrays `[x,y, x,y, ...]`.
@@ -1825,6 +2013,10 @@ export class BrepKernel {
      * Uses the Sutherland-Hodgman algorithm (convex clipper).
      */
     intersectPolygons2d(coords_a: Float64Array, coords_b: Float64Array): Float64Array;
+    /**
+     * Intersect with full entity history; see `fuseWithEntityEvolution`.
+     */
+    intersectWithEntityEvolution(a: number, b: number): string;
     /**
      * Intersect two solids and return evolution tracking data.
      *
@@ -1859,6 +2051,18 @@ export class BrepKernel {
      */
     isWireClosed(wire: number): boolean;
     /**
+     * Journals an explicit barrier over every entity of `solid` for an
+     * operation without evolution records. Returns the journal op id.
+     */
+    journalBarrier(kind: string, solid: number): number;
+    /**
+     * A read-only summary of the evolution journal: JSON array of
+     * `{"op", "kind", "type", "detail"}` where `type` is `evolution`
+     * (detail: origin, event count), `barrier` (detail: affected
+     * count), or `globalBarrier`.
+     */
+    journalSummary(): string;
+    /**
      * Lift a 2D curve onto a 3D plane, producing an edge.
      *
      * `curve_type`: 0 = Line, 1 = Circle, 2 = Ellipse, 3 = NURBS.
@@ -1879,6 +2083,11 @@ export class BrepKernel {
      * Returns an error if inputs are invalid.
      */
     linearPattern(solid: number, dx: number, dy: number, dz: number, spacing: number, count: number): number;
+    /**
+     * Linear pattern journaled as one evolution entry (kind
+     * `linear_pattern`). Returns JSON `{"compound", "op"}`.
+     */
+    linearPatternJournaled(solid: number, dx: number, dy: number, dz: number, spacing: number, count: number): string;
     /**
      * Loft two or more profile faces into a solid.
      *
@@ -2129,6 +2338,11 @@ export class BrepKernel {
      */
     makeNurbsEdge(start_x: number, start_y: number, start_z: number, end_x: number, end_y: number, end_z: number, degree: number, knots: Float64Array, control_points: Float64Array, weights: Float64Array): number;
     /**
+     * Serializes "the `index`-th `kind` output of journal operation
+     * `op`" as a portable reference string (versioned JSON, opaque).
+     */
+    makeOperationOutputRef(op: number, kind: string, index: number): string;
+    /**
      * Create a strictly planar face from a wire.
      *
      * Fails with a "wire is not planar" error if the wire's geometry does
@@ -2373,7 +2587,7 @@ export class BrepKernel {
     /**
      * Offset all faces of a solid outward or inward (V2 pipeline).
      *
-     * Uses the new `brepkit-offset` engine with intersection-based joints.
+     * Uses the new `remus-offset` engine with intersection-based joints.
      *
      * # Errors
      *
@@ -2522,6 +2736,13 @@ export class BrepKernel {
      */
     projectPointOnSurface(face: number, px: number, py: number, pz: number): Float64Array;
     /**
+     * Propagates face attributes across one journaled operation.
+     *
+     * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
+     * "refusedInferred"}`.
+     */
+    propagateAttributesForOp(op: number, allow_inferred: boolean): string;
+    /**
      * Move a planar face of a solid along its outward normal.
      *
      * A positive `distance` adds material, a negative one removes it.
@@ -2602,6 +2823,26 @@ export class BrepKernel {
      */
     resizeCylindricalFace(solid: number, face: number, new_radius: number): number;
     /**
+     * Resolves "the `index`-th `kind` output of journal operation `op`"
+     * against the current model. Returns the resolution JSON (`status`
+     * plus status-specific fields); severed references are data, not
+     * errors.
+     */
+    resolveOperationOutput(op: number, kind: string, index: number): string;
+    /**
+     * Resolves a serialized reference against the current model.
+     * Returns the resolution JSON; severed references are data, not
+     * errors.
+     */
+    resolveRef(reference: string): string;
+    /**
+     * Resolves a serialized reference and reads the bound faces'
+     * attributes: JSON array of `{"kind", "handle", "name"}`. Errors on
+     * non-binding resolutions (`ref_*` diagnostics) — an attribute is
+     * never read through a dangling, severed, or ambiguous reference.
+     */
+    resolveRefFaceAttributes(reference: string): string;
+    /**
      * Restore the kernel to a previously saved checkpoint.
      *
      * All state created after the checkpoint is discarded. The checkpoint
@@ -2661,6 +2902,21 @@ export class BrepKernel {
      */
     runHealPipeline(solid: number, steps: string[]): any;
     /**
+     * Span-true polyline of one edge at the given chordal deflection.
+     *
+     * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
+     * own parameter span — the same sampler the solid wireframe uses.
+     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
+     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
+     * full-period trace of the parent curve.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid, `deflection` is not
+     * positive, or the sampling budget is exceeded at this deflection.
+     */
+    sampleEdge(edge: number, deflection: number): Float64Array;
+    /**
      * Section a solid with a plane, returning cross-section face handles.
      *
      * Returns an array of face handles (`u32[]`).
@@ -2683,7 +2939,7 @@ export class BrepKernel {
      *
      * This writer emits a single-root version 2 document. Returns a
      * `Uint8Array` consumable by
-     * `brepkit_io::arena_io::deserialize_solid`.
+     * `remus_io::arena_io::deserialize_solid`.
      *
      * # Errors
      *
@@ -2702,6 +2958,11 @@ export class BrepKernel {
      * Returns an error if any solid handle is invalid or serialization fails.
      */
     serializeSolids(solids: Uint32Array): Uint8Array;
+    /**
+     * Sets (or clears, when `name` is null/empty) a face's semantic
+     * name, preserving its other attributes.
+     */
+    setFaceName(face: number, name?: string | null): void;
     /**
      * Sew loose faces into a connected solid.
      *
@@ -2956,7 +3217,7 @@ export class BrepKernel {
      * Export a solid as a JSON-encoded BREP representation.
      *
      * Returns a JSON string with vertices, edges (with curve parameters),
-     * and faces (with surface parameters). This is a brepkit-specific format
+     * and faces (with surface parameters). This is a remus-specific format
      * that preserves all analytic geometry types.
      */
     toBrepJson(solid: number): any;
@@ -3286,7 +3547,7 @@ export function decodeEvolutionPayload(json: string): FaceEvolutionPayloadV1;
 export function lastPanicMessage(): string | undefined;
 
 /**
- * Route brepkit's Rust `log::*` calls to JavaScript `console.{log, warn,
+ * Route remus's Rust `log::*` calls to JavaScript `console.{log, warn,
  * error}`. Without this every `log::warn!` in the engine is silently
  * dropped under wasm-pack.
  *

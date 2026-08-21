@@ -36,8 +36,9 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
-use crate::boolean::{FaceSpec, assemble_solid_mixed};
+use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
+use crate::evolution::EvolutionMap;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
 const OP: &str = "split";
@@ -137,7 +138,22 @@ struct Connector {
 struct Half {
     side: Side,
     faces: Vec<FaceId>,
+    /// Input-face arena index each `faces` entry derives from, in step.
+    sources: Vec<usize>,
     connectors: Vec<Connector>,
+}
+
+/// Construction-derived face evolution of a split, one map per half.
+///
+/// Carried faces and trimmed faces are `modified` from their source; each
+/// half's cap is synthesised by the operation and reported `unresolved`
+/// with no candidates, following the boolean faithful path's convention.
+#[derive(Debug)]
+pub struct SplitEvolution {
+    /// Evolution of the positive half's faces.
+    pub positive: EvolutionMap,
+    /// Evolution of the negative half's faces.
+    pub negative: EvolutionMap,
 }
 
 /// Split a solid into two halves along a plane.
@@ -182,6 +198,24 @@ pub fn split(
     plane_point: Point3,
     plane_normal: Vec3,
 ) -> Result<SplitResult, OperationsError> {
+    Ok(split_with_evolution(topo, solid, plane_point, plane_normal)?.0)
+}
+
+/// [`split`] with construction-derived face evolution for both halves.
+///
+/// The mapping is recorded while the halves are built — which source face
+/// each carried or trimmed face came from — never recovered geometrically
+/// after the fact.
+///
+/// # Errors
+///
+/// Exactly [`split`]'s errors.
+pub fn split_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    plane_point: Point3,
+    plane_normal: Vec3,
+) -> Result<(SplitResult, SplitEvolution), OperationsError> {
     let tol = Tolerance::new();
     let normal = plane_normal.normalize()?;
     let d = dot_normal_point(normal, plane_point);
@@ -206,11 +240,13 @@ pub fn split(
     let mut positive = Half {
         side: Side::Pos,
         faces: Vec::new(),
+        sources: Vec::new(),
         connectors: Vec::new(),
     };
     let mut negative = Half {
         side: Side::Neg,
         faces: Vec::new(),
+        sources: Vec::new(),
         connectors: Vec::new(),
     };
     let mut straddled = 0usize;
@@ -219,13 +255,20 @@ pub fn split(
         match face_side(topo, fid, &cuts)? {
             // Untouched: surface, curved edges, orientation and every inner
             // wire travel through as topology rather than as positions.
-            Some(Side::Pos) => positive.faces.push(fid),
-            Some(Side::Neg) => negative.faces.push(fid),
+            Some(Side::Pos) => {
+                positive.faces.push(fid);
+                positive.sources.push(fid.index());
+            }
+            Some(Side::Neg) => {
+                negative.faces.push(fid);
+                negative.sources.push(fid.index());
+            }
             None => {
                 straddled += 1;
                 for half in [&mut positive, &mut negative] {
                     let (face, connector) = trim_face(topo, fid, half.side, &cuts, normal, d, eps)?;
                     half.faces.push(face);
+                    half.sources.push(fid.index());
                     half.connectors.push(connector);
                 }
             }
@@ -241,22 +284,34 @@ pub fn split(
     let mut built = Vec::with_capacity(2);
     for half in [positive, negative] {
         let cap = build_cap(topo, &half.connectors, half.side, normal, d, eps)?;
+        let sources = half.sources;
         let specs: Vec<FaceSpec> = half
             .faces
             .into_iter()
             .chain(std::iter::once(cap))
             .map(|face| FaceSpec::Existing { face, outer: None })
             .collect();
-        let assembled = assemble_solid_mixed(topo, &specs, tol)?;
+        let assembly = assemble_solid_mixed_with_history(topo, &specs, tol)?;
+        let assembled = assembly.solid;
+        let mut evo = EvolutionMap::exact();
+        for (i, out) in assembly.faces_by_spec.iter().enumerate() {
+            let Some(out) = out else { continue };
+            match sources.get(i) {
+                Some(&src) => evo.add_modified(src, out.index()),
+                // The cap: synthesised by the operation, not derived from
+                // any one input face.
+                None => evo.add_unresolved(out.index(), Vec::new()),
+            }
+        }
         let volume = gate(topo, assembled, half.side)?;
-        built.push((assembled, volume));
+        built.push((assembled, volume, evo));
     }
 
     // The halves are a decomposition of the input, so this identity is exact
     // up to rounding. It is the strongest single check available here: it
     // catches a filled hole, a dropped face and an inside-out cap alike.
     let input_volume = crate::measure::solid_volume(topo, solid, VOLUME_DEFLECTION)?;
-    let sum: f64 = built.iter().map(|&(_, v)| v).sum();
+    let sum: f64 = built.iter().map(|(_, v, _)| v).sum();
     let slack = (input_volume.abs() * VOLUME_SUM_RELATIVE_SLACK).max(tol.linear);
     if (sum - input_volume).abs() > slack {
         return Err(unsupported(format!(
@@ -265,13 +320,21 @@ pub fn split(
         )));
     }
 
-    match built.as_slice() {
-        [(positive, _), (negative, _)] => Ok(SplitResult {
-            positive: *positive,
-            negative: *negative,
-        }),
-        _ => Err(unsupported("split did not produce two halves")),
+    if built.len() != 2 {
+        return Err(unsupported("split did not produce two halves"));
     }
+    let (neg_solid, _, neg_evo) = built.pop().ok_or_else(|| unsupported("missing half"))?;
+    let (pos_solid, _, pos_evo) = built.pop().ok_or_else(|| unsupported("missing half"))?;
+    Ok((
+        SplitResult {
+            positive: pos_solid,
+            negative: neg_solid,
+        },
+        SplitEvolution {
+            positive: pos_evo,
+            negative: neg_evo,
+        },
+    ))
 }
 
 /// Require a half to be a valid solid enclosing positive volume, and return

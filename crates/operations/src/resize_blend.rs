@@ -190,6 +190,13 @@ fn resize_blend_impl(
         }
         ["cylinder", "cone"] | ["cone", "cylinder"] => {
             if !tol.approx_eq(new_radius, 0.0) {
+                // Removal works (the sharp circle is exact), but a positive
+                // radius would ride heal-to-sharp + re-fillet, and the
+                // closed-rim fillet assembler does not rebuild a
+                // cylinder-wall × cone-wall rim yet — fillet_v2 fails on the
+                // recovered chain (verified against the Shapr3D fixture).
+                // Refuse with the support-pair code, which is more precise
+                // than surfacing the downstream reconstruction failure.
                 return Err(ResizeBlendError::UnsupportedSupportPair {
                     first: support_types[0],
                     second: support_types[1],

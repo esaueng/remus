@@ -78,6 +78,89 @@ pub fn bilinear_cap_patch(corners: &[Point3]) -> Result<NurbsSurface, remus_math
     )
 }
 
+/// Bilinear (4 corners) or Coons (5 or more) patch through a non-planar
+/// ring, exact on the ring's chords.
+///
+/// # Errors
+///
+/// Returns an error if the ring cannot form a valid patch.
+pub fn nonplanar_ring_surface(
+    cap_verts: &[Point3],
+) -> Result<NurbsSurface, crate::OperationsError> {
+    if cap_verts.len() == 4 {
+        bilinear_cap_patch(cap_verts).map_err(crate::OperationsError::Math)
+    } else {
+        coons_cap_patch(cap_verts)
+    }
+}
+
+/// Coons patch through an n-corner ring (n ≥ 5), in ring order.
+///
+/// The ring is split into four chord chains at quarter points; opposite
+/// chains are refined to a common breakpoint count by splitting their
+/// longest segments at midpoints — collinear insertions, so the boundary
+/// image stays exactly the ring's chords — and the four polylines are
+/// blended by [`crate::fill_face::coons_surface`]. Every boundary iso-curve
+/// of the result is exactly a run of ring chords, so the cap shares its
+/// boundary with the side faces.
+///
+/// # Errors
+///
+/// Returns an error if the ring cannot form a valid Coons net.
+fn coons_cap_patch(cap_verts: &[Point3]) -> Result<NurbsSurface, crate::OperationsError> {
+    let n = cap_verts.len();
+    let i1 = n.div_ceil(4).max(1);
+    let i2 = (n / 2).max(i1 + 1);
+    let i3 = (3 * n / 4).max(i2 + 1);
+    if i3 >= n {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("cap ring with {n} edges cannot be split into four chains"),
+        });
+    }
+
+    let bottom: Vec<Point3> = cap_verts[0..=i1].to_vec();
+    let right: Vec<Point3> = cap_verts[i1..=i2].to_vec();
+    let mut top: Vec<Point3> = cap_verts[i2..=i3].to_vec();
+    top.reverse();
+    let mut left: Vec<Point3> = cap_verts[i3..].to_vec();
+    left.push(cap_verts[0]);
+    left.reverse();
+
+    let m_u = bottom.len().max(top.len());
+    let m_v = right.len().max(left.len());
+    let bottom = refine_polyline(bottom, m_u);
+    let top = refine_polyline(top, m_u);
+    let right = refine_polyline(right, m_v);
+    let left = refine_polyline(left, m_v);
+
+    crate::fill_face::coons_surface(&bottom, &right, &top, &left)
+}
+
+/// Insert midpoints of the longest segments until the polyline has `target`
+/// points. Insertions are collinear, so the polyline's image is unchanged.
+fn refine_polyline(mut pts: Vec<Point3>, target: usize) -> Vec<Point3> {
+    while pts.len() < target {
+        let mut best = 0;
+        let mut best_len = -1.0;
+        for i in 0..pts.len() - 1 {
+            let len = (pts[i + 1] - pts[i]).length();
+            if len > best_len {
+                best_len = len;
+                best = i;
+            }
+        }
+        let a = pts[best];
+        let b = pts[best + 1];
+        let mid = Point3::new(
+            f64::midpoint(a.x(), b.x()),
+            f64::midpoint(a.y(), b.y()),
+            f64::midpoint(a.z(), b.z()),
+        );
+        pts.insert(best + 1, mid);
+    }
+    pts
+}
+
 /// The ring's outward cap normal: its Newell normal, flipped to agree with
 /// `toward` (the side the cap should face, e.g. away from the swept body).
 ///
@@ -154,14 +237,16 @@ pub fn build_cap_face(
             reason: "cap with holes on a non-planar section boundary is not supported".into(),
         });
     }
-    if n != 4 {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: "cap for a non-planar section boundary with more than 4 edges is not supported"
-                .into(),
-        });
-    }
 
-    let surf = bilinear_cap_patch(cap_verts).map_err(crate::OperationsError::Math)?;
+    // 4-sided: single bilinear span. 5-or-more-sided: Coons patch of the
+    // ring's chord chains — its boundary iso-curves are exactly the ring
+    // chords, so like the bilinear case it cannot overfill past the section.
+    // (A 3-ring of chords always lies in a plane and took the branch above.)
+    let surf = if n == 4 {
+        bilinear_cap_patch(cap_verts).map_err(crate::OperationsError::Math)?
+    } else {
+        coons_cap_patch(cap_verts)?
+    };
     // A near-flat bilinear lid: its center normal is stable and aligned with the
     // ring axis, so probe there and flip if it opposes `outward`.
     let reversed = surf

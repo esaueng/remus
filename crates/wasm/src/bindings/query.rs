@@ -412,9 +412,11 @@ impl BrepKernel {
         }
     }
 
-    /// Get the face normal of a planar face.
+    /// Get the outward face normal of a planar face.
     ///
-    /// Returns `[nx, ny, nz]`.
+    /// Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+    /// boolean and blend assembly routinely emit reversed faces, and the raw
+    /// plane normal points inward on those.
     ///
     /// # Errors
     ///
@@ -423,15 +425,15 @@ impl BrepKernel {
     pub fn get_face_normal(&self, face: u32) -> Result<Vec<f64>, JsError> {
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
-        match face_data.surface() {
-            remus_topology::face::FaceSurface::Plane { normal, .. } => {
-                Ok(vec![normal.x(), normal.y(), normal.z()])
-            }
-            _ => Err(WasmError::InvalidInput {
-                reason: "getFaceNormal only works on planar faces".into(),
-            }
-            .into()),
-        }
+        face_data.effective_plane_normal().map_or_else(
+            || {
+                Err(WasmError::InvalidInput {
+                    reason: "getFaceNormal only works on planar faces".into(),
+                }
+                .into())
+            },
+            |normal| Ok(vec![normal.x(), normal.y(), normal.z()]),
+        )
     }
 
     /// Get entity counts of a solid: `[faces, edges, vertices]`.
@@ -580,6 +582,56 @@ impl BrepKernel {
                 Ok(vec![p.project(start), p.project(end)])
             }
         }
+    }
+
+    /// The parameter span the edge ACTUALLY covers on its stored curve.
+    ///
+    /// Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
+    /// one full period anchored at its start vertex, and an open edge via the
+    /// endpoint-trimmed convention. This differs from
+    /// [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
+    /// reports the raw curve domain (`[0, TAU]` for every circle): a circle
+    /// edge's endpoints subtend TWO arcs, and only this span says which one
+    /// the edge is — reconstructing it from endpoints alone flips
+    /// intentional major arcs. Evaluate points on the span with
+    /// [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
+    /// prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
+    /// closed-curve wrapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the edge handle is invalid.
+    #[wasm_bindgen(js_name = "getEdgeParamSpan")]
+    pub fn get_edge_param_span(&self, edge: u32) -> Result<Vec<f64>, JsError> {
+        let edge_id = self.resolve_edge(edge)?;
+        let edge_data = self.topo.edge(edge_id)?;
+        let (t0, t1) = remus_operations::tessellate::edge_param_span(&self.topo, edge_data)?;
+        Ok(vec![t0, t1])
+    }
+
+    /// Span-true polyline of one edge at the given chordal deflection.
+    ///
+    /// Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
+    /// own parameter span — the same sampler the solid wireframe uses.
+    /// Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
+    /// or closed-NURBS edge yields its actual arc (vertex-anchored), never a
+    /// full-period trace of the parent curve.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the edge handle is invalid, `deflection` is not
+    /// positive, or the sampling budget is exceeded at this deflection.
+    #[wasm_bindgen(js_name = "sampleEdge")]
+    pub fn sample_edge_polyline(&self, edge: u32, deflection: f64) -> Result<Vec<f64>, JsError> {
+        crate::error::validate_positive(deflection, "deflection")?;
+        let edge_id = self.resolve_edge(edge)?;
+        let points = remus_operations::tessellate::sample_edge_polyline(
+            &self.topo,
+            edge_id,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )?;
+        Ok(points.iter().flat_map(|p| [p.x(), p.y(), p.z()]).collect())
     }
 
     /// Evaluate a point on an edge curve at parameter `t`.
@@ -860,15 +912,17 @@ impl BrepKernel {
         }
     }
 
-    /// Evaluate a surface normal at (u, v) on a face.
+    /// Evaluate the outward surface normal at (u, v) on a face.
     ///
-    /// Returns `[nx, ny, nz]`.
+    /// Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+    /// boolean and blend assembly routinely emit reversed faces, and the raw
+    /// surface normal points inward on those.
     #[wasm_bindgen(js_name = "evaluateSurfaceNormal")]
     pub fn evaluate_surface_normal(&self, face: u32, u: f64, v: f64) -> Result<Vec<f64>, JsError> {
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
-        match face_data.surface() {
-            FaceSurface::Plane { normal, .. } => Ok(vec![normal.x(), normal.y(), normal.z()]),
+        let raw = match face_data.surface() {
+            FaceSurface::Plane { normal, .. } => *normal,
             FaceSurface::Nurbs(surface) => {
                 let derivs = surface.derivatives(u, v, 1);
                 let du = if derivs.len() > 1 && !derivs[1].is_empty() {
@@ -881,29 +935,15 @@ impl BrepKernel {
                 } else {
                     Vec3::new(0.0, 1.0, 0.0)
                 };
-                let n = du.cross(dv);
-                match n.normalize() {
-                    Ok(normal) => Ok(vec![normal.x(), normal.y(), normal.z()]),
-                    Err(_) => Ok(vec![0.0, 0.0, 1.0]),
-                }
+                du.cross(dv).normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0))
             }
-            FaceSurface::Cylinder(cyl) => {
-                let n = cyl.normal(u, v);
-                Ok(vec![n.x(), n.y(), n.z()])
-            }
-            FaceSurface::Cone(cone) => {
-                let n = cone.normal(u, v);
-                Ok(vec![n.x(), n.y(), n.z()])
-            }
-            FaceSurface::Sphere(sph) => {
-                let n = sph.normal(u, v);
-                Ok(vec![n.x(), n.y(), n.z()])
-            }
-            FaceSurface::Torus(tor) => {
-                let n = tor.normal(u, v);
-                Ok(vec![n.x(), n.y(), n.z()])
-            }
-        }
+            FaceSurface::Cylinder(cyl) => cyl.normal(u, v),
+            FaceSurface::Cone(cone) => cone.normal(u, v),
+            FaceSurface::Sphere(sph) => sph.normal(u, v),
+            FaceSurface::Torus(tor) => tor.normal(u, v),
+        };
+        let n = if face_data.is_reversed() { -raw } else { raw };
+        Ok(vec![n.x(), n.y(), n.z()])
     }
 
     /// Evaluate a point on a face surface at (u, v).

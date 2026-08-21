@@ -21,7 +21,6 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::wire::{OrientedEdge, WireId};
 
 use super::FaceProvenance;
-use super::split_types::EdgeLineageLog;
 
 use crate::bop::SelectedFace;
 use crate::error::AlgoError;
@@ -44,8 +43,9 @@ pub fn build_solid(
     topo: &mut Topology,
     selected: &[SelectedFace],
     cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<SolidId, AlgoError> {
-    Ok(build_solid_with_origins(topo, selected, cap_planes)?.0)
+    Ok(build_solid_with_origins(topo, selected, cap_planes, lineage)?.0)
 }
 
 /// Like [`build_solid`], but also returns each result face's provenance:
@@ -61,23 +61,7 @@ pub fn build_solid_with_origins(
     topo: &mut Topology,
     selected: &[SelectedFace],
     cap_planes: &[CapPlane],
-) -> Result<(SolidId, FaceProvenance), AlgoError> {
-    let mut lineage = EdgeLineageLog::default();
-    build_solid_with_origins_and_lineage(topo, selected, cap_planes, &mut lineage)
-}
-
-/// Like [`build_solid_with_origins`], while appending exact edge rebuild
-/// records to `lineage` for entity-evolution callers.
-///
-/// # Errors
-///
-/// Returns [`AlgoError`] if assembly produces no valid shells or topology
-/// lookups fail.
-pub fn build_solid_with_origins_and_lineage(
-    topo: &mut Topology,
-    selected: &[SelectedFace],
-    cap_planes: &[CapPlane],
-    lineage: &mut EdgeLineageLog,
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(SolidId, FaceProvenance), AlgoError> {
     if selected.is_empty() {
         return Err(AlgoError::AssemblyFailed("no faces selected".into()));
@@ -1887,7 +1871,7 @@ fn is_degenerate_line_sliver(topo: &Topology, fid: FaceId) -> bool {
 fn weld_coincident_vertices(
     topo: &mut Topology,
     face_ids: &mut [FaceId],
-    lineage: &mut EdgeLineageLog,
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(), AlgoError> {
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::vertex::VertexId;
@@ -2030,9 +2014,12 @@ fn weld_coincident_vertices(
                     // stays valid on the rebuilt edge.
                     let mut welded = Edge::new(nv0, nv1, curve);
                     welded.set_trim(trim);
-                    let rebuilt = topo.add_edge(welded);
-                    lineage.rewrites.insert(rebuilt.index(), eid.index());
-                    Some(rebuilt)
+                    let new_eid = topo.add_edge(welded);
+                    // Construction lineage: the welded edge IS the source
+                    // edge with coincident vertices substituted (Issue 12
+                    // assembly-rebuild records).
+                    lineage.rewrites.insert(new_eid.index(), eid.index());
+                    Some(new_eid)
                 };
                 edge_remap.insert(eid, result);
                 Ok(result)
@@ -2087,7 +2074,7 @@ fn weld_coincident_vertices(
 fn split_edges_at_collinear_vertices(
     topo: &mut Topology,
     face_ids: &mut [FaceId],
-    lineage: &mut EdgeLineageLog,
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(), AlgoError> {
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::vertex::VertexId;
@@ -2213,6 +2200,8 @@ fn split_edges_at_collinear_vertices(
         let mut subs = Vec::with_capacity(chain.len() - 1);
         for w in chain.windows(2) {
             let sub_eid = topo.add_edge(Edge::new(w[0], w[1], EdgeCurve::Line));
+            // Construction lineage: each piece is the parent line split at
+            // a collinear vertex (Issue 12 assembly-rebuild records).
             lineage.rewrites.insert(sub_eid.index(), eid.index());
             subs.push(OrientedEdge::new(sub_eid, true));
         }
@@ -2352,7 +2341,7 @@ fn conics_share_support(a: &EdgeCurve, b: &EdgeCurve, tol: f64) -> bool {
 fn split_arc_edges_at_collinear_vertices(
     topo: &mut Topology,
     face_ids: &mut [FaceId],
-    lineage: &mut EdgeLineageLog,
+    lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(), AlgoError> {
     use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
     use remus_topology::vertex::VertexId;
@@ -2566,6 +2555,7 @@ fn split_arc_edges_at_collinear_vertices(
                     Some((w[0].0, w[1].0))
                 });
                 let sub_eid = topo.add_edge(sub);
+                // Construction lineage: split piece of the parent edge.
                 lineage.rewrites.insert(sub_eid.index(), eid.index());
                 subs.push(OrientedEdge::new(sub_eid, true));
             }
@@ -2710,6 +2700,7 @@ fn split_arc_edges_at_collinear_vertices(
                 Some((w[0].0, w[1].0))
             });
             let sub_eid = topo.add_edge(sub);
+            // Construction lineage: split piece of the parent arc.
             lineage.rewrites.insert(sub_eid.index(), eid.index());
             subs.push(OrientedEdge::new(sub_eid, true));
         }
@@ -3666,7 +3657,7 @@ mod tests {
         split_arc_edges_at_collinear_vertices(
             &mut topo,
             &mut face_ids,
-            &mut EdgeLineageLog::default(),
+            &mut crate::builder::split_types::EdgeLineageLog::default(),
         )
         .unwrap();
         merge_duplicate_edges(&mut topo, &mut face_ids).unwrap();
@@ -3730,7 +3721,7 @@ mod tests {
         split_arc_edges_at_collinear_vertices(
             &mut topo,
             &mut face_ids,
-            &mut EdgeLineageLog::default(),
+            &mut crate::builder::split_types::EdgeLineageLog::default(),
         )
         .unwrap();
 
@@ -3789,7 +3780,7 @@ mod tests {
         split_arc_edges_at_collinear_vertices(
             &mut topo,
             &mut face_ids,
-            &mut EdgeLineageLog::default(),
+            &mut crate::builder::split_types::EdgeLineageLog::default(),
         )
         .unwrap();
         merge_duplicate_edges(&mut topo, &mut face_ids).unwrap();
@@ -3854,7 +3845,7 @@ mod tests {
         split_arc_edges_at_collinear_vertices(
             &mut topo,
             &mut face_ids,
-            &mut EdgeLineageLog::default(),
+            &mut crate::builder::split_types::EdgeLineageLog::default(),
         )
         .unwrap();
         merge_duplicate_edges(&mut topo, &mut face_ids).unwrap();
@@ -4009,7 +4000,12 @@ mod tests {
             if outer_is_open {
                 continue;
             }
-            let err = build_solid(&mut topo, &selected, &[]);
+            let err = build_solid(
+                &mut topo,
+                &selected,
+                &[],
+                &mut crate::builder::split_types::EdgeLineageLog::default(),
+            );
             assert!(
                 matches!(err, Err(AlgoError::AssemblyFailed(_))),
                 "omit={omit}: a 5-face open shell must abort assembly, got {err:?}"
