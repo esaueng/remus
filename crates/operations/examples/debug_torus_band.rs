@@ -4,39 +4,40 @@
     clippy::print_stderr,
     missing_docs
 )]
-//! Probe for the closed-torus band split (roadmap B1, ready-repro
+//! Probe for the closed-torus band split (roadmap B1, pinned by
 //! `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`).
 //!
 //! Dumps both operands and then raw GFA *below* the operations acceptance
-//! gate, so the structural failure is visible instead of the ops-level
-//! "mesh boolean work limit exceeded" that the gate substitutes.
+//! gate, so a structural failure is visible instead of the ops-level
+//! "mesh boolean work limit exceeded" the gate would substitute. Per face it
+//! prints `integrate_face` (the analytic volume oracle `solid_volume` actually
+//! uses on an all-analytic solid) beside the tessellated mesh contribution,
+//! plus an edge-use census and ray-cast region probes.
 //!
-//! What it shows, and why the split has no arm. The torus operand is ONE
-//! face whose whole boundary is 2 distinct zero-length seam edges, each
-//! traversed twice and all anchored at a single vertex at (12,0,0) — the
-//! UV rectangle with both seams collapsed to a point. Two gaps follow, and
-//! they are one contract:
+//! The configuration: torus R=10 rho=2 against a concentric sphere R=10. The
+//! sections are exact circles at s=9.8, z=+/-1.98997 (tube angle v ~ +/-95.74
+//! deg) and the seam anchors are (9.8, 0, +/-1.98997).
 //!
-//! 1. `fill_images_faces::compute_seam_anchors` skips any surface that is
-//!    not Cylinder/Cone, and `seam_anchor_on_circle` looks for a
-//!    NON-degenerate seam Line — a torus has neither, so its section
-//!    circles are never re-anchored to the face's seam.
-//! 2. `face_splitter::special_cases::split_periodic_face_into_bands`
-//!    rejects a torus on its first line, and its boundary precondition
-//!    (exactly 2 closed circle edges plus seam Lines) is unsatisfiable for
-//!    a doubly-periodic face that has no boundary circles at all.
+//! The three things this probe established, kept because each one is a trap:
 //!
-//! The anchor point IS the shared vertex between a band's seam segment and
-//! the section edge, which is why the 2026-08-21 attempt at (2) alone
-//! assembled free-edged. For torus R=10 rho=2 against a concentric sphere
-//! R=10 the sections are exact circles at s=9.8, z=+/-1.98997 (tube angle
-//! v ~ +/-95.74 deg) and the seam anchors are (9.8, 0, +/-1.98997).
-//!
-//! The partner side is compatible: on a hemisphere those circles genuinely
-//! bound spherical caps, so the sphere keeps each as a 1-edge inner wire.
-//! Opening a closed circle gives it a start/end vertex without splitting
-//! the edge, so one edge can serve as both the sphere's hole wire and the
-//! torus band's separator.
+//! 1. The torus operand is ONE face whose whole boundary is 2 distinct
+//!    zero-length seam edges, each traversed twice and all anchored at a
+//!    single vertex at (12,0,0) — the UV rectangle with both seams collapsed
+//!    to a point. That degenerate vertex is the only seam evidence a torus
+//!    carries, which is why `seam_anchor_on_circle` has to read it: without
+//!    the anchor, section circles start wherever the intersection curve's own
+//!    frame began (measured at u=90 deg against a seam at u=0) and the band
+//!    cannot share a VertexId with the partner face.
+//! 2. The partner side is compatible: on a hemisphere those circles genuinely
+//!    bound spherical caps, so the sphere keeps each as a 1-edge inner wire.
+//!    Opening a closed circle gives it a start/end vertex without splitting
+//!    the edge, so one edge serves as both the sphere's hole wire and the
+//!    torus band's separator.
+//! 3. The per-face `integrate_face` column is the one that found the last
+//!    defect. Cut's outer band WRAPS the v period, and its trimming polygon
+//!    was built in canonical v while its integration range was unwrapped, so
+//!    it read 0.00 while the mesh column read a plausible -489.31. Trust the
+//!    analytic column here; the mesh one does not distinguish the two bands.
 
 use remus_operations::primitives::{make_sphere, make_torus};
 use remus_topology::Topology;

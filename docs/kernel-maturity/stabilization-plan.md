@@ -306,15 +306,20 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
 - **B2 Non-planar caps — workstreams 1 and 3 done, promoted** with declared
   bounds (Coons n-sided caps; partial-revolve polygonal caps). Workstream 2
   (holes) and 4 (miter) stay typed refusals.
-- **B1 Torus booleans — evidence improved, label retained (Beta).** Exact
+- **B1 Torus booleans — configuration 3 done, label retained (Beta).** Exact
   coaxial torus×cylinder and axis-centred torus×sphere circles (the marching
   hang is gone), a containment-shortcut unsoundness fixed (seam-vertex-only
-  witnesses), volume oracles pinned. The closed-torus band split is the
-  named missing primitive (ready-repro:
-  `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`); a
-  first attempt (doubled tube-meridian seam bands) assembled free-edged and
-  was reverted — rim/seam vertex identity with the partner face's splitter
-  output is the open problem.
+  witnesses), volume oracles pinned. The closed-torus band split now exists
+  (`split_closed_torus_into_bands`, reached via a seam anchor taken from the
+  torus's degenerate seam vertex), and the concentric torus×sphere cell is
+  exact for all three operations —
+  `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion` is
+  un-ignored. Closing it also fixed a volume-oracle defect one layer away:
+  the face integrator unwrapped only `u`, so the first face whose v-range
+  wrapped the torus period trimmed against its own complement and integrated
+  to zero. Configuration 2's tangent case (torus ∖ coaxial cylinder) still
+  resolves through the bounded mesh fallback and keeps its declared 3% band;
+  the label stays Beta until it does not.
 - **C1 Curved blends — item 1 done** (the blind-hole floor rim defect no
   longer reproduces; domain widened to `r < r_c` with closed-form pins).
   Items 2–3 (closed-rim chamfers, v2 trimmer completion) not started.

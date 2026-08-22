@@ -115,45 +115,20 @@ fn tilted_plane_through_centre_halves_torus() {
 /// Concentric sphere through the tube centres: fuse, intersect, and cut
 /// volumes must satisfy inclusion–exclusion against the operand volumes.
 ///
-/// Ready-repro, ADVANCED not closed: the closed-torus band split now exists
+/// All three run analytic through the closed-torus band split
 /// (`split_closed_torus_into_bands`, reached via the seam anchor that takes a
-/// torus's seam u from its degenerate seam vertex). Fuse and Intersect are
-/// analytic, watertight and exact — 4632.67 and 344.60 against closed-form
-/// 4633 and 344.6, and their sum matches vol(torus)+vol(sphere) to 0.02%.
+/// torus's seam u from its degenerate seam vertex) and agree with closed form:
+/// fuse 4632.67 vs 4633, intersect 344.60 vs 344.6, and cut + intersect =
+/// 789.57 = vol(torus) to the digit.
 ///
-/// CUT stays ignored, and the cause is now fully localized — it is NOT in the
-/// boolean or the band splitter. `remus_check::properties::face_integrator::
-/// integrate_face` returns 0.00 for a torus face whose v-range WRAPS the
-/// period, and `solid_volume` reaches it through the all-analytic
-/// `analytic_faces_solid_volume` fast path (confirmed with `BK_VOL_TRACE=1`;
-/// note that trace needs a logger initialized or it reads as a false zero).
-///
-/// Measured per face on the Cut result:
-///
-///   torus band (outer, wraps v)  integrate_face =    0.00   <- the defect
-///   sphere annulus, rev=true     integrate_face = -416.78   <- correct
-///   sphere annulus, rev=true     integrate_face = -416.78   <- correct
-///   sum                                          = -833.56  <- as reported
-///
-/// The arithmetic closes exactly: the full torus integrates to 789.57 and the
-/// INNER band (which does not wrap, and which Intersect uses) to -488.96, so
-/// the outer band owes +1278.53. With that, Cut = 1278.53 - 416.78 - 416.78 =
-/// 444.97, the exact closed form. Reversal itself is handled correctly — the
-/// sphere faces flip sign against Intersect's +416.78 exactly as they should.
-///
-/// Fix altitude: `face_uv_bounds` in that integrator, called for Torus with
-/// periodic_u AND periodic_v. Both bands share the same two boundary v-values
-/// (95.74° and 264.26°) and differ only in which side carries material, so
-/// bounds derived from boundary samples alone cannot tell them apart; the
-/// wrapping one needs an interior sample to pick its side. Nothing previously
-/// produced a torus face whose v-range wraps, which is why this never fired.
-///
-/// REFUTED, do not retry: flipping the band's lower-rim winding (it breaks the
-/// shared section circles instead), and blaming the reversed sphere annulus
-/// (measured correct). `solid_volume_from_faces` returns NaN on every solid
-/// here including plain operands, so it is not a usable second oracle.
+/// Cut needed one further fix, in `remus_check`: this is the first face whose
+/// v-range WRAPS the torus period (264.26 deg to 455.74 deg), and the trimming
+/// boundary was built in canonical v while the integration range was unwrapped.
+/// In canonical v a seam-crossing band projects to the band on the OTHER side
+/// of its two rims — the same rectangle traversed backwards — so trimming
+/// rejected every abscissa and the face integrated to 0.00 instead of 1278.52.
+/// See `face_integrator::UvLoop::new`.
 #[test]
-#[ignore = "closed-torus band split landed; Cut still inside-out and over-encloses by 388.59"]
 fn concentric_sphere_inclusion_exclusion() {
     let build = |op: BooleanOp| -> f64 {
         let mut topo = Topology::new();
