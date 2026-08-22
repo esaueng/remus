@@ -129,8 +129,32 @@ fn dump(topo: &Topology, s: SolidId, label: &str) {
     for &f in &faces {
         let fa = topo.face(f).unwrap();
         let ow = topo.wire(fa.outer_wire()).unwrap();
+        // Divergence contribution of this face's own mesh: sum of
+        // p0 . (p1-p0)x(p2-p0) / 6. A correctly outward face contributes
+        // positively to the enclosed volume; a sign here that disagrees with
+        // the face's role is the orientation-metadata defect.
+        let ifv = remus_check::properties::face_integrator::integrate_face(topo, f, 8)
+            .map(|c| c.volume)
+            .unwrap_or(f64::NAN);
+        let contrib = remus_operations::tessellate::tessellate(topo, f, 0.02)
+            .map(|m| {
+                let mut acc = 0.0;
+                for t in m.indices.chunks_exact(3) {
+                    let (a, b, c) = (
+                        m.positions[t[0] as usize],
+                        m.positions[t[1] as usize],
+                        m.positions[t[2] as usize],
+                    );
+                    let ab = b - a;
+                    let ac = c - a;
+                    let n = ab.cross(ac);
+                    acc += (a.x() * n.x() + a.y() * n.y() + a.z() * n.z()) / 6.0;
+                }
+                acc
+            })
+            .unwrap_or(f64::NAN);
         println!(
-            "    {f:?} {} rev={} outer_edges={} inner_wires={}",
+            "    {f:?} {} rev={} outer_edges={} inner_wires={} integrate_face={ifv:.2} meshcontrib={contrib:.2}",
             kind(fa.surface()),
             fa.is_reversed(),
             ow.edges().len(),
@@ -152,6 +176,9 @@ fn dump(topo: &Topology, s: SolidId, label: &str) {
 }
 
 fn main() {
+    // BK_VOL_TRACE writes through `log`, so a logger must exist or the
+    // trace reads as a false zero.
+    let _ = env_logger::builder().is_test(false).try_init();
     let mut topo = Topology::new();
     let t = make_torus(&mut topo, 10.0, 2.0, 32).unwrap();
     let s = make_sphere(&mut topo, 10.0, 32).unwrap();

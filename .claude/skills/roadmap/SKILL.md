@@ -1207,19 +1207,23 @@ ledger, details in the named fixtures:
   more than half the tube would otherwise emit one arc its endpoints cannot determine). Fuse and
   Intersect are now analytic, watertight and exact: 4632.67 and 344.60 against closed-form 4633 and
   344.6, free=0 over=0, and their sum matches vol(torus)+vol(sphere) to 0.02%.
-  CUT REMAINS OPEN, and it is an ORIENTATION-METADATA defect, not geometry — three measurements pin
-  that and should stop the next pass re-verifying the splitter. (a) The REGION is correct by
-  ray-cast ground truth: (11.9,0,0) in the tube outside the sphere reads Inside, (8.1,0,0) in the
-  tube inside the sphere reads Outside, sphere core and far field Outside — exactly torus∖sphere.
-  (b) The SAME outer band face appears in Fuse, which measures 4632.67 exactly, so the band's
-  tessellation is sound and only Cut is wrong. (c) The excess is 833.56 − 444.97 = 388.59 =
-  2 × 194.30, the signature of ONE face group carrying a flipped sign rather than a distorted mesh.
-  Next step: per-face signed contributions in the Cut shell; the reversed sphere annulus and the
-  shell's outward/inward decision are the two candidates. TOOLING NOTE: `solid_volume_from_faces`
-  returns NaN on all of these, including plain torus and sphere operands, so it is NOT the second
-  oracle here — ray-cast classification is. REFUTED, do not retry: flipping the band's lower-rim
-  winding. It breaks the shared section circles instead ("2 shared edges have inconsistent face
-  orientations"), so the +u lower-rim convention is right. Ready-repro:
+  CUT REMAINS OPEN but is FULLY LOCALIZED, and NOT in algo: `remus_check::properties::
+  face_integrator::integrate_face` returns 0.00 for a torus face whose v-range WRAPS the period.
+  `solid_volume` reaches it via the all-analytic `analytic_faces_solid_volume` fast path (confirm
+  with BK_VOL_TRACE=1 — that trace goes through `log`, so initialize a logger or it reads as a
+  FALSE ZERO). Measured per face on Cut: torus band (outer, wraps) 0.00, the two rev=true sphere
+  annuli −416.78 each, sum −833.56 exactly as reported. Reversal is handled CORRECTLY — the sphere
+  faces flip sign against Intersect's +416.78 as they should. The arithmetic closes: full torus
+  integrates 789.57, the non-wrapping INNER band (used by Intersect) −488.96, so the outer band owes
+  +1278.53, giving Cut = 1278.53 − 416.78 − 416.78 = 444.97, the exact closed form. FIX ALTITUDE:
+  `face_uv_bounds` in that integrator, called for Torus with periodic_u AND periodic_v — both bands
+  share the same two boundary v-values (95.74° and 264.26°) and differ only in which side carries
+  material, so bounds from boundary samples alone cannot separate them; the wrapping band needs an
+  interior sample to pick its side. Nothing previously produced a v-wrapping torus face, which is
+  why this never fired. REFUTED, do not retry: flipping the band's lower-rim winding (breaks the
+  shared section circles), and blaming the reversed sphere annulus (measured correct). TOOLING:
+  `solid_volume_from_faces` returns NaN on every solid here including plain operands — not a usable
+  second oracle; ray-cast classification is. Ready-repro:
   `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion` (#[ignore]); probe
   `crates/operations/examples/debug_torus_band.rs` dumps operands, raw GFA and ops side by side.
   Partner compatibility (why this is solvable at all): the sphere legitimately keeps each circle as
