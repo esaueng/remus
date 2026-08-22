@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787348885020,
+  "lastUpdate": 1787362429489,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1133,6 +1133,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39015799,
             "range": "± 139030",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa4343157bcc6364f662083b005ec69a29ca3161",
+          "message": "fix(check): unwrap v on doubly-periodic surfaces when trimming a face (#66)\n\nCloses the concentric torus x sphere cell of roadmap B1: fuse, intersect and\ncut all run analytic, watertight and exact.\n\nUvLoop::new in crates/check/src/properties/face_integrator.rs unwrapped only u.\nA torus is periodic in both axes, and the closed-torus band split produces the\nfirst face whose v-range wraps the period (264.26 to 455.74 deg). face_uv_bounds\nderives that range correctly, but the trimming polygon was built in canonical v,\nwhere a seam-crossing band closes as the band on the other side of the same two\nrims. Trimming therefore rejected every abscissa the correct range offered and\nintegrate_face returned 0.00, which propagated into solid_volume through the\nall-analytic fast path.\n\nOuter band 0.00 -> 1278.52 (closed form 1278.53); Cut 833.56 -> 444.97 (exact);\ncut + intersect = 789.57 = vol(torus). Fuse and Intersect unchanged.\n\nOnly the torus arm sets the new flag. The NURBS arm deliberately does not, even\nwhen is_periodic_v: unwrap_angle hardcodes a 2*pi period, which the analytic\nsurfaces satisfy by construction but a NURBS domain_v need not.\n\nconcentric_sphere_inclusion_exclusion is un-ignored, and a new unit guard\nasserts both branches so dropping the flag fails rather than regressing quietly.\n\nTorus minus coaxial cylinder stays on the bounded mesh fallback with its\ndeclared 3% band: tangent contact leaves the band splitter no separators, so\nB1 remains Beta on that account.",
+          "timestamp": "2026-08-21T21:31:29-04:00",
+          "tree_id": "565fd012f1a205a6fa96a78343fdb1fd1d76625e",
+          "url": "https://github.com/esaueng/remus/commit/fa4343157bcc6364f662083b005ec69a29ca3161"
+        },
+        "date": 1787362428290,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1055502,
+            "range": "± 1593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1128323,
+            "range": "± 2447",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 11017,
+            "range": "± 274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 770658,
+            "range": "± 825",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31796605,
+            "range": "± 38237",
             "unit": "ns/iter"
           }
         ]
