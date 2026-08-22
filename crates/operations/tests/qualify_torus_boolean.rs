@@ -115,17 +115,20 @@ fn tilted_plane_through_centre_halves_torus() {
 /// Concentric sphere through the tube centres: fuse, intersect, and cut
 /// volumes must satisfy inclusion–exclusion against the operand volumes.
 ///
-/// Ready-repro: phase FF now emits the two exact section circles (see
-/// `exact_torus_sphere`), but carving the closed torus face into its two
-/// tube bands has no splitter arm — the generic paths cannot weave a face
-/// with a degenerate point boundary, the analytic result fails validation,
-/// and the mesh fallback exceeds its classification work budget (a typed,
-/// bounded refusal). The missing primitive is the closed-torus band split;
-/// a 2026-08-21 attempt (two-rim bands with doubled tube-meridian seams)
-/// assembled free-edged and is parked — the rim/seam vertex identities
-/// must match whatever the partner face's splitter emits.
+/// All three run analytic through the closed-torus band split
+/// (`split_closed_torus_into_bands`, reached via the seam anchor that takes a
+/// torus's seam u from its degenerate seam vertex) and agree with closed form:
+/// fuse 4632.67 vs 4633, intersect 344.60 vs 344.6, and cut + intersect =
+/// 789.57 = vol(torus) to the digit.
+///
+/// Cut needed one further fix, in `remus_check`: this is the first face whose
+/// v-range WRAPS the torus period (264.26 deg to 455.74 deg), and the trimming
+/// boundary was built in canonical v while the integration range was unwrapped.
+/// In canonical v a seam-crossing band projects to the band on the OTHER side
+/// of its two rims — the same rectangle traversed backwards — so trimming
+/// rejected every abscissa and the face integrated to 0.00 instead of 1278.52.
+/// See `face_integrator::UvLoop::new`.
 #[test]
-#[ignore = "needs the closed-torus band split; exact section circles already emitted"]
 fn concentric_sphere_inclusion_exclusion() {
     let build = |op: BooleanOp| -> f64 {
         let mut topo = Topology::new();

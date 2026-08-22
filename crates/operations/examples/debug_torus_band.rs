@@ -1,0 +1,218 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    missing_docs
+)]
+//! Probe for the closed-torus band split (roadmap B1, pinned by
+//! `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`).
+//!
+//! Dumps both operands and then raw GFA *below* the operations acceptance
+//! gate, so a structural failure is visible instead of the ops-level
+//! "mesh boolean work limit exceeded" the gate would substitute. Per face it
+//! prints `integrate_face` (the analytic volume oracle `solid_volume` actually
+//! uses on an all-analytic solid) beside the tessellated mesh contribution,
+//! plus an edge-use census and ray-cast region probes.
+//!
+//! The configuration: torus R=10 rho=2 against a concentric sphere R=10. The
+//! sections are exact circles at s=9.8, z=+/-1.98997 (tube angle v ~ +/-95.74
+//! deg) and the seam anchors are (9.8, 0, +/-1.98997).
+//!
+//! The three things this probe established, kept because each one is a trap:
+//!
+//! 1. The torus operand is ONE face whose whole boundary is 2 distinct
+//!    zero-length seam edges, each traversed twice and all anchored at a
+//!    single vertex at (12,0,0) — the UV rectangle with both seams collapsed
+//!    to a point. That degenerate vertex is the only seam evidence a torus
+//!    carries, which is why `seam_anchor_on_circle` has to read it: without
+//!    the anchor, section circles start wherever the intersection curve's own
+//!    frame began (measured at u=90 deg against a seam at u=0) and the band
+//!    cannot share a VertexId with the partner face.
+//! 2. The partner side is compatible: on a hemisphere those circles genuinely
+//!    bound spherical caps, so the sphere keeps each as a 1-edge inner wire.
+//!    Opening a closed circle gives it a start/end vertex without splitting
+//!    the edge, so one edge serves as both the sphere's hole wire and the
+//!    torus band's separator.
+//! 3. The per-face `integrate_face` column is the one that found the last
+//!    defect. Cut's outer band WRAPS the v period, and its trimming polygon
+//!    was built in canonical v while its integration range was unwrapped, so
+//!    it read 0.00 while the mesh column read a plausible -489.31. Trust the
+//!    analytic column here; the mesh one does not distinguish the two bands.
+
+use remus_operations::primitives::{make_sphere, make_torus};
+use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceSurface;
+use remus_topology::solid::SolidId;
+use std::collections::BTreeMap;
+
+fn ecurve(topo: &Topology, e: remus_topology::edge::EdgeId) -> String {
+    let ed = topo.edge(e).unwrap();
+    let v0 = topo.vertex(ed.start()).unwrap().point();
+    let v1 = topo.vertex(ed.end()).unwrap().point();
+    let k = ed.curve().type_tag();
+    format!(
+        "{k} v{:?}->{:?} ({:.3},{:.3},{:.3})->({:.3},{:.3},{:.3})",
+        ed.start(),
+        ed.end(),
+        v0.x(),
+        v0.y(),
+        v0.z(),
+        v1.x(),
+        v1.y(),
+        v1.z()
+    )
+}
+
+/// Edge-use census by edge id: free (1 use) and over-shared (>2).
+fn edge_census(topo: &Topology, s: SolidId) {
+    let faces = solid_faces(topo, s).unwrap();
+    let mut uses: BTreeMap<usize, usize> = BTreeMap::new();
+    for &f in &faces {
+        let fa = topo.face(f).unwrap();
+        let mut wires = vec![fa.outer_wire()];
+        wires.extend(fa.inner_wires().iter().copied());
+        for w in wires {
+            for oe in topo.wire(w).unwrap().edges() {
+                *uses.entry(oe.edge().index()).or_default() += 1;
+            }
+        }
+    }
+    let free = uses.values().filter(|&&c| c == 1).count();
+    let over = uses.values().filter(|&&c| c > 2).count();
+    println!("    edge-use: total={} free={free} over={over}", uses.len());
+}
+
+fn kind(s: &FaceSurface) -> &'static str {
+    s.type_tag()
+}
+
+fn dump(topo: &Topology, s: SolidId, label: &str) {
+    let faces = solid_faces(topo, s).unwrap();
+    let mut mix: std::collections::BTreeMap<&str, usize> = BTreeMap::new();
+    for &f in &faces {
+        *mix.entry(kind(topo.face(f).unwrap().surface()))
+            .or_default() += 1;
+    }
+    let vol = remus_operations::measure::solid_volume(topo, s, 0.02).unwrap_or(f64::NAN);
+    let volf =
+        remus_operations::measure::solid_volume_from_faces(topo, s, 0.02).unwrap_or(f64::NAN);
+    println!(
+        "--- {label}: F={} vol_tess={vol:.2} vol_faces={volf:.2} mix={mix:?}",
+        faces.len()
+    );
+    edge_census(topo, s);
+    // Ground-truth region probes (ray-cast), per the debugging doctrine.
+    //   outer tube ring, outside the sphere  -> in Cut/Fuse, not Intersect
+    //   inner tube ring, inside the sphere   -> in Intersect/Fuse, not Cut
+    //   sphere core, outside the tube        -> in Fuse only
+    for (name, pt) in [
+        (
+            "tube_outer(11.9,0,0)",
+            remus_math::vec::Point3::new(11.9, 0.0, 0.0),
+        ),
+        (
+            "tube_inner(8.1,0,0)",
+            remus_math::vec::Point3::new(8.1, 0.0, 0.0),
+        ),
+        (
+            "sphere_core(3,0,0)",
+            remus_math::vec::Point3::new(3.0, 0.0, 0.0),
+        ),
+        (
+            "far_outside(30,0,0)",
+            remus_math::vec::Point3::new(30.0, 0.0, 0.0),
+        ),
+    ] {
+        let c = remus_operations::classify::classify_point(topo, s, pt, 0.02, 1e-7);
+        println!("        probe {name}: {c:?}");
+    }
+    for &f in &faces {
+        let fa = topo.face(f).unwrap();
+        let ow = topo.wire(fa.outer_wire()).unwrap();
+        // Divergence contribution of this face's own mesh: sum of
+        // p0 . (p1-p0)x(p2-p0) / 6. A correctly outward face contributes
+        // positively to the enclosed volume; a sign here that disagrees with
+        // the face's role is the orientation-metadata defect.
+        let ifv = remus_check::properties::face_integrator::integrate_face(topo, f, 8)
+            .map(|c| c.volume)
+            .unwrap_or(f64::NAN);
+        let contrib = remus_operations::tessellate::tessellate(topo, f, 0.02)
+            .map(|m| {
+                let mut acc = 0.0;
+                for t in m.indices.chunks_exact(3) {
+                    let (a, b, c) = (
+                        m.positions[t[0] as usize],
+                        m.positions[t[1] as usize],
+                        m.positions[t[2] as usize],
+                    );
+                    let ab = b - a;
+                    let ac = c - a;
+                    let n = ab.cross(ac);
+                    acc += (a.x() * n.x() + a.y() * n.y() + a.z() * n.z()) / 6.0;
+                }
+                acc
+            })
+            .unwrap_or(f64::NAN);
+        println!(
+            "    {f:?} {} rev={} outer_edges={} inner_wires={} integrate_face={ifv:.2} meshcontrib={contrib:.2}",
+            kind(fa.surface()),
+            fa.is_reversed(),
+            ow.edges().len(),
+            fa.inner_wires().len()
+        );
+        for oe in ow.edges() {
+            println!("            outer: {}", ecurve(topo, oe.edge()));
+        }
+        for (i, &iw) in fa.inner_wires().iter().enumerate() {
+            println!(
+                "        inner[{i}] edges={}",
+                topo.wire(iw).unwrap().edges().len()
+            );
+            for oe in topo.wire(iw).unwrap().edges() {
+                println!("            inner: {}", ecurve(topo, oe.edge()));
+            }
+        }
+    }
+}
+
+fn main() {
+    // BK_VOL_TRACE writes through `log`, so a logger must exist or the
+    // trace reads as a false zero.
+    let _ = env_logger::builder().is_test(false).try_init();
+    let mut topo = Topology::new();
+    let t = make_torus(&mut topo, 10.0, 2.0, 32).unwrap();
+    let s = make_sphere(&mut topo, 10.0, 32).unwrap();
+
+    dump(&topo, t, "TORUS operand");
+    dump(&topo, s, "SPHERE operand");
+
+    for op in [
+        remus_algo::bop::BooleanOp::Fuse,
+        remus_algo::bop::BooleanOp::Intersect,
+        remus_algo::bop::BooleanOp::Cut,
+    ] {
+        let mut work = Topology::new();
+        let t2 = make_torus(&mut work, 10.0, 2.0, 32).unwrap();
+        let s2 = make_sphere(&mut work, 10.0, 32).unwrap();
+        println!("\n=== RAW GFA {op:?} ===");
+        match remus_algo::gfa::boolean(&mut work, op, t2, s2) {
+            Ok(r) => dump(&work, r, &format!("raw {op:?}")),
+            Err(e) => println!("    Err: {e}"),
+        }
+        let mut ow = Topology::new();
+        let t3 = make_torus(&mut ow, 10.0, 2.0, 32).unwrap();
+        let s3 = make_sphere(&mut ow, 10.0, 32).unwrap();
+        let ops_op = match op {
+            remus_algo::bop::BooleanOp::Fuse => remus_operations::boolean::BooleanOp::Fuse,
+            remus_algo::bop::BooleanOp::Intersect => {
+                remus_operations::boolean::BooleanOp::Intersect
+            }
+            remus_algo::bop::BooleanOp::Cut => remus_operations::boolean::BooleanOp::Cut,
+        };
+        match remus_operations::boolean::boolean(&mut ow, ops_op, t3, s3) {
+            Ok(r) => dump(&ow, r, &format!("OPS {op:?}")),
+            Err(e) => println!("    OPS Err: {e}"),
+        }
+    }
+}
