@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787425341560,
+  "lastUpdate": 1787425505735,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1241,6 +1241,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40939285,
             "range": "± 2444489",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "391a6633aa085efa2c81246bef5b2057acce1338",
+          "message": "build(deps): bump the actions group with 2 updates (#68)\n\nAdvances two SHA-pinned actions:\n\n- taiki-e/install-action 6c6fd71 -> 288e746, which are the upstream tags\n  v2.85.10 and v2.86.1 respectively.\n- Swatinem/rust-cache 258712b -> f0d9c38. Both are untagged commits on\n  upstream master, matching this repo's existing pin style for that\n  action. The range spans two commits and touches only upstream's own\n  coverage.yml and nix.yml workflows — the action's runtime code is\n  unchanged.",
+          "timestamp": "2026-08-22T14:59:40-04:00",
+          "tree_id": "710f257e229e4a26a6e71f66d3cfa632d976e1b4",
+          "url": "https://github.com/esaueng/remus/commit/391a6633aa085efa2c81246bef5b2057acce1338"
+        },
+        "date": 1787425505093,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1411956,
+            "range": "± 2428",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1444169,
+            "range": "± 1793",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14197,
+            "range": "± 84",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 989726,
+            "range": "± 21353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40992588,
+            "range": "± 360014",
             "unit": "ns/iter"
           }
         ]
