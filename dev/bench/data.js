@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787362429489,
+  "lastUpdate": 1787425341560,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1187,6 +1187,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 31796605,
             "range": "± 38237",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d12a2e7d2a0b86ae4de1f673796347e119191015",
+          "message": "build(deps-dev): bump the npm group with 2 updates (#67)\n\nBumps @commitlint/cli to ^21.2.2 and refreshes the lockfile.\n\nDev-tooling only: no Rust, WASM, or published-package surface is\naffected. The lockfile also carries a transitive TypeScript 6.0.3 -> 7.0.2\npeer bump, which is inert here — nothing in the repo invokes tsc or\ntsserver, and commitlint.config.js is plain JS, so the TS config loader\npath is never exercised.",
+          "timestamp": "2026-08-22T14:59:32-04:00",
+          "tree_id": "3da0d2ce412062bb8633efa269543d70d7f4af81",
+          "url": "https://github.com/esaueng/remus/commit/d12a2e7d2a0b86ae4de1f673796347e119191015"
+        },
+        "date": 1787425340605,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1411315,
+            "range": "± 857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1443906,
+            "range": "± 1409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14050,
+            "range": "± 391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 994074,
+            "range": "± 1530",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40939285,
+            "range": "± 2444489",
             "unit": "ns/iter"
           }
         ]
