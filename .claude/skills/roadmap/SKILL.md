@@ -1196,14 +1196,48 @@ ledger, details in the named fixtures:
 - Coaxial torus×cylinder and axis-centred torus×sphere sections are EXACT circles
   (`exact_torus_cylinder` / `exact_torus_sphere` in math, preferred by phase FF). The quartic
   marcher + dense `gauss_solve` NURBS fits made these hang for minutes-to-forever; now seconds.
-- OPEN, sanctioned failing repro EXISTS: the closed-torus band split. Exact circles are emitted,
-  but a whole torus face (degenerate point boundary) cut by two axis-circles has no splitter arm →
-  analytic result invalid → fallback (cylinder case, 2% volume) or bounded work-budget refusal
-  (sphere fuse). Ready-repro: `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion`
-  (#[ignore]). ATTEMPTED AND REVERTED (do not blind-retry): two-rim bands with doubled tube-meridian
-  seam arcs assembled all-free — rim/seam vertex identity must match whatever the PARTNER face's
-  splitter emits (the cylinder side anchors sections at its own seam u); solve the shared-vertex
-  contract first, not the wire shape.
+- CLOSED 2026-08-22 — the closed-torus band split, all three ops analytic and exact. It took
+  THREE parts, and the first two are ONE contract in `algo`: `seam_anchor_on_circle` now takes a
+  torus's seam u from its DEGENERATE seam vertex (a doubly-periodic face has no extended seam Line,
+  so the old search found nothing and section circles anchored wherever the intersection curve's own
+  frame began — MEASURED at u=90° against a seam at u=0, which is exactly why the earlier attempt
+  assembled free-edged and could not share a VertexId with the partner), and
+  `split_closed_torus_into_bands` (`face_splitter/special_cases.rs`) emits the cyclic bands: N
+  separators → N bands, not N+1, with seam segments as sub-arcs of the TUBE MERIDIAN under π rather
+  than Lines (a torus band spanning more than half the tube would otherwise emit one arc its
+  endpoints cannot determine).
+  The third part is in `check`, and it is the one worth remembering: `UvLoop::new` in
+  `properties/face_integrator.rs` unwrapped only `u`. A torus is periodic in BOTH axes, and the
+  outer band is the first face anywhere whose v-range WRAPS the period (264.26° → 455.74°). Built in
+  canonical v, its trimming polygon closes as the band on the OTHER side of the same two rims — the
+  same rectangle traversed backwards, shoelace area 18.480468 identical to the inner band's — so
+  trimming rejected every abscissa the (correct) range offered and `integrate_face` returned 0.00.
+  Unwrapping v alongside u makes the outer band integrate +1278.52 and Cut land on 444.97, the exact
+  closed form; `cut + intersect = 789.57 = vol(torus)` to the digit, Fuse 4632.67 and Intersect
+  344.60 unchanged. Guard: `seam_crossing_band_trims_in_the_unwrapped_v_branch` asserts BOTH
+  branches, so dropping the flag fails rather than silently regressing.
+  MY OWN FIX-ALTITUDE CALL WAS WRONG BY ONE FUNCTION, and the correction is the lesson: I pinned it
+  on `face_uv_bounds` needing an interior sample to tell the two bands apart. It does not —
+  instrumenting it showed it already returns (264.26°, 455.74°) correctly, because it unwraps v.
+  The two bands are separable from boundary samples alone; what was missing was the SECOND consumer
+  agreeing on the branch. When a range and a mask disagree, instrument both before blaming either.
+  REFUTED, do not retry: flipping the band's lower-rim winding (breaks the shared section circles),
+  and blaming the reversed sphere annulus (measured correct at ∓416.78). TOOLING:
+  `solid_volume_from_faces` returns NaN on every solid here including plain operands — not a usable
+  second oracle; ray-cast classification is. BK_VOL_TRACE=1 goes through `log`, so initialize a
+  logger or it reads as a FALSE ZERO. Pin:
+  `qualify_torus_boolean.rs::concentric_sphere_inclusion_exclusion` (un-ignored); probe
+  `crates/operations/examples/debug_torus_band.rs` dumps operands, raw GFA and ops side by side.
+  Partner compatibility (why this was solvable at all): the sphere legitimately keeps each section
+  circle as a 1-edge inner wire, and opening a closed circle adds a vertex without splitting the
+  edge, so one edge serves as both the sphere's hole wire and the torus band's separator.
+- STILL OPEN, same row: torus ∖ COAXIAL CYLINDER (`coaxial_cylinder_cut_matches_closed_form`, 3%
+  band) remains on the bounded mesh fallback — measured 424.16 vs 428.29, rel 9.7e-3, log confirms
+  `boolean Cut: mesh boolean path → 2646 faces, surface types lost`. The band split does not fire
+  there: the cylinder wall is TANGENT to the tube rather than sectioning it in two circles, so the
+  separators the splitter needs do not exist. Different primitive, do not fold it into the split.
+  approx_census carries no row for either configuration, so nothing flipped there — the census tracks
+  analytic-path degradation, and this was a volume-oracle defect.
 - Micron-scale boolean gap FILED: at model scale 1e-3 a plain box∖box through-cut carries the tool
   walls untrimmed and the volume EXCEEDS the blank (ignored ready-repro
   `crates/operations/tests/boolean_scale_gap.rs`). Fix altitude: scaled tolerance through OperationContext

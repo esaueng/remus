@@ -1041,6 +1041,206 @@ pub(super) fn split_periodic_face_into_bands(
     Some(bands)
 }
 
+/// Split a CLOSED torus face into bands at its constant-v section circles.
+///
+/// The doubly-periodic sibling of [`split_periodic_face_into_bands`]. Three
+/// structural differences from the cylinder case, each forced by the torus
+/// being periodic in BOTH directions:
+///
+/// 1. **No boundary circles.** A full torus's fundamental polygon
+///    (a b a⁻¹ b⁻¹) collapses both seams onto ONE vertex, so every boundary
+///    edge is a degenerate Line and there are no rims to bound the end bands.
+/// 2. **Levels wrap cyclically.** N separators give N bands, not N+1 — the
+///    last band closes through v = 0 back to the first.
+/// 3. **The seam segment is an ARC, not a Line.** On a cylinder v is axial,
+///    so the constant-u seam is straight; on a torus v is the tube angle, so
+///    the seam runs along the tube meridian circle at that u. Its pcurve is
+///    still a straight UV line at constant u.
+///
+/// The meridian is built with `ref_dir` at the tube's outer point, which makes
+/// `meridian.evaluate(v)` identical to `surface.evaluate(seam_u, v)` — the arc
+/// and the surface agree by construction rather than by fitting.
+///
+/// Seam arcs are emitted in sub-arcs under π. A band spanning more than half
+/// the tube would otherwise produce a single arc whose endpoints do not
+/// determine it (the > π ambiguity the periodic trim contract guards), and
+/// splitting is the sanctioned fix — the two adjacent traversals of a seam
+/// share each sub-arc, so no partner face sees the extra vertices.
+///
+/// Preconditions (returns `None` so the caller can fall back otherwise):
+/// - surface is a torus
+/// - every boundary edge is a degenerate seam Line (the closed-torus shape);
+///   a trimmed torus patch has real boundary and belongs to the generic paths
+/// - every section is a closed circle at constant v whose start sits on the
+///   seam (guaranteed by the seam-anchor pre-pass in `fill_images_faces`),
+///   with no two sections at the same v
+#[allow(clippy::too_many_lines, clippy::items_after_statements)]
+pub(super) fn split_closed_torus_into_bands(
+    surface: &FaceSurface,
+    boundary_edges: &[OrientedPCurveEdge],
+    sections: &[SectionEdge],
+    rank: Rank,
+    reversed: bool,
+    face_id: FaceId,
+    tol: f64,
+) -> Option<Vec<SplitSubFace>> {
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
+    use std::f64::consts::{PI, TAU};
+
+    let FaceSurface::Torus(torus) = surface else {
+        return None;
+    };
+    let close_tol = tol * 100.0;
+
+    // A closed torus has no real boundary: every boundary edge must be a
+    // degenerate seam Line, and they all meet at the single seam vertex.
+    let mut seam_pt = None;
+    for e in boundary_edges {
+        if !matches!(e.curve_3d, EdgeCurve::Line) {
+            return None;
+        }
+        if (e.start_3d - e.end_3d).length() > close_tol {
+            return None;
+        }
+        seam_pt = Some(e.start_3d);
+    }
+    let (seam_u, _) = surface.project_point(seam_pt?)?;
+
+    // +u tangent at the seam: d/du of the surface's radial term. The lower
+    // rim of each band traverses this way, making the band wire CCW in UV.
+    let (sin_u, cos_u) = seam_u.sin_cos();
+    let du_dir = torus.y_axis() * cos_u - torus.x_axis() * sin_u;
+
+    struct BandCircle {
+        v: f64,
+        lower: OrientedPCurveEdge,
+        upper: OrientedPCurveEdge,
+    }
+    let mut mids: Vec<BandCircle> = Vec::with_capacity(sections.len());
+    for s in sections {
+        if (s.start - s.end).length() > close_tol {
+            return None;
+        }
+        let EdgeCurve::Circle(c) = &s.curve_3d else {
+            return None;
+        };
+        let (_, v_raw) = surface.project_point(s.start)?;
+        let v = v_raw.rem_euclid(TAU);
+        // The section must be anchored on the seam, or the band's seam
+        // segments would join an arbitrary angle and cut through the interior.
+        let on_seam = surface.evaluate(seam_u, v)?;
+        if (on_seam - s.start).length() > close_tol {
+            return None;
+        }
+        let natural_tan = c.tangent(c.project(s.start));
+        let lower_fwd = natural_tan.dot(du_dir) > 0.0;
+        let pcurve = match rank {
+            Rank::A => &s.pcurve_a,
+            Rank::B => &s.pcurve_b,
+        };
+        let mk = |forward: bool| OrientedPCurveEdge {
+            curve_3d: s.curve_3d.clone(),
+            trim: s.trim,
+            pcurve: pcurve.clone(),
+            start_uv: Point2::new(seam_u, v),
+            end_uv: Point2::new(seam_u, v),
+            start_3d: s.start,
+            end_3d: s.start,
+            forward,
+            source_edge_idx: None,
+            pave_block_id: s.pave_block_id,
+            source_topo_edge: None,
+        };
+        mids.push(BandCircle {
+            v,
+            lower: mk(lower_fwd),
+            upper: mk(!lower_fwd),
+        });
+    }
+    if mids.is_empty() {
+        return None;
+    }
+    mids.sort_by(|a, b| a.v.partial_cmp(&b.v).unwrap_or(std::cmp::Ordering::Equal));
+    if mids.windows(2).any(|w| w[1].v - w[0].v < close_tol) {
+        return None;
+    }
+    // The cyclic wrap must also be a real gap.
+    if mids.len() > 1 && (mids[0].v + TAU) - mids[mids.len() - 1].v < close_tol {
+        return None;
+    }
+
+    // The tube meridian at the seam, parameterized so that
+    // `meridian.evaluate(v) == surface.evaluate(seam_u, v)`.
+    let radial = torus.x_axis() * cos_u + torus.y_axis() * sin_u;
+    let tube_center = torus.center() + radial * torus.major_radius();
+    let meridian = Circle3D::new_with_ref(
+        tube_center,
+        radial.cross(torus.z_axis()),
+        torus.minor_radius(),
+        radial,
+    )
+    .ok()?;
+
+    // Seam run from va to vb as sub-arcs under π, so each piece is
+    // unambiguously determined by its endpoints.
+    let seam_run = |va: f64, vb: f64| -> Option<Vec<OrientedPCurveEdge>> {
+        const MAX_ARC: f64 = 0.9 * PI;
+        let span = vb - va;
+        let steps = ((span.abs() / MAX_ARC).ceil() as usize).max(1);
+        let step = span / steps as f64;
+        let mut out = Vec::with_capacity(steps);
+        for k in 0..steps {
+            let (a, b) = (va + step * k as f64, va + step * (k + 1) as f64);
+            let dir = Vec2::new(0.0, if b > a { 1.0 } else { -1.0 });
+            out.push(OrientedPCurveEdge {
+                curve_3d: EdgeCurve::Circle(meridian.clone()),
+                trim: None,
+                pcurve: Curve2D::Line(Line2D::new(Point2::new(seam_u, a), dir).ok()?),
+                start_uv: Point2::new(seam_u, a),
+                end_uv: Point2::new(seam_u, b),
+                start_3d: surface.evaluate(seam_u, a)?,
+                end_3d: surface.evaluate(seam_u, b)?,
+                forward: b > a,
+                source_edge_idx: None,
+                pave_block_id: None,
+                source_topo_edge: None,
+            });
+        }
+        Some(out)
+    };
+
+    // N separators, N bands: band i runs from level i up to level i+1,
+    // the last wrapping through v = 0.
+    let n = mids.len();
+    let mut bands = Vec::with_capacity(n);
+    for i in 0..n {
+        let a = &mids[i];
+        let b = &mids[(i + 1) % n];
+        let va = a.v;
+        let vb = if b.v > va { b.v } else { b.v + TAU };
+        let mut wire = vec![a.lower.clone()];
+        wire.extend(seam_run(va, vb)?);
+        wire.push(b.upper.clone());
+        wire.extend(seam_run(vb, va)?);
+        let interior = surface.evaluate(
+            (seam_u + PI).rem_euclid(TAU),
+            f64::midpoint(va, vb).rem_euclid(TAU),
+        )?;
+        bands.push(SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: wire,
+            inner_wires: Vec::new(),
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(interior),
+        });
+    }
+    Some(bands)
+}
+
 /// Split a u-periodic face (cylinder lateral) into angular SECTORS at its
 /// full-height ruling sections (u = const lines from rim to rim).
 ///
