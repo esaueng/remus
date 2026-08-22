@@ -1266,7 +1266,14 @@ fn compute_seam_anchors(topo: &Topology, arena: &GfaArena) -> BTreeMap<usize, Po
         for fid in [curve_ds.face_a, curve_ds.face_b] {
             let Ok(face) = topo.face(fid) else { continue };
             let surface = face.surface();
-            if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+            // Cylinder and cone laterals seam on a Line edge. A full torus is
+            // periodic in BOTH directions and has no boundary at all: its two
+            // seams collapse to a single degenerate vertex, which is still the
+            // seam evidence `seam_anchor_on_circle` needs.
+            if !matches!(
+                surface,
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Torus(_)
+            ) {
                 continue;
             }
             let Some(anchor) = seam_anchor_on_circle(topo, face, circle) else {
@@ -1292,6 +1299,13 @@ fn seam_anchor_on_circle(
     let surface = face.surface();
     let wire = topo.wire(face.outer_wire()).ok()?;
     let mut seam_pt = None;
+    // A doubly-periodic face (a full torus) has no boundary: both seams
+    // collapse onto ONE vertex, so every seam Line is zero-length and the
+    // extended-seam search below finds nothing. That vertex still carries the
+    // seam's u, and is the only seam evidence such a face has, so it serves as
+    // the fallback. Cylinder and cone laterals always have an extended seam
+    // Line and therefore never reach it — their behaviour is unchanged.
+    let mut degenerate_seam_pt = None;
     for oe in wire.edges() {
         let Ok(edge) = topo.edge(oe.edge()) else {
             continue;
@@ -1303,9 +1317,10 @@ fn seam_anchor_on_circle(
                 seam_pt = Some(sp);
                 break;
             }
+            degenerate_seam_pt.get_or_insert(sp);
         }
     }
-    let (seam_u, _) = surface.project_point(seam_pt?)?;
+    let (seam_u, _) = surface.project_point(seam_pt.or(degenerate_seam_pt)?)?;
     let (_, v_circle) = surface.project_point(circle.evaluate(0.0))?;
     let anchor = surface.evaluate(seam_u, v_circle)?;
     let radial = anchor - circle.center();
@@ -4157,6 +4172,62 @@ mod tests {
     use remus_math::nurbs::fitting::interpolate;
     use remus_math::traits::ParametricCurve;
     use remus_math::vec::{Point2, Vec2, Vec3};
+
+    /// A full torus is periodic in BOTH directions, so it has no boundary:
+    /// its fundamental polygon (a b a⁻¹ b⁻¹) collapses both seams onto ONE
+    /// vertex and every seam Line is zero-length. The extended-seam search
+    /// finds nothing there, so the degenerate seam vertex must supply the
+    /// seam u — otherwise a closed section circle on a torus never gets an
+    /// anchor, its start vertex is arbitrary, and the band wires cannot
+    /// share a VertexId with the partner face's hole wire.
+    ///
+    /// Geometry: torus R=10 ρ=2 seamed at (12,0,0) (u=0), cut by a concentric
+    /// sphere of radius 10. The sections are the two circles at s=9.8,
+    /// z=±1.98997; anchoring each at u=0 puts the shared vertex on the
+    /// tube meridian through the seam.
+    #[test]
+    fn torus_section_circle_anchors_on_the_degenerate_seam_vertex() {
+        use remus_math::surfaces::ToroidalSurface;
+        use remus_topology::wire::Wire;
+
+        let (rmaj, rmin) = (10.0, 2.0);
+        let mut topo = Topology::new();
+        let surface = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), rmaj, rmin).unwrap();
+
+        // Faithful to `make_torus`: 1 vertex, 2 degenerate seam Lines,
+        // wire a → b → a⁻¹ → b⁻¹.
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(rmaj + rmin, 0.0, 0.0), 1e-7));
+        let ea = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Line));
+        let eb = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Line));
+        let wire = Wire::new(
+            vec![
+                OrientedEdge::new(ea, true),
+                OrientedEdge::new(eb, true),
+                OrientedEdge::new(ea, false),
+                OrientedEdge::new(eb, false),
+            ],
+            true,
+        )
+        .unwrap();
+        let wid = topo.add_wire(wire);
+        let fid = topo.add_face(Face::new(wid, vec![], FaceSurface::Torus(surface)));
+        let face = topo.face(fid).unwrap();
+
+        // Both exact torus×sphere section circles.
+        for z in [1.989_974_874_213_239_f64, -1.989_974_874_213_239] {
+            let circle =
+                Circle3D::new(Point3::new(0.0, 0.0, z), Vec3::new(0.0, 0.0, 1.0), 9.8).unwrap();
+            let anchor = seam_anchor_on_circle(&topo, face, &circle)
+                .expect("degenerate seam vertex must yield an anchor");
+            // On the seam meridian (u = 0 ⇒ y = 0, x > 0) and on the circle.
+            assert!(
+                (anchor.x() - 9.8).abs() < 1e-9
+                    && anchor.y().abs() < 1e-9
+                    && (anchor.z() - z).abs() < 1e-9,
+                "anchor {anchor:?} is not the u=0 point of the section circle at z={z}"
+            );
+        }
+    }
 
     #[test]
     fn final_edge_writer_keeps_valid_trim_and_drops_mismatched_metadata() {
