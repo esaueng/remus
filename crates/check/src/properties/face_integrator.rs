@@ -114,7 +114,7 @@ pub fn integrate_face(
                 face_boundary_v_extent(topo, face_id, s)?,
             );
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true)?;
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
@@ -131,7 +131,7 @@ pub fn integrate_face(
                 face_boundary_v_extent(topo, face_id, s)?,
             );
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true)?;
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, true)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
@@ -148,7 +148,7 @@ pub fn integrate_face(
                 (-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2),
             );
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, false, full)?;
-            let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false)?;
+            let mut uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false, false)?;
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
             Ok(integrate_with_trimming(
                 s,
@@ -163,7 +163,10 @@ pub fn integrate_face(
         FaceSurface::Torus(s) => {
             let full = ((0.0, std::f64::consts::TAU), (0.0, std::f64::consts::TAU));
             let (u_range, v_range) = face_uv_bounds(topo, face_id, s, true, true, full)?;
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, false)?;
+            // A torus is periodic in `v` as well, so the trimming boundary has
+            // to be unwrapped on that axis too or a seam-crossing band lands in
+            // a different branch than the range above.
+            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), true, true, false)?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
@@ -180,7 +183,14 @@ pub fn integrate_face(
             let periodic_v = s.is_periodic_v();
             let (u_range, v_range) =
                 face_uv_bounds(topo, face_id, s, periodic_u, periodic_v, full)?;
-            let uv = build_face_uv(topo, face_id, |p| s.project_point(p), periodic_u, false)?;
+            let uv = build_face_uv(
+                topo,
+                face_id,
+                |p| s.project_point(p),
+                periodic_u,
+                false,
+                false,
+            )?;
             Ok(integrate_with_trimming(
                 s,
                 u_range,
@@ -304,13 +314,30 @@ struct UvLoop {
 }
 
 impl UvLoop {
-    /// Wrap a projected boundary into a loop, unwrapping `u` sequentially.
-    fn new(mut points: Vec<Point2>, u_periodic: bool) -> Self {
-        if u_periodic {
-            for i in 1..points.len() {
-                let u = unwrap_angle(points[i - 1].x(), points[i].x());
-                points[i] = Point2::new(u, points[i].y());
-            }
+    /// Wrap a projected boundary into a loop, unwrapping each periodic axis
+    /// sequentially.
+    ///
+    /// `v` needs the same treatment as `u` on a doubly-periodic surface. A
+    /// torus band whose `v` extent crosses the period seam projects, in
+    /// canonical `v`, to the band on the OTHER side of its two rims traversed
+    /// backwards — same rectangle, opposite winding — because the seam run
+    /// jumps `2pi` mid-loop. Trimming against that accepts exactly the
+    /// complement of the face, so every abscissa in the range
+    /// `face_uv_bounds` derived (which does unwrap `v`) is rejected and the
+    /// face integrates to zero.
+    fn new(mut points: Vec<Point2>, u_periodic: bool, v_periodic: bool) -> Self {
+        for i in 1..points.len() {
+            let u = if u_periodic {
+                unwrap_angle(points[i - 1].x(), points[i].x())
+            } else {
+                points[i].x()
+            };
+            let v = if v_periodic {
+                unwrap_angle(points[i - 1].y(), points[i].y())
+            } else {
+                points[i].y()
+            };
+            points[i] = Point2::new(u, v);
         }
         let u_min = points.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min);
         let u_max = points
@@ -462,7 +489,18 @@ struct FaceUv {
 
 /// Project a face's wires into the surface's UV domain.
 ///
-/// `v_unbounded` says the surface's `v` runs to infinity in both directions (a
+/// `u_periodic` and `v_periodic` say which axes close on themselves, and so
+/// which need unwrapping to keep a seam-straddling wire contiguous. They must
+/// match what the caller passed [`face_uv_bounds`], or the mask and the range
+/// end up a period apart and the face trims to nothing.
+///
+/// Only a torus sets `v_periodic`, and the NURBS arm deliberately does not,
+/// even when `is_periodic_v`: [`unwrap_angle`] hardcodes a `2pi` period, which
+/// the analytic surfaces satisfy by construction but a NURBS `domain_v` need
+/// not. Widening that wants a repro on a periodic-v NURBS face first.
+///
+/// `v_unbounded` is a different question about the same axis: it says the
+/// surface's `v` runs to infinity in both directions (a
 /// cylinder or a cone). That is what makes the band test well posed: with no
 /// far end to the wall, a sample that no band lies above is material, so
 /// counting bands above it decides the sample. A sphere's `v` ends at a pole
@@ -473,6 +511,7 @@ fn build_face_uv<F>(
     face_id: FaceId,
     project: F,
     u_periodic: bool,
+    v_periodic: bool,
     v_unbounded: bool,
 ) -> Result<FaceUv, CheckError>
 where
@@ -487,6 +526,7 @@ where
                 })
                 .collect(),
             u_periodic,
+            v_periodic,
         )
     };
 
@@ -1818,6 +1858,46 @@ mod tests {
 
     use super::*;
     use remus_math::vec::{Point3, Vec3};
+
+    /// A torus band whose `v` extent crosses the period seam must trim in the
+    /// same branch the integration range lives in.
+    ///
+    /// Built in canonical `v`, the loop below closes as the band on the OTHER
+    /// side of its two rims — the region it must reject — so every abscissa in
+    /// `(264.26 deg, 455.74 deg)` fell outside and the face integrated to zero.
+    #[test]
+    fn seam_crossing_band_trims_in_the_unwrapped_v_branch() {
+        let deg = |d: f64| d.to_radians();
+        // Rim at 264.26 deg (u ascending), seam run up across the 0/2pi seam to
+        // 95.74 deg, rim back (u descending), seam run down. Exactly what
+        // `project_point` emits: every `v` canonical in [0, 2pi).
+        let mut pts = Vec::new();
+        for u in [0.0, 90.0, 180.0, 270.0, 360.0] {
+            pts.push(Point2::new(deg(u), deg(264.26)));
+        }
+        for v in [300.0, 340.0, 20.0, 60.0, 95.74] {
+            pts.push(Point2::new(deg(360.0), deg(v)));
+        }
+        for u in [270.0, 180.0, 90.0, 0.0] {
+            pts.push(Point2::new(deg(u), deg(95.74)));
+        }
+        for v in [60.0, 20.0, 340.0, 300.0] {
+            pts.push(Point2::new(deg(0.0), deg(v)));
+        }
+
+        let unwrapped = UvLoop::new(pts.clone(), true, true);
+        // `face_uv_bounds` reports (264.26 deg, 455.74 deg) for this face, so
+        // those are the abscissae the quadrature actually offers.
+        assert!(unwrapped.encloses(deg(180.0), deg(300.0), true));
+        assert!(unwrapped.encloses(deg(180.0), deg(400.0), true));
+        assert!(!unwrapped.encloses(deg(180.0), deg(180.0), true));
+
+        // Without the `v` unwrap the loop accepts precisely the complement,
+        // which is what made the band integrate to zero.
+        let canonical = UvLoop::new(pts, true, false);
+        assert!(!canonical.encloses(deg(180.0), deg(300.0), true));
+        assert!(canonical.encloses(deg(180.0), deg(180.0), true));
+    }
 
     #[test]
     fn planar_fan_is_signed_on_nonconvex_polygons() {
