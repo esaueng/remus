@@ -41,9 +41,9 @@ use edge_splitting::{
 };
 use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic, sample_wire_loop_uv_via_frame};
 use special_cases::{
-    split_face_with_internal_loops, split_noseam_face_direct, split_periodic_face_into_bands,
-    split_periodic_face_into_sectors, split_torus_band_by_arrangement,
-    try_split_crossing_plane_face, try_split_disk_by_chords,
+    split_closed_torus_into_bands, split_face_with_internal_loops, split_noseam_face_direct,
+    split_periodic_face_into_bands, split_periodic_face_into_sectors,
+    split_torus_band_by_arrangement, try_split_crossing_plane_face, try_split_disk_by_chords,
 };
 
 /// Number of probe points (plus one for the closing sample) walked along a
@@ -5159,6 +5159,26 @@ fn split_face_2d_impl(
     } else {
         sections
     };
+
+    // Closed-torus band shortcut: the doubly-periodic sibling of the
+    // cylinder band path below. A full torus has no boundary circles to
+    // bound end bands and its levels wrap cyclically, so the cylinder
+    // emitter cannot express it; this one is gated to a torus whose
+    // boundary is entirely degenerate seam Lines and defers otherwise.
+    if !is_plane
+        && original_inner_wires.is_empty()
+        && let Some(bands) = split_closed_torus_into_bands(
+            &surface,
+            &boundary_edges,
+            sections,
+            rank,
+            reversed,
+            face_id,
+            tol.linear,
+        )
+    {
+        return bands;
+    }
 
     // Band shortcut: closed section circles on a u-periodic face split it
     // into stacked bands, not discs. Requires seam-anchored circles (see
