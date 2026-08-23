@@ -3,6 +3,20 @@
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 
+const MAX_EDGE_SAMPLE_POINTS: usize = 16_384;
+
+/// Reject sampling requests that could exhaust memory or CPU on hostile trims.
+pub(super) fn enforce_edge_sample_limit(n: usize) -> Result<(), crate::OperationsError> {
+    if n > MAX_EDGE_SAMPLE_POINTS {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "edge sampling needs {n} points; limit is {MAX_EDGE_SAMPLE_POINTS}; increase tolerances"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Combined linear+angular segment count for a circular arc.
 ///
 /// Delegates to [`remus_math::chord::segments_for_chord_deviation_with_angle`]
@@ -397,15 +411,8 @@ pub(super) fn sample_edge(
     use remus_geometry::sampling::sample_uniform;
     use remus_topology::edge::EdgeCurve;
 
-    const MAX_EDGE_SAMPLE_POINTS: usize = 16_384;
     let n = edge_sample_count(topo, edge, deflection, angular_tol, circle_floor);
-    if n > MAX_EDGE_SAMPLE_POINTS {
-        return Err(crate::OperationsError::InvalidInput {
-            reason: format!(
-                "edge sampling needs {n} points; limit is {MAX_EDGE_SAMPLE_POINTS}; increase tolerances"
-            ),
-        });
-    }
+    enforce_edge_sample_limit(n)?;
 
     let mut points = match edge.curve() {
         EdgeCurve::Line => {
@@ -603,6 +610,7 @@ pub(super) fn sample_wire_positions(
                     angular_tol,
                     false,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve_into(
                     &|t| circle.evaluate(t),
@@ -635,6 +643,7 @@ pub(super) fn sample_wire_positions(
                     angular_tol,
                     true,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve_into(
                     &|t| ellipse.evaluate(t),
@@ -658,6 +667,7 @@ pub(super) fn sample_wire_positions(
                     deflection,
                     angular_tol,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve_into(
                     &|t| h.evaluate(t),
@@ -677,6 +687,7 @@ pub(super) fn sample_wire_positions(
                     deflection,
                     angular_tol,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve_into(
                     &|t| p.evaluate(t),
