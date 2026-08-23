@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::error::{WasmError, validate_positive};
+use crate::error::{WasmError, validate_positive, validate_work_product};
 use crate::helpers::{parse_polygon_2d, parse_polygon_2d_checked, polygons_overlap_2d};
 use crate::kernel::BrepKernel;
 use crate::types::PolygonBoolean2dResult;
@@ -59,13 +59,22 @@ fn resolve_polygon_tolerance(tolerance: Option<f64>) -> Result<f64, WasmError> {
 ///
 /// Returns [`WasmError::InvalidInput`] if either coordinate array is
 /// malformed (odd length, fewer than 3 points, non-finite values) or the
-/// supplied tolerance is not positive and finite.
+/// supplied tolerance is not positive and finite, or if the pair of polygons
+/// exceeds the public WASM work budget.
 pub fn polygon_boolean_2d_impl(
     coords_a: &[f64],
     coords_b: &[f64],
     op: PolyBooleanOp,
     tolerance: Option<f64>,
 ) -> Result<PolygonBoolean2dResult, WasmError> {
+    let vertices_a = u32::try_from(coords_a.len() / 2).map_err(|_| WasmError::InvalidInput {
+        reason: "polygon A has too many vertices".to_string(),
+    })?;
+    let vertices_b = u32::try_from(coords_b.len() / 2).map_err(|_| WasmError::InvalidInput {
+        reason: "polygon B has too many vertices".to_string(),
+    })?;
+    let _ = validate_work_product(vertices_a, vertices_b, "polygon edge comparisons")?;
+
     let poly_a = parse_polygon_2d_checked(coords_a, "polygon A")?;
     let poly_b = parse_polygon_2d_checked(coords_b, "polygon B")?;
     let tol = resolve_polygon_tolerance(tolerance)?;
@@ -589,6 +598,17 @@ mod polygon_boolean_tests {
             }),
         );
         assert!(msg.contains("tolerance"), "message was: {msg}");
+    }
+
+    #[test]
+    fn polygon_boolean_work_above_the_public_budget_is_rejected() {
+        let polygon = vec![0.0; 202];
+        let err = polygon_boolean_2d_impl(&polygon, &polygon, PolyBooleanOp::Intersection, None)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("polygon edge comparisons"),
+            "was: {err}"
+        );
     }
 
     #[test]
