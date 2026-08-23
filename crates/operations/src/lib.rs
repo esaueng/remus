@@ -178,6 +178,10 @@ pub enum OperationsError {
     #[error("heal: {0}")]
     Heal(#[from] remus_heal::HealError),
 
+    /// A topology-preserving offset or move-face operation was refused.
+    #[error("offset: {0}")]
+    Offset(#[from] remus_offset::OffsetError),
+
     /// An operation completed only a subset of the requested items.
     #[error("{operation} produced a partial result: {succeeded} succeeded, {failed} failed")]
     PartialResult {
