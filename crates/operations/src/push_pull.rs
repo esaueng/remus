@@ -11,6 +11,7 @@
 
 use std::f64::consts::PI;
 
+use remus_math::aabb::Aabb3;
 use remus_math::mat::Mat4;
 use remus_math::surfaces::CylindricalSurface;
 use remus_math::tolerance::Tolerance;
@@ -36,6 +37,173 @@ enum Concavity {
     Hole,
     /// A boss: material lies inside the cylinder.
     Boss,
+}
+
+/// Move a coplanar group of planar faces while preserving the solid's
+/// adjacency graph.
+///
+/// Positive `distance` moves the group along its common outward normal;
+/// negative distance moves it inward. Adjacent planar and cylindrical faces
+/// are extended or shortened to the moved support plane. The edit is
+/// transactional: any intersection, topology, validation, or volume failure
+/// restores the topology to its pre-call state.
+///
+/// # Errors
+///
+/// Returns a structured [`remus_offset::OffsetError`] through
+/// [`crate::OperationsError::Offset`] when the selection is unsupported or
+/// the move would change topology. A failed postcondition also returns an
+/// error and leaves the input topology unchanged.
+pub fn move_faces(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    let snapshot = topo.clone();
+    let outcome = (|| -> Result<SolidId, crate::OperationsError> {
+        refuse_swept_face_intersections(topo, solid, faces, distance)?;
+        let result = remus_offset::move_faces(topo, solid, faces, distance)?;
+
+        if move_is_prismatic(topo, solid, faces)? {
+            let deflection = verify_deflection(topo, solid);
+            let before = solid_volume(topo, solid, deflection)?;
+            let area = faces.iter().try_fold(0.0, |sum, &face| {
+                crate::measure::face_area(topo, face, deflection).map(|value| sum + value)
+            })?;
+            let expected = distance.mul_add(area, before);
+            let actual = solid_volume(topo, result, verify_deflection(topo, result))?;
+            let slack = expected.abs().mul_add(2e-3, 1e-6);
+            if (actual - expected).abs() > slack {
+                return Err(remus_offset::OffsetError::TopologyChange {
+                    face: faces.first().copied(),
+                    edge: None,
+                    reason: format!("volume is {actual}, expected {expected}"),
+                }
+                .into());
+            }
+        }
+
+        let report = crate::validate::validate_solid(topo, result)?;
+        if !report.is_valid() {
+            let summary = report
+                .issues
+                .iter()
+                .filter(|issue| issue.severity == crate::validate::Severity::Error)
+                .take(3)
+                .map(|issue| issue.description.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(remus_offset::OffsetError::TopologyChange {
+                face: faces.first().copied(),
+                edge: None,
+                reason: format!(
+                    "strict validation failed with {} error(s): {summary}",
+                    report.error_count()
+                ),
+            }
+            .into());
+        }
+
+        Ok(result)
+    })();
+
+    if outcome.is_err() {
+        topo.restore_preserving_handle_slots(&snapshot);
+    }
+    outcome
+}
+
+fn refuse_swept_face_intersections(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+    distance: f64,
+) -> Result<(), crate::OperationsError> {
+    let Some(&reference) = selected_faces.first() else {
+        return Ok(());
+    };
+    let Some(normal) = topo.face(reference)?.effective_plane_normal() else {
+        return Ok(());
+    };
+    let delta = normal * distance;
+    let selected: std::collections::HashSet<_> =
+        selected_faces.iter().map(|face| face.index()).collect();
+    let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+    let source_faces = solid_faces(topo, solid)?;
+
+    for &moved_face in selected_faces {
+        let mut adjacent = std::collections::HashSet::new();
+        for faces in edge_faces.values() {
+            if faces.contains(&moved_face) {
+                adjacent.extend(faces.iter().map(|face| face.index()));
+            }
+        }
+
+        let original = crate::measure::face_set_bounding_box(topo, &[moved_face])?;
+        let destination = Aabb3 {
+            min: original.min + delta,
+            max: original.max + delta,
+        };
+        let swept = original.union(destination);
+        for &candidate in &source_faces {
+            if selected.contains(&candidate.index()) || adjacent.contains(&candidate.index()) {
+                continue;
+            }
+            let candidate_box = crate::measure::face_set_bounding_box(topo, &[candidate])?;
+            if !original.intersects(candidate_box) && swept.intersects(candidate_box) {
+                return Err(remus_offset::OffsetError::TopologyChange {
+                    face: Some(moved_face),
+                    edge: None,
+                    reason: format!(
+                        "swept face reaches nonadjacent face {} before completing the move",
+                        candidate.index()
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn move_is_prismatic(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<bool, crate::OperationsError> {
+    let Some(&reference) = selected_faces.first() else {
+        return Ok(false);
+    };
+    let Some(move_normal) = topo.face(reference)?.effective_plane_normal() else {
+        return Ok(false);
+    };
+    let selected: std::collections::HashSet<_> =
+        selected_faces.iter().map(|face| face.index()).collect();
+    let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+    let tolerance = Tolerance::new();
+    for faces in edge_faces.values() {
+        if faces.len() != 2 || faces[0] == faces[1] {
+            continue;
+        }
+        let first_selected = selected.contains(&faces[0].index());
+        let second_selected = selected.contains(&faces[1].index());
+        if first_selected == second_selected {
+            continue;
+        }
+        let neighbor = if first_selected { faces[1] } else { faces[0] };
+        let invariant = match topo.face(neighbor)?.surface() {
+            FaceSurface::Plane { normal, .. } => normal.dot(move_normal).abs() <= tolerance.angular,
+            FaceSurface::Cylinder(cylinder) => {
+                cylinder.axis().dot(move_normal).abs() >= 1.0 - tolerance.angular
+            }
+            _ => false,
+        };
+        if !invariant {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Move a planar face of `solid` along its outward normal.

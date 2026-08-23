@@ -62,11 +62,13 @@ pub mod error;
 pub(crate) mod inter2d;
 pub(crate) mod inter3d;
 pub(crate) mod loops;
+mod move_faces;
 pub(crate) mod offset;
 pub(crate) mod self_int;
 
 pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
+pub use move_faces::move_faces;
 
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
