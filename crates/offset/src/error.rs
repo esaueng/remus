@@ -2,6 +2,7 @@
 
 use remus_topology::edge::EdgeId;
 use remus_topology::face::FaceId;
+use remus_topology::solid::SolidId;
 
 /// Errors from solid offset operations.
 #[derive(Debug, thiserror::Error)]
@@ -18,6 +19,50 @@ pub enum OffsetError {
     #[error("invalid input: {reason}")]
     InvalidInput {
         /// Description of why the input is invalid.
+        reason: String,
+    },
+
+    /// A requested move references a face outside the edited solid.
+    #[error("face {face:?} is not part of solid {solid:?}")]
+    FaceNotInSolid {
+        /// Face requested by the caller.
+        face: FaceId,
+        /// Solid being edited.
+        solid: SolidId,
+    },
+
+    /// A selected face has no exact move-face construction in this phase.
+    #[error("move-face does not support face {face:?} ({surface_type}): {reason}")]
+    UnsupportedMoveFace {
+        /// Selected face that cannot be moved.
+        face: FaceId,
+        /// Surface type reported by the face.
+        surface_type: &'static str,
+        /// Exact reason the configuration was refused.
+        reason: String,
+    },
+
+    /// Selected planar faces do not form one rigid coplanar group.
+    #[error(
+        "move-face group mismatch between reference face {reference:?} and face {face:?}: {reason}"
+    )]
+    MoveGroupMismatch {
+        /// First selected face, used as the group reference.
+        reference: FaceId,
+        /// Selected face that does not match the group.
+        face: FaceId,
+        /// Exact coplanarity or orientation mismatch.
+        reason: String,
+    },
+
+    /// The requested move would alter the source adjacency graph.
+    #[error("move-face would change topology at face {face:?}, edge {edge:?}: {reason}")]
+    TopologyChange {
+        /// Source face nearest the detected change, when applicable.
+        face: Option<FaceId>,
+        /// Source edge nearest the detected change, when applicable.
+        edge: Option<EdgeId>,
+        /// Exact invariant that did not survive the move.
         reason: String,
     },
 
