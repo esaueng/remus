@@ -158,21 +158,32 @@ fn cylinder_arc_sweep(
         }
         let span = te - ts;
         let v = axis.dot(circle.center() - origin);
-        if let Some(entry) = levels
-            .iter_mut()
-            .find(|(lv, _)| (*lv - v).abs() < LEVEL_MERGE_TOL)
+        levels.push((v, span));
+    }
+
+    // Sort once so equal axial levels can be merged in a linear pass. Looking
+    // up every level in the accumulated vector makes crafted faces with many
+    // distinct circle heights quadratic in their edge count.
+    levels.sort_unstable_by(|(a, _), (b, _)| a.total_cmp(b));
+    let mut widest: Option<f64> = None;
+    let mut current: Option<(f64, f64)> = None;
+    for (level, span) in levels {
+        if let Some((group_level, group_span)) = current.as_mut()
+            && (level - *group_level).abs() < LEVEL_MERGE_TOL
         {
-            entry.1 += span;
-        } else {
-            levels.push((v, span));
+            *group_span += span;
+            continue;
+        }
+        if let Some((_, group_span)) = current.replace((level, span)) {
+            let group_span = group_span.min(std::f64::consts::TAU);
+            widest = Some(widest.map_or(group_span, |value| value.max(group_span)));
         }
     }
-    Ok(levels
-        .iter()
-        .map(|&(_, span)| span.min(std::f64::consts::TAU))
-        .fold(None, |acc: Option<f64>, span| {
-            Some(acc.map_or(span, |a| a.max(span)))
-        }))
+    if let Some((_, group_span)) = current {
+        let group_span = group_span.min(std::f64::consts::TAU);
+        widest = Some(widest.map_or(group_span, |value| value.max(group_span)));
+    }
+    Ok(widest)
 }
 
 /// Compute the area of a conical face analytically.
