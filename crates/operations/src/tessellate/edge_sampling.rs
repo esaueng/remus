@@ -634,7 +634,8 @@ pub(super) fn sample_wire_positions(
                     deflection,
                     angular_tol,
                     true,
-                );
+                )
+                .min(4096);
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve_into(
                     &|t| ellipse.evaluate(t),

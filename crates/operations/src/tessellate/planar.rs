@@ -840,7 +840,8 @@ pub(super) fn tessellate_planar(
                     deflection,
                     angular_tol,
                     true,
-                );
+                )
+                .min(4096);
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve(
                     &|t| ellipse.evaluate(t),

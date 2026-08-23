@@ -1981,6 +1981,40 @@ fn circle_and_degenerate_ellipse_do_not_over_tessellate() {
     );
 }
 
+#[test]
+fn eccentric_ellipse_sampling_is_capped() {
+    let mut topo = Topology::new();
+    let center = Point3::new(0.0, 0.0, 0.0);
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let ellipse = remus_math::curves::Ellipse3D::new(center, normal, 10.0, 0.001).unwrap();
+    let seam = ellipse.evaluate(0.0);
+    let vertex = topo.add_vertex(Vertex::new(seam, 1e-7));
+    let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Ellipse(ellipse)));
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane { normal, d: 0.0 },
+    ));
+
+    let wire_positions = super::edge_sampling::sample_wire_positions(
+        &topo,
+        topo.wire(wire).unwrap(),
+        1e-10,
+        0.01,
+        0.2,
+    )
+    .unwrap();
+    assert_eq!(wire_positions.len(), 4096);
+
+    let mesh = tessellate(&topo, face, 0.01).unwrap();
+    assert!(
+        mesh.positions.len() <= 4096,
+        "eccentric ellipse planar tessellation exceeded the sample cap: {} vertices",
+        mesh.positions.len()
+    );
+}
+
 // -- Grouped solid tessellation (wasm export path) --
 
 /// Count boundary and non-manifold edges with vertices unified by quantized
