@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787460248721,
+  "lastUpdate": 1787460388442,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1457,6 +1457,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 32479292,
             "range": "± 142854",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3f77f1e2fca65898847ff32f625d82ae97b78ba",
+          "message": "Merge pull request #76 from esaueng/codex/fix-unbounded-nurbs-tessellation-grid\n\ntessellate: bound non-planar CDT interior grid work",
+          "timestamp": "2026-08-23T00:42:42-04:00",
+          "tree_id": "6edde32447ddb53a8857aa19ce03318a1b8edbf2",
+          "url": "https://github.com/esaueng/remus/commit/f3f77f1e2fca65898847ff32f625d82ae97b78ba"
+        },
+        "date": 1787460387830,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 884321,
+            "range": "± 2552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 952785,
+            "range": "± 8142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 9240,
+            "range": "± 296",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 632071,
+            "range": "± 5500",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 28620302,
+            "range": "± 1453956",
             "unit": "ns/iter"
           }
         ]
