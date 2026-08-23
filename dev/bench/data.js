@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787459198235,
+  "lastUpdate": 1787460248721,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1403,6 +1403,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38610957,
             "range": "± 85188",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b7e73f47f3298d1cb6c425cc680b97c95947f5b",
+          "message": "Merge pull request #70 from esaueng/codex/fix-quadratic-complexity-in-plane-plane-booleans\n\nfix(algo): make planar wire chaining linear to avoid O(E^2) clipping",
+          "timestamp": "2026-08-23T00:41:30-04:00",
+          "tree_id": "62b4dffbfa33c2d1911c92028673fce13071b08a",
+          "url": "https://github.com/esaueng/remus/commit/1b7e73f47f3298d1cb6c425cc680b97c95947f5b"
+        },
+        "date": 1787460247602,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1085847,
+            "range": "± 4139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1168465,
+            "range": "± 5694",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10955,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 791152,
+            "range": "± 2487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32479292,
+            "range": "± 142854",
             "unit": "ns/iter"
           }
         ]
