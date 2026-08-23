@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787461222352,
+  "lastUpdate": 1787525541360,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1619,6 +1619,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41029234,
             "range": "± 189930",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6c76ec20dd3bcb2afb53e56abd44116288a0e1d5",
+          "message": "Merge pull request #79 from esaueng/codex/feat-move-faces-planar\n\nfeat(operations): add planar move-face foundation",
+          "timestamp": "2026-08-23T18:49:25-04:00",
+          "tree_id": "f89137aa25e1a4e34d8c1c3f44b5a1d2745f7ecb",
+          "url": "https://github.com/esaueng/remus/commit/6c76ec20dd3bcb2afb53e56abd44116288a0e1d5"
+        },
+        "date": 1787525540505,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1217117,
+            "range": "± 2696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1307877,
+            "range": "± 20018",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12886,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 901191,
+            "range": "± 6089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 36492715,
+            "range": "± 154085",
             "unit": "ns/iter"
           }
         ]
