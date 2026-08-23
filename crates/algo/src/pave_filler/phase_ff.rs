@@ -5220,6 +5220,60 @@ enum FaceClip {
     Indeterminate,
 }
 
+/// Orders connected edges without repeatedly scanning all unconsumed edges.
+fn chain_edge_vertices<T>(edges: &[(T, T)]) -> Option<Vec<T>>
+where
+    T: Copy + Eq + std::hash::Hash,
+{
+    let (&(first_start, first_end), rest) = edges.split_first()?;
+    let mut incident: std::collections::HashMap<T, Vec<usize>> =
+        std::collections::HashMap::with_capacity(edges.len());
+    for (index, &(start, end)) in edges.iter().enumerate() {
+        incident.entry(start).or_default().push(index);
+        incident.entry(end).or_default().push(index);
+    }
+
+    let mut used = vec![false; edges.len()];
+    used[0] = true;
+    let mut vertices = Vec::with_capacity(edges.len() + 1);
+    vertices.extend([first_start, first_end]);
+    for _ in rest {
+        let &current = vertices.last()?;
+        let candidates = incident.get_mut(&current)?;
+        let index = loop {
+            let candidate = candidates.pop()?;
+            if !used[candidate] {
+                break candidate;
+            }
+        };
+        used[index] = true;
+        let (start, end) = edges[index];
+        vertices.push(if start == current { end } else { start });
+    }
+    Some(vertices)
+}
+
+#[cfg(test)]
+mod edge_chaining_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::chain_edge_vertices;
+
+    #[test]
+    fn chains_large_wire_with_adversarial_storage_order() {
+        const EDGE_COUNT: usize = 10_000;
+        let mut edges = Vec::with_capacity(EDGE_COUNT);
+        edges.push((0, 1));
+        edges.push((EDGE_COUNT - 1, 0));
+        edges.extend((1..EDGE_COUNT - 1).rev().map(|start| (start, start + 1)));
+
+        let vertices = chain_edge_vertices(&edges).expect("the wire is connected");
+
+        assert_eq!(vertices.len(), EDGE_COUNT + 1);
+        assert_eq!(vertices.first(), vertices.last());
+    }
+}
+
 /// Clip a Line curve to a planar face's boundary polygon.
 fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve) -> FaceClip {
     let Ok(face) = topo.face(face_id) else {
@@ -5242,7 +5296,7 @@ fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve) -> FaceCl
     // orientation flags — wires from external builders may carry
     // inconsistent `is_forward` flags, and a mis-ordered polygon makes
     // the clip silently truncate the range.
-    let mut remaining: Vec<(
+    let mut edges: Vec<(
         remus_topology::vertex::VertexId,
         remus_topology::vertex::VertexId,
     )> = Vec::new();
@@ -5250,23 +5304,14 @@ fn clip_line_to_face(topo: &Topology, face_id: FaceId, raw: &RawCurve) -> FaceCl
         let Ok(edge) = topo.edge(oe.edge()) else {
             return FaceClip::Indeterminate;
         };
-        remaining.push((edge.start(), edge.end()));
+        edges.push((edge.start(), edge.end()));
     }
-    if remaining.len() < 3 {
+    if edges.len() < 3 {
         return FaceClip::Indeterminate;
     }
-    let (first_start, first_end) = remaining.swap_remove(0);
-    let mut vert_ids = vec![first_start, first_end];
-    while !remaining.is_empty() {
-        let Some(&cur) = vert_ids.last() else {
-            return FaceClip::Indeterminate;
-        };
-        let Some(pos) = remaining.iter().position(|&(s, e)| s == cur || e == cur) else {
-            return FaceClip::Indeterminate;
-        };
-        let (s, e) = remaining.swap_remove(pos);
-        vert_ids.push(if s == cur { e } else { s });
-    }
+    let Some(mut vert_ids) = chain_edge_vertices(&edges) else {
+        return FaceClip::Indeterminate;
+    };
     if vert_ids.first() == vert_ids.last() {
         vert_ids.pop();
     }
