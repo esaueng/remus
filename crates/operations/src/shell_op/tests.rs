@@ -11,6 +11,23 @@ use remus_topology::test_utils::make_unit_cube_manifold;
 
 use super::*;
 
+#[test]
+fn rim_containment_work_limit_is_bounded() {
+    let loop_count = 1_024_usize;
+    let members: Vec<_> = (0..loop_count).collect();
+    let polygons = vec![vec![Point3::new(0.0, 0.0, 0.0); 4]; loop_count];
+    assert!(
+        rim_containment_work(&members, &polygons)
+            .is_none_or(|work| work > MAX_RIM_CONTAINMENT_WORK)
+    );
+
+    let ordinary_members: Vec<_> = (0..4).collect();
+    assert!(
+        rim_containment_work(&ordinary_members, &polygons)
+            .is_some_and(|work| work <= MAX_RIM_CONTAINMENT_WORK)
+    );
+}
+
 /// Helper: get face IDs matching a given normal direction.
 fn find_faces_by_normal(topo: &Topology, solid: SolidId, target_normal: Vec3) -> Vec<FaceId> {
     let tol = Tolerance::loose();
