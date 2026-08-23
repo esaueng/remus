@@ -9,7 +9,6 @@
 
 use crate::MathError;
 use crate::nurbs::curve::NurbsCurve;
-use crate::nurbs::decompose::curve_to_bezier_segments;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Point3;
 
@@ -71,12 +70,12 @@ pub struct SurfaceProjection {
 
 /// Find the closest point on a NURBS curve to the given point.
 ///
-/// Uses Bezier decomposition for initial guess, then Newton–Raphson
+/// Samples each knot span for initial guesses, then uses Newton–Raphson
 /// refinement (NURBS Book A6.1 + A6.3–A6.4).
 ///
 /// # Errors
 ///
-/// Returns an error if Bezier decomposition fails (invalid curve data).
+/// Returns an error if the curve has no non-empty knot span.
 pub fn project_point_to_curve(
     curve: &NurbsCurve,
     point: Point3,
@@ -112,33 +111,45 @@ pub fn project_point_to_curve(
     })
 }
 
-/// Coarse search: decompose into Bezier segments and sample points to find
-/// multiple candidate parameter values for Newton refinement.
+/// Coarse search: sample each non-empty knot span to find multiple candidate
+/// parameter values for Newton refinement.
+///
+/// Sampling the original curve is equivalent to sampling a Bezier
+/// decomposition at the same parameters, but avoids repeatedly inserting
+/// knots and copying attacker-sized control-point and knot vectors.  Keeping
+/// this pass linear in the number of knot spans is important because point
+/// projection is also used while inspecting imported edge endpoints.
 ///
 /// Returns a sorted list of candidate parameters (best first) to use as
 /// Newton seeds. Using multiple seeds avoids converging to a local minimum.
 #[allow(clippy::cast_precision_loss)]
 fn curve_coarse_search(curve: &NurbsCurve, point: Point3) -> Result<Vec<f64>, MathError> {
-    let segments = curve_to_bezier_segments(curve)?;
-
     // Collect all (distance_sq, parameter) samples.
     let mut samples: Vec<(f64, f64)> = Vec::new();
+    let knots = curve.knots();
+    let degree = curve.degree();
+    let n_samples = (degree + 1).max(5) * 2;
 
-    for seg in &segments {
-        let knots = seg.knots();
-        let p = seg.degree();
-        let u_start = knots[p];
-        let u_end = knots[knots.len() - p - 1];
+    for span in degree..knots.len() - degree - 1 {
+        let u_start = knots[span];
+        let u_end = knots[span + 1];
+        if u_end <= u_start {
+            continue;
+        }
 
-        // Sample points along the segment.
-        let n_samples = (p + 1).max(5) * 2;
+        // Sample points along the non-empty knot span. Shared span endpoints
+        // may be sampled twice, matching the old decomposed-curve search.
         for i in 0..=n_samples {
             let t = i as f64 / n_samples as f64;
             let u = t.mul_add(u_end - u_start, u_start);
-            let pt = seg.evaluate(u);
+            let pt = curve.evaluate(u);
             let d_sq = (pt - point).length_squared();
             samples.push((d_sq, u));
         }
+    }
+
+    if samples.is_empty() {
+        return Err(MathError::EmptyInput);
     }
 
     // Sort by distance and return the best candidates.
