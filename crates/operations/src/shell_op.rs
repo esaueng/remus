@@ -39,6 +39,12 @@ const OP: &str = "shell";
 /// the fallback paths.
 const VOLUME_DEFLECTION: f64 = 0.01;
 
+/// Maximum number of polygon vertices the rim containment pass may inspect.
+///
+/// Containment is pairwise in the number of coplanar loops. Bounding this
+/// work prevents crafted, highly perforated faces from monopolising a worker.
+const MAX_RIM_CONTAINMENT_WORK: usize = 1_000_000;
+
 fn unsupported(reason: impl Into<String>) -> crate::OperationsError {
     crate::OperationsError::Unsupported {
         operation: OP,
@@ -752,6 +758,13 @@ pub fn shell_with_evolution(
         }
         let (u, v) = plane_basis(normal);
 
+        let containment_work = rim_containment_work(members, &rim_polys);
+        if containment_work.is_none_or(|work| work > MAX_RIM_CONTAINMENT_WORK) {
+            return Err(unsupported(format!(
+                "rim containment exceeds the work limit of {MAX_RIM_CONTAINMENT_WORK} vertex tests"
+            )));
+        }
+
         // How many of the group's other loops enclose each loop. A loop at
         // even depth bounds material — the rim of the wall, or the rim of a
         // bore's own wall inside it — and the loops directly inside it are
@@ -802,6 +815,18 @@ pub fn shell_with_evolution(
     *topo.shell_mut(shell_id)? = new_shell;
 
     Ok((gate(topo, solid)?, evolution))
+}
+
+/// Conservative upper bound for both pairwise containment passes.
+fn rim_containment_work(members: &[usize], rim_polys: &[Vec<Point3>]) -> Option<usize> {
+    let points = members
+        .iter()
+        .try_fold(0_usize, |sum, &i| sum.checked_add(rim_polys[i].len()))?;
+    members
+        .len()
+        .checked_mul(2)?
+        .checked_sub(1)?
+        .checked_mul(points)
 }
 
 /// An orthonormal pair spanning the plane with normal `n`.
