@@ -16,4 +16,4 @@ The goal of this project for me is far too grand to be feasible without the use 
 
 These tools were made from our collective knowledge so to will its output go- put to make up for the energy consumed I'm unofficially committing any profit this project may generate to clean energy initiatives- if no profits I'll just use my own money.
 
-- Peter
+-- Peter
