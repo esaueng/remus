@@ -2084,6 +2084,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
+        validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
         let interior_pts: Vec<Point2> = (1..n_u)
@@ -2160,6 +2161,25 @@ pub(super) fn tessellate_nonplanar_cdt(
         merged.indices.push(final_global_ids[i2]);
     }
 
+    Ok(())
+}
+
+/// Maximum number of candidates in the non-planar CDT interior grid.
+///
+/// The grid is a quality aid rather than part of the constrained boundary.
+/// Bounding it prevents attacker-controlled surface scale and deflection from
+/// causing an unbounded Cartesian-product allocation.
+const MAX_INTERIOR_GRID_POINTS: usize = 1_000_000;
+
+fn validate_interior_grid_size(n_u: usize, n_v: usize) -> Result<(), crate::OperationsError> {
+    let candidates = n_u.saturating_sub(1).checked_mul(n_v.saturating_sub(1));
+    if candidates.is_none_or(|count| count > MAX_INTERIOR_GRID_POINTS) {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "non-planar face tessellation grid exceeds the {MAX_INTERIOR_GRID_POINTS}-point work limit"
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -3056,5 +3076,32 @@ mod torus_winding_tests {
     fn complete_torus_rim_has_a_single_period_winding() {
         let full_rim = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0];
         assert!(has_single_period_winding(&full_rim));
+    }
+}
+
+#[cfg(test)]
+mod interior_grid_limit_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{MAX_INTERIOR_GRID_POINTS, validate_interior_grid_size};
+
+    #[test]
+    fn accepts_grid_at_work_limit() {
+        validate_interior_grid_size(1_001, 1_001).unwrap();
+    }
+
+    #[test]
+    fn rejects_grid_above_work_limit() {
+        let error = validate_interior_grid_size(1_002, 1_001).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{MAX_INTERIOR_GRID_POINTS}-point work limit"))
+        );
+    }
+
+    #[test]
+    fn rejects_grid_size_overflow() {
+        assert!(validate_interior_grid_size(usize::MAX, usize::MAX).is_err());
     }
 }
