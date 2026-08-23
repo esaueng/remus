@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787460388442,
+  "lastUpdate": 1787461051254,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1511,6 +1511,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 28620302,
             "range": "± 1453956",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "28e44529cb2c9b8d41b4f52e3c8891c67de2ebdf",
+          "message": "fix(operations): prevent quadratic cylindrical arc sweep\n\nValidated as a combined stack against current main: formatting and all-target Clippy passed; crate boundaries passed; the workspace test run passed through all affected crates. An unrelated remus-render GPU test SIGSEGV passed serially on both this stack and untouched main.",
+          "timestamp": "2026-08-23T00:54:52-04:00",
+          "tree_id": "927952d62df9f4ce22d4ee884c14389f05288198",
+          "url": "https://github.com/esaueng/remus/commit/28e44529cb2c9b8d41b4f52e3c8891c67de2ebdf"
+        },
+        "date": 1787461050204,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1281033,
+            "range": "± 3955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1366492,
+            "range": "± 4325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13048,
+            "range": "± 201",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 954490,
+            "range": "± 3180",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38373646,
+            "range": "± 341712",
             "unit": "ns/iter"
           }
         ]
