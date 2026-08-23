@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787459034556,
+  "lastUpdate": 1787459198235,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1349,6 +1349,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 31655039,
             "range": "± 26983",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "60d94280660475861eb902ed3330b8a5b09ab22f",
+          "message": "Update AI-DISCLOSURE-ETHICS.md",
+          "timestamp": "2026-08-23T00:21:38-04:00",
+          "tree_id": "cfaa5568bfd0b17d9865490f7b22247bf37758b2",
+          "url": "https://github.com/esaueng/remus/commit/60d94280660475861eb902ed3330b8a5b09ab22f"
+        },
+        "date": 1787459197611,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1293741,
+            "range": "± 2263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1387230,
+            "range": "± 37442",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13485,
+            "range": "± 128",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 967389,
+            "range": "± 946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38610957,
+            "range": "± 85188",
             "unit": "ns/iter"
           }
         ]
