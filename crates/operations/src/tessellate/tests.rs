@@ -42,6 +42,31 @@ fn tessellate_triangle() {
 }
 
 #[test]
+fn planar_tessellation_rejects_excessive_circle_trim_sampling() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let face = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face_id| {
+            matches!(
+                topo.face(face_id).unwrap().surface(),
+                FaceSurface::Plane { .. }
+            )
+        })
+        .unwrap();
+    let wire_id = topo.face(face).unwrap().outer_wire();
+    let edge_id = topo.wire(wire_id).unwrap().edges()[0].edge();
+    topo.edge_mut(edge_id)
+        .unwrap()
+        .set_trim(Some((0.0, 1.0e12)));
+
+    let error = tessellate(&topo, face, 0.01).unwrap_err();
+    assert!(error.to_string().contains("edge sampling needs"));
+    assert!(error.to_string().contains("limit is 16384"));
+}
+
+#[test]
 fn tessellate_solid_propagates_face_failure() {
     let mut topo = Topology::new();
     let valid_face = make_unit_square_face(&mut topo);
