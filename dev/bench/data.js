@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787425505735,
+  "lastUpdate": 1787459034556,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1295,6 +1295,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40992588,
             "range": "± 360014",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba6c8ce72687741c40975ad29c6477ba776515b9",
+          "message": "Update and rename AI-DISCLOSURE.md to AI-DISCLOSURE-ETHICS.md",
+          "timestamp": "2026-08-23T00:21:21-04:00",
+          "tree_id": "c648b30e12556c9b317d477793d40e94dd1b52ea",
+          "url": "https://github.com/esaueng/remus/commit/ba6c8ce72687741c40975ad29c6477ba776515b9"
+        },
+        "date": 1787459033970,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1047500,
+            "range": "± 22261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1119691,
+            "range": "± 2313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 11071,
+            "range": "± 52",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 765010,
+            "range": "± 4613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31655039,
+            "range": "± 26983",
             "unit": "ns/iter"
           }
         ]
