@@ -5,8 +5,8 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 
 use super::edge_sampling::{
-    circle_param_range, measure_max_chord_deviation, sample_wire_positions,
-    segments_for_chord_deviation_a,
+    circle_param_range, enforce_edge_sample_limit, measure_max_chord_deviation,
+    sample_wire_positions, segments_for_chord_deviation_a,
 };
 use super::{AnalyticKind, MERGE_GRID, TriangleMesh, TriangleMeshUV, point_merge_key};
 
@@ -815,6 +815,7 @@ pub(super) fn tessellate_planar(
                     angular_tol,
                     false,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve(
                     &|t| circle.evaluate(t),
@@ -841,6 +842,7 @@ pub(super) fn tessellate_planar(
                     angular_tol,
                     true,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve(
                     &|t| ellipse.evaluate(t),
@@ -864,6 +866,7 @@ pub(super) fn tessellate_planar(
                     deflection,
                     angular_tol,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve(
                     &|t| h.evaluate(t),
@@ -883,6 +886,7 @@ pub(super) fn tessellate_planar(
                     deflection,
                     angular_tol,
                 );
+                enforce_edge_sample_limit(n_samples)?;
                 #[allow(clippy::cast_precision_loss)]
                 sample_curve(
                     &|t| p.evaluate(t),
