@@ -7,6 +7,7 @@ use wasm_bindgen::prelude::*;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::compound_ops;
 
+use crate::error::validate_finite;
 use crate::handles::solid_id_to_u32;
 use crate::helpers::{build_triangle_mesh, panic_message, parse_boolean_op, triangle_mesh_to_js};
 use crate::kernel::BrepKernel;
@@ -356,6 +357,7 @@ impl BrepKernel {
         op: &str,
         tolerance: f64,
     ) -> Result<JsMesh, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let mesh_a = build_triangle_mesh(&positions_a, &indices_a)?;
         let mesh_b = build_triangle_mesh(&positions_b, &indices_b)?;
         let bool_op = parse_boolean_op(op)?;
