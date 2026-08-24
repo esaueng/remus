@@ -117,6 +117,16 @@ fn openzcad_nurbs_fillet_plate_volume_reports_the_files_parabolic_content() {
     let expected: BTreeMap<_, _> = [("nurbs", 4), ("plane", 6)].into_iter().collect();
     assert_eq!(surface_census(&topo, solid), expected);
 
+    // The fixture stores one band with ADVANCED_FACE.same_sense = .F.
+    // and its loop in face sense per ISO 10303-42; strict validation
+    // guards the reader's same_sense composition on B-spline faces.
+    let report = validate_solid(&topo, solid).expect("validate imported solid");
+    assert!(
+        report.is_valid(),
+        "reversed-NURBS import failed strict validation: {:?}",
+        report.issues
+    );
+
     // The premise: four degree-(2,1) non-rational bands — parabolas, not arcs.
     for fid in solid_faces(&topo, solid).expect("faces") {
         if let FaceSurface::Nurbs(surf) = topo.face(fid).expect("face").surface() {
