@@ -2484,6 +2484,39 @@ class BrepKernel {
         }
     }
     /**
+     * Return the exact tangency-connected constant-radius blend region.
+     *
+     * The JSON result is `{ "faces": number[], "radius": number }`, with
+     * faces sorted by deterministic arena handle. Cylinder, torus and spherical
+     * corner faces of the same rolling-ball radius are grouped together.
+     *
+     * # Errors
+     *
+     * Returns a typed refusal when `face` is not a proven analytic blend
+     * region of `solid`.
+     * @param {number} solid
+     * @param {number} face
+     * @returns {string}
+     */
+    getBlendRegion(solid, face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_getBlendRegion(this.__wbg_ptr, solid, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Get the solid handles within a compound.
      *
      * Returns an array of solid handles (`u32[]`).
