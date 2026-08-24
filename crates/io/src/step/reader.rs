@@ -884,19 +884,18 @@ impl<'a> StepBuilder<'a> {
             // underlying surface and composes them with Face::reversed.
             // Normalize FACE_BOUND.orientation at the import boundary so
             // valid STEP shells keep opposing effective edge uses
-            // internally. Analytic surfaces also need their STEP surface
-            // sense composed into the loop direction. The NURBS importer
-            // already preserves the control net's parametric sense, so
-            // composing same_sense there would double-reverse the loop.
+            // internally. ADVANCED_FACE.same_sense must be composed into
+            // the loop direction for every surface type — ISO 10303-42
+            // defines the loop relative to the face normal (surface normal
+            // times same_sense), so B-spline surfaces are no exception.
+            // Exempting NURBS here mis-imported every conforming external
+            // file with a reversed B-spline face (Shapr3D/HOOPS AP242).
             //
             // `flip` belongs to an enclosing ORIENTED_CLOSED_SHELL and
             // must not participate here: that wrapper reverses the whole
             // face after its own bounds have been interpreted.
             let bound_reversed = orientation_is_reversed(&bound_attrs);
-            let analytic_surface_reversed =
-                surface_reversed && !matches!(&surface, FaceSurface::Nurbs(_));
-            let wire =
-                self.build_edge_loop(loop_ref, analytic_surface_reversed != bound_reversed)?;
+            let wire = self.build_edge_loop(loop_ref, surface_reversed != bound_reversed)?;
             candidates.push(FaceBoundCandidate {
                 bound_ref,
                 wire,
