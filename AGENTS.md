@@ -482,10 +482,10 @@ JS-exposed methods, one for private helpers. This is a wasm-bindgen requirement.
 ### Wildcard match arms
 **The compiler does not flag every match site.** Roughly 93 production `match`
 blocks over `EdgeCurve` (21) and `FaceSurface` (72) carry a `_ =>` arm, spread
-over ~45 files — heaviest in `operations/src/measure/volume.rs`,
-`operations/src/{revolve,sweep,resize_blend}.rs`,
-`operations/src/tessellate/nonplanar.rs`, `algo/src/{builder,pave_filler}/`,
-and `blend/src/fillet_builder.rs`.
+over 39 files. The densest are `operations/src/measure/volume.rs` (13),
+`algo/src/pave_filler/phase_ff.rs` (8),
+`operations/src/tessellate/nonplanar.rs` (7), and
+`operations/src/resize_blend.rs` (6).
 
 Most of those arms are a deliberate "anything else is not the special case I
 handle" (`_ => None`, `_ => false`, `_ => return Ok(None)`), which is why they
