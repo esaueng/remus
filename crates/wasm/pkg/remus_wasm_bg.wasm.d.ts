@@ -124,6 +124,7 @@ export const brepkernel_gcsSetPoint: (a: number, b: number, c: number, d: number
 export const brepkernel_gcsSolve: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_gcsSolveDetailed: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_getAnalyticSurfaceParams: (a: number, b: number) => [number, number, number, number];
+export const brepkernel_getBlendRegion: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_getCompoundSolids: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_getEdgeCurveParameters: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_getEdgeCurveType: (a: number, b: number) => [number, number, number, number];
