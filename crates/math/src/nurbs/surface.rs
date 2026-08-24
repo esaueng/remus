@@ -66,6 +66,23 @@ impl NurbsSurface {
             }
         }
 
+        // Same degree contract as `NurbsCurve::new`, applied per direction.
+        // Degree 0 yields discontinuous basis functions whose derivatives —
+        // and therefore surface normals — are identically zero, so it cannot
+        // produce usable face geometry.
+        if degree_u == 0 || degree_u >= n_rows {
+            return Err(MathError::InvalidDegree {
+                degree: degree_u,
+                control_points: n_rows,
+            });
+        }
+        if degree_v == 0 || degree_v >= n_cols {
+            return Err(MathError::InvalidDegree {
+                degree: degree_v,
+                control_points: n_cols,
+            });
+        }
+
         // Validate knot vectors.
         let expected_knots_u = n_rows + degree_u + 1;
         if knots_u.len() != expected_knots_u {
@@ -103,6 +120,7 @@ impl NurbsSurface {
             }
         }
         validate_weight_values(&weights)?;
+        super::validate_control_point_values(control_points.iter().flatten().copied())?;
 
         Ok(Self {
             degree_u,
@@ -538,6 +556,90 @@ use super::basis::binomial;
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+
+    /// A valid bilinear patch, with one control point substituted.
+    fn bilinear_with(point: Point3) -> Result<NurbsSurface, MathError> {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), point],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+    }
+
+    #[test]
+    fn rejects_nonfinite_control_points() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                matches!(
+                    bilinear_with(Point3::new(1.0, bad, 0.0)),
+                    // Row-major flattening: the substituted point is index 3.
+                    Err(MathError::InvalidControlPointValue { index: 3, .. })
+                ),
+                "expected rejection for {bad}"
+            );
+        }
+        assert!(bilinear_with(Point3::new(1.0, 1.0, 0.0)).is_ok());
+    }
+
+    #[test]
+    fn rejects_degree_zero_in_either_direction() {
+        let points = vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+        ];
+        let weights = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
+        // Degree 0 has a knot vector one shorter than degree 1, so both the
+        // count and the degree are legal-looking in isolation.
+        assert!(matches!(
+            NurbsSurface::new(
+                0,
+                1,
+                vec![0.0, 0.5, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                points.clone(),
+                weights.clone(),
+            ),
+            Err(MathError::InvalidDegree { degree: 0, .. })
+        ));
+        assert!(matches!(
+            NurbsSurface::new(
+                1,
+                0,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.5, 1.0],
+                points,
+                weights,
+            ),
+            Err(MathError::InvalidDegree { degree: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_degree_without_enough_control_points() {
+        assert!(matches!(
+            NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                    vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+                ],
+                vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            ),
+            Err(MathError::InvalidDegree {
+                degree: 2,
+                control_points: 2
+            })
+        ));
+    }
 
     #[test]
     fn rationality_follows_the_weight_grid() {

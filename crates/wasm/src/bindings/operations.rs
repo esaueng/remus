@@ -1104,6 +1104,17 @@ impl BrepKernel {
         pitch: f64,
         turns: f64,
     ) -> Result<u32, JsError> {
+        for (name, value) in [
+            ("axis_origin_x", axis_origin_x),
+            ("axis_origin_y", axis_origin_y),
+            ("axis_origin_z", axis_origin_z),
+            ("axis_dir_x", axis_dir_x),
+            ("axis_dir_y", axis_dir_y),
+            ("axis_dir_z", axis_dir_z),
+            ("turns", turns),
+        ] {
+            validate_finite(value, name)?;
+        }
         validate_positive(radius, "radius")?;
         validate_positive(pitch, "pitch")?;
         let face_id = self.resolve_face(profile)?;
@@ -1188,6 +1199,16 @@ impl BrepKernel {
         neutral_z: f64,
         angle_degrees: f64,
     ) -> Result<u32, JsError> {
+        for (name, value) in [
+            ("pull_x", pull_x),
+            ("pull_y", pull_y),
+            ("pull_z", pull_z),
+            ("neutral_x", neutral_x),
+            ("neutral_y", neutral_y),
+            ("neutral_z", neutral_z),
+        ] {
+            validate_finite(value, name)?;
+        }
         validate_finite(angle_degrees, "angle_degrees")?;
         for (value, name) in [
             (pull_x, "pull_x"),
@@ -1670,6 +1691,19 @@ impl BrepKernel {
         hidden_lines: bool,
         deflection: f64,
     ) -> Result<JsValue, JsError> {
+        for (name, value) in [
+            ("origin_x", origin_x),
+            ("origin_y", origin_y),
+            ("origin_z", origin_z),
+            ("dir_x", dir_x),
+            ("dir_y", dir_y),
+            ("dir_z", dir_z),
+            ("x_axis_x", x_axis_x),
+            ("x_axis_y", x_axis_y),
+            ("x_axis_z", x_axis_z),
+        ] {
+            validate_finite(value, name)?;
+        }
         validate_positive(deflection, "deflection")?;
         for (v, name) in [
             (origin_x, "origin_x"),
@@ -1721,6 +1755,9 @@ impl BrepKernel {
         z: f64,
         tolerance: f64,
     ) -> Result<String, JsError> {
+        for (name, value) in [("x", x), ("y", y), ("z", z), ("tolerance", tolerance)] {
+            validate_finite(value, name)?;
+        }
         let solid_id = self.resolve_solid(solid)?;
         let point = Point3::new(x, y, z);
         let result = remus_operations::classify::classify_point_winding(
@@ -1741,6 +1778,9 @@ impl BrepKernel {
         z: f64,
         tolerance: f64,
     ) -> Result<String, JsError> {
+        for (name, value) in [("x", x), ("y", y), ("z", z), ("tolerance", tolerance)] {
+            validate_finite(value, name)?;
+        }
         let solid_id = self.resolve_solid(solid)?;
         let point = Point3::new(x, y, z);
         let result = remus_operations::classify::classify_point_robust(
@@ -1846,6 +1886,7 @@ impl BrepKernel {
     /// Returns a new wire handle.
     #[wasm_bindgen(js_name = "offsetWire")]
     pub fn offset_wire(&mut self, face: u32, distance: f64) -> Result<u32, JsError> {
+        validate_finite(distance, "distance")?;
         let face_id = self.resolve_face(face)?;
         let wire_id =
             remus_operations::offset_wire::offset_wire(self.topo_mut(), face_id, distance)?;
@@ -1868,6 +1909,7 @@ impl BrepKernel {
         distance: f64,
         join_type: &str,
     ) -> Result<u32, JsError> {
+        validate_finite(distance, "distance")?;
         let face_id = self.resolve_face(face)?;
         let jt = parse_join_type_str(join_type)?;
         let wire_id = remus_operations::offset_wire::offset_wire_with_join(
@@ -1903,6 +1945,7 @@ impl BrepKernel {
         distance: f64,
         join_type: &str,
     ) -> Result<u32, JsError> {
+        validate_finite(distance, "distance")?;
         let wire_id = self.resolve_wire(wire)?;
         let jt = parse_join_type_str(join_type)?;
         let face_id =

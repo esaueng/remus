@@ -957,6 +957,8 @@ impl BrepKernel {
     /// surface normal points inward on those.
     #[wasm_bindgen(js_name = "evaluateSurfaceNormal")]
     pub fn evaluate_surface_normal(&self, face: u32, u: f64, v: f64) -> Result<Vec<f64>, JsError> {
+        validate_finite(u, "u")?;
+        validate_finite(v, "v")?;
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
         let raw = match face_data.surface() {
@@ -989,6 +991,8 @@ impl BrepKernel {
     /// Returns `[x, y, z]`.
     #[wasm_bindgen(js_name = "evaluateSurface")]
     pub fn evaluate_surface(&self, face: u32, u: f64, v: f64) -> Result<Vec<f64>, JsError> {
+        validate_finite(u, "u")?;
+        validate_finite(v, "v")?;
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
         let point = match face_data.surface() {
@@ -1029,6 +1033,8 @@ impl BrepKernel {
         u: f64,
         v: f64,
     ) -> Result<Vec<f64>, JsError> {
+        validate_finite(u, "u")?;
+        validate_finite(v, "v")?;
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
         match face_data.surface() {
@@ -1340,6 +1346,9 @@ impl BrepKernel {
         py: f64,
         pz: f64,
     ) -> Result<Vec<f64>, JsError> {
+        validate_finite(px, "px")?;
+        validate_finite(py, "py")?;
+        validate_finite(pz, "pz")?;
         let face_id = self.resolve_face(face)?;
         let face_data = self.topo.face(face_id)?;
         let target = Point3::new(px, py, pz);
