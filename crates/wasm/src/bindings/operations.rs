@@ -28,7 +28,7 @@ use crate::types::FaceEvolutionPayloadV1;
 
 use remus_operations::extrude::extrude;
 use remus_operations::offset_wire::JoinType;
-use remus_operations::push_pull::{push_pull_face, resize_cylindrical_face};
+use remus_operations::push_pull::{move_faces, push_pull_face, resize_cylindrical_face};
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::revolve::revolve;
 use remus_operations::sweep::sweep;
@@ -547,6 +547,35 @@ impl BrepKernel {
         let face_id = self.resolve_face(face)?;
         let result = self
             .with_topology_transaction(|topo| push_pull_face(topo, solid_id, face_id, distance))?;
+        Ok(solid_id_to_u32(result))
+    }
+
+    /// Translate planar faces together along their common direction.
+    ///
+    /// This is the multi-face direct-edit primitive used for symmetric
+    /// dimensions. Returns a new solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any handle is invalid, the faces cannot move as a
+    /// coherent group, or the edit does not produce a valid solid.
+    #[wasm_bindgen(js_name = "moveFaces")]
+    pub fn move_faces_binding(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        distance: f64,
+    ) -> Result<u32, JsError> {
+        validate_finite(distance, "distance")?;
+        let face_count = u32::try_from(faces.len()).unwrap_or(u32::MAX);
+        validate_work_count(face_count, "faces")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let face_ids = faces
+            .into_iter()
+            .map(|face| self.resolve_face(face))
+            .collect::<Result<Vec<_>, _>>()?;
+        let result =
+            self.with_topology_transaction(|topo| move_faces(topo, solid_id, &face_ids, distance))?;
         Ok(solid_id_to_u32(result))
     }
 

@@ -180,6 +180,28 @@ const vol = kernel.volume(boxId, DEFLECTION);
 assert.ok(Math.abs(vol - 6000) < 1e-6, `volume=${vol}, expected ~6000`);
 console.log(`ok - volume = ${vol}`);
 
+const planarPairs = JSON.parse(kernel.getOpposingPlanarFacePairs(boxId));
+assert.deepEqual(
+  planarPairs.map((pair) => pair.distance).sort((a, b) => a - b),
+  [10, 20, 30],
+);
+const widthPair = planarPairs.find((pair) => pair.distance === 10);
+assert.ok(widthPair, 'expected a 10-unit box face pair');
+assert.equal(widthPair.overlapArea, 600);
+const movedBox = kernel.moveFaces(
+  boxId,
+  new Uint32Array([widthPair.faceA]),
+  2,
+);
+assert.ok(Math.abs(kernel.volume(movedBox, DEFLECTION) - 7200) < 1e-6);
+const [batchPairs] = JSON.parse(
+  kernel.executeBatch(
+    JSON.stringify([{ op: 'getOpposingPlanarFacePairs', args: { solid: boxId } }]),
+  ),
+);
+assert.equal(batchPairs.ok.length, 3);
+console.log('ok - opposing planar pairs and moveFaces direct edit');
+
 // Detailed validation must preserve every operations-layer diagnostic while
 // leaving the existing numeric validator unchanged.
 const validation = JSON.parse(kernel.validateSolidDetailed(boxId));

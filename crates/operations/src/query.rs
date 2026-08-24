@@ -2,14 +2,204 @@
 
 use std::collections::{HashMap, HashSet};
 
-use remus_math::vec::{Point3, Vec3};
+use remus_math::polygon_boolean::{BooleanOp as PolygonBooleanOp, polygon_boolean};
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
+use remus_topology::explorer::{face_edges, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
+use crate::boolean::{face_polygon, wire_polygon};
 use crate::classify::{PointClassification, classify_point, classify_point_robust};
+use crate::measure::face_area;
+
+/// An opposing pair of parallel planar faces with a non-zero projected overlap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpposingPlanarFacePair {
+    /// First face in stable topology order.
+    pub face_a: FaceId,
+    /// Second face in stable topology order.
+    pub face_b: FaceId,
+    /// Perpendicular distance between the two planes.
+    pub distance: f64,
+    /// Area covered by both trimmed faces after projection onto either plane.
+    pub overlap_area: f64,
+    /// Trimmed area of `face_a`.
+    pub face_area_a: f64,
+    /// Trimmed area of `face_b`.
+    pub face_area_b: f64,
+    /// Effective outward normal of `face_a`.
+    pub normal: Vec3,
+    /// Whether `face_a` has a tangent contact with a curved blend face.
+    pub face_a_borders_blend: bool,
+    /// Whether `face_b` has a tangent contact with a curved blend face.
+    pub face_b_borders_blend: bool,
+}
+
+struct PlanarFaceRegion {
+    face: FaceId,
+    normal: Vec3,
+    outer: Vec<Point3>,
+    holes: Vec<Vec<Point3>>,
+    area: f64,
+    borders_blend: bool,
+}
+
+fn plane_frame(normal: Vec3) -> Option<(Vec3, Vec3)> {
+    let seed = if normal.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let u = normal.cross(seed).normalize().ok()?;
+    let v = normal.cross(u).normalize().ok()?;
+    Some((u, v))
+}
+
+fn project_loop(points: &[Point3], origin: Point3, u: Vec3, v: Vec3) -> Vec<Point2> {
+    points
+        .iter()
+        .map(|point| {
+            let delta = *point - origin;
+            Point2::new(delta.dot(u), delta.dot(v))
+        })
+        .collect()
+}
+
+fn polygon_overlap_area(a: &[Point2], b: &[Point2], tolerance: Tolerance) -> f64 {
+    polygon_boolean(a, b, PolygonBooleanOp::Intersection, tolerance.linear)
+        .area()
+        .max(0.0)
+}
+
+fn projected_overlap_area(a: &PlanarFaceRegion, b: &PlanarFaceRegion, tolerance: Tolerance) -> f64 {
+    let Some(&origin) = a.outer.first() else {
+        return 0.0;
+    };
+    let Some((u, v)) = plane_frame(a.normal) else {
+        return 0.0;
+    };
+    let outer_a = project_loop(&a.outer, origin, u, v);
+    let outer_b = project_loop(&b.outer, origin, u, v);
+    let holes_a: Vec<Vec<Point2>> = a
+        .holes
+        .iter()
+        .map(|hole| project_loop(hole, origin, u, v))
+        .collect();
+    let holes_b: Vec<Vec<Point2>> = b
+        .holes
+        .iter()
+        .map(|hole| project_loop(hole, origin, u, v))
+        .collect();
+
+    let mut overlap = polygon_overlap_area(&outer_a, &outer_b, tolerance);
+    for hole in &holes_a {
+        overlap -= polygon_overlap_area(hole, &outer_b, tolerance);
+    }
+    for hole in &holes_b {
+        overlap -= polygon_overlap_area(hole, &outer_a, tolerance);
+    }
+    for hole_a in &holes_a {
+        for hole_b in &holes_b {
+            overlap += polygon_overlap_area(hole_a, hole_b, tolerance);
+        }
+    }
+    overlap.clamp(0.0, a.area.min(b.area))
+}
+
+fn borders_blend(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    face: FaceId,
+) -> Result<bool, OperationsError> {
+    for edge in face_edges(topo, face)? {
+        for &neighbour in adjacency.faces_for_edge(edge) {
+            if neighbour == face || topo.face(neighbour)?.surface().is_planar() {
+                continue;
+            }
+            if edge_is_g1(topo, edge, face, neighbour)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Find pairs of opposing parallel planar faces with overlapping projections.
+///
+/// Faces are returned in stable topology order. The pair direction is chosen
+/// so the effective outward normals point away from the material between the
+/// planes; parallel faces whose normals point into the intervening gap are not
+/// thickness candidates.
+///
+/// # Errors
+///
+/// Returns an error if the solid topology cannot be traversed or measured.
+pub fn opposing_planar_face_pairs(
+    topo: &Topology,
+    solid: SolidId,
+    tolerance: Tolerance,
+) -> Result<Vec<OpposingPlanarFacePair>, OperationsError> {
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut regions = Vec::new();
+    for face in solid_faces(topo, solid)? {
+        let face_data = topo.face(face)?;
+        let Some(normal) = face_data.effective_plane_normal() else {
+            continue;
+        };
+        let outer = face_polygon(topo, face)?;
+        if outer.len() < 3 {
+            continue;
+        }
+        let holes = face_data
+            .inner_wires()
+            .iter()
+            .map(|&wire| wire_polygon(topo, wire))
+            .collect::<Result<Vec<_>, _>>()?;
+        regions.push(PlanarFaceRegion {
+            face,
+            normal,
+            outer,
+            holes,
+            area: face_area(topo, face, tolerance.linear)?,
+            borders_blend: borders_blend(topo, &adjacency, face)?,
+        });
+    }
+    regions.sort_by_key(|region| region.face.index());
+
+    let mut pairs = Vec::new();
+    for (index, a) in regions.iter().enumerate() {
+        for b in &regions[index + 1..] {
+            let dot = a.normal.dot(b.normal);
+            if (dot + 1.0).abs() > tolerance.angular {
+                continue;
+            }
+            let signed_distance = (b.outer[0] - a.outer[0]).dot(a.normal);
+            if signed_distance >= -tolerance.linear {
+                continue;
+            }
+            let overlap_area = projected_overlap_area(a, b, tolerance);
+            if overlap_area <= tolerance.linear_sq() {
+                continue;
+            }
+            pairs.push(OpposingPlanarFacePair {
+                face_a: a.face,
+                face_b: b.face,
+                distance: -signed_distance,
+                overlap_area,
+                face_area_a: a.area,
+                face_area_b: b.area,
+                normal: a.normal,
+                face_a_borders_blend: a.borders_blend,
+                face_b_borders_blend: b.borders_blend,
+            });
+        }
+    }
+    Ok(pairs)
+}
 
 /// Geometric relation between the two faces meeting at a manifold edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +617,32 @@ mod tests {
     use crate::boolean::{BooleanOp, boolean};
     use crate::primitives::{make_box, make_cylinder};
     use crate::transform::transform_solid;
+
+    #[test]
+    fn opposing_planar_pairs_measure_box_dimensions() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+
+        let pairs = opposing_planar_face_pairs(&topo, solid, Tolerance::default()).unwrap();
+        assert_eq!(pairs.len(), 3);
+
+        let mut measurements: Vec<(f64, f64)> = pairs
+            .iter()
+            .map(|pair| (pair.distance, pair.overlap_area))
+            .collect();
+        measurements.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!((measurements[0].0 - 2.0).abs() < 1.0e-9);
+        assert!((measurements[0].1 - 12.0).abs() < 1.0e-9);
+        assert!((measurements[1].0 - 3.0).abs() < 1.0e-9);
+        assert!((measurements[1].1 - 8.0).abs() < 1.0e-9);
+        assert!((measurements[2].0 - 4.0).abs() < 1.0e-9);
+        assert!((measurements[2].1 - 6.0).abs() < 1.0e-9);
+        assert!(
+            pairs
+                .iter()
+                .all(|pair| { !pair.face_a_borders_blend && !pair.face_b_borders_blend })
+        );
+    }
 
     #[test]
     fn filletable_edges_all_planar_box() {
