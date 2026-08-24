@@ -9,6 +9,8 @@ use serde_json::{Map, Value};
 
 /// Maximum JS-controlled work count accepted by scalar WASM parameters.
 pub const MAX_WASM_WORK_ITEMS: u32 = 10_000;
+/// Maximum faces accepted by a query that may compare every unordered pair.
+pub const MAX_WASM_FACE_PAIR_FACES: u32 = 512;
 
 /// Errors that can occur in WASM-exposed operations.
 #[derive(Debug, thiserror::Error)]
@@ -453,11 +455,31 @@ pub fn validate_work_product(left: u32, right: u32, name: &str) -> Result<usize,
     Ok(work as usize)
 }
 
+/// Bound a potentially quadratic face-pair query before topology work starts.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] when the face count exceeds the query
+/// budget.
+pub fn validate_face_pair_count(value: u32) -> Result<usize, WasmError> {
+    if value > MAX_WASM_FACE_PAIR_FACES {
+        return Err(WasmError::InvalidInput {
+            reason: format!(
+                "solid faces for face-pair query must be at most {MAX_WASM_FACE_PAIR_FACES}, got {value}"
+            ),
+        });
+    }
+    Ok(value as usize)
+}
+
 #[cfg(test)]
 mod work_limit_tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{MAX_WASM_WORK_ITEMS, validate_work_count, validate_work_product};
+    use super::{
+        MAX_WASM_FACE_PAIR_FACES, MAX_WASM_WORK_ITEMS, validate_face_pair_count,
+        validate_work_count, validate_work_product,
+    };
 
     #[test]
     fn scalar_work_count_accepts_limit_and_rejects_larger_values() {
@@ -471,6 +493,15 @@ mod work_limit_tests {
             "invalid input: segments must be at most 10000, got 10001"
         );
         assert!(validate_work_count(u32::MAX, "segments").is_err());
+    }
+
+    #[test]
+    fn face_pair_query_has_a_quadratic_work_bound() {
+        assert_eq!(
+            validate_face_pair_count(MAX_WASM_FACE_PAIR_FACES).unwrap(),
+            MAX_WASM_FACE_PAIR_FACES as usize
+        );
+        assert!(validate_face_pair_count(MAX_WASM_FACE_PAIR_FACES + 1).is_err());
     }
 
     #[test]
