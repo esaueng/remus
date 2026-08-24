@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787525541360,
+  "lastUpdate": 1787538471458,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1673,6 +1673,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 36492715,
             "range": "± 154085",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f20cf73f771c36834fda2b3b817466f1ed3ac6ba",
+          "message": "fix(io): compose STEP same_sense into NURBS face loops (#77)\n\nISO 10303-42 stores each EDGE_LOOP in the face's topological sense\n(surface normal composed with ADVANCED_FACE.same_sense) for every\nsurface type, but the STEP reader and writer exempted B-spline\nsurfaces from that composition. Any conforming external file with a\nreversed NURBS face — e.g. Shapr3D / HOOPS Exchange AP242 exports —\nimported with misoriented shared edges and failed strict\nvalidate_solid, tripping OpenZCAD's B-rep validity warning on every\nsuch import while relaxed validation and tessellation stayed clean.\n\nRemove the exemption in both reader and writer, and migrate the five\ncommitted brepkit-written fixtures that carry same_sense=.F. B-spline\nfaces to the conforming face-sense loop encoding (loop order reversed,\noriented-edge senses flipped), which preserves their imported topology\nexactly. Regression: a Shapr3D AP242 export with eight reversed NURBS\nfaces (24 formerly misoriented edges) must import and round-trip with\nopposing shared-edge uses, and the openzcad NURBS-fillet fixture now\nalso runs strict validation on import.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-23T22:25:02-04:00",
+          "tree_id": "d37e2ea3b6aa3407440eac6a7a7fefa798e57d4a",
+          "url": "https://github.com/esaueng/remus/commit/f20cf73f771c36834fda2b3b817466f1ed3ac6ba"
+        },
+        "date": 1787538470596,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1281898,
+            "range": "± 1634",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1368683,
+            "range": "± 36395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14844,
+            "range": "± 84",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 955015,
+            "range": "± 1635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38560964,
+            "range": "± 623054",
             "unit": "ns/iter"
           }
         ]
