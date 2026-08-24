@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787577662421,
+  "lastUpdate": 1787605664469,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1835,6 +1835,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40994919,
             "range": "± 110262",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee6acc12475c505b275fe9fda147679e7b1e260c",
+          "message": "fix: reject non-finite geometry at the kernel boundary (#81)\n\n* fix(math,wasm,check): reject non-finite geometry at the kernel boundary\n\nNaN and infinity survive every tolerance comparison in the kernel, because a\ncomparison against NaN is always false. A poisoned coordinate that gets past\nan input gate is therefore never caught downstream: it builds geometry that\nmeasures, validates, and exports as if it were sound.\n\nThree gates were open.\n\n`NurbsCurve::new` and `NurbsSurface::new` validated knots and weights for\nfiniteness but not control points, so a NaN control point constructed a curve\nor surface that evaluated to NaN everywhere. Both now reject it, which also\ncovers the WASM sweep/pipe/loft paths and the STEP and IGES readers, since\nthey all construct through these two functions. `NurbsSurface::new` also\ngains the degree contract `NurbsCurve::new` already enforced: degree 0 has\nidentically-zero derivatives, so it cannot produce usable face geometry.\n\n`parse_points` and `parse_mat4` — the shared WASM parsers behind most\ncoordinate-taking bindings — checked array length but not element\nfiniteness, while a handful of individual bindings checked inline. A\n`Float64Array` from JS carries NaN verbatim (unlike the `executeBatch` JSON\npath, where it cannot be encoded), so this was the reachable vector. The\ncheck moves into the shared parsers, and the sites that hand-rolled the same\nlength-check-and-chunk now route through them.\n\n`validate_solid` reported nothing at all for a NaN-bearing shape: every\ngeometric check compares a measured deviation against a tolerance, and every\none of those comparisons was false. `CheckId::GeometryFinite` reports it as\nan Error. The checks sample through the `EdgeCurve`/`FaceSurface` delegate\nmethods rather than matching variants, so new geometry types are covered\nwithout touching the file.\n\nRegression tests pin both sides of each gate, including the pre-change\nbehaviour: with `GeometryFinite` disabled, a cube with one NaN vertex still\nvalidates clean.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* docs(agents): correct the EdgeCurve/FaceSurface ripple checklists\n\nThree claims in the ripple-effect section did not match the code, and each\none makes a variant addition look safer than it is.\n\nThe `EdgeCurve` variant list was two variants stale: `Hyperbola` and\n`Parabola` have been there for a while and were missing, so the checklist\nunderstated what a new arm has to sit alongside.\n\nThe match-site counts (~100 and ~112 files) are both ~150 now.\n\nMost importantly, \"no production `_ =>` wildcards remain — the compiler flags\nevery match site\" is not true: 93 production match blocks over the two enums\ncarry a wildcard arm (21 `EdgeCurve`, 72 `FaceSurface`), across ~45 files.\nMost are a deliberate \"anything else is not my special case\", which is fine\nin itself — but it means a new variant lands in them silently and degrades\nbehaviour rather than failing to compile, which is exactly what the section\npromised could not happen. The section now says so, and carries a query that\nenumerates the sites to audit.\n\nDocs only; no code change.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(wasm): reject non-finite scalar arguments on the public API\n\nCompanion to the shared-parser gate: the array-taking bindings now refuse\nNaN and infinity, but the scalar arguments beside them did not. 124 `f64`\nparameters across 41 exported methods — endpoints for `makeLineEdge`,\n`makeCircleArc3d` and `makeEllipseArc3d`, query points for the distance and\nclassification calls, pull and neutral directions for draft, axis and origin\nfor helical sweep and edge projection, sketch point coordinates, and the\ntolerance and deflection arguments throughout — reached the kernel unchecked.\n\n`executeBatch` was never the exposed path here: JSON cannot encode NaN. A\ndirect call from JS can, and does, pass one straight through.\n\n`validate_finite` on every one of them. It is the weakest gate that is\nalways correct: none of these parameters has a meaning for NaN or infinity,\nwhereas tightening the tolerance arguments to `validate_positive` would\nchange what callers are allowed to ask for, which is a separate decision.\n\nRegression tests go through `make_nurbs_edge_impl`, the one binding on this\nsurface whose error type is constructible off the wasm target, covering both\nthe scalar endpoints and the control-point refusal it inherits from\n`NurbsCurve::new`.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* docs(agents): give the wildcard match-arm counts per file\n\nThe corrected section said \"~45 files\" from a rough pass; the measured figure\nis 39, and naming the four densest files (volume.rs 13, phase_ff.rs 8,\nnonplanar.rs 7, resize_blend.rs 6) points the audit at where a new variant\nwould do the most silent damage.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(wasm): gate the naming validate_finite import behind the io feature\n\n`capture_signature_ref` — the only consumer — lives in an `impl BrepKernel`\nblock carrying `#[cfg(feature = \"io\")]`, so with `--no-default-features` the\nfunction is compiled out and the import is unused, failing the CI step that\nbuilds the kernel without optional I/O under `-D warnings`.\n\nThe import now carries the same gate as its consumer.\n\nVerified in both configurations: `cargo clippy -p remus-wasm --target\nwasm32-unknown-unknown --no-default-features -- -D warnings` and\n`cargo test -p remus-wasm --no-default-features` (413 passed) alongside the\ndefault-feature workspace clippy.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-24T17:05:00-04:00",
+          "tree_id": "2b4d3a18fe851832786674dc21053ec669e5a3c8",
+          "url": "https://github.com/esaueng/remus/commit/ee6acc12475c505b275fe9fda147679e7b1e260c"
+        },
+        "date": 1787605663339,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1411664,
+            "range": "± 3125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1443050,
+            "range": "± 1829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13990,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 988759,
+            "range": "± 1735",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40739745,
+            "range": "± 56090",
             "unit": "ns/iter"
           }
         ]
