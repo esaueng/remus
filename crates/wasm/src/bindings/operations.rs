@@ -29,7 +29,7 @@ use crate::types::FaceEvolutionPayloadV1;
 use remus_operations::extrude::extrude;
 use remus_operations::offset_wire::JoinType;
 use remus_operations::push_pull::{push_pull_face, resize_cylindrical_face};
-use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
+use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::revolve::revolve;
 use remus_operations::sweep::sweep;
 
@@ -573,6 +573,28 @@ impl BrepKernel {
             resize_cylindrical_face(topo, solid_id, face_id, new_radius)
         })?;
         Ok(solid_id_to_u32(result))
+    }
+
+    /// Return the exact tangency-connected constant-radius blend region.
+    ///
+    /// The JSON result is `{ "faces": number[], "radius": number }`, with
+    /// faces sorted by deterministic arena handle. Cylinder, torus and spherical
+    /// corner faces of the same rolling-ball radius are grouped together.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed refusal when `face` is not a proven analytic blend
+    /// region of `solid`.
+    #[wasm_bindgen(js_name = "getBlendRegion")]
+    pub fn get_blend_region(&self, solid: u32, face: u32) -> Result<String, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let face_id = self.resolve_face(face)?;
+        let region = blend_region(self.topo(), solid_id, face_id)?;
+        serde_json::to_string(&serde_json::json!({
+            "faces": region.faces.into_iter().map(face_id_to_u32).collect::<Vec<_>>(),
+            "radius": region.radius,
+        }))
+        .map_err(|error| JsError::new(&format!("failed to encode blend region: {error}")))
     }
 
     /// Resize or remove an exact constant-radius analytic blend band.
@@ -2291,6 +2313,14 @@ mod tests {
             .collect();
         assert_eq!(bands.len(), 1);
         let band = *bands.iter().next().unwrap();
+
+        let grouped = dispatch(
+            &mut kernel,
+            "getBlendRegion",
+            serde_json::json!({ "solid": fillet.result.solid, "face": band }),
+        );
+        assert_eq!(grouped["ok"]["faces"], serde_json::json!([band]));
+        assert_eq!(grouped["ok"]["radius"].as_f64(), Some(1.0));
 
         let resized = kernel
             .resize_blend_with_evolution_binding(fillet.result.solid, band, 1.0, 2.0)
