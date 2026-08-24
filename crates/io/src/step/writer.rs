@@ -509,12 +509,13 @@ impl StepWriteContext {
         let face = topo.face(face_id).map_err(topo_err)?;
 
         let mut bound_ids = Vec::new();
-        // Analytic STEP surfaces compose ADVANCED_FACE.same_sense into their
-        // loop direction. NURBS control nets already carry their parametric
-        // sense, matching the reader's representation.
+        // ISO 10303-42 stores an EDGE_LOOP in the face's topological sense
+        // (surface normal composed with ADVANCED_FACE.same_sense), while
+        // remus stores wires relative to the surface. Reversed faces must
+        // therefore emit their loops reversed — for every surface type,
+        // B-splines included, or external readers see misoriented shells.
         let step_face_reversed = face.is_reversed() != flip;
-        let reverse_bounds = step_face_reversed
-            && !matches!(face.surface(), remus_topology::face::FaceSurface::Nurbs(_));
+        let reverse_bounds = step_face_reversed;
 
         let outer_loop = self.write_edge_loop(topo, face.outer_wire(), reverse_bounds)?;
         let outer_bound = self.next_id();
