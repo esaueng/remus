@@ -13,7 +13,7 @@ use remus_operations::tessellate;
 use remus_topology::Topology;
 use wasm_bindgen::prelude::*;
 
-use crate::error::{StructuredWasmError, WasmError};
+use crate::error::{StructuredWasmError, WasmError, validate_all_finite};
 use crate::handles::face_id_to_u32;
 use crate::shapes::JsMesh;
 
@@ -24,15 +24,30 @@ pub const TOL: f64 = 1e-7;
 
 /// Parse flat `[x,y,z, ...]` coordinates into `Vec<Point3>`.
 pub fn parse_points(coords: &[f64]) -> Result<Vec<Point3>, JsError> {
+    Ok(parse_points_checked(coords)?)
+}
+
+/// [`parse_points`] returning a [`WasmError`] instead of a `JsError`.
+///
+/// `JsError` cannot be constructed on non-wasm targets, so parsing that must
+/// stay reachable from native unit tests or from `executeBatch` dispatch has
+/// to go through this form (the same split as
+/// [`parse_polygon_2d_checked`]).
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if the length is not a multiple of
+/// three, or if any coordinate is not finite.
+pub fn parse_points_checked(coords: &[f64]) -> Result<Vec<Point3>, WasmError> {
     if !coords.len().is_multiple_of(3) {
         return Err(WasmError::InvalidInput {
             reason: format!(
                 "coordinate array length must be a multiple of 3, got {}",
                 coords.len()
             ),
-        }
-        .into());
+        });
     }
+    validate_all_finite(coords, "coordinate array")?;
     Ok(coords
         .chunks_exact(3)
         .map(|c| Point3::new(c[0], c[1], c[2]))
@@ -77,6 +92,7 @@ pub fn parse_mat4(elems: &[f64]) -> Result<Mat4, JsError> {
         }
         .into());
     }
+    validate_all_finite(elems, "matrix")?;
     let rows = std::array::from_fn(|i| std::array::from_fn(|j| elems[i * 4 + j]));
     Ok(Mat4(rows))
 }
@@ -593,19 +609,7 @@ pub fn build_triangle_mesh(
     positions: &[f64],
     indices: &[u32],
 ) -> Result<tessellate::TriangleMesh, JsError> {
-    if !positions.len().is_multiple_of(3) {
-        return Err(WasmError::InvalidInput {
-            reason: format!(
-                "positions length must be a multiple of 3, got {}",
-                positions.len()
-            ),
-        }
-        .into());
-    }
-    let pts: Vec<Point3> = positions
-        .chunks_exact(3)
-        .map(|c| Point3::new(c[0], c[1], c[2]))
-        .collect();
+    let pts = parse_points(positions)?;
     // Compute normals as zero vectors (mesh_boolean recomputes them)
     let normals = vec![Vec3::new(0.0, 0.0, 0.0); pts.len()];
     Ok(tessellate::TriangleMesh {
@@ -1491,4 +1495,56 @@ pub fn frenet_from_derivatives(curvature: f64, d1: Vec3, d2: Vec3) -> Vec<f64> {
         normal.y(),
         normal.z(),
     ]
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// A `Float64Array` from JS carries NaN and infinity verbatim — unlike the
+    /// `executeBatch` JSON path, where they cannot be encoded at all. NaN
+    /// compares false against every tolerance in the kernel, so a poisoned
+    /// coordinate that gets past this parser is never caught downstream: it
+    /// builds geometry that measures, validates, and exports as if sound.
+    #[test]
+    fn parse_points_rejects_nonfinite_coordinates() {
+        for poison in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for slot in 0..3 {
+                let mut coords = vec![0.0, 1.0, 2.0];
+                coords[slot] = poison;
+                let err = parse_points_checked(&coords)
+                    .expect_err("non-finite coordinate must be refused");
+                let WasmError::InvalidInput { reason } = err else {
+                    panic!("expected InvalidInput, got {err:?}");
+                };
+                assert!(
+                    reason.contains(&format!("[{slot}]")),
+                    "message should name the offending index: {reason}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parse_points_accepts_finite_coordinates() {
+        let points = parse_points_checked(&[0.0, 1.0, 2.0, -3.0, 4.5, f64::MAX])
+            .expect("finite coordinates parse");
+        assert_eq!(points.len(), 2);
+    }
+
+    #[test]
+    fn parse_points_still_rejects_a_ragged_array() {
+        assert!(matches!(
+            parse_points_checked(&[0.0, 1.0]),
+            Err(WasmError::InvalidInput { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_mat4_rejects_nonfinite_elements() {
+        let mut m = vec![0.0; 16];
+        m[7] = f64::NAN;
+        assert!(validate_all_finite(&m, "matrix").is_err());
+    }
 }

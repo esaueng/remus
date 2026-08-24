@@ -9,7 +9,8 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::transform::transform_solid;
 
 use crate::error::{
-    WasmError, validate_finite, validate_positive, validate_work_count, validate_work_product,
+    WasmError, validate_all_finite, validate_finite, validate_positive, validate_work_count,
+    validate_work_product,
 };
 use crate::handles::{compound_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use crate::kernel::BrepKernel;
@@ -80,6 +81,8 @@ impl BrepKernel {
             }
             .into());
         }
+        validate_all_finite(&matrix_a, "matrix A")?;
+        validate_all_finite(&matrix_b, "matrix B")?;
         let rows_a = std::array::from_fn(|i| std::array::from_fn(|j| matrix_a[i * 4 + j]));
         let rows_b = std::array::from_fn(|i| std::array::from_fn(|j| matrix_b[i * 4 + j]));
         let result = Mat4(rows_a) * Mat4(rows_b);
@@ -376,6 +379,9 @@ impl BrepKernel {
         az: f64,
         count: u32,
     ) -> Result<u32, JsError> {
+        validate_finite(ax, "ax")?;
+        validate_finite(ay, "ay")?;
+        validate_finite(az, "az")?;
         let solid_id = self.resolve_solid(solid)?;
         let axis = Vec3::new(ax, ay, az);
         let count = validate_work_count(count, "count")?;
@@ -393,6 +399,7 @@ impl BrepKernel {
         solid: u32,
         tolerance: f64,
     ) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let solid_id = self.resolve_solid(solid)?;
         let count = remus_operations::heal::merge_coincident_vertices(
             self.topo_mut(),

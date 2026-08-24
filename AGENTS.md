@@ -388,12 +388,14 @@ impl needs the new arm). The files below still use direct match arms.
 
 ### Adding an `EdgeCurve` variant
 
-`EdgeCurve` is defined in `topology/src/edge.rs`. Current variants: `Line`, `NurbsCurve`, `Circle`, `Ellipse`.
+`EdgeCurve` is defined in `topology/src/edge.rs`. Current variants: `Line`,
+`NurbsCurve`, `Circle`, `Ellipse`, `Hyperbola`, `Parabola`.
 
-`EdgeCurve::` is matched in ~100 files. Since the variants are exhaustive
-(no production `_ =>` wildcards — see below), the compiler flags every
-direct-match site when you add a variant; you do NOT need a hand-maintained
-list. Get the authoritative set with:
+`EdgeCurve::` is matched in ~150 files. The compiler flags the exhaustive
+direct-match sites, so you do NOT need a hand-maintained list for those — but
+21 production matches carry a `_ =>` arm and will absorb a new variant
+silently. See [Wildcard match arms](#wildcard-match-arms); auditing those is
+part of the job, not an optional extra. Get the full set with:
 
 ```bash
 rg -l 'EdgeCurve::' crates/*/src/
@@ -412,9 +414,11 @@ first: `operations/src/tessellate/`, `transform.rs`, `copy.rs`,
 
 `FaceSurface` is defined in `topology/src/face.rs`. Current variants: `Plane`, `Nurbs`, `Cylinder`, `Cone`, `Sphere`, `Torus`.
 
-`FaceSurface::` is matched in ~112 files. As with `EdgeCurve`, the variants
-are exhaustive, so the compiler flags every direct-match site. Get the
-authoritative set with:
+`FaceSurface::` is matched in ~150 files. As with `EdgeCurve`, the compiler
+flags the exhaustive sites — but 72 production matches carry a `_ =>` arm and
+absorb a new variant silently, so
+[Wildcard match arms](#wildcard-match-arms) applies with more force here than
+anywhere else in the codebase. Get the full set with:
 
 ```bash
 rg -l 'FaceSurface::' crates/*/src/
@@ -476,13 +480,30 @@ Multiple `#[wasm_bindgen] impl BrepKernel` blocks are needed — one for public
 JS-exposed methods, one for private helpers. This is a wasm-bindgen requirement.
 
 ### Wildcard match arms
-As of v1.3.2, all `EdgeCurve` and `FaceSurface` match arms use exhaustive
-patterns — no production `_ =>` wildcards remain. When adding a new variant,
-the compiler will flag every match site. Still worth a manual scan of these
-files since `_ =>` could be re-introduced:
-- `io/src/step/writer.rs`
-- `io/src/iges/writer.rs`
-- `operations/src/offset_face.rs`
+**The compiler does not flag every match site.** Roughly 93 production `match`
+blocks over `EdgeCurve` (21) and `FaceSurface` (72) carry a `_ =>` arm, spread
+over 39 files. The densest are `operations/src/measure/volume.rs` (13),
+`algo/src/pave_filler/phase_ff.rs` (8),
+`operations/src/tessellate/nonplanar.rs` (7), and
+`operations/src/resize_blend.rs` (6).
+
+Most of those arms are a deliberate "anything else is not the special case I
+handle" (`_ => None`, `_ => false`, `_ => return Ok(None)`), which is why they
+exist. The cost is that a **new variant lands in them silently**: the shape
+does not fail to compile, it quietly degrades — a face skipped, an exact path
+declined for a mesh fallback, a surface treated as non-planar. So adding a
+variant is a two-part job:
+
+1. Fix what the compiler flags (the exhaustive sites).
+2. Audit the wildcard sites by hand and decide, per site, whether the new
+   variant belongs with the handled set. Enumerate them with:
+
+```bash
+rg -n --multiline '(EdgeCurve|FaceSurface)::[\s\S]{0,600}?^\s+_ =>' crates/*/src/
+```
+
+Step 2 is the one that gets skipped; treat a variant addition as incomplete
+until it has been done.
 
 ### Walking faces in a solid
 A solid has both an `outer_shell()` and zero-or-more `inner_shells()`

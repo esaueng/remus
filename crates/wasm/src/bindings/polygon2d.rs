@@ -4,7 +4,9 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::error::{WasmError, validate_positive, validate_work_product};
+use crate::error::{
+    WasmError, validate_all_finite, validate_finite, validate_positive, validate_work_product,
+};
 use crate::helpers::{parse_polygon_2d, parse_polygon_2d_checked, polygons_overlap_2d};
 use crate::kernel::BrepKernel;
 use crate::types::PolygonBoolean2dResult;
@@ -117,6 +119,9 @@ impl BrepKernel {
             }
             .into());
         }
+        validate_all_finite(&coords, "coords")?;
+        validate_finite(distance, "distance")?;
+        validate_positive(tolerance, "tolerance")?;
         let points: Vec<remus_math::vec::Point2> = coords
             .chunks_exact(2)
             .map(|c| remus_math::vec::Point2::new(c[0], c[1]))
@@ -145,6 +150,9 @@ impl BrepKernel {
             }
             .into());
         }
+        validate_all_finite(&polygon_coords, "polygon_coords")?;
+        validate_finite(px, "px")?;
+        validate_finite(py, "py")?;
         let polygon: Vec<remus_math::vec::Point2> = polygon_coords
             .chunks_exact(2)
             .map(|c| remus_math::vec::Point2::new(c[0], c[1]))

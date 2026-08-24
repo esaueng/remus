@@ -204,6 +204,13 @@ impl ToDiagnostic for MathError {
                     .with_detail("index", *index)
                     .with_detail("value", *value)
             }
+            Self::InvalidControlPointValue { index, x, y, z } => {
+                Diagnostic::new(InvalidInput, "invalid_control_point_value", message)
+                    .with_detail("index", *index)
+                    .with_detail("x", *x)
+                    .with_detail("y", *y)
+                    .with_detail("z", *z)
+            }
             Self::InvalidControlPointGrid {
                 expected_rows,
                 expected_cols,

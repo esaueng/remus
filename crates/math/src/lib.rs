@@ -58,6 +58,21 @@ pub enum MathError {
         value: f64,
     },
 
+    /// A NURBS control point has a non-finite coordinate.
+    #[error(
+        "invalid NURBS control point at index {index}: expected finite coordinates, got ({x}, {y}, {z})"
+    )]
+    InvalidControlPointValue {
+        /// Flattened index of the invalid control point.
+        index: usize,
+        /// X coordinate as supplied.
+        x: f64,
+        /// Y coordinate as supplied.
+        y: f64,
+        /// Z coordinate as supplied.
+        z: f64,
+    },
+
     /// Control point grid dimensions are inconsistent.
     #[error(
         "invalid control point grid: expected {expected_rows}x{expected_cols}, got inconsistent dimensions"
