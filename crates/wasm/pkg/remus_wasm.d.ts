@@ -1564,6 +1564,19 @@ export class BrepKernel {
      */
     getAnalyticSurfaceParams(face: number): string;
     /**
+     * Return the exact tangency-connected constant-radius blend region.
+     *
+     * The JSON result is `{ "faces": number[], "radius": number }`, with
+     * faces sorted by deterministic arena handle. Cylinder, torus and spherical
+     * corner faces of the same rolling-ball radius are grouped together.
+     *
+     * # Errors
+     *
+     * Returns a typed refusal when `face` is not a proven analytic blend
+     * region of `solid`.
+     */
+    getBlendRegion(solid: number, face: number): string;
+    /**
      * Get the solid handles within a compound.
      *
      * Returns an array of solid handles (`u32[]`).
