@@ -25,7 +25,11 @@ use remus_topology::journal::{EntityKind, JournalAttributePropagation, OpId};
 use remus_topology::naming::Discriminator;
 use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
-use crate::error::{StructuredWasmError, validate_finite};
+use crate::error::StructuredWasmError;
+// The only consumer, `capture_signature_ref`, lives in an `io`-gated
+// impl block, so the import has to carry the same gate.
+#[cfg(feature = "io")]
+use crate::error::validate_finite;
 use crate::helpers::get_u32;
 use crate::kernel::BrepKernel;
 
