@@ -379,6 +379,9 @@ impl BrepKernel {
         az: f64,
         count: u32,
     ) -> Result<u32, JsError> {
+        validate_finite(ax, "ax")?;
+        validate_finite(ay, "ay")?;
+        validate_finite(az, "az")?;
         let solid_id = self.resolve_solid(solid)?;
         let axis = Vec3::new(ax, ay, az);
         let count = validate_work_count(count, "count")?;
@@ -396,6 +399,7 @@ impl BrepKernel {
         solid: u32,
         tolerance: f64,
     ) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let solid_id = self.resolve_solid(solid)?;
         let count = remus_operations::heal::merge_coincident_vertices(
             self.topo_mut(),

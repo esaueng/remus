@@ -6,6 +6,7 @@ use wasm_bindgen::prelude::*;
 
 use remus_topology::face::Face;
 
+use crate::error::validate_finite;
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::{TOL, serialize_feature};
 use crate::kernel::BrepKernel;
@@ -24,6 +25,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "sewFaces")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn sew_faces(&mut self, face_handles: Vec<u32>, tolerance: f64) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let face_ids: Vec<remus_topology::face::FaceId> = face_handles
             .iter()
             .map(|&h| self.resolve_face(h))
@@ -71,6 +73,7 @@ impl BrepKernel {
         face_handles: Vec<u32>,
         tolerance: f64,
     ) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let face_ids: Vec<remus_topology::face::FaceId> = face_handles
             .iter()
             .map(|&h| self.resolve_face(h))
@@ -177,6 +180,7 @@ impl BrepKernel {
     /// Returns the number of edges removed.
     #[wasm_bindgen(js_name = "removeDegenerateEdges")]
     pub fn remove_degenerate_edges(&mut self, solid: u32, tolerance: f64) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let solid_id = self.resolve_solid(solid)?;
         let count =
             remus_operations::heal::remove_degenerate_edges(self.topo_mut(), solid_id, tolerance)?;
@@ -223,6 +227,8 @@ impl BrepKernel {
         area_threshold: f64,
         deflection: f64,
     ) -> Result<Vec<u32>, JsError> {
+        validate_finite(area_threshold, "area_threshold")?;
+        validate_finite(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
         let faces = remus_operations::defeature::detect_small_features(
             &self.topo,
@@ -238,6 +244,7 @@ impl BrepKernel {
     /// Returns a JSON string describing the recognized features.
     #[wasm_bindgen(js_name = "recognizeFeatures")]
     pub fn recognize_features(&self, solid: u32, deflection: f64) -> Result<String, JsError> {
+        validate_finite(deflection, "deflection")?;
         let solid_id = self.resolve_solid(solid)?;
         let features = remus_operations::feature_recognition::recognize_features(
             &self.topo, solid_id, deflection,
