@@ -6,11 +6,13 @@ use std::f64::consts::PI;
 
 use wasm_bindgen::prelude::*;
 
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
+use remus_operations::query::opposing_planar_face_pairs;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 
-use crate::error::{WasmError, validate_finite, validate_work_count};
+use crate::error::{WasmError, validate_face_pair_count, validate_finite, validate_work_count};
 use crate::handles::{
     edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, vertex_id_to_u32,
     wire_id_to_u32,
@@ -37,6 +39,42 @@ impl BrepKernel {
         let faces = remus_topology::explorer::solid_faces(&self.topo, solid_id)?;
         #[allow(clippy::cast_possible_truncation)]
         Ok(faces.iter().map(|f| f.index() as u32).collect())
+    }
+
+    /// Find opposing parallel planar face pairs with projected overlap.
+    ///
+    /// Returns JSON records containing both face handles, pair distance,
+    /// overlap and face areas, the outward normal of `faceA`, and conservative
+    /// blend-border flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle or its topology is invalid.
+    #[wasm_bindgen(js_name = "getOpposingPlanarFacePairs")]
+    pub fn get_opposing_planar_face_pairs(&self, solid: u32) -> Result<String, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let face_count =
+            u32::try_from(remus_topology::explorer::solid_faces(&self.topo, solid_id)?.len())
+                .unwrap_or(u32::MAX);
+        validate_face_pair_count(face_count)?;
+        let pairs = opposing_planar_face_pairs(&self.topo, solid_id, Tolerance::default())?;
+        let records: Vec<_> = pairs
+            .iter()
+            .map(|pair| {
+                serde_json::json!({
+                    "faceA": face_id_to_u32(pair.face_a),
+                    "faceB": face_id_to_u32(pair.face_b),
+                    "distance": pair.distance,
+                    "overlapArea": pair.overlap_area,
+                    "faceAreaA": pair.face_area_a,
+                    "faceAreaB": pair.face_area_b,
+                    "normal": [pair.normal.x(), pair.normal.y(), pair.normal.z()],
+                    "faceABordersBlend": pair.face_a_borders_blend,
+                    "faceBBordersBlend": pair.face_b_borders_blend,
+                })
+            })
+            .collect();
+        serde_json::to_string(&records).map_err(|error| JsError::new(&error.to_string()))
     }
 
     /// Get all edge handles of a solid.
