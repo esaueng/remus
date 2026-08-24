@@ -3,6 +3,7 @@
 pub mod checks;
 pub(crate) mod edge;
 pub(crate) mod face;
+pub(crate) mod finite;
 pub mod shell;
 pub(crate) mod solid;
 pub(crate) mod vertex;
@@ -185,6 +186,9 @@ fn validate_shell_checks(
     let mut checked_faces = HashSet::new();
     for &fid in shell.faces() {
         if checked_faces.insert(fid) {
+            if !options.disabled_checks.contains(&CheckId::GeometryFinite) {
+                issues.extend(finite::check_face_finite(topo, fid)?);
+            }
             if !options.disabled_checks.contains(&CheckId::FaceNoSurface) {
                 issues.extend(face::check_face_has_surface(topo, fid)?);
             }
@@ -198,6 +202,7 @@ fn validate_shell_checks(
     }
 
     let mut checked_edges = HashSet::new();
+    let mut checked_vertices = HashSet::new();
     for &fid in shell.faces() {
         let face = topo.face(fid)?;
         let mut wire_ids = vec![face.outer_wire()];
@@ -207,6 +212,15 @@ fn validate_shell_checks(
             for oe in wire_data.edges() {
                 let eid = oe.edge();
                 if checked_edges.insert(eid) {
+                    if !options.disabled_checks.contains(&CheckId::GeometryFinite) {
+                        let edge_data = topo.edge(eid)?;
+                        for vid in [edge_data.start(), edge_data.end()] {
+                            if checked_vertices.insert(vid) {
+                                issues.extend(finite::check_vertex_finite(topo, vid)?);
+                            }
+                        }
+                        issues.extend(finite::check_edge_finite(topo, eid)?);
+                    }
                     if !options.disabled_checks.contains(&CheckId::EdgeRangeValid) {
                         issues.extend(edge::check_edge_range(
                             topo,

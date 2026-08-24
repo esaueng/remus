@@ -26,6 +26,10 @@ use remus_topology::naming::Discriminator;
 use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
 use crate::error::StructuredWasmError;
+// The only consumer, `capture_signature_ref`, lives in an `io`-gated
+// impl block, so the import has to carry the same gate.
+#[cfg(feature = "io")]
+use crate::error::validate_finite;
 use crate::helpers::get_u32;
 use crate::kernel::BrepKernel;
 
@@ -515,6 +519,7 @@ impl BrepKernel {
         handle: u32,
         quantum: f64,
     ) -> Result<String, JsError> {
+        validate_finite(quantum, "quantum")?;
         self.capture_signature_ref_json(kind, handle, quantum)
             .map(|v| v["ref"].as_str().unwrap_or_default().to_owned())
             .map_err(structured_to_js)
