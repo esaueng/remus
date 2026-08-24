@@ -9,17 +9,22 @@ use wasm_bindgen::prelude::*;
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{self, BooleanOp, boolean};
 use remus_operations::extrude::extrude;
 use remus_operations::measure;
-use remus_operations::push_pull::{push_pull_face, resize_cylindrical_face};
+use remus_operations::push_pull::{move_faces, push_pull_face, resize_cylindrical_face};
+use remus_operations::query::opposing_planar_face_pairs;
 use remus_operations::revolve::revolve;
 use remus_operations::sweep::sweep;
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 
-use crate::error::{StructuredWasmError, WasmError, validate_work_count, validate_work_product};
+use crate::error::{
+    StructuredWasmError, WasmError, validate_face_pair_count, validate_work_count,
+    validate_work_product,
+};
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
@@ -138,6 +143,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getSolidFaces"
         | "getFaceNormal"
         | "getFaceVertexPositions"
+        | "getOpposingPlanarFacePairs"
         | "volume" => Some(BatchOpKind::ReadOnly),
         // Serialized-reference ops: their dispatch arms in `naming.rs` are
         // `io`-gated because the reference codec is. Classifying them without
@@ -182,6 +188,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "copySolid"
         | "copyAndTransformSolid"
         | "pushPullFace"
+        | "moveFaces"
         | "resizeCylindricalFace"
         | "extrude"
         | "revolve"
@@ -1042,6 +1049,21 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
+            "moveFaces" => {
+                let s = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                let distance = get_f64(args, "distance")?;
+                let face_count = u32::try_from(faces.len()).unwrap_or(u32::MAX);
+                validate_work_count(face_count, "faces").map_err(StructuredWasmError::from)?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let face_ids = faces
+                    .into_iter()
+                    .map(|face| self.resolve_face(face).map_err(StructuredWasmError::from))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result = move_faces(self.topo_mut(), solid_id, &face_ids, distance)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
             "resizeCylindricalFace" => {
                 let s = get_u32(args, "solid")?;
                 let f = get_u32(args, "face")?;
@@ -1689,6 +1711,42 @@ impl BrepKernel {
                     .map_err(StructuredWasmError::from)?;
                 let handles: Vec<u32> = faces.iter().map(|f| face_id_to_u32(*f)).collect();
                 Ok(serde_json::json!(handles))
+            }
+            "getOpposingPlanarFacePairs" => {
+                let s = get_u32(args, "solid")?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let face_count = u32::try_from(
+                    remus_topology::explorer::solid_faces(self.topo(), solid_id)
+                        .map_err(crate::error::WasmError::from)
+                        .map_err(StructuredWasmError::from)?
+                        .len(),
+                )
+                .unwrap_or(u32::MAX);
+                validate_face_pair_count(face_count).map_err(StructuredWasmError::from)?;
+                let pairs = opposing_planar_face_pairs(self.topo(), solid_id, Tolerance::default())
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::Value::Array(
+                    pairs
+                        .iter()
+                        .map(|pair| {
+                            serde_json::json!({
+                                "faceA": face_id_to_u32(pair.face_a),
+                                "faceB": face_id_to_u32(pair.face_b),
+                                "distance": pair.distance,
+                                "overlapArea": pair.overlap_area,
+                                "faceAreaA": pair.face_area_a,
+                                "faceAreaB": pair.face_area_b,
+                                "normal": [
+                                    pair.normal.x(),
+                                    pair.normal.y(),
+                                    pair.normal.z()
+                                ],
+                                "faceABordersBlend": pair.face_a_borders_blend,
+                                "faceBBordersBlend": pair.face_b_borders_blend,
+                            })
+                        })
+                        .collect(),
+                ))
             }
             "getBlendRegion" => {
                 let s = get_u32(args, "solid")?;
@@ -2384,8 +2442,58 @@ mod batch_contract_tests {
     fn classifies_operations_before_topology_snapshotting() {
         assert_eq!(batch_op_kind("volume"), Some(BatchOpKind::ReadOnly));
         assert_eq!(batch_op_kind("projectEdges"), Some(BatchOpKind::ReadOnly));
+        assert_eq!(
+            batch_op_kind("getOpposingPlanarFacePairs"),
+            Some(BatchOpKind::ReadOnly)
+        );
         assert_eq!(batch_op_kind("makeBox"), Some(BatchOpKind::Mutating));
+        assert_eq!(batch_op_kind("moveFaces"), Some(BatchOpKind::Mutating));
         assert_eq!(batch_op_kind("notAnOperation"), None);
+    }
+
+    #[test]
+    fn planar_pair_query_and_move_faces_round_trip() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel
+            .dispatch_op(
+                "makeBox",
+                &serde_json::json!({"width": 2.0, "height": 3.0, "depth": 4.0}),
+            )
+            .expect("box")
+            .as_u64()
+            .expect("solid handle") as u32;
+        let pairs = kernel
+            .dispatch_op(
+                "getOpposingPlanarFacePairs",
+                &serde_json::json!({"solid": solid}),
+            )
+            .expect("face pairs");
+        let pairs = pairs.as_array().expect("pair array");
+        assert_eq!(pairs.len(), 3);
+        let width_pair = pairs
+            .iter()
+            .find(|pair| (pair["distance"].as_f64().unwrap_or_default() - 2.0).abs() < 1.0e-9)
+            .expect("width pair");
+        assert!((width_pair["overlapArea"].as_f64().unwrap_or_default() - 12.0).abs() < 1.0e-9);
+
+        let face = width_pair["faceA"].as_u64().expect("face handle") as u32;
+        let moved = kernel
+            .dispatch_op(
+                "moveFaces",
+                &serde_json::json!({"solid": solid, "faces": [face], "distance": 1.0}),
+            )
+            .expect("move face")
+            .as_u64()
+            .expect("moved solid handle") as u32;
+        let volume = kernel
+            .dispatch_op(
+                "volume",
+                &serde_json::json!({"solid": moved, "deflection": 0.1}),
+            )
+            .expect("volume")
+            .as_f64()
+            .expect("numeric volume");
+        assert!((volume - 36.0).abs() < 1.0e-6);
     }
 
     /// Classification must agree with what `dispatch_naming_op` can actually
