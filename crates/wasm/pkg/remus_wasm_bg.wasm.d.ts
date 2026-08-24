@@ -142,6 +142,7 @@ export const brepkernel_getFaceWires: (a: number, b: number) => [number, number,
 export const brepkernel_getNurbsCurveData: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_getNurbsSurfaceData: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_getNurbsSurfaceDataParity: (a: number, b: number) => [number, number, number, number];
+export const brepkernel_getOpposingPlanarFacePairs: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_getShapeOrientation: (a: number, b: number) => [number, number];
 export const brepkernel_getShellFaces: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_getSolidEdges: (a: number, b: number) => [number, number, number, number];
@@ -223,6 +224,7 @@ export const brepkernel_meshEdgesAll: (a: number, b: number, c: number, d: numbe
 export const brepkernel_meshQuality: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_minkowskiSum: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+export const brepkernel_moveFaces: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_multiSectionSweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
 export const brepkernel_new: () => number;
 export const brepkernel_offsetFace: (a: number, b: number, c: number, d: number) => [number, number, number];

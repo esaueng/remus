@@ -2878,6 +2878,37 @@ class BrepKernel {
         }
     }
     /**
+     * Find opposing parallel planar face pairs with projected overlap.
+     *
+     * Returns JSON records containing both face handles, pair distance,
+     * overlap and face areas, the outward normal of `faceA`, and conservative
+     * blend-border flags.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle or its topology is invalid.
+     * @param {number} solid
+     * @returns {string}
+     */
+    getOpposingPlanarFacePairs(solid) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_getOpposingPlanarFacePairs(this.__wbg_ptr, solid);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Get the orientation of a shape.
      *
      * Returns `"forward"` for all faces (remus faces don't have an
@@ -4711,6 +4742,30 @@ class BrepKernel {
      */
     mirror(solid, px, py, pz, nx, ny, nz) {
         const ret = wasm.brepkernel_mirror(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Translate planar faces together along their common direction.
+     *
+     * This is the multi-face direct-edit primitive used for symmetric
+     * dimensions. Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, the faces cannot move as a
+     * coherent group, or the edit does not produce a valid solid.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {number}
+     */
+    moveFaces(solid, faces, distance) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_moveFaces(this.__wbg_ptr, solid, ptr0, len0, distance);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
