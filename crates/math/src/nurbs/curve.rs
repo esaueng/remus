@@ -61,6 +61,7 @@ impl NurbsCurve {
         }
         super::validate_knot_values(&knots)?;
         super::validate_knot_domain(&knots, degree, n)?;
+        super::validate_control_point_values(control_points.iter().copied())?;
         if weights.len() != n {
             return Err(MathError::InvalidWeights {
                 expected: n,
@@ -412,6 +413,46 @@ mod tests {
                 control_points: 2
             })
         ));
+    }
+
+    #[test]
+    fn rejects_nonfinite_control_points() {
+        let make = |control_points| {
+            NurbsCurve::new(1, vec![0.0, 0.0, 1.0, 1.0], control_points, vec![1.0, 1.0])
+        };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for point in [
+                Point3::new(bad, 0.0, 0.0),
+                Point3::new(0.0, bad, 0.0),
+                Point3::new(0.0, 0.0, bad),
+            ] {
+                assert!(
+                    matches!(
+                        make(vec![Point3::new(0.0, 0.0, 0.0), point]),
+                        Err(MathError::InvalidControlPointValue { index: 1, .. })
+                    ),
+                    "expected rejection for {point:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_finite_control_points_at_extreme_magnitude() {
+        // The gate rejects only non-finite values: a legitimately huge but
+        // representable coordinate must still construct.
+        assert!(
+            NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(f64::MAX, -f64::MAX, f64::MIN_POSITIVE),
+                ],
+                vec![1.0, 1.0],
+            )
+            .is_ok()
+        );
     }
 
     #[test]
