@@ -139,6 +139,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resolveOperationOutput"
         | "journalSummary"
         | "getFaceName"
+        | "getBlendRegion"
         | "getSolidFaces"
         | "getFaceNormal"
         | "getFaceVertexPositions"
@@ -1746,6 +1747,23 @@ impl BrepKernel {
                         })
                         .collect(),
                 ))
+            }
+            "getBlendRegion" => {
+                let s = get_u32(args, "solid")?;
+                let f = get_u32(args, "face")?;
+                let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let region =
+                    remus_operations::resize_blend::blend_region(self.topo(), solid_id, face_id)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!({
+                    "faces": region
+                        .faces
+                        .into_iter()
+                        .map(face_id_to_u32)
+                        .collect::<Vec<_>>(),
+                    "radius": region.radius,
+                }))
             }
             "getFaceNormal" => {
                 // The face's stored surface normal at its outer-wire start (a
