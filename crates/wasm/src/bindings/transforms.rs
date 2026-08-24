@@ -9,7 +9,8 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::transform::transform_solid;
 
 use crate::error::{
-    WasmError, validate_finite, validate_positive, validate_work_count, validate_work_product,
+    WasmError, validate_all_finite, validate_finite, validate_positive, validate_work_count,
+    validate_work_product,
 };
 use crate::handles::{compound_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
 use crate::kernel::BrepKernel;
@@ -80,6 +81,8 @@ impl BrepKernel {
             }
             .into());
         }
+        validate_all_finite(&matrix_a, "matrix A")?;
+        validate_all_finite(&matrix_b, "matrix B")?;
         let rows_a = std::array::from_fn(|i| std::array::from_fn(|j| matrix_a[i * 4 + j]));
         let rows_b = std::array::from_fn(|i| std::array::from_fn(|j| matrix_b[i * 4 + j]));
         let result = Mat4(rows_a) * Mat4(rows_b);

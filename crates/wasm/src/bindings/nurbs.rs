@@ -183,19 +183,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "interpolatePoints")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn interpolate_points(&mut self, coords: Vec<f64>, degree: u32) -> Result<u32, JsError> {
-        if !coords.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "coordinate array length must be a multiple of 3, got {}",
-                    coords.len()
-                ),
-            }
-            .into());
-        }
-        let points: Vec<Point3> = coords
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
+        let points = parse_points(&coords)?;
         if points.len() < 2 {
             return Err(WasmError::InvalidInput {
                 reason: format!("need at least 2 points, got {}", points.len()),

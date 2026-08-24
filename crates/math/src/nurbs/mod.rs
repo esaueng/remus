@@ -39,6 +39,29 @@ pub use projection::{
 pub use surface::NurbsSurface;
 pub use surface_fitting::interpolate_surface;
 
+/// Reject control points carrying a non-finite coordinate.
+///
+/// A NaN or infinite control point produces geometry that evaluates to NaN
+/// everywhere downstream, and NaN compares false against every tolerance, so
+/// the poison passes silently through distance, containment, and validation
+/// checks instead of failing. Rejecting at construction is the only place the
+/// value is still attributable to its input.
+fn validate_control_point_values(
+    points: impl IntoIterator<Item = crate::vec::Point3>,
+) -> Result<(), crate::MathError> {
+    for (index, point) in points.into_iter().enumerate() {
+        if !point.0.iter().all(|c| c.is_finite()) {
+            return Err(crate::MathError::InvalidControlPointValue {
+                index,
+                x: point.x(),
+                y: point.y(),
+                z: point.z(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_knot_values(knots: &[f64]) -> Result<(), crate::MathError> {
     let mut max_value = f64::NEG_INFINITY;
     for (index, &value) in knots.iter().enumerate() {

@@ -409,6 +409,29 @@ pub fn validate_finite(value: f64, name: &str) -> Result<(), WasmError> {
         })
 }
 
+/// Validate that every element of a JS-supplied `f64` array is finite.
+///
+/// NaN and infinity survive every tolerance comparison in the kernel (a
+/// comparison against NaN is always false), so a poisoned coordinate is not
+/// caught downstream — it silently produces geometry that measures, validates,
+/// and exports as if it were sound. The public boundary is the only place the
+/// bad value is still attributable to the caller's input, so reject it here.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] naming the first offending index.
+pub fn validate_all_finite(values: &[f64], name: &str) -> Result<(), WasmError> {
+    match values.iter().position(|v| !v.is_finite()) {
+        None => Ok(()),
+        Some(index) => Err(WasmError::InvalidInput {
+            reason: format!(
+                "{name}[{index}] must be finite, got {value}",
+                value = values[index]
+            ),
+        }),
+    }
+}
+
 /// Validate that a `f64` value is finite and strictly positive.
 ///
 /// # Errors

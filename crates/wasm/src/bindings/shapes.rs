@@ -61,34 +61,14 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makePolygon")]
     #[allow(clippy::needless_pass_by_value)] // wasm-bindgen requires owned Vec
     pub fn make_polygon(&mut self, coords: Vec<f64>) -> Result<u32, JsError> {
-        if !coords.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "coordinate array length must be a multiple of 3, got {}",
-                    coords.len()
-                ),
-            }
-            .into());
-        }
-        let n = coords.len() / 3;
+        let points = parse_points(&coords)?;
+        let n = points.len();
         if n < 3 {
             return Err(WasmError::InvalidInput {
                 reason: format!("polygon requires at least 3 points, got {n}"),
             }
             .into());
         }
-
-        if let Some(pos) = coords.iter().position(|v| !v.is_finite()) {
-            return Err(WasmError::InvalidInput {
-                reason: format!("coordinate at index {pos} is not finite"),
-            }
-            .into());
-        }
-
-        let points: Vec<Point3> = coords
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
 
         let face_id = self.make_planar_face(&points)?;
         Ok(face_id_to_u32(face_id))
@@ -758,19 +738,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "convexHull")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn convex_hull(&mut self, coords: Vec<f64>) -> Result<u32, JsError> {
-        if !coords.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "coordinate array length must be a multiple of 3, got {}",
-                    coords.len()
-                ),
-            }
-            .into());
-        }
-        let points: Vec<Point3> = coords
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
+        let points = parse_points(&coords)?;
         if points.len() < 4 {
             return Err(WasmError::InvalidInput {
                 reason: format!(
@@ -889,6 +857,16 @@ impl BrepKernel {
                     control_points.len()
                 ),
             });
+        }
+        for (name, value) in [
+            ("start_x", start_x),
+            ("start_y", start_y),
+            ("start_z", start_z),
+            ("end_x", end_x),
+            ("end_y", end_y),
+            ("end_z", end_z),
+        ] {
+            validate_finite(value, name)?;
         }
         let cp: Vec<Point3> = control_points
             .chunks_exact(3)
