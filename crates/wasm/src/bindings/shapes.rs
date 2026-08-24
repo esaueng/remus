@@ -61,34 +61,14 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "makePolygon")]
     #[allow(clippy::needless_pass_by_value)] // wasm-bindgen requires owned Vec
     pub fn make_polygon(&mut self, coords: Vec<f64>) -> Result<u32, JsError> {
-        if !coords.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "coordinate array length must be a multiple of 3, got {}",
-                    coords.len()
-                ),
-            }
-            .into());
-        }
-        let n = coords.len() / 3;
+        let points = parse_points(&coords)?;
+        let n = points.len();
         if n < 3 {
             return Err(WasmError::InvalidInput {
                 reason: format!("polygon requires at least 3 points, got {n}"),
             }
             .into());
         }
-
-        if let Some(pos) = coords.iter().position(|v| !v.is_finite()) {
-            return Err(WasmError::InvalidInput {
-                reason: format!("coordinate at index {pos} is not finite"),
-            }
-            .into());
-        }
-
-        let points: Vec<Point3> = coords
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
 
         let face_id = self.make_planar_face(&points)?;
         Ok(face_id_to_u32(face_id))
@@ -154,6 +134,16 @@ impl BrepKernel {
         y2: f64,
         z2: f64,
     ) -> Result<u32, JsError> {
+        for (name, value) in [
+            ("x1", x1),
+            ("y1", y1),
+            ("z1", z1),
+            ("x2", x2),
+            ("y2", y2),
+            ("z2", z2),
+        ] {
+            validate_finite(value, name)?;
+        }
         let start = Point3::new(x1, y1, z1);
         let end = Point3::new(x2, y2, z2);
         let eid = remus_topology::builder::make_line_edge(self.topo_mut(), start, end, TOL)?;
@@ -430,6 +420,22 @@ impl BrepKernel {
         axis_y: f64,
         axis_z: f64,
     ) -> Result<u32, JsError> {
+        for (name, value) in [
+            ("start_x", start_x),
+            ("start_y", start_y),
+            ("start_z", start_z),
+            ("end_x", end_x),
+            ("end_y", end_y),
+            ("end_z", end_z),
+            ("center_x", center_x),
+            ("center_y", center_y),
+            ("center_z", center_z),
+            ("axis_x", axis_x),
+            ("axis_y", axis_y),
+            ("axis_z", axis_z),
+        ] {
+            validate_finite(value, name)?;
+        }
         let start_pt = Point3::new(start_x, start_y, start_z);
         let end_pt = Point3::new(end_x, end_y, end_z);
         let center = Point3::new(center_x, center_y, center_z);
@@ -509,6 +515,25 @@ impl BrepKernel {
         semi_major: f64,
         semi_minor: f64,
     ) -> Result<u32, JsError> {
+        for (name, value) in [
+            ("start_x", start_x),
+            ("start_y", start_y),
+            ("start_z", start_z),
+            ("end_x", end_x),
+            ("end_y", end_y),
+            ("end_z", end_z),
+            ("center_x", center_x),
+            ("center_y", center_y),
+            ("center_z", center_z),
+            ("axis_x", axis_x),
+            ("axis_y", axis_y),
+            ("axis_z", axis_z),
+            ("ref_x", ref_x),
+            ("ref_y", ref_y),
+            ("ref_z", ref_z),
+        ] {
+            validate_finite(value, name)?;
+        }
         for (v, name) in [
             (start_x, "start_x"),
             (start_y, "start_y"),
@@ -758,19 +783,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "convexHull")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn convex_hull(&mut self, coords: Vec<f64>) -> Result<u32, JsError> {
-        if !coords.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "coordinate array length must be a multiple of 3, got {}",
-                    coords.len()
-                ),
-            }
-            .into());
-        }
-        let points: Vec<Point3> = coords
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
+        let points = parse_points(&coords)?;
         if points.len() < 4 {
             return Err(WasmError::InvalidInput {
                 reason: format!(
@@ -882,6 +895,16 @@ impl BrepKernel {
         control_points: Vec<f64>,
         weights: Vec<f64>,
     ) -> Result<u32, WasmError> {
+        for (name, value) in [
+            ("start_x", start_x),
+            ("start_y", start_y),
+            ("start_z", start_z),
+            ("end_x", end_x),
+            ("end_y", end_y),
+            ("end_z", end_z),
+        ] {
+            validate_finite(value, name)?;
+        }
         if !control_points.len().is_multiple_of(3) {
             return Err(WasmError::InvalidInput {
                 reason: format!(
@@ -889,6 +912,16 @@ impl BrepKernel {
                     control_points.len()
                 ),
             });
+        }
+        for (name, value) in [
+            ("start_x", start_x),
+            ("start_y", start_y),
+            ("start_z", start_z),
+            ("end_x", end_x),
+            ("end_y", end_y),
+            ("end_z", end_z),
+        ] {
+            validate_finite(value, name)?;
         }
         let cp: Vec<Point3> = control_points
             .chunks_exact(3)
@@ -1005,6 +1038,90 @@ mod tests {
 
     use super::*;
     use remus_topology::face::FaceSurface;
+
+    // ── non-finite input rejection ────────────────────────────────
+
+    /// The `executeBatch` JSON path cannot encode NaN, but a direct call from
+    /// JS passes a `Float64Array` and plain numbers straight through, so the
+    /// scalar arguments are a live poison vector. `make_nurbs_edge_impl` is
+    /// the one binding on that surface whose error type is constructible off
+    /// the wasm target, so it stands in for the whole gated set here.
+    #[test]
+    fn make_nurbs_edge_rejects_nonfinite_endpoints() {
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        let cps = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let weights = vec![1.0, 1.0];
+
+        // Baseline: the same call with finite endpoints succeeds, so the
+        // rejections below are attributable to the poison and nothing else.
+        let mut k = BrepKernel::new();
+        assert!(
+            k.make_nurbs_edge_impl(
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1,
+                knots.clone(),
+                cps.clone(),
+                weights.clone(),
+            )
+            .is_ok()
+        );
+
+        for poison in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut k = BrepKernel::new();
+            let err = k
+                .make_nurbs_edge_impl(
+                    poison,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    1,
+                    knots.clone(),
+                    cps.clone(),
+                    weights.clone(),
+                )
+                .expect_err("non-finite endpoint must be refused");
+            assert!(
+                matches!(&err, WasmError::InvalidInput { reason } if reason.contains("start_x")),
+                "expected start_x to be named, got {err:?}"
+            );
+        }
+    }
+
+    /// The control points reach `NurbsCurve::new`, which owns the finiteness
+    /// contract for curve data; the binding must surface that refusal rather
+    /// than building an edge whose geometry evaluates to NaN.
+    #[test]
+    fn make_nurbs_edge_rejects_nonfinite_control_points() {
+        let mut k = BrepKernel::new();
+        let err = k
+            .make_nurbs_edge_impl(
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, f64::NAN, 0.0, 0.0],
+                vec![1.0, 1.0],
+            )
+            .expect_err("non-finite control point must be refused");
+        assert!(
+            matches!(
+                &err,
+                WasmError::Math(remus_math::MathError::InvalidControlPointValue { index: 1, .. })
+            ),
+            "expected the control-point refusal naming index 1, got {err:?}"
+        );
+    }
 
     // ── make_rectangle ────────────────────────────────────────────
 

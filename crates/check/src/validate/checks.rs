@@ -48,6 +48,12 @@ pub enum CheckId {
     SolidEulerCharacteristic,
     /// Same face ID appears in multiple shells.
     SolidDuplicateFaces,
+    /// Geometry carries a NaN or infinite value.
+    ///
+    /// Reported separately from the deviation checks because NaN compares
+    /// false against every tolerance: without this check a poisoned shape
+    /// passes the whole suite clean.
+    GeometryFinite,
 }
 
 /// Issue severity.

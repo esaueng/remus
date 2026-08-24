@@ -10,7 +10,7 @@ use remus_math::vec::Point3;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::vertex::Vertex;
 
-use crate::error::{WasmError, validate_work_count, validate_work_product};
+use crate::error::{WasmError, validate_finite, validate_work_count, validate_work_product};
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
 use crate::helpers::{TOL, parse_point_grid, parse_points};
 use crate::kernel::BrepKernel;
@@ -183,19 +183,7 @@ impl BrepKernel {
     #[wasm_bindgen(js_name = "interpolatePoints")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn interpolate_points(&mut self, coords: Vec<f64>, degree: u32) -> Result<u32, JsError> {
-        if !coords.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "coordinate array length must be a multiple of 3, got {}",
-                    coords.len()
-                ),
-            }
-            .into());
-        }
-        let points: Vec<Point3> = coords
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
+        let points = parse_points(&coords)?;
         if points.len() < 2 {
             return Err(WasmError::InvalidInput {
                 reason: format!("need at least 2 points, got {}", points.len()),
@@ -253,6 +241,7 @@ impl BrepKernel {
         tolerance: f64,
         max_iterations: u32,
     ) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         let points = parse_points(&coords)?;
         if points.len() < 2 {
             return Err(WasmError::InvalidInput {
@@ -316,6 +305,7 @@ impl BrepKernel {
         tolerance: f64,
         max_iterations: u32,
     ) -> Result<u32, JsError> {
+        validate_finite(tolerance, "tolerance")?;
         validate_work_count(rows, "rows")?;
         validate_work_count(cols, "cols")?;
         let _ = validate_work_product(rows, cols, "surface grid points")?;
@@ -341,6 +331,7 @@ impl BrepKernel {
     /// Returns a new edge handle with the refined curve.
     #[wasm_bindgen(js_name = "curveKnotInsert")]
     pub fn curve_knot_insert(&mut self, edge: u32, knot: f64, times: u32) -> Result<u32, JsError> {
+        validate_finite(knot, "knot")?;
         let curve = self.extract_nurbs_curve(edge)?;
         let times = validate_work_count(times, "times")?;
         let refined = remus_math::nurbs::knot_ops::curve_knot_insert(&curve, knot, times)?;
@@ -359,6 +350,8 @@ impl BrepKernel {
         knot: f64,
         tolerance: f64,
     ) -> Result<u32, JsError> {
+        validate_finite(knot, "knot")?;
+        validate_finite(tolerance, "tolerance")?;
         let curve = self.extract_nurbs_curve(edge)?;
         let simplified = remus_math::nurbs::knot_ops::curve_knot_remove(&curve, knot, tolerance)?;
         Ok(edge_id_to_u32(
@@ -371,6 +364,7 @@ impl BrepKernel {
     /// Returns two edge handles as `[u32; 2]`.
     #[wasm_bindgen(js_name = "curveSplit")]
     pub fn curve_split(&mut self, edge: u32, u: f64) -> Result<Vec<u32>, JsError> {
+        validate_finite(u, "u")?;
         let curve = self.extract_nurbs_curve(edge)?;
         let (left, right) = remus_math::nurbs::knot_ops::curve_split(&curve, u)?;
         let e1 = self.nurbs_curve_to_edge_from_curve(&left);

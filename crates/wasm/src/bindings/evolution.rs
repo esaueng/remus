@@ -13,7 +13,7 @@ use remus_operations::boolean::{BooleanOp, EdgeEvent, EntityEvolution, VertexEve
 use remus_operations::journal_ops;
 use remus_topology::journal::EntryPayload;
 
-use crate::error::StructuredWasmError;
+use crate::error::{StructuredWasmError, validate_finite};
 use crate::helpers::{get_f64, get_u32, get_u32_array};
 use crate::kernel::BrepKernel;
 
@@ -307,6 +307,7 @@ impl BrepKernel {
         edges: Vec<u32>,
         radius: f64,
     ) -> Result<String, JsError> {
+        validate_finite(radius, "radius")?;
         self.fillet_journaled_json(solid, &edges, radius)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
@@ -321,6 +322,8 @@ impl BrepKernel {
         d1: f64,
         d2: f64,
     ) -> Result<String, JsError> {
+        validate_finite(d1, "d1")?;
+        validate_finite(d2, "d2")?;
         self.chamfer_journaled_json(solid, &edges, d1, d2)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
@@ -338,6 +341,9 @@ impl BrepKernel {
         spacing: f64,
         count: u32,
     ) -> Result<String, JsError> {
+        for (name, value) in [("dx", dx), ("dy", dy), ("dz", dz), ("spacing", spacing)] {
+            validate_finite(value, name)?;
+        }
         self.linear_pattern_journaled_json(solid, [dx, dy, dz], spacing, count)
             .map(|v| v.to_string())
             .map_err(structured_to_js)

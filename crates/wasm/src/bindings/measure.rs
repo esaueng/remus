@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use remus_math::vec::Point3;
 use remus_operations::measure;
 
-use crate::error::validate_positive;
+use crate::error::{validate_finite, validate_positive};
 use crate::kernel::BrepKernel;
 
 fn detailed_validation_result(
@@ -216,6 +216,9 @@ impl BrepKernel {
         z: f64,
         tolerance: f64,
     ) -> Result<String, JsError> {
+        for (name, value) in [("x", x), ("y", y), ("z", z), ("tolerance", tolerance)] {
+            validate_finite(value, name)?;
+        }
         let solid_id = self.resolve_solid(solid)?;
         let point = remus_math::vec::Point3::new(x, y, z);
         let result = remus_operations::classify::classify_point(
@@ -303,6 +306,7 @@ impl BrepKernel {
         solid: u32,
         tolerance_scale: f64,
     ) -> Result<u32, JsError> {
+        validate_finite(tolerance_scale, "tolerance_scale")?;
         let solid_id = self.resolve_solid(solid)?;
         let options = remus_operations::validate::ValidationOptions {
             tolerance_scale,
@@ -352,6 +356,7 @@ impl BrepKernel {
         solid: u32,
         tolerance_scale: f64,
     ) -> Result<JsValue, JsError> {
+        validate_finite(tolerance_scale, "tolerance_scale")?;
         let solid_id = self.resolve_solid(solid)?;
         let options = remus_operations::validate::ValidationOptions {
             tolerance_scale,
@@ -383,6 +388,9 @@ impl BrepKernel {
         pz: f64,
         solid: u32,
     ) -> Result<Vec<f64>, JsError> {
+        validate_finite(px, "px")?;
+        validate_finite(py, "py")?;
+        validate_finite(pz, "pz")?;
         let solid_id = self.resolve_solid(solid)?;
         let result = remus_operations::distance::point_to_solid_distance(
             &self.topo,
@@ -435,6 +443,9 @@ impl BrepKernel {
         pz: f64,
         face: u32,
     ) -> Result<Vec<f64>, JsError> {
+        validate_finite(px, "px")?;
+        validate_finite(py, "py")?;
+        validate_finite(pz, "pz")?;
         let face_id = self.resolve_face(face)?;
         let result = remus_operations::distance::point_to_face(
             &self.topo,
@@ -464,6 +475,9 @@ impl BrepKernel {
         pz: f64,
         edge: u32,
     ) -> Result<Vec<f64>, JsError> {
+        validate_finite(px, "px")?;
+        validate_finite(py, "py")?;
+        validate_finite(pz, "pz")?;
         let edge_id = self.resolve_edge(edge)?;
         let result = remus_operations::distance::point_to_edge(
             &self.topo,
