@@ -1733,6 +1733,18 @@ export class BrepKernel {
      */
     getNurbsSurfaceDataParity(face: number): string;
     /**
+     * Find opposing parallel planar face pairs with projected overlap.
+     *
+     * Returns JSON records containing both face handles, pair distance,
+     * overlap and face areas, the outward normal of `faceA`, and conservative
+     * blend-border flags.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle or its topology is invalid.
+     */
+    getOpposingPlanarFacePairs(solid: number): string;
+    /**
      * Get the orientation of a shape.
      *
      * Returns `"forward"` for all faces (remus faces don't have an
@@ -2550,6 +2562,18 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or the normal is zero.
      */
     mirror(solid: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number): number;
+    /**
+     * Translate planar faces together along their common direction.
+     *
+     * This is the multi-face direct-edit primitive used for symmetric
+     * dimensions. Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, the faces cannot move as a
+     * coherent group, or the edit does not produce a valid solid.
+     */
+    moveFaces(solid: number, faces: Uint32Array, distance: number): number;
     /**
      * Sweep through multiple section profiles along a spine, lofting the
      * rotation-minimizing-frame-placed profiles.
