@@ -6,11 +6,14 @@ use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;
 use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
 use remus_operations::blend_ops::fillet_v2;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::make_box;
-use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
+use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
+use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
 use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
 use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
@@ -52,6 +55,28 @@ fn imported_box_fillet() -> String {
     write_step(&topo, &[filleted]).expect("write STEP")
 }
 
+fn imported_trihedral_fillet() -> String {
+    let mut topo = Topology::new();
+    let sharp = make_box(&mut topo, 40.0, 40.0, 10.0).expect("box");
+    let corner = Point3::new(40.0, 40.0, 10.0);
+    let edges: Vec<EdgeId> = solid_edges(&topo, sharp)
+        .expect("box edges")
+        .into_iter()
+        .filter(|edge| {
+            let edge = topo.edge(*edge).expect("edge");
+            [edge.start(), edge.end()].into_iter().any(|vertex| {
+                (topo.vertex(vertex).expect("vertex").point() - corner).length()
+                    <= Tolerance::new().linear
+            })
+        })
+        .collect();
+    assert_eq!(edges.len(), 3);
+    let filleted = fillet_v2(&mut topo, sharp, &edges, 3.0)
+        .expect("trihedral fillet")
+        .solid;
+    write_step(&topo, &[filleted]).expect("write STEP")
+}
+
 #[test]
 fn imported_step_box_blend_grows_shrinks_and_removes_exactly() {
     let step = imported_box_fillet();
@@ -80,6 +105,67 @@ fn imported_step_box_blend_grows_shrinks_and_removes_exactly() {
                 assert!(after > before, "shrinking a convex blend restores volume");
             }
         }
+    }
+}
+
+#[test]
+fn imported_step_trihedral_region_resizes_with_corner_patch() {
+    let step = imported_trihedral_fillet();
+
+    for new_radius in [2.0, 4.0] {
+        let mut topo = Topology::new();
+        let input = read_step(&step, &mut topo).expect("read STEP")[0];
+        assert_valid(&topo, input);
+        let seed = solid_faces(&topo, input)
+            .expect("faces")
+            .into_iter()
+            .find(|face| {
+                matches!(
+                    topo.face(*face).expect("face").surface(),
+                    FaceSurface::Cylinder(cylinder)
+                        if Tolerance::new().approx_eq(cylinder.radius(), 3.0)
+                )
+            })
+            .expect("imported trihedral band");
+        assert_eq!(
+            blend_region(&topo, input, seed)
+                .expect("region")
+                .faces
+                .len(),
+            4
+        );
+
+        let result = resize_blend(&mut topo, input, seed, 3.0, new_radius)
+            .expect("resize imported trihedral region")
+            .solid;
+        assert_valid(&topo, result);
+        let mesh =
+            tessellate_solid_with_tolerance(&topo, result, 0.01, 0.1).expect("tessellate result");
+        assert!(is_watertight(&mesh));
+        let faces = solid_faces(&topo, result).expect("result faces");
+        assert_eq!(faces.len(), 10);
+        assert_eq!(
+            faces
+                .iter()
+                .filter(|face| matches!(
+                    topo.face(**face).expect("face").surface(),
+                    FaceSurface::Cylinder(cylinder)
+                        if Tolerance::new().approx_eq(cylinder.radius(), new_radius)
+                ))
+                .count(),
+            3
+        );
+        assert_eq!(
+            faces
+                .iter()
+                .filter(|face| matches!(
+                    topo.face(**face).expect("face").surface(),
+                    FaceSurface::Sphere(sphere)
+                        if Tolerance::new().approx_eq(sphere.radius(), new_radius)
+                ))
+                .count(),
+            1
+        );
     }
 }
 

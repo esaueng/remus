@@ -33,7 +33,7 @@ pub enum ResizeBlendError {
         reason: String,
     },
     /// The selected face is not a supported analytic blend surface.
-    #[error("selected face is not an analytic torus/cylinder blend: {surface}")]
+    #[error("selected face is not an analytic torus/cylinder/sphere blend: {surface}")]
     BandNotAnalytic {
         /// Selected surface type.
         surface: &'static str,
@@ -100,12 +100,26 @@ pub struct ResizeBlendResult {
 enum BlendKind {
     Cylinder,
     Torus,
+    Sphere,
+}
+
+/// Tangency-connected analytic faces that carry one constant blend radius.
+///
+/// A region may contain cylindrical edge bands, toroidal curved-edge bands,
+/// and spherical corner patches. Membership is derived from exact shared-edge
+/// tangency and radius equality; the seed is never trusted as a classification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlendRegion {
+    /// Region faces in deterministic arena-index order.
+    pub faces: Vec<FaceId>,
+    /// Exact rolling-ball radius shared by every region face.
+    pub radius: f64,
 }
 
 #[derive(Debug)]
 struct BandDescription {
     faces: Vec<FaceId>,
-    supports: [FaceId; 2],
+    supports: Vec<FaceId>,
     radius: f64,
 }
 
@@ -179,34 +193,44 @@ fn resize_blend_impl(
     }
 
     let input_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
-    let support_types = [
-        topo.face(band.supports[0])?.surface().type_tag(),
-        topo.face(band.supports[1])?.surface().type_tag(),
-    ];
-    let sharp = match support_types {
-        ["plane", "plane"] => heal_planar_band(topo, solid, &band)?,
-        ["plane", "cylinder"] | ["cylinder", "plane"] => {
-            heal_plane_cylinder_band(topo, solid, &band)?
-        }
-        ["cylinder", "cone"] | ["cone", "cylinder"] => {
-            if !tol.approx_eq(new_radius, 0.0) {
-                // Removal works (the sharp circle is exact), but a positive
-                // radius would ride heal-to-sharp + re-fillet, and the
-                // closed-rim fillet assembler does not rebuild a
-                // cylinder-wall × cone-wall rim yet — fillet_v2 fails on the
-                // recovered chain (verified against the Shapr3D fixture).
-                // Refuse with the support-pair code, which is more precise
-                // than surfacing the downstream reconstruction failure.
-                return Err(ResizeBlendError::UnsupportedSupportPair {
-                    first: support_types[0],
-                    second: support_types[1],
-                }
-                .into());
+    let support_types: Vec<&'static str> = band
+        .supports
+        .iter()
+        .map(|support| topo.face(*support).map(|face| face.surface().type_tag()))
+        .collect::<Result<_, _>>()?;
+    let sharp = if support_types.iter().all(|surface| *surface == "plane") {
+        heal_planar_band(topo, solid, &band)?
+    } else {
+        match support_types.as_slice() {
+            ["plane", "cylinder"] | ["cylinder", "plane"] => {
+                heal_plane_cylinder_band(topo, solid, &band)?
             }
-            heal_cylinder_cone_band(topo, solid, &band)?
-        }
-        [first, second] => {
-            return Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into());
+            ["cylinder", "cone"] | ["cone", "cylinder"] => {
+                if !tol.approx_eq(new_radius, 0.0) {
+                    // Removal works (the sharp circle is exact), but a positive
+                    // radius would ride heal-to-sharp + re-fillet, and the
+                    // closed-rim fillet assembler does not rebuild a
+                    // cylinder-wall × cone-wall rim yet — fillet_v2 fails on the
+                    // recovered chain (verified against the Shapr3D fixture).
+                    // Refuse with the support-pair code, which is more precise
+                    // than surfacing the downstream reconstruction failure.
+                    return Err(ResizeBlendError::UnsupportedSupportPair {
+                        first: support_types[0],
+                        second: support_types[1],
+                    }
+                    .into());
+                }
+                heal_cylinder_cone_band(topo, solid, &band)?
+            }
+            [first, second] => {
+                return Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into());
+            }
+            _ => {
+                return Err(reconstruction(format!(
+                    "blend region has {} non-planar support faces; exactly two are required",
+                    support_types.len()
+                )));
+            }
         }
     };
 
@@ -220,19 +244,7 @@ fn resize_blend_impl(
         });
     }
 
-    let chains =
-        remus_blend::g1_chain::g1_chains(topo, sharp.solid, &sharp.edges, Tolerance::new())
-            .map_err(|error| {
-                reconstruction(format!("recovered sharp-edge walk failed: {error}"))
-            })?;
-    if chains.len() != 1 || chains[0].is_empty() {
-        return Err(reconstruction(format!(
-            "recovered support intersection produced {} sharp-edge chains",
-            chains.len()
-        )));
-    }
-
-    let rebuilt = match fillet_v2(topo, sharp.solid, &chains[0], new_radius) {
+    let rebuilt = match fillet_v2(topo, sharp.solid, &sharp.edges, new_radius) {
         Ok(result) => result,
         Err(OperationsError::Blend(remus_blend::BlendError::RadiusTooLarge { .. })) => {
             return Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into());
@@ -282,6 +294,7 @@ fn blend_surface(surface: &FaceSurface) -> Option<(BlendKind, f64)> {
     match surface {
         FaceSurface::Cylinder(cylinder) => Some((BlendKind::Cylinder, cylinder.radius())),
         FaceSurface::Torus(torus) => Some((BlendKind::Torus, torus.minor_radius())),
+        FaceSurface::Sphere(sphere) => Some((BlendKind::Sphere, sphere.radius())),
         _ => None,
     }
 }
@@ -314,11 +327,30 @@ fn tangent_across(
     crate::query::edge_is_tangent(topo, edge, &pair)
 }
 
-fn describe_band(
+/// Find the complete equal-radius analytic blend region containing `seed`.
+///
+/// Faces are connected only across exact shared edges where their effective
+/// outward normals are tangent. At least two tangent non-region supports must
+/// bound the result, which prevents an ordinary cylinder or sphere from being
+/// reported as a blend solely because it has a radius.
+///
+/// # Errors
+///
+/// Returns a typed resize-blend refusal when the seed is outside `solid`, is
+/// not analytic blend geometry, touches freeform support, or cannot be proven
+/// to have at least two tangent support faces.
+pub fn blend_region(
     topo: &Topology,
     solid: SolidId,
     seed: FaceId,
-) -> Result<BandDescription, OperationsError> {
+) -> Result<BlendRegion, OperationsError> {
+    if !remus_topology::explorer::solid_faces(topo, solid)?.contains(&seed) {
+        return Err(invalid(format!(
+            "face {} is not part of solid {}",
+            seed.index(),
+            solid.index()
+        )));
+    }
     let seed_surface = topo.face(seed)?.surface();
     let Some((_, radius)) = blend_surface(seed_surface) else {
         return Err(ResizeBlendError::BandNotAnalytic {
@@ -353,8 +385,27 @@ fn describe_band(
         }
     }
 
+    let mut faces: Vec<FaceId> = band.into_iter().collect();
+    faces.sort_unstable_by_key(|face| face.index());
+    let supports = blend_region_supports(topo, solid, &faces)?;
+    if supports.len() < 2 {
+        return Err(reconstruction(format!(
+            "blend region has {} tangent support faces; at least two are required",
+            supports.len()
+        )));
+    }
+    Ok(BlendRegion { faces, radius })
+}
+
+fn blend_region_supports(
+    topo: &Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+) -> Result<Vec<FaceId>, OperationsError> {
+    let adjacency = topo.build_adjacency(solid)?;
+    let band: HashSet<FaceId> = faces.iter().copied().collect();
     let mut supports = HashSet::new();
-    for &band_face in &band {
+    for &band_face in faces {
         for edge in face_edges(topo, band_face)? {
             let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
             let others: Vec<FaceId> = adjacent
@@ -376,19 +427,20 @@ fn describe_band(
 
     let mut supports: Vec<FaceId> = supports.into_iter().collect();
     supports.sort_unstable_by_key(|support| support.index());
-    let [first, second] = supports.as_slice() else {
-        return Err(reconstruction(format!(
-            "band has {} tangent support faces; exactly two are required",
-            supports.len()
-        )));
-    };
+    Ok(supports)
+}
 
-    let mut faces: Vec<FaceId> = band.into_iter().collect();
-    faces.sort_unstable_by_key(|face| face.index());
+fn describe_band(
+    topo: &Topology,
+    solid: SolidId,
+    seed: FaceId,
+) -> Result<BandDescription, OperationsError> {
+    let region = blend_region(topo, solid, seed)?;
+    let supports = blend_region_supports(topo, solid, &region.faces)?;
     Ok(BandDescription {
-        faces,
-        supports: [*first, *second],
-        radius,
+        faces: region.faces,
+        supports,
+        radius: region.radius,
     })
 }
 
@@ -412,30 +464,49 @@ fn heal_planar_band(
     solid: SolidId,
     band: &BandDescription,
 ) -> Result<SharpResult, OperationsError> {
+    let expected_edges = band
+        .faces
+        .iter()
+        .filter(|face| {
+            topo.face(**face)
+                .ok()
+                .and_then(|face| blend_surface(face.surface()))
+                .is_some_and(|(kind, _)| kind != BlendKind::Sphere)
+        })
+        .count();
     let outcome = crate::defeature::defeature_blend_band(topo, solid, &band.faces)
         .map_err(|error| reconstruction(format!("planar support heal failed: {error}")))?;
-    let support_a = outcome
-        .face_map
-        .get(&band.supports[0].index())
-        .copied()
-        .ok_or_else(|| reconstruction("first support was consumed by planar heal"))?;
-    let support_b = outcome
-        .face_map
-        .get(&band.supports[1].index())
-        .copied()
-        .ok_or_else(|| reconstruction("second support was consumed by planar heal"))?;
+    let supports: HashSet<FaceId> = band
+        .supports
+        .iter()
+        .map(|support| {
+            outcome
+                .face_map
+                .get(&support.index())
+                .copied()
+                .ok_or_else(|| {
+                    reconstruction(format!(
+                        "support face {} was consumed by planar heal",
+                        support.index()
+                    ))
+                })
+        })
+        .collect::<Result<_, _>>()?;
     let adjacency = topo.build_adjacency(outcome.solid)?;
     let mut edges = Vec::new();
-    for edge in face_edges(topo, support_a)? {
+    for edge in remus_topology::explorer::solid_edges(topo, outcome.solid)? {
         let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
-        if adjacent.contains(&support_a) && adjacent.contains(&support_b) {
+        if adjacent.len() == 2 && adjacent.iter().all(|face| supports.contains(face)) {
             edges.push(edge);
         }
     }
-    if edges.is_empty() {
-        return Err(reconstruction(
-            "healed planar supports do not share a sharp edge",
-        ));
+    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.dedup();
+    if edges.len() != expected_edges {
+        return Err(reconstruction(format!(
+            "healed planar region produced {} sharp edges for {expected_edges} edge-band faces",
+            edges.len()
+        )));
     }
     Ok(SharpResult {
         solid: outcome.solid,
