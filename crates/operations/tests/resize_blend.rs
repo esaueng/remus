@@ -9,7 +9,8 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::fillet_v2;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
-use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
+use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
+use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
@@ -21,6 +22,14 @@ const DEFLECTION: f64 = 0.01;
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).unwrap();
     assert!(report.is_valid(), "validation issues: {:?}", report.issues);
+}
+
+fn assert_watertight(topo: &Topology, solid: SolidId) {
+    let mesh = tessellate_solid_with_tolerance(topo, solid, 0.01, 0.1).unwrap();
+    assert!(
+        is_watertight(&mesh),
+        "result tessellation must be watertight"
+    );
 }
 
 fn volume(topo: &Topology, solid: SolidId) -> f64 {
@@ -69,6 +78,36 @@ fn cylinder_fixture(radius: f64) -> (Topology, SolidId, FaceId) {
         .collect();
     assert_eq!(bands.len(), 1);
     (topo, solid, bands[0])
+}
+
+fn trihedral_fixture(radius: f64) -> (Topology, SolidId, FaceId) {
+    let mut topo = Topology::new();
+    let sharp = make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
+    let corner = Point3::new(40.0, 40.0, 10.0);
+    let edges: Vec<EdgeId> = solid_edges(&topo, sharp)
+        .unwrap()
+        .into_iter()
+        .filter(|edge| {
+            let edge = topo.edge(*edge).unwrap();
+            [edge.start(), edge.end()].into_iter().any(|vertex| {
+                (topo.vertex(vertex).unwrap().point() - corner).length() <= Tolerance::new().linear
+            })
+        })
+        .collect();
+    assert_eq!(edges.len(), 3, "three box edges meet at the corner");
+    let solid = fillet_v2(&mut topo, sharp, &edges, radius).unwrap().solid;
+    let seed = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|face| {
+            matches!(
+                topo.face(*face).unwrap().surface(),
+                FaceSurface::Cylinder(cylinder)
+                    if Tolerance::new().approx_eq(cylinder.radius(), radius)
+            )
+        })
+        .expect("trihedral cylinder band");
+    (topo, solid, seed)
 }
 
 fn blend_radius(topo: &Topology, solid: SolidId) -> Option<f64> {
@@ -129,6 +168,53 @@ fn closed_cylinder_rim_grows_shrinks_and_removes() {
     assert_valid(&topo, result);
     assert_eq!(solid_entity_counts(&topo, result).unwrap().0, 3);
     assert!(blend_radius(&topo, result).is_none());
+}
+
+#[test]
+fn trihedral_region_groups_corner_sphere_and_resizes_as_one_feature() {
+    for new_radius in [2.0, 4.0] {
+        let (mut topo, input, seed) = trihedral_fixture(3.0);
+        let before = volume(&topo, input);
+        let region = blend_region(&topo, input, seed).unwrap();
+        assert_eq!(region.faces.len(), 4, "three bands plus one corner patch");
+        assert_eq!(
+            region
+                .faces
+                .iter()
+                .filter(|face| matches!(
+                    topo.face(**face).unwrap().surface(),
+                    FaceSurface::Sphere(_)
+                ))
+                .count(),
+            1,
+            "the spherical corner belongs to the same radius region"
+        );
+
+        let result = resize_blend(&mut topo, input, seed, 3.0, new_radius)
+            .unwrap()
+            .solid;
+        assert_valid(&topo, result);
+        assert_watertight(&topo, result);
+        assert_eq!(solid_entity_counts(&topo, result).unwrap().0, 10);
+        let result_seed = solid_faces(&topo, result)
+            .unwrap()
+            .into_iter()
+            .find(|face| {
+                matches!(
+                    topo.face(*face).unwrap().surface(),
+                    FaceSurface::Cylinder(cylinder)
+                        if Tolerance::new().approx_eq(cylinder.radius(), new_radius)
+                )
+            })
+            .expect("rebuilt cylinder band");
+        let rebuilt = blend_region(&topo, result, result_seed).unwrap();
+        assert_eq!(rebuilt.faces.len(), 4);
+        if new_radius < 3.0 {
+            assert!(volume(&topo, result) > before);
+        } else {
+            assert!(volume(&topo, result) < before);
+        }
+    }
 }
 
 #[test]

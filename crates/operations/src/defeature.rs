@@ -83,7 +83,7 @@ pub fn defeature(
     solid: SolidId,
     faces_to_remove: &[FaceId],
 ) -> Result<SolidId, OperationsError> {
-    Ok(defeature_impl(topo, solid, faces_to_remove)?.solid)
+    Ok(defeature_impl(topo, solid, faces_to_remove, false)?.solid)
 }
 
 /// [`defeature`] with construction-derived face evolution.
@@ -107,7 +107,7 @@ pub fn defeature_with_evolution(
         let shell = topo.shell(solid_data.outer_shell())?;
         shell.faces().iter().map(|f| f.index()).collect()
     };
-    let outcome = defeature_impl(topo, solid, faces_to_remove)?;
+    let outcome = defeature_impl(topo, solid, faces_to_remove, false)?;
 
     let mut evolution = crate::evolution::EvolutionMap::exact();
     let mut mapped: Vec<(usize, usize)> = outcome
@@ -144,13 +144,14 @@ pub(crate) fn defeature_blend_band(
     solid: SolidId,
     faces_to_remove: &[FaceId],
 ) -> Result<DefeatureOutcome, OperationsError> {
-    defeature_impl(topo, solid, faces_to_remove)
+    defeature_impl(topo, solid, faces_to_remove, true)
 }
 
 fn defeature_impl(
     topo: &mut Topology,
     solid: SolidId,
     faces_to_remove: &[FaceId],
+    prefer_nearest_corner: bool,
 ) -> Result<DefeatureOutcome, OperationsError> {
     if faces_to_remove.is_empty() {
         return Err(OperationsError::InvalidInput {
@@ -200,7 +201,15 @@ fn defeature_impl(
     let plan = classify_wound(topo, &all_faces, &kept_positions, &wound)?;
 
     let result = if plan.needs_extend {
-        heal_by_extending(topo, &all_faces, &kept_positions, &removed, &wound, &plan)?
+        heal_by_extending(
+            topo,
+            &all_faces,
+            &kept_positions,
+            &removed,
+            &wound,
+            &plan,
+            prefer_nearest_corner,
+        )?
     } else {
         heal_by_capping(topo, solid, &kept_positions, &plan)?
     };
@@ -508,6 +517,7 @@ fn heal_by_extending(
     removed: &[bool],
     wound: &Wound,
     plan: &HealPlan,
+    prefer_nearest_corner: bool,
 ) -> Result<DefeatureOutcome, OperationsError> {
     let tol = Tolerance::new();
 
@@ -553,7 +563,15 @@ fn heal_by_extending(
             .vertex_id_from_index(vertex)
             .ok_or_else(|| unsupported(format!("vertex {vertex} disappeared")))?;
         let original = topo.vertex(vid)?.point();
-        let corner = resolve_corner(faces, &planes, removed, &adjacency, original, eps)?;
+        let corner = resolve_corner(
+            faces,
+            &planes,
+            removed,
+            &adjacency,
+            original,
+            eps,
+            prefer_nearest_corner,
+        )?;
         if (corner - original).length() > max_displacement {
             return Err(unsupported(
                 "extending the adjacent faces moves a corner far outside the \
@@ -754,6 +772,7 @@ fn resolve_corner(
     adjacency: &Adjacency,
     original: Point3,
     eps: f64,
+    prefer_nearest: bool,
 ) -> Result<Point3, OperationsError> {
     let mut required: Vec<Plane> = Vec::new();
     for &pos in faces_at_vertex {
@@ -787,7 +806,23 @@ fn resolve_corner(
 
         match corners_on(&candidates, &required, eps) {
             Corners::One(p) => return Ok(p),
-            Corners::Many => {
+            Corners::Many(mut points) if prefer_nearest => {
+                points.sort_by(|first, second| {
+                    (*first - original)
+                        .length()
+                        .total_cmp(&(*second - original).length())
+                });
+                let first_distance = (points[0] - original).length();
+                let second_distance = (points[1] - original).length();
+                if second_distance - first_distance > eps {
+                    return Ok(points[0]);
+                }
+                return Err(unsupported(
+                    "the blend wound has two equally near sharp corners; removal is ambiguous"
+                        .to_string(),
+                ));
+            }
+            Corners::Many(_) => {
                 return Err(unsupported(
                     "the faces around the removed patch close over the gap in more \
                      than one way; the selection is ambiguous"
@@ -807,7 +842,6 @@ fn resolve_corner(
             }
         }
         if next.is_empty() {
-            let _ = original;
             return Err(unsupported(
                 "no three faces around the removed patch meet in a corner; the \
                  adjacent faces are parallel and would have to be merged rather \
@@ -828,12 +862,12 @@ fn push_plane(set: &mut Vec<Plane>, plane: Plane, eps: f64) {
 enum Corners {
     None,
     One(Point3),
-    Many,
+    Many(Vec<Point3>),
 }
 
 /// Corners of the `candidates` arrangement that lie on every `required` plane.
 fn corners_on(candidates: &[Plane], required: &[Plane], eps: f64) -> Corners {
-    let mut found: Option<Point3> = None;
+    let mut found: Vec<Point3> = Vec::new();
     for i in 0..candidates.len() {
         for j in (i + 1)..candidates.len() {
             for k in (j + 1)..candidates.len() {
@@ -844,15 +878,17 @@ fn corners_on(candidates: &[Plane], required: &[Plane], eps: f64) -> Corners {
                 if !required.iter().all(|plane| plane.contains(p, eps)) {
                     continue;
                 }
-                match found {
-                    None => found = Some(p),
-                    Some(q) if (q - p).length() <= eps => {}
-                    Some(_) => return Corners::Many,
+                if !found.iter().any(|point| (*point - p).length() <= eps) {
+                    found.push(p);
                 }
             }
         }
     }
-    found.map_or(Corners::None, Corners::One)
+    match found.as_slice() {
+        [] => Corners::None,
+        [point] => Corners::One(*point),
+        _ => Corners::Many(found),
+    }
 }
 
 /// Position of the first vertex on a face's outer wire, used to anchor the
