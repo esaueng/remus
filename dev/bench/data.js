@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787626951152,
+  "lastUpdate": 1787628241042,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1997,6 +1997,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38915258,
             "range": "± 678847",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2614b4e82a257c95e19b263a038861c14144a45a",
+          "message": "Merge pull request #84 from esaueng/codex/shapr3d-hammer-holder-acceptance\n\ntest(io): cover real Shapr3D blend resize boundary",
+          "timestamp": "2026-08-24T23:21:27-04:00",
+          "tree_id": "1e18aebb231b68ce9781359ce9c9024a9b54159b",
+          "url": "https://github.com/esaueng/remus/commit/2614b4e82a257c95e19b263a038861c14144a45a"
+        },
+        "date": 1787628240420,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1281599,
+            "range": "± 8051",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1372355,
+            "range": "± 3516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13052,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 954260,
+            "range": "± 1588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38455153,
+            "range": "± 138168",
             "unit": "ns/iter"
           }
         ]
