@@ -643,7 +643,7 @@ fn invalid_selections_return_specific_move_face_errors() {
         })
         .expect("curved face");
     let unsupported = move_faces(&mut topo, cylinder, &[curved], 1.0)
-        .expect_err("phase 4.1 must refuse radial moves");
+        .expect_err("outward-facing cylinders are not bore moves");
     assert!(matches!(
         unsupported,
         OperationsError::Offset(OffsetError::UnsupportedMoveFace { .. })
