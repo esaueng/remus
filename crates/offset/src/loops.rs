@@ -586,11 +586,17 @@ fn build_loops_via_line_intersection(
     }
 
     let mut wire_ids = Vec::with_capacity(all_loops.len());
-    let (surface_normal, original_reversed) = match data.offset_faces.get(&face_id) {
+    // Wind against the STORED surface normal, never the effective one. A
+    // face's reversal flag mirrors its normal and its edge traversal
+    // together, so winding a loop to the flipped normal leaves the stored
+    // winding disagreeing with the stored surface — and every consumer that
+    // reads orientation off the wire (shell orientation in `assemble`, the
+    // planar tessellator) then derives the opposite face from the one the
+    // integrator sees. Thick solids used to negate here, which is what turned
+    // their outer skin inside out.
+    let surface_normal = match data.offset_faces.get(&face_id) {
         Some(offset_face) => match &offset_face.surface {
-            FaceSurface::Plane { normal, .. } => {
-                (*normal, topo.face(offset_face.original)?.is_reversed())
-            }
+            FaceSurface::Plane { normal, .. } => *normal,
             _ => {
                 return Err(OffsetError::AssemblyFailed {
                     reason: format!(
@@ -606,18 +612,8 @@ fn build_loops_via_line_intersection(
             });
         }
     };
-    let result_reversed = original_reversed ^ !data.excluded_faces.is_empty();
-    let desired_normal = if result_reversed {
-        remus_math::vec::Vec3::new(
-            -surface_normal.x(),
-            -surface_normal.y(),
-            -surface_normal.z(),
-        )
-    } else {
-        surface_normal
-    };
     for mut loop_edges in all_loops {
-        orient_loop_to_normal(topo, &mut loop_edges, desired_normal)?;
+        orient_loop_to_normal(topo, &mut loop_edges, surface_normal)?;
         let wire = Wire::new(loop_edges, true)?;
         wire_ids.push(topo.add_wire(wire));
     }
