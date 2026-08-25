@@ -46,7 +46,51 @@ fn validate_offset_postcondition(
             ),
         });
     }
+    ensure_not_collapsed(topo, operation, solid)?;
     Ok(solid)
+}
+
+/// Reject an offset that pushed the boundary through itself.
+///
+/// An inward offset larger than the body's own half-thickness carries every
+/// face past its opposite number. Nothing in the per-face offset notices:
+/// the radius guards in `crates/offset/src/offset.rs` catch a cylinder,
+/// cone, sphere, or torus whose radius goes non-positive, but a plane has no
+/// radius — it is simply translated — so an all-planar solid has no
+/// per-face collapse condition at all. Assembly then succeeds on the
+/// inverted arrangement and returns a solid that is inside out.
+///
+/// On a 10 mm box: -4.9 gives the correct 0.008 mm^3 result, -5.0 happens to
+/// fail in assembly, and -6, -10, and -1e6 all returned `Ok` with volumes of
+/// 8, 1000 (the untouched input), and 8e18. `validate_solid` above does not
+/// see it, because the check crate has no shell-orientation check.
+///
+/// A negative signed volume on the outer shell is exactly that inversion,
+/// and it is the one signature every collapsed case shares, so it is checked
+/// here rather than by widening the general validator.
+fn ensure_not_collapsed(
+    topo: &Topology,
+    operation: &'static str,
+    solid: SolidId,
+) -> Result<(), OperationsError> {
+    let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let Some(floor) = crate::measure::negligible_volume(topo, solid) else {
+        return Ok(());
+    };
+    let outer = topo.solid(solid)?.outer_shell();
+    let Some(signed) = crate::measure::shell_signed_volume(topo, outer, gauss_order) else {
+        return Ok(());
+    };
+    if signed < -floor {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "{operation} collapsed the solid: the result's outer shell is inside out \
+                 (signed volume {signed}), which means the offset carried the boundary \
+                 through itself"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Offset all faces of a solid (V2 pipeline).
