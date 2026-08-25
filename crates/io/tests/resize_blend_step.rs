@@ -2,6 +2,8 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
+
 use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;
@@ -11,7 +13,10 @@ use remus_operations::blend_ops::fillet_v2;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::make_box;
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
-use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
+use remus_operations::tessellate::{
+    is_watertight, tessellate_solid_with_tolerance, welded_mesh_quality,
+};
+use remus_operations::validate::validate_solid as validate_operations_solid;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
 use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
@@ -19,6 +24,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
+const HAMMER_HOLDER_VOLUME: f64 = 50_240.482_852_844_82;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");
@@ -43,6 +49,86 @@ fn blend_face(topo: &Topology, solid: SolidId, radius: f64) -> FaceId {
         .collect();
     assert_eq!(matches.len(), 1, "one analytic r={radius} blend face");
     matches[0]
+}
+
+fn surface_census(topo: &Topology, solid: SolidId) -> BTreeMap<&'static str, usize> {
+    let mut census = BTreeMap::new();
+    for face in solid_faces(topo, solid).expect("solid faces") {
+        *census
+            .entry(topo.face(face).expect("face").surface().type_tag())
+            .or_insert(0) += 1;
+    }
+    census
+}
+
+fn assert_hammer_holder_census(topo: &Topology, solid: SolidId) {
+    assert_eq!(
+        surface_census(topo, solid),
+        BTreeMap::from([
+            ("cone", 2),
+            ("cylinder", 42),
+            ("nurbs", 42),
+            ("plane", 52),
+            ("sphere", 8),
+            ("torus", 14),
+        ])
+    );
+    let faces = solid_faces(topo, solid).expect("solid faces");
+    assert_eq!(
+        faces
+            .iter()
+            .filter(|face| matches!(
+                topo.face(**face).expect("face").surface(),
+                FaceSurface::Cylinder(cylinder)
+                    if Tolerance::new().approx_eq(cylinder.radius(), 3.0)
+            ))
+            .count(),
+        32,
+        "fixture's radius-3 cylinder census"
+    );
+    assert_eq!(
+        faces
+            .iter()
+            .filter(|face| matches!(
+                topo.face(**face).expect("face").surface(),
+                FaceSurface::Torus(torus)
+                    if Tolerance::new().approx_eq(torus.minor_radius(), 3.0)
+            ))
+            .count(),
+        12,
+        "fixture's radius-3 torus census"
+    );
+}
+
+fn assert_hammer_holder_strict(topo: &Topology, solid: SolidId) {
+    let report = validate_operations_solid(topo, solid).expect("strict operations validation");
+    assert!(report.is_valid(), "validation issues: {:?}", report.issues);
+    assert_eq!(report.warning_count(), 0, "strict validation warnings");
+
+    let solid_data = topo.solid(solid).expect("solid");
+    for shell in
+        std::iter::once(solid_data.outer_shell()).chain(solid_data.inner_shells().iter().copied())
+    {
+        let shell_data = topo.shell(shell).expect("shell");
+        remus_topology::validation::validate_shell_closed(shell_data, topo)
+            .expect("strict shell closure");
+        remus_topology::validation::validate_shell_manifold(shell_data, topo)
+            .expect("strict shell manifoldness");
+    }
+}
+
+fn hammer_holder_resize_seed(topo: &Topology, solid: SolidId) -> FaceId {
+    solid_faces(topo, solid)
+        .expect("solid faces")
+        .into_iter()
+        .find(|face| {
+            matches!(
+                topo.face(*face).expect("face").surface(),
+                FaceSurface::Cylinder(cylinder)
+                    if Tolerance::new().approx_eq(cylinder.radius(), 3.0)
+            )
+        })
+        .expect("radius-3 Shapr3D blend seed")
 }
 
 fn imported_box_fillet() -> String {
@@ -167,6 +253,45 @@ fn imported_step_trihedral_region_resizes_with_corner_patch() {
             1
         );
     }
+}
+
+#[test]
+fn shapr3d_hammer_holder_blend_refusal_preserves_exact_acceptance_contract() {
+    let mut topo = Topology::new();
+    let solids = read_step(include_str!("data/shapr3d_hammer_holder.step"), &mut topo)
+        .expect("read Shapr3D hammer holder");
+    assert_eq!(solids.len(), 1, "fixture must contain one solid");
+    let input = solids[0];
+
+    let seed = hammer_holder_resize_seed(&topo, input);
+    let discovery_error = blend_region(&topo, input, seed).unwrap_err();
+    assert_eq!(
+        resize_blend_failure_code(&discovery_error),
+        "band-touches-freeform"
+    );
+    let error = resize_blend(&mut topo, input, seed, 3.0, 2.0).unwrap_err();
+    assert_eq!(resize_blend_failure_code(&error), "band-touches-freeform");
+
+    assert_hammer_holder_strict(&topo, input);
+    assert_eq!(
+        solid_entity_counts(&topo, input).expect("entity counts after refusal"),
+        (160, 386, 238)
+    );
+    assert_hammer_holder_census(&topo, input);
+    let after = volume(&topo, input);
+    assert!(
+        (after - HAMMER_HOLDER_VOLUME).abs() <= 0.01,
+        "fixture volume {after} differs from {HAMMER_HOLDER_VOLUME}"
+    );
+    let mesh = tessellate_solid_with_tolerance(&topo, input, 0.1, 0.1)
+        .expect("tessellate hammer holder after refusal");
+    let quality = welded_mesh_quality(&mesh);
+    assert!(
+        quality.is_watertight(),
+        "refusal must preserve a watertight manifold mesh ({} boundary, {} non-manifold edges)",
+        quality.boundary_edges,
+        quality.non_manifold_edges
+    );
 }
 
 #[test]
