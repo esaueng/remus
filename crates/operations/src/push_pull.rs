@@ -39,14 +39,16 @@ enum Concavity {
     Boss,
 }
 
-/// Move a coplanar group of planar faces while preserving the solid's
-/// adjacency graph.
+/// Move a supported face selection while preserving the solid's adjacency
+/// graph.
 ///
-/// Positive `distance` moves the group along its common outward normal;
-/// negative distance moves it inward. Adjacent planar and cylindrical faces
-/// are extended or shortened to the moved support plane. The edit is
-/// transactional: any intersection, topology, validation, or volume failure
-/// restores the topology to its pre-call state.
+/// A coplanar group of planar faces moves along its common outward normal.
+/// One cylindrical bore wall moves radially along its outward normal, so a
+/// positive distance shrinks the bore and a negative distance widens it.
+/// Cylindrical moves currently require two circular rims on planar supports
+/// perpendicular to the bore axis. The edit is transactional: any
+/// intersection, topology, validation, or volume failure restores the
+/// topology to its pre-call state.
 ///
 /// # Errors
 ///
@@ -62,8 +64,27 @@ pub fn move_faces(
 ) -> Result<SolidId, crate::OperationsError> {
     let snapshot = topo.clone();
     let outcome = (|| -> Result<SolidId, crate::OperationsError> {
-        refuse_swept_face_intersections(topo, solid, faces, distance)?;
-        let result = remus_offset::move_faces(topo, solid, faces, distance)?;
+        let result = if let Some((face, new_radius)) =
+            cylindrical_bore_move_request(topo, solid, faces, distance)?
+        {
+            let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
+            let result = resize_cylindrical_face(topo, solid, face, new_radius)?;
+            let result_counts = remus_topology::explorer::solid_entity_counts(topo, result)?;
+            if result_counts != source_counts {
+                return Err(remus_offset::OffsetError::TopologyChange {
+                    face: Some(face),
+                    edge: None,
+                    reason: format!(
+                        "radial move changed entity counts from {source_counts:?} to {result_counts:?} (F, E, V)"
+                    ),
+                }
+                .into());
+            }
+            result
+        } else {
+            refuse_swept_face_intersections(topo, solid, faces, distance)?;
+            remus_offset::move_faces(topo, solid, faces, distance)?
+        };
 
         if move_is_prismatic(topo, solid, faces)? {
             let deflection = verify_deflection(topo, solid);
@@ -112,6 +133,192 @@ pub fn move_faces(
         topo.restore_preserving_handle_slots(&snapshot);
     }
     outcome
+}
+
+/// Validate and translate the Phase 4.3 cylindrical move contract.
+///
+/// The lower-layer move engine preserves an existing adjacency graph and is
+/// intentionally independent of booleans. Radial edits reuse the established
+/// exact cylindrical resize construction here at L3, after refusing every
+/// trim configuration that construction cannot preserve exactly.
+fn cylindrical_bore_move_request(
+    topo: &Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<Option<(FaceId, f64)>, crate::OperationsError> {
+    let Some(&reference) = faces.first() else {
+        return Ok(None);
+    };
+    let source_faces = solid_faces(topo, solid)?;
+    let source_face_indices: std::collections::HashSet<_> =
+        source_faces.iter().map(|face| face.index()).collect();
+    if !source_face_indices.contains(&reference.index()) {
+        return Err(remus_offset::OffsetError::FaceNotInSolid {
+            face: reference,
+            solid,
+        }
+        .into());
+    }
+
+    let reference_data = topo.face(reference)?;
+    let FaceSurface::Cylinder(cylinder) = reference_data.surface() else {
+        return Ok(None);
+    };
+    let cylinder = cylinder.clone();
+    let tolerance = Tolerance::new();
+    if !distance.is_finite() || distance.abs() <= tolerance.linear {
+        return Err(remus_offset::OffsetError::InvalidInput {
+            reason: "move-face distance must be non-zero and finite".into(),
+        }
+        .into());
+    }
+
+    let mut selected = std::collections::HashSet::with_capacity(faces.len());
+    for &face in faces {
+        if !source_face_indices.contains(&face.index()) {
+            return Err(remus_offset::OffsetError::FaceNotInSolid { face, solid }.into());
+        }
+        if !selected.insert(face.index()) {
+            return Err(remus_offset::OffsetError::InvalidInput {
+                reason: format!(
+                    "move-face selection contains face {} more than once",
+                    face.index()
+                ),
+            }
+            .into());
+        }
+    }
+    if let Some(&face) = faces.get(1) {
+        return Err(remus_offset::OffsetError::MoveGroupMismatch {
+            reference,
+            face,
+            reason: "a radial move requires exactly one cylindrical bore face".into(),
+        }
+        .into());
+    }
+    if !reference_data.is_reversed() {
+        return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+            face: reference,
+            surface_type: reference_data.surface().type_tag(),
+            reason: "radial move supports inward-facing bore walls only".into(),
+        }
+        .into());
+    }
+    if !reference_data.inner_wires().is_empty() {
+        return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+            face: reference,
+            surface_type: reference_data.surface().type_tag(),
+            reason: "a moved bore wall cannot carry inner trim wires".into(),
+        }
+        .into());
+    }
+
+    validate_cylindrical_bore_boundary(topo, solid, reference, &cylinder)?;
+    let new_radius = cylinder.radius() - distance;
+    if new_radius <= tolerance.linear {
+        return Err(remus_offset::OffsetError::TopologyChange {
+            face: Some(reference),
+            edge: None,
+            reason: format!(
+                "radial move collapses the bore: radius {} - distance {distance} <= {}",
+                cylinder.radius(),
+                tolerance.linear
+            ),
+        }
+        .into());
+    }
+    Ok(Some((reference, new_radius)))
+}
+
+fn validate_cylindrical_bore_boundary(
+    topo: &Topology,
+    solid: SolidId,
+    face: FaceId,
+    cylinder: &CylindricalSurface,
+) -> Result<(), crate::OperationsError> {
+    let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+    let face_data = topo.face(face)?;
+    let wire = topo.wire(face_data.outer_wire())?;
+    let mut visited = std::collections::HashSet::new();
+    let mut rim_count = 0_usize;
+
+    for oriented in wire.edges() {
+        let edge = oriented.edge();
+        if !visited.insert(edge.index()) {
+            continue;
+        }
+        let adjacent = edge_faces.get(&edge.index()).ok_or_else(|| {
+            remus_offset::OffsetError::TopologyChange {
+                face: Some(face),
+                edge: Some(edge),
+                reason: "bore boundary edge has no solid adjacency record".into(),
+            }
+        })?;
+        if adjacent.len() != 2 {
+            return Err(remus_offset::OffsetError::TopologyChange {
+                face: Some(face),
+                edge: Some(edge),
+                reason: format!(
+                    "bore boundary edge has {} face uses, expected 2",
+                    adjacent.len()
+                ),
+            }
+            .into());
+        }
+        if adjacent[0] == adjacent[1] {
+            continue;
+        }
+
+        let neighbor = adjacent
+            .iter()
+            .copied()
+            .find(|candidate| *candidate != face)
+            .ok_or_else(|| remus_offset::OffsetError::TopologyChange {
+                face: Some(face),
+                edge: Some(edge),
+                reason: "bore rim does not identify a distinct support face".into(),
+            })?;
+        let neighbor_data = topo.face(neighbor)?;
+        let FaceSurface::Plane { normal, .. } = neighbor_data.surface() else {
+            return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+                face: neighbor,
+                surface_type: neighbor_data.surface().type_tag(),
+                reason: format!("face bounds cylindrical bore rim edge {}", edge.index()),
+            }
+            .into());
+        };
+        if normal.dot(cylinder.axis()).abs() < 1.0 - Tolerance::new().angular {
+            return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+                face: neighbor,
+                surface_type: neighbor_data.surface().type_tag(),
+                reason: "bore support plane is not perpendicular to the cylinder axis".into(),
+            }
+            .into());
+        }
+        if !matches!(
+            topo.edge(edge)?.curve(),
+            remus_topology::edge::EdgeCurve::Circle(_)
+        ) {
+            return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+                face,
+                surface_type: face_data.surface().type_tag(),
+                reason: format!("bore rim edge {} is not an exact circle", edge.index()),
+            }
+            .into());
+        }
+        rim_count += 1;
+    }
+
+    if rim_count != 2 {
+        return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+            face,
+            surface_type: face_data.surface().type_tag(),
+            reason: format!("bore wall has {rim_count} supported circular rims, expected 2"),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn refuse_swept_face_intersections(
