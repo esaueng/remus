@@ -28,6 +28,18 @@ pub fn curve_to_bezier_segments(curve: &NurbsCurve) -> Result<Vec<NurbsCurve>, M
         while i + mult < knots.len() - p - 1 && (knots[i + mult] - u).abs() < 1e-15 {
             mult += 1;
         }
+        // Bezier decomposition needs multiplicity `p` at every interior
+        // knot, and the segment walk below assumes consecutive segments
+        // share one control point — which holds only at multiplicity
+        // exactly `p`. A C^-1 break (multiplicity `p + 1`) makes the
+        // segments disjoint, and the fixed `seg * p` stride then reads a
+        // collapsed knot span, so refuse instead of emitting a
+        // zero-length segment. Plain `p - mult` also underflowed here:
+        // a debug panic, and in release a huge deficit fed straight into
+        // knot insertion.
+        if mult > p {
+            return Err(MathError::InvalidKnotValue { index: i, value: u });
+        }
         let deficit = p - mult;
         if deficit > 0 {
             unique_interior.push((u, deficit));

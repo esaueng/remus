@@ -87,7 +87,12 @@ fn validate_knot_domain(
     degree: usize,
     control_points: usize,
 ) -> Result<(), crate::MathError> {
-    if knots[degree] > knots[control_points] {
+    // `>=`, not `>`: an equal pair is a collapsed domain, a curve or surface
+    // with no parameter range at all. Evaluation, projection, and splitting
+    // are all meaningless on one, and it is exactly what a decomposition bug
+    // produces when it reads the wrong knot span — so reject it here rather
+    // than let a zero-length entity travel.
+    if knots[degree] >= knots[control_points] {
         return Err(crate::MathError::InvalidKnotValue {
             index: control_points,
             value: knots[control_points],
