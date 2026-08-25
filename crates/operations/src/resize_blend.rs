@@ -6,8 +6,9 @@
 //! fillet construction at the requested radius. Any ambiguity is a refusal and
 //! the topology arena is restored to its pre-call state.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use remus_blend::BlendResult;
 use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
@@ -129,6 +130,20 @@ struct SharpResult {
     face_map: HashMap<usize, FaceId>,
 }
 
+#[derive(Debug)]
+struct SupportPair {
+    first: FaceId,
+    second: FaceId,
+    edge_count: usize,
+}
+
+#[derive(Debug)]
+struct BlendMovePlan {
+    radius: f64,
+    volume_effect: f64,
+    support_pairs: Vec<SupportPair>,
+}
+
 /// Resize or remove a constant-radius analytic blend band.
 ///
 /// The selected face is only a seed. Band membership, supports and the current
@@ -193,46 +208,7 @@ fn resize_blend_impl(
     }
 
     let input_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
-    let support_types: Vec<&'static str> = band
-        .supports
-        .iter()
-        .map(|support| topo.face(*support).map(|face| face.surface().type_tag()))
-        .collect::<Result<_, _>>()?;
-    let sharp = if support_types.iter().all(|surface| *surface == "plane") {
-        heal_planar_band(topo, solid, &band)?
-    } else {
-        match support_types.as_slice() {
-            ["plane", "cylinder"] | ["cylinder", "plane"] => {
-                heal_plane_cylinder_band(topo, solid, &band)?
-            }
-            ["cylinder", "cone"] | ["cone", "cylinder"] => {
-                if !tol.approx_eq(new_radius, 0.0) {
-                    // Removal works (the sharp circle is exact), but a positive
-                    // radius would ride heal-to-sharp + re-fillet, and the
-                    // closed-rim fillet assembler does not rebuild a
-                    // cylinder-wall × cone-wall rim yet — fillet_v2 fails on the
-                    // recovered chain (verified against the Shapr3D fixture).
-                    // Refuse with the support-pair code, which is more precise
-                    // than surfacing the downstream reconstruction failure.
-                    return Err(ResizeBlendError::UnsupportedSupportPair {
-                        first: support_types[0],
-                        second: support_types[1],
-                    }
-                    .into());
-                }
-                heal_cylinder_cone_band(topo, solid, &band)?
-            }
-            [first, second] => {
-                return Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into());
-            }
-            _ => {
-                return Err(reconstruction(format!(
-                    "blend region has {} non-planar support faces; exactly two are required",
-                    support_types.len()
-                )));
-            }
-        }
-    };
+    let sharp = remove_blend_region(topo, solid, &band, new_radius)?;
 
     validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
     let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
@@ -244,22 +220,7 @@ fn resize_blend_impl(
         });
     }
 
-    let rebuilt = match fillet_v2(topo, sharp.solid, &sharp.edges, new_radius) {
-        Ok(result) => result,
-        Err(OperationsError::Blend(remus_blend::BlendError::RadiusTooLarge { .. })) => {
-            return Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into());
-        }
-        Err(OperationsError::Blend(remus_blend::BlendError::TrimmingFailure { .. }))
-            if new_radius > band.radius =>
-        {
-            return Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into());
-        }
-        Err(error) => {
-            return Err(reconstruction(format!(
-                "fillet reconstruction at {new_radius} mm failed: {error}"
-            )));
-        }
-    };
+    let rebuilt = rebuild_blend_edges(topo, sharp.solid, &sharp.edges, band.radius, new_radius)?;
     validate_exact_result(topo, rebuilt.solid, "resized blend")?;
     let result_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
     validate_volume_progress(
@@ -274,6 +235,66 @@ fn resize_blend_impl(
         solid: rebuilt.solid,
         evolution,
     })
+}
+
+fn remove_blend_region(
+    topo: &mut Topology,
+    solid: SolidId,
+    band: &BandDescription,
+    rebuild_radius: f64,
+) -> Result<SharpResult, OperationsError> {
+    let support_types: Vec<&'static str> = band
+        .supports
+        .iter()
+        .map(|support| topo.face(*support).map(|face| face.surface().type_tag()))
+        .collect::<Result<_, _>>()?;
+    if support_types.iter().all(|surface| *surface == "plane") {
+        return heal_planar_band(topo, solid, band);
+    }
+    match support_types.as_slice() {
+        ["plane", "cylinder"] | ["cylinder", "plane"] => {
+            heal_plane_cylinder_band(topo, solid, band)
+        }
+        ["cylinder", "cone"] | ["cone", "cylinder"] => {
+            if !Tolerance::new().approx_eq(rebuild_radius, 0.0) {
+                // The sharp circle is exact, but the closed-rim assembler
+                // cannot reconstruct this support pair at positive radius.
+                return Err(ResizeBlendError::UnsupportedSupportPair {
+                    first: support_types[0],
+                    second: support_types[1],
+                }
+                .into());
+            }
+            heal_cylinder_cone_band(topo, solid, band)
+        }
+        [first, second] => Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into()),
+        _ => Err(reconstruction(format!(
+            "blend region has unsupported support surfaces {support_types:?}; expected all planes or one supported analytic pair"
+        ))),
+    }
+}
+
+fn rebuild_blend_edges(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    old_radius: f64,
+    new_radius: f64,
+) -> Result<BlendResult, OperationsError> {
+    match fillet_v2(topo, solid, edges, new_radius) {
+        Ok(result) => Ok(result),
+        Err(OperationsError::Blend(remus_blend::BlendError::RadiusTooLarge { .. })) => {
+            Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into())
+        }
+        Err(OperationsError::Blend(remus_blend::BlendError::TrimmingFailure { .. }))
+            if new_radius > old_radius =>
+        {
+            Err(ResizeBlendError::RadiusTooLarge { radius: new_radius }.into())
+        }
+        Err(error) => Err(reconstruction(format!(
+            "fillet reconstruction at {new_radius} mm failed: {error}"
+        ))),
+    }
 }
 
 fn invalid(reason: impl Into<String>) -> OperationsError {
@@ -415,7 +436,7 @@ fn blend_region_supports(
             for other in others {
                 let surface = topo.face(other)?.surface();
                 let tangent = tangent_across(topo, edge, band_face, other)?;
-                if matches!(surface, FaceSurface::Nurbs(_)) {
+                if tangent && matches!(surface, FaceSurface::Nurbs(_)) {
                     return Err(ResizeBlendError::BandTouchesFreeform.into());
                 }
                 if tangent {
@@ -442,6 +463,706 @@ fn describe_band(
         supports,
         radius: region.radius,
     })
+}
+
+/// Move planar support faces through their tangent analytic blend neighborhood.
+///
+/// The primary path temporarily restores every incident sharp edge, moves the
+/// sharp support, and rebuilds the same constant-radius blend regions. Imported
+/// prismatic regions that reach freeform carrier patches may instead be moved as
+/// one rigid, proof-gated patch when every boundary extension stays exact.
+///
+/// `Ok(None)` means the selection has no tangent analytic blend neighbor and
+/// the ordinary planar path should run. Once a blend is recognized, every
+/// refusal is returned rather than falling back to an approximation.
+pub(crate) fn move_planar_faces_with_blends(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<Option<SolidId>, OperationsError> {
+    if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
+        return Ok(None);
+    }
+
+    let snapshot = topo.clone();
+    let remove_rebuild_error =
+        match move_planar_faces_with_blends_remove_rebuild(topo, solid, faces, distance) {
+            Ok(Some(result)) => return Ok(Some(result)),
+            Ok(None) => {
+                reconstruction("remove/rebuild could not derive a removable incident blend region")
+            }
+            Err(error) => error,
+        };
+    topo.restore_preserving_handle_slots(&snapshot);
+    match move_translation_invariant_blend_region(topo, solid, faces, distance) {
+        Ok(result) => Ok(Some(result)),
+        Err(translation_error) => Err(reconstruction(format!(
+            "remove/rebuild failed ({remove_rebuild_error}); exact prismatic blend translation failed ({translation_error})"
+        ))),
+    }
+}
+
+fn move_planar_faces_with_blends_remove_rebuild(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<Option<SolidId>, OperationsError> {
+    if faces.is_empty() {
+        return Ok(None);
+    }
+    let source_faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let source_face_set: HashSet<usize> = source_faces.iter().map(|face| face.index()).collect();
+    if faces.iter().any(|face| {
+        !source_face_set.contains(&face.index())
+            || topo
+                .face(*face)
+                .is_ok_and(|face| !matches!(face.surface(), FaceSurface::Plane { .. }))
+    }) {
+        return Ok(None);
+    }
+    if adjacent_blend_seed(topo, solid, faces)?.is_none() {
+        return Ok(None);
+    }
+
+    let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
+    let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+    let mut current_solid = solid;
+    let mut selected_faces = faces.to_vec();
+    let mut plans = Vec::new();
+
+    while let Some(seed) = adjacent_blend_seed(topo, current_solid, &selected_faces)? {
+        let band = describe_band(topo, current_solid, seed)?;
+        let stage_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+        let sharp = remove_blend_region(topo, current_solid, &band, band.radius)?;
+        validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
+        let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
+        validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
+
+        selected_faces = remap_faces(&selected_faces, &sharp.face_map, "selected planar support")?;
+        for plan in &mut plans {
+            remap_plan(plan, &sharp.face_map)?;
+        }
+        let mapped_supports = remap_faces(&band.supports, &sharp.face_map, "blend support")?;
+        plans.push(BlendMovePlan {
+            radius: band.radius,
+            volume_effect: stage_volume - sharp_volume,
+            support_pairs: support_pairs_for_edges(
+                topo,
+                sharp.solid,
+                &sharp.edges,
+                &mapped_supports,
+            )?,
+        });
+        current_solid = sharp.solid;
+    }
+
+    if !crate::push_pull::move_is_prismatic(topo, current_solid, &selected_faces)? {
+        return Err(reconstruction(
+            "blend-aware planar move requires a prismatic sharp support neighborhood",
+        ));
+    }
+    let moved_area = selected_faces.iter().try_fold(0.0, |area, &face| {
+        crate::measure::face_area(topo, face, 0.01).map(|value| area + value)
+    })?;
+    let sharp_before = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+    let moved =
+        remus_offset::move_faces_with_face_map(topo, current_solid, &selected_faces, distance)?;
+    let sharp_after = crate::measure::solid_volume(topo, moved.solid, 0.05)?;
+    validate_expected_volume(
+        sharp_before + moved_area * distance,
+        sharp_after,
+        "sharp planar move",
+    )?;
+    for plan in &mut plans {
+        remap_plan(plan, &moved.face_map)?;
+    }
+    current_solid = moved.solid;
+
+    for index in (0..plans.len()).rev() {
+        let before_rebuild = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+        let edges = resolve_support_pair_edges(topo, current_solid, &plans[index])?;
+        let rebuilt = rebuild_blend_edges(
+            topo,
+            current_solid,
+            &edges,
+            plans[index].radius,
+            plans[index].radius,
+        )?;
+        validate_exact_result(topo, rebuilt.solid, "moved blend reconstruction")?;
+        let rebuilt_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
+        validate_expected_volume(
+            before_rebuild + plans[index].volume_effect,
+            rebuilt_volume,
+            "moved blend volume effect",
+        )?;
+        let origins = rebuilt.face_origins.as_ref().ok_or_else(|| {
+            reconstruction("blend reconstruction did not report construction face origins")
+        })?;
+        let survivor_map: HashMap<usize, FaceId> = origins
+            .survived
+            .iter()
+            .map(|(source, result)| (source.index(), *result))
+            .collect();
+        for plan in &mut plans[..index] {
+            remap_plan(plan, &survivor_map)?;
+        }
+        current_solid = rebuilt.solid;
+    }
+
+    validate_exact_result(topo, current_solid, "blend-aware planar move")?;
+    let final_counts = remus_topology::explorer::solid_entity_counts(topo, current_solid)?;
+    if final_counts != source_counts {
+        return Err(reconstruction(format!(
+            "blend-aware planar move changed (faces, edges, vertices) from {source_counts:?} to {final_counts:?}"
+        )));
+    }
+    let final_volume = crate::measure::solid_volume(topo, current_solid, 0.05)?;
+    validate_expected_volume(
+        source_volume + moved_area * distance,
+        final_volume,
+        "blend-aware planar move",
+    )?;
+
+    Ok(Some(current_solid))
+}
+
+fn adjacent_blend_seed(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<Option<FaceId>, OperationsError> {
+    let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut ordered = selected_faces.to_vec();
+    ordered.sort_unstable_by_key(|face| face.index());
+    for selected_face in ordered {
+        for edge in face_edges(topo, selected_face)? {
+            let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
+            adjacent.sort_unstable_by_key(|face| face.index());
+            for candidate in adjacent {
+                if selected.contains(&candidate)
+                    || blend_surface(topo.face(candidate)?.surface()).is_none()
+                {
+                    continue;
+                }
+                if tangent_across(topo, edge, selected_face, candidate)?
+                    && describe_band(topo, solid, candidate).is_ok()
+                {
+                    return Ok(Some(candidate));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn adjacent_analytic_blend_seed(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<Option<FaceId>, OperationsError> {
+    let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut ordered = selected_faces.to_vec();
+    ordered.sort_unstable_by_key(|face| face.index());
+    for selected_face in ordered {
+        for edge in face_edges(topo, selected_face)? {
+            let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
+            adjacent.sort_unstable_by_key(|face| face.index());
+            for candidate in adjacent {
+                if selected.contains(&candidate)
+                    || blend_surface(topo.face(candidate)?.surface()).is_none()
+                {
+                    continue;
+                }
+                if tangent_across(topo, edge, selected_face, candidate)?
+                    && is_local_blend_face(topo, &adjacency, candidate)?
+                {
+                    return Ok(Some(candidate));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn is_local_blend_face(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    face: FaceId,
+) -> Result<bool, OperationsError> {
+    if blend_surface(topo.face(face)?.surface()).is_none() {
+        return Ok(false);
+    }
+    let mut tangent_neighbors = HashSet::new();
+    for edge in face_edges(topo, face)? {
+        for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
+            if adjacent != face && tangent_across(topo, edge, face, adjacent)? {
+                tangent_neighbors.insert(adjacent);
+            }
+        }
+    }
+    Ok(tangent_neighbors.len() >= 2)
+}
+
+fn surface_translation_invariant(surface: &FaceSurface, direction: Vec3) -> bool {
+    let tol = Tolerance::new();
+    match surface {
+        FaceSurface::Plane { normal, .. } => normal.dot(direction).abs() <= tol.angular,
+        FaceSurface::Cylinder(cylinder) => {
+            cylinder.axis().dot(direction).abs() >= 1.0 - tol.angular
+        }
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => false,
+    }
+}
+
+struct BlendTranslationRegion {
+    translated_faces: HashSet<FaceId>,
+    translated_nurbs_supports: HashSet<FaceId>,
+}
+
+fn translation_invariant_blend_region(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+    direction: Vec3,
+) -> Result<BlendTranslationRegion, OperationsError> {
+    let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut region = HashSet::new();
+    let mut queue = VecDeque::new();
+
+    for &selected_face in selected_faces {
+        for edge in face_edges(topo, selected_face)? {
+            for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if selected.contains(&candidate)
+                    || surface_translation_invariant(topo.face(candidate)?.surface(), direction)
+                    || !tangent_across(topo, edge, selected_face, candidate)?
+                    || !is_local_blend_face(topo, &adjacency, candidate)?
+                {
+                    continue;
+                }
+                if region.insert(candidate) {
+                    queue.push_back(candidate);
+                }
+            }
+        }
+    }
+
+    while let Some(current) = queue.pop_front() {
+        for edge in face_edges(topo, current)? {
+            for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if candidate == current
+                    || selected.contains(&candidate)
+                    || region.contains(&candidate)
+                {
+                    continue;
+                }
+                if !tangent_across(topo, edge, current, candidate)?
+                    || surface_translation_invariant(topo.face(candidate)?.surface(), direction)
+                    || !is_local_blend_face(topo, &adjacency, candidate)?
+                {
+                    continue;
+                }
+                region.insert(candidate);
+                queue.push_back(candidate);
+            }
+        }
+    }
+
+    if region.is_empty() {
+        return Err(reconstruction(
+            "no translation-dependent analytic blend region bounds the selected plane",
+        ));
+    }
+
+    let mut translated_nurbs_supports = HashSet::new();
+    for &blend_face in &region {
+        for edge in face_edges(topo, blend_face)? {
+            for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if adjacent == blend_face
+                    || selected.contains(&adjacent)
+                    || region.contains(&adjacent)
+                {
+                    continue;
+                }
+                let surface = topo.face(adjacent)?.surface();
+                if matches!(surface, FaceSurface::Nurbs(_)) {
+                    translated_nurbs_supports.insert(adjacent);
+                } else if !surface_translation_invariant(surface, direction) {
+                    return Err(reconstruction(format!(
+                        "blend face {} reaches non-invariant {} support face {} across edge {}",
+                        blend_face.index(),
+                        topo.face(adjacent)?.surface().type_tag(),
+                        adjacent.index(),
+                        edge.index()
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(BlendTranslationRegion {
+        translated_faces: region,
+        translated_nurbs_supports,
+    })
+}
+
+fn translate_face_surface(
+    topo: &mut Topology,
+    face: FaceId,
+    delta: Vec3,
+) -> Result<(), OperationsError> {
+    let translated = match topo.face(face)?.surface().clone() {
+        FaceSurface::Plane { normal, d } => FaceSurface::Plane {
+            normal,
+            d: normal.dot(delta).mul_add(1.0, d),
+        },
+        FaceSurface::Cylinder(surface) => FaceSurface::Cylinder(surface.translated(delta)),
+        FaceSurface::Cone(surface) => FaceSurface::Cone(surface.translated(delta)),
+        FaceSurface::Sphere(surface) => FaceSurface::Sphere(surface.translated(delta)),
+        FaceSurface::Torus(surface) => FaceSurface::Torus(surface.translated(delta)),
+        FaceSurface::Nurbs(surface) => {
+            let control_points = surface
+                .control_points()
+                .iter()
+                .map(|row| row.iter().map(|point| *point + delta).collect())
+                .collect();
+            FaceSurface::Nurbs(remus_math::nurbs::surface::NurbsSurface::new(
+                surface.degree_u(),
+                surface.degree_v(),
+                surface.knots_u().to_vec(),
+                surface.knots_v().to_vec(),
+                control_points,
+                surface.weights().to_vec(),
+            )?)
+        }
+    };
+    topo.face_mut(face)?.set_surface(translated);
+    Ok(())
+}
+
+fn face_anchor(topo: &Topology, face: FaceId) -> Result<remus_math::vec::Point3, OperationsError> {
+    let wire = topo.wire(topo.face(face)?.outer_wire())?;
+    let oriented = wire
+        .edges()
+        .first()
+        .ok_or_else(|| reconstruction(format!("face {} has an empty outer wire", face.index())))?;
+    let edge = topo.edge(oriented.edge())?;
+    Ok(topo.vertex(oriented.oriented_start(edge))?.point())
+}
+
+#[allow(clippy::too_many_lines)]
+fn move_translation_invariant_blend_region(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<SolidId, OperationsError> {
+    if !distance.is_finite() || distance.abs() <= Tolerance::new().linear {
+        return Err(remus_offset::OffsetError::InvalidInput {
+            reason: "move-face distance must be non-zero and finite".into(),
+        }
+        .into());
+    }
+    let Some(&reference) = faces.first() else {
+        return Err(remus_offset::OffsetError::InvalidInput {
+            reason: "move-face requires at least one selected face".into(),
+        }
+        .into());
+    };
+    let source_faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let source_face_set: HashSet<FaceId> = source_faces.iter().copied().collect();
+    if faces.iter().any(|face| !source_face_set.contains(face)) {
+        return Err(remus_offset::OffsetError::FaceNotInSolid {
+            face: faces
+                .iter()
+                .copied()
+                .find(|face| !source_face_set.contains(face))
+                .unwrap_or(reference),
+            solid,
+        }
+        .into());
+    }
+    let (direction, reference_d) = match topo.face(reference)?.surface() {
+        FaceSurface::Plane { .. } => {
+            let normal = topo
+                .face(reference)?
+                .effective_plane_normal()
+                .ok_or_else(|| reconstruction("selected planar face has no effective normal"))?;
+            let anchor = face_anchor(topo, reference)?;
+            (
+                normal,
+                normal.dot(anchor - remus_math::vec::Point3::new(0.0, 0.0, 0.0)),
+            )
+        }
+        surface => {
+            return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+                face: reference,
+                surface_type: surface.type_tag(),
+                reason: "blend-aware translation requires planar selected faces".into(),
+            }
+            .into());
+        }
+    };
+    for &face in faces.iter().skip(1) {
+        let FaceSurface::Plane { .. } = topo.face(face)?.surface() else {
+            return Err(remus_offset::OffsetError::UnsupportedMoveFace {
+                face,
+                surface_type: topo.face(face)?.surface().type_tag(),
+                reason: "blend-aware translation requires planar selected faces".into(),
+            }
+            .into());
+        };
+        let normal = topo
+            .face(face)?
+            .effective_plane_normal()
+            .ok_or_else(|| reconstruction("selected planar face has no effective normal"))?;
+        let anchor = face_anchor(topo, face)?;
+        let d = normal.dot(anchor - remus_math::vec::Point3::new(0.0, 0.0, 0.0));
+        if normal.dot(direction) < 1.0 - Tolerance::new().angular
+            || !Tolerance::new().approx_eq(d, reference_d)
+        {
+            return Err(remus_offset::OffsetError::MoveGroupMismatch {
+                reference,
+                face,
+                reason: "selected faces are not coplanar with the same outward normal".into(),
+            }
+            .into());
+        }
+    }
+
+    let region = translation_invariant_blend_region(topo, solid, faces, direction)?;
+    let delta = direction * distance;
+    let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
+    let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+    let mut work = topo.clone();
+    let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
+    moved_faces.extend(region.translated_faces);
+    moved_faces.extend(region.translated_nurbs_supports);
+    let invariant_carriers = remus_topology::explorer::solid_faces(topo, solid)?
+        .into_iter()
+        .filter(|face| {
+            topo.face(*face)
+                .is_ok_and(|face| surface_translation_invariant(face.surface(), direction))
+        })
+        .collect();
+    let swept_faces = faces.iter().copied().collect();
+    let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
+    crate::push_pull::refuse_swept_region_intersections(
+        topo,
+        solid,
+        &swept_faces,
+        &excluded_candidates,
+        direction,
+        distance,
+    )?;
+    let adjacency = work.build_adjacency(solid)?;
+
+    let mut moved_vertices = HashSet::new();
+    for &face in &moved_faces {
+        moved_vertices.extend(remus_topology::explorer::face_vertices(&work, face)?);
+    }
+    let mut translated_edges = HashSet::new();
+    for edge in remus_topology::explorer::solid_edges(&work, solid)? {
+        let edge_data = work.edge(edge)?;
+        let start_moves = moved_vertices.contains(&edge_data.start());
+        let end_moves = moved_vertices.contains(&edge_data.end());
+        if start_moves || end_moves {
+            for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if !moved_faces.contains(&adjacent)
+                    && !surface_translation_invariant(work.face(adjacent)?.surface(), direction)
+                {
+                    return Err(reconstruction(format!(
+                        "boundary edge {} reaches non-invariant unmoved face {}",
+                        edge.index(),
+                        adjacent.index()
+                    )));
+                }
+            }
+        }
+        match (start_moves, end_moves) {
+            (true, true) => {
+                translated_edges.insert(edge);
+            }
+            (true, false) | (false, true) => {
+                if !matches!(edge_data.curve(), EdgeCurve::Line) {
+                    return Err(reconstruction(format!(
+                        "boundary edge {} would change one endpoint of a curved edge",
+                        edge.index()
+                    )));
+                }
+                let span =
+                    work.vertex(edge_data.end())?.point() - work.vertex(edge_data.start())?.point();
+                if span.cross(direction).length() > Tolerance::new().linear {
+                    return Err(reconstruction(format!(
+                        "boundary edge {} is not parallel to the planar move",
+                        edge.index()
+                    )));
+                }
+            }
+            (false, false) => {}
+        }
+    }
+
+    for vertex in moved_vertices {
+        let point = work.vertex(vertex)?.point();
+        work.vertex_mut(vertex)?.set_point(point + delta);
+    }
+    let matrix = remus_math::mat::Mat4::translation(delta.x(), delta.y(), delta.z());
+    crate::transform::transform_edges(&mut work, &translated_edges, &matrix)?;
+    for face in moved_faces {
+        translate_face_surface(&mut work, face, delta)?;
+    }
+    validate_exact_result(&work, solid, "translation-invariant blend move")?;
+    let result_counts = remus_topology::explorer::solid_entity_counts(&work, solid)?;
+    if result_counts != source_counts {
+        return Err(reconstruction(format!(
+            "blend translation changed (faces, edges, vertices) from {source_counts:?} to {result_counts:?}"
+        )));
+    }
+    let result_volume = crate::measure::solid_volume(&work, solid, 0.05)?;
+    let volume_change = result_volume - source_volume;
+    let volume_slack = source_volume.abs().mul_add(1e-9, 1e-7);
+    if volume_change.abs() <= volume_slack
+        || volume_change.is_sign_positive() != distance.is_sign_positive()
+    {
+        return Err(reconstruction(format!(
+            "blend-aware move changed volume by {volume_change}, inconsistent with distance {distance}"
+        )));
+    }
+
+    let result = crate::copy::copy_solid_between(&work, topo, solid)?;
+    validate_exact_result(topo, result, "accepted blend-aware planar move")?;
+    Ok(result)
+}
+
+fn remap_faces(
+    faces: &[FaceId],
+    face_map: &HashMap<usize, FaceId>,
+    label: &str,
+) -> Result<Vec<FaceId>, OperationsError> {
+    faces
+        .iter()
+        .map(|face| {
+            face_map.get(&face.index()).copied().ok_or_else(|| {
+                reconstruction(format!(
+                    "{label} face {} did not survive exact reconstruction",
+                    face.index()
+                ))
+            })
+        })
+        .collect()
+}
+
+fn remap_plan(
+    plan: &mut BlendMovePlan,
+    face_map: &HashMap<usize, FaceId>,
+) -> Result<(), OperationsError> {
+    for pair in &mut plan.support_pairs {
+        pair.first = face_map.get(&pair.first.index()).copied().ok_or_else(|| {
+            reconstruction(format!(
+                "blend support face {} did not survive exact reconstruction",
+                pair.first.index()
+            ))
+        })?;
+        pair.second = face_map.get(&pair.second.index()).copied().ok_or_else(|| {
+            reconstruction(format!(
+                "blend support face {} did not survive exact reconstruction",
+                pair.second.index()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn support_pairs_for_edges(
+    topo: &Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    supports: &[FaceId],
+) -> Result<Vec<SupportPair>, OperationsError> {
+    let adjacency = topo.build_adjacency(solid)?;
+    let support_set: HashSet<FaceId> = supports.iter().copied().collect();
+    let mut pairs: BTreeMap<(usize, usize), (FaceId, FaceId, usize)> = BTreeMap::new();
+    for &edge in edges {
+        let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
+        let [first, second] = adjacent.as_slice() else {
+            return Err(reconstruction(format!(
+                "sharp blend edge {} has {} adjacent faces; exactly two are required",
+                edge.index(),
+                adjacent.len()
+            )));
+        };
+        if !support_set.contains(first) || !support_set.contains(second) {
+            return Err(reconstruction(format!(
+                "sharp blend edge {} is not bounded by the recognized supports",
+                edge.index()
+            )));
+        }
+        let (first, second) = if first.index() <= second.index() {
+            (*first, *second)
+        } else {
+            (*second, *first)
+        };
+        pairs
+            .entry((first.index(), second.index()))
+            .and_modify(|entry| entry.2 += 1)
+            .or_insert((first, second, 1));
+    }
+    Ok(pairs
+        .into_values()
+        .map(|(first, second, edge_count)| SupportPair {
+            first,
+            second,
+            edge_count,
+        })
+        .collect())
+}
+
+fn resolve_support_pair_edges(
+    topo: &Topology,
+    solid: SolidId,
+    plan: &BlendMovePlan,
+) -> Result<Vec<EdgeId>, OperationsError> {
+    let mut edges = Vec::new();
+    for pair in &plan.support_pairs {
+        let mut shared = shared_edges(topo, solid, pair.first, pair.second)?;
+        shared.sort_unstable_by_key(|edge| edge.index());
+        shared.dedup();
+        if shared.len() != pair.edge_count {
+            return Err(reconstruction(format!(
+                "moved blend supports {} and {} share {} sharp edges; expected {}",
+                pair.first.index(),
+                pair.second.index(),
+                shared.len(),
+                pair.edge_count
+            )));
+        }
+        edges.extend(shared);
+    }
+    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.dedup();
+    Ok(edges)
+}
+
+fn validate_expected_volume(
+    expected: f64,
+    actual: f64,
+    label: &str,
+) -> Result<(), OperationsError> {
+    let slack = expected.abs().mul_add(2e-3, 1e-6);
+    if (actual - expected).abs() <= slack {
+        return Ok(());
+    }
+    Err(reconstruction(format!(
+        "{label} volume is {actual}, expected {expected}"
+    )))
 }
 
 fn copy_unchanged(
@@ -1175,7 +1896,7 @@ fn validate_exact_result(
         .iter()
         .filter(|issue| issue.severity == remus_check::validate::Severity::Error)
         .take(3)
-        .map(|issue| issue.description.as_str())
+        .map(|issue| format!("{} ({:?})", issue.description, issue.entity))
         .collect::<Vec<_>>()
         .join("; ");
     Err(reconstruction(format!(
