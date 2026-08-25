@@ -292,9 +292,13 @@ Executed in one campaign; per the maintenance rule, each item's outcome:
 - **A1 Draft — done, promoted.** Qualification suite + WASM batch contract
   tests; label flipped with the matrices.
 - **A2 Defeaturing — done, promoted.** Cap and extend strategies qualified;
-  the micron-scale boolean input gap discovered en route is filed as the
-  ignored ready-repro `boolean_scale_gap.rs` (an OperationContext-tolerance
-  item, not a defeature cell).
+  the micron-scale boolean input gap discovered en route is covered by
+  `boolean_scale_gap.rs` (an OperationContext-tolerance item, not a defeature
+  cell). Since 2026-08-25 that repro is un-ignored and green: the boolean's
+  acceptance gate now rejects a result that reaches outside the space its
+  operands allow, so the small-scale case falls back or refuses instead of
+  returning a wrong solid as exact. Producing an exact analytic result at that
+  scale remains open and still wants scaled tolerance through the GFA bands.
 - **A3 Assemblies — done, promoted.** Determinism defects fixed on the way
   (hash-ordered storage, leaf-only flatten, unordered BOM, sentinel bbox).
 - **A4 Feature recognition — done, promoted** for the declared set. Two
