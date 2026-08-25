@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787605664469,
+  "lastUpdate": 1787624012941,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1889,6 +1889,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40739745,
             "range": "± 56090",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "99d8c0118ce7a6c94a22b901202bd57ba6f50d37",
+          "message": "fix(math): make the NURBS knot operations total on their own domain (#82)\n\nOn `wasm32-unknown-unknown` the panic strategy is `abort`. A panic inside a\nkernel method traps mid-call and leaves the wasm-bindgen borrow flag set, so\nevery later call throws \"recursive use of an object\" and the only recovery is\na new `BrepKernel` — `crates/wasm/src/panics.rs` documents this, and\n`catch_unwind` cannot intercept it. A panic here is not a recoverable error;\nit ends the session.\n\nFour of these were reachable, none of them from adversarial input:\n\n- `curve_split(c, u_max)` indexed `cps[..=last_u - p]` past the end. At the\n  clamped end the knot already carries multiplicity `degree + 1`, so nothing\n  is inserted and the partition index runs off the control-point array.\n  `u_min` did not panic but returned a misleading `InvalidDegree` from the\n  half it tried to build.\n- `curve_knot_remove(c, u_min)` indexed `pw[k + 1]` past the end, and\n  `curve_knot_remove(c, u_max)` underflowed `pw[k - p]`. Only interior knots\n  are removable: the end knots carry the multiplicity that clamps the curve.\n- `curve_to_bezier_segments` underflowed `p - mult` on a curve whose interior\n  knot multiplicity exceeds the degree — a C^-1 break, which\n  `NurbsCurve::new` accepts. `curve_degree_elevate` decomposes first, so it\n  inherited the same panic.\n\n`u_min` and `u_max` are the curve's own domain endpoints, the most natural\nvalues a caller has to hand, and these paths are reached from JS\n(`curveSplit`, `curveKnotRemove`), from STEP import\n(`step/reader.rs` trims curves with file-supplied parameters), from the GFA\nboolean (`phase_ff`), and from sweep. Every caller already propagates with\n`?` or `.ok()`, so a typed refusal needs no call-site change.\n\nSplit and remove now refuse anything outside the open domain with\n`ParameterOutOfRange`, compared with the same `KNOT_EPS` the multiplicity\ncount uses, since a `u` that close to an end degenerates identically. Split\nkeeps a structural bounds check as well, so no knot arrangement can index out\nof range even if the domain guard is ever loosened.\n\nDecomposition refuses multiplicity above the degree rather than saturating:\nsaturating stops the panic but the segment walk assumes consecutive segments\nshare a control point, which only holds at multiplicity exactly `p`, so the\nfixed stride then read a collapsed knot span and emitted a zero-length\nsegment. Silently wrong beats loudly wrong here, so it fails closed;\nsupporting C^-1 decomposition properly is a feature, not this fix.\n\n`validate_knot_domain` now rejects a collapsed domain (`u_min == u_max`)\ninstead of only an inverted one — the backstop that would have caught that\ndegenerate segment where it was created rather than where it was used.\n\nFound by probing the public surface for panics rather than by a reported\nfailure; the regression file carries the mechanism for each case.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-24T22:10:52-04:00",
+          "tree_id": "049c046313bf5ff331ee842bf9d017caa1828eec",
+          "url": "https://github.com/esaueng/remus/commit/99d8c0118ce7a6c94a22b901202bd57ba6f50d37"
+        },
+        "date": 1787624012301,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1355372,
+            "range": "± 1626",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1454262,
+            "range": "± 49673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14036,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 995150,
+            "range": "± 4507",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41083021,
+            "range": "± 1407621",
             "unit": "ns/iter"
           }
         ]
