@@ -111,3 +111,26 @@ fn shell_v2_inherits_the_guard() {
         );
     }
 }
+
+#[test]
+fn a_legitimate_hollow_box_is_not_mistaken_for_a_collapse() {
+    // The counterpart the guard must not catch, and the approx_census
+    // `shell box (1 face open)` row: a 10 mm box shelled with one face open.
+    // It reached the guard reporting a signed volume of -2584 — outward skin
+    // inside out, cavity correct, so the body measured as the SUM of its two
+    // skins. That was a real defect in the offset engine's thick-solid
+    // assembly, not a false positive here; see
+    // `crates/offset/tests/thick_solid_orientation.rs`.
+    for (thickness, want) in [(1.0_f64, 584.0_f64), (-1.0, 424.0)] {
+        let mut topo = Topology::new();
+        let solid = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let exclude = vec![remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0]];
+        let result = offset_v2::shell_v2(&mut topo, solid, thickness, &exclude)
+            .unwrap_or_else(|e| panic!("shelling a 10mm box by {thickness} must succeed: {e}"));
+        let got = measure::solid_volume(&topo, result, 0.01).unwrap();
+        assert!(
+            (got - want).abs() / want < 1e-9,
+            "shell {thickness}: want {want}, got {got}"
+        );
+    }
+}
