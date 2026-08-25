@@ -225,6 +225,12 @@ pub fn surface_knot_insert_v(
 /// Returns [`MathError::ConvergenceFailure`] when the knot cannot be removed
 /// within the requested tolerance (the curve geometry depends on that knot
 /// too strongly).
+///
+/// Returns [`MathError::ParameterOutOfRange`] unless `u` lies strictly inside
+/// the curve's domain. Only interior knots are removable: the clamped end
+/// knots carry the multiplicity that makes the curve interpolate its end
+/// control points, and dropping one would unclamp it.
+///
 /// Returns an error if the resulting curve cannot be constructed.
 #[allow(
     clippy::similar_names,
@@ -242,6 +248,20 @@ pub fn curve_knot_remove(
     let cps = curve.control_points();
     let ws = curve.weights();
     let n = cps.len();
+
+    // Only interior knots are removable. Without this the end knots reach the
+    // reconstruction below with a span index outside the control-point array
+    // (`k < p` at the upper end, `k + 1 == n` at the lower), which indexes out
+    // of bounds — and on wasm32, where the panic strategy is `abort`, that
+    // takes the whole kernel instance with it.
+    let (u_min, u_max) = curve.domain();
+    if u <= u_min + KNOT_EPS || u >= u_max - KNOT_EPS {
+        return Err(MathError::ParameterOutOfRange {
+            value: u,
+            min: u_min,
+            max: u_max,
+        });
+    }
 
     // Find the last index of knot u in the knot vector.
     let mut r_last: Option<usize> = None;
@@ -498,9 +518,27 @@ pub fn curve_knot_refine(
 ///
 /// # Errors
 ///
+/// Returns [`MathError::ParameterOutOfRange`] unless `u` lies strictly
+/// inside the curve's domain. A split at either end has no second half:
+/// the clamped end knot already carries multiplicity `degree + 1`, so
+/// nothing is inserted and one side of the partition is empty.
+///
 /// Returns an error if the resulting curves cannot be constructed.
 pub fn curve_split(curve: &NurbsCurve, u: f64) -> Result<(NurbsCurve, NurbsCurve), MathError> {
     let p = curve.degree();
+
+    // Compared with the same epsilon `curve_knot_insert` uses to count
+    // existing multiplicity: a `u` that close to an end is indistinguishable
+    // from the end itself once insertion runs, and would partition the same
+    // degenerate way.
+    let (u_min, u_max) = curve.domain();
+    if u <= u_min + KNOT_EPS || u >= u_max - KNOT_EPS {
+        return Err(MathError::ParameterOutOfRange {
+            value: u,
+            min: u_min,
+            max: u_max,
+        });
+    }
 
     // Insert knot to multiplicity p (C^0 continuity = interpolatory).
     let refined = curve_knot_insert(curve, u, p)?;
@@ -521,11 +559,31 @@ pub fn curve_split(curve: &NurbsCurve, u: f64) -> Result<(NurbsCurve, NurbsCurve
 
     // The split control point index: with multiplicity p, the curve passes
     // through the CP at index (last_u - p). Both halves share this point.
+    //
+    // The domain guard above rules out the boundary cases that make these
+    // subtractions underflow, but an interior knot already at multiplicity
+    // `p + 1` (a legal C^-1 break) can still land `split_cp` past the end.
+    // Refuse rather than index out of bounds: on wasm32 the panic strategy
+    // is `abort`, so an out-of-range index there is unrecoverable.
+    let mult = last_u - first_u + 1;
+    if last_u < p || mult > p + 1 {
+        return Err(MathError::ParameterOutOfRange {
+            value: u,
+            min: u_min,
+            max: u_max,
+        });
+    }
     let split_cp = last_u - p;
+    if split_cp >= cps.len() || split_cp >= ws.len() {
+        return Err(MathError::ParameterOutOfRange {
+            value: u,
+            min: u_min,
+            max: u_max,
+        });
+    }
 
     // Left curve: CPs 0..=split_cp, knots up to first_u then add p+1-mult
     // copies of u to form a proper clamped end.
-    let mult = last_u - first_u + 1;
     let mut left_knots: Vec<f64> = knots[..=last_u].to_vec();
     // Need p+1 copies of u at the end; we have `mult` already.
     for _ in 0..(p + 1 - mult) {
