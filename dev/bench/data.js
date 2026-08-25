@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787628241042,
+  "lastUpdate": 1787634234831,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2051,6 +2051,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38455153,
             "range": "± 138168",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3a500279b550bf9190c6ca0ac8738bf2c35a00b4",
+          "message": "fix(operations): refuse an offset that carries the boundary through itself (#86)\n\nAn inward offset larger than the body's own half-thickness returned `Ok`\nwith a solid that is inside out.\n\nThe per-face offset guards every curved surface against its radius going\nnon-positive — `crates/offset/src/offset.rs` checks the cylinder, cone,\nsphere, and torus arms. A plane has no radius: it is simply translated by\nthe distance, so the plane arm has no collapse condition at all. Past the\nhalf-thickness every face crosses its opposite number, assembly succeeds on\nthe inverted arrangement, and the caller gets a result with a negatively\nwound outer shell.\n\nMeasured on a 10 mm box (half-extent 5, so anything at or past -5 must\ncollapse):\n\n| distance | before |\n| --- | --- |\n| -4.9 | 0.008 mm^3 — correct |\n| -5.0 | assembly happened to fail |\n| -6.0 | Ok, 8 mm^3 |\n| -10.0 | Ok, 1000 mm^3 — the untouched input |\n| -1e6 | Ok, 8e18 mm^3 — grown, not shrunk |\n\nOnly -5.0 was caught, and by accident rather than by a guard. `shell_v2`\ndrives the same engine and collapsed identically.\n\n`validate_offset_postcondition` already ran `remus_check::validate` and\npassed all three: the check crate has no shell-orientation check, and being\nL2 it cannot reach the L3 signed-volume machinery that would give it one.\n`OffsetError::CollapsedSolid` exists for exactly this and is never\nconstructed anywhere.\n\nA negative signed volume on the outer shell is the one signature every\ncollapsed case shares, so the postcondition now tests for it directly rather\nthan widening the general validator — which would risk rejecting legitimate\ncurved offsets on unrelated geometric checks.\n\nEvery legal offset still returns its exact closed-form volume; the\nregression file pins both sides at ten distances plus the shell_v2 path.\n\nFound by probing operations with geometrically impossible inputs, not from a\nreported failure.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-25T01:01:30-04:00",
+          "tree_id": "4c4330dd46a4bc374f5ff25b5460bbd96dbcc2d6",
+          "url": "https://github.com/esaueng/remus/commit/3a500279b550bf9190c6ca0ac8738bf2c35a00b4"
+        },
+        "date": 1787634234182,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1096417,
+            "range": "± 1782",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1124174,
+            "range": "± 2574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10954,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 773153,
+            "range": "± 7007",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32351613,
+            "range": "± 455313",
             "unit": "ns/iter"
           }
         ]
