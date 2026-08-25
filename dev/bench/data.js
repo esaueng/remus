@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787673084293,
+  "lastUpdate": 1787673282591,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2159,6 +2159,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39122117,
             "range": "± 151498",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f98292b930db2a01b3aea7c590d5901a3b70a5e1",
+          "message": "fix(offset): stop a thick solid's outer skin coming out inside out (#89)\n\n`shell_v2` on a box with one face open returned a body that measured 2584\nmm^3 for a part containing 584: its outer skin faced inward while its cavity\nstayed correct, so the two skins ADDED instead of subtracting. #86's new\npostcondition is what surfaced it — the guard was right, the geometry was\nnot. Before that guard the same solid was returned as `Ok` and had been\nsince the thick-solid path was written; the approx_census row reports face\ncounts and fallbacks, so it showed the shape as \"exact analytic\" throughout.\n\nTwo rules decided which skin was the cavity, and both assumed it was the\noffset one:\n\n* `loops.rs` wound each offset face's wire against the face's EFFECTIVE\n  normal (`^ !excluded_faces.is_empty()`) instead of its stored surface\n  normal. The convention — stated in `check/src/validate/face.rs` — is that\n  the reversal flag mirrors the normal and the edge traversal TOGETHER, so\n  the stored winding always follows the stored surface. Negating here left\n  the two disagreeing on exactly the five offset faces.\n* `assemble.rs` then flipped the offset skin whenever any face was excluded,\n  regardless of which way the offset actually ran.\n\n`orient_shell_faces` reads wire traversal, so the first rule fed it a\ncontradiction: it propagated a shell that was edge-coherent and geometrically\ninconsistent, and `remus_check::validate` could only see it as five\n\"face normal inconsistent with wire winding\" warnings. The second rule is\nwhat put the offset skin outside on an outward thickness in the first place.\n\nNow the cavity is whichever skin ends up inside — the offset one for an\ninward distance, the retained original for an outward one — and offset loops\nalways wind to their own surface normal. On a 10 mm cube with one face open:\n\n| thickness | before | after | exact |\n| --- | --- | --- | --- |\n| +1.0 | 2584 (refused by the guard) | 584 | 584 |\n| -1.0 | 1576 | 424 | 424 |\n\nPlain `offset_solid` and `move_faces` pass no excluded faces and are\nunchanged; the arc-joint path returns before any of this.\n\n`crates/offset/tests/thick_solid_orientation.rs` pins the exact wall volume\nat both signs across three orders of magnitude, that the result is not\ninverted, and the winding convention itself. The census row is pinned\nend-to-end through `shell_v2` in the #86 regression file.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-25T11:51:01-04:00",
+          "tree_id": "4567eb78bc4109fcac23768cb4f36307e75eb71c",
+          "url": "https://github.com/esaueng/remus/commit/f98292b930db2a01b3aea7c590d5901a3b70a5e1"
+        },
+        "date": 1787673281902,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1226195,
+            "range": "± 7003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1318743,
+            "range": "± 4529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12873,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 900288,
+            "range": "± 1118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 36807830,
+            "range": "± 115739",
             "unit": "ns/iter"
           }
         ]
