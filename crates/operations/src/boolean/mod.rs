@@ -1017,6 +1017,7 @@ fn boolean_with_policy_impl(
                 if euler_ok
                     && open_shell_ok
                     && operands_are_represented(topo, op, result, a, b, tol)
+                    && result_within_operand_bounds(topo, op, result, a, b, tol)
                     && validate_boolean_result(topo, result).is_ok()
                 {
                     log::info!(
@@ -1099,6 +1100,7 @@ fn boolean_with_policy_impl(
                     // and classifier queries run in between).
                     && closed_manifold
                     && operands_are_represented(topo, op, result, a, b, tol)
+                    && result_within_operand_bounds(topo, op, result, a, b, tol)
                     && validate_boolean_result(topo, result).is_ok()
                 {
                     log::info!(
@@ -1508,7 +1510,8 @@ pub fn boolean_with_evolution(
                 && (op != BooleanOp::Intersect
                     || has_free_edges(topo, result).is_ok_and(|free| !free))
                 && cut_safe
-                && operands_are_represented(topo, op, result, a, b, tol);
+                && operands_are_represented(topo, op, result, a, b, tol)
+                && result_within_operand_bounds(topo, op, result, a, b, tol);
 
             // Trust the faithful path only if its result is valid; otherwise
             // fall through to boolean()'s full pipeline (fast paths + mesh
@@ -2554,6 +2557,111 @@ fn operands_are_represented(
         }
         BooleanOp::Intersect => true,
     }
+}
+
+/// Whether a GFA result stays inside the space its operands allow it.
+///
+/// [`operands_are_represented`] checks the lower half of the boolean contract —
+/// that the result did not quietly LOSE an operand. This is the upper half, and
+/// it fails in the opposite direction: the result keeps geometry no operand
+/// entitled it to.
+///
+/// The bound is a fact rather than a heuristic. Removing material cannot extend
+/// a shape, so a difference must sit inside its blank; an intersection is a
+/// subset of both operands; and a union cannot reach beyond the two operands
+/// together. In every case the result must lie within the box its operands
+/// allow — including any cavity it carries, since `solid_vertices` walks inner
+/// shells as well as the outer one.
+///
+/// This is what a difference at small model scale violates. A through-cut whose
+/// blank spans z ∈ [0, s] came back spanning z ∈ [−0.5s, 1.5s] — the result had
+/// kept the *tool's* full protruding extent as its hole walls — measuring 43 %
+/// more volume than the blank it was cut from, which is impossible. That result
+/// is topologically immaculate (correct face count, closed, manifold, Euler
+/// balanced, `validate_solid` green), so every structural gate above passes it;
+/// only the contract catches it.
+///
+/// The witness is a result VERTEX outside the allowed box, not the result's own
+/// bounding box, because `solid_bounding_box` over-approximates a trimmed
+/// curved face: the box ∩ sphere census case reports [−1, 11]³ for a result that
+/// really lies inside [0, 10]³, since its spherical patches are bounded by their
+/// untrimmed surface. Testing that loose box against the allowed one rejects
+/// four correct census rows. Vertex positions carry no such slack. The allowed
+/// box stays a bounding box on purpose — where an operand is curved its box is
+/// larger than the operand, which can only make this test more permissive.
+///
+/// Rejecting routes the case to the mesh fallback, which is bounded and
+/// disclosed rather than silently wrong (and under
+/// [`FallbackPolicy::ExactOnly`](remus_math::context::FallbackPolicy::ExactOnly)
+/// becomes a typed refusal). Margin is relative to the allowed box's own
+/// diagonal, so the test is scale-free; an unmeasurable box accepts, keeping
+/// this a safety net that can only ever reject on a witness.
+fn result_within_operand_bounds(
+    topo: &Topology,
+    op: BooleanOp,
+    result: SolidId,
+    a: SolidId,
+    b: SolidId,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    let (Ok(a_box), Ok(b_box)) = (
+        crate::measure::solid_bounding_box(topo, a),
+        crate::measure::solid_bounding_box(topo, b),
+    ) else {
+        return true; // unmeasurable: keep the historic acceptance
+    };
+
+    // The box the operands entitle the result to occupy.
+    let allowed = match op {
+        // Material can only be removed, so the blank alone bounds the result.
+        BooleanOp::Cut => a_box,
+        // A subset of both operands is a subset of the smaller box. Build the
+        // overlap directly; a non-overlapping pair yields an inverted box,
+        // which the emptiness guard below turns into an accept.
+        BooleanOp::Intersect => remus_math::aabb::Aabb3 {
+            min: Point3::new(
+                a_box.min.x().max(b_box.min.x()),
+                a_box.min.y().max(b_box.min.y()),
+                a_box.min.z().max(b_box.min.z()),
+            ),
+            max: Point3::new(
+                a_box.max.x().min(b_box.max.x()),
+                a_box.max.y().min(b_box.max.y()),
+                a_box.max.z().min(b_box.max.z()),
+            ),
+        },
+        // A union reaches no further than both operands together.
+        BooleanOp::Fuse => remus_math::aabb::Aabb3 {
+            min: Point3::new(
+                a_box.min.x().min(b_box.min.x()),
+                a_box.min.y().min(b_box.min.y()),
+                a_box.min.z().min(b_box.min.z()),
+            ),
+            max: Point3::new(
+                a_box.max.x().max(b_box.max.x()),
+                a_box.max.y().max(b_box.max.y()),
+                a_box.max.z().max(b_box.max.z()),
+            ),
+        },
+    };
+
+    // An inverted or degenerate allowed box carries no information (disjoint
+    // intersect operands, a zero-thickness operand); do not reject on it.
+    let extent = allowed.max - allowed.min;
+    if !(extent.x() >= 0.0 && extent.y() >= 0.0 && extent.z() >= 0.0) {
+        return true;
+    }
+
+    let margin = (extent.length() * 1e-6).max(tol.linear);
+    let grown = allowed.expanded(margin);
+
+    let Ok(vertices) = remus_topology::explorer::solid_vertices(topo, result) else {
+        return true;
+    };
+    !vertices.iter().any(|&vid| {
+        topo.vertex(vid)
+            .is_ok_and(|v| !grown.contains_point(v.point()))
+    })
 }
 
 /// Returns `true` when two axis-aligned boxes are separated on at least
