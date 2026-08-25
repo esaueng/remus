@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -188,11 +189,7 @@ assert.deepEqual(
 const widthPair = planarPairs.find((pair) => pair.distance === 10);
 assert.ok(widthPair, 'expected a 10-unit box face pair');
 assert.equal(widthPair.overlapArea, 600);
-const movedBox = kernel.moveFaces(
-  boxId,
-  new Uint32Array([widthPair.faceA]),
-  2,
-);
+const movedBox = kernel.moveFaces(boxId, new Uint32Array([widthPair.faceA]), 2);
 assert.ok(Math.abs(kernel.volume(movedBox, DEFLECTION) - 7200) < 1e-6);
 const [batchPairs] = JSON.parse(
   kernel.executeBatch(
@@ -421,7 +418,66 @@ for (const operation of ['fillet', 'chamfer']) {
   console.log('ok - evolution decoder and degenerate-operation rejection');
 }
 
-// 13. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
+// 13. The real Shapr3D hammer-holder contract from the connected-blend work.
+// Its radius-3 regions border imported NURBS support geometry, so a nontrivial
+// resize is an exact refusal today. The public direct/batch query must agree,
+// and the refusal must not silently damage the imported body.
+{
+  const hammerKernel = new BrepKernel();
+  const step = readFileSync(
+    resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'),
+  );
+  const imported = Array.from(hammerKernel.importStep(step));
+  assert.equal(imported.length, 1, 'hammer holder STEP must contain one solid');
+  const solid = imported[0];
+  const faces = Array.from(hammerKernel.getSolidFaces(solid));
+  const params = new Map(
+    faces.map((face) => [face, JSON.parse(hammerKernel.getAnalyticSurfaceParams(face))]),
+  );
+  const radiusThreeCylinders = faces.filter((face) => {
+    const surface = params.get(face);
+    return surface.type === 'cylinder' && Math.abs(surface.radius - 3) < 1e-9;
+  });
+  assert.equal(radiusThreeCylinders.length, 32);
+  assert.equal(faces.filter((face) => params.get(face).type === 'torus').length, 14);
+
+  const seed = radiusThreeCylinders[0];
+  assert.throws(
+    () => hammerKernel.getBlendRegion(solid, seed),
+    /blend band touches a freeform face/,
+  );
+
+  const [batchRegion] = JSON.parse(
+    hammerKernel.executeBatch(
+      JSON.stringify([{ op: 'getBlendRegion', args: { solid, face: seed } }]),
+    ),
+  );
+  assert.match(batchRegion.error, /blend band touches a freeform face/);
+
+  const beforeCounts = Array.from(hammerKernel.getEntityCounts(solid));
+  assert.deepEqual(beforeCounts, [160, 386, 238]);
+  assert.throws(() => hammerKernel.resizeBlend(solid, seed, 3, 2), /band-touches-freeform/);
+
+  assert.deepEqual(Array.from(hammerKernel.getEntityCounts(solid)), beforeCounts);
+  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_240.482_852_844_82) <= 0.01);
+  const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
+  assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
+  assert.equal(strict.warningCount, 0, 'refused edit must preserve warning-free topology');
+  const quality = JSON.parse(hammerKernel.meshQuality(solid, 0.1));
+  assert.equal(quality.boundaryEdges, 0);
+  assert.equal(quality.nonManifoldEdges, 0);
+  assert.equal(quality.isWatertight, true);
+  assert.deepEqual(
+    faces.map((face) => params.get(face).type).sort(),
+    Array.from(hammerKernel.getSolidFaces(solid))
+      .map((face) => JSON.parse(hammerKernel.getAnalyticSurfaceParams(face)).type)
+      .sort(),
+    'refused edit must preserve the face census',
+  );
+  console.log('ok - real Shapr3D connected-blend refusal is exact and transactional');
+}
+
+// 14. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
 runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload });
 
 console.log('\nAll smoke tests passed');
