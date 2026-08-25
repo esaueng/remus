@@ -68,7 +68,7 @@ pub(crate) mod self_int;
 
 pub use data::{JointType, OffsetOptions};
 pub use error::OffsetError;
-pub use move_faces::move_faces;
+pub use move_faces::{MoveFacesResult, move_faces, move_faces_with_face_map};
 
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
