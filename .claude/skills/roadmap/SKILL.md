@@ -1239,10 +1239,24 @@ ledger, details in the named fixtures:
   separators the splitter needs do not exist. Different primitive, do not fold it into the split.
   approx_census carries no row for either configuration, so nothing flipped there — the census tracks
   analytic-path degradation, and this was a volume-oracle defect.
-- Micron-scale boolean gap FILED: at model scale 1e-3 a plain box∖box through-cut carries the tool
-  walls untrimmed and the volume EXCEEDS the blank (ignored ready-repro
-  `crates/operations/tests/boolean_scale_gap.rs`). Fix altitude: scaled tolerance through OperationContext
-  into the GFA bands, not a splitter patch.
+- Micron-scale boolean gap — SILENT-WRONG-ANSWER HALF CLOSED (2026-08-25), engine half still open.
+  At model scale 1e-3 a plain box∖box through-cut carries the tool walls untrimmed and the volume
+  EXCEEDS the blank. Read the distinction before quoting this row: what is closed is that the kernel
+  no longer ANSWERS with that solid; what is NOT closed is GFA producing a correct exact result there.
+  The band measured 1e-4 .. 2e-3, wider than the single pinned case, and the wrong result passed every
+  gate the acceptance bar names — right face count, watertight, manifold, Euler balanced,
+  `validate_solid` green (its `VertexOnSurface` issues stay Warning because that check's tolerance is an
+  absolute 1e-4). Closed by `result_within_operand_bounds` (`operations/src/boolean/mod.rs`), the upper
+  half of the contract whose lower half `operands_are_represented` already held: a difference cannot
+  reach outside its blank. Rejecting routes it to the bounded, disclosed mesh fallback — exact at 1e-3,
+  typed error at 1e-4, typed refusal under ExactOnly. The ready-repro is un-ignored and green, with four
+  more tests beside it. TRAP, cost four correct census rows in development: test the result's VERTICES,
+  never its bounding box — `solid_bounding_box` bounds a trimmed curved patch by its untrimmed surface,
+  so box∩sphere reports [−1,11]³ for a result really inside [0,10]³
+  (`curved_cut_result_is_not_rejected` pins this). Still open, unchanged in altitude: scaled tolerance
+  through OperationContext into the GFA bands, so these cases come back exact analytic instead of
+  falling back. Also noted while measuring: ExactOnly already refused this configuration at scale 1e6
+  BEFORE any of this work — a separate, unfiled large-scale cell.
 - Blind-hole floor rim fillet: the stability matrix's wrong-direction defect NO LONGER REPRODUCES;
   concave inward plane/cylinder now shares the convex `r < r_c` bound with closed-form collar pins
   (`qualify_blind_hole_floor_fillet.rs`). resize_blend cylinder/cone positive radius stays a typed
