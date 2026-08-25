@@ -12,7 +12,10 @@
 //! Run:
 //!   cargo run --release --example approx_census -p remus-operations
 //!
-//! The boolean matrix uses overlapping primitives; offset/fillet/chamfer run on
+//! The boolean matrix uses overlapping primitives, and sweeps every geometry
+//! pair across all three operators — fuse, cut and intersect — because the exact
+//! pipeline can hold for one operator and fall back for another on the same two
+//! solids; offset/fillet/chamfer run on
 //! every analytic primitive to show they stay exact (no probe fires). A final
 //! "remaining paths" section then constructs the inputs the primitive matrix
 //! cannot reach — a NURBS-faced loft, a torus, and a 4-valence pyramid apex — so
@@ -78,6 +81,10 @@ fn drain() -> Vec<String> {
 
 type PrimBuild = fn(&mut Topology) -> Result<SolidId, OperationsError>;
 
+/// Builds the two operands of one boolean case into a fresh topology. Borrowed
+/// rather than owned so `bool_pair` can run the same builder once per operator.
+type PairBuild<'a> = &'a dyn Fn(&mut Topology) -> Result<(SolidId, SolidId), OperationsError>;
+
 fn face_count(topo: &Topology, s: SolidId) -> usize {
     solid_faces(topo, s).map(|f| f.len()).unwrap_or(0)
 }
@@ -96,7 +103,7 @@ fn report(family: &str, case: &str, ms: f64, faces: usize, events: &[String]) {
         }
         format!("FALLBACK x{}: {}", events.len(), uniq.join(" | "))
     };
-    println!("  {family:<9} {case:<30} {ms:>8.2}ms  faces={faces:<4}  {path}");
+    println!("  {family:<9} {case:<38} {ms:>8.2}ms  faces={faces:<4}  {path}");
 }
 
 fn box_at(topo: &mut Topology, d: f64, x: f64, y: f64, z: f64) -> Result<SolidId, OperationsError> {
@@ -105,11 +112,7 @@ fn box_at(topo: &mut Topology, d: f64, x: f64, y: f64, z: f64) -> Result<SolidId
     Ok(s)
 }
 
-fn bool_case(
-    name: &str,
-    op: BooleanOp,
-    build: impl FnOnce(&mut Topology) -> Result<(SolidId, SolidId), OperationsError>,
-) {
+fn bool_case(name: &str, op: BooleanOp, build: PairBuild<'_>) {
     let mut topo = Topology::new();
     let (a, b) = match build(&mut topo) {
         Ok(v) => v,
@@ -130,7 +133,16 @@ fn bool_case(
     let ms = t.elapsed().as_secs_f64() * 1000.0;
     let mut ev = drain();
     match res {
-        Ok(s) => report("boolean", name, ms, face_count(&topo, s), &ev),
+        Ok(s) => {
+            let faces = face_count(&topo, s);
+            // An empty intersect is a real answer (the operands share no
+            // volume), so tag it — otherwise faces=0 reads like a failed build.
+            if faces == 0 {
+                report("boolean", &format!("{name} [empty]"), ms, 0, &ev);
+            } else {
+                report("boolean", name, ms, faces, &ev);
+            }
+        }
         Err(e) => {
             ev.push(format!("err: {e}"));
             report("boolean", &format!("{name} [ERR]"), ms, 0, &ev);
@@ -138,39 +150,62 @@ fn bool_case(
     }
 }
 
+/// One geometry pair, swept across all three boolean operators.
+///
+/// The operator belongs to the case, not to the geometry. The exact pipeline can
+/// succeed on one operator and fall back to the mesh on another for the very
+/// same two solids, so a pair probed under a single operator says nothing about
+/// the other two. Testing one operator per pair is what let three mesh fallbacks
+/// sit unreported behind rows that passed: box ∪ sphere (the census tested ∩),
+/// perpendicular cyl ∩ cyl (it tested ∪), and torus ∩ box (it tested −). Every
+/// pair now gets all three, so a clean census means the engine is clean rather
+/// than that the sampling was lucky.
+fn bool_pair(
+    operands: &str,
+    build: impl Fn(&mut Topology) -> Result<(SolidId, SolidId), OperationsError>,
+) {
+    for (symbol, op) in [
+        ("∪", BooleanOp::Fuse),
+        ("−", BooleanOp::Cut),
+        ("∩", BooleanOp::Intersect),
+    ] {
+        bool_case(&format!("{operands} {symbol}"), op, &build);
+    }
+}
+
 fn boolean_matrix() {
-    println!("BOOLEAN (overlapping primitives):");
-    bool_case("box ∪ box (overlap)", BooleanOp::Fuse, |t| {
+    println!("BOOLEAN (overlapping primitives, each pair swept ∪ / − / ∩):");
+    bool_pair("box / box (overlap)", |t| {
         Ok((
             box_at(t, 10.0, 0.0, 0.0, 0.0)?,
             box_at(t, 10.0, 5.0, 5.0, 5.0)?,
         ))
     });
-    bool_case("box ∪ box (flush coplanar)", BooleanOp::Fuse, |t| {
+    bool_pair("box / box (flush coplanar)", |t| {
         Ok((
             box_at(t, 10.0, 0.0, 0.0, 0.0)?,
             box_at(t, 10.0, 10.0, 0.0, 0.0)?,
         ))
     });
-    bool_case("box − cyl (through hole)", BooleanOp::Cut, |t| {
+    bool_pair("box / cyl (through)", |t| {
         let b = box_at(t, 10.0, 0.0, 0.0, 0.0)?;
         let c = primitives::make_cylinder(t, 3.0, 20.0)?;
         transform_solid(t, c, &Mat4::translation(5.0, 5.0, -5.0))?;
         Ok((b, c))
     });
-    bool_case("box ∩ sphere", BooleanOp::Intersect, |t| {
+    bool_pair("box / sphere", |t| {
         let b = box_at(t, 10.0, 0.0, 0.0, 0.0)?;
         let s = primitives::make_sphere(t, 6.0, 24)?;
         transform_solid(t, s, &Mat4::translation(5.0, 5.0, 5.0))?;
         Ok((b, s))
     });
-    bool_case("sphere − cyl (3 pieces)", BooleanOp::Cut, |t| {
+    bool_pair("sphere / cyl (3 pieces)", |t| {
         let s = primitives::make_sphere(t, 6.0, 24)?;
         let c = primitives::make_cylinder(t, 3.0, 30.0)?;
         transform_solid(t, c, &Mat4::translation(0.0, 0.0, -15.0))?;
         Ok((s, c))
     });
-    bool_case("cyl ∪ cyl (perp cross)", BooleanOp::Fuse, |t| {
+    bool_pair("cyl / cyl (perp cross)", |t| {
         let c1 = primitives::make_cylinder(t, 3.0, 20.0)?;
         transform_solid(t, c1, &Mat4::translation(0.0, 0.0, -10.0))?;
         let c2 = primitives::make_cylinder(t, 3.0, 20.0)?;
@@ -178,23 +213,23 @@ fn boolean_matrix() {
         transform_solid(t, c2, &Mat4::translation(-10.0, 0.0, 0.0))?;
         Ok((c1, c2))
     });
-    bool_case("cyl ∩ cyl (coaxial)", BooleanOp::Intersect, |t| {
+    bool_pair("cyl / cyl (coaxial)", |t| {
         let c1 = primitives::make_cylinder(t, 5.0, 20.0)?;
         let c2 = primitives::make_cylinder(t, 5.0, 20.0)?;
         transform_solid(t, c2, &Mat4::translation(0.0, 0.0, 10.0))?;
         Ok((c1, c2))
     });
-    bool_case("cone ∪ box", BooleanOp::Fuse, |t| {
+    bool_pair("cone / box", |t| {
         let c = primitives::make_cone(t, 6.0, 2.0, 12.0)?;
         let b = box_at(t, 8.0, -4.0, -4.0, 6.0)?;
         Ok((c, b))
     });
-    bool_case("torus − box", BooleanOp::Cut, |t| {
+    bool_pair("torus / box", |t| {
         let tor = primitives::make_torus(t, 10.0, 3.0, 32)?;
         let b = box_at(t, 8.0, 6.0, -4.0, -4.0)?;
         Ok((tor, b))
     });
-    bool_case("cyl − box (slot)", BooleanOp::Cut, |t| {
+    bool_pair("cyl / box (slot)", |t| {
         let c = primitives::make_cylinder(t, 6.0, 20.0)?;
         let b = box_at(t, 4.0, -2.0, -8.0, 5.0)?;
         Ok((c, b))
