@@ -35,6 +35,17 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
         });
     }
 
+    // A thick solid keeps BOTH skins: the offset one and a clone of the
+    // original. Whichever ends up inside is the cavity, and only that one
+    // opposes its source surface. Which one that is follows the sign of the
+    // distance — an inward offset puts the offset skin inside, an outward one
+    // puts the original skin inside. Flipping the offset skin either way (the
+    // rule before this) turned every outward thick solid's outer boundary
+    // inside out, so the body measured as the SUM of its two skins rather than
+    // their difference.
+    let offset_skin_is_cavity = has_openings && data.distance < 0.0;
+    let original_skin_is_cavity = has_openings && data.distance > 0.0;
+
     let mut shell_groups: Vec<Vec<FaceId>> = Vec::with_capacity(data.shell_faces.len());
     for source_faces in &data.shell_faces {
         let mut source_faces = source_faces.clone();
@@ -68,9 +79,8 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
             let outer_wire = wires[0];
             let inner_wires = wires[1..].to_vec();
 
-            // A thick solid contains the original outer skin and an offset
-            // inner skin, so the offset faces must oppose their source faces.
-            let result_reversed = topo.face(offset_face.original)?.is_reversed() ^ has_openings;
+            let result_reversed =
+                topo.face(offset_face.original)?.is_reversed() ^ offset_skin_is_cavity;
             let face = if result_reversed {
                 Face::new_reversed(outer_wire, inner_wires, offset_face.surface.clone())
             } else {
@@ -95,7 +105,11 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
                 continue;
             };
             if offset_face.status == OffsetStatus::Done {
-                outer_group.push(topo.add_face(topo.face(offset_face.original)?.clone()));
+                let mut skin = topo.face(offset_face.original)?.clone();
+                if original_skin_is_cavity {
+                    skin.set_reversed(!skin.is_reversed());
+                }
+                outer_group.push(topo.add_face(skin));
             }
         }
         let wall_faces = build_wall_faces(topo, data)?;
