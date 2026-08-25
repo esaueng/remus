@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787624012941,
+  "lastUpdate": 1787626951152,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -1943,6 +1943,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41083021,
             "range": "± 1407621",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ae1978de12fb470427aaa822d9f1fe387afab341",
+          "message": "fix: two gates that could not detect what they claimed to (#85)\n\n* fix(ci): make the product-naming and lineage gates able to fail\n\nBoth scripts scanned with `rg`, which is not installed on the GitHub\nrunner, and both put the scan inside an `if var=$(...)` condition. That\nidiom swallows a command's exit status wholesale, so the resulting 127\nread as \"no matches\": the Product Naming job printed its success line\nand exited 0 on every run, and the Apache Lineage job silently skipped\nits incompatible-license-metadata scan while still reporting success.\n\nThe naming gate had therefore never been able to fail since it was\nadded, and a real violation reached `main` past it.\n\nTwo changes, applied to both scripts:\n\n- Scan with `git grep` instead of `rg`. A git checkout is guaranteed to\n  have it, so there is no install step that could itself be dropped, and\n  it brings pathspec excludes and binary skipping natively. Scope\n  narrows from the working tree to tracked files, which is the right\n  scope: the sibling tracked-path check was already tracked-only, a CI\n  checkout has no untracked files, and untracked scratch files are not\n  part of the tree's published identity.\n- Never let a scan's exit status be read as a result. 0 means found and\n  1 means clean; anything else aborts the gate with a message rather\n  than vouching for a tree it never read.\n\nVerified the naming gate now fails on a planted content violation, fails\non a planted tracked-path violation, aborts with exit 2 when its scanner\nis missing, and still passes on a clean tree; and that the lineage gate\nfails on planted AGPL-3.0-only metadata.\n\nAdds AI-DISCLOSURE-ETHICS.md to the naming allowlist. It names the\npredecessor project as a statement of origin — the same category as\nNOTICE, which is already exempt — and the file says outright that it is\nhuman-written and not for agents to edit. Its references are a record,\nnot naming that failed to get updated.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(operations): sweep the boolean census across all three operators\n\napprox_census tested each geometry pair under a single boolean operator,\nand in every case that operator happened to be one that passes. The\noperator belongs to the case, not to the geometry: the exact pipeline\ncan hold for one operator and fall back to the mesh on another for the\nvery same two solids.\n\nSweeping the ten existing pairs across fuse, cut and intersect (30 rows,\nsame geometry, no new fixtures) surfaces three mesh fallbacks that were\neach sitting one operator away from a row the census already reported as\nexact analytic:\n\n  box / sphere ∪            1192 all-planar faces  (census tested ∩)\n  cyl / cyl (perp cross) ∩    70 all-planar faces  (census tested ∪)\n  torus / box ∩              312 all-planar faces  (census tested −)\n\nNone of these is a wrong answer — volumes land within ~0.2-0.5% of the\nclosed form, consistent with the default deflection. They are honest\napproximations that cost the analytic surface types, so they do not\nSTEP-export as analytic and do not fillet meaningfully downstream.\n\nThe detector was never the problem: run_mesh_fallback already emits the\nremus_approx probe, and it fires correctly on all three. The gap was\npurely which cases got probed.\n\nAlso marks an empty result explicitly, so the empty intersect this sweep\nnewly exercises (box / box flush coplanar) is not read as a failed build\nat faces=0, and widens the case column to fit the longest row.\n\nAmends the roadmap skill, per its own maintenance rule. Its claim that\n\"approx_census carries NO boolean fallback rows at all on this fork\" was\ntrue of the sampling rather than of the engine, and would otherwise now\ncontradict the census it cites. Records the Steinmetz intersect as a\nDEFERRED-but-ready item: equal-radius perpendicular cylinder intersect\nis the one chaseable row of the three. Its seam is two planar ellipses\nwith no singularity — not the self-touching figure-eight pinch that made\nthe perpendicular cylinder UNION terminal — and the union direction\nalready ships exact at 6 faces. Both surface and curve variants already\nexist, and the volume oracle is 16/3*r^3. The other two reduce to\nexisting TERMINAL entries and are not proposed.\n\nVerified: workspace clippy clean, full suite 3969 passed / 0 failed,\nunchanged from before this commit.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-24T22:59:38-04:00",
+          "tree_id": "151b7e0bc915baf8072075a2022cf01a008ef83e",
+          "url": "https://github.com/esaueng/remus/commit/ae1978de12fb470427aaa822d9f1fe387afab341"
+        },
+        "date": 1787626949933,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1283442,
+            "range": "± 1573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1372899,
+            "range": "± 1986",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12945,
+            "range": "± 36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 952810,
+            "range": "± 17237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38915258,
+            "range": "± 678847",
             "unit": "ns/iter"
           }
         ]
