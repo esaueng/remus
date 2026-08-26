@@ -281,17 +281,36 @@ impl HealOperator for SewShellsOp {
     ) -> Result<(SolidId, FixResult), HealError> {
         let solid_data = topo.solid(solid_id)?;
         let shell_id = solid_data.outer_shell();
-        let sewn = crate::upgrade::shell_sewing::sew_shell(topo, shell_id, ctx.tolerance.linear)?;
-        let status = if sewn > 0 {
-            crate::status::Status::DONE1
-        } else {
-            crate::status::Status::OK
-        };
+        let report =
+            crate::upgrade::shell_sewing::sew_shell_report(topo, shell_id, ctx.tolerance.linear)?;
+
+        let mut status = crate::status::Status::empty();
+        if report.sewn > 0 {
+            status |= crate::status::Status::DONE1;
+        }
+        if report.declined > 0 {
+            // Coincident free edges the pass refused to merge: the shell is
+            // still open there, and saying so beats reporting success.
+            status |= crate::status::Status::FAIL1;
+            ctx.send_message(
+                crate::context::MessageSeverity::Warning,
+                format!(
+                    "sew_shells: declined {} coincident free-edge pair(s) whose curves disagree \
+                     or whose partner was ambiguous",
+                    report.declined
+                ),
+                status,
+            );
+        }
+        if status.is_empty() {
+            status = crate::status::Status::OK;
+        }
+
         Ok((
             solid_id,
             FixResult {
                 status,
-                actions_taken: sewn,
+                actions_taken: report.sewn,
             },
         ))
     }
