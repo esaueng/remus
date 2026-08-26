@@ -174,19 +174,24 @@ fn check_wire_self_intersection_impl(
                 edge_segments.push(vec![p0, p1]);
             }
             remus_topology::edge::EdgeCurve::Circle(c) => {
-                let is_closed = edge.start() == edge.end();
-                let (t0, t1) = if is_closed {
-                    (0.0, std::f64::consts::TAU)
+                let (t0, t1) = if let Some(trim) = edge.trim() {
+                    trim
+                } else if edge.is_closed() {
+                    let start = c.project(p0);
+                    (start, start + std::f64::consts::TAU)
                 } else {
-                    let mut ta = c.project(p0);
-                    let mut tb = c.project(p1);
-                    if !oe.is_forward() {
-                        std::mem::swap(&mut ta, &mut tb);
+                    // Legacy imported arcs may not carry an explicit trim.
+                    // Match tessellation's authoritative convention and walk
+                    // the shorter endpoint-bounded arc; the complementary
+                    // major arc can cross unrelated wire edges and report a
+                    // false self-intersection.
+                    let start = c.project(p0);
+                    let forward = (c.project(p1) - start).rem_euclid(std::f64::consts::TAU);
+                    if forward <= std::f64::consts::PI {
+                        (start, start + forward)
+                    } else {
+                        (start, start - (std::f64::consts::TAU - forward))
                     }
-                    if tb <= ta {
-                        tb += std::f64::consts::TAU;
-                    }
-                    (ta, tb)
                 };
                 let mut pts = Vec::with_capacity(samples_per_edge + 1);
                 for k in 0..=samples_per_edge {
@@ -331,4 +336,69 @@ fn check_wire_self_intersection_impl(
     }
 
     Ok(vec![])
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    use super::check_wire_self_intersection;
+
+    #[test]
+    fn untrimmed_circle_uses_short_arc_for_crossing_check() {
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(0.0, -1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 1.0, 1.0),
+            Point3::new(0.0, 1.0, -1.0),
+            Point3::new(0.0, -1.0, -1.0),
+        ];
+        let vertices: Vec<_> = points
+            .into_iter()
+            .map(|point| topo.add_vertex(Vertex::new(point, 1e-7)))
+            .collect();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            1.0,
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        let mut edges = vec![topo.add_edge(Edge::new(
+            vertices[0],
+            vertices[1],
+            EdgeCurve::Circle(circle),
+        ))];
+        for index in 1..vertices.len() {
+            edges.push(topo.add_edge(Edge::new(
+                vertices[index],
+                vertices[(index + 1) % vertices.len()],
+                EdgeCurve::Line,
+            )));
+        }
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .into_iter()
+                    .map(|edge| OrientedEdge::new(edge, true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+
+        let issues = check_wire_self_intersection(&topo, wire, 1e-7).unwrap();
+        assert!(
+            issues.is_empty(),
+            "short quarter arc must not cross: {issues:?}"
+        );
+    }
 }
