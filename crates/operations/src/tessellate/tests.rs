@@ -1728,6 +1728,36 @@ fn tessellate_thin_box() {
 }
 
 #[test]
+fn analytic_grid_refuses_an_unbounded_deflection() {
+    // `nu`/`nv` come straight from the chord-deviation helper, so a small enough
+    // deflection asks for an arbitrarily large grid. Before the bound, a torus at
+    // 1e-6 allocated until the process died; it now refuses in microseconds.
+    let mut topo = Topology::new();
+    let torus = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+
+    let refused = super::tessellate_solid(&topo, torus, 1e-6);
+    assert!(
+        refused.is_err(),
+        "an unbounded analytic grid must be refused, not attempted; got {} triangles",
+        refused.map_or(0, |m| m.indices.len() / 3)
+    );
+    if let Err(err) = super::tessellate_solid(&topo, torus, 1e-6) {
+        assert!(
+            err.to_string().contains("work limit"),
+            "expected the grid work-limit refusal, got: {err}"
+        );
+    }
+
+    // A deflection a caller would actually use is untouched.
+    let mesh = super::tessellate_solid(&topo, torus, 1e-2).unwrap();
+    assert!(
+        mesh.indices.len() / 3 > 1000,
+        "a normal deflection must still tessellate, got {} triangles",
+        mesh.indices.len() / 3
+    );
+}
+
+#[test]
 fn tessellate_small_torus_reasonable_count() {
     let mut topo = Topology::new();
     let solid = crate::primitives::make_torus(&mut topo, 5.0, 0.1, 32).unwrap();
