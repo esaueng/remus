@@ -506,11 +506,10 @@ pub fn filter_planar_edges(
     solid_id: SolidId,
     edge_ids: &[EdgeId],
 ) -> Result<Vec<EdgeId>, OperationsError> {
-    let solid_data = topo.solid(solid_id)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-
+    // Solid-scoped: a hollow body's cavity faces carry filletable/planar edges
+    // too, so walk outer + inner shells (CLAUDE.md, "Walking faces in a solid").
     let mut edge_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
-    for &fid in shell.faces() {
+    for fid in solid_faces(topo, solid_id)? {
         let face = topo.face(fid)?;
         let wire = topo.wire(face.outer_wire())?;
         for oe in wire.edges() {
@@ -556,14 +555,13 @@ pub fn filter_filletable_edges(
     solid_id: SolidId,
     edge_ids: &[EdgeId],
 ) -> Result<Vec<EdgeId>, OperationsError> {
-    let solid_data = topo.solid(solid_id)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-
+    // Solid-scoped: a hollow body's cavity faces carry filletable/planar edges
+    // too, so walk outer + inner shells (CLAUDE.md, "Walking faces in a solid").
     // Map each edge to its set of *distinct* adjacent faces, walking both outer
     // and inner (hole-boundary) wires — the same adjacency the fillet engine
     // sees. The set dedups a seam edge that a single face's wire lists twice.
     let mut edge_faces: HashMap<usize, HashSet<FaceId>> = HashMap::new();
-    for &fid in shell.faces() {
+    for fid in solid_faces(topo, solid_id)? {
         let face = topo.face(fid)?;
         let mut wires = vec![face.outer_wire()];
         wires.extend(face.inner_wires().iter().copied());

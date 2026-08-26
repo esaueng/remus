@@ -437,7 +437,7 @@ fn unit_si_factor(
                 reason: format!("conversion factor entity #{measure_ref} not found"),
             })?;
         let measure_attrs = measure.attrs.clone();
-        let value = parse_floats(&measure_attrs)
+        let value = parse_floats(&measure_attrs)?
             .first()
             .copied()
             .ok_or_else(|| IoError::ParseError {
@@ -1635,7 +1635,7 @@ impl<'a> StepBuilder<'a> {
             }
             "CYLINDRICAL_SURFACE" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("CYLINDRICAL_SURFACE #{surface_ref} missing axis"),
                 })?;
@@ -1652,7 +1652,7 @@ impl<'a> StepBuilder<'a> {
             }
             "CONICAL_SURFACE" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("CONICAL_SURFACE #{surface_ref} missing axis"),
                 })?;
@@ -1693,7 +1693,7 @@ impl<'a> StepBuilder<'a> {
             }
             "SPHERICAL_SURFACE" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("SPHERICAL_SURFACE #{surface_ref} missing axis"),
                 })?;
@@ -1712,7 +1712,7 @@ impl<'a> StepBuilder<'a> {
             }
             "TOROIDAL_SURFACE" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("TOROIDAL_SURFACE #{surface_ref} missing axis"),
                 })?;
@@ -1859,7 +1859,7 @@ impl<'a> StepBuilder<'a> {
         // The magnitude is the only float on the VECTOR itself; the
         // direction's components live on the referenced DIRECTION.
         let magnitude =
-            parse_floats(&attrs)
+            parse_floats(&attrs)?
                 .first()
                 .copied()
                 .ok_or_else(|| IoError::ParseError {
@@ -2205,7 +2205,7 @@ impl<'a> StepBuilder<'a> {
                 // Every reference in this reader is found that way, so fixing
                 // it is a change to the reference layer, not to this arm.
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("CIRCLE #{curve_ref} missing axis reference"),
                 })?;
@@ -2235,7 +2235,7 @@ impl<'a> StepBuilder<'a> {
             // the raw direction is what belongs here, unprojected.
             "ELLIPSE" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("ELLIPSE #{curve_ref} missing axis reference"),
                 })?;
@@ -2266,7 +2266,7 @@ impl<'a> StepBuilder<'a> {
             // arbitrary in-plane axis and rotate the branch inside its plane.
             "HYPERBOLA" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("HYPERBOLA #{curve_ref} missing axis reference"),
                 })?;
@@ -2300,7 +2300,7 @@ impl<'a> StepBuilder<'a> {
             // vertices trim.
             "PARABOLA" => {
                 let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs);
+                let floats = parse_floats(&attrs)?;
                 let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
                     reason: format!("PARABOLA #{curve_ref} missing axis reference"),
                 })?;
@@ -2623,7 +2623,7 @@ impl<'a> StepBuilder<'a> {
 
     fn build_cartesian_point(&self, cp_ref: u64) -> Result<Point3, IoError> {
         let attrs = &self.get_entity(cp_ref)?.attrs;
-        let coords = parse_floats(attrs);
+        let coords = parse_floats(attrs)?;
         if coords.len() < 3 {
             return Err(IoError::ParseError {
                 reason: format!(
@@ -2638,7 +2638,7 @@ impl<'a> StepBuilder<'a> {
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
         let attrs = &self.get_entity(dir_ref)?.attrs;
-        let coords = parse_floats(attrs);
+        let coords = parse_floats(attrs)?;
         if coords.len() < 3 {
             return Err(IoError::ParseError {
                 reason: format!(
@@ -4236,7 +4236,36 @@ fn parse_list_refs(attrs: &str) -> Vec<u64> {
 /// Extract floating-point numbers from an attribute string.
 ///
 /// Handles both nested `(1.0, 2.0)` and flat `'', #ref, 1.5E+00` formats.
-fn parse_floats(attrs: &str) -> Vec<f64> {
+///
+/// # Non-finite values
+///
+/// This is the single funnel every number takes on its way out of a STEP file —
+/// coordinates, direction components, radii, angles, knots and weights all pass
+/// through here — so it is where finiteness is enforced. `f64::from_str` accepts
+/// `NaN`, `inf` and `infinity`, and silently overflows a large literal to
+/// infinity, so `1.E400` — which is well-formed STEP real syntax, not merely a
+/// hostile token — used to arrive as `inf` and propagate into the topology as a
+/// coordinate. Every downstream guard is a tolerance comparison, and those all
+/// return false against NaN, so nothing further along would have caught it.
+///
+/// Rejecting here rather than at each of the sixteen call sites means a value
+/// that cannot describe geometry never reaches a constructor, and the caller's
+/// existing arity check is not left reporting a confusing shortfall instead.
+///
+/// # Errors
+///
+/// Returns [`IoError::ParseError`] if any parsed token is NaN or infinite.
+fn parse_floats(attrs: &str) -> Result<Vec<f64>, IoError> {
+    fn checked(v: f64, attrs: &str) -> Result<f64, IoError> {
+        if v.is_finite() {
+            Ok(v)
+        } else {
+            Err(IoError::ParseError {
+                reason: format!("non-finite value `{v}` in attributes `{attrs}`"),
+            })
+        }
+    }
+
     let mut result = Vec::new();
     // Try nested parentheses first.
     if let Some(start) = attrs.find('(')
@@ -4246,7 +4275,7 @@ fn parse_floats(attrs: &str) -> Vec<f64> {
         for part in inner.split(',') {
             let trimmed = part.trim();
             if let Ok(v) = trimmed.parse::<f64>() {
-                result.push(v);
+                result.push(checked(v, attrs)?);
             }
         }
     }
@@ -4258,11 +4287,11 @@ fn parse_floats(attrs: &str) -> Vec<f64> {
                 continue;
             }
             if let Ok(v) = trimmed.parse::<f64>() {
-                result.push(v);
+                result.push(checked(v, attrs)?);
             }
         }
     }
-    result
+    Ok(result)
 }
 
 /// Find the B-spline attribute substring within a composite STEP entity.
@@ -4517,8 +4546,8 @@ fn parse_bspline_surface_attrs(
     let u_mults = parse_ints_in_parens(&groups[1]);
     let v_mults = parse_ints_in_parens(&groups[2]);
 
-    let u_knots = parse_floats(&groups[3]);
-    let v_knots = parse_floats(&groups[4]);
+    let u_knots = parse_floats(&groups[3]).ok()?;
+    let v_knots = parse_floats(&groups[4]).ok()?;
 
     Some((
         degree_u, degree_v, cp_grid, u_mults, v_mults, u_knots, v_knots,
@@ -4647,7 +4676,7 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
 
     let cp_refs = parse_refs(&groups[0]);
     let mults = parse_ints_in_parens(&groups[1]);
-    let knots = parse_floats(&groups[2]);
+    let knots = parse_floats(&groups[2]).ok()?;
 
     Some((degree, cp_refs, mults, knots))
 }
@@ -5170,16 +5199,42 @@ mod tests {
 
     #[test]
     fn parse_floats_basic() {
-        let floats = parse_floats("'', (1.5, -2.3, 0.)");
+        let floats = parse_floats("'', (1.5, -2.3, 0.)").unwrap();
         assert_eq!(floats.len(), 3);
         assert!((floats[0] - 1.5).abs() < 1e-10);
         assert!((floats[1] - (-2.3)).abs() < 1e-10);
         assert!((floats[2]).abs() < 1e-10);
     }
 
+    /// `f64::from_str` accepts `NaN` and `inf`, and silently overflows a large
+    /// literal to infinity — and `1.E400` is well-formed STEP real syntax, not
+    /// merely a hostile token. Such a value used to reach the topology as a
+    /// coordinate, where every downstream guard is a tolerance comparison and
+    /// those all return false against NaN. Reject at the parse boundary instead.
+    #[test]
+    fn parse_floats_rejects_non_finite_values() {
+        for attrs in [
+            "'', (1.0, NaN, 0.)",
+            "'', (1.0, inf, 0.)",
+            "'', (1.0, -infinity, 0.)",
+            // Overflow, not a keyword: valid STEP real syntax that becomes inf.
+            "'', (1.0, 1.E400, 0.)",
+        ] {
+            let err =
+                parse_floats(attrs).expect_err(&format!("`{attrs}` must be rejected, not parsed"));
+            assert!(
+                err.to_string().contains("non-finite"),
+                "for `{attrs}` the message was: {err}"
+            );
+        }
+        // A finite magnitude near the limit still parses.
+        assert_eq!(parse_floats("'', (1.E300, 0., 0.)").unwrap().len(), 3);
+    }
+
     #[test]
     fn parse_floats_scientific() {
-        let floats = parse_floats("'', (1.000000000000000E+00, -5.000000000000000E-01, 0.)");
+        let floats =
+            parse_floats("'', (1.000000000000000E+00, -5.000000000000000E-01, 0.)").unwrap();
         assert_eq!(floats.len(), 3);
         assert!((floats[0] - 1.0).abs() < 1e-10);
         assert!((floats[1] - (-0.5)).abs() < 1e-10);

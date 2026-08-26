@@ -793,6 +793,14 @@ impl BrepKernel {
             }
             .into());
         }
+        // `convex_hull_3d` is quadratic in the point count before Quickhull even
+        // starts — its duplicate rejection scans every accepted point per input —
+        // so an unbounded array from JS stalls the tab with no error. Cap the
+        // count on the same budget the other count-bounded bindings use.
+        let point_count = u32::try_from(points.len()).map_err(|_| WasmError::InvalidInput {
+            reason: "convex hull point count exceeds the work budget".to_string(),
+        })?;
+        let _ = validate_work_count(point_count, "convex hull points")?;
 
         let solid_id = remus_operations::primitives::make_convex_hull(self.topo_mut(), &points)?;
         Ok(solid_id_to_u32(solid_id))
