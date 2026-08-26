@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787673282591,
+  "lastUpdate": 1787710790661,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2213,6 +2213,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 36807830,
             "range": "± 115739",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d72351b2923d224384f837ae6f521f77bd41c10c",
+          "message": "Merge pull request #90 from esaueng/codex/reconcile-pr-87\n\nfeat(operations): move planar faces through blends",
+          "timestamp": "2026-08-25T22:16:58-04:00",
+          "tree_id": "413a7e2c78b3d686a3f461544151765b20ebdc11",
+          "url": "https://github.com/esaueng/remus/commit/d72351b2923d224384f837ae6f521f77bd41c10c"
+        },
+        "date": 1787710789486,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1297981,
+            "range": "± 2113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1384854,
+            "range": "± 2004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13126,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 958351,
+            "range": "± 1720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38833013,
+            "range": "± 118452",
             "unit": "ns/iter"
           }
         ]
