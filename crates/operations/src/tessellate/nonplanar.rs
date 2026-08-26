@@ -875,6 +875,13 @@ pub(super) fn tessellate_torus_two_rim_band(
         segments_for_chord_deviation_a(wrap_radius, TAU, deflection, angular_tol, true);
     let n_cols = rims[0].len().max(rims[1].len()).max(full_circle_cols);
 
+    // Same work bound the CDT interior path applies. A band mesher declines
+    // rather than erroring: the caller then routes the face to a path that
+    // carries the bound itself, instead of the whole tessellation failing.
+    if validate_interior_grid_size(n_cols, n_rows).is_err() {
+        return Ok(false);
+    }
+
     let emit = make_band_emit(&project, &surf_normal);
     let mut prev_ring: LatRing = rims[0].clone();
     for i in 1..n_rows {
@@ -1091,6 +1098,13 @@ pub(super) fn tessellate_torus_notch_band(
         segments_for_chord_deviation_a(torus.minor_radius(), TAU, deflection, angular_tol, true)
             .max(8);
 
+    // Same work bound the CDT interior path applies. A band mesher declines
+    // rather than erroring: the caller then routes the face to a path that
+    // carries the bound itself, instead of the whole tessellation failing.
+    if validate_interior_grid_size(n_u, n_v).is_err() {
+        return Ok(false);
+    }
+
     // Build interior rings as `LatRing` (sorted by v) of fresh vertices.
     let build_u_ring = |u: f64,
                         merged: &mut TriangleMesh,
@@ -1244,6 +1258,13 @@ pub(super) fn tessellate_latitude_band_shared(
             segments_for_chord_deviation_a(band_radius, v_hi - v_lo, deflection, angular_tol, true)
                 .max(1);
         let n_u_interior = ring_lo.len().max(ring_hi.len()).max(full_circle_cols);
+
+        // Same work bound the CDT interior path applies. A band mesher declines
+        // rather than erroring: the caller then routes the face to a path that
+        // carries the bound itself, instead of the whole tessellation failing.
+        if validate_interior_grid_size(n_u_interior, n_v).is_err() {
+            return Ok(false);
+        }
         let mut prev_ring: LatRing = ring_lo.clone();
         for iv in 1..n_v {
             #[allow(clippy::cast_precision_loss)]
@@ -1309,6 +1330,13 @@ pub(super) fn tessellate_latitude_band_shared(
         true,
     )
     .max(1);
+
+    // Same work bound the CDT interior path applies. A band mesher declines
+    // rather than erroring: the caller then routes the face to a path that
+    // carries the bound itself, instead of the whole tessellation failing.
+    if validate_interior_grid_size(floor.len().max(cap_ring.len()), n_v).is_err() {
+        return Ok(false);
+    }
 
     // Lower boundary ring as a LatRing (drop the v component; the gid carries
     // the shared scalloped-floor vertex).
@@ -2171,7 +2199,10 @@ pub(super) fn tessellate_nonplanar_cdt(
 /// causing an unbounded Cartesian-product allocation.
 const MAX_INTERIOR_GRID_POINTS: usize = 1_000_000;
 
-fn validate_interior_grid_size(n_u: usize, n_v: usize) -> Result<(), crate::OperationsError> {
+pub(super) fn validate_interior_grid_size(
+    n_u: usize,
+    n_v: usize,
+) -> Result<(), crate::OperationsError> {
     let candidates = n_u.saturating_sub(1).checked_mul(n_v.saturating_sub(1));
     if candidates.is_none_or(|count| count > MAX_INTERIOR_GRID_POINTS) {
         return Err(crate::OperationsError::InvalidInput {
@@ -2482,6 +2513,13 @@ fn fill_sphere_latitude_cap(
         angular_tol,
         true,
     ));
+
+    // Same work bound the CDT interior path applies. A band mesher declines
+    // rather than erroring: the caller then routes the face to a path that
+    // carries the bound itself, instead of the whole tessellation failing.
+    if validate_interior_grid_size(n_u, n_v).is_err() {
+        return false;
+    }
     let surf_eval = |u, v| sphere.evaluate(u, v);
     let surf_normal = |u, v| sphere.normal(u, v);
     let project = |p| sphere.project_point(p);
