@@ -662,9 +662,18 @@ pub(super) fn tessellate_analytic(
     nu: usize,
     nv: usize,
     kind: AnalyticKind,
-) -> TriangleMeshUV {
+) -> Result<TriangleMeshUV, crate::OperationsError> {
     let nu = nu.max(4);
     let nv = nv.max(1);
+
+    // Every analytic face type funnels through here, and `nu`/`nv` arrive
+    // straight from the chord-deviation helper with nothing between them and a
+    // caller-supplied deflection — so a small enough deflection asks for an
+    // arbitrarily large grid and the allocations below never return. The CDT
+    // interior path has carried this budget for a while; the analytic grid it
+    // sits beside had none, which is the larger hole of the two since it covers
+    // cylinder, cone, sphere and torus alike.
+    super::nonplanar::validate_interior_grid_size(nu + 1, nv + 1)?;
 
     let num_verts = (nu + 1) * (nv + 1);
     let num_indices = nu * nv * 6;
@@ -734,14 +743,14 @@ pub(super) fn tessellate_analytic(
         }
     }
 
-    TriangleMeshUV {
+    Ok(TriangleMeshUV {
         mesh: TriangleMesh {
             positions,
             normals,
             indices,
         },
         uvs,
-    }
+    })
 }
 
 /// Tessellate a planar face using CDT (Constrained Delaunay Triangulation).

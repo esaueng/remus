@@ -61,9 +61,10 @@ pub fn point_to_solid_distance(
 ) -> Result<DistanceResult, crate::OperationsError> {
     let tol = Tolerance::new();
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<FaceId> = shell.faces().to_vec();
+    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
+    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
+    // solid"). This query is not one of the per-shell exceptions.
+    let face_ids: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid)?;
 
     let face_aabbs = build_face_aabbs(topo, &face_ids)?;
     let bvh = Bvh::build(&face_aabbs);
@@ -131,9 +132,10 @@ pub fn solid_to_solid_distance(
     }
 
     // Vertices of A against faces of B.
-    let data_b = topo.solid(solid_b)?;
-    let shell_b = topo.shell(data_b.outer_shell())?;
-    let faces_b: Vec<FaceId> = shell_b.faces().to_vec();
+    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
+    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
+    // solid"). This query is not one of the per-shell exceptions.
+    let faces_b: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid_b)?;
     let aabbs_b = build_face_aabbs(topo, &faces_b)?;
     let bvh_b = Bvh::build(&aabbs_b);
 
@@ -155,9 +157,10 @@ pub fn solid_to_solid_distance(
     }
 
     // Vertices of B against faces of A.
-    let data_a = topo.solid(solid_a)?;
-    let shell_a = topo.shell(data_a.outer_shell())?;
-    let faces_a: Vec<FaceId> = shell_a.faces().to_vec();
+    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
+    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
+    // solid"). This query is not one of the per-shell exceptions.
+    let faces_a: Vec<FaceId> = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let aabbs_a = build_face_aabbs(topo, &faces_a)?;
     let bvh_a = Bvh::build(&aabbs_a);
 
@@ -478,18 +481,21 @@ fn collect_solid_edges(
     let mut seen = std::collections::HashSet::new();
     let mut edges = Vec::new();
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-
-    for &fid in shell.faces() {
+    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
+    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
+    // solid"). This query is not one of the per-shell exceptions.
+    // Inner wires matter for the same reason: a hole rim is boundary too.
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            if seen.insert(oe.edge().index()) {
-                let edge = topo.edge(oe.edge())?;
-                let p1 = topo.vertex(edge.start())?.point();
-                let p2 = topo.vertex(edge.end())?.point();
-                edges.push((p1, p2));
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wid)?;
+            for oe in wire.edges() {
+                if seen.insert(oe.edge().index()) {
+                    let edge = topo.edge(oe.edge())?;
+                    let p1 = topo.vertex(edge.start())?.point();
+                    let p2 = topo.vertex(edge.end())?.point();
+                    edges.push((p1, p2));
+                }
             }
         }
     }
@@ -596,17 +602,20 @@ fn collect_solid_points(
     let mut seen = std::collections::HashSet::new();
     let mut points = Vec::new();
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-
-    for &fid in shell.faces() {
+    // Solid-scoped: a hollow body's cavity walls are real boundary and must be
+    // considered, so walk outer + inner shells (CLAUDE.md, "Walking faces in a
+    // solid"). This query is not one of the per-shell exceptions.
+    // Inner wires matter for the same reason: a hole rim is boundary too.
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            for vid in [edge.start(), edge.end()] {
-                if seen.insert(vid.index()) {
-                    points.push(topo.vertex(vid)?.point());
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wid)?;
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge())?;
+                for vid in [edge.start(), edge.end()] {
+                    if seen.insert(vid.index()) {
+                        points.push(topo.vertex(vid)?.point());
+                    }
                 }
             }
         }
@@ -625,6 +634,41 @@ mod tests {
     use remus_topology::test_utils::make_unit_cube_manifold_at;
 
     use super::*;
+
+    /// A hollow solid's cavity wall is boundary. Walking only `outer_shell()`
+    /// answers this with the distance to the OUTER wall, which is both wrong and
+    /// larger — the failure mode CLAUDE.md's "Walking faces in a solid" warns
+    /// about, and it was live here.
+    #[test]
+    fn distance_sees_the_cavity_wall_of_a_hollow_solid() {
+        let mut topo = Topology::new();
+        let block = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        // A fully-interior tool leaves a void: the result carries an inner shell
+        // spanning 3.0 ..= 7.0 in every axis.
+        let void = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            void,
+            &remus_math::mat::Mat4::translation(3.0, 3.0, 3.0),
+        )
+        .unwrap();
+        let hollow =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, block, void)
+                .unwrap();
+        assert!(
+            !topo.solid(hollow).unwrap().inner_shells().is_empty(),
+            "test needs a solid that actually has a cavity shell"
+        );
+
+        // From the cavity centre the nearest boundary is the cavity wall at 2.0.
+        // Outer-shell-only walking reports 5.0 (the outer wall).
+        let result = point_to_solid_distance(&topo, Point3::new(5.0, 5.0, 5.0), hollow).unwrap();
+        assert!(
+            (result.distance - 2.0).abs() < 1e-6,
+            "expected the cavity wall at 2.0, got {} (5.0 means only the outer shell was walked)",
+            result.distance
+        );
+    }
 
     #[test]
     fn point_inside_cube_distance_is_half() {
