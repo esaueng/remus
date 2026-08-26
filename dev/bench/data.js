@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787673282591,
+  "lastUpdate": 1787710790661,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2213,6 +2213,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 36807830,
             "range": "± 115739",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a9e93edd59bc93dfa10e6a818de2771e77d3bb27",
+          "message": "Merge pull request #90 from esaueng/codex/reconcile-pr-87\n\nfeat(operations): move planar faces through blends",
+          "timestamp": "2026-08-25T22:16:58-04:00",
+          "tree_id": "2ccf5419fa2c5b6ba88dbef7e26e1e048b598d3d",
+          "url": "https://github.com/esaueng/remus/commit/a9e93edd59bc93dfa10e6a818de2771e77d3bb27"
+        },
+        "date": 1787710789486,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1297981,
+            "range": "± 2113",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1384854,
+            "range": "± 2004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13126,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 958351,
+            "range": "± 1720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38833013,
+            "range": "± 118452",
             "unit": "ns/iter"
           }
         ]
