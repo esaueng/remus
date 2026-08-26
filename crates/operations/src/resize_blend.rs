@@ -721,6 +721,27 @@ fn surface_translation_invariant(surface: &FaceSurface, direction: Vec3) -> bool
     }
 }
 
+fn invariant_boundary_carriers(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    moved_faces: &HashSet<FaceId>,
+    direction: Vec3,
+) -> Result<HashSet<FaceId>, OperationsError> {
+    let mut carriers = HashSet::new();
+    for &moved_face in moved_faces {
+        for edge in face_edges(topo, moved_face)? {
+            for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if !moved_faces.contains(&adjacent)
+                    && surface_translation_invariant(topo.face(adjacent)?.surface(), direction)
+                {
+                    carriers.insert(adjacent);
+                }
+            }
+        }
+    }
+    Ok(carriers)
+}
+
 struct BlendTranslationRegion {
     translated_faces: HashSet<FaceId>,
     translated_nurbs_supports: HashSet<FaceId>,
@@ -945,13 +966,9 @@ fn move_translation_invariant_blend_region(
     let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
     moved_faces.extend(region.translated_faces);
     moved_faces.extend(region.translated_nurbs_supports);
-    let invariant_carriers = remus_topology::explorer::solid_faces(topo, solid)?
-        .into_iter()
-        .filter(|face| {
-            topo.face(*face)
-                .is_ok_and(|face| surface_translation_invariant(face.surface(), direction))
-        })
-        .collect();
+    let adjacency = work.build_adjacency(solid)?;
+    let invariant_carriers =
+        invariant_boundary_carriers(&work, &adjacency, &moved_faces, direction)?;
     let swept_faces = faces.iter().copied().collect();
     let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
     crate::push_pull::refuse_swept_region_intersections(
@@ -962,7 +979,6 @@ fn move_translation_invariant_blend_region(
         direction,
         distance,
     )?;
-    let adjacency = work.build_adjacency(solid)?;
 
     let mut moved_vertices = HashSet::new();
     for &face in &moved_faces {
@@ -2014,7 +2030,45 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+
+    #[test]
+    fn sweep_exemption_only_includes_actual_boundary_carriers() {
+        let mut topo = Topology::new();
+        let outer = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let cavity = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        let outer_shell = topo.solid(outer).unwrap().outer_shell();
+        let cavity_shell = topo.solid(cavity).unwrap().outer_shell();
+        let hollow = topo.add_solid(remus_topology::solid::Solid::new(
+            outer_shell,
+            vec![cavity_shell],
+        ));
+        let direction = Vec3::new(0.0, 0.0, 1.0);
+        let selected = remus_topology::explorer::solid_faces(&topo, outer)
+            .unwrap()
+            .into_iter()
+            .find(|face| {
+                topo.face(*face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.dot(direction) > 1.0 - Tolerance::new().angular)
+            })
+            .unwrap();
+        let moved_faces = HashSet::from([selected]);
+        let adjacency = topo.build_adjacency(hollow).unwrap();
+
+        let carriers =
+            invariant_boundary_carriers(&topo, &adjacency, &moved_faces, direction).unwrap();
+        let cavity_faces: HashSet<_> = remus_topology::explorer::solid_faces(&topo, cavity)
+            .unwrap()
+            .into_iter()
+            .collect();
+
+        assert_eq!(carriers.len(), 4);
+        assert!(carriers.is_disjoint(&cavity_faces));
+    }
 
     #[test]
     fn refusal_codes_are_stable() {
