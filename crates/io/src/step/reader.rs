@@ -2543,7 +2543,11 @@ impl<'a> StepBuilder<'a> {
             control_points.push(self.build_cartesian_point(cp_ref)?);
         }
 
-        let knots = expand_knots(&mults, &knot_vals);
+        let knots = expand_knots(&mults, &knot_vals).ok_or(IoError::LimitExceeded {
+            resource: "STEP B_SPLINE_CURVE knot count",
+            limit: MAX_EXPANDED_KNOTS,
+            actual: usize::MAX,
+        })?;
 
         // Extract weights from RATIONAL_B_SPLINE section if present.
         let weights = if is_rational {
@@ -2580,8 +2584,16 @@ impl<'a> StepBuilder<'a> {
             cp_grid.push(row);
         }
 
-        let knots_u = expand_knots(&u_mults, &u_knots);
-        let knots_v = expand_knots(&v_mults, &v_knots);
+        let knots_u = expand_knots(&u_mults, &u_knots).ok_or(IoError::LimitExceeded {
+            resource: "STEP B_SPLINE_SURFACE U knot count",
+            limit: MAX_EXPANDED_KNOTS,
+            actual: usize::MAX,
+        })?;
+        let knots_v = expand_knots(&v_mults, &v_knots).ok_or(IoError::LimitExceeded {
+            resource: "STEP B_SPLINE_SURFACE V knot count",
+            limit: MAX_EXPANDED_KNOTS,
+            actual: usize::MAX,
+        })?;
 
         let n_rows = cp_grid.len();
         let n_cols = cp_grid.first().map_or(0, Vec::len);
@@ -4569,18 +4581,36 @@ fn parse_nested_refs(s: &str) -> Vec<Vec<u64>> {
     rows
 }
 
+/// Hard cap on the flattened knot-vector length of a single B-spline.
+///
+/// Multiplicities arrive straight from file integers; without a bound a
+/// single entry like `(4294967295)` would expand into billions of pushes
+/// (~34 GB) before the NURBS constructor gets a chance to reject the
+/// malformed knot vector. Real splines sit orders of magnitude below this.
+const MAX_EXPANDED_KNOTS: usize = 1 << 20;
+
 /// Expand knot multiplicities and unique values into a flat knot vector.
 ///
 /// Given `mults = [3, 1, 3]` and `vals = [0.0, 0.5, 1.0]`, produces
 /// `[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]`.
-fn expand_knots(mults: &[u32], vals: &[f64]) -> Vec<f64> {
-    let mut knots = Vec::new();
+///
+/// Returns `None` when the expansion would exceed [`MAX_EXPANDED_KNOTS`].
+fn expand_knots(mults: &[u32], vals: &[f64]) -> Option<Vec<f64>> {
+    let total = mults.iter().try_fold(0usize, |acc, &m| {
+        #[allow(clippy::cast_possible_truncation)]
+        acc.checked_add(m as usize)
+    })?;
+    if total > MAX_EXPANDED_KNOTS {
+        return None;
+    }
+
+    let mut knots = Vec::with_capacity(total);
     for (&m, &v) in mults.iter().zip(vals.iter()) {
         for _ in 0..m {
             knots.push(v);
         }
     }
-    knots
+    Some(knots)
 }
 
 /// Parse a B_SPLINE_CURVE_WITH_KNOTS attribute string.
@@ -5424,7 +5454,27 @@ mod tests {
         let mults = [3, 1, 3];
         let vals = [0.0, 0.5, 1.0];
         let flat = expand_knots(&mults, &vals);
-        assert_eq!(flat, vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            flat.as_deref(),
+            Some([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0].as_slice())
+        );
+    }
+
+    #[test]
+    fn expand_knots_caps_hostile_multiplicity() {
+        // A single multiplicity near u32::MAX must be rejected up front
+        // instead of attempting a multi-billion-element expansion.
+        let mults = [u32::MAX];
+        let vals = [0.5];
+        assert!(expand_knots(&mults, &vals).is_none());
+    }
+
+    #[test]
+    fn expand_knots_rejects_multiplicity_sum_overflow() {
+        // Many large multiplicities whose sum overflows usize.
+        let mults = [u32::MAX; 8];
+        let vals = [0.25, 0.5];
+        assert!(expand_knots(&mults, &vals).is_none());
     }
 
     #[test]
