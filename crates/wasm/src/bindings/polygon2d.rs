@@ -57,6 +57,29 @@ fn resolve_polygon_tolerance(tolerance: Option<f64>) -> Result<f64, WasmError> {
 /// Returns a [`WasmError`] (not a `JsError`) so it stays callable from
 /// native tests and from `executeBatch` dispatch.
 ///
+/// Bound a polygon-pair query whose cost is the product of the two vertex
+/// counts, before any parsing or geometry work starts.
+///
+/// `polygonBoolean2d` grew this bound when its own report landed; the three
+/// siblings below share its O(n·m) shape and were left without one. A JS caller
+/// can hand any of them two large arrays and stall the tab with no error, so
+/// they take the same budget rather than each waiting for its own report.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if either polygon has more vertices than
+/// a `u32` can hold, or if the product exceeds the public WASM work budget.
+fn bound_polygon_pair(coords_a: &[f64], coords_b: &[f64]) -> Result<(), WasmError> {
+    let vertices_a = u32::try_from(coords_a.len() / 2).map_err(|_| WasmError::InvalidInput {
+        reason: "polygon A has too many vertices".to_string(),
+    })?;
+    let vertices_b = u32::try_from(coords_b.len() / 2).map_err(|_| WasmError::InvalidInput {
+        reason: "polygon B has too many vertices".to_string(),
+    })?;
+    let _ = validate_work_product(vertices_a, vertices_b, "polygon edge comparisons")?;
+    Ok(())
+}
+
 /// # Errors
 ///
 /// Returns [`WasmError::InvalidInput`] if either coordinate array is
@@ -173,6 +196,7 @@ impl BrepKernel {
         coords_a: Vec<f64>,
         coords_b: Vec<f64>,
     ) -> Result<bool, JsError> {
+        bound_polygon_pair(&coords_a, &coords_b)?;
         let poly_a = parse_polygon_2d(&coords_a)?;
         let poly_b = parse_polygon_2d(&coords_b)?;
         Ok(polygons_overlap_2d(&poly_a, &poly_b))
@@ -192,6 +216,7 @@ impl BrepKernel {
         coords_a: Vec<f64>,
         coords_b: Vec<f64>,
     ) -> Result<Vec<f64>, JsError> {
+        bound_polygon_pair(&coords_a, &coords_b)?;
         let subject = parse_polygon_2d(&coords_a)?;
         let clip = parse_polygon_2d(&coords_b)?;
         let result = sutherland_hodgman_clip(&subject, &clip);
@@ -210,6 +235,7 @@ impl BrepKernel {
         coords_a: Vec<f64>,
         coords_b: Vec<f64>,
     ) -> Result<Vec<f64>, JsError> {
+        bound_polygon_pair(&coords_a, &coords_b)?;
         let poly_a = parse_polygon_2d(&coords_a)?;
         let poly_b = parse_polygon_2d(&coords_b)?;
         let tolerance = 1e-7;
@@ -617,6 +643,22 @@ mod polygon_boolean_tests {
             err.to_string().contains("polygon edge comparisons"),
             "was: {err}"
         );
+    }
+
+    /// `polygonBoolean2d` grew a work bound when its own report landed; the
+    /// three siblings that share its O(n·m) shape were left unbounded, so a JS
+    /// caller could stall the tab with no error. They take the same budget now.
+    #[test]
+    fn polygon_pair_siblings_share_the_public_work_budget() {
+        let polygon = vec![0.0; 202];
+        let err = bound_polygon_pair(&polygon, &polygon).unwrap_err();
+        assert!(
+            err.to_string().contains("polygon edge comparisons"),
+            "was: {err}"
+        );
+        // A pair inside the budget is untouched.
+        let small = vec![0.0; 20];
+        assert!(bound_polygon_pair(&small, &small).is_ok());
     }
 
     #[test]
