@@ -100,8 +100,19 @@ fn process_shell(
     Ok(to_remove.len())
 }
 
-/// Bounding-box diagonal of a face's outer-wire vertex positions.
+/// Bounding-box diagonal of a face's outer boundary, sampled ALONG its curves.
+///
+/// Endpoint positions alone are not enough, and this decides what gets DELETED.
+/// A face bounded by one closed curve — a cylinder cap, a disc, a full-circle
+/// hole rim — has `start == end` on that edge, so an endpoint-only box collapses
+/// to a point, the face measures zero, and it is removed as a sliver. Measured:
+/// `fix_shape` on a plain cylinder returned 1 face instead of 3, having deleted
+/// both caps and a third of the volume.
+///
+/// The doctrine is the boolean-debugging skill's: closed boundary edges must be
+/// sampled along the curve, never endpoint-checked.
 fn face_diagonal(topo: &Topology, fid: FaceId) -> Result<f64, HealError> {
+    const BOUNDARY_SAMPLES: usize = 16;
     let face = topo.face(fid)?;
     let wire = topo.wire(face.outer_wire())?;
 
@@ -110,8 +121,13 @@ fn face_diagonal(topo: &Topology, fid: FaceId) -> Result<f64, HealError> {
 
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        for &vid in &[edge.start(), edge.end()] {
-            let pos = topo.vertex(vid)?.point();
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let (t0, t1) = edge.domain_with_endpoints(start, end);
+        for i in 0..=BOUNDARY_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t0 + (t1 - t0) * (i as f64) / (BOUNDARY_SAMPLES as f64);
+            let pos = edge.curve().evaluate_with_endpoints(t, start, end);
             min_pt = Vec3::new(
                 min_pt.x().min(pos.x()),
                 min_pt.y().min(pos.y()),
