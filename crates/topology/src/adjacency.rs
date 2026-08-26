@@ -42,8 +42,11 @@ impl AdjacencyIndex {
     /// Returns [`TopologyError`] if any referenced entity (solid, shell,
     /// face, or wire) does not exist in the topology.
     pub fn build(topo: &Topology, solid: SolidId) -> Result<Self, TopologyError> {
-        let shell_id = topo.solid(solid)?.outer_shell();
-        let faces = topo.shell(shell_id)?.faces().to_vec();
+        // Solid-scoped: a hollow solid's cavity edges are shared by two cavity
+        // faces, and indexing only the outer shell reports them as having none —
+        // the sibling `explorer::edge_to_face_map` already walks both. Callers
+        // that genuinely want one shell have `build_from_faces` below.
+        let faces = crate::explorer::solid_faces(topo, solid)?;
         Self::build_from_faces(topo, &faces)
     }
 
