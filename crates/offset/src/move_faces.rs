@@ -21,6 +21,15 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::data::{OffsetData, OffsetFace, OffsetOptions, OffsetStatus};
 use crate::error::OffsetError;
 
+/// A topology-preserving face move and its construction-derived face map.
+#[derive(Debug)]
+pub struct MoveFacesResult {
+    /// Edited solid.
+    pub solid: SolidId,
+    /// Source face index to the one result face that carries it.
+    pub face_map: HashMap<usize, FaceId>,
+}
+
 /// Move a coplanar group of planar faces by a signed distance along their
 /// common outward normal.
 ///
@@ -44,6 +53,20 @@ pub fn move_faces(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<SolidId, OffsetError> {
+    Ok(move_faces_with_face_map(topo, solid, faces, distance)?.solid)
+}
+
+/// [`move_faces`] with the exact source-to-result face correspondence.
+///
+/// # Errors
+///
+/// Returns the same typed refusals as [`move_faces`].
+pub fn move_faces_with_face_map(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<MoveFacesResult, OffsetError> {
     let snapshot = topo.clone();
     let result = move_faces_impl(topo, solid, faces, distance);
     if result.is_err() {
@@ -57,7 +80,7 @@ fn move_faces_impl(
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
-) -> Result<SolidId, OffsetError> {
+) -> Result<MoveFacesResult, OffsetError> {
     let options = OffsetOptions::default();
     if !distance.is_finite() || distance.abs() <= options.tolerance.linear {
         return Err(OffsetError::InvalidInput {
@@ -137,10 +160,18 @@ fn move_faces_impl(
     )?;
     validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
 
-    let result = crate::assemble::assemble_solid(topo, &data)?;
-    super::validate_offset_result(topo, result)?;
-    validate_result_topology(topo, result, source_counts, source_shell_sizes.as_slice())?;
-    Ok(result)
+    let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
+    super::validate_offset_result(topo, result.solid)?;
+    validate_result_topology(
+        topo,
+        result.solid,
+        source_counts,
+        source_shell_sizes.as_slice(),
+    )?;
+    Ok(MoveFacesResult {
+        solid: result.solid,
+        face_map: result.face_map,
+    })
 }
 
 fn move_neighborhood<V: std::ops::Deref<Target = [FaceId]>>(

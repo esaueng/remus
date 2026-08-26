@@ -761,7 +761,7 @@ fn transform_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::Operatio
 ///
 /// Line edges need no update — their geometry is defined by vertices.
 #[allow(clippy::too_many_lines)]
-fn transform_edges(
+pub(crate) fn transform_edges(
     topo: &mut Topology,
     edge_ids: &HashSet<EdgeId>,
     matrix: &Mat4,

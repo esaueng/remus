@@ -1,5 +1,7 @@
 //! Final shell and solid assembly from offset faces and wire loops.
 
+use std::collections::HashMap;
+
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -11,6 +13,12 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::data::{OffsetData, OffsetStatus};
 use crate::error::OffsetError;
+
+/// Construction result with the exact source-face correspondence.
+pub struct AssembleResult {
+    pub(crate) solid: SolidId,
+    pub(crate) face_map: HashMap<usize, FaceId>,
+}
 
 /// Assemble the final offset solid from trimmed offset faces, joint
 /// faces, and wire loops.
@@ -28,6 +36,14 @@ use crate::error::OffsetError;
 /// Returns [`OffsetError::AssemblyFailed`] if no faces could be
 /// assembled or the shell construction fails.
 pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId, OffsetError> {
+    Ok(assemble_solid_with_face_map(topo, data)?.solid)
+}
+
+/// [`assemble_solid`] with the exact source-to-result face map retained.
+pub fn assemble_solid_with_face_map(
+    topo: &mut Topology,
+    data: &OffsetData,
+) -> Result<AssembleResult, OffsetError> {
     let has_openings = !data.excluded_faces.is_empty();
     if data.shell_faces.is_empty() {
         return Err(OffsetError::AssemblyFailed {
@@ -47,6 +63,7 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
     let original_skin_is_cavity = has_openings && data.distance > 0.0;
 
     let mut shell_groups: Vec<Vec<FaceId>> = Vec::with_capacity(data.shell_faces.len());
+    let mut face_map = HashMap::new();
     for source_faces in &data.shell_faces {
         let mut source_faces = source_faces.clone();
         source_faces.sort_by_key(|face_id| face_id.index());
@@ -86,7 +103,9 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
             } else {
                 Face::new(outer_wire, inner_wires, offset_face.surface.clone())
             };
-            new_faces.push(topo.add_face(face));
+            let result_face = topo.add_face(face);
+            face_map.insert(face_id.index(), result_face);
+            new_faces.push(result_face);
         }
 
         shell_groups.push(new_faces);
@@ -140,7 +159,10 @@ pub fn assemble_solid(topo: &mut Topology, data: &OffsetData) -> Result<SolidId,
     }
 
     let solid = Solid::new(shell_ids[0], shell_ids[1..].to_vec());
-    Ok(topo.add_solid(solid))
+    Ok(AssembleResult {
+        solid: topo.add_solid(solid),
+        face_map,
+    })
 }
 
 /// Make adjacent faces traverse every shared edge in opposite directions.
