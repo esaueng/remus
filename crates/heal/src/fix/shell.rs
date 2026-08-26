@@ -102,10 +102,20 @@ fn fix_orientation(
             .chain(face.inner_wires().iter().copied())
             .collect();
 
+        // Compose the face's own reversal into the wire's sense. A face flagged
+        // `is_reversed` traverses its boundary opposite to what its wire
+        // records, so the raw flag is not the direction the shell actually sees.
+        // Reading it raw made this pass flip faces that were already correct:
+        // `fix_shape` on a box with a cylindrical through-hole came back with
+        // volume 1041.9 instead of 874.3, and disabling `fix_orientation` alone
+        // restored it. Mirrors `offset::assemble::orient_shell_faces`.
+        let face_reversed = face.is_reversed();
+
         for wid in wire_ids {
             let wire = topo.wire(wid)?;
             for oe in wire.edges() {
-                face_edge_info.push((i, oe.edge().index(), oe.is_forward()));
+                let effective_forward = oe.is_forward() != face_reversed;
+                face_edge_info.push((i, oe.edge().index(), effective_forward));
             }
         }
     }
