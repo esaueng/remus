@@ -9,11 +9,14 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::fillet_v2;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::push_pull::move_faces;
 use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_failure_code};
 use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
-use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
+use remus_topology::explorer::{
+    edge_to_face_map, face_vertices, solid_edges, solid_entity_counts, solid_faces,
+};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
@@ -119,6 +122,83 @@ fn blend_radius(topo: &Topology, solid: SolidId) -> Option<f64> {
             FaceSurface::Cylinder(cylinder) if cylinder.radius() < 5.0 => Some(cylinder.radius()),
             _ => None,
         })
+}
+
+fn planar_band_support(topo: &Topology, solid: SolidId, band: FaceId) -> FaceId {
+    edge_to_face_map(topo, solid)
+        .unwrap()
+        .values()
+        .filter(|faces| faces.contains(&band))
+        .flatten()
+        .copied()
+        .find(|face| {
+            *face != band
+                && matches!(
+                    topo.face(*face).unwrap().surface(),
+                    FaceSurface::Plane { .. }
+                )
+        })
+        .expect("planar blend support")
+}
+
+#[test]
+fn planar_move_removes_and_rebuilds_incident_box_blend() {
+    let (mut topo, input, band) = box_fixture(1.0);
+    let support = planar_band_support(&topo, input, band);
+    let normal = topo
+        .face(support)
+        .unwrap()
+        .effective_plane_normal()
+        .expect("support normal");
+    let source_point = topo
+        .vertex(face_vertices(&topo, support).unwrap()[0])
+        .unwrap()
+        .point();
+    let source_coordinate = (source_point - Point3::new(0.0, 0.0, 0.0)).dot(normal);
+    let source_counts = solid_entity_counts(&topo, input).unwrap();
+
+    let result = move_faces(&mut topo, input, &[support], 1.0).unwrap();
+
+    assert_eq!(solid_entity_counts(&topo, result).unwrap(), source_counts);
+    assert_valid(&topo, result);
+    assert_watertight(&topo, result);
+    assert!(Tolerance::new().approx_eq(blend_radius(&topo, result).unwrap(), 1.0));
+    let moved_coordinate = solid_faces(&topo, result)
+        .unwrap()
+        .into_iter()
+        .filter_map(|face| {
+            let face_data = topo.face(face).ok()?;
+            let moved_normal = face_data.effective_plane_normal()?;
+            if moved_normal.dot(normal) < 1.0 - Tolerance::new().angular {
+                return None;
+            }
+            let point = topo
+                .vertex(face_vertices(&topo, face).ok()?[0])
+                .ok()?
+                .point();
+            Some((point - Point3::new(0.0, 0.0, 0.0)).dot(normal))
+        })
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        Tolerance::new().approx_eq(moved_coordinate, source_coordinate + 1.0),
+        "support moved to {moved_coordinate}, expected {}",
+        source_coordinate + 1.0
+    );
+}
+
+#[test]
+fn rejected_planar_blend_move_is_typed_and_transactional() {
+    let (mut topo, input, band) = box_fixture(1.0);
+    let support = planar_band_support(&topo, input, band);
+    let source_counts = solid_entity_counts(&topo, input).unwrap();
+    let source_volume = volume(&topo, input);
+
+    let error = move_faces(&mut topo, input, &[support], -20.0).unwrap_err();
+
+    assert_eq!(resize_blend_failure_code(&error), "resize-blend-failed");
+    assert_eq!(solid_entity_counts(&topo, input).unwrap(), source_counts);
+    assert!(Tolerance::new().approx_eq(volume(&topo, input), source_volume));
+    assert_valid(&topo, input);
 }
 
 #[test]
