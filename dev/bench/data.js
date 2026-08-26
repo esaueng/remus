@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787710790661,
+  "lastUpdate": 1787776138141,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2267,6 +2267,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38833013,
             "range": "± 118452",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d18104702f7f0ec742764cb4d239cd992238d1cb",
+          "message": "Merge pull request #91 from esaueng/fix/sweep-per-symbol-guards\n\nfix: sweep four guard classes that were applied per-symbol",
+          "timestamp": "2026-08-26T16:26:11-04:00",
+          "tree_id": "9b45d9efece45ae041c8757d177eec17ec850808",
+          "url": "https://github.com/esaueng/remus/commit/d18104702f7f0ec742764cb4d239cd992238d1cb"
+        },
+        "date": 1787776136047,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1175745,
+            "range": "± 13655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1257768,
+            "range": "± 10486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12154,
+            "range": "± 180",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 862168,
+            "range": "± 3658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 35035032,
+            "range": "± 380092",
             "unit": "ns/iter"
           }
         ]
