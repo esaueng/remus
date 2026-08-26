@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787776138141,
+  "lastUpdate": 1787776294653,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2321,6 +2321,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 35035032,
             "range": "± 380092",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "019ad18ce2d543c283984a52319d38c0a91a33bd",
+          "message": "Merge pull request #94 from esaueng/fix/heal-shell-sewing\n\nfix(heal): make shell sewing actually close the shell",
+          "timestamp": "2026-08-26T16:27:37-04:00",
+          "tree_id": "f09e5c18f4865f059017557d3dc4c39a0ace3048",
+          "url": "https://github.com/esaueng/remus/commit/019ad18ce2d543c283984a52319d38c0a91a33bd"
+        },
+        "date": 1787776292618,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1057634,
+            "range": "± 1583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1132635,
+            "range": "± 9093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 11163,
+            "range": "± 97",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 775345,
+            "range": "± 2272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32211581,
+            "range": "± 907014",
             "unit": "ns/iter"
           }
         ]
