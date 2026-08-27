@@ -188,6 +188,33 @@ pub fn get_u32_array(args: &serde_json::Value, key: &str) -> Result<Vec<u32>, St
         .collect()
 }
 
+/// Extract an OPTIONAL array of `u32` handles: absent or null yields an empty
+/// list, but a array that IS present is parsed strictly.
+///
+/// The batch dispatch used to inline
+/// `filter_map(|v| v.as_u64().map(|n| n as u32))` at twelve sites, which fails
+/// open twice over. `filter_map` DROPS an element it cannot read, so
+/// `edges: [0, "x", 1]` filleted two of the three edges asked for and reported
+/// success; and `n as u32` truncates, so the handle `4294967296` wrapped to `0`
+/// and filleted edge 0 instead of reporting an unknown handle — also as success.
+/// Both are wrong answers a caller has no way to notice. The strict parse those
+/// sites needed already existed in [`get_u32_array`]; only the missing-key case
+/// differed, which is what this wrapper preserves.
+///
+/// # Errors
+///
+/// Returns a message naming `key` if it is present but not an array, or naming
+/// the offending index if an element is not a `u32`.
+pub fn get_u32_array_optional(
+    args: &serde_json::Value,
+    key: &str,
+) -> Result<Vec<u32>, StructuredWasmError> {
+    match args.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(_) => get_u32_array(args, key),
+    }
+}
+
 /// Extract a required `u32` value from a JSON object.
 pub fn get_u32(args: &serde_json::Value, key: &str) -> Result<u32, StructuredWasmError> {
     args[key]
@@ -609,7 +636,52 @@ pub fn build_triangle_mesh(
     positions: &[f64],
     indices: &[u32],
 ) -> Result<tessellate::TriangleMesh, JsError> {
-    let pts = parse_points(positions)?;
+    Ok(build_triangle_mesh_checked(positions, indices)?)
+}
+
+/// [`build_triangle_mesh`] returning a [`WasmError`] instead of a `JsError`.
+///
+/// Indices come straight from JS and used to be copied through unchecked. The
+/// mesh boolean indexes `positions` with them directly, so an out-of-range
+/// value is not an error there — it is a slice panic, and a panic in wasm
+/// ABORTS THE INSTANCE: the kernel is dead until the page reloads, which a
+/// caller can neither catch nor recover from. Reproduced with three positions
+/// and an index of 99:
+///
+/// ```text
+/// index out of bounds: the len is 3 but the index is 99
+///   at operations/src/mesh_boolean.rs:1704
+/// ```
+///
+/// Rejecting here keeps it a returnable error. Split from the `JsError` form so
+/// it is testable: `JsError` cannot be constructed on a non-wasm target.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if `positions` is malformed, the index
+/// count is not a multiple of three, or any index addresses a vertex that does
+/// not exist.
+pub fn build_triangle_mesh_checked(
+    positions: &[f64],
+    indices: &[u32],
+) -> Result<tessellate::TriangleMesh, WasmError> {
+    let pts = parse_points_checked(positions)?;
+
+    if !indices.len().is_multiple_of(3) {
+        return Err(WasmError::InvalidInput {
+            reason: format!(
+                "triangle index count must be a multiple of 3, got {}",
+                indices.len()
+            ),
+        });
+    }
+    let vertex_count = pts.len();
+    if let Some(bad) = indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return Err(WasmError::InvalidInput {
+            reason: format!("triangle index {bad} is out of range for {vertex_count} vertices"),
+        });
+    }
+
     // Compute normals as zero vectors (mesh_boolean recomputes them)
     let normals = vec![Vec3::new(0.0, 0.0, 0.0); pts.len()];
     Ok(tessellate::TriangleMesh {
@@ -868,6 +940,31 @@ pub fn segments_intersect_2d(a1: Point2, a2: Point2, b1: Point2, b2: Point2) -> 
 #[cfg(test)]
 mod parsing_tests {
     use super::get_u32;
+
+    /// `meshBoolean` indexes the position array with caller-supplied indices, so
+    /// an out-of-range value is not an error downstream — it is a slice panic,
+    /// and a panic in wasm ABORTS THE INSTANCE (the kernel is dead until the
+    /// page reloads, uncatchable by the caller). Reproduced before the fix with
+    /// three positions and an index of 99:
+    /// "index out of bounds: the len is 3 but the index is 99"
+    /// at operations/src/mesh_boolean.rs:1704.
+    #[test]
+    fn build_triangle_mesh_rejects_out_of_range_indices() {
+        let positions = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+        // A well-formed triangle still builds.
+        assert!(super::build_triangle_mesh_checked(&positions, &[0, 1, 2]).is_ok());
+
+        // 99 addresses a vertex that does not exist.
+        assert!(
+            super::build_triangle_mesh_checked(&positions, &[0, 1, 99]).is_err(),
+            "an index past the last vertex must be rejected here, where it is \
+             still a returnable error rather than a wasm abort"
+        );
+
+        // An index count that is not a whole number of triangles.
+        assert!(super::build_triangle_mesh_checked(&positions, &[0, 1]).is_err());
+    }
 
     #[test]
     fn get_u32_rejects_values_outside_the_handle_range() {
