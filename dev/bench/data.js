@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787776294653,
+  "lastUpdate": 1787845937875,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2375,6 +2375,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 32211581,
             "range": "± 907014",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c42a4f77a7e020535376f49827fbfc808bc5e3a9",
+          "message": "fix: harden untrusted-input parsing and CI token scope (security audit) (#95)\n\n* fix(math): clamp chord segment counts against tolerance blowup\n\nCaller-controlled deflection/angular tolerances could drive the raw\nceil(arc_range/theta) count toward usize::MAX (subnormal deflection,\nnear-zero angular cap), turning downstream samplers into unbounded\nallocation/hang bombs reachable from library APIs, WASM bindings and\nfile importers. Clamp both helpers to MAX_CHORD_SEGMENTS (65_536),\nfar above any legitimate tessellation density.\n\n* fix(io): harden readers against crafted-file resource abuse\n\n- STEP: bound B-spline knot multiplicity expansion (MAX_EXPANDED_KNOTS).\n  A single file-controlled multiplicity of 4294967295 previously pushed\n  ~34 GB of f64s before the NURBS constructor could reject the vector.\n- glTF: extract_json_array now returns Option and callers bail out on\n  unterminated arrays instead of slicing an inverted range (panic,\n  instance-killing in WASM); chunk-walk uses checked arithmetic so a\n  near-u32::MAX chunk length cannot wrap the bounds test on 32-bit\n  targets; mesh indices use checked_add so an index + vertex base\n  overflow is an error, not silent wrap to a corrupted index.\n- OBJ: reject face indices above u32 range; the previous cast truncated\n  e.g. 4294967297 into vertex index 1.\n\nEach fix ships with a regression test.\n\n* chore(ci): least-privilege workflow tokens and complete ci-pass gate\n\n- ci.yml/mutants.yml: default to contents: read at workflow level; the\n  wasm-size job keeps its explicit pull-requests: write override.\n- ci-pass: include apache-lineage and doc-paths in the aggregate gate so\n  a lineage or stale-doc regression can no longer merge green when only\n  the summary check is marked required.",
+          "timestamp": "2026-08-27T11:49:27-04:00",
+          "tree_id": "2a8590eb6528f52bd531680764bc70145eb743ea",
+          "url": "https://github.com/esaueng/remus/commit/c42a4f77a7e020535376f49827fbfc808bc5e3a9"
+        },
+        "date": 1787845937208,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1423772,
+            "range": "± 5507",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1454174,
+            "range": "± 12062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14103,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 997332,
+            "range": "± 18997",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40954575,
+            "range": "± 141247",
             "unit": "ns/iter"
           }
         ]
