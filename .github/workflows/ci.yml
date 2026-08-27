@@ -13,6 +13,11 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
+# Least privilege by default: jobs run with a read-only token unless they
+# explicitly opt into more (e.g. the wasm-size PR comment job below).
+permissions:
+  contents: read
+
 # rust-toolchain.toml pins the exact Rust version (1.96.0) and includes
 # rustfmt, clippy, and the wasm32 target. Rustup auto-detects it, so most
 # jobs don't need dtolnay/rust-toolchain.
@@ -383,7 +388,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, workflow-contracts, deny, audit, docs, machete, secrets-scan, taplo]
+    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, workflow-contracts, deny, audit, docs, machete, secrets-scan, taplo, apache-lineage, doc-paths]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
