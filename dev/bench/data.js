@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787845937875,
+  "lastUpdate": 1787847829117,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2429,6 +2429,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40954575,
             "range": "± 141247",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4186f62400d09bca67c0adf8f07aa40b9a6ea738",
+          "message": "fix(operations): refuse a malformed mesh instead of panicking on it (#96)\n\n`meshBoolean` is a public WASM binding, and `build_triangle_mesh` copies\nthe caller's index array verbatim after validating only the positions.\nEvery downstream stage of `mesh_boolean` then indexes `positions`,\n`normals` and `indices` raw, so malformed input aborted the kernel — and\na panic unwinding across the wasm-bindgen boundary leaves the kernel's\n`RefCell` borrowed, breaking every subsequent JS call rather than only\nthe failing one.\n\nThe review named one panic. Surveying the input surface found four, plus\na silent-truncation path:\n\n    vertex index past the end      PANIC  mesh_boolean.rs:1704\n    index count not a multiple of 3  silently accepted\n    empty normals                  PANIC  mesh_boolean.rs:1050\n    short normals                  PANIC  mesh_boolean.rs:1689\n    indices into empty positions   PANIC  mesh_boolean.rs:1704\n\nThe silent one is the worst of them: every triangle count in the file is\n`indices.len() / 3`, so a trailing partial triangle was dropped without\na word.\n\nOne `validate_mesh_input` at the entry to `mesh_boolean_with_limits` now\nchecks what the raw index sites assume — whole triangles, per-vertex\nnormals, every index in range — rather than guarding a dozen sites.\n\nThis sits at the operations layer, not the binding: `mesh_boolean` is\npublic API taking caller-supplied meshes, the workspace lint denies\npanics in production code, and fixing only the binding would leave\nnative callers crashing.\n\nSix regression tests; five fail against unmodified code. The sixth is\nthe control proving the guard does not reject valid input.\n`approx_census` is byte-identical to its baseline — the kernel's own\nmesh-fallback path runs through this validation, and its three real\nfallback rows still produce 1192 / 70 / 312 faces.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-27T12:20:58-04:00",
+          "tree_id": "eff7fa8fafa83c683f4c212f71cb103606198055",
+          "url": "https://github.com/esaueng/remus/commit/4186f62400d09bca67c0adf8f07aa40b9a6ea738"
+        },
+        "date": 1787847827737,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1291884,
+            "range": "± 8687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1375750,
+            "range": "± 2392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13080,
+            "range": "± 46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 961418,
+            "range": "± 4142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38604784,
+            "range": "± 1748512",
             "unit": "ns/iter"
           }
         ]
