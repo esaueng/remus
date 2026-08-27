@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Scheduled/dispatch-only workflow; read-only token is sufficient.
+permissions:
+  contents: read
+
 jobs:
   mutants:
     name: Cargo Mutants
