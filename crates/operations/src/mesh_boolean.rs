@@ -93,6 +93,48 @@ pub fn mesh_boolean(
     mesh_boolean_with_limits(mesh_a, mesh_b, op, tolerance, MeshBooleanLimits::default())
 }
 
+/// Reject a triangle mesh whose index or normal arrays cannot be indexed
+/// safely.
+///
+/// Every downstream stage indexes `positions`, `normals` and `indices`
+/// directly, so a malformed mesh is a panic rather than an error — and both
+/// operands are caller-supplied. The three conditions below are exactly what
+/// those raw index sites assume:
+///
+/// * `indices` is a whole number of triangles. A trailing partial triangle
+///   would otherwise be dropped silently by the `len() / 3` triangle counts.
+/// * `normals` is per-vertex, because assembly reads `normals[i]` for a
+///   vertex index `i`.
+/// * every index addresses a vertex that exists.
+fn validate_mesh_input(mesh: &TriangleMesh, label: &str) -> Result<(), OperationsError> {
+    if !mesh.indices.len().is_multiple_of(3) {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "mesh {label}: index count must be a multiple of 3, got {}",
+                mesh.indices.len()
+            ),
+        });
+    }
+    if mesh.normals.len() != mesh.positions.len() {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "mesh {label}: normal count {} does not match vertex count {}",
+                mesh.normals.len(),
+                mesh.positions.len()
+            ),
+        });
+    }
+    let vertex_count = mesh.positions.len();
+    if let Some(bad) = mesh.indices.iter().find(|&&i| i as usize >= vertex_count) {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "mesh {label}: vertex index {bad} is out of range for {vertex_count} vertices"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Perform a mesh boolean with explicit deterministic work limits.
 ///
 /// # Errors
@@ -106,6 +148,12 @@ pub fn mesh_boolean_with_limits(
     tolerance: f64,
     limits: MeshBooleanLimits,
 ) -> Result<MeshBooleanResult, OperationsError> {
+    // The triangle data below is indexed raw in a dozen places, and both
+    // meshes arrive from the caller — `meshBoolean` hands JS arrays straight
+    // through. Validate once here rather than guarding each index site.
+    validate_mesh_input(mesh_a, "A")?;
+    validate_mesh_input(mesh_b, "B")?;
+
     let triangles_a = mesh_a.indices.len() / 3;
     let triangles_b = mesh_b.indices.len() / 3;
     log::debug!("mesh_boolean {op:?}: input triangles a={triangles_a} b={triangles_b}");
