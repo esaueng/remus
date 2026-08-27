@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787847829117,
+  "lastUpdate": 1787847996773,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2483,6 +2483,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38604784,
             "range": "± 1748512",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e7826301a5a2f1bde93126b552f7d9e53605dacf",
+          "message": "fix(wasm): stop the JS boundary failing open on malformed input (#97)\n\nThree ways the wasm surface accepted input it could not honour. Two\nproduced a wrong answer reported as success; one killed the kernel.\n\n1. UNBOUNDED TRIANGLE INDICES ABORT THE INSTANCE. `meshBoolean` copied\n   caller-supplied indices through `build_triangle_mesh` unchecked, and\n   the mesh boolean indexes the position array with them directly. An\n   out-of-range value is therefore not an error downstream — it is a\n   slice panic, and a panic in wasm ABORTS THE INSTANCE: the kernel is\n   dead until the page reloads, which a caller can neither catch nor\n   recover from. Reproduced with three positions and an index of 99:\n\n       index out of bounds: the len is 3 but the index is 99\n         at operations/src/mesh_boolean.rs:1704\n\n   Now rejected where it is still a returnable error, along with an index\n   count that is not a whole number of triangles. Split into a\n   `build_triangle_mesh_checked` returning `WasmError`, mirroring the\n   existing `parse_points` / `parse_points_checked` pair — `JsError`\n   cannot be constructed on a non-wasm target, so the `JsError` form is\n   untestable.\n\n2. HANDLE ARRAYS DROPPED ELEMENTS THEY COULD NOT READ. Twelve batch\n   dispatch sites parsed handles with\n   `filter_map(|v| v.as_u64().map(|n| n as u32))`. `filter_map` DISCARDS\n   an element it cannot read, so `edges: [0, \"not-a-handle\", 1]` filleted\n   two of the three edges asked for and returned `{\"ok\":1}`.\n\n3. AND TRUNCATED THE ONES IT COULD. `n as u32` wraps, so the handle\n   4294967296 became 0 — a DIFFERENT LIVE ENTITY — and filleted edge 0,\n   also reporting `{\"ok\":1}`.\n\n   The strict parse those sites needed already existed in\n   `helpers::get_u32_array`, which rejects a non-integer element by index\n   and uses `u32::try_from`. Only the missing-key case differed, so the\n   twelve sites now share a `get_u32_array_optional` wrapper: absent or\n   null still means an empty selection, but an array that IS present is\n   parsed strictly. Ops relying on an optional selection (`shell` without\n   `faces`) are unaffected.\n\nNOT a defect, and deliberately not changed: the review this came from\nalso claimed \"~40 scalar arguments silently fall back to a default when\npresent-but-malformed\". Measured, that is wrong — the dominant batch\npattern is `v.as_f64().ok_or_else(...)`, which errors correctly, and the\nhandful of `unwrap_or` sites are in tests. No fix was warranted.\n\nVerified: each test fails with its own assertion when only its own fix is\nreverted. Full workspace suite 4026 passed / 0 failed; the CI wasm jobs\n(`-p remus-wasm --no-default-features`, and clippy on\nwasm32-unknown-unknown) both clean; fmt, workspace clippy, rustdoc,\nboundaries, doc-paths and naming gates clean.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-27T12:21:02-04:00",
+          "tree_id": "a497a23ed85d94d2f8106608403a915384089601",
+          "url": "https://github.com/esaueng/remus/commit/e7826301a5a2f1bde93126b552f7d9e53605dacf"
+        },
+        "date": 1787847995688,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1289134,
+            "range": "± 866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1378293,
+            "range": "± 2500",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13045,
+            "range": "± 137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 969328,
+            "range": "± 1456",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38554940,
+            "range": "± 196531",
             "unit": "ns/iter"
           }
         ]
