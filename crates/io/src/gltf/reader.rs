@@ -54,11 +54,14 @@ pub fn read_glb_with_limits(
         });
     }
 
-    let mut offset = 12;
+    let mut offset = 12usize;
     let mut json_data: Option<&[u8]> = None;
     let mut bin_data: Option<&[u8]> = None;
 
-    while offset + 8 <= data.len() {
+    while let Some(hdr_end) = offset.checked_add(8) {
+        if hdr_end > data.len() {
+            break;
+        }
         let chunk_len = u32::from_le_bytes([
             data[offset],
             data[offset + 1],
@@ -71,19 +74,24 @@ pub fn read_glb_with_limits(
             data[offset + 6],
             data[offset + 7],
         ]);
-        offset += 8;
+        offset = hdr_end;
 
-        if offset + chunk_len > data.len() {
+        // checked_add keeps the bounds test sound on narrow (32-bit) targets,
+        // where a near-u32::MAX chunk length would otherwise wrap below len.
+        let Some(chunk_end) = offset.checked_add(chunk_len) else {
+            break;
+        };
+        if chunk_end > data.len() {
             break;
         }
 
         match chunk_type {
-            0x4E4F_534A => json_data = Some(&data[offset..offset + chunk_len]), // JSON
-            0x004E_4942 => bin_data = Some(&data[offset..offset + chunk_len]),  // BIN
-            _ => {}                                                             // skip unknown
+            0x4E4F_534A => json_data = Some(&data[offset..chunk_end]), // JSON
+            0x004E_4942 => bin_data = Some(&data[offset..chunk_end]),  // BIN
+            _ => {}                                                    // skip unknown
         }
 
-        offset += chunk_len;
+        offset = chunk_end;
     }
 
     let json_bytes = json_data.ok_or_else(|| crate::IoError::ParseError {
@@ -183,14 +191,24 @@ pub fn read_glb_with_limits(
                     // uint16
                     for chunk in idx_data.chunks_exact(2) {
                         let idx = u16::from_le_bytes([chunk[0], chunk[1]]);
-                        indices.push(u32::from(idx) + v_offset);
+                        let global = u32::from(idx).checked_add(v_offset).ok_or_else(|| {
+                            crate::IoError::ParseError {
+                                reason: "glTF index + vertex offset overflows u32".into(),
+                            }
+                        })?;
+                        indices.push(global);
                     }
                 }
                 5125 => {
                     // uint32
                     for chunk in idx_data.chunks_exact(4) {
                         let idx = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                        indices.push(idx + v_offset);
+                        let global = idx.checked_add(v_offset).ok_or_else(|| {
+                            crate::IoError::ParseError {
+                                reason: "glTF index + vertex offset overflows u32".into(),
+                            }
+                        })?;
+                        indices.push(global);
                     }
                 }
                 ct => {
@@ -271,7 +289,9 @@ fn parse_accessors(json: &str) -> Vec<AccessorInfo> {
     };
     let arr_offset = start + arr_start;
 
-    let arr_str = extract_json_array(json, arr_offset);
+    let Some(arr_str) = extract_json_array(json, arr_offset) else {
+        return accessors;
+    };
 
     for obj in split_json_objects(arr_str) {
         let bv = extract_int(obj, "bufferView");
@@ -302,7 +322,9 @@ fn parse_buffer_views(json: &str) -> Vec<BufferViewInfo> {
     };
     let arr_offset = start + arr_start;
 
-    let arr_str = extract_json_array(json, arr_offset);
+    let Some(arr_str) = extract_json_array(json, arr_offset) else {
+        return views;
+    };
 
     for obj in split_json_objects(arr_str) {
         let offset = extract_int(obj, "byteOffset").unwrap_or(0);
@@ -332,14 +354,18 @@ fn parse_mesh_primitives(json: &str) -> Vec<MeshPrimitive> {
         return primitives;
     };
     let meshes_arr_offset = meshes_start + arr_start;
-    let meshes_str = extract_json_array(json, meshes_arr_offset);
+    let Some(meshes_str) = extract_json_array(json, meshes_arr_offset) else {
+        return primitives;
+    };
 
     let mut search_offset = 0;
     while let Some(prim_key_pos) = meshes_str[search_offset..].find("\"primitives\"") {
         let prim_key_abs = search_offset + prim_key_pos;
         if let Some(prim_arr_start) = meshes_str[prim_key_abs..].find('[') {
             let prim_arr_offset = prim_key_abs + prim_arr_start;
-            let prim_arr_str = extract_json_array(meshes_str, prim_arr_offset);
+            let Some(prim_arr_str) = extract_json_array(meshes_str, prim_arr_offset) else {
+                break;
+            };
 
             for prim_obj in split_json_objects(prim_arr_str) {
                 let pos = extract_attribute_accessor(prim_obj, "POSITION");
@@ -393,23 +419,26 @@ fn extract_attribute_accessor(text: &str, attr_name: &str) -> Option<usize> {
 }
 
 /// Extract the content of a JSON array starting at `arr_offset` (the `[` char).
-fn extract_json_array(json: &str, arr_offset: usize) -> &str {
+/// Extract the text between the `[` at `arr_offset` and its matching `]`.
+///
+/// Returns `None` when no matching closing bracket exists in the remainder
+/// of the string (truncated/hostile JSON) so callers can bail out instead
+/// of forming an inverted slice range and panicking.
+fn extract_json_array(json: &str, arr_offset: usize) -> Option<&str> {
     let mut depth = 0;
-    let mut arr_end = arr_offset;
     for (i, ch) in json[arr_offset..].chars().enumerate() {
         match ch {
             '[' => depth += 1,
             ']' => {
                 depth -= 1;
                 if depth == 0 {
-                    arr_end = arr_offset + i;
-                    break;
+                    return Some(&json[arr_offset + 1..arr_offset + i]);
                 }
             }
             _ => {}
         }
     }
-    &json[arr_offset + 1..arr_end]
+    None
 }
 
 /// Split a JSON array's inner text into top-level objects by tracking brace depth.
@@ -760,6 +789,130 @@ mod tests {
         assert!(
             result.is_ok(),
             "read_glb_solid should return Ok: {result:?}"
+        );
+    }
+
+    fn build_glb_bytes(json: &str, bin: &[u8]) -> Vec<u8> {
+        let mut json_bytes = json.as_bytes().to_vec();
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
+        let total_len = 12 + 8 + json_bytes.len() + 8 + bin.len();
+        let mut glb = Vec::with_capacity(total_len);
+
+        glb.extend_from_slice(&0x4654_6C67_u32.to_le_bytes());
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        #[allow(clippy::cast_possible_truncation)]
+        glb.extend_from_slice(&(total_len as u32).to_le_bytes());
+
+        #[allow(clippy::cast_possible_truncation)]
+        glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534A_u32.to_le_bytes());
+        glb.extend_from_slice(&json_bytes);
+
+        #[allow(clippy::cast_possible_truncation)]
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x004E_4942_u32.to_le_bytes());
+        glb.extend_from_slice(bin);
+        glb
+    }
+
+    #[test]
+    fn unterminated_json_array_is_error_not_panic() {
+        // Truncated JSON: the accessors array never closes. Previously this
+        // produced an inverted slice range (&json[n+1..n]) and panicked.
+        let json = r#"{"asset":{"version":"2.0"},"accessors":["#;
+        let bin = [0u8; 4];
+        let glb = build_glb_bytes(json, &bin);
+        assert!(read_glb(&glb).is_err(), "must reject truncated JSON");
+    }
+
+    #[test]
+    fn extract_json_array_unterminated_returns_none() {
+        assert!(extract_json_array(r#"{"a":["#, 4).is_none());
+        assert_eq!(extract_json_array(r"[1,2]", 0), Some("1,2"));
+    }
+
+    #[test]
+    fn oversized_chunk_length_is_rejected_without_overflow() {
+        // A chunk length near u32::MAX used to wrap `offset + chunk_len` on
+        // 32-bit targets; it must simply be skipped / rejected.
+        let mut glb = Vec::new();
+        glb.extend_from_slice(&0x4654_6C67_u32.to_le_bytes());
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        glb.extend_from_slice(&28_u32.to_le_bytes());
+        glb.extend_from_slice(&0xFFFF_FFF0_u32.to_le_bytes()); // bogus len
+        glb.extend_from_slice(&0x4E4F_534A_u32.to_le_bytes());
+        assert!(read_glb(&glb).is_err(), "missing JSON chunk must error");
+    }
+
+    #[test]
+    fn uint32_index_plus_vertex_offset_overflow_errors() {
+        // Primitive 1's index of u32::MAX plus its vertex base (3) would
+        // previously wrap to a silently corrupted small index.
+        let positions_0: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let normals_0: [f32; 9] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+        let indices_0: [u32; 3] = [0, 1, 2];
+        let positions_1: [f32; 9] = [5.0, 0.0, 0.0, 6.0, 0.0, 0.0, 5.0, 1.0, 0.0];
+        let normals_1: [f32; 9] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+        let indices_1: [u32; 3] = [u32::MAX, 1, 2];
+
+        let bv0 = (0_usize, 36_usize);
+        let bv1 = (bv0.0 + bv0.1, 36_usize);
+        let bv2 = (bv1.0 + bv1.1, 12_usize);
+        let bv3 = (bv2.0 + bv2.1, 36_usize);
+        let bv4 = (bv3.0 + bv3.1, 36_usize);
+        let bv5 = (bv4.0 + bv4.1, 12_usize);
+        let buf_len = bv5.0 + bv5.1;
+
+        let mut bin_buffer = Vec::with_capacity(buf_len);
+        for v in positions_0.iter().chain(normals_0.iter()) {
+            bin_buffer.extend_from_slice(&v.to_le_bytes());
+        }
+        for i in &indices_0 {
+            bin_buffer.extend_from_slice(&i.to_le_bytes());
+        }
+        for v in positions_1.iter().chain(normals_1.iter()) {
+            bin_buffer.extend_from_slice(&v.to_le_bytes());
+        }
+        for i in &indices_1 {
+            bin_buffer.extend_from_slice(&i.to_le_bytes());
+        }
+
+        let json = serde_json::json!({
+            "meshes": [{
+                "primitives": [
+                    {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2},
+                    {"attributes": {"POSITION": 3, "NORMAL": 4}, "indices": 5}
+                ]
+            }],
+            "accessors": [
+                {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 2, "componentType": 5125, "count": 3, "type": "SCALAR"},
+                {"bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 4, "componentType": 5126, "count": 3, "type": "VEC3"},
+                {"bufferView": 5, "componentType": 5125, "count": 3, "type": "SCALAR"}
+            ],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": bv0.0, "byteLength": bv0.1},
+                {"buffer": 0, "byteOffset": bv1.0, "byteLength": bv1.1},
+                {"buffer": 0, "byteOffset": bv2.0, "byteLength": bv2.1},
+                {"buffer": 0, "byteOffset": bv3.0, "byteLength": bv3.1},
+                {"buffer": 0, "byteOffset": bv4.0, "byteLength": bv4.1},
+                {"buffer": 0, "byteOffset": bv5.0, "byteLength": bv5.1}
+            ],
+            "buffers": [{"byteLength": buf_len}]
+        })
+        .to_string();
+
+        let glb = build_glb_bytes(&json, &bin_buffer);
+        let err = read_glb(&glb)
+            .map(|_| ())
+            .expect_err("u32 index overflow must be an error");
+        assert!(
+            format!("{err}").contains("overflow"),
+            "unexpected error: {err}"
         );
     }
 }
