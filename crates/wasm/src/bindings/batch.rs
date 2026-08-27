@@ -29,8 +29,8 @@ use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array, panic_message,
-    try_chamfer, try_fillet,
+    TOL, classify_to_string, get_f64, get_f64_array, get_u32, get_u32_array,
+    get_u32_array_optional, panic_message, try_chamfer, try_fillet,
 };
 use crate::kernel::BrepKernel;
 
@@ -1194,14 +1194,7 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "multiSectionSweep" => {
-                let faces: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let faces: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let params: Vec<f64> = args["params"]
                     .as_array()
                     .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
@@ -1304,14 +1297,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let dist = get_f64(args, "distance")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1340,14 +1326,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let radius = get_f64(args, "radius")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1421,14 +1400,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let radius = get_f64(args, "radius")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1447,14 +1419,7 @@ impl BrepKernel {
                 let d1 = get_f64(args, "d1")?;
                 let d2 = get_f64(args, "d2")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1477,14 +1442,7 @@ impl BrepKernel {
                     return Err("angle must be less than π/2".into());
                 }
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let edge_handles: Vec<u32> = args["edges"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let edge_handles: Vec<u32> = get_u32_array_optional(args, "edges")?;
                 let edge_ids: Vec<_> = edge_handles
                     .iter()
                     .map(|&h| self.resolve_edge(h).map_err(StructuredWasmError::from))
@@ -1503,14 +1461,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let thickness = get_f64(args, "thickness")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1606,14 +1557,7 @@ impl BrepKernel {
                 Ok(serde_json::json!(classify_to_string(result)))
             }
             "loft" => {
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1639,14 +1583,7 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "loftSmooth" => {
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1825,14 +1762,7 @@ impl BrepKernel {
             "defeature" => {
                 let s = get_u32(args, "solid")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -1997,14 +1927,7 @@ impl BrepKernel {
                 }))
             }
             "sewFaces" => {
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let tol = get_f64(args, "tolerance").unwrap_or(1e-6);
                 let face_ids: Vec<_> = face_handles
                     .iter()
@@ -2058,14 +1981,7 @@ impl BrepKernel {
                 let s = get_u32(args, "solid")?;
                 let angle = get_f64(args, "angle")?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let face_handles: Vec<u32> = args["faces"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
@@ -2348,6 +2264,63 @@ mod batch_contract_tests {
 
     fn parse(response: &str) -> serde_json::Value {
         serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    /// Handle arrays used to be parsed with
+    /// `filter_map(|v| v.as_u64().map(|n| n as u32))`, which fails open twice:
+    /// `filter_map` DROPS an element it cannot read, and `as u32` truncates.
+    /// Both produced a wrong answer reported as success, which a caller cannot
+    /// notice. Measured before the fix: `edges: [0, "not-a-handle", 1]` filleted
+    /// two of the three edges and returned `{"ok":1}`, and the handle
+    /// `4294967296` wrapped to `0` and filleted edge 0, also `{"ok":1}`.
+    #[test]
+    fn batch_handle_arrays_reject_malformed_and_out_of_range_elements() {
+        const BOX: &str = r#"{"op":"makeBox","args":{"width":10,"height":10,"depth":10}}"#;
+
+        // A well-formed selection still works, so the guard is not just refusing.
+        let mut kernel = BrepKernel::new();
+        let ok = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[0],"radius":0.5}}}}]"#
+        )));
+        assert_eq!(ok[1]["ok"], 1, "a valid edge selection must still fillet");
+
+        // An element that is not a handle names its own index instead of
+        // vanishing from the selection.
+        let mut kernel = BrepKernel::new();
+        let dropped = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[0,"not-a-handle",1],"radius":0.5}}}}]"#
+        )));
+        assert_eq!(
+            dropped[1]["error"], "edges[1] is not a u32",
+            "a malformed element must be reported, not silently dropped: {dropped}"
+        );
+
+        // 2^32 truncates to 0 under `as u32`, which is a DIFFERENT live entity.
+        let mut kernel = BrepKernel::new();
+        let wrapped = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[4294967296],"radius":0.5}}}}]"#
+        )));
+        assert_eq!(
+            wrapped[1]["error"], "edges[0] is not a u32",
+            "a handle above u32::MAX must be rejected, not wrapped: {wrapped}"
+        );
+
+        // chamfer shares the parser.
+        let mut kernel = BrepKernel::new();
+        let chamfer = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"chamfer","args":{{"solid":0,"edges":[0,null],"distance":0.5}}}}]"#
+        )));
+        assert_eq!(chamfer[1]["error"], "edges[1] is not a u32");
+
+        // An ABSENT optional key keeps its old meaning: an empty selection.
+        let mut kernel = BrepKernel::new();
+        let absent = parse(&kernel.execute_batch(&format!(
+            r#"[{BOX},{{"op":"shell","args":{{"solid":0,"thickness":1.0}}}}]"#
+        )));
+        assert_eq!(
+            absent[1]["ok"], 1,
+            "an absent optional handle array must still mean 'none': {absent}"
+        );
     }
 
     #[test]
