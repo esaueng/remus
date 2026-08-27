@@ -62,6 +62,7 @@ pub fn import_mesh(
     };
 
     let mut face_ids = Vec::new();
+    let mut edge_cache: EdgeCache = std::collections::HashMap::new();
     for tri in mesh.indices.chunks_exact(3) {
         let i0 = tri[0] as usize;
         let i1 = tri[1] as usize;
@@ -91,7 +92,7 @@ pub fn import_mesh(
             std::mem::swap(&mut v1, &mut v2);
         }
 
-        let face_id = build_triangle_face(topo, v0, v1, v2)?;
+        let face_id = build_triangle_face(topo, &mut edge_cache, v0, v1, v2)?;
         face_ids.push(face_id);
     }
 
@@ -164,22 +165,69 @@ fn build_vertex_map(
     tolerance: f64,
 ) -> Vec<remus_topology::vertex::VertexId> {
     let tol_sq = tolerance * tolerance;
-    let mut unique_verts: Vec<(Point3, remus_topology::vertex::VertexId)> = Vec::new();
     let mut map = Vec::with_capacity(positions.len());
 
-    for &pos in positions {
-        let existing = unique_verts.iter().find(|(p, _)| {
-            let dx = p.x() - pos.x();
-            let dy = p.y() - pos.y();
-            let dz = p.z() - pos.z();
-            dx.mul_add(dx, dy.mul_add(dy, dz * dz)) < tol_sq
-        });
+    // Spatial hash at the weld radius. The scan used to be linear over every
+    // vertex accepted so far, which is quadratic in the mesh: measured 3.9x the
+    // vertices costing 8.7x the time, and 153ms at 26k vertices extrapolating to
+    // roughly a quarter of an hour at the 2,000,000-vertex `ImportLimits`
+    // ceiling. Bucketing by quantized position makes it linear.
+    //
+    // A candidate probes its own cell and the 26 around it, because two points
+    // within `tolerance` can still land either side of a cell boundary — the
+    // quantized-key pattern the numerical-robustness guidance prescribes for
+    // near-duplicate merging. A non-finite or zero tolerance would make the
+    // cell size meaningless, so those fall back to one bucket, which is the old
+    // behaviour rather than a wrong answer.
+    let cell_size = if tolerance.is_finite() && tolerance > 0.0 {
+        tolerance
+    } else {
+        f64::INFINITY
+    };
+    let cell_of = |p: Point3| -> (i64, i64, i64) {
+        if cell_size.is_infinite() {
+            return (0, 0, 0);
+        }
+        let s = 1.0 / cell_size;
+        (
+            (p.x() * s).floor() as i64,
+            (p.y() * s).floor() as i64,
+            (p.z() * s).floor() as i64,
+        )
+    };
 
-        if let Some(&(_, vid)) = existing {
+    let mut buckets: std::collections::HashMap<
+        (i64, i64, i64),
+        Vec<(Point3, remus_topology::vertex::VertexId)>,
+    > = std::collections::HashMap::new();
+
+    for &pos in positions {
+        let c = cell_of(pos);
+        let mut found = None;
+        'probe: for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let Some(list) = buckets.get(&(c.0 + dx, c.1 + dy, c.2 + dz)) else {
+                        continue;
+                    };
+                    for &(p, vid) in list {
+                        let ex = p.x() - pos.x();
+                        let ey = p.y() - pos.y();
+                        let ez = p.z() - pos.z();
+                        if ex.mul_add(ex, ey.mul_add(ey, ez * ez)) < tol_sq {
+                            found = Some(vid);
+                            break 'probe;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(vid) = found {
             map.push(vid);
         } else {
             let vid = topo.add_vertex(Vertex::new(pos, tolerance));
-            unique_verts.push((pos, vid));
+            buckets.entry(c).or_default().push((pos, vid));
             map.push(vid);
         }
     }
@@ -187,21 +235,55 @@ fn build_vertex_map(
     map
 }
 
+/// Edges already minted, keyed by their unordered vertex pair.
+type EdgeCache = std::collections::HashMap<
+    (usize, usize),
+    (
+        remus_topology::edge::EdgeId,
+        remus_topology::vertex::VertexId,
+    ),
+>;
+
+/// Fetch the edge between `a` and `b`, minting it only if no triangle has used
+/// it yet, and returning it oriented for a traversal from `a` to `b`.
+///
+/// Every triangle used to mint three FRESH edges, so two triangles sharing a
+/// side referenced two distinct `EdgeId`s and the shell never connected. An
+/// imported cube came back V=8 E=36 F=12 — Euler −16 against the required 2,
+/// with all 36 edges used exactly once. Sharing the edge is what makes the
+/// import a shell rather than a pile of loose triangles.
+fn shared_edge(
+    topo: &mut Topology,
+    cache: &mut EdgeCache,
+    a: remus_topology::vertex::VertexId,
+    b: remus_topology::vertex::VertexId,
+) -> OrientedEdge {
+    let key = if a.index() <= b.index() {
+        (a.index(), b.index())
+    } else {
+        (b.index(), a.index())
+    };
+    if let Some(&(eid, start)) = cache.get(&key) {
+        // Forward when this triangle walks it the way the edge was built.
+        return OrientedEdge::new(eid, start == a);
+    }
+    let eid = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+    cache.insert(key, (eid, a));
+    OrientedEdge::new(eid, true)
+}
+
 /// Build a single triangular planar face from three vertex IDs.
 fn build_triangle_face(
     topo: &mut Topology,
+    cache: &mut EdgeCache,
     v0: remus_topology::vertex::VertexId,
     v1: remus_topology::vertex::VertexId,
     v2: remus_topology::vertex::VertexId,
 ) -> Result<remus_topology::face::FaceId, IoError> {
-    let e01 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
-    let e12 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
-    let e20 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
-
     let oriented = vec![
-        OrientedEdge::new(e01, true),
-        OrientedEdge::new(e12, true),
-        OrientedEdge::new(e20, true),
+        shared_edge(topo, cache, v0, v1),
+        shared_edge(topo, cache, v1, v2),
+        shared_edge(topo, cache, v2, v0),
     ];
     let wire = Wire::new(oriented, true).map_err(|e| IoError::ParseError {
         reason: format!("failed to build triangle wire: {e}"),
@@ -241,6 +323,122 @@ mod tests {
     use super::*;
     use crate::stl::reader::read_stl;
     use crate::stl::writer::{self, StlFormat};
+
+    /// An imported mesh must be a SHELL, not a pile of loose triangles.
+    ///
+    /// Every triangle used to mint three fresh edges, so two triangles sharing a
+    /// side referenced two distinct `EdgeId`s and nothing ever connected. A
+    /// tessellated cube imported as V=8 E=36 F=12 — Euler −16 against the
+    /// required 2, with all 36 edges used exactly once — while the doc comment
+    /// claimed a closed shell and no test checked. Every STL, OBJ, PLY, 3MF and
+    /// GLB import came through this path.
+    #[test]
+    fn imported_mesh_shares_edges_and_closes_the_shell() {
+        use remus_operations::tessellate::tessellate_solid;
+        use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+
+        let mut source = Topology::new();
+        let cube = remus_operations::primitives::make_box(&mut source, 10.0, 10.0, 10.0).unwrap();
+        let mesh = tessellate_solid(&source, cube, 0.1).unwrap();
+
+        let mut topo = Topology::new();
+        let imported = import_mesh(&mut topo, &mesh, 1e-6).unwrap();
+
+        let v = solid_vertices(&topo, imported).unwrap().len();
+        let e = solid_edges(&topo, imported).unwrap().len();
+        let f = solid_faces(&topo, imported).unwrap().len();
+
+        // A closed triangulated shell: every triangle has 3 sides, every side is
+        // shared by exactly 2 triangles, so E = 3F/2 and Euler is 2.
+        assert_eq!(e, 3 * f / 2, "expected {} shared edges, got {e}", 3 * f / 2);
+        assert_eq!(
+            v + f,
+            e + 2,
+            "Euler V - E + F must be 2 for a closed shell; got V={v} E={e} F={f}"
+        );
+
+        // No edge may be used only once — that is a free boundary.
+        let mut uses: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for fid in solid_faces(&topo, imported).unwrap() {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    *uses.entry(oe.edge().index()).or_insert(0) += 1;
+                }
+            }
+        }
+        let free = uses.values().filter(|&&c| c == 1).count();
+        let non_manifold = uses.values().filter(|&&c| c > 2).count();
+        assert_eq!(free, 0, "imported shell has {free} free edge(s)");
+        assert_eq!(
+            non_manifold, 0,
+            "imported shell has {non_manifold} over-shared edge(s)"
+        );
+
+        // A shell that actually closes measures the volume it enclosed.
+        let volume = remus_operations::measure::solid_volume(&topo, imported, 0.01).unwrap();
+        assert!(
+            (volume - 1000.0).abs() < 1e-6,
+            "expected the cube's 1000, got {volume}"
+        );
+    }
+
+    /// The weld used to scan every vertex accepted so far, which is quadratic:
+    /// measured 3.9x the vertices costing 8.7x the time, and 153ms at 26k
+    /// vertices extrapolating to roughly a quarter of an hour at the
+    /// 2,000,000-vertex `ImportLimits` ceiling. Bucketing makes it linear.
+    ///
+    /// Asserts the SHAPE of the curve, not a wall-clock number: cost per vertex
+    /// must not grow with the mesh. A quadratic weld fails this by a wide
+    /// margin (its per-vertex cost rose 15x over this range); the generous
+    /// bound keeps it from being a flaky timing test on a shared runner.
+    #[test]
+    fn vertex_weld_cost_does_not_grow_with_mesh_size() {
+        use remus_math::vec::Vec3;
+        use remus_operations::tessellate::TriangleMesh;
+        use std::time::Instant;
+
+        let grid = |k: usize| -> TriangleMesh {
+            let mut positions = Vec::new();
+            for j in 0..=k {
+                for i in 0..=k {
+                    positions.push(Point3::new(i as f64, j as f64, 0.0));
+                }
+            }
+            let idx = |i: usize, j: usize| (j * (k + 1) + i) as u32;
+            let mut indices = Vec::new();
+            for j in 0..k {
+                for i in 0..k {
+                    indices.extend_from_slice(&[idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)]);
+                    indices.extend_from_slice(&[idx(i, j), idx(i + 1, j + 1), idx(i, j + 1)]);
+                }
+            }
+            let n = positions.len();
+            TriangleMesh {
+                positions,
+                normals: vec![Vec3::new(0.0, 0.0, 1.0); n],
+                indices,
+            }
+        };
+
+        let per_vertex = |k: usize| -> f64 {
+            let mesh = grid(k);
+            let n = mesh.positions.len() as f64;
+            let mut topo = Topology::new();
+            let started = Instant::now();
+            let _ = import_mesh(&mut topo, &mesh, 1e-9);
+            started.elapsed().as_secs_f64() / n
+        };
+
+        let small = per_vertex(40);
+        let large = per_vertex(160);
+        assert!(
+            large < small * 8.0,
+            "per-vertex weld cost grew from {small:.3e}s to {large:.3e}s over a 16x larger \
+             mesh — the weld is superlinear again"
+        );
+    }
 
     #[test]
     fn vol_from_faces_8_vertex_box() {
