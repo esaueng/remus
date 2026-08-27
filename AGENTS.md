@@ -101,6 +101,10 @@ Quick reference — find the right file for any task:
 | Oriented bounding box (PCA + SAT) | `obb.rs` |
 | Chord deviation arc discretization | `chord.rs` |
 | Gauss-Legendre quadrature | `quadrature.rs` |
+| Deterministic hashing (fixed-seed FNV-1a) | `det_hash.rs` |
+| Qualified intersection results (contact kind × quality) | `intersect.rs` |
+| Robust 2D polygon booleans (arrangement-based) | `polygon_boolean.rs` |
+| Kernel-wide structured diagnostics | `diagnostic.rs` |
 
 ### L1: geometry (`crates/geometry/src/`)
 | Task | File(s) |
@@ -134,6 +138,12 @@ Quick reference — find the right file for any task:
 | PCurve registry | `pcurve.rs` |
 | Topology validation | `validation.rs` |
 | Test utilities (`test-utils` feature) | `test_utils.rs` |
+| Coedge — one directed use of an edge by one face | `coedge.rs` |
+| Loop — ordered cycle of coedge uses bounding a face | `face_loop.rs` |
+| Transactional mutation (run_transacted / run_validated) | `transaction.rs` |
+| Append-only evolution journal (RFC 0003) | `journal.rs` |
+| Persistent references and their resolver (RFC 0003) | `naming.rs` |
+| Attribute store (names, colours, app ids) | `attributes.rs` |
 
 ### L2: algo (`crates/algo/src/`)
 | Task | File(s) |
@@ -159,6 +169,8 @@ Quick reference — find the right file for any task:
 | Interference indexing | `ds/interference.rs`, `ds/shape_index.rs` |
 | Analytic classifier (7 variants) | `classifier/analytic.rs` |
 | Ray-cast classifier | `classifier/ray_cast.rs` |
+| Boolean preflight diagnostics | `diagnostic.rs` |
+| Deterministic work counters (complexity guards) | `perf.rs` |
 
 ### L2: blend (`crates/blend/src/`)
 | Task | File(s) |
@@ -176,6 +188,9 @@ Quick reference — find the right file for any task:
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Shared builder utilities | `builder_utils.rs` |
+| Geometry-aware snap tolerance for blend assembly | `adaptive_tolerance.rs` |
+| G1 continuity chain expansion | `g1_chain.rs` |
+| Spherical-triangle corner patches for vertex blends | `spherical_triangle.rs` |
 
 ### L2: heal (`crates/heal/src/`)
 | Task | File(s) |
@@ -260,6 +275,8 @@ Quick reference — find the right file for any task:
 | Arc joints (pipe + sphere cap) | `arc_joint.rs` |
 | Shell assembly + solid creation | `assemble.rs` |
 | Self-intersection removal (BOP-based) | `self_int.rs` |
+| Cavity (inner shell) extent checks | `cavity.rs` |
+| Topology-preserving planar face moves | `move_faces.rs` |
 
 ### L2: sketch (`crates/sketch/src/`)
 | Task | File(s) |
@@ -322,6 +339,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
+| Journal ingestion for modeling ops (RFC 0003) | `journal_ops.rs` |
+| Direct push/pull face editing | `push_pull.rs` |
+| Shared test assertion helpers | `test_helpers.rs` |
 
 ### L3: io (`crates/io/src/`)
 | Task | File(s) |
@@ -333,6 +353,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | OBJ read/write | `obj/reader.rs`, `obj/writer.rs` |
 | PLY read/write | `ply/reader.rs`, `ply/writer.rs` |
 | glTF read/write | `gltf/reader.rs`, `gltf/writer.rs` |
+| Exact arena serialization (solid/compound sub-arenas) | `arena_io.rs` |
+| Persistent-reference serialization (RFC 0003) | `naming_io.rs` |
+| Resource limits for untrusted imports (`ImportLimits`) | `limits.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
@@ -373,6 +396,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
+| Faces with inner (hole) wires | `holed_face.rs` |
+| `log` crate bridge to JS console | `logging.rs` |
+| Panic capture for post-mortem diagnosis | `panics.rs` |
+| Deterministic reproduction bundles | `repro.rs` |
 
 ## Ripple-Effect Checklists
 
