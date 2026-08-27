@@ -16,6 +16,15 @@
 /// ~20° — chosen so small fillet/chamfer arcs reach reference density.
 pub const DEFAULT_ANGULAR_TOL: f64 = 0.35;
 
+/// Hard upper bound on the segment count returned by either helper below.
+///
+/// Caller-controlled tolerances can drive the raw `ceil(arc_range/θ)` count
+/// toward `usize::MAX` (subnormal deflection, near-zero angular cap), which
+/// downstream samplers would turn into unbounded work or allocation. The
+/// bound is far above any legitimate tessellation density; callers needing
+/// more detail must subdivide geometry themselves.
+pub const MAX_CHORD_SEGMENTS: usize = 65_536;
+
 /// Compute the number of segments needed to discretize a circular arc
 /// so that the chord-height deviation stays below `deflection`.
 ///
@@ -48,7 +57,8 @@ pub fn segments_for_chord_deviation(radius: f64, arc_range: f64, deflection: f64
 /// - `θ_minsize = min(min_len/radius, π/2)` (when `min_len > 0`) floors the
 ///   step so a vanishingly small radius cannot demand sub-`min_len` edges.
 ///
-/// The segment count is `ceil(arc_range / θ_step)`, kept at least 4.
+/// The segment count is `ceil(arc_range / θ_step)`, clamped to
+/// [`MAX_CHORD_SEGMENTS`] and kept at least 4.
 /// For degenerate inputs (non-positive radius, deflection, or arc range)
 /// returns 8 as a safe default. A non-positive `angular_tol` is treated as
 /// "no angular cap" (linear-only behaviour).
@@ -96,7 +106,7 @@ pub fn segments_for_chord_deviation_with_angle(
     let n = (arc_range / theta_step).ceil() as usize;
 
     if !apply_curvature_floor {
-        return n.max(4);
+        return n.clamp(4, MAX_CHORD_SEGMENTS);
     }
 
     // Legacy curvature floor for variable-curvature curves and doubly-curved
@@ -106,7 +116,7 @@ pub fn segments_for_chord_deviation_with_angle(
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let n_min = (arc_range * (radius / deflection).sqrt()).ceil() as usize;
 
-    n.max(n_min).max(4)
+    n.max(n_min).clamp(4, MAX_CHORD_SEGMENTS)
 }
 
 #[cfg(test)]
@@ -214,5 +224,44 @@ mod tests {
         let n = segments_for_chord_deviation_with_angle(0.1, TAU, 1e-6, 0.01, 100.0, true);
         let floor = (TAU / std::f64::consts::FRAC_PI_2).ceil() as usize;
         assert!(n >= floor, "got {n}, expected >= {floor}");
+    }
+
+    #[test]
+    fn tiny_angular_tolerance_is_work_bounded() {
+        // A near-zero angular cap (e.g. a hostile 1e-15 from an API caller)
+        // must not saturate the count toward usize::MAX.
+        let n = segments_for_chord_deviation_with_angle(1.0, TAU, 0.1, 1.0e-12, 0.0, false);
+        assert_eq!(n, MAX_CHORD_SEGMENTS);
+    }
+
+    #[test]
+    fn huge_curvature_floor_is_work_bounded() {
+        // The legacy curvature floor can exceed usize::MAX for extreme
+        // radius/deflection ratios; the cast saturates and the clamp caps it.
+        let n = segments_for_chord_deviation_with_angle(1.0e12, TAU, 1.0e-3, 0.0, 0.0, true);
+        assert_eq!(n, MAX_CHORD_SEGMENTS);
+    }
+
+    #[test]
+    fn near_zero_deflection_is_work_bounded() {
+        // A hostile-but-valid tiny deflection must not demand billions of
+        // segments (ratio 1e-15 stays far enough above 1.0's float spacing
+        // to yield a small non-zero step angle).
+        let linear_only = segments_for_chord_deviation_with_angle(1.0, TAU, 1e-15, 0.0, 0.0, false);
+        assert_eq!(linear_only, MAX_CHORD_SEGMENTS);
+        let floored = segments_for_chord_deviation_with_angle(1.0, TAU, 1e-15, 0.0, 0.0, true);
+        assert_eq!(floored, MAX_CHORD_SEGMENTS);
+
+        // Fully subnormal deflection collapses the step angle to zero and
+        // takes the degenerate-input exit: still bounded either way.
+        let subnormal = segments_for_chord_deviation_with_angle(
+            1.0,
+            TAU,
+            f64::MIN_POSITIVE / 8.0,
+            0.0,
+            0.0,
+            false,
+        );
+        assert!(subnormal <= MAX_CHORD_SEGMENTS);
     }
 }

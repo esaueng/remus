@@ -104,6 +104,13 @@ fn parse_face_index(token: &str, line: &str) -> Result<u32, crate::IoError> {
             reason: format!("negative or zero face index in: {line}"),
         });
     }
+    // Reject indices that cannot be represented as u32 instead of letting
+    // the cast truncate them into silently corrupted (wrong-vertex) indices.
+    if idx > u32::MAX as i64 + 1 {
+        return Err(crate::IoError::ParseError {
+            reason: format!("face index out of range in: {line}"),
+        });
+    }
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     Ok((idx - 1) as u32) // OBJ is 1-indexed
 }
@@ -223,6 +230,19 @@ f 1 2 3 4
         assert_eq!(mesh.positions.len(), 4);
         // Quad should be split into 2 triangles
         assert_eq!(mesh.indices.len(), 6);
+    }
+
+    #[test]
+    fn face_index_beyond_u32_range_is_rejected_not_truncated() {
+        // 4294967297 == u32::MAX + 2; the old `(idx - 1) as u32` cast wrapped
+        // this to vertex index 1 instead of rejecting it.
+        let obj = "\
+v 0.0 0.0 0.0
+v 1.0 0.0 0.0
+v 0.0 1.0 0.0
+f 4294967297 2 3
+";
+        assert!(read_obj(obj).is_err(), "oversized face index must error");
     }
 
     #[test]
