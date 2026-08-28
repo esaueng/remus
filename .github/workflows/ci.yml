@@ -289,6 +289,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./scripts/check-doc-paths.sh
+      - run: ./scripts/check-doc-module-map.py
 
   naming:
     name: Product Naming
