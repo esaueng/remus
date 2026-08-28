@@ -1064,6 +1064,18 @@ pub fn validate_solid_with_options(
                 });
             }
         }
+        for &face_id in &faces {
+            for issue in remus_check::validate::check_face_inner_wire_orientation(topo, face_id)
+                .map_err(|e| crate::OperationsError::InvalidInput {
+                    reason: e.to_string(),
+                })?
+            {
+                issues.push(ValidationIssue {
+                    severity: Severity::Error,
+                    description: issue.description,
+                });
+            }
+        }
     }
 
     Ok(ValidationReport { issues })

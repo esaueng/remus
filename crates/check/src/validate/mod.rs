@@ -10,6 +10,7 @@ pub(crate) mod vertex;
 pub(crate) mod wire;
 
 pub use checks::{CheckId, EntityRef, Severity, ValidationIssue, ValidationReport};
+pub use face::check_face_inner_wire_orientation;
 pub use wire::check_wire_self_intersection;
 
 use std::collections::{HashMap, HashSet};

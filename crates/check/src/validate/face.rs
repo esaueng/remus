@@ -38,45 +38,117 @@ pub fn check_face_orientation(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Vec<ValidationIssue>, CheckError> {
+    let mut issues = Vec::new();
     let polygon = crate::util::face_polygon(topo, face_id)?;
-    if polygon.len() < 3 {
-        return Ok(vec![]); // Can't determine winding for degenerate polygon
+    if polygon.len() >= 3 {
+        let wire_normal = newell_normal(&polygon);
+        if wire_normal.length() >= 1e-15 {
+            let face = topo.face(face_id)?;
+            let centroid = polygon_centroid(&polygon);
+
+            let surface_normal = if let Some((u, v)) = face.surface().project_point(centroid) {
+                face.surface().normal(u, v)
+            } else {
+                // Plane: use stored normal directly
+                face.surface().normal(0.0, 0.0)
+            };
+
+            // Check if normals agree (dot product > 0 means same direction)
+            let dot = wire_normal.dot(surface_normal);
+            if dot < -0.1 {
+                // Allow some tolerance for curved surfaces
+                issues.push(ValidationIssue {
+                    check: CheckId::FaceOrientationConsistency,
+                    severity: Severity::Warning,
+                    entity: EntityRef::Face(face_id),
+                    description: format!(
+                        "face normal inconsistent with wire winding (dot={dot:.3})"
+                    ),
+                    deviation: Some(dot.abs()),
+                });
+            }
+        }
     }
 
-    let wire_normal = newell_normal(&polygon);
-    if wire_normal.length() < 1e-15 {
-        return Ok(vec![]); // Degenerate polygon
-    }
+    issues.extend(check_face_inner_wire_orientation(topo, face_id)?);
+    Ok(issues)
+}
 
+/// Check that every planar inner wire traverses opposite to its outer wire.
+///
+/// A same-wound hole reverses the material-side convention and can poison the
+/// orientation of a later boolean even when the source solid otherwise passes
+/// shell and volume checks.
+///
+/// # Errors
+///
+/// Returns an error if the face, one of its wires, or an edge or vertex used by
+/// those wires cannot be resolved.
+pub fn check_face_inner_wire_orientation(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Vec<ValidationIssue>, CheckError> {
     let face = topo.face(face_id)?;
-    let centroid = polygon_centroid(&polygon);
-
-    let surface_normal = if let Some((u, v)) = face.surface().project_point(centroid) {
-        face.surface().normal(u, v)
-    } else {
-        // Plane: use stored normal directly
-        face.surface().normal(0.0, 0.0)
-    };
-
-    // Check if normals agree (dot product > 0 means same direction)
-    let dot = wire_normal.dot(surface_normal);
-    if dot < -0.1 {
-        // Allow some tolerance for curved surfaces
-        return Ok(vec![ValidationIssue {
-            check: CheckId::FaceOrientationConsistency,
-            severity: Severity::Warning,
-            entity: EntityRef::Face(face_id),
-            description: format!("face normal inconsistent with wire winding (dot={dot:.3})"),
-            deviation: Some(dot.abs()),
-        }]);
+    if !matches!(
+        face.surface(),
+        remus_topology::face::FaceSurface::Plane { .. }
+    ) || face.inner_wires().is_empty()
+    {
+        return Ok(Vec::new());
     }
 
-    Ok(vec![])
+    let outer = crate::util::wire_polygon(topo, face.outer_wire())?;
+    let Some(outer_normal) = raw_newell_normal(&outer) else {
+        return Ok(Vec::new());
+    };
+    let mut issues = Vec::new();
+    for &wire_id in face.inner_wires() {
+        let inner = crate::util::wire_polygon(topo, wire_id)?;
+        let Some(inner_normal) = raw_newell_normal(&inner) else {
+            continue;
+        };
+        let alignment =
+            outer_normal.dot(inner_normal) / (outer_normal.length() * inner_normal.length());
+        if alignment > 0.1 {
+            issues.push(ValidationIssue {
+                check: CheckId::FaceOrientationConsistency,
+                severity: Severity::Error,
+                entity: EntityRef::Wire(wire_id),
+                description: format!(
+                    "inner wire {} on planar face {} has the same winding as its outer wire",
+                    wire_id.index(),
+                    face_id.index()
+                ),
+                deviation: Some(alignment),
+            });
+        }
+    }
+    Ok(issues)
 }
 
 /// Compute polygon normal via Newell's method.
 fn newell_normal(verts: &[Point3]) -> Vec3 {
     crate::util::polygon_normal(verts)
+}
+
+fn raw_newell_normal(verts: &[Point3]) -> Option<Vec3> {
+    if verts.len() < 3 {
+        return None;
+    }
+    let mut normal = Vec3::new(0.0, 0.0, 0.0);
+    for (current, next) in verts
+        .iter()
+        .zip(verts.iter().cycle().skip(1))
+        .take(verts.len())
+    {
+        normal += Vec3::new(
+            (current.y() - next.y()) * (current.z() + next.z()),
+            (current.z() - next.z()) * (current.x() + next.x()),
+            (current.x() - next.x()) * (current.y() + next.y()),
+        );
+    }
+    let length = normal.length();
+    (length.is_finite() && length > 1e-30).then_some(normal)
 }
 
 /// Compute polygon centroid.
@@ -162,5 +234,45 @@ mod tests {
         // Flipped the other way: CW winding, +z stored normal.
         let fid = square_face(&mut topo, false, 1.0, false);
         assert_eq!(check_face_orientation(&topo, fid).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn planar_inner_wire_must_wind_opposite_to_outer_wire() {
+        let mut topo = Topology::new();
+        let outer = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+                Point3::new(4.0, 4.0, 0.0),
+                Point3::new(0.0, 4.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let same_wound_inner = remus_topology::builder::make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(3.0, 1.0, 0.0),
+                Point3::new(3.0, 3.0, 0.0),
+                Point3::new(1.0, 3.0, 0.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![same_wound_inner],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let issues = check_face_orientation(&topo, face).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].severity, Severity::Error);
+        assert!(issues[0].description.contains("same winding"));
     }
 }

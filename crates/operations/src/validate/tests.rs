@@ -50,6 +50,59 @@ fn valid_box_primitive() {
 }
 
 #[test]
+fn same_wound_planar_hole_is_invalid() {
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::builder::make_polygon_wire;
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+
+    let mut topo = Topology::new();
+    let outer = make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(4.0, 4.0, 0.0),
+            Point3::new(0.0, 4.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let inner = make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(3.0, 1.0, 0.0),
+            Point3::new(3.0, 3.0, 0.0),
+            Point3::new(1.0, 3.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let face = topo.add_face(Face::new(
+        outer,
+        vec![inner],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+    let report = validate_solid(&topo, solid).unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.description.contains("same winding")),
+        "strict validation must identify the malformed hole: {:?}",
+        report.issues
+    );
+}
+
+#[test]
 fn extruded_solid_is_valid() {
     let mut topo = Topology::new();
     let face = remus_topology::test_utils::make_unit_square_face(&mut topo);
