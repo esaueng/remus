@@ -7,7 +7,6 @@ use std::collections::HashMap;
 
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::Edge;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
@@ -302,16 +301,21 @@ fn merge_coincident_vertices(
                 .copied()
                 .unwrap_or_else(|| edge.end());
             if new_start != edge.start() || new_end != edge.end() {
-                Some((eid, new_start, new_end, edge.curve().clone()))
+                Some((eid, new_start, new_end))
             } else {
                 None
             }
         })
         .collect();
 
-    for (eid, new_start, new_end, curve) in updates {
+    for (eid, new_start, new_end) in updates {
         let edge = topo.edge_mut(eid)?;
-        *edge = Edge::new(new_start, new_end, curve);
+        // `set_start`/`set_end`, never a whole-`Edge` rebuild: an explicit
+        // trim (RFC 0002, Stage 3) and an edge-specific tolerance are not
+        // recoverable from the endpoints, and a vertex merge changes neither
+        // the curve nor the parameter interval on it.
+        edge.set_start(new_start);
+        edge.set_end(new_end);
     }
 
     ctx.info(format!("merged {merged_count} coincident vertices"));

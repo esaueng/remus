@@ -241,7 +241,12 @@ pub fn merge_coincident_vertices(
 
     for (eid, new_start, new_end) in updates {
         let edge = topo.edge_mut(eid)?;
-        *edge = remus_topology::edge::Edge::new(new_start, new_end, edge.curve().clone());
+        // `set_start`/`set_end`, never a whole-`Edge` rebuild: an explicit
+        // trim (RFC 0002, Stage 3) and an edge-specific tolerance are not
+        // recoverable from the endpoints, and a vertex merge changes neither
+        // the curve nor the parameter interval on it.
+        edge.set_start(new_start);
+        edge.set_end(new_end);
     }
 
     Ok(merged_count)
@@ -649,16 +654,18 @@ pub fn close_wire_gaps(
                             cur_end
                         };
                         if new_start != cur_start || new_end != cur_end {
-                            let curve = edge.curve().clone();
-                            updates.push((oe.edge(), new_start, new_end, curve));
+                            updates.push((oe.edge(), new_start, new_end));
                         }
                     }
                 }
 
                 // Allocate: apply the updates.
-                for (eid, new_start, new_end, curve) in updates {
+                for (eid, new_start, new_end) in updates {
                     let em = topo.edge_mut(eid)?;
-                    *em = remus_topology::edge::Edge::new(new_start, new_end, curve);
+                    // See `merge_coincident_vertices`: preserve trim and
+                    // edge tolerance across a pure endpoint change.
+                    em.set_start(new_start);
+                    em.set_end(new_end);
                 }
                 gaps_closed += 1;
             }
