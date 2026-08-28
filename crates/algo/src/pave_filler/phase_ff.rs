@@ -63,6 +63,10 @@ fn ff_trace_x() -> Option<f64> {
 #[derive(Default)]
 struct JunctionRegistry {
     cells: std::collections::HashMap<(i64, i64, i64), JunctionEntry>,
+    /// Characteristic size per face pair, so the snap bands below track the
+    /// geometry instead of a fixed length. Cached because `resolve` runs per
+    /// section endpoint and a face AABB costs a surface sampling pass.
+    extents: std::collections::HashMap<(usize, usize), f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +79,25 @@ struct JunctionEntry {
 impl JunctionRegistry {
     const CELL: f64 = 1e-4;
     const BOUNDARY_TRIGGER_MAX: f64 = 1e-3;
+    /// Ceiling on the boundary-candidate band as a fraction of the face
+    /// pair's own extent.
+    ///
+    /// The band above is an absolute length, which is a sane search radius
+    /// only while the model is much larger than it. On a body whose features
+    /// are 1e-3 across, 1e-3 is the WHOLE MODEL: a section endpoint adopts
+    /// any boundary junction of the pair however far away, and a through-cut
+    /// section lands on the tool's own cap rim instead of the blank's face.
+    /// The band was also `.max()`-floored, so lowering the caller's tolerance
+    /// could not shrink it — the boolean returned bit-identical wrong output
+    /// at every tolerance, which is what disguised this as a tolerance
+    /// problem.
+    ///
+    /// A cap rather than a replacement: the absolute band is load-bearing at
+    /// the scales real parts live at (removing it mesh-falls-back the
+    /// dovetail nub fuse), so this only ever NARROWS it, and only once it has
+    /// grown to a significant fraction of the geometry it searches. Any pair
+    /// whose extent exceeds 0.1 keeps the historical band bit-for-bit.
+    const BOUNDARY_TRIGGER_EXTENT_FRACTION: f64 = 0.01;
 
     fn key(p: Point3) -> (i64, i64, i64) {
         #[allow(clippy::cast_possible_truncation)]
@@ -108,11 +131,15 @@ impl JunctionRegistry {
         p: Point3,
         tol: Tolerance,
     ) -> Point3 {
+        // The band must track the geometry it searches, never a fixed length.
+        let trigger_max = Self::BOUNDARY_TRIGGER_MAX
+            .min(self.pair_extent(topo, fa, fb, tol) * Self::BOUNDARY_TRIGGER_EXTENT_FRACTION)
+            .max(tol.linear);
         // A broad trigger is safe only for finding a boundary candidate: the
         // returned point is recomputed on a boundary of this exact face pair.
         // Never adopt a registry point directly from the untrusted fitted
         // endpoint, because an unrelated nearby feature could redirect it.
-        let trigger = (tol.linear * 1000.0).max(Self::BOUNDARY_TRIGGER_MAX);
+        let trigger = (tol.linear * 1000.0).max(trigger_max);
         let Some(boundary_junction) = snap_to_boundary_junction_band(topo, fa, fb, p, tol, trigger)
         else {
             return p;
@@ -149,18 +176,12 @@ impl JunctionRegistry {
                     [prev_a, prev_b].contains(&fa) || [prev_a, prev_b].contains(&fb)
                 });
                 if (!shares_face && !face_uses_source)
-                    || (entry.point - boundary_junction).length() > Self::BOUNDARY_TRIGGER_MAX
+                    || (entry.point - boundary_junction).length() > trigger_max
                 {
                     return None;
                 }
-                let validated = snap_to_boundary_junction_band(
-                    topo,
-                    fa,
-                    fb,
-                    entry.point,
-                    tol,
-                    Self::BOUNDARY_TRIGGER_MAX,
-                )?;
+                let validated =
+                    snap_to_boundary_junction_band(topo, fa, fb, entry.point, tol, trigger_max)?;
                 ((validated - entry.point).length() <= weld).then_some(entry.point)
             })
             .collect::<Vec<_>>();
@@ -188,6 +209,35 @@ impl JunctionRegistry {
             },
         );
         boundary_junction
+    }
+
+    /// Diagonal of the union of the two faces' AABBs — the characteristic
+    /// length of this pair. Falls back to the caller's tolerance if either
+    /// face's box cannot be built, which keeps the band at its minimum rather
+    /// than letting a failure widen it.
+    fn pair_extent(&mut self, topo: &Topology, fa: FaceId, fb: FaceId, tol: Tolerance) -> f64 {
+        let key = if fa.index() <= fb.index() {
+            (fa.index(), fb.index())
+        } else {
+            (fb.index(), fa.index())
+        };
+        if let Some(&cached) = self.extents.get(&key) {
+            return cached;
+        }
+        let extent = match (
+            compute_face_bbox(topo, fa, tol),
+            compute_face_bbox(topo, fb, tol),
+        ) {
+            (Ok(a), Ok(b)) => {
+                let dx = a.max.x().max(b.max.x()) - a.min.x().min(b.min.x());
+                let dy = a.max.y().max(b.max.y()) - a.min.y().min(b.min.y());
+                let dz = a.max.z().max(b.max.z()) - a.min.z().min(b.min.z());
+                dz.mul_add(dz, dx.mul_add(dx, dy * dy)).sqrt()
+            }
+            _ => tol.linear,
+        };
+        self.extents.insert(key, extent);
+        extent
     }
 
     fn seed(&mut self, p: Point3, source_edge: remus_topology::edge::EdgeId) {
