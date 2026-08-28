@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787908556000,
+  "lastUpdate": 1787908716652,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3131,6 +3131,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 32994284,
             "range": "± 1467880",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "815c5e5cfbbae36432504ae449b25fbc9ee526d7",
+          "message": "Merge pull request #111 from esaueng/fix/plane-patch-extent\n\nfix(heal): make a converted patch cover the face it was built for",
+          "timestamp": "2026-08-28T05:15:35-04:00",
+          "tree_id": "e87e26d25fb1078ae1663af91ddc731a894d5e9c",
+          "url": "https://github.com/esaueng/remus/commit/815c5e5cfbbae36432504ae449b25fbc9ee526d7"
+        },
+        "date": 1787908716072,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1299447,
+            "range": "± 2006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1388348,
+            "range": "± 1125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12963,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 964334,
+            "range": "± 1389",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39247709,
+            "range": "± 57539",
             "unit": "ns/iter"
           }
         ]
