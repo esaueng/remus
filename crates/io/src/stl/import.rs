@@ -4,14 +4,16 @@
 //! and builds topology entities: one planar face per triangle, assembled
 //! into a shell and solid.
 
+use std::collections::HashMap;
+
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::tessellate::TriangleMesh;
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
-use remus_topology::vertex::Vertex;
+use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::IoError;
@@ -62,6 +64,10 @@ pub fn import_mesh(
     };
 
     let mut face_ids = Vec::new();
+    // Edges are shared between the two triangles that meet along them. Giving
+    // each triangle its own three edges would leave every face an island: the
+    // shell would have no adjacency at all and every edge would read as free.
+    let mut edge_map: HashMap<(usize, usize), EdgeId> = HashMap::new();
     for tri in mesh.indices.chunks_exact(3) {
         let i0 = tri[0] as usize;
         let i1 = tri[1] as usize;
@@ -91,7 +97,7 @@ pub fn import_mesh(
             std::mem::swap(&mut v1, &mut v2);
         }
 
-        let face_id = build_triangle_face(topo, v0, v1, v2)?;
+        let face_id = build_triangle_face(topo, &mut edge_map, v0, v1, v2)?;
         face_ids.push(face_id);
     }
 
@@ -158,28 +164,65 @@ fn validate_mesh(mesh: &TriangleMesh, tolerance: f64) -> Result<(), IoError> {
 }
 
 /// Build vertex IDs, merging coincident positions.
-fn build_vertex_map(
-    topo: &mut Topology,
-    positions: &[Point3],
-    tolerance: f64,
-) -> Vec<remus_topology::vertex::VertexId> {
+///
+/// Candidates are found through a uniform spatial hash whose cell edge is the
+/// weld tolerance, so a scan is bounded by the 27 cells that can hold a point
+/// within tolerance rather than by every vertex seen so far. A mesh scan
+/// arrives with almost every position distinct, which is the linear search's
+/// worst case: it made import quadratic in vertex count.
+///
+/// Cell membership alone never decides a merge — two points in one cell can
+/// still be up to a diagonal apart, and two points a hair either side of a
+/// cell boundary are neighbours. Every candidate is distance-checked, and the
+/// 27-cell probe is what stops a boundary-straddling pair from being missed.
+fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -> Vec<VertexId> {
     let tol_sq = tolerance * tolerance;
-    let mut unique_verts: Vec<(Point3, remus_topology::vertex::VertexId)> = Vec::new();
+    let mut buckets: HashMap<(i64, i64, i64), Vec<(Point3, VertexId)>> = HashMap::new();
     let mut map = Vec::with_capacity(positions.len());
 
-    for &pos in positions {
-        let existing = unique_verts.iter().find(|(p, _)| {
-            let dx = p.x() - pos.x();
-            let dy = p.y() - pos.y();
-            let dz = p.z() - pos.z();
-            dx.mul_add(dx, dy.mul_add(dy, dz * dz)) < tol_sq
-        });
+    // `as i64` saturates rather than wrapping, so an extreme
+    // coordinate-to-tolerance ratio degrades to larger buckets, never to a
+    // wrong cell.
+    let cell = |v: f64| -> i64 { (v / tolerance).floor() as i64 };
 
-        if let Some(&(_, vid)) = existing {
+    for &pos in positions {
+        let (cx, cy, cz) = (cell(pos.x()), cell(pos.y()), cell(pos.z()));
+
+        // Among every candidate within tolerance, take the earliest-created
+        // vertex. Insertion order decided the winner in the linear scan this
+        // replaces, and vertex ids are allocated in order, so picking the
+        // smallest id keeps welding deterministic and order-independent.
+        let mut best: Option<VertexId> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let key = (
+                        cx.saturating_add(dx),
+                        cy.saturating_add(dy),
+                        cz.saturating_add(dz),
+                    );
+                    let Some(bucket) = buckets.get(&key) else {
+                        continue;
+                    };
+                    for &(p, vid) in bucket {
+                        let ex = p.x() - pos.x();
+                        let ey = p.y() - pos.y();
+                        let ez = p.z() - pos.z();
+                        if ex.mul_add(ex, ey.mul_add(ey, ez * ez)) < tol_sq
+                            && best.is_none_or(|b| vid < b)
+                        {
+                            best = Some(vid);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(vid) = best {
             map.push(vid);
         } else {
             let vid = topo.add_vertex(Vertex::new(pos, tolerance));
-            unique_verts.push((pos, vid));
+            buckets.entry((cx, cy, cz)).or_default().push((pos, vid));
             map.push(vid);
         }
     }
@@ -187,21 +230,49 @@ fn build_vertex_map(
     map
 }
 
-/// Build a single triangular planar face from three vertex IDs.
+/// Return the shared edge between `a` and `b`, creating it on first use.
+///
+/// The key is the unordered vertex pair, so the two triangles that meet along
+/// an edge resolve to one [`EdgeId`]; the returned flag says whether this use
+/// traverses it in its natural direction.
+fn shared_edge(
+    topo: &mut Topology,
+    edge_map: &mut HashMap<(usize, usize), EdgeId>,
+    a: VertexId,
+    b: VertexId,
+) -> (EdgeId, bool) {
+    let key = if a.index() <= b.index() {
+        (a.index(), b.index())
+    } else {
+        (b.index(), a.index())
+    };
+    if let Some(&edge_id) = edge_map.get(&key) {
+        // Natural direction is whichever pair created it.
+        let forward = topo.edge(edge_id).is_ok_and(|e| e.start() == a);
+        return (edge_id, forward);
+    }
+    let edge_id = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+    edge_map.insert(key, edge_id);
+    (edge_id, true)
+}
+
+/// Build a single triangular planar face from three vertex IDs, reusing the
+/// edges already created for neighbouring triangles.
 fn build_triangle_face(
     topo: &mut Topology,
-    v0: remus_topology::vertex::VertexId,
-    v1: remus_topology::vertex::VertexId,
-    v2: remus_topology::vertex::VertexId,
+    edge_map: &mut HashMap<(usize, usize), EdgeId>,
+    v0: VertexId,
+    v1: VertexId,
+    v2: VertexId,
 ) -> Result<remus_topology::face::FaceId, IoError> {
-    let e01 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
-    let e12 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
-    let e20 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line));
+    let (e01, f01) = shared_edge(topo, edge_map, v0, v1);
+    let (e12, f12) = shared_edge(topo, edge_map, v1, v2);
+    let (e20, f20) = shared_edge(topo, edge_map, v2, v0);
 
     let oriented = vec![
-        OrientedEdge::new(e01, true),
-        OrientedEdge::new(e12, true),
-        OrientedEdge::new(e20, true),
+        OrientedEdge::new(e01, f01),
+        OrientedEdge::new(e12, f12),
+        OrientedEdge::new(e20, f20),
     ];
     let wire = Wire::new(oriented, true).map_err(|e| IoError::ParseError {
         reason: format!("failed to build triangle wire: {e}"),
