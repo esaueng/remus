@@ -2402,7 +2402,7 @@ impl<'a> StepBuilder<'a> {
             return Ok(basis);
         };
 
-        let params = parse_parameter_values(attrs);
+        let params = parse_parameter_values(attrs)?;
         let [t0, t1] = params[..] else {
             // A .CARTESIAN. trim states its ends as points, which are the
             // edge's own vertices; nothing further to apply.
@@ -4217,7 +4217,15 @@ fn unescape_step_string(literal: &str) -> String {
 /// A `TRIMMED_CURVE`'s two trim selects each hold a `CARTESIAN_POINT`, a
 /// `PARAMETER_VALUE`, or both, so the parameters have to be picked out by
 /// name rather than by position.
-fn parse_parameter_values(attrs: &str) -> Vec<f64> {
+///
+/// Non-finite values are rejected. This parser sits beside
+/// `parse_floats` and was missed when that one was gated: `f64::from_str`
+/// accepts `NaN`, and the caller's domain check is
+/// `lo < d0 - tol || hi > d1 + tol`, which is FALSE for NaN on both sides — so
+/// a NaN trim passed straight through and became the edge's parameter range.
+/// An explicitly malformed parameter must fail closed rather than silently
+/// changing the file's geometry by falling back to the untrimmed basis curve.
+fn parse_parameter_values(attrs: &str) -> Result<Vec<f64>, IoError> {
     const MARKER: &str = "PARAMETER_VALUE(";
     let mut values = Vec::new();
     let mut from = 0usize;
@@ -4227,11 +4235,16 @@ fn parse_parameter_values(attrs: &str) -> Vec<f64> {
             break;
         };
         if let Ok(value) = attrs[open..open + close].trim().parse::<f64>() {
+            if !value.is_finite() {
+                return Err(IoError::ParseError {
+                    reason: "TRIMMED_CURVE PARAMETER_VALUE must be finite".to_string(),
+                });
+            }
             values.push(value);
         }
         from = open + close;
     }
-    values
+    Ok(values)
 }
 
 /// Extract `#NNN` references from the first parenthesized list in attrs.
@@ -5241,6 +5254,32 @@ mod tests {
     /// merely a hostile token. Such a value used to reach the topology as a
     /// coordinate, where every downstream guard is a tolerance comparison and
     /// those all return false against NaN. Reject at the parse boundary instead.
+    /// `parse_parameter_values` sits beside `parse_floats` and was missed when
+    /// that one was gated. It matters because the caller's domain check —
+    /// `lo < d0 - tol || hi > d1 + tol` — is FALSE for NaN on both sides, so a
+    /// NaN trim passed straight through and became the edge's parameter range.
+    /// Infinity was already caught by that same comparison.
+    #[test]
+    fn parse_parameter_values_rejects_non_finite_trims() {
+        // A well-formed pair still parses.
+        let good = parse_parameter_values("PARAMETER_VALUE(0.25), PARAMETER_VALUE(0.75)")
+            .expect("finite trim parameters must parse");
+        assert_eq!(good.len(), 2);
+        assert!((good[0] - 0.25).abs() < 1e-12);
+
+        for attrs in [
+            "PARAMETER_VALUE(NaN), PARAMETER_VALUE(0.75)",
+            "PARAMETER_VALUE(0.25), PARAMETER_VALUE(inf)",
+            "PARAMETER_VALUE(0.25), PARAMETER_VALUE(1.E400)",
+        ] {
+            let error = parse_parameter_values(attrs).expect_err("non-finite trim must fail");
+            assert!(
+                error.to_string().contains("PARAMETER_VALUE must be finite"),
+                "unexpected error for `{attrs}`: {error}"
+            );
+        }
+    }
+
     #[test]
     fn parse_floats_rejects_non_finite_values() {
         for attrs in [
