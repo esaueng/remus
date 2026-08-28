@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787931132437,
+  "lastUpdate": 1787936630213,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3347,6 +3347,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41698483,
             "range": "± 74918",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "476f81f6fdb9283bdb28cc1eb57a46f595a75cd3",
+          "message": "fix(io): normalize legacy STEP hole winding (#116)\n\n* fix(io): normalize legacy STEP hole winding\n\n* fix(blend): preserve closed-rim curve direction\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-28T13:01:04-04:00",
+          "tree_id": "d027166acb668038c533edd080757c9cf43b4c6d",
+          "url": "https://github.com/esaueng/remus/commit/476f81f6fdb9283bdb28cc1eb57a46f595a75cd3"
+        },
+        "date": 1787936628839,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1301311,
+            "range": "± 23079",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1387007,
+            "range": "± 9593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13111,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 970306,
+            "range": "± 1940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39149671,
+            "range": "± 71755",
             "unit": "ns/iter"
           }
         ]
