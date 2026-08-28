@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787901317862,
+  "lastUpdate": 1787903746302,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2969,6 +2969,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41224309,
             "range": "± 170699",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d61581530268e2dece46ba0dad09c435a6ec013",
+          "message": "fix(check): unwrap UV trim coordinates by the real period, not always 2π (#108)\n\n* fix(math): refine ray-surface hits against the ray-perpendicular tangents\n\n`refine_line_surface_point` drives the distance from a surface point to\nthe ray LINE to zero. Only the ray-perpendicular part of a surface\ntangent reduces that distance -- sliding the point along the ray moves it\nwithout getting it any closer. The Gauss-Newton normal matrix was built\nfrom the raw tangents anyway, which inflates it by the ray-parallel\ncomponent and under-relaxes every step.\n\nThe failure is silent rather than wrong: the iteration budget expires and\nthe function returns None, so a real intersection is reported as no\nintersection at all. Firing the point-in-solid classifier's three ray\ndirections at a b-spline box, 124 of 271 analytically provable ray-face\nhits were not found -- 45.76%. With the projected matrix, 0.\n\nOn a plane the projected system is exact and converges in one iteration;\nthe raw one needs more than 100. Raising MAX_NEWTON_ITER to 100\nreproduces the projected result exactly, which confirms the mechanism is\nunder-relaxation rather than a different solution being found.\nMAX_NEWTON_ITER is shared with three other intersectors and is untouched.\n\nNo test caught this because every existing ray test in the module fires\nALONG the surface normal -- the one direction where the bug cannot\nappear, since the tangents are already perpendicular to the ray.\n\nEnd to end, a box converted to b-spline and classified over 4743 interior\npoints went from 25.15% misclassified to 6.05%; the remaining 6% is a\nseparate defect in the UV trim that `remus-check` builds, which this\ncommit does not address. Curved b-spline faces are unchanged and still\nwrong for that same reason -- see the PR for the measured table.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(check): unwrap UV trim coordinates by the real period, not always 2pi\n\n`build_uv_boundary` unwrapped u by 2pi on every step, on the stated\ngrounds that u is angular \"for all analytic surfaces\". It is -- but the\nsame helper is also called from `ray_crossings_nurbs`, where u is a knot\nparameter with no period at all.\n\nTwo consequences. On a non-periodic NURBS the unwrap is pure corruption:\na b-spline box face spans 12.0 in u, so any two consecutive boundary\nvertices more than pi apart get shifted by a spurious 2pi. On a periodic\none the period is the knot span rather than 2pi, and without it the seam\nprojects onto the wrong branch and the trim polygon collapses -- taking\nevery hit on that face with it. Measured by asking the trim about points\nthat provably lie on the face: the cylinder's lateral face accepted\n0 of 121, and the cone's 0 of 121. Not a degraded count, none.\n\nReplace the hard-coded 2pi with the direction's actual period, or no\nunwrap where the direction does not close. `is_periodic_u`/\n`is_periodic_v` already existed on NurbsSurface. The analytic call site\npasses Some(TAU) in u and, for the torus alone, in v -- behaviour\nunchanged. Both call sites keep their existing full-surface predicates.\n\nConverted to b-spline, against analytic ground truth: box 6.05% -> 0.00%,\ncone 21.16% -> 3.46%, cylinder 44.97% -> 25.24%. Sphere and torus are\nunmoved at 28.30% and 17.31%; they fail for reasons this does not\naddress, documented in the PR along with the measurements.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-28T03:53:05-04:00",
+          "tree_id": "8f4d49ff4d5339d875c493d90da2e779dca65d74",
+          "url": "https://github.com/esaueng/remus/commit/2d61581530268e2dece46ba0dad09c435a6ec013"
+        },
+        "date": 1787903745386,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1301587,
+            "range": "± 11327",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1388305,
+            "range": "± 8525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13052,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 967670,
+            "range": "± 1697",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38887236,
+            "range": "± 125349",
             "unit": "ns/iter"
           }
         ]
