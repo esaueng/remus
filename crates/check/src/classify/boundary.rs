@@ -213,6 +213,138 @@ where
     Ok(crossings)
 }
 
+/// Count ray crossings of a spherical face whose outer boundary is planar,
+/// trimming against the boundary PLANE rather than a polygon inscribed in it.
+///
+/// Returns `None` when the boundary is not planar, so the caller keeps the
+/// polygon path for lunes and boolean-made spherical triangles.
+///
+/// # Why this exists
+///
+/// `face_polygon` samples a closed boundary edge at a fixed 32 points, so a
+/// hemisphere's equator becomes a 32-gon INSCRIBED in the true circle. A ray
+/// leaving the sphere within the scalloped band between chord and arc — angular
+/// half-width ~pi/n, so 0.098 r at n = 32 — is inside neither hemisphere's
+/// polygon: the north face rejects it on containment and the south face rejects
+/// it on the half-space test. The crossing is counted by NO face, parity flips,
+/// and an interior point is reported `Outside`. Measured on `make_sphere(1, s)`
+/// at 0.9 r: 32.4% wrong at s = 8, 3.3% at s = 32, still 0.25% at s = 128, every
+/// failure Inside -> Outside. The sphere CENTRE is always right, which is why
+/// the single-point tests never caught it.
+///
+/// This is the sagitta gap the `numerical-robustness` guidance names, and the
+/// same one `sphere_seam_plane_crossings` (`algo/src/pave_filler/phase_ff.rs`)
+/// already fixes for section circles — its doc describes this defect verbatim.
+///
+/// # Why the cap side comes from the surface, not the winding
+///
+/// The obvious form of this fix reuses the sign already computed here from the
+/// boundary polygon's Newell normal negated by `is_reversed`. That sign is
+/// wrong on boolean-produced spherical faces, where it survives today only
+/// because two complementary hemispheres tile the sphere and the errors cancel.
+/// Break the symmetry — `cut(box, sphere)` leaves an annular face whose
+/// complementary cap is not a face of the same solid — and a winding-derived
+/// half-space counts a phantom cap, which is an O(1) error rather than the
+/// bounded one it replaces.
+///
+/// So the side is taken from geometry the B-Rep states directly: the outward
+/// surface normal at a boundary point (analytic, `(p - centre)/r` flipped by
+/// `is_reversed`) crossed with the boundary's own traversal direction gives the
+/// inward tangent, and its component along the plane normal says which cap the
+/// face occupies.
+fn count_sphere_cap_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    origin: Point3,
+    direction: Vec3,
+    roots: &SmallVec<[f64; 4]>,
+    sph: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    if roots.is_empty() {
+        return Ok(Some(0));
+    }
+
+    let verts = face_polygon(topo, face_id)?;
+    if verts.len() < 3 {
+        return Ok(None);
+    }
+
+    let plane_normal = polygon_normal(&verts);
+    let n_len = plane_normal.length();
+    if n_len < 1e-12 {
+        return Ok(None); // degenerate or self-intersecting boundary
+    }
+    let plane_normal = plane_normal * (1.0 / n_len);
+    let ref_pt = verts[0];
+
+    // Planar to tolerance? A cap boundary is; a lune's is not.
+    let radius = sph.radius();
+    let planarity_tol = 1e-9_f64.mul_add(radius, 1e-9);
+    if verts
+        .iter()
+        .any(|v| ((*v - ref_pt).dot(plane_normal)).abs() > planarity_tol)
+    {
+        return Ok(None);
+    }
+
+    // Which cap does the face occupy? Outward surface normal at a boundary
+    // vertex, crossed with the direction the boundary is walked, points into
+    // the face along the surface; its component along the plane normal is the
+    // cap side. `face_polygon` returns the loop in traversal order.
+    let mut inward_side = 0.0_f64;
+    for i in 0..verts.len() {
+        let v = verts[i];
+        let next = verts[(i + 1) % verts.len()];
+        let tangent = next - v;
+        if tangent.length() < 1e-12 {
+            continue;
+        }
+        let outward = v - sph.center();
+        let r = outward.length();
+        if r < 1e-12 {
+            continue;
+        }
+        let outward = outward * (1.0 / r);
+        // NOT negated by `is_reversed`. The traversal direction already carries
+        // the face's orientation — `face_polygon` walks the outer wire as the
+        // B-Rep stores it — so flipping the surface normal here as well applies
+        // the same reversal twice. Measured: with the extra flip, the annular
+        // face left by `cut(box, sphere)` where the sphere breaks the surface
+        // (so its complementary cap is NOT a face of the same solid) gets 34.3%
+        // of its carved region wrong; without it, 0.000%. The double flip is
+        // invisible on a whole `make_sphere`, where two complementary
+        // hemispheres tile the sphere and the errors cancel.
+        let candidate = outward.cross(tangent).dot(plane_normal);
+        if candidate.abs() > inward_side.abs() {
+            inward_side = candidate;
+        }
+    }
+    if inward_side.abs() < 1e-12 {
+        return Ok(None);
+    }
+    // +1 when the face lies on the +plane_normal side, -1 otherwise.
+    let cap_sign = if inward_side > 0.0 { 1.0 } else { -1.0 };
+
+    let holes = face_hole_polygons(topo, face_id)?;
+    let mut crossings = 0u32;
+    for &t in roots {
+        if t <= RAY_T_MIN {
+            continue;
+        }
+        let hit = origin + direction * t;
+        // Exact: the cap is every point of the sphere on this side of the plane.
+        if (hit - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
+            continue;
+        }
+        if hit_in_hole_3d(&holes, hit, plane_normal) {
+            continue;
+        }
+        crossings += 1;
+    }
+
+    Ok(Some(crossings))
+}
+
 /// Count crossings using 3D polygon containment (for faces with planar
 /// boundaries, e.g. sphere hemispheres where UV projection has pole
 /// singularities).
@@ -318,11 +450,20 @@ pub fn count_face_ray_crossings(
             )
         }
         FaceSurface::Sphere(sph) => {
-            // Sphere boundaries are planar (equator, small circles), so
-            // point_in_polygon_3d works. UV projection fails at poles.
+            // A spherical cap's boundary is planar, and the plane cuts the
+            // sphere in a circle — so the exact trim is a half-space test
+            // against that plane, with no polygon involved. Take it when the
+            // boundary really is planar; fall back to the chorded polygon for a
+            // lune or a boolean-made spherical triangle, whose boundary is not.
             let sph = sph.clone();
             let roots = ray_surface::ray_sphere(origin, direction, &sph);
-            count_3d_polygon_crossings(topo, face_id, origin, direction, &roots)
+            if let Some(count) =
+                count_sphere_cap_crossings(topo, face_id, origin, direction, &roots, &sph)?
+            {
+                Ok(count)
+            } else {
+                count_3d_polygon_crossings(topo, face_id, origin, direction, &roots)
+            }
         }
         FaceSurface::Torus(tor) => {
             let tor = tor.clone();
