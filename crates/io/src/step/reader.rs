@@ -4217,6 +4217,15 @@ fn unescape_step_string(literal: &str) -> String {
 /// A `TRIMMED_CURVE`'s two trim selects each hold a `CARTESIAN_POINT`, a
 /// `PARAMETER_VALUE`, or both, so the parameters have to be picked out by
 /// name rather than by position.
+///
+/// Non-finite values are dropped rather than returned. This parser sits beside
+/// `parse_floats` and was missed when that one was gated: `f64::from_str`
+/// accepts `NaN`, and the caller's domain check is
+/// `lo < d0 - tol || hi > d1 + tol`, which is FALSE for NaN on both sides — so
+/// a NaN trim passed straight through and became the edge's parameter range.
+/// (An infinite trim was already caught by that same comparison.) Dropping the
+/// value leaves fewer than the two the caller destructures, so it falls back to
+/// the untrimmed basis curve instead of trimming to nothing.
 fn parse_parameter_values(attrs: &str) -> Vec<f64> {
     const MARKER: &str = "PARAMETER_VALUE(";
     let mut values = Vec::new();
@@ -4226,7 +4235,9 @@ fn parse_parameter_values(attrs: &str) -> Vec<f64> {
         let Some(close) = attrs[open..].find(')') else {
             break;
         };
-        if let Ok(value) = attrs[open..open + close].trim().parse::<f64>() {
+        if let Ok(value) = attrs[open..open + close].trim().parse::<f64>()
+            && value.is_finite()
+        {
             values.push(value);
         }
         from = open + close;
@@ -5241,6 +5252,34 @@ mod tests {
     /// merely a hostile token. Such a value used to reach the topology as a
     /// coordinate, where every downstream guard is a tolerance comparison and
     /// those all return false against NaN. Reject at the parse boundary instead.
+    /// `parse_parameter_values` sits beside `parse_floats` and was missed when
+    /// that one was gated. It matters because the caller's domain check —
+    /// `lo < d0 - tol || hi > d1 + tol` — is FALSE for NaN on both sides, so a
+    /// NaN trim passed straight through and became the edge's parameter range.
+    /// Infinity was already caught by that same comparison.
+    #[test]
+    fn parse_parameter_values_drops_non_finite_trims() {
+        // A well-formed pair still parses.
+        let good = parse_parameter_values("PARAMETER_VALUE(0.25), PARAMETER_VALUE(0.75)");
+        assert_eq!(good.len(), 2);
+        assert!((good[0] - 0.25).abs() < 1e-12);
+
+        for attrs in [
+            "PARAMETER_VALUE(NaN), PARAMETER_VALUE(0.75)",
+            "PARAMETER_VALUE(0.25), PARAMETER_VALUE(inf)",
+            "PARAMETER_VALUE(0.25), PARAMETER_VALUE(1.E400)",
+        ] {
+            let values = parse_parameter_values(attrs);
+            assert!(
+                values.iter().all(|v| v.is_finite()),
+                "`{attrs}` yielded a non-finite trim: {values:?}"
+            );
+            // Fewer than two parameters means the caller keeps the untrimmed
+            // basis curve rather than trimming to a meaningless range.
+            assert_eq!(values.len(), 1, "for `{attrs}`");
+        }
+    }
+
     #[test]
     fn parse_floats_rejects_non_finite_values() {
         for attrs in [
