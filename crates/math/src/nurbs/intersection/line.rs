@@ -44,19 +44,25 @@ pub fn intersect_line_nurbs(
         return Err(MathError::ZeroVector);
     }
 
-    // Compute an adaptive distance threshold based on the surface's 3D extent.
-    // Use the diagonal of the surface bounding box divided by the grid resolution.
-    let corner_00 = surface.evaluate(u_min, v_min);
-    let corner_11 = surface.evaluate(u_max, v_max);
+    // Evaluate the seed grid once and keep it: deciding whether a sample is
+    // close enough to the ray requires knowing how far apart the samples
+    // actually are.
     #[allow(clippy::cast_precision_loss)]
-    let candidate_threshold = ((corner_11 - corner_00).length() / n as f64).max(0.1);
+    let grid: Vec<Vec<Point3>> = (0..n)
+        .map(|i| {
+            let u = u_min + i as f64 * u_step;
+            (0..n)
+                .map(|j| surface.evaluate(u, v_min + j as f64 * v_step))
+                .collect()
+        })
+        .collect();
 
     #[allow(clippy::cast_precision_loss)]
     for i in 0..n {
         let u = u_min + i as f64 * u_step;
         for j in 0..n {
             let v = v_min + j as f64 * v_step;
-            let pt = surface.evaluate(u, v);
+            let pt = grid[i][j];
             let diff = pt - ray_origin;
             let diff_vec = Vec3::new(diff.x(), diff.y(), diff.z());
 
@@ -69,7 +75,40 @@ pub fn intersect_line_nurbs(
             );
 
             let dist = (pt - closest_on_ray).length();
-            if dist < candidate_threshold {
+
+            // A ray piercing the surface lands somewhere inside a grid cell, so
+            // the nearest sample to it can be half a cell diagonal away. The
+            // test therefore has to be against the LOCAL sample spacing.
+            //
+            // It used to be the corner-to-corner diagonal over `n`, which is
+            // not a spacing at all: it is unrelated to the grid's actual
+            // density, and it COLLAPSES for any surface whose two corners
+            // coincide -- precisely what a closed one does -- landing on the
+            // `.max(0.1)` floor. A torus then seeded at 0.1 against a real
+            // spacing of 0.657 and missed 74% of its intersections; a cylinder
+            // seeded at 0.500 against 1.567 and missed 30%. Both failed
+            // silently, as an empty result. A box happened to work only because
+            // its diagonal came out larger than its spacing (0.849 vs 0.632).
+            //
+            // Half a cell diagonal is at most `sqrt(2)/2` of the larger of the
+            // two adjacent spacings, so the neighbour distance covers it with
+            // ~40% to spare, and adapts where the grid stretches or collapses
+            // (a sphere's poles).
+            let mut spacing = 0.0_f64;
+            if i > 0 {
+                spacing = spacing.max((pt - grid[i - 1][j]).length());
+            }
+            if i + 1 < n {
+                spacing = spacing.max((pt - grid[i + 1][j]).length());
+            }
+            if j > 0 {
+                spacing = spacing.max((pt - grid[i][j - 1]).length());
+            }
+            if j + 1 < n {
+                spacing = spacing.max((pt - grid[i][j + 1]).length());
+            }
+
+            if dist < spacing {
                 // Rough candidate.
                 candidates.push((u, v, t));
             }
