@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787907102940,
+  "lastUpdate": 1787908556000,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3077,6 +3077,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39739063,
             "range": "± 102046",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1c40b8671256e51a1f8e38911b49b2eb326651c5",
+          "message": "Merge pull request #109 from esaueng/fix/nurbs-seed-spacing\n\nfix(math): seed ray-surface search by sample spacing, not a corner diagonal",
+          "timestamp": "2026-08-28T05:13:28-04:00",
+          "tree_id": "9b7a2502623d7ceeeb76034241c68d18af229f32",
+          "url": "https://github.com/esaueng/remus/commit/1c40b8671256e51a1f8e38911b49b2eb326651c5"
+        },
+        "date": 1787908555309,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1113543,
+            "range": "± 1753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1142037,
+            "range": "± 2177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10988,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 774833,
+            "range": "± 918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32994284,
+            "range": "± 1467880",
             "unit": "ns/iter"
           }
         ]
