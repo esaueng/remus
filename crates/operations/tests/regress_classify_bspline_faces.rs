@@ -31,7 +31,7 @@
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_heal::custom::convert_to_bspline::convert_solid_to_bspline;
 use remus_math::vec::Point3;
-use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::primitives::{make_box, make_cylinder, make_torus};
 use remus_topology::Topology;
 
 /// Deterministic low-discrepancy sample in [0, 1).
@@ -133,18 +133,66 @@ fn bspline_box_classifies_identically_to_the_analytic_box() {
     );
 }
 
-/// A curved b-spline face is still not right, and this pins how far it got.
+/// A full torus closes in both directions -- the worst case for the seed grid,
+/// whose threshold collapsed to its 0.1 floor there, and for the trim, whose
+/// boundary is four coincident seam endpoints.
 ///
-/// The cylinder measured 44.97% misclassified before the UV-period fix and
-/// 25.24% after. The remainder is a THIRD defect, in `intersect_line_nurbs`'s
-/// seed grid: it accepts a seed within `|corner_00 - corner_11| / n`, a
-/// corner-to-corner diagonal unrelated to how far apart the samples actually
-/// are. On this cylinder that threshold is 0.500 against a real sample spacing
-/// of 1.567, so roughly 30% of hits are never seeded at all. The box escapes it
-/// only because its diagonal happens to exceed its spacing (0.849 vs 0.632).
+/// Measured 17.31% misclassified until BOTH were fixed; neither alone moved it.
+#[test]
+fn bspline_torus_classifies_identically_to_the_analytic_torus() {
+    let mut topo = Topology::new();
+    let solid = make_torus(&mut topo, 3.0, 1.0, 48).unwrap();
+
+    let truth = |p: Point3| {
+        let q = p.x().hypot(p.y()) - 3.0;
+        let d = 1.0 - q.hypot(p.z());
+        if d.abs() < 0.3 { None } else { Some(d > 0.0) }
+    };
+
+    let (analytic_wrong, _) = score(
+        &topo,
+        solid,
+        Point3::new(-4.5, -4.5, -1.5),
+        Point3::new(4.5, 4.5, 1.5),
+        700,
+        truth,
+    );
+    assert_eq!(
+        analytic_wrong, 0,
+        "control: the ANALYTIC torus must be exact"
+    );
+
+    convert_solid_to_bspline(&mut topo, solid).unwrap();
+    let (wrong, n) = score(
+        &topo,
+        solid,
+        Point3::new(-4.5, -4.5, -1.5),
+        Point3::new(4.5, 4.5, 1.5),
+        700,
+        truth,
+    );
+    assert_eq!(
+        wrong,
+        0,
+        "b-spline torus misclassified {wrong}/{n} = {:.2}%",
+        100.0 * wrong as f64 / n as f64
+    );
+}
+
+/// The cylinder is closer but not yet right, and this pins how far it got.
+///
+/// 44.97% before the UV-period fix, 25.24% after it, 13.74% after the seed
+/// spacing fix. What is left is NOT in the classifier: `plane_face_to_nurbs`
+/// sizes a converted planar patch from the face's VERTEX positions, and a cap
+/// bounded by one closed circle has `start == end`, so the box collapses to a
+/// point, takes the +/-1.0 fallback, and yields a patch spanning [-1.2, 1.2] --
+/// for a disc of radius 5. Rays crossing the cap outside that little square
+/// find no surface at all, because refinement clamps (u, v) to the domain.
+/// That is the same "one closed curve measures zero" mistake already fixed for
+/// face size analysis; see `regress_heal_analytic_solids.rs`.
 ///
 /// This bound is a regression guard on a known-bad number, not a statement that
-/// 30% is acceptable. Tighten it to 0 when the seeding defect is fixed.
+/// 14% is acceptable. Tighten it to 0 when the patch extent is fixed.
 #[test]
 fn bspline_cylinder_is_no_worse_than_the_pinned_rate() {
     let mut topo = Topology::new();
@@ -179,8 +227,8 @@ fn bspline_cylinder_is_no_worse_than_the_pinned_rate() {
     );
     let rate = 100.0 * wrong as f64 / n as f64;
     assert!(
-        rate < 30.0,
-        "b-spline cylinder regressed past its pinned rate: {wrong}/{n} = {rate:.2}% (was 44.97% \
-         before the UV-period fix, 25.24% after)"
+        rate < 15.0,
+        "b-spline cylinder regressed past its pinned rate: {wrong}/{n} = {rate:.2}% (44.97% before \
+         the UV-period fix, 25.24% after it, 13.74% after the seed spacing fix)"
     );
 }
