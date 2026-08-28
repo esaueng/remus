@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787889937376,
+  "lastUpdate": 1787890126839,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2591,6 +2591,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38844901,
             "range": "± 187572",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "378ba5b01ec770de70865524ca4d4694f98bfc2c",
+          "message": "fix(heal): keep edge trim and tolerance across a vertex merge (#103)\n\nFour sites overwrote an existing edge with `Edge::new(start, end, curve)`\nin order to change nothing but its endpoints. `Edge::new` resets the\nexplicit trim (RFC 0002, Stage 3) and the edge-specific tolerance, and\nneither is recoverable from the endpoints — the trim exists precisely so\nthe domain never has to be reconstructed by projection.\n\nMeasured on a unit box whose twelve edges all carry a trim and an edge\ntolerance, counting how many still have both afterwards:\n\n    ReShape::apply_vertex_replacements        9/12 -> 12/12\n    heal::fix::solid merge_coincident_vertices 9/12 -> 12/12\n    operations::heal::merge_coincident_vertices 10/12 -> 12/12\n    operations::heal::close_wire_gaps          10/12 -> 12/12\n\nEach dropped them on exactly the edges it touched. `operations::heal` is\na separate implementation from `remus_heal::fix::fix_shape`, so both\ncarried their own copy of the same defect; the two operations sites were\nfound by searching for the pattern rather than the reported symbol.\n\nThe correct form already existed three doors away in\n`heal::fix::split_vertex` and `heal::fix::wireframe`, which use\n`set_start`/`set_end`. That is what all four now do. Deliberately not\n`set_curve`: it clears the trim by design, which is right where the curve\nactually changes (`operations::transform` sets a new curve and then\nrecomputes the trim) and wrong here, where only the endpoints move.\n\nFour regression tests, all four failing against unmodified code. Each\nalso asserts the merge actually happened, so preservation cannot pass\nvacuously; the collapse assertion is direction-agnostic because the merge\ndoes not always retain the lower-index vertex.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-28T00:03:36-04:00",
+          "tree_id": "35a11185597f4e0d7016f16b51c7d7f4945851d8",
+          "url": "https://github.com/esaueng/remus/commit/378ba5b01ec770de70865524ca4d4694f98bfc2c"
+        },
+        "date": 1787890126107,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1288044,
+            "range": "± 2040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1378172,
+            "range": "± 4705",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13009,
+            "range": "± 153",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 964620,
+            "range": "± 2427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38509974,
+            "range": "± 69359",
             "unit": "ns/iter"
           }
         ]
