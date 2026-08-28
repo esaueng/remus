@@ -2640,6 +2640,16 @@ fn fill_sphere_cap_web(
     let rings =
         segments_for_chord_deviation_a(radius, theta_max, deflection, angular_tol, true).max(1);
 
+    // Same work bound the CDT interior path and the other band meshers carry.
+    // This one was missed when that sweep went through: it is the FALLBACK the
+    // sphere cap takes when the latitude path declines, so guarding only the
+    // paths that decline left the path they decline TO unbounded. Declines
+    // rather than erroring, matching its siblings — the caller then routes the
+    // face somewhere that carries the bound itself.
+    if validate_interior_grid_size(boundary.len().max(2), rings).is_err() {
+        return false;
+    }
+
     let emit = |merged: &mut TriangleMesh, a: u32, b: u32, c: u32| {
         if a == b || b == c || a == c {
             return;
