@@ -143,6 +143,24 @@ fn vertices_further_apart_than_the_tolerance_stay_distinct() {
 }
 
 #[test]
+fn extreme_coordinate_to_tolerance_ratio_does_not_overflow_hash_probe() {
+    // Converting a finite coordinate/tolerance ratio beyond i64's range
+    // saturates the cell coordinate. Probing its neighbouring cells must
+    // saturate too rather than overflowing at i64::MIN or i64::MAX.
+    let p = Point3::new;
+    let positions = vec![p(1.0, 0.0, 0.0), p(0.0, 1.0, 0.0), p(0.0, 0.0, 0.0)];
+    let mesh = TriangleMesh {
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); positions.len()],
+        positions,
+        indices: vec![0, 1, 2],
+    };
+
+    let mut topo = Topology::new();
+    import_mesh(&mut topo, &mesh, 1e-300)
+        .expect("a finite coordinate/tolerance ratio must not overflow the hash probe");
+}
+
+#[test]
 fn welding_does_not_depend_on_input_order() {
     // Insertion order picked the winner in the linear scan this replaces;
     // the hash keeps that by taking the earliest-created candidate. Reversing

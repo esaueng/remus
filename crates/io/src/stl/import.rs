@@ -196,7 +196,12 @@ fn build_vertex_map(topo: &mut Topology, positions: &[Point3], tolerance: f64) -
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let Some(bucket) = buckets.get(&(cx + dx, cy + dy, cz + dz)) else {
+                    let key = (
+                        cx.saturating_add(dx),
+                        cy.saturating_add(dy),
+                        cz.saturating_add(dz),
+                    );
+                    let Some(bucket) = buckets.get(&key) else {
                         continue;
                     };
                     for &(p, vid) in bucket {
