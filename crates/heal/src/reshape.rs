@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::edge::EdgeId;
 use remus_topology::face::FaceId;
 use remus_topology::shell::ShellId;
 use remus_topology::solid::{Solid, SolidId};
@@ -417,13 +417,18 @@ impl ReShape {
             let new_start = self.resolve_vertex(edge.start());
             let new_end = self.resolve_vertex(edge.end());
             if new_start != edge.start() || new_end != edge.end() {
-                updates.push((eid, new_start, new_end, edge.curve().clone()));
+                updates.push((eid, new_start, new_end));
             }
         }
 
-        for (eid, new_start, new_end, curve) in updates {
+        for (eid, new_start, new_end) in updates {
             let edge = topo.edge_mut(eid)?;
-            *edge = Edge::new(new_start, new_end, curve);
+            // `set_start`/`set_end`, never a whole-`Edge` rebuild: an explicit
+            // trim (RFC 0002, Stage 3) and an edge-specific tolerance are not
+            // recoverable from the endpoints, and a vertex merge changes neither
+            // the curve nor the parameter interval on it.
+            edge.set_start(new_start);
+            edge.set_end(new_end);
         }
 
         Ok(())
