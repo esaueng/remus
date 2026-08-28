@@ -510,15 +510,16 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         return Ok(None);
     }
     let rim_edge = edges[0];
-    {
+    let rim_normal = {
         let e = topo.edge(rim_edge)?;
         if e.start() != e.end() {
             return Ok(None);
         }
-        if !matches!(e.curve(), EdgeCurve::Circle(_)) {
+        let EdgeCurve::Circle(circle) = e.curve() else {
             return Ok(None);
-        }
-    }
+        };
+        circle.normal()
+    };
 
     // One side is the plane (cap), the other the cylinder/cone wall.
     let s1 = topo.face(stripe.face1)?.surface().clone();
@@ -598,8 +599,11 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         let v = topo.vertex(topo.edge(rim_edge)?.start())?.point() - axis_origin;
         v - axis * axis.dot(v)
     };
-    let plate_circle = Circle3D::new_with_ref(plate_center, axis, plate_radius, seam_dir)?;
-    let wall_circle = Circle3D::new_with_ref(wall_center, axis, wall_radius, seam_dir)?;
+    // Keep the source rim's parameter direction. The cap and wall retain the
+    // source edge-use flags, so rebuilding around the unsigned wall axis can
+    // silently reverse a bore loop whose source circle uses the opposite axis.
+    let plate_circle = Circle3D::new_with_ref(plate_center, rim_normal, plate_radius, seam_dir)?;
+    let wall_circle = Circle3D::new_with_ref(wall_center, rim_normal, wall_radius, seam_dir)?;
 
     // At a bore mouth the chamfer must widen the hole. If the contact came out
     // the other way the configuration is not the one this rebuild models, so
