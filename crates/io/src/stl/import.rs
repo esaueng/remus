@@ -28,6 +28,7 @@ use crate::IoError;
 ///
 /// Returns [`IoError`] if:
 /// - The mesh has no triangles
+/// - Three or more triangles share an edge after vertex welding
 /// - Wire or shell construction fails
 pub fn import_mesh(
     topo: &mut Topology,
@@ -37,6 +38,7 @@ pub fn import_mesh(
     validate_mesh(mesh, tolerance)?;
 
     let vertex_ids = build_vertex_map(topo, &mesh.positions, tolerance);
+    validate_triangle_edge_incidence(&vertex_ids, &mesh.indices)?;
 
     // Determine whether the mesh winding needs to be flipped.
     // For a closed mesh, outward-facing triangles produce positive signed
@@ -114,6 +116,50 @@ pub fn import_mesh(
     let solid_id = topo.add_solid(Solid::new(shell_id, Vec::new()));
 
     Ok(solid_id)
+}
+
+/// Reject triangle edges incident to more than two non-degenerate faces.
+///
+/// Incidence is counted after tolerance welding because file formats such as
+/// STL repeat each triangle's positions instead of sharing vertex indices.
+/// This runs before allocating any edges, faces, shells, or solids, so an
+/// over-shared mesh cannot become invalid B-Rep topology.
+fn validate_triangle_edge_incidence(
+    vertex_ids: &[VertexId],
+    indices: &[u32],
+) -> Result<(), IoError> {
+    let mut edge_incidence: HashMap<(usize, usize), usize> = HashMap::new();
+
+    for tri in indices.chunks_exact(3) {
+        let v0 = vertex_ids[tri[0] as usize];
+        let v1 = vertex_ids[tri[1] as usize];
+        let v2 = vertex_ids[tri[2] as usize];
+
+        // `import_mesh` skips these triangles, so they must not contribute
+        // phantom face incidences to an otherwise manifold edge.
+        if v0 == v1 || v1 == v2 || v0 == v2 {
+            continue;
+        }
+
+        for (a, b) in [(v0, v1), (v1, v2), (v2, v0)] {
+            *edge_incidence.entry(edge_key(a, b)).or_default() += 1;
+        }
+    }
+
+    if let Some(((start, end), incident_faces)) = edge_incidence
+        .into_iter()
+        .filter(|(_, incident_faces)| *incident_faces > 2)
+        .min_by_key(|(edge, _)| *edge)
+    {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "non-manifold mesh edge between welded vertices {start} and {end} has \
+                 {incident_faces} incident faces (maximum is 2)"
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 /// Validate mesh data before allocating any topology entities.
@@ -241,11 +287,7 @@ fn shared_edge(
     a: VertexId,
     b: VertexId,
 ) -> (EdgeId, bool) {
-    let key = if a.index() <= b.index() {
-        (a.index(), b.index())
-    } else {
-        (b.index(), a.index())
-    };
+    let key = edge_key(a, b);
     if let Some(&edge_id) = edge_map.get(&key) {
         // Natural direction is whichever pair created it.
         let forward = topo.edge(edge_id).is_ok_and(|e| e.start() == a);
@@ -254,6 +296,14 @@ fn shared_edge(
     let edge_id = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
     edge_map.insert(key, edge_id);
     (edge_id, true)
+}
+
+fn edge_key(a: VertexId, b: VertexId) -> (usize, usize) {
+    if a.index() <= b.index() {
+        (a.index(), b.index())
+    } else {
+        (b.index(), a.index())
+    }
 }
 
 /// Build a single triangular planar face from three vertex IDs, reusing the
