@@ -5,8 +5,6 @@
 //! for analytic surfaces and 3D polygon containment for surfaces with
 //! pole singularities (spheres).
 
-use std::f64::consts::PI;
-
 use smallvec::SmallVec;
 
 use remus_math::predicates::point_in_polygon;
@@ -28,36 +26,45 @@ const HALF_SPACE_EPS: f64 = 1e-10;
 /// Threshold for coincident vertex detection (squared distance).
 const COINCIDENT_SQ: f64 = 1e-12;
 
-/// Unwrap a step in a periodic (angular) coordinate so the difference
-/// lies in `[-PI, PI)`.
+/// Unwrap a step in a periodic coordinate so the difference lies in
+/// `[-period/2, period/2)`.
 ///
 /// Given the previous unwrapped value `prev` and the next raw value `next`,
-/// returns the next value adjusted so the step is continuous.
+/// returns the next value adjusted so the step is continuous. `period` is the
+/// coordinate's actual period: `2*PI` for the analytic surfaces' angular `u`,
+/// the knot span for a NURBS direction that closes.
 #[inline]
-fn unwrap_angle(prev: f64, next: f64) -> f64 {
-    let tau = std::f64::consts::TAU;
+fn unwrap_periodic(prev: f64, next: f64, period: f64) -> f64 {
+    let half = period * 0.5;
     let diff = next - prev;
-    prev + diff - tau * ((diff + PI) / tau).floor()
+    prev + diff - period * ((diff + half) / period).floor()
 }
 
 /// Build a UV boundary polygon from 3D face boundary vertices,
 /// with proper unwrapping of periodic coordinates.
 ///
-/// `v_periodic`: whether the v-coordinate is periodic (e.g. torus). Cylinder
-/// and cone have linear v (height / distance), so only u is unwrapped for them.
-fn build_uv_boundary<F>(verts: &[Point3], project: &F, v_periodic: bool) -> Vec<(f64, f64)>
+/// `u_period` / `v_period`: that direction's period, or `None` when the
+/// direction does not close. The analytic surfaces are angular in u (`2*PI`)
+/// and, for the torus alone, in v. A NURBS parameter is a knot value with no
+/// inherent period: it gets `Some(knot span)` only when the control grid
+/// actually closes in that direction, and `None` otherwise.
+fn build_uv_boundary<F>(
+    verts: &[Point3],
+    project: &F,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> Vec<(f64, f64)>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     let mut uv: Vec<(f64, f64)> = verts.iter().map(|&p| project(p)).collect();
 
     for i in 1..uv.len() {
-        // u is always periodic (angular coordinate for all analytic surfaces).
-        uv[i].0 = unwrap_angle(uv[i - 1].0, uv[i].0);
-
-        // v is periodic only for doubly-periodic surfaces (torus).
-        if v_periodic {
-            uv[i].1 = unwrap_angle(uv[i - 1].1, uv[i].1);
+        if let Some(period) = u_period {
+            uv[i].0 = unwrap_periodic(uv[i - 1].0, uv[i].0, period);
+        }
+        if let Some(period) = v_period {
+            uv[i].1 = unwrap_periodic(uv[i - 1].1, uv[i].1, period);
         }
     }
 
@@ -72,7 +79,8 @@ fn point_in_uv_boundary(
     hit_u: f64,
     hit_v: f64,
     uv_boundary: &[(f64, f64)],
-    v_periodic: bool,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
 ) -> bool {
     let u_min = uv_boundary
         .iter()
@@ -85,10 +93,10 @@ fn point_in_uv_boundary(
     let u_center = (u_min + u_max) * 0.5;
 
     // Shift hit_u to be closest to the polygon's u center.
-    let hu = unwrap_angle(u_center, hit_u);
+    let hu = u_period.map_or(hit_u, |p| unwrap_periodic(u_center, hit_u, p));
 
-    // For doubly-periodic surfaces (torus), also shift hit_v.
-    let hv = if v_periodic {
+    // For surfaces that also close in v (torus), shift hit_v the same way.
+    let hv = v_period.map_or(hit_v, |period| {
         let v_min = uv_boundary
             .iter()
             .map(|(_, v)| *v)
@@ -98,10 +106,8 @@ fn point_in_uv_boundary(
             .map(|(_, v)| *v)
             .fold(f64::NEG_INFINITY, f64::max);
         let v_center = (v_min + v_max) * 0.5;
-        unwrap_angle(v_center, hit_v)
-    } else {
-        hit_v
-    };
+        unwrap_periodic(v_center, hit_v, period)
+    });
 
     let poly: Vec<Point2> = uv_boundary
         .iter()
@@ -123,23 +129,30 @@ fn hole_uv_boundaries<F>(
     topo: &Topology,
     face_id: FaceId,
     project: &F,
-    v_periodic: bool,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
 ) -> Result<Vec<Vec<(f64, f64)>>, CheckError>
 where
     F: Fn(Point3) -> (f64, f64),
 {
     Ok(face_hole_polygons(topo, face_id)?
         .iter()
-        .map(|poly| build_uv_boundary(poly, project, v_periodic))
+        .map(|poly| build_uv_boundary(poly, project, u_period, v_period))
         .collect())
 }
 
 /// True when a hit lands in one of the face's holes, where the trimmed face
 /// has no material and therefore no crossing.
-fn hit_in_hole_uv(holes: &[Vec<(f64, f64)>], hit_u: f64, hit_v: f64, v_periodic: bool) -> bool {
+fn hit_in_hole_uv(
+    holes: &[Vec<(f64, f64)>],
+    hit_u: f64,
+    hit_v: f64,
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> bool {
     holes
         .iter()
-        .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, v_periodic))
+        .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, u_period, v_period))
 }
 
 /// True when a hit lands in one of the face's holes (3D polygon variant).
@@ -187,8 +200,13 @@ where
             .iter()
             .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
     };
-    let uv_boundary = (!is_full_surface).then(|| build_uv_boundary(&verts, &project, v_periodic));
-    let holes = hole_uv_boundaries(topo, face_id, &project, v_periodic)?;
+    // Every analytic surface here parameterizes u as an angle with period 2pi;
+    // v is angular only for the torus.
+    let u_period = Some(std::f64::consts::TAU);
+    let v_period = v_periodic.then_some(std::f64::consts::TAU);
+    let uv_boundary =
+        (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+    let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
     for &t in roots {
@@ -199,12 +217,12 @@ where
         let (hit_u, hit_v) = project(hit);
 
         if let Some(boundary) = &uv_boundary
-            && !point_in_uv_boundary(hit_u, hit_v, boundary, v_periodic)
+            && !point_in_uv_boundary(hit_u, hit_v, boundary, u_period, v_period)
         {
             continue;
         }
         // The trimmed face carries no material inside its inner wires.
-        if hit_in_hole_uv(&holes, hit_u, hit_v, v_periodic) {
+        if hit_in_hole_uv(&holes, hit_u, hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
@@ -392,17 +410,31 @@ fn ray_crossings_nurbs(
     let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
     // A full-surface face (fewer than 3 boundary points) counts every forward
     // hit that does not land in a hole.
-    let uv_boundary = (verts.len() >= 3).then(|| build_uv_boundary(&verts, &project, false));
-    let holes = hole_uv_boundaries(topo, face_id, &project, false)?;
+    // A NURBS u/v are knot parameters, not angles. Unwrapping them by 2pi is
+    // meaningless -- and actively wrong, since a b-spline domain routinely
+    // spans more than pi (a converted box face spans 12.0), so consecutive
+    // boundary vertices get shifted by a spurious 2pi. When the surface really
+    // does close in a direction, the period is that direction's knot span:
+    // without it the seam projects onto the wrong branch and the trim polygon
+    // collapses, rejecting every hit on the face.
+    let u_period = surface
+        .is_periodic_u()
+        .then(|| surface.domain_u().1 - surface.domain_u().0);
+    let v_period = surface
+        .is_periodic_v()
+        .then(|| surface.domain_v().1 - surface.domain_v().0);
+    let uv_boundary =
+        (verts.len() >= 3).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+    let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in &hits {
         if let Some(boundary) = &uv_boundary
-            && !point_in_uv_boundary(*hit_u, *hit_v, boundary, false)
+            && !point_in_uv_boundary(*hit_u, *hit_v, boundary, u_period, v_period)
         {
             continue;
         }
-        if hit_in_hole_uv(&holes, *hit_u, *hit_v, false) {
+        if hit_in_hole_uv(&holes, *hit_u, *hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
