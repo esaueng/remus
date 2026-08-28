@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787908716652,
+  "lastUpdate": 1787910020042,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3185,6 +3185,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39247709,
             "range": "± 57539",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d5b69e80cadf9f4a44f8efd1c4c6315b7048397d",
+          "message": "Merge pull request #112 from esaueng/fix/degenerate-uv-trim\n\nfix(check): count crossings on faces whose UV trim encloses no area",
+          "timestamp": "2026-08-28T05:37:29-04:00",
+          "tree_id": "0011eb701cdb2cb94019984168d6237c18cc7974",
+          "url": "https://github.com/esaueng/remus/commit/d5b69e80cadf9f4a44f8efd1c4c6315b7048397d"
+        },
+        "date": 1787910019216,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1376830,
+            "range": "± 2269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1471508,
+            "range": "± 27800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14048,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 999974,
+            "range": "± 939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41686061,
+            "range": "± 346961",
             "unit": "ns/iter"
           }
         ]
