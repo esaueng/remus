@@ -10,11 +10,94 @@
 
 use std::collections::HashMap;
 
-use remus_io::stl::import_mesh;
+use remus_io::IoError;
+use remus_io::stl::{import_mesh, read_stl_solid};
+use remus_io::threemf::read_threemf_solid;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::tessellate::TriangleMesh;
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
+
+const NON_MANIFOLD_ASCII_STL: &[u8] = br"solid non_manifold
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 1 0
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 1 0 0
+      vertex 0 0 0
+      vertex 0 -1 0
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 0
+      vertex 1 0 0
+      vertex 0 0 1
+    endloop
+  endfacet
+endsolid non_manifold
+";
+
+fn non_manifold_threemf() -> Vec<u8> {
+    let model = br#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+          <vertex x="0" y="-1" z="0"/>
+          <vertex x="0" y="0" z="1"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+          <triangle v1="1" v2="0" v3="3"/>
+          <triangle v1="0" v2="1" v3="4"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build><item objectid="1"/></build>
+</model>"#;
+
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut archive = zip::ZipWriter::new(cursor);
+    archive
+        .start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    std::io::Write::write_all(&mut archive, model).unwrap();
+    archive.finish().unwrap().into_inner()
+}
+
+fn assert_rejected_before_brep_construction(result: Result<SolidId, IoError>, topo: &Topology) {
+    let err = result.expect_err("an edge shared by three triangles must be rejected");
+    let IoError::InvalidTopology { reason } = err else {
+        panic!("expected invalid topology error, got {err}");
+    };
+    assert!(
+        reason.contains("non-manifold mesh edge") && reason.contains("3 incident faces"),
+        "unexpected rejection reason: {reason}"
+    );
+    assert_eq!(topo.num_edges(), 0, "the manifold gate must precede edges");
+    assert_eq!(topo.num_faces(), 0, "the manifold gate must precede faces");
+    assert_eq!(
+        topo.num_shells(),
+        0,
+        "the manifold gate must precede shells"
+    );
+    assert_eq!(
+        topo.num_solids(),
+        0,
+        "the manifold gate must precede solids"
+    );
+}
 
 /// Unit cube: 12 triangles over 8 shared vertices, wound outward.
 fn cube_mesh() -> TriangleMesh {
@@ -70,6 +153,22 @@ fn adjacent_triangles_share_one_edge() {
         "12 triangles over 8 vertices must resolve to 18 shared edges, got {distinct}"
     );
     assert_eq!(free, 0, "a closed mesh must import with no free edges");
+}
+
+#[test]
+fn stl_solid_rejects_edge_incident_to_three_faces() {
+    let mut topo = Topology::new();
+    let result = read_stl_solid(&mut topo, NON_MANIFOLD_ASCII_STL, 1e-7);
+
+    assert_rejected_before_brep_construction(result, &topo);
+}
+
+#[test]
+fn threemf_solid_rejects_edge_incident_to_three_faces() {
+    let mut topo = Topology::new();
+    let result = read_threemf_solid(&mut topo, &non_manifold_threemf(), 1e-7);
+
+    assert_rejected_before_brep_construction(result, &topo);
 }
 
 #[test]
