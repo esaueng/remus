@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787903746302,
+  "lastUpdate": 1787907102940,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3023,6 +3023,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38887236,
             "range": "± 125349",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6aed8fe74c6055549fec5f00512b2be935914045",
+          "message": "fix(algo): cap the FF junction snap band to the face pair's extent (#110)\n\n`JunctionRegistry::resolve` searched for a boundary junction to snap a\nsection endpoint onto within a band floored at an absolute 1e-3. That is\na sane search radius only while the model is much larger than it. On a\nbody whose features are 1e-3 across it is the WHOLE MODEL: a through-cut\nsection endpoint adopted the tool's own cap-rim junction instead of\nstaying on the blank's face, so the tool's sides were never trimmed and\nits protruding ends survived into the result.\n\nMeasured on the box-minus-box through-cut, raw GFA, volume / s^3 against\na correct 0.840000:\n\n    s=1e-2  0.840000        s=1e-3  1.200000\n\nThe section curves show it directly. With plane parameters identical at\nboth scales -- fa n=(0,0,-1) d=0, fb n=(-1,0,0) d=-0.3s -- the resulting\nline sits at z/s = 0.000 at 1e-2 and z/s = -0.500 at 1e-3, which does\nnot satisfy fa's own plane equation.\n\nThe band was also `.max()`-floored, so lowering the caller's tolerance\ncould not shrink it: the boolean returned bit-identical wrong output at\nevery tolerance from 1e-7 to 1e-12. That is what disguised this as a\ntolerance-threading problem. It is not one -- the tolerance reaches this\ncode correctly and is simply irrelevant to a constant.\n\nThe fix caps the band at 1% of the face pair's AABB diagonal rather than\nreplacing it. Replacing it outright was tried first and mesh-fell-back\nthe dovetail nub fixture (1597 faces against an expected <150): the\nabsolute band is load-bearing at the scale real parts live at. A cap can\nonly ever narrow the band, and only once it has grown to a significant\nfraction of the geometry it searches, so every pair with extent above\n0.1 keeps the historical value bit-for-bit. The pair extent is cached\nbecause `resolve` runs per section endpoint.\n\nAt the public API this turns a mesh fallback into an exact result:\n\n    s=1e-3  before  0.840000 Approximate { deflection: 0.1 }\n    s=1e-3  after   0.840000 Exact\n\n`small_scale_cut_refuses_under_exact_only` pinned 1e-3 as a scale where\nExactOnly must refuse. That is no longer the correct answer there, so\nthe assertion is strengthened rather than dropped: 1e-3 now demands the\nexact result with `BooleanQuality::Exact` and the correct volume, and\n1e-4 keeps its own refusal test. The three sibling assertions that\nverify 1e-3 independently -- volume, vertex containment, curved-result\nacceptance -- pass untouched.\n\nThis moves the boundary one decade; it does not close the scale gap.\n`tol.linear * 1000.0` remains a floor, so 1e-4 is still wrong at the\ndefault tolerance and 1e-5 and below still fail closed.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-28T04:38:10-04:00",
+          "tree_id": "6e4e4d5e4cefee80faab3abcf5f2fe7c32860ffd",
+          "url": "https://github.com/esaueng/remus/commit/6aed8fe74c6055549fec5f00512b2be935914045"
+        },
+        "date": 1787907102298,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1309261,
+            "range": "± 7591",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1394282,
+            "range": "± 1913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13043,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 968234,
+            "range": "± 2078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39739063,
+            "range": "± 102046",
             "unit": "ns/iter"
           }
         ]
