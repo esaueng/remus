@@ -6,7 +6,11 @@ use std::collections::BTreeMap;
 
 use remus_io::step::reader::read_step;
 use remus_io::step::writer::write_step;
+use remus_math::mat::Mat4;
+use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
+use remus_operations::primitives::make_cylinder;
+use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
@@ -82,6 +86,22 @@ fn openzcad_bored_plate_imports_as_one_valid_analytic_solid() {
         BORED_PLATE,
         8_814.601_836_602_553,
         &[("cylinder", 1), ("plane", 6)],
+    );
+}
+
+#[test]
+fn openzcad_bored_plate_remains_valid_after_a_second_drill() {
+    let (mut topo, solid) = import_one(BORED_PLATE);
+    let tool = make_cylinder(&mut topo, 2.0, 10.4).expect("drill tool");
+    transform_solid(&mut topo, tool, &Mat4::translation(8.0, 4.8, -0.2))
+        .expect("position drill tool");
+
+    let drilled = boolean(&mut topo, BooleanOp::Cut, solid, tool).expect("drill imported plate");
+    let report = validate_solid(&topo, drilled).expect("validate drilled plate");
+    assert!(
+        report.is_valid(),
+        "a conforming cut must not inherit inconsistent orientation from STEP: {:?}",
+        report.issues
     );
 }
 
