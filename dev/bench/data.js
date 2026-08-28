@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787901146831,
+  "lastUpdate": 1787901317862,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2915,6 +2915,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 40528179,
             "range": "± 347822",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c1ad14ecd399e61e01440830c140f7d339c6e12",
+          "message": "docs: restore the AGENTS.md module map and gate it against drifting again (#101)\n\n* docs: restore the AGENTS.md module map and gate it against drifting again\n\n42 modules existed with no row in the Module Map, spread across every\ncrate in the workspace: all six of topology's RFC 0002/0003 entities\n(coedge, face_loop, transaction, attributes, journal, naming), eight in\nalgo including BuilderSolid and the GFA shape store, eight in wasm, and\nthe rest scattered through blend, check, heal, io, math, offset and\noperations.\n\nThe map is what a session reads to find the right file for a task, so an\nabsent module is invisible — the session never learns the file is there\nand goes looking somewhere else. Each new row is described from the\nmodule's own `//!` header rather than inferred from its name.\n\nThe drift was structural, not an oversight. `check-doc-paths.sh` verifies\nthat every path named in the docs still resolves, which catches a module\nthat moved or was deleted; nothing looked the other way, so a module\nadded without a row was never noticed by anything. That is why 42 of them\naccumulated.\n\n`scripts/check-doc-module-map.py` closes that direction, matching the\nfour forms the map actually uses: a backticked path, a bare filename, a\nglob (`pave_filler/phase_*.rs`), and the `dir/` (a, b, c) shorthand.\n`lib.rs` and `mod.rs` are wiring rather than destinations and are\nskipped; an explicit ALLOWLIST covers anything that genuinely does not\nbelong. Verified to fail on a removed row, not merely to pass as written.\n\nWired into the existing doc-paths CI job, which ci-pass already gates on.\nPython, matching the two existing Python gate scripts: a bash version\nwould want a scan whose exit status must never be read as a result, which\nis the trap that left check-remus-rename.sh unable to fail for months.\n\nNo Rust source is touched, so the workspace suite is unaffected.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(docs): scope module map gate by crate\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-28T03:11:09-04:00",
+          "tree_id": "0795be5f48ff04729358739f07ddc019a2b2bcb5",
+          "url": "https://github.com/esaueng/remus/commit/4c1ad14ecd399e61e01440830c140f7d339c6e12"
+        },
+        "date": 1787901317140,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1367027,
+            "range": "± 1965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1462749,
+            "range": "± 2097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14076,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 996114,
+            "range": "± 1826",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41224309,
+            "range": "± 170699",
             "unit": "ns/iter"
           }
         ]
