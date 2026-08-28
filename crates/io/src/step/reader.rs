@@ -618,12 +618,12 @@ const MAX_CURVE_INDIRECTION: u32 = 32;
 /// tell apart anyway.
 const POLYLINE_WELD_EPS: f64 = 1e-9;
 
-/// Chordal tolerance used only to classify planar trim-loop containment.
+/// Chordal tolerance used to classify planar trim-loop containment and winding.
 ///
 /// This is Remus's documented loose linear tolerance (0.1 micrometre),
 /// not a replacement for exact edge geometry.  The sampled polygons decide
-/// which exact [`Wire`] is the perimeter; they never replace the wire or alter
-/// its orientation.
+/// which exact [`Wire`] is the perimeter and whether a hole must be reversed;
+/// they never replace exact edge geometry.
 const FACE_BOUND_CLASSIFICATION_DEFLECTION: f64 = Tolerance::loose().linear;
 
 /// Maximum surface residual accepted while projecting an already-approximated
@@ -905,6 +905,7 @@ impl<'a> StepBuilder<'a> {
         }
 
         let (outer, inner_wires) = self.resolve_face_bounds(face_ref, &surface, &candidates)?;
+        self.normalize_planar_inner_winding(face_ref, &surface, outer, &inner_wires, &candidates)?;
 
         let face_id = if face_reversed {
             self.topo
@@ -920,6 +921,102 @@ impl<'a> StepBuilder<'a> {
             self.topo.set_face_attributes(face_id, attributes)?;
         }
         Ok(face_id)
+    }
+
+    /// Repairs the legacy single-edge form of a same-wound planar hole.
+    ///
+    /// Reversing a closed periodic curve changes its traversal without changing
+    /// the shared topological edge use. Multi-edge loops are left unchanged so
+    /// the validator can diagnose them without making import destructive.
+    fn normalize_planar_inner_winding(
+        &mut self,
+        face_ref: u64,
+        surface: &FaceSurface,
+        outer: WireId,
+        inner_wires: &[WireId],
+        candidates: &[FaceBoundCandidate],
+    ) -> Result<(), IoError> {
+        let FaceSurface::Plane { normal, d } = surface else {
+            return Ok(());
+        };
+        if inner_wires.is_empty() {
+            return Ok(());
+        }
+
+        let normal_sq = normal.dot(*normal);
+        let tol = Tolerance::new();
+        if normal_sq <= tol.linear_sq() {
+            return Ok(());
+        }
+        let origin_vector = *normal * (*d / normal_sq);
+        let origin = Point3::new(origin_vector.x(), origin_vector.y(), origin_vector.z());
+        let frame = Frame3::from_normal(origin, *normal).map_err(|error| IoError::ParseError {
+            reason: format!(
+                "ADVANCED_FACE #{face_ref} cannot classify planar bound winding: {error}"
+            ),
+        })?;
+
+        let candidate_for = |wire| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.wire == wire)
+                .copied()
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} selected an unknown wire while resolving bounds"
+                    ),
+                })
+        };
+        let mut sampled_points = 0usize;
+        let outer_polygon =
+            self.sample_planar_bound(face_ref, candidate_for(outer)?, &frame, &mut sampled_points)?;
+        let outer_area = polygon_signed_area(&outer_polygon);
+        let outer_perimeter = polygon_perimeter(&outer_polygon);
+        if outer_polygon.len() < 3
+            || !outer_area.is_finite()
+            || !outer_perimeter.is_finite()
+            || outer_area.abs() <= outer_perimeter * tol.linear
+        {
+            return Ok(());
+        }
+
+        for &inner_wire in inner_wires {
+            let polygon = self.sample_planar_bound(
+                face_ref,
+                candidate_for(inner_wire)?,
+                &frame,
+                &mut sampled_points,
+            )?;
+            let area = polygon_signed_area(&polygon);
+            let perimeter = polygon_perimeter(&polygon);
+            if polygon.len() < 3
+                || !area.is_finite()
+                || !perimeter.is_finite()
+                || area.abs() <= perimeter * tol.linear
+                || area.is_sign_positive() != outer_area.is_sign_positive()
+            {
+                continue;
+            }
+
+            let wire = self.topo.wire(inner_wire)?;
+            let [oriented] = wire.edges() else {
+                continue;
+            };
+            let edge_id = oriented.edge();
+            let edge = self.topo.edge(edge_id)?;
+            if !edge.is_closed() {
+                continue;
+            }
+            let reversed = match edge.curve() {
+                EdgeCurve::Circle(circle) => EdgeCurve::Circle(circle.reversed()),
+                EdgeCurve::Ellipse(ellipse) => EdgeCurve::Ellipse(ellipse.reversed()),
+                EdgeCurve::NurbsCurve(nurbs) => EdgeCurve::NurbsCurve(nurbs.reversed()),
+                EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => continue,
+            };
+            self.topo.edge_mut(edge_id)?.set_curve(reversed);
+        }
+
+        Ok(())
     }
 
     /// Resolve the semantic perimeter independently of STEP aggregate order.
