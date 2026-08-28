@@ -101,6 +101,7 @@ Quick reference — find the right file for any task:
 | Oriented bounding box (PCA + SAT) | `obb.rs` |
 | Chord deviation arc discretization | `chord.rs` |
 | Gauss-Legendre quadrature | `quadrature.rs` |
+| Operation tolerance and resource policy | `context.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
 | Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
 | Qualified intersection results (contact kind, quality) | `intersect.rs` |
@@ -155,6 +156,7 @@ Quick reference — find the right file for any task:
 | Intersection curve data | `ds/curve.rs` |
 | Face classification state | `ds/face_info.rs` |
 | PaveFiller orchestrator | `pave_filler/mod.rs` |
+| Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Pave block splitting + edge creation | `pave_filler/make_blocks.rs`, `make_split_edges.rs` |
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
@@ -194,6 +196,8 @@ Quick reference — find the right file for any task:
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Shared builder utilities | `builder_utils.rs` |
+| G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
+| Read-only analytic blend queries | `query.rs` |
 | Geometry-aware snap tolerance for assembly dedup | `adaptive_tolerance.rs` |
 | Spherical triangle corner patches (3+ stripes) | `spherical_triangle.rs` |
 
@@ -407,6 +411,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
+| Entity-evolution and journal bindings | `bindings/evolution.rs` |
+| Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
 | Faces with inner (hole) wires — validation & construction | `holed_face.rs` |
 | `log` → JS `console` bridge | `logging.rs` |
 | Panic capture for post-mortem diagnosis | `panics.rs` |
