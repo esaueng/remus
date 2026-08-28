@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787890126839,
+  "lastUpdate": 1787890302843,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2645,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38509974,
             "range": "± 69359",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "347e372b771308d55dd323977d4d6243e0d063ff",
+          "message": "fix(io): share edges between imported triangles and stop welding quadratically (#98)\n\n* fix(io): share edges between imported triangles and stop welding quadratically\n\nMesh import gave every triangle its own three edges, so no two faces ever\nshared one. Vertices were welded, meaning neighbouring triangles agreed\non their corners but never on the edge between them: every imported face\nwas a topological island. A closed unit cube of 12 triangles imported as\n36 distinct edges, all 36 free, and failed validate_shell_closed. Every\nSTL and 3MF import handed booleans, tessellation, offset and healing a\nshell with no adjacency at all.\n\nEdges are now keyed by their unordered vertex pair, so the two triangles\nmeeting along an edge resolve to one EdgeId and the second use carries\nthe reversed orientation flag. The same cube now imports as 18 edges —\nwhat Euler requires — with none free and a closed 2-manifold shell.\n\nbuild_vertex_map linearly scanned every accepted vertex for every\nposition, which is quadratic on the all-distinct input a mesh scan\nproduces. Release-build import timings, before -> after:\n\n    n= 2000    0.99ms ->  0.83ms\n    n= 8000   17.01ms ->  2.91ms\n    n=16000   65.29ms ->  6.11ms\n    n=32000  237.23ms -> 12.30ms\n\nCandidates now come from a uniform spatial hash with cell edge equal to\nthe weld tolerance. Cell membership never decides a merge: every\ncandidate is still distance-checked, and the probe covers all 27\nsurrounding cells so a pair sitting either side of a boundary is not\nmissed. Ties go to the earliest-created vertex, which is what insertion\norder gave the linear scan, keeping welding order-independent.\n\nSix regression tests; the three edge-sharing ones fail against\nunmodified code. The three weld tests pass on the old code too — it was\ncorrect, only slow — and exist to stop the hash regressing correctness;\ncrippling the 27-cell probe to one cell fails the boundary test and only\nthat test.\n\nMulti-body meshes are left importing as one solid: measured after the\nedge fix, that case is valid (shell closed, volume exact,\nvalidate_solid clean), and splitting components would change the\nmesh-reader return convention across five formats.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* test(io): guard the vertex weld against going quadratic again\n\nThe six correctness tests on this branch all pass against a QUADRATIC\nweld — a linear scan gives the same answers, just slowly — so nothing\nhere stopped the weld regressing to one. The cost is invisible at test\nsizes and ruinous at real ones: 153ms at 26k vertices, per-vertex cost\nclimbing 0.0004 -> 0.0059 ms across the range, extrapolating to roughly a\nquarter of an hour at the 2,000,000-vertex `ImportLimits` ceiling the\nimporters already enforce.\n\nAsserts the SHAPE of the curve rather than a wall-clock number: cost per\nvertex must not grow with the mesh. A quadratic weld fails it by a wide\nmargin — measured 11x growth in per-vertex cost over this range — while\nthe 8x bound keeps it from being a flaky timing test on a shared runner.\nThe grid uses all-distinct vertices, so it measures the candidate search\nitself rather than the merge.\n\nPorted from PR #99, which fixed the same two defects independently and is\nclosed in favour of this branch.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(io): saturate mesh weld neighbor probes\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-28T00:07:11-04:00",
+          "tree_id": "4125e10801a998c1bc0dbf01b8f461d133b3b7eb",
+          "url": "https://github.com/esaueng/remus/commit/347e372b771308d55dd323977d4d6243e0d063ff"
+        },
+        "date": 1787890301739,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1363683,
+            "range": "± 1999",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1460654,
+            "range": "± 2636",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14078,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1000067,
+            "range": "± 625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41081238,
+            "range": "± 171930",
             "unit": "ns/iter"
           }
         ]
