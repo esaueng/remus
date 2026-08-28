@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787898904114,
+  "lastUpdate": 1787901146831,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2861,6 +2861,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38927497,
             "range": "± 204280",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "182ea22e27b4eadccb548f953ea818d947bccbe8",
+          "message": "fix(math): refine ray-surface hits against the ray-perpendicular tangents (#107)\n\n`refine_line_surface_point` drives the distance from a surface point to\nthe ray LINE to zero. Only the ray-perpendicular part of a surface\ntangent reduces that distance -- sliding the point along the ray moves it\nwithout getting it any closer. The Gauss-Newton normal matrix was built\nfrom the raw tangents anyway, which inflates it by the ray-parallel\ncomponent and under-relaxes every step.\n\nThe failure is silent rather than wrong: the iteration budget expires and\nthe function returns None, so a real intersection is reported as no\nintersection at all. Firing the point-in-solid classifier's three ray\ndirections at a b-spline box, 124 of 271 analytically provable ray-face\nhits were not found -- 45.76%. With the projected matrix, 0.\n\nOn a plane the projected system is exact and converges in one iteration;\nthe raw one needs more than 100. Raising MAX_NEWTON_ITER to 100\nreproduces the projected result exactly, which confirms the mechanism is\nunder-relaxation rather than a different solution being found.\nMAX_NEWTON_ITER is shared with three other intersectors and is untouched.\n\nNo test caught this because every existing ray test in the module fires\nALONG the surface normal -- the one direction where the bug cannot\nappear, since the tangents are already perpendicular to the ray.\n\nEnd to end, a box converted to b-spline and classified over 4743 interior\npoints went from 25.15% misclassified to 6.05%; the remaining 6% is a\nseparate defect in the UV trim that `remus-check` builds, which this\ncommit does not address. Curved b-spline faces are unchanged and still\nwrong for that same reason -- see the PR for the measured table.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-28T03:09:44-04:00",
+          "tree_id": "7e7fc242dbfd293d31ccb5c5229fe8316a962367",
+          "url": "https://github.com/esaueng/remus/commit/182ea22e27b4eadccb548f953ea818d947bccbe8"
+        },
+        "date": 1787901145793,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1290751,
+            "range": "± 15971",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1380036,
+            "range": "± 4430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12899,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 959926,
+            "range": "± 1857",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40528179,
+            "range": "± 347822",
             "unit": "ns/iter"
           }
         ]
