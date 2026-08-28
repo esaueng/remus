@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787890844368,
+  "lastUpdate": 1787898723878,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2753,6 +2753,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38852042,
             "range": "± 154338",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54acd5dc2b325ebf51a8d2e1705bc16bb8eb47b3",
+          "message": "fix(check): trim spherical faces against the boundary plane, not a 32-gon (#105)\n\n`count_face_ray_crossings` routed every `FaceSurface::Sphere` to\n`count_3d_polygon_crossings`, which trims a ray's exit point against\n`face_polygon` — a closed boundary edge sampled at a fixed 32 points. A\nhemisphere's equator became a 32-gon INSCRIBED in the true circle, so a ray\nleaving in the scalloped band between chord and arc was inside neither\nhemisphere's polygon: the near face rejected it on containment, the far face\non the half-space test. The crossing was counted by no face, parity flipped,\nand an interior point came back `Outside`.\n\nMeasured on `make_sphere(1, s)` at 0.9r: 37.6% wrong at s=8, 4.5% at s=32,\nstill 0.25% at s=128 — every failure Inside -> Outside. On `cut(box, sphere)`,\n2.7% of the cavity read as material. The sphere CENTRE is always correct,\nwhich is why the existing single-point tests never caught it.\n\nA cap's boundary is planar and its plane cuts the sphere in a circle, so the\nexact trim is a half-space test with no polygon involved. Take that path when\nthe boundary is planar; keep the polygon fallback for lunes and boolean-made\nspherical triangles, whose boundaries are not.\n\nThe cap side comes from the outward surface normal crossed with the boundary's\ntraversal direction, NOT from the boundary polygon's winding. The winding sign\nis wrong and survives today only because two complementary hemispheres tile a\nwhole sphere and the errors cancel; on the annular face left when a sphere\nbreaks a block's top face it scores 34.3% against 47.1% for the unfixed code.\n`is_reversed` is deliberately not applied — traversal order already carries the\nface's orientation, so applying it again double-flips.\n\nAll measured cases go to 0.000%, including a holed spherical face (3.8% before).\nCylinder, torus and box were 0% before and after; `count_3d_polygon_crossings`\nhas only this one caller, so no other surface type is affected.",
+          "timestamp": "2026-08-28T02:27:28-04:00",
+          "tree_id": "d678f0e8f999cd94ebff480de62b35211b6b8c5e",
+          "url": "https://github.com/esaueng/remus/commit/54acd5dc2b325ebf51a8d2e1705bc16bb8eb47b3"
+        },
+        "date": 1787898722786,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1295177,
+            "range": "± 2042",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1380788,
+            "range": "± 1980",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13181,
+            "range": "± 196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 961084,
+            "range": "± 1206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38938579,
+            "range": "± 86111",
             "unit": "ns/iter"
           }
         ]
