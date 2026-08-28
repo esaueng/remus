@@ -26,6 +26,7 @@ pub mod phase_vv;
 #[cfg(test)]
 mod tests;
 
+use remus_math::context::OperationContext;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
@@ -42,8 +43,8 @@ pub struct PaveFiller<'a> {
     solid_a: SolidId,
     /// Solid B (second boolean argument).
     solid_b: SolidId,
-    /// Tolerance for geometric comparisons.
-    tol: Tolerance,
+    /// Caller-visible tolerance and work budgets.
+    context: OperationContext,
 }
 
 impl<'a> PaveFiller<'a> {
@@ -54,11 +55,12 @@ impl<'a> PaveFiller<'a> {
             topo,
             solid_a,
             solid_b,
-            tol: Tolerance::default(),
+            context: OperationContext::new(),
         }
     }
 
     /// Creates a `PaveFiller` with custom tolerance.
+    #[allow(dead_code)]
     pub fn with_tolerance(
         topo: &'a mut Topology,
         solid_a: SolidId,
@@ -69,7 +71,22 @@ impl<'a> PaveFiller<'a> {
             topo,
             solid_a,
             solid_b,
-            tol,
+            context: OperationContext::new().with_tolerance(tol),
+        }
+    }
+
+    /// Creates a `PaveFiller` under an explicit operation context.
+    pub fn with_context(
+        topo: &'a mut Topology,
+        solid_a: SolidId,
+        solid_b: SolidId,
+        context: OperationContext,
+    ) -> Self {
+        Self {
+            topo,
+            solid_a,
+            solid_b,
+            context,
         }
     }
 
@@ -83,22 +100,29 @@ impl<'a> PaveFiller<'a> {
     ///
     /// Returns [`AlgoError`] if any topology lookup or intersection fails.
     pub fn perform(&mut self, arena: &mut GfaArena) -> Result<(), AlgoError> {
+        let tol = self.context.tolerance;
         self.init_pave_blocks(arena)?;
 
-        phase_vv::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
+        phase_vv::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
         // VV is the only phase that registers same-domain vertices, and
         // `edge_pave_blocks` is fixed at init — so the pave-vertex coincidence
         // index is stable for the remaining phases. Build it once here instead
         // of linear-scanning every pave block per intersection endpoint.
-        arena.build_pave_vertex_index(self.topo, self.tol.linear);
-        phase_ve::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
-        phase_ee::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
-        phase_vf::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
-        phase_ef::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
-        phase_ff::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
+        arena.build_pave_vertex_index(self.topo, tol.linear);
+        phase_ve::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        phase_ee::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        phase_vf::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        phase_ef::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        phase_ff::perform_with_context(
+            self.topo,
+            self.solid_a,
+            self.solid_b,
+            &self.context,
+            arena,
+        )?;
 
         // Coplanar face splitting: parallel planes are skipped by Phase FF.
-        phase_ff_coplanar::perform(self.topo, self.solid_a, self.solid_b, self.tol, arena)?;
+        phase_ff_coplanar::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
 
         Ok(())
     }
@@ -145,9 +169,26 @@ pub fn run_pave_filler(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let context = OperationContext::new().with_tolerance(tol);
+    run_pave_filler_with_context(topo, solid_a, solid_b, &context, arena)
+}
+
+/// Run the complete PaveFiller pipeline under an explicit operation context.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any topology lookup or intersection fails.
+pub fn run_pave_filler_with_context(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+    arena: &mut GfaArena,
+) -> Result<(), AlgoError> {
+    let tol = context.tolerance;
     // Stage 1: Intersection (may create new vertices for EE/EF/FF crossings)
     {
-        let mut filler = PaveFiller::with_tolerance(topo, solid_a, solid_b, tol);
+        let mut filler = PaveFiller::with_context(topo, solid_a, solid_b, *context);
         filler.perform(arena)?;
     }
 
@@ -157,7 +198,7 @@ pub fn run_pave_filler(
     link_existing::perform(topo, tol, arena)?;
     make_split_edges::perform(topo, arena)?;
     make_pcurves::perform(topo, arena)?;
-    fill_face_info::perform(topo, arena)?;
+    fill_face_info::perform_with_tolerance(topo, arena, tol)?;
 
     Ok(())
 }
@@ -185,13 +226,30 @@ pub fn run_pave_filler(
 /// # Errors
 ///
 /// Returns [`AlgoError`] if `sources` is empty or any stage fails.
+#[allow(dead_code)]
 pub fn run_pave_filler_n(
     topo: &mut Topology,
     sources: &[SolidId],
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let context = OperationContext::new().with_tolerance(tol);
+    run_pave_filler_n_with_context(topo, sources, &context, arena)
+}
+
+/// Run the N-way PaveFiller pipeline under an explicit operation context.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if `sources` is empty or any stage fails.
+pub fn run_pave_filler_n_with_context(
+    topo: &mut Topology,
+    sources: &[SolidId],
+    context: &OperationContext,
+    arena: &mut GfaArena,
+) -> Result<(), AlgoError> {
     const MAX_SOURCE_PAIRS: usize = 4_096;
+    let tol = context.tolerance;
 
     if sources.is_empty() {
         return Err(AlgoError::AssemblyFailed(
@@ -236,7 +294,7 @@ pub fn run_pave_filler_n(
         phase_ef::perform(topo, sources[i], sources[j], tol, arena)?;
     }
     for &(i, j) in &pairs {
-        phase_ff::perform(topo, sources[i], sources[j], tol, arena)?;
+        phase_ff::perform_with_context(topo, sources[i], sources[j], context, arena)?;
     }
     for &(i, j) in &pairs {
         phase_ff_coplanar::perform(topo, sources[i], sources[j], tol, arena)?;
@@ -248,7 +306,7 @@ pub fn run_pave_filler_n(
     link_existing::perform(topo, tol, arena)?;
     make_split_edges::perform(topo, arena)?;
     make_pcurves::perform(topo, arena)?;
-    fill_face_info::perform(topo, arena)?;
+    fill_face_info::perform_with_tolerance(topo, arena, tol)?;
 
     Ok(())
 }

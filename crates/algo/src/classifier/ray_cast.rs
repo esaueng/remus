@@ -88,7 +88,21 @@ pub fn classify_ray_cast(
     solid: SolidId,
     point: Point3,
 ) -> Result<FaceClass, AlgoError> {
-    let inside_votes = ray_cast_inside_votes(topo, solid, point)?;
+    classify_ray_cast_with_tolerance(topo, solid, point, Tolerance::default())
+}
+
+/// Classify a point by ray casting with the caller's tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::ClassificationFailed`] if classification is indeterminate.
+pub fn classify_ray_cast_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    point: Point3,
+    tolerance: Tolerance,
+) -> Result<FaceClass, AlgoError> {
+    let inside_votes = ray_cast_inside_votes_with_tolerance(topo, solid, point, tolerance)?;
     if inside_votes >= 2 {
         Ok(FaceClass::Inside)
     } else {
@@ -109,8 +123,22 @@ pub fn ray_cast_inside_votes(
     solid: SolidId,
     point: Point3,
 ) -> Result<u8, AlgoError> {
+    ray_cast_inside_votes_with_tolerance(topo, solid, point, Tolerance::default())
+}
+
+/// Number of rays reporting an odd crossing count using the caller's tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::ClassificationFailed`] if no face geometry is collected.
+pub fn ray_cast_inside_votes_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    point: Point3,
+    tolerance: Tolerance,
+) -> Result<u8, AlgoError> {
     let face_data = collect_face_geoms(topo, solid)?;
-    votes_from_geoms(&face_data, point)
+    votes_from_geoms(&face_data, point, tolerance)
 }
 
 /// Pre-collected ray-cast geometry for a solid, built once and reused across
@@ -147,7 +175,20 @@ impl RayCastGeoms {
 ///
 /// Returns [`AlgoError`] if no face geometry was collected.
 pub fn ray_cast_inside_votes_cached(geoms: &RayCastGeoms, point: Point3) -> Result<u8, AlgoError> {
-    votes_from_geoms(&geoms.faces, point)
+    ray_cast_inside_votes_cached_with_tolerance(geoms, point, Tolerance::default())
+}
+
+/// Cached inside-vote count using the caller's tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if no face geometry was collected.
+pub fn ray_cast_inside_votes_cached_with_tolerance(
+    geoms: &RayCastGeoms,
+    point: Point3,
+    tolerance: Tolerance,
+) -> Result<u8, AlgoError> {
+    votes_from_geoms(&geoms.faces, point, tolerance)
 }
 
 /// Ray-cast classification for `point` using pre-collected geometry.
@@ -159,7 +200,20 @@ pub fn classify_ray_cast_cached(
     geoms: &RayCastGeoms,
     point: Point3,
 ) -> Result<FaceClass, AlgoError> {
-    if votes_from_geoms(&geoms.faces, point)? >= 2 {
+    classify_ray_cast_cached_with_tolerance(geoms, point, Tolerance::default())
+}
+
+/// Cached ray-cast classification using the caller's tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if no face geometry was collected.
+pub fn classify_ray_cast_cached_with_tolerance(
+    geoms: &RayCastGeoms,
+    point: Point3,
+    tolerance: Tolerance,
+) -> Result<FaceClass, AlgoError> {
+    if votes_from_geoms(&geoms.faces, point, tolerance)? >= 2 {
         Ok(FaceClass::Inside)
     } else {
         Ok(FaceClass::Outside)
@@ -189,14 +243,17 @@ fn ray_trace_target() -> Option<(Point3, f64)> {
 /// Count the inside votes (of three rays) for a point against pre-collected
 /// face geometry: cardinal rays first, re-cast with fixed generic directions
 /// only when every cardinal ray grazed degenerate structure.
-fn votes_from_geoms(face_data: &[FaceGeom], point: Point3) -> Result<u8, AlgoError> {
+fn votes_from_geoms(
+    face_data: &[FaceGeom],
+    point: Point3,
+    tol: Tolerance,
+) -> Result<u8, AlgoError> {
     if face_data.is_empty() {
         return Err(AlgoError::ClassificationFailed(
             "no face polygons collected for ray-cast".into(),
         ));
     }
 
-    let tol = Tolerance::new();
     let cardinal_dirs = [
         Vec3::new(0.0, 0.0, 1.0),
         Vec3::new(1.0, 0.0, 0.0),

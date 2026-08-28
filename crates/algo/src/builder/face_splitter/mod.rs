@@ -4567,6 +4567,7 @@ pub fn split_face_2d(
         &cap_centers,
         rank,
         frame,
+        tol.linear,
     )
 }
 
@@ -4613,6 +4614,7 @@ fn collect_wire_points_oriented(
 /// emerging inside an existing opening — and a circle contained by no sub-face
 /// has no home; both are dropped, exactly as the impl's air filter and
 /// arrangement paths drop them.
+#[allow(clippy::too_many_arguments)]
 fn distribute_cap_circles(
     topo: &Topology,
     face_id: FaceId,
@@ -4621,6 +4623,7 @@ fn distribute_cap_circles(
     cap_centers: &[Point3],
     rank: Rank,
     frame: Option<&PlaneFrame>,
+    tolerance: f64,
 ) -> Vec<SplitSubFace> {
     let Ok(face) = topo.face(face_id) else {
         return base;
@@ -4684,6 +4687,7 @@ fn distribute_cap_circles(
                 sf.reversed,
                 face_id,
                 &sub_wire_pts,
+                tolerance,
             );
             result.extend(carved);
         }
@@ -5346,6 +5350,7 @@ fn split_face_2d_impl(
             reversed,
             face_id,
             &wire_pts,
+            tol.linear,
         );
     }
 
@@ -8243,6 +8248,7 @@ mod tests {
             &centers,
             Rank::A,
             Some(&frame),
+            remus_math::tolerance::Tolerance::default().linear,
         );
 
         assert_eq!(
