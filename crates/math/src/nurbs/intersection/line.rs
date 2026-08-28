@@ -137,12 +137,27 @@ fn refine_line_surface_point(
 
         let r = Vec3::new(residual.x(), residual.y(), residual.z());
 
-        // Solve 2x2 system: [su*su, su*sv; sv*su, sv*sv] * [du, dv] = [su*r, sv*r]
-        let a11 = su.dot(su);
-        let a12 = su.dot(sv);
-        let a22 = sv.dot(sv);
-        let b1 = su.dot(r);
-        let b2 = sv.dot(r);
+        // The quantity being driven to zero is the distance to the ray LINE, so
+        // only the ray-PERPENDICULAR part of a tangent reduces it -- sliding the
+        // surface point along the ray moves it without getting it any closer.
+        // Build the Gauss-Newton system from those projected tangents. Using the
+        // raw su/sv inflates the matrix by the ray-parallel component and
+        // under-relaxes every step: on a plane, where the projected system lands
+        // exactly in one iteration, the raw one still has not converged after
+        // 100 and so gives up at MAX_NEWTON_ITER with the intersection
+        // undiscovered. `r` is already perpendicular to the ray, so the
+        // right-hand side is unchanged in exact arithmetic; it is projected here
+        // too to keep the system self-consistent.
+        let dir_dot_dir = ray_dir.dot(ray_dir);
+        let ju = su - ray_dir * (su.dot(ray_dir) / dir_dot_dir);
+        let jv = sv - ray_dir * (sv.dot(ray_dir) / dir_dot_dir);
+
+        // Solve 2x2 system: [ju*ju, ju*jv; jv*ju, jv*jv] * [du, dv] = [ju*r, jv*r]
+        let a11 = ju.dot(ju);
+        let a12 = ju.dot(jv);
+        let a22 = jv.dot(jv);
+        let b1 = ju.dot(r);
+        let b2 = jv.dot(r);
 
         let det = a11.mul_add(a22, -(a12 * a12));
         // Relative singularity threshold -- catches surface poles/apex where
