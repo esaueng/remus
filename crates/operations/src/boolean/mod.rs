@@ -7,8 +7,8 @@
 pub mod assembly;
 mod classify;
 mod types;
-use assembly::validate_boolean_result;
 pub(crate) use assembly::{assemble_solid_mixed, assemble_solid_mixed_with_history};
+use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 pub use types::{BooleanOp, BooleanOptions, FaceSpec};
 
@@ -107,9 +107,8 @@ fn note_flatten_guard_trip() {
 /// pre-operation state: pre-existing handles stay valid, and handles
 /// allocated by the failed attempt can never alias later entities.
 ///
-/// Costs one topology snapshot over [`boolean`]; callers in snapshot-
-/// managed contexts (the WASM batch dispatcher) keep calling [`boolean`]
-/// directly.
+/// Unlike [`boolean`], this also runs the operations-layer validation report
+/// before committing. Both entry points roll back operation failures.
 ///
 /// # Errors
 ///
@@ -121,9 +120,14 @@ pub fn boolean_transacted(
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
+    let context = remus_math::context::OperationContext::new();
+    let opts = BooleanOptions::default();
     remus_topology::transaction::run_validated(
         topo,
-        |topo| boolean(topo, op, a, b),
+        |topo| {
+            let mut used_fallback = false;
+            boolean_with_operation_context(topo, op, a, b, &context, &opts, &mut used_fallback)
+        },
         |topo, &result| {
             let report = crate::validate::validate_solid(topo, result)?;
             if report.is_valid() {
@@ -149,22 +153,20 @@ pub fn boolean_transacted(
 /// # Errors
 ///
 /// Returns an error if either solid is invalid or the operation produces
-/// an empty or non-manifold result.
+/// an empty or non-manifold result. Every error restores the topology's live
+/// entities to their pre-operation state.
 pub fn boolean(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
     b: SolidId,
 ) -> Result<SolidId, crate::OperationsError> {
-    let mut used_fallback = false;
-    boolean_with_policy(
-        topo,
-        op,
-        a,
-        b,
-        default_fallback_policy(),
-        &mut used_fallback,
-    )
+    let context = remus_math::context::OperationContext::new();
+    let opts = BooleanOptions::default();
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut used_fallback = false;
+        boolean_with_operation_context(topo, op, a, b, &context, &opts, &mut used_fallback)
+    })
 }
 
 /// The result quality a context-carrying boolean discloses.
@@ -211,7 +213,8 @@ pub struct BooleanOutcome {
 ///
 /// # Errors
 ///
-/// Returns [`boolean`]'s errors, or the typed exact-only refusal.
+/// Returns [`boolean`]'s errors, an invalid-context error, or the typed
+/// exact-only refusal. Every error rolls back the operation.
 pub fn boolean_with_context(
     topo: &mut Topology,
     op: BooleanOp,
@@ -219,29 +222,27 @@ pub fn boolean_with_context(
     b: SolidId,
     context: &remus_math::context::OperationContext,
 ) -> Result<BooleanOutcome, crate::OperationsError> {
-    let mut used_fallback = false;
-    let solid = boolean_with_policy(topo, op, a, b, context.fallback, &mut used_fallback)?;
-    let quality = if used_fallback {
-        BooleanQuality::Approximate {
-            deflection: context
-                .fallback
-                .budget()
-                .unwrap_or(remus_math::context::DEFAULT_APPROXIMATION_BUDGET),
-        }
-    } else {
-        BooleanQuality::Exact
-    };
-    Ok(BooleanOutcome { solid, quality })
+    validate_operation_context(context)?;
+    let opts = boolean_options_from_context(context);
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut used_fallback = false;
+        let solid =
+            boolean_with_operation_context(topo, op, a, b, context, &opts, &mut used_fallback)?;
+        let quality = if used_fallback {
+            BooleanQuality::Approximate {
+                deflection: context
+                    .fallback
+                    .budget()
+                    .unwrap_or(remus_math::context::DEFAULT_APPROXIMATION_BUDGET),
+            }
+        } else {
+            BooleanQuality::Exact
+        };
+        Ok(BooleanOutcome { solid, quality })
+    })
 }
 
-/// The policy the legacy [`boolean`] entry runs under: approximation
-/// allowed at the historical mesh deflection.
-const fn default_fallback_policy() -> remus_math::context::FallbackPolicy {
-    remus_math::context::FallbackPolicy::AllowApproximate {
-        budget: remus_math::context::DEFAULT_APPROXIMATION_BUDGET,
-    }
-}
-
+#[cfg(test)]
 fn boolean_with_policy(
     topo: &mut Topology,
     op: BooleanOp,
@@ -250,9 +251,63 @@ fn boolean_with_policy(
     policy: remus_math::context::FallbackPolicy,
     used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
-    let result = boolean_with_policy_impl(topo, op, a, b, policy, used_fallback)?;
+    let context = remus_math::context::OperationContext::new().with_fallback(policy);
+    let opts = boolean_options_from_context(&context);
+    boolean_with_operation_context(topo, op, a, b, &context, &opts, used_fallback)
+}
+
+fn boolean_with_operation_context(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    context: &remus_math::context::OperationContext,
+    opts: &BooleanOptions,
+    used_fallback: &mut bool,
+) -> Result<SolidId, crate::OperationsError> {
+    let result = boolean_with_context_impl(topo, op, a, b, context, opts, used_fallback)?;
     normalize_hole_windings(topo, result)?;
     Ok(result)
+}
+
+fn validate_operation_context(
+    context: &remus_math::context::OperationContext,
+) -> Result<(), crate::OperationsError> {
+    let tol = context.tolerance;
+    if !tol.linear.is_finite() || tol.linear <= 0.0 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "boolean linear tolerance must be finite and positive".into(),
+        });
+    }
+    if !tol.angular.is_finite() || tol.angular <= 0.0 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "boolean angular tolerance must be finite and positive".into(),
+        });
+    }
+    if !tol.relative.is_finite() || tol.relative < 0.0 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "boolean relative tolerance must be finite and non-negative".into(),
+        });
+    }
+    if let Some(budget) = context.fallback.budget()
+        && (!budget.is_finite() || budget <= 0.0)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "boolean approximation budget must be finite and positive".into(),
+        });
+    }
+    Ok(())
+}
+
+fn boolean_options_from_context(context: &remus_math::context::OperationContext) -> BooleanOptions {
+    BooleanOptions {
+        deflection: context
+            .fallback
+            .budget()
+            .unwrap_or(remus_math::context::DEFAULT_APPROXIMATION_BUDGET),
+        tolerance: context.tolerance,
+        ..BooleanOptions::default()
+    }
 }
 
 /// Rewind plane-face hole wires that wind the same way as their outer wire.
@@ -343,27 +398,28 @@ fn wire_winding_sign(
 }
 
 #[allow(clippy::too_many_lines)]
-fn boolean_with_policy_impl(
+fn boolean_with_context_impl(
     topo: &mut Topology,
     op: BooleanOp,
     a: SolidId,
     b: SolidId,
-    policy: remus_math::context::FallbackPolicy,
+    context: &remus_math::context::OperationContext,
+    opts: &BooleanOptions,
     used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
-    let tol = remus_math::tolerance::Tolerance::new();
-    if let remus_math::context::FallbackPolicy::ApproximateOnly { budget } = policy {
+    let tol = context.tolerance;
+    if let remus_math::context::FallbackPolicy::ApproximateOnly { budget } = context.fallback {
         *used_fallback = true;
-        return run_mesh_fallback(topo, op, a, b, budget, tol);
+        return run_mesh_fallback(topo, op, a, b, budget, tol, opts);
     }
 
     // Detect A⊂B or B⊂A (including A=B) and handle directly. A positive
     // containment result requires an analytic classifier for the containing
     // operand; AABB enclosure alone is only a necessary condition.
     {
-        use remus_algo::classifier::try_build_analytic_classifier;
-        let ca = try_build_analytic_classifier(topo, a);
-        let cb = try_build_analytic_classifier(topo, b);
+        use remus_algo::classifier::try_build_analytic_classifier_with_tolerance;
+        let ca = try_build_analytic_classifier_with_tolerance(topo, a, tol);
+        let cb = try_build_analytic_classifier_with_tolerance(topo, b, tol);
         let TrivialRelation {
             identical,
             a_in_b,
@@ -411,7 +467,7 @@ fn boolean_with_policy_impl(
             if tool_simple
                 && solid_strictly_inside(topo, b, classifier, tol)
                 && let Ok(result) = build_contained_cut_hollow(topo, a, b)
-                && validate_boolean_result(topo, result).is_ok()
+                && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
             {
                 return Ok(result);
             }
@@ -803,12 +859,13 @@ fn boolean_with_policy_impl(
             b
         };
         if flatten_settled {
-            let working_result = boolean_with_policy(
+            let working_result = boolean_with_operation_context(
                 &mut working,
                 op,
                 working_a,
                 working_b,
-                policy,
+                context,
+                opts,
                 used_fallback,
             )?;
             return crate::copy::copy_solid_between(&working, topo, working_result);
@@ -826,7 +883,7 @@ fn boolean_with_policy_impl(
     }
     let (gfa_a, gfa_b) = (a, b);
     let gfa_start = timer_now();
-    match remus_algo::gfa::boolean(topo, algo_op, gfa_a, gfa_b) {
+    match remus_algo::gfa::boolean_with_context(topo, algo_op, gfa_a, gfa_b, context) {
         Ok(result) => {
             let result_faces = remus_topology::explorer::solid_faces(topo, result)?.len();
             // Narrow-phase empty intersect: overlapping AABBs but the engine
@@ -1018,7 +1075,7 @@ fn boolean_with_policy_impl(
                     && open_shell_ok
                     && operands_are_represented(topo, op, result, a, b, tol)
                     && result_within_operand_bounds(topo, op, result, a, b, tol)
-                    && validate_boolean_result(topo, result).is_ok()
+                    && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
                 {
                     log::info!(
                         "GFA boolean succeeded in {:.1}ms ({result_faces} faces)",
@@ -1060,11 +1117,13 @@ fn boolean_with_policy_impl(
                 // and should be rejected. Fuse/Intersect don't have this
                 // failure mode.
                 let cut_safe = op != BooleanOp::Cut
-                    || remus_algo::classifier::try_build_analytic_classifier(topo, b)
-                        .as_ref()
-                        .is_none_or(|cls_b| {
-                            all_component_centers_outside(topo, &components_vec, cls_b, tol)
-                        });
+                    || remus_algo::classifier::try_build_analytic_classifier_with_tolerance(
+                        topo, b, tol,
+                    )
+                    .as_ref()
+                    .is_none_or(|cls_b| {
+                        all_component_centers_outside(topo, &components_vec, cls_b, tol)
+                    });
                 // Intersect's mirror hazard: GFA could emit a piece that is not
                 // part of A∩B at all. Reject when any component's AABB-centre
                 // sample classifies OUTSIDE either operand — an intersection
@@ -1101,7 +1160,7 @@ fn boolean_with_policy_impl(
                     && closed_manifold
                     && operands_are_represented(topo, op, result, a, b, tol)
                     && result_within_operand_bounds(topo, op, result, a, b, tol)
-                    && validate_boolean_result(topo, result).is_ok()
+                    && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
                 {
                     log::info!(
                         "GFA multi-region succeeded in {:.1}ms ({result_faces} faces, {components} pieces)",
@@ -1136,7 +1195,7 @@ fn boolean_with_policy_impl(
                 "GFA result not accepted in {:.1}ms (faces={result_faces}, \
                  validate={:?}), falling back",
                 timer_elapsed_ms(gfa_start),
-                validate_boolean_result(topo, result).err()
+                validate_boolean_result_with_tolerance(topo, result, tol).err()
             );
         }
         // An input carrying a curve type the engine cannot represent is NOT
@@ -1167,7 +1226,7 @@ fn boolean_with_policy_impl(
         if components.len() >= 2
             && components_are_disjoint_pieces(topo, &components)
             && let Ok(result) =
-                cut_multi_region_input(topo, a, b, components.len(), policy, used_fallback)
+                cut_multi_region_input(topo, a, b, components.len(), context, opts, used_fallback)
         {
             return Ok(result);
         }
@@ -1185,7 +1244,7 @@ fn boolean_with_policy_impl(
         if (2..=64).contains(&tool_components.len())
             && components_are_disjoint_pieces(topo, &tool_components)
             && let Ok(result) =
-                fuse_multi_component_tool(topo, a, tool_components, policy, used_fallback)
+                fuse_multi_component_tool(topo, a, tool_components, context, opts, used_fallback)
         {
             return Ok(result);
         }
@@ -1194,11 +1253,11 @@ fn boolean_with_policy_impl(
     // Mesh boolean fallback (no recursion). Under an exact-only policy
     // this is the refusal point: degrading to a mesh is declined with a
     // typed error rather than performed silently.
-    let remus_math::context::FallbackPolicy::AllowApproximate { budget } = policy else {
+    let remus_math::context::FallbackPolicy::AllowApproximate { budget } = context.fallback else {
         return Err(crate::OperationsError::ExactOnlyUnattainable);
     };
     *used_fallback = true;
-    run_mesh_fallback(topo, op, a, b, budget, tol)
+    run_mesh_fallback(topo, op, a, b, budget, tol, opts)
 }
 
 /// The mesh (co-refinement) fallback path, at an explicit deflection.
@@ -1209,13 +1268,13 @@ fn run_mesh_fallback(
     b: SolidId,
     deflection: f64,
     tol: remus_math::tolerance::Tolerance,
+    opts: &BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
     log::debug!(
         target: "remus_approx",
         "boolean {op:?}: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost"
     );
-    let opts = BooleanOptions::default();
-    let raw = match mesh_boolean_fallback(topo, op, a, b, deflection, tol, &opts) {
+    let raw = match mesh_boolean_fallback(topo, op, a, b, deflection, tol, opts) {
         Ok(raw) => raw,
         // An empty mesh-boolean output for an intersect means the common
         // region is empty — return the empty-result sentinel rather than
@@ -1227,9 +1286,11 @@ fn run_mesh_fallback(
     };
     let result = crate::copy::copy_solid(topo, raw)?;
     let _ = crate::heal::remove_degenerate_edges(topo, result, tol.linear)?;
-    for _ in 0..3 {
-        if crate::heal::unify_faces(topo, result)? == 0 {
-            break;
+    if opts.unify_faces {
+        for _ in 0..3 {
+            if crate::heal::unify_faces(topo, result)? == 0 {
+                break;
+            }
         }
     }
     let result = enforce_manifold_shell(topo, result)?;
@@ -1241,9 +1302,11 @@ fn run_mesh_fallback(
 
 /// Perform a boolean operation with custom options.
 ///
-/// Runs the standard GFA boolean pipeline, then applies post-processing
-/// options. Currently supported: `unify_faces` (merges co-surface face
-/// fragments via `remus_heal::unify_same_domain`).
+/// Runs the standard boolean pipeline under a context derived from `opts`,
+/// then applies the requested post-processing. `deflection` is the mesh
+/// fallback budget, `tolerance` reaches exact and approximate paths,
+/// `unify_faces` controls same-domain post-processing, and
+/// `heal_after_boolean` runs the full operations-layer healing pass.
 ///
 /// # Errors
 ///
@@ -1255,15 +1318,57 @@ pub fn boolean_with_options(
     b: SolidId,
     opts: BooleanOptions,
 ) -> Result<SolidId, crate::OperationsError> {
-    let result = boolean(topo, op, a, b)?;
+    let context = operation_context_from_options(&opts);
+    validate_operation_context(&context)?;
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut used_fallback = false;
+        let result =
+            boolean_with_operation_context(topo, op, a, b, &context, &opts, &mut used_fallback)?;
+        apply_boolean_options(topo, result, &opts)
+    })
+}
+
+fn operation_context_from_options(opts: &BooleanOptions) -> remus_math::context::OperationContext {
+    opts.operation_context()
+}
+
+fn apply_boolean_options(
+    topo: &mut Topology,
+    mut result: SolidId,
+    opts: &BooleanOptions,
+) -> Result<SolidId, crate::OperationsError> {
+    if remus_topology::explorer::solid_faces(topo, result)?.is_empty() {
+        return Ok(result);
+    }
     if opts.unify_faces {
-        let unify_opts = remus_heal::upgrade::unify_same_domain::UnifyOptions::default();
-        if let Err(e) =
-            remus_heal::upgrade::unify_same_domain::unify_same_domain(topo, result, &unify_opts)
-        {
-            log::debug!("boolean unify_faces post-processing failed: {e}");
+        let unify_opts = remus_heal::upgrade::unify_same_domain::UnifyOptions {
+            linear_tolerance: opts.tolerance.linear,
+            angular_tolerance: opts.tolerance.angular,
+            ..remus_heal::upgrade::unify_same_domain::UnifyOptions::default()
+        };
+        let unified = remus_topology::transaction::run_transacted(
+            topo,
+            |topo| -> Result<SolidId, crate::OperationsError> {
+                let (candidate, _) = remus_heal::upgrade::unify_same_domain::unify_same_domain(
+                    topo,
+                    result,
+                    &unify_opts,
+                )?;
+                validate_boolean_result_with_tolerance(topo, candidate, opts.tolerance)?;
+                Ok(candidate)
+            },
+        );
+        match unified {
+            Ok(candidate) => result = candidate,
+            Err(error) => log::debug!(
+                "boolean same-domain simplification rejected; keeping valid unsimplified result: {error}"
+            ),
         }
     }
+    if opts.heal_after_boolean {
+        let _ = crate::heal::heal_solid(topo, result, opts.tolerance.linear)?;
+    }
+    validate_boolean_result_with_tolerance(topo, result, opts.tolerance)?;
     Ok(result)
 }
 
@@ -1284,6 +1389,20 @@ pub fn compound_cut(
     target: SolidId,
     tools: &[SolidId],
     opts: BooleanOptions,
+) -> Result<SolidId, crate::OperationsError> {
+    let context = operation_context_from_options(&opts);
+    validate_operation_context(&context)?;
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        compound_cut_impl(topo, target, tools, opts, &context)
+    })
+}
+
+fn compound_cut_impl(
+    topo: &mut Topology,
+    target: SolidId,
+    tools: &[SolidId],
+    opts: BooleanOptions,
+    context: &remus_math::context::OperationContext,
 ) -> Result<SolidId, crate::OperationsError> {
     if tools.len() > MAX_COMPOUND_CUT_TOOLS {
         return Err(crate::OperationsError::InvalidInput {
@@ -1315,20 +1434,32 @@ pub fn compound_cut(
     let mut result = target;
     let mut batched = false;
     if tools.len() >= 2
-        && let Some(clusters) = cluster_tools_by_aabb(topo, tools)
+        && let Some(clusters) = cluster_tools_by_aabb(topo, tools, context.tolerance.linear)
         && !clusters.is_empty()
     {
-        let merged = clusters
-            .iter()
-            .map(|cluster| {
-                let fused = fuse_cluster(topo, cluster)?;
-                crate::copy::copy_solid(topo, fused)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .and_then(|solids| crate::compound_ops::merge_disjoint_solids(topo, &solids));
-        if let Ok(tool) = merged
-            && let Ok(cut) = boolean(topo, BooleanOp::Cut, target, tool)
-        {
+        let batched_cut = remus_topology::transaction::run_transacted(topo, |topo| {
+            let solids = clusters
+                .iter()
+                .map(|cluster| {
+                    let fused = fuse_cluster_with_context(topo, cluster, context, &opts)?;
+                    crate::copy::copy_solid(topo, fused)
+                })
+                .collect::<Result<Vec<_>, crate::OperationsError>>()?;
+            let tool = crate::compound_ops::merge_disjoint_solids(topo, &solids)?;
+            {
+                let mut used_fallback = false;
+                boolean_with_operation_context(
+                    topo,
+                    BooleanOp::Cut,
+                    target,
+                    tool,
+                    context,
+                    &opts,
+                    &mut used_fallback,
+                )
+            }
+        });
+        if let Ok(cut) = batched_cut {
             result = cut;
             batched = true;
         } else {
@@ -1337,18 +1468,19 @@ pub fn compound_cut(
     }
     if !batched {
         for &tool in tools {
-            result = boolean(topo, BooleanOp::Cut, result, tool)?;
+            let mut used_fallback = false;
+            result = boolean_with_operation_context(
+                topo,
+                BooleanOp::Cut,
+                result,
+                tool,
+                context,
+                &opts,
+                &mut used_fallback,
+            )?;
         }
     }
-    if opts.unify_faces {
-        let unify_opts = remus_heal::upgrade::unify_same_domain::UnifyOptions::default();
-        if let Err(e) =
-            remus_heal::upgrade::unify_same_domain::unify_same_domain(topo, result, &unify_opts)
-        {
-            log::debug!("compound_cut unify_faces failed: {e}");
-        }
-    }
-    Ok(result)
+    apply_boolean_options(topo, result, &opts)
 }
 
 /// Fuse one AABB-overlap cluster into a single solid.
@@ -1365,25 +1497,54 @@ pub(crate) fn fuse_cluster(
     topo: &mut Topology,
     cluster: &[SolidId],
 ) -> Result<SolidId, crate::OperationsError> {
+    let opts = BooleanOptions::default();
+    fuse_cluster_with_context(
+        topo,
+        cluster,
+        &remus_math::context::OperationContext::new(),
+        &opts,
+    )
+}
+
+fn fuse_cluster_with_context(
+    topo: &mut Topology,
+    cluster: &[SolidId],
+    context: &remus_math::context::OperationContext,
+    opts: &BooleanOptions,
+) -> Result<SolidId, crate::OperationsError> {
     let Some((&first, rest)) = cluster.split_first() else {
         return Err(crate::OperationsError::InvalidInput {
             reason: "fuse_cluster requires a non-empty cluster".into(),
         });
     };
     if cluster.len() >= 3
-        && let Ok(fused) = remus_algo::gfa::fuse_n(topo, cluster)
-        && validate_boolean_result(topo, fused).is_ok()
+        && let Ok(fused) = remus_algo::gfa::fuse_n_with_context(topo, cluster, context)
+        && validate_boolean_result_with_tolerance(topo, fused, context.tolerance).is_ok()
     {
         return Ok(fused);
     }
-    rest.iter()
-        .try_fold(first, |a, &t| boolean(topo, BooleanOp::Fuse, a, t))
+    rest.iter().try_fold(first, |a, &t| {
+        let mut used_fallback = false;
+        boolean_with_operation_context(
+            topo,
+            BooleanOp::Fuse,
+            a,
+            t,
+            context,
+            opts,
+            &mut used_fallback,
+        )
+    })
 }
 
 /// Group tools into AABB-overlap clusters (union-find over tolerance-
 /// expanded boxes). Tools within a cluster may interpenetrate; distinct
 /// clusters are pairwise disjoint. `None` when any AABB is unavailable.
-fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<SolidId>>> {
+fn cluster_tools_by_aabb(
+    topo: &Topology,
+    tools: &[SolidId],
+    tolerance: f64,
+) -> Option<Vec<Vec<SolidId>>> {
     fn find(parent: &mut Vec<usize>, i: usize) -> usize {
         if parent[i] != i {
             let root = find(parent, parent[i]);
@@ -1391,7 +1552,6 @@ fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<S
         }
         parent[i]
     }
-    let tol = remus_math::tolerance::Tolerance::new().linear;
     let mut boxes = Vec::with_capacity(tools.len());
     for &t in tools {
         boxes.push(crate::measure::solid_bounding_box(topo, t).ok()?);
@@ -1399,7 +1559,7 @@ fn cluster_tools_by_aabb(topo: &Topology, tools: &[SolidId]) -> Option<Vec<Vec<S
     let mut parent: Vec<usize> = (0..tools.len()).collect();
     for i in 0..boxes.len() {
         for j in (i + 1)..boxes.len() {
-            if boxes[i].expanded(tol).intersects(boxes[j]) {
+            if boxes[i].expanded(tolerance).intersects(boxes[j]) {
                 let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
                 if ri != rj {
                     parent[ri] = rj;
@@ -3179,7 +3339,7 @@ fn mesh_boolean_fallback(
     if opts.heal_after_boolean {
         let _ = crate::heal::heal_solid(topo, result, tol.linear)?;
     }
-    validate_boolean_result(topo, result)?;
+    validate_boolean_result_with_tolerance(topo, result, tol)?;
     if !is_closed_manifold(topo, result)? {
         return Err(crate::OperationsError::NonManifoldResult);
     }
@@ -3731,19 +3891,21 @@ fn fuse_multi_component_tool(
     topo: &mut Topology,
     a: SolidId,
     b_components: Vec<Vec<remus_topology::face::FaceId>>,
-    policy: remus_math::context::FallbackPolicy,
+    context: &remus_math::context::OperationContext,
+    opts: &BooleanOptions,
     used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
     let mut result = a;
     for comp_faces in b_components {
         let comp_solid_raw = make_solid_from_face_subset(topo, &comp_faces)?;
         let comp_solid = crate::copy::copy_solid(topo, comp_solid_raw)?;
-        result = boolean_with_policy(
+        result = boolean_with_operation_context(
             topo,
             BooleanOp::Fuse,
             result,
             comp_solid,
-            policy,
+            context,
+            opts,
             used_fallback,
         )?;
     }
@@ -3763,7 +3925,8 @@ fn cut_multi_region_input(
     a: SolidId,
     b: SolidId,
     comp_count: usize,
-    policy: remus_math::context::FallbackPolicy,
+    context: &remus_math::context::OperationContext,
+    opts: &BooleanOptions,
     used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
     let components = crate::boolean::assembly::face_components(topo, a);
@@ -3779,7 +3942,15 @@ fn cut_multi_region_input(
         // input — GFA's pavefiller can stumble on shared vertex IDs across
         // what it considers a single "solid A".
         let comp_solid = crate::copy::copy_solid(topo, comp_solid_raw)?;
-        match boolean_with_policy(topo, BooleanOp::Cut, comp_solid, b, policy, used_fallback) {
+        match boolean_with_operation_context(
+            topo,
+            BooleanOp::Cut,
+            comp_solid,
+            b,
+            context,
+            opts,
+            used_fallback,
+        ) {
             Ok(r) => per_component_results.push(r),
             Err(
                 crate::OperationsError::EmptyResult { .. }
