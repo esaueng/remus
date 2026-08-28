@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787898723878,
+  "lastUpdate": 1787898904114,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2807,6 +2807,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38938579,
             "range": "± 86111",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "df669630ef43eee9ca8bd5fb18771c22f4c6547a",
+          "message": "fix(geometry): align the recognized plane normal with the surface (#106)\n\n`try_recognize_plane` derived its normal from a cross product over the\ncontrol points in flattened row-major order, so the sign followed the\ncontrol grid's layout rather than the surface. For every planar face\n`convert_solid_to_bspline` produces it comes out opposed: all six faces\nof a box measure dot = -1.000 against their own du x dv.\n\nCallers replace the `Nurbs` face with `FaceSurface::Plane { normal, d }`\nand then read that normal as the face's outward direction.\n`boolean/mod.rs` already knew this and re-aligned the normal locally\nafter every call; `heal/custom/convert_to_elementary.rs` did not, and\ninstalls the recognized normal unguarded.\n\nFix it at the source so the workaround is not each consumer's job.\n\nThis is internal-consistency hygiene, not a live defect: measured over\n4000 points, a box round-tripped through b-spline conversion has volume\nexactly 512.00000 and the same classification rate before and after, and\nthe full workspace suite is unchanged (229/229). The local re-alignment\nin `boolean/mod.rs` is left in place — it is idempotent now, and its\ntest guards the same invariant from the consumer side.\n\nThe regression test builds one flat bilinear patch in both grid layouts\nand asserts each is recognized with the normal its own parameterization\nimplies; it fails on the unfixed code with dot = -1.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-28T02:28:24-04:00",
+          "tree_id": "fa44f3de28d9ba9679b5a3faaf238dc7c09dda47",
+          "url": "https://github.com/esaueng/remus/commit/df669630ef43eee9ca8bd5fb18771c22f4c6547a"
+        },
+        "date": 1787898903477,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1293253,
+            "range": "± 2686",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1378958,
+            "range": "± 9099",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13032,
+            "range": "± 224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 959632,
+            "range": "± 12443",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38927497,
+            "range": "± 204280",
             "unit": "ns/iter"
           }
         ]
