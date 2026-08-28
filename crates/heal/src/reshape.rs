@@ -533,9 +533,10 @@ impl ReShape {
 
             if new_faces != old_faces {
                 if new_faces.is_empty() {
-                    return Err(HealError::FixFailed(format!(
-                        "face replacements would empty retained shell {shell_id:?}"
-                    )));
+                    // Decline the complete shell-scoped rewrite when its face
+                    // actions would turn a retained boundary into invalid
+                    // topology. The shell itself was not removed or replaced.
+                    continue;
                 }
                 *topo.shell_mut(shell_id)? = remus_topology::shell::Shell::new(new_faces)?;
             }
@@ -738,6 +739,26 @@ mod tests {
             reshape.final_shell_ids(&topo, solid).unwrap(),
             vec![outer, new_inner]
         );
+    }
+
+    #[test]
+    fn apply_retains_shell_when_face_actions_would_remove_every_face() {
+        let mut topo = Topology::new();
+        let edge = add_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let wire = add_wire(&mut topo, edge);
+        let face = add_face(&mut topo, wire);
+        let shell = add_shell(&mut topo, vec![face]);
+        let solid = add_solid(&mut topo, shell, vec![]);
+
+        let mut reshape = ReShape::new();
+        reshape.remove_face(face);
+        reshape.apply(&mut topo, solid).unwrap();
+
+        assert_eq!(topo.shell(shell).unwrap().faces(), &[face]);
     }
 
     #[test]
