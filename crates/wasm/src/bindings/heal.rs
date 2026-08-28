@@ -628,6 +628,24 @@ mod heal_config_tests {
     }
 
     #[test]
+    fn fix_with_default_config_preserves_single_face_full_torus() {
+        let mut k = BrepKernel::new();
+        let solid = k.make_torus_solid(3.0, 1.0, 32).unwrap();
+        let original_volume = k.volume(solid, 0.001).unwrap();
+
+        let r = k.fix_shape_with_config_impl(solid, "{}").unwrap();
+
+        let faces = k.get_solid_faces(r.solid).unwrap();
+        assert_eq!(faces.len(), 1, "full torus must keep its periodic face");
+        assert_eq!(k.get_surface_type(faces[0]).unwrap(), "torus");
+        let healed_volume = k.volume(r.solid, 0.001).unwrap();
+        assert!(
+            (healed_volume - original_volume).abs() <= 1e-10 * original_volume,
+            "WASM heal changed full-torus volume {original_volume} -> {healed_volume}"
+        );
+    }
+
+    #[test]
     fn fix_config_all_off_takes_no_actions() {
         let mut k = BrepKernel::new();
         let solid = make_box(&mut k);
