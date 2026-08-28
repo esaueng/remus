@@ -78,7 +78,7 @@ fn convert_face_surface(topo: &mut Topology, fid: FaceId) -> Result<bool, HealEr
             cylinder_to_nurbs(&c, v_range)?
         }
         FaceSurface::Cone(c) => {
-            let mut v_range = axial_v_range(topo, fid, c.apex(), c.axis())?;
+            let mut v_range = generator_v_range(topo, fid, c.apex())?;
             // Cone has a parametric singularity at v=0 (the apex). Pull v_min
             // strictly positive to keep the rational NURBS construction stable.
             if v_range.0 < 1e-9 {
@@ -202,28 +202,88 @@ fn drop_face_pcurves(topo: &mut Topology, fid: FaceId) -> Result<(), HealError> 
 }
 
 /// Bounds of a face's wire vertices projected onto an axis through `origin`.
+/// Sample points along every bounding edge of a face.
+///
+/// Reading only `edge.start()` / `edge.end()` is not enough: a face bounded by
+/// ONE closed curve -- every cylinder and cone cap -- has `start == end`, so the
+/// endpoints alone describe a single point and any extent computed from them
+/// collapses. The same mistake used to delete these caps outright in the
+/// face-size analysis; see the header of `regress_heal_analytic_solids.rs`.
+///
+/// The endpoints remain covered, as the first and last sample of each edge.
+fn boundary_sample_points(topo: &Topology, face_id: FaceId) -> Result<Vec<Point3>, HealError> {
+    const EDGE_SAMPLES: usize = 16;
+    let face = topo.face(face_id)?;
+    let mut pts = Vec::new();
+
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start_pt = topo.vertex(edge.start())?.point();
+            let end_pt = topo.vertex(edge.end())?.point();
+            let (t0, t1) = edge.domain_with_endpoints(start_pt, end_pt);
+            for i in 0..=EDGE_SAMPLES {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = i as f64 / EDGE_SAMPLES as f64;
+                pts.push(edge.curve().evaluate_with_endpoints(
+                    (t1 - t0).mul_add(frac, t0),
+                    start_pt,
+                    end_pt,
+                ));
+            }
+        }
+    }
+
+    Ok(pts)
+}
+
 fn axial_v_range(
     topo: &Topology,
     face_id: FaceId,
     origin: Point3,
     axis: Vec3,
 ) -> Result<(f64, f64), HealError> {
-    let face = topo.face(face_id)?;
     let mut v_min = f64::INFINITY;
     let mut v_max = f64::NEG_INFINITY;
 
-    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        let wire = topo.wire(wire_id)?;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            for vid in [edge.start(), edge.end()] {
-                let pt = topo.vertex(vid)?.point();
-                let to_pt = pt - origin;
-                let v = axis.dot(to_pt);
-                v_min = v_min.min(v);
-                v_max = v_max.max(v);
-            }
-        }
+    for pt in boundary_sample_points(topo, face_id)? {
+        let v = axis.dot(pt - origin);
+        v_min = v_min.min(v);
+        v_max = v_max.max(v);
+    }
+
+    if v_min < v_max {
+        Ok((v_min, v_max))
+    } else {
+        Ok((-1.0, 1.0))
+    }
+}
+
+/// Extent along a cone's GENERATOR direction, measured from the apex.
+///
+/// `cone_to_nurbs` documents `v_range` as "the extent along the cone's
+/// generator direction from the apex" -- the ruling line, not the axis. Feeding
+/// it an axial extent under-reports by `cos(half_angle)`: for
+/// `make_cone(6, 2, 12)` that is 5.1%, and the converted patch stopped 0.92
+/// short of its own base circle, so rays crossing the cone there found no
+/// surface at all and point-in-solid classification counted the wrong parity.
+///
+/// A point that lies ON the cone sits on a ruling through the apex, so its
+/// distance to the apex IS its generator coordinate. Take it directly rather
+/// than reconstructing it from the half-angle.
+fn generator_v_range(
+    topo: &Topology,
+    face_id: FaceId,
+    apex: Point3,
+) -> Result<(f64, f64), HealError> {
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+
+    for pt in boundary_sample_points(topo, face_id)? {
+        let v = (pt - apex).length();
+        v_min = v_min.min(v);
+        v_max = v_max.max(v);
     }
 
     if v_min < v_max {
@@ -244,25 +304,17 @@ fn plane_face_to_nurbs(
     let (u_axis, v_axis) = plane_frame_axes(normal);
     let plane_origin = Point3::new(0.0, 0.0, 0.0) + normal * d;
 
-    let face = topo.face(face_id)?;
     let mut u_min = f64::INFINITY;
     let mut u_max = f64::NEG_INFINITY;
     let mut v_min = f64::INFINITY;
     let mut v_max = f64::NEG_INFINITY;
 
-    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        let wire = topo.wire(wire_id)?;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            for vid in [edge.start(), edge.end()] {
-                let pt = topo.vertex(vid)?.point();
-                let rel = pt - plane_origin;
-                u_min = u_min.min(u_axis.dot(rel));
-                u_max = u_max.max(u_axis.dot(rel));
-                v_min = v_min.min(v_axis.dot(rel));
-                v_max = v_max.max(v_axis.dot(rel));
-            }
-        }
+    for pt in boundary_sample_points(topo, face_id)? {
+        let rel = pt - plane_origin;
+        u_min = u_min.min(u_axis.dot(rel));
+        u_max = u_max.max(u_axis.dot(rel));
+        v_min = v_min.min(v_axis.dot(rel));
+        v_max = v_max.max(v_axis.dot(rel));
     }
 
     if u_min >= u_max {
