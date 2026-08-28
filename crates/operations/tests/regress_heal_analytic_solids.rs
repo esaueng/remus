@@ -1,7 +1,7 @@
 //! `fix_shape` must not break the analytic solids it is handed.
 //!
 //! The default heal path — reachable from JS through the `heal` bindings — was
-//! unusable on most real geometry, and destructive on the rest. Three defects
+//! unusable on most real geometry, and destructive on the rest. Four defects
 //! stacked, and each was masked by the one in front of it:
 //!
 //! 1. **Seam edges aborted the whole pipeline.** A face uses a seam edge twice,
@@ -21,6 +21,10 @@
 //!    `Face::is_reversed`, so a reversed face read as traversing its shared edge
 //!    the wrong way. A box with a cylindrical through-hole healed to volume
 //!    1041.9 instead of 874.3; disabling `fix_orientation` alone restored it.
+//! 4. **A full torus tried to delete its only face.** Its two topological seam
+//!    carriers share one geometric vertex, so generic size analysis records the
+//!    periodic face for removal. `ReShape` then resolved the single-face shell
+//!    to no faces and refused to construct the invalid empty boundary.
 //!
 //! Each case below is pinned to its measured volume and face count. The suite
 //! did not catch any of this, because nothing ran `fix_shape` over ordinary
@@ -32,10 +36,11 @@ use remus_heal::fix::{FixConfig, fix_shape};
 use remus_math::mat::Mat4;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
-use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
 /// Heal a solid and assert it came back with the same volume and face count.
@@ -82,6 +87,42 @@ fn heal_preserves_a_sphere() {
     let mut topo = Topology::new();
     let sphere = make_sphere(&mut topo, 3.0, 24).unwrap();
     assert_heal_preserves("sphere", &mut topo, sphere);
+}
+
+/// A full torus is one doubly-periodic face whose two seam edges are each used
+/// in both senses. Their coincident endpoints do not make the face removable.
+#[test]
+fn heal_preserves_a_single_face_full_torus() {
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, 3.0, 1.0, 32).unwrap();
+    let original_face = solid_faces(&topo, torus).unwrap()[0];
+    let original_volume = solid_volume(&topo, torus, 0.001).unwrap();
+
+    let (healed, _report) =
+        fix_shape(&mut topo, torus, &FixConfig::default()).unwrap_or_else(|e| {
+            panic!("fix_shape must retain a shell when face actions would empty it: {e}")
+        });
+
+    let healed_faces = solid_faces(&topo, healed).unwrap();
+    assert_eq!(healed_faces, vec![original_face]);
+    assert!(matches!(
+        topo.face(healed_faces[0]).unwrap().surface(),
+        FaceSurface::Torus(_)
+    ));
+    let shell = topo
+        .shell(topo.solid(healed).unwrap().outer_shell())
+        .unwrap();
+    let shell_validation = remus_topology::validation::validate_shell_closed(shell, &topo);
+    assert!(
+        shell_validation.is_ok(),
+        "healed full torus must remain a closed shell: {shell_validation:?}"
+    );
+
+    let healed_volume = solid_volume(&topo, healed, 0.001).unwrap();
+    assert!(
+        (healed_volume - original_volume).abs() <= 1e-10 * original_volume,
+        "heal changed full-torus volume {original_volume} -> {healed_volume}"
+    );
 }
 
 /// The orientation defect's own case: the hole's walls are reversed faces, and
