@@ -25,11 +25,11 @@
 //! fails with a typed error rather than answering. Under `ExactOnly` both
 //! become a typed refusal.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use remus_math::context::{FallbackPolicy, OperationContext};
 use remus_math::mat::Mat4;
-use remus_operations::boolean::{BooleanOp, boolean, boolean_with_context};
+use remus_operations::boolean::{BooleanOp, BooleanQuality, boolean, boolean_with_context};
 use remus_operations::measure::{solid_bounding_box, solid_volume};
 use remus_operations::primitives::{make_box, make_sphere};
 use remus_operations::transform::transform_solid;
@@ -108,20 +108,49 @@ fn cut_result_never_escapes_the_blank() {
 /// Fail closed, not open. Where the exact pipeline cannot hold at small scale,
 /// `ExactOnly` must refuse — the one thing it must never do is report success
 /// on the wrong solid, which is what this configuration did at 1e-3.
+///
+/// 1e-3 has since moved to the good side of the boundary: the FF junction band
+/// is now capped relative to the face pair's extent, so the section endpoints
+/// stop snapping onto the tool's own cap rim and the exact pipeline holds. The
+/// assertion for that scale is therefore *strengthened* rather than dropped —
+/// refusing is no longer the correct answer there, so the test demands the
+/// exact one. `micron_scale_through_cut_volume_is_correct` and the vertex
+/// containment test above independently confirm that result is right.
 #[test]
-fn small_scale_cut_refuses_under_exact_only() {
-    for exponent in [-4i32, -3] {
-        let s = f64::from(10i32).powi(exponent);
-        let mut topo = Topology::new();
-        let (blank, tool) = through_cut(&mut topo, s);
-        let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-        let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx);
-        assert!(
-            outcome.is_err(),
-            "scale 1e{exponent}: exact-only returned a result where the exact pipeline \
-             does not hold; it must refuse instead"
-        );
-    }
+fn small_scale_cut_still_refuses_below_the_exact_boundary() {
+    let s = 1e-4;
+    let mut topo = Topology::new();
+    let (blank, tool) = through_cut(&mut topo, s);
+    let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx);
+    assert!(
+        outcome.is_err(),
+        "scale 1e-4: exact-only returned a result where the exact pipeline does not \
+         hold; it must refuse instead"
+    );
+}
+
+/// The other side of that boundary: at 1e-3 the exact pipeline now holds, so
+/// `ExactOnly` must return the exact answer — not refuse, and not fall back.
+#[test]
+fn micron_scale_cut_is_exact_under_exact_only() {
+    let s = 1e-3;
+    let mut topo = Topology::new();
+    let (blank, tool) = through_cut(&mut topo, s);
+    let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+    let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx)
+        .expect("exact-only must produce a result at 1e-3");
+    assert!(
+        matches!(outcome.quality, BooleanQuality::Exact),
+        "expected an exact result, got {:?}",
+        outcome.quality
+    );
+    let vol = solid_volume(&topo, outcome.solid, 0.01 * s).unwrap();
+    let expected = 0.84 * s * s * s;
+    assert!(
+        ((vol - expected) / expected).abs() < 1e-6,
+        "expected {expected:.6e}, got {vol:.6e}"
+    );
 }
 
 /// Guards the reason the check tests VERTICES rather than the result's bounding
