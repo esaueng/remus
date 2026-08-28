@@ -549,8 +549,19 @@ fn ray_crossings_nurbs(
 
     let verts = face_polygon(topo, face_id)?;
     let project = |p: Point3| -> (f64, f64) { surface.project_point(p) };
-    // A full-surface face (fewer than 3 boundary points) counts every forward
-    // hit that does not land in a hole.
+    // A full-surface face counts every forward hit that does not land in a
+    // hole. `count_analytic_crossings` tests this two ways -- too few boundary
+    // points, OR every boundary point coincident -- and only the first test was
+    // made here. A doubly-periodic face (a full torus) has a boundary of
+    // exactly its seam endpoints: four vertices, all at one place. That passes
+    // `len() >= 3`, so a degenerate polygon was built and every hit on the face
+    // was then trimmed away against it.
+    let is_full_surface = verts.len() < 3 || {
+        let ref_pt = verts[0];
+        verts
+            .iter()
+            .all(|v| (*v - ref_pt).length_squared() < COINCIDENT_SQ)
+    };
     // A NURBS u/v are knot parameters, not angles. Unwrapping them by 2pi is
     // meaningless -- and actively wrong, since a b-spline domain routinely
     // spans more than pi (a converted box face spans 12.0), so consecutive
@@ -565,7 +576,7 @@ fn ray_crossings_nurbs(
         .is_periodic_v()
         .then(|| surface.domain_v().1 - surface.domain_v().0);
     let uv_boundary =
-        (verts.len() >= 3).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+        (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
     let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
