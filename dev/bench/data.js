@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787847996773,
+  "lastUpdate": 1787889937376,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2537,6 +2537,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 38554940,
             "range": "± 196531",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c22ba5420b2628e80f73b108b291f0ac9ac0762",
+          "message": "fix: close two sites the earlier guard sweeps missed (#102)\n\n* fix: close two sites the earlier guard sweeps missed\n\nA re-audit of the review register against main found both of these\nsitting inside classes PR #91 had already swept — the same\nfix-the-named-symbol failure that PR was about, committed while fixing\nit.\n\n1. `fill_sphere_cap_web` computes a deflection-driven ring count and\n   loops over it with no work bound. #91 guarded the five band meshers\n   and `tessellate_analytic`, but this one is the FALLBACK the sphere cap\n   takes when the latitude path DECLINES — so guarding the paths that\n   decline left the path they decline to unbounded. It now declines on an\n   oversized grid like its siblings, and the caller routes the face\n   somewhere that carries the bound itself.\n\n2. `parse_parameter_values` reads TRIMMED_CURVE trim parameters with a\n   bare `parse::<f64>()`. #91 gated `parse_floats`, the funnel most STEP\n   numbers take, and missed this sibling beside it. It matters because\n   the caller's domain check is\n\n       if lo < d0 - tol || hi > d1 + tol { return Err(...) }\n\n   and both comparisons are FALSE for NaN — so an infinite trim was\n   already rejected but a NaN trim passed straight through and became the\n   edge's parameter range. Non-finite values are now dropped, which\n   leaves fewer than the two the caller destructures, so it falls back to\n   the untrimmed basis curve rather than trimming to a meaningless range.\n\nTwo other residuals the audit raised are NOT defects and are deliberately\nleft alone:\n\n- `parse_weight_list` also parses bare f64, but every path from it runs\n  through `validate_weight_values`, which rejects non-finite and\n  non-positive weights with a real check rather than a `debug_assert`.\n  Defended one layer down.\n- `polygons_overlap_2d` and `find_common_segments` remain unbounded for\n  native Rust callers. #97 capped the WASM bindings, which is the\n  untrusted-input boundary; bounding the math functions themselves would\n  put a work limit on a library API its in-tree callers use with trusted\n  sizes.\n\nThe trim test fails against the ungated parser with `yielded a non-finite\ntrim: [NaN, 0.75]`.\n\nVerified: full workspace suite 4043 passed / 0 failed; approx_census\nunchanged at 45 exact-analytic rows and the same nine known fallbacks;\nfmt, workspace clippy, doc-paths, naming and boundaries gates clean.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* fix(io): reject non-finite STEP trim parameters\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-28T00:02:13-04:00",
+          "tree_id": "90913d4f2ce0dcf1b4144139cef2b974c2eb1308",
+          "url": "https://github.com/esaueng/remus/commit/7c22ba5420b2628e80f73b108b291f0ac9ac0762"
+        },
+        "date": 1787889936150,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1292151,
+            "range": "± 2033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1379243,
+            "range": "± 3563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13040,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 964538,
+            "range": "± 5060",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38844901,
+            "range": "± 187572",
             "unit": "ns/iter"
           }
         ]
