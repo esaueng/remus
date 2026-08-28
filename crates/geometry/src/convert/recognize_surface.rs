@@ -153,7 +153,20 @@ fn try_recognize_plane(surface: &NurbsSurface, tolerance: f64) -> Option<(Vec3, 
         }
     }
 
-    Some((n, d))
+    // Align to the surface's own du x dv normal. The cross product above is
+    // taken over control points in flattened row-major order, so its sign is an
+    // accident of the control grid's layout rather than a statement about the
+    // surface: for every planar face `convert_solid_to_bspline` produces, it
+    // comes out OPPOSED. Callers replace a `Nurbs` face with
+    // `FaceSurface::Plane { normal, d }`, and a plane that disagrees with the
+    // surface it was recognized from is a trap for any consumer that reads the
+    // normal as the face's outward direction.
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    match surface.normal(0.5 * (u0 + u1), 0.5 * (v0 + v1)) {
+        Ok(du_cross_dv) if n.dot(du_cross_dv) < 0.0 => Some((-n, -d)),
+        _ => Some((n, d)),
+    }
 }
 
 // ── Cylinder recognition ──────────────────────────────────────────────────────
@@ -1050,6 +1063,60 @@ mod tests {
                 );
             }
             other => panic!("expected Torus, got {other:?}"),
+        }
+    }
+
+    /// Build a flat bilinear patch in the z=0 plane. `flip` transposes the
+    /// control grid, which reverses du x dv without moving a single point.
+    fn flat_patch(flip: bool) -> NurbsSurface {
+        let pts = [[(0.0, 0.0), (0.0, 4.0)], [(4.0, 0.0), (4.0, 4.0)]];
+        let grid: Vec<Vec<Point3>> = (0..2)
+            .map(|i| {
+                (0..2)
+                    .map(|j| {
+                        let (x, y) = if flip { pts[j][i] } else { pts[i][j] };
+                        Point3::new(x, y, 0.0)
+                    })
+                    .collect()
+            })
+            .collect();
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            grid,
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap()
+    }
+
+    /// The recognized normal is taken from a cross product over control points
+    /// in flattened order, so its raw sign follows the grid layout rather than
+    /// the surface. Consumers replace the NURBS face with
+    /// `FaceSurface::Plane { normal, d }` and then read that normal as the
+    /// face's outward direction, so it has to agree with the surface's own
+    /// du x dv. Both layouts describe the same plane; each must be recognized
+    /// with the normal its own parameterization implies.
+    #[test]
+    fn recognized_plane_normal_agrees_with_du_cross_dv() {
+        for flip in [false, true] {
+            let surface = flat_patch(flip);
+            let expected = surface.normal(0.5, 0.5).unwrap();
+            let RecognizedSurface::Plane { normal, d } = recognize_surface(&surface, 1e-6) else {
+                panic!("flip={flip}: a flat bilinear patch must recognize as a plane");
+            };
+            assert!(
+                normal.dot(expected) > 0.0,
+                "flip={flip}: recognized normal {normal:?} opposes du x dv {expected:?}"
+            );
+            // The plane equation must still hold with the returned sign.
+            let on_plane = surface.evaluate(0.5, 0.5);
+            let residual = normal.dot(Vec3::new(on_plane.x(), on_plane.y(), on_plane.z())) - d;
+            assert!(
+                residual.abs() < 1e-9,
+                "flip={flip}: normal and d disagree, residual {residual}"
+            );
         }
     }
 
