@@ -199,3 +199,61 @@ fn a_multi_body_mesh_still_imports_as_a_valid_solid() {
     let report = remus_operations::validate::validate_solid(&topo, solid).unwrap();
     assert!(report.is_valid(), "multi-body import must still validate");
 }
+
+/// The correctness tests above all pass against a QUADRATIC weld — a linear
+/// scan gives the same answers, just slowly. Nothing here stopped the weld
+/// regressing to one, and the cost is invisible at test sizes: it was 153ms at
+/// 26k vertices, with per-vertex cost climbing 0.0004 -> 0.0059 ms across the
+/// range, extrapolating to roughly a quarter of an hour at the 2,000,000-vertex
+/// `ImportLimits` ceiling the importers already enforce.
+///
+/// So this asserts the SHAPE of the curve rather than a wall-clock number: cost
+/// per vertex must not grow with the mesh. A quadratic weld fails it by a wide
+/// margin — measured 11x growth in per-vertex cost over this range — while the
+/// 8x bound keeps it from being a flaky timing test on a shared runner.
+#[test]
+fn vertex_weld_cost_does_not_grow_with_mesh_size() {
+    use std::time::Instant;
+
+    // A k x k grid of quads, all vertices distinct: nothing to merge, so this
+    // measures the candidate search itself rather than the merge.
+    fn grid(k: usize) -> TriangleMesh {
+        let mut positions = Vec::new();
+        for j in 0..=k {
+            for i in 0..=k {
+                positions.push(Point3::new(i as f64, j as f64, 0.0));
+            }
+        }
+        let idx = |i: usize, j: usize| (j * (k + 1) + i) as u32;
+        let mut indices = Vec::new();
+        for j in 0..k {
+            for i in 0..k {
+                indices.extend_from_slice(&[idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)]);
+                indices.extend_from_slice(&[idx(i, j), idx(i + 1, j + 1), idx(i, j + 1)]);
+            }
+        }
+        let n = positions.len();
+        TriangleMesh {
+            positions,
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); n],
+            indices,
+        }
+    }
+
+    let per_vertex = |k: usize| -> f64 {
+        let mesh = grid(k);
+        let n = mesh.positions.len() as f64;
+        let mut topo = Topology::new();
+        let started = Instant::now();
+        let _ = import_mesh(&mut topo, &mesh, 1e-9);
+        started.elapsed().as_secs_f64() / n
+    };
+
+    let small = per_vertex(40);
+    let large = per_vertex(160);
+    assert!(
+        large < small * 8.0,
+        "per-vertex weld cost grew from {small:.3e}s to {large:.3e}s over a 16x larger mesh — \
+         the weld is superlinear again"
+    );
+}
