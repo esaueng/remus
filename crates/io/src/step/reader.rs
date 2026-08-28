@@ -2395,6 +2395,7 @@ impl<'a> StepBuilder<'a> {
                 reason: format!("TRIMMED_CURVE #{curve_ref} missing its basis curve reference"),
             })?;
         let basis = self.build_curve_geometry_at(basis_ref, depth + 1)?;
+        let params = parse_parameter_values(attrs)?;
 
         let EdgeCurve::NurbsCurve(nurbs) = basis else {
             // Line, Circle and Ellipse are stored complete; the edge's
@@ -2402,7 +2403,6 @@ impl<'a> StepBuilder<'a> {
             return Ok(basis);
         };
 
-        let params = parse_parameter_values(attrs)?;
         let [t0, t1] = params[..] else {
             // A .CARTESIAN. trim states its ends as points, which are the
             // edge's own vertices; nothing further to apply.
@@ -6899,6 +6899,25 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
              (PARAMETER_VALUE(5.)),.T.,.PARAMETER.);\n"
         );
         assert!(matches!(curve_geometry(&body, 5).unwrap(), EdgeCurve::Line));
+    }
+
+    #[test]
+    fn trimmed_analytic_curve_rejects_non_finite_parameter_values() {
+        let line = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2 = DIRECTION('',(1.,0.,0.));\n\
+                    #3 = VECTOR('',#2,1.);\n\
+                    #4 = LINE('',#1,#3);\n";
+
+        for literal in ["NaN", "inf", "1.E400"] {
+            let body = format!(
+                "{line}#5 = TRIMMED_CURVE('',#4,(PARAMETER_VALUE({literal})),\
+                 (PARAMETER_VALUE(5.)),.T.,.PARAMETER.);\n"
+            );
+            let IoError::ParseError { reason } = curve_geometry(&body, 5).unwrap_err() else {
+                panic!("{literal} should produce a typed STEP parse error");
+            };
+            assert_eq!(reason, "TRIMMED_CURVE PARAMETER_VALUE must be finite");
+        }
     }
 
     /// A `.CARTESIAN.` trim names its ends as points, which are the edge's
