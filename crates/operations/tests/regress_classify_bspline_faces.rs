@@ -31,7 +31,7 @@
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_heal::custom::convert_to_bspline::convert_solid_to_bspline;
 use remus_math::vec::Point3;
-use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_torus};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceSurface;
@@ -279,6 +279,50 @@ fn bspline_cone_classifies_identically_to_the_analytic_cone() {
         wrong,
         0,
         "b-spline cone misclassified {wrong}/{n} = {:.2}%",
+        100.0 * wrong as f64 / n as f64
+    );
+}
+
+/// A sphere is two hemisphere faces sharing only the equatorial wire, so a
+/// hemisphere's ENTIRE trim boundary is the equator -- which maps to one
+/// constant `v` sweeping the whole `u` period. The UV polygon therefore has
+/// measured zero area (v span `0.000000`), every point-in-polygon test answers
+/// "outside", and the face contributed no crossing for any ray: all 1513
+/// failures were Inside reported as Outside.
+///
+/// Such a boundary does not bound a patch, it SPLITS the surface, and which
+/// half the face takes is carried by the winding of that boundary -- which is
+/// what the 3D boundary-plane test reads.
+///
+/// Note the analytic control is asserted loosely here, unlike every other shape
+/// in this file. The ANALYTIC sphere is the one still carrying a defect: its
+/// hemispheres are trimmed against a 32-gon inscribed in the equator, so a hit
+/// in the scalloped band belongs to neither. That is fixed separately; this
+/// test is about the converted path, which no longer depends on it.
+#[test]
+fn bspline_sphere_classifies_correctly() {
+    let mut topo = Topology::new();
+    let solid = make_sphere(&mut topo, 5.0, 32).unwrap();
+
+    let truth = |p: Point3| {
+        let d = 5.0 - p.x().hypot(p.y()).hypot(p.z());
+        if d.abs() < 0.3 { None } else { Some(d > 0.0) }
+    };
+    let (lo, hi) = (Point3::new(-6.0, -6.0, -6.0), Point3::new(6.0, 6.0, 6.0));
+
+    let (analytic_wrong, analytic_n) = score(&topo, solid, lo, hi, 220, truth);
+    let analytic_rate = 100.0 * analytic_wrong as f64 / analytic_n as f64;
+    assert!(
+        analytic_rate < 3.0,
+        "control: the analytic sphere measured {analytic_rate:.2}%, worse than its known          equator-chord defect accounts for"
+    );
+
+    convert_solid_to_bspline(&mut topo, solid).unwrap();
+    let (wrong, n) = score(&topo, solid, lo, hi, 220, truth);
+    assert_eq!(
+        wrong,
+        0,
+        "b-spline sphere misclassified {wrong}/{n} = {:.2}%",
         100.0 * wrong as f64 / n as f64
     );
 }
