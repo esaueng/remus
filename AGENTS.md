@@ -101,6 +101,11 @@ Quick reference — find the right file for any task:
 | Oriented bounding box (PCA + SAT) | `obb.rs` |
 | Chord deviation arc discretization | `chord.rs` |
 | Gauss-Legendre quadrature | `quadrature.rs` |
+| Operation tolerance and resource policy | `context.rs` |
+| Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
+| Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
+| Qualified intersection results (contact kind, quality) | `intersect.rs` |
+| 2D polygon booleans (union, intersection, difference) | `polygon_boolean.rs` |
 
 ### L1: geometry (`crates/geometry/src/`)
 | Task | File(s) |
@@ -134,6 +139,12 @@ Quick reference — find the right file for any task:
 | PCurve registry | `pcurve.rs` |
 | Topology validation | `validation.rs` |
 | Test utilities (`test-utils` feature) | `test_utils.rs` |
+| Coedge — one directed use of an edge by a face boundary | `coedge.rs` |
+| Loop — ordered cycle of coedges bounding a face | `face_loop.rs` |
+| Transactional mutation (`run_transacted`, `run_validated`) | `transaction.rs` |
+| Attribute store (names, colors, app ids) | `attributes.rs` |
+| Append-only evolution journal | `journal.rs` |
+| Persistent references and their resolver | `naming.rs` |
 
 ### L2: algo (`crates/algo/src/`)
 | Task | File(s) |
@@ -145,6 +156,7 @@ Quick reference — find the right file for any task:
 | Intersection curve data | `ds/curve.rs` |
 | Face classification state | `ds/face_info.rs` |
 | PaveFiller orchestrator | `pave_filler/mod.rs` |
+| Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Pave block splitting + edge creation | `pave_filler/make_blocks.rs`, `make_split_edges.rs` |
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
@@ -159,6 +171,14 @@ Quick reference — find the right file for any task:
 | Interference indexing | `ds/interference.rs`, `ds/shape_index.rs` |
 | Analytic classifier (7 variants) | `classifier/analytic.rs` |
 | Ray-cast classifier | `classifier/ray_cast.rs` |
+| Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
+| Boolean preflight diagnostics | `diagnostic.rs` |
+| Isolated GFA shape store (deep-copied operands) | `ds/shape_store.rs` |
+| Spatial hash of pave-block endpoints | `ds/pave_vertex_index.rs` |
+| Post-split EE overlap → `CommonBlock` | `pave_filler/force_interf_ee.rs` |
+| Link section blocks to existing boundary blocks | `pave_filler/link_existing.rs` |
+| PCurves for split edges on their faces | `pave_filler/make_pcurves.rs` |
+| Deterministic work counters (complexity guards) | `perf.rs` |
 
 ### L2: blend (`crates/blend/src/`)
 | Task | File(s) |
@@ -176,6 +196,10 @@ Quick reference — find the right file for any task:
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Shared builder utilities | `builder_utils.rs` |
+| G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
+| Read-only analytic blend queries | `query.rs` |
+| Geometry-aware snap tolerance for assembly dedup | `adaptive_tolerance.rs` |
+| Spherical triangle corner patches (3+ stripes) | `spherical_triangle.rs` |
 
 ### L2: heal (`crates/heal/src/`)
 | Task | File(s) |
@@ -219,6 +243,9 @@ Quick reference — find the right file for any task:
 | Operator registry | `pipeline/registry.rs` |
 | Configurable pipeline executor | `pipeline/process.rs` |
 | 13 built-in operators | `pipeline/builtin.rs` |
+| Collapse orphan collinear interior wire vertices | `upgrade/collapse_collinear_vertices.rs` |
+| Canonicalize a split-arc rim into one closed edge | `upgrade/merge_split_rim_arcs.rs` |
+| Split figure-8 / pinched wires into simple cycles | `upgrade/split_self_intersecting_wires.rs` |
 
 ### L2: check (`crates/check/src/`)
 | Task | File(s) |
@@ -245,6 +272,7 @@ Quick reference — find the right file for any task:
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
+| Non-finite geometry detection | `validate/finite.rs` |
 
 ### L2: offset (`crates/offset/src/`)
 | Task | File(s) |
@@ -260,6 +288,8 @@ Quick reference — find the right file for any task:
 | Arc joints (pipe + sphere cap) | `arc_joint.rs` |
 | Shell assembly + solid creation | `assemble.rs` |
 | Self-intersection removal (BOP-based) | `self_int.rs` |
+| Cavity (inner shell) extent checks | `cavity.rs` |
+| Topology-preserving planar face moves | `move_faces.rs` |
 
 ### L2: sketch (`crates/sketch/src/`)
 | Task | File(s) |
@@ -322,6 +352,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
+| Journal ingestion for modeling operations | `journal_ops.rs` |
+| Direct push/pull face editing | `push_pull.rs` |
+| Exact constant-radius blend-band resizing | `resize_blend.rs` |
+| Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
+| Shared test assertion helpers | `test_helpers.rs` |
 
 ### L3: io (`crates/io/src/`)
 | Task | File(s) |
@@ -333,6 +368,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | OBJ read/write | `obj/reader.rs`, `obj/writer.rs` |
 | PLY read/write | `ply/reader.rs`, `ply/writer.rs` |
 | glTF read/write | `gltf/reader.rs`, `gltf/writer.rs` |
+| Exact arena (sub-topology) serialization | `arena_io.rs` |
+| Resource limits for untrusted imports | `limits.rs` |
+| Persistent-reference JSON codec | `naming_io.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
@@ -373,6 +411,16 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
+| Entity-evolution and journal bindings | `bindings/evolution.rs` |
+| Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
+| Faces with inner (hole) wires — validation & construction | `holed_face.rs` |
+| `log` → JS `console` bridge | `logging.rs` |
+| Panic capture for post-mortem diagnosis | `panics.rs` |
+| Deterministic reproduction bundles | `repro.rs` |
+| Entity lifecycle (delete / restore) | `bindings/lifecycle.rs` |
+| Persistent-naming bindings | `bindings/naming.rs` |
+| Holed-face integration tests | `bindings/holed_face_tests.rs` |
+| Qualified-operation integration tests | `bindings/qualify_ops_tests.rs` |
 
 ## Ripple-Effect Checklists
 
