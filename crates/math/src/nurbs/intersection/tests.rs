@@ -679,6 +679,75 @@ fn ssi_wide_domain_surfaces() {
     }
 }
 
+/// A flat patch of the size a b-spline-converted box face has.
+fn wide_flat_patch() -> NurbsSurface {
+    NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![
+            vec![Point3::new(-1.0, -1.0, 0.0), Point3::new(-1.0, 11.0, 0.0)],
+            vec![Point3::new(11.0, -1.0, 0.0), Point3::new(11.0, 11.0, 0.0)],
+        ],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap()
+}
+
+/// Rays that are OBLIQUE to the surface must be found too.
+///
+/// Every other ray test here fires along the surface normal, which is the one
+/// direction where the refinement's normal matrix is already correct: the
+/// tangents are perpendicular to the ray, so projecting them changes nothing.
+/// Off that axis the raw matrix is inflated by the ray-parallel component of
+/// each tangent, every step is under-relaxed, and the iteration budget runs out
+/// with the intersection undiscovered — silently, as an empty result.
+///
+/// These directions are the ones `remus-check` casts for point-in-solid
+/// classification. Before the fix a plain b-spline box misclassified a quarter
+/// of its interior points because of it.
+#[test]
+fn line_nurbs_oblique_rays_are_found() {
+    let surface = wide_flat_patch();
+    let dirs = [
+        Vec3::new(
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+            0.350_889_803_483_932_2,
+        ),
+        Vec3::new(
+            0.267_261_241_912_424_4,
+            0.534_522_483_824_849,
+            0.801_783_725_737_273,
+        ),
+        Vec3::new(
+            -0.424_264_068_711_928_5,
+            0.565_685_424_949_238,
+            0.707_106_781_186_547_5,
+        ),
+    ];
+    for (k, dir) in dirs.iter().enumerate() {
+        // Aim from below so the ray crosses z = 0 at a point well inside the patch.
+        let target = Point3::new(4.0, 6.0, 0.0);
+        let origin = target - *dir * 7.0;
+
+        let hits = intersect_line_nurbs(&surface, origin, *dir, 20).unwrap();
+        assert!(
+            !hits.is_empty(),
+            "dir {k}: oblique ray must hit the patch, got no intersection"
+        );
+        let best = hits
+            .iter()
+            .map(|h| (h.point - target).length())
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            best < 1e-6,
+            "dir {k}: expected the hit at {target:?}, closest returned was {best:.3e} away"
+        );
+    }
+}
+
 #[test]
 fn line_nurbs_wide_domain() {
     // Ray intersection with a surface having [0, 100] domain.
