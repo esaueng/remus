@@ -71,6 +71,51 @@ where
     uv
 }
 
+/// Twice the signed area of a UV polygon (the shoelace sum).
+fn uv_polygon_double_area(poly: &[(f64, f64)]) -> f64 {
+    let n = poly.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut acc = 0.0;
+    let mut j = n - 1;
+    for i in 0..n {
+        acc += (poly[j].0 - poly[i].0) * (poly[j].1 + poly[i].1);
+        j = i;
+    }
+    acc
+}
+
+/// True when a UV boundary encloses no region, so no containment test can use
+/// it.
+///
+/// A face's boundary usually bounds a patch of its surface. Sometimes it merely
+/// SPLITS it: a sphere hemisphere's entire boundary is the equator, which maps
+/// to one constant `v` sweeping the whole `u` period. Measured on a converted
+/// sphere, the trim polygon's v span is `0.000000` and its area is zero, so
+/// every point-in-polygon test answers "outside" and the face contributes no
+/// crossing for any ray.
+///
+/// Judged against the polygon's own extent so it holds at any parameter scale.
+fn uv_boundary_is_degenerate(poly: &[(f64, f64)]) -> bool {
+    if poly.len() < 3 {
+        return true;
+    }
+    let (mut u_lo, mut u_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut v_lo, mut v_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (u, v) in poly {
+        u_lo = u_lo.min(*u);
+        u_hi = u_hi.max(*u);
+        v_lo = v_lo.min(*v);
+        v_hi = v_hi.max(*v);
+    }
+    let scale = (u_hi - u_lo).max(v_hi - v_lo);
+    if scale <= 0.0 {
+        return true;
+    }
+    uv_polygon_double_area(poly).abs() <= 1e-9 * scale * scale
+}
+
 /// Test if a (u,v) point is inside the UV boundary polygon.
 ///
 /// Adjusts the test point's u coordinate (and v when periodic) to lie within
@@ -577,6 +622,26 @@ fn ray_crossings_nurbs(
         .then(|| surface.domain_v().1 - surface.domain_v().0);
     let uv_boundary =
         (!is_full_surface).then(|| build_uv_boundary(&verts, &project, u_period, v_period));
+
+    // A boundary that encloses no UV area does not bound a patch -- it splits
+    // the surface, and which half this face takes is carried by the WINDING of
+    // its boundary, not by anything in UV. `count_3d_polygon_crossings` reads
+    // exactly that (the two hemispheres of a sphere traverse their shared
+    // equatorial wire in opposite senses), and it needs no surface type, so it
+    // serves any NURBS face of this shape.
+    //
+    // It tests a half-space, so it assumes the degenerate boundary is planar in
+    // 3D. That holds for the case this addresses -- an equator -- and matches
+    // what the analytic sphere path already assumes. A non-planar zero-area
+    // boundary would not be handled correctly here, though it is no worse off
+    // than under the UV test, which credits it with no crossings at all.
+    if let Some(boundary) = &uv_boundary
+        && uv_boundary_is_degenerate(boundary)
+    {
+        let roots: SmallVec<[f64; 4]> = hits.iter().map(|(t, _, _)| *t).collect();
+        return count_3d_polygon_crossings(topo, face_id, origin, direction, &roots);
+    }
+
     let holes = hole_uv_boundaries(topo, face_id, &project, u_period, v_period)?;
 
     let mut crossings = 0u32;
