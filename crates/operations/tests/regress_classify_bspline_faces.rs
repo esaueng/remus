@@ -31,8 +31,10 @@
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_heal::custom::convert_to_bspline::convert_solid_to_bspline;
 use remus_math::vec::Point3;
-use remus_operations::primitives::{make_box, make_cylinder, make_torus};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_torus};
 use remus_topology::Topology;
+use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceSurface;
 
 /// Deterministic low-discrepancy sample in [0, 1).
 fn halton(mut i: u32, base: u32) -> f64 {
@@ -179,22 +181,17 @@ fn bspline_torus_classifies_identically_to_the_analytic_torus() {
     );
 }
 
-/// The cylinder is closer but not yet right, and this pins how far it got.
+/// The cylinder took all four fixes: 44.97% -> 25.24% (UV period) -> 13.74%
+/// (seed spacing) -> 0.00% (patch extent).
 ///
-/// 44.97% before the UV-period fix, 25.24% after it, 13.74% after the seed
-/// spacing fix. What is left is NOT in the classifier: `plane_face_to_nurbs`
-/// sizes a converted planar patch from the face's VERTEX positions, and a cap
-/// bounded by one closed circle has `start == end`, so the box collapses to a
-/// point, takes the +/-1.0 fallback, and yields a patch spanning [-1.2, 1.2] --
-/// for a disc of radius 5. Rays crossing the cap outside that little square
-/// find no surface at all, because refinement clamps (u, v) to the domain.
-/// That is the same "one closed curve measures zero" mistake already fixed for
-/// face size analysis; see `regress_heal_analytic_solids.rs`.
-///
-/// This bound is a regression guard on a known-bad number, not a statement that
-/// 14% is acceptable. Tighten it to 0 when the patch extent is fixed.
+/// The last one was not in the classifier at all. `plane_face_to_nurbs` sized a
+/// converted planar patch from the face's VERTEX positions, and a cap bounded by
+/// one closed circle has `start == end`, so the box collapsed to a point, took
+/// the +/-1.0 fallback, and produced a patch spanning [-1.2, 1.2] for a disc of
+/// radius 5. Rays crossing the cap outside that square found no surface, because
+/// refinement clamps (u, v) to the domain.
 #[test]
-fn bspline_cylinder_is_no_worse_than_the_pinned_rate() {
+fn bspline_cylinder_classifies_identically_to_the_analytic_cylinder() {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
 
@@ -225,10 +222,150 @@ fn bspline_cylinder_is_no_worse_than_the_pinned_rate() {
         700,
         truth,
     );
-    let rate = 100.0 * wrong as f64 / n as f64;
-    assert!(
-        rate < 15.0,
-        "b-spline cylinder regressed past its pinned rate: {wrong}/{n} = {rate:.2}% (44.97% before \
-         the UV-period fix, 25.24% after it, 13.74% after the seed spacing fix)"
+    assert_eq!(
+        wrong,
+        0,
+        "b-spline cylinder misclassified {wrong}/{n} = {:.2}%",
+        100.0 * wrong as f64 / n as f64
     );
+}
+
+/// The cone needed a fix of its own. `cone_to_nurbs` documents `v_range` as the
+/// extent along the cone's GENERATOR (its ruling line) from the apex, and it was
+/// handed an extent along the AXIS. Those differ by `cos(half_angle)` -- 5.1%
+/// for this cone -- so the lateral patch spanned z[0.924, 12.308] instead of
+/// z[0, 12] and stopped 0.92 short of its own base circle.
+///
+/// 21.14% misclassified originally; 3.66% once the seeding and trim were fixed;
+/// 0.00% once the patch covers the face.
+#[test]
+fn bspline_cone_classifies_identically_to_the_analytic_cone() {
+    let mut topo = Topology::new();
+    let solid = make_cone(&mut topo, 6.0, 2.0, 12.0).unwrap();
+
+    let truth = |p: Point3| {
+        if p.z() < 0.0 || p.z() > 12.0 {
+            let outside_by = (-p.z()).max(p.z() - 12.0);
+            return if outside_by < 0.3 { None } else { Some(false) };
+        }
+        let r_at = (2.0 - 6.0f64).mul_add(p.z() / 12.0, 6.0);
+        let d = (r_at - p.x().hypot(p.y())).min(p.z()).min(12.0 - p.z());
+        if d.abs() < 0.3 { None } else { Some(d > 0.0) }
+    };
+
+    let (analytic_wrong, _) = score(
+        &topo,
+        solid,
+        Point3::new(-7.0, -7.0, -1.0),
+        Point3::new(7.0, 7.0, 13.0),
+        700,
+        truth,
+    );
+    assert_eq!(
+        analytic_wrong, 0,
+        "control: the ANALYTIC cone must be exact"
+    );
+
+    convert_solid_to_bspline(&mut topo, solid).unwrap();
+    let (wrong, n) = score(
+        &topo,
+        solid,
+        Point3::new(-7.0, -7.0, -1.0),
+        Point3::new(7.0, 7.0, 13.0),
+        700,
+        truth,
+    );
+    assert_eq!(
+        wrong,
+        0,
+        "b-spline cone misclassified {wrong}/{n} = {:.2}%",
+        100.0 * wrong as f64 / n as f64
+    );
+}
+
+/// The invariant the patch-extent fix restores, stated directly: a converted
+/// surface must cover the face it was built for.
+///
+/// Measured before the fix, on a cylinder of radius 5: the cap patches spanned
+/// x[-1.20, 1.20] y[-1.20, 1.20] -- about 5% of the disc they were supposed to
+/// carry.
+#[test]
+fn a_converted_patch_covers_its_own_face_boundary() {
+    for (label, build) in [
+        (
+            "cylinder",
+            (|t: &mut Topology| make_cylinder(t, 5.0, 10.0).unwrap())
+                as fn(&mut Topology) -> remus_topology::solid::SolidId,
+        ),
+        ("cone", |t: &mut Topology| {
+            make_cone(t, 6.0, 2.0, 12.0).unwrap()
+        }),
+        ("box", |t: &mut Topology| {
+            make_box(t, 10.0, 10.0, 10.0).unwrap()
+        }),
+    ] {
+        let mut topo = Topology::new();
+        let solid = build(&mut topo);
+        convert_solid_to_bspline(&mut topo, solid).unwrap();
+
+        for fid in solid_faces(&topo, solid).unwrap() {
+            let face = topo.face(fid).unwrap();
+            let FaceSurface::Nurbs(nurbs) = face.surface() else {
+                continue;
+            };
+
+            // The face's own boundary, sampled along the edge curves rather than
+            // read off the vertices -- the distinction this fix is about.
+            let mut b_lo = [f64::MAX; 3];
+            let mut b_hi = [f64::MIN; 3];
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    let edge = topo.edge(oe.edge()).unwrap();
+                    let sp = topo.vertex(edge.start()).unwrap().point();
+                    let ep = topo.vertex(edge.end()).unwrap().point();
+                    let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+                    for i in 0..=24 {
+                        let t = (t1 - t0).mul_add(f64::from(i) / 24.0, t0);
+                        let p = edge.curve().evaluate_with_endpoints(t, sp, ep);
+                        for (a, c) in [p.x(), p.y(), p.z()].iter().enumerate() {
+                            b_lo[a] = b_lo[a].min(*c);
+                            b_hi[a] = b_hi[a].max(*c);
+                        }
+                    }
+                }
+            }
+
+            // What the patch actually reaches over its own domain.
+            let (u0, u1) = nurbs.domain_u();
+            let (v0, v1) = nurbs.domain_v();
+            let mut s_lo = [f64::MAX; 3];
+            let mut s_hi = [f64::MIN; 3];
+            for iu in 0..=40 {
+                for iv in 0..=40 {
+                    let p = nurbs.evaluate(
+                        (u1 - u0).mul_add(f64::from(iu) / 40.0, u0),
+                        (v1 - v0).mul_add(f64::from(iv) / 40.0, v0),
+                    );
+                    for (a, c) in [p.x(), p.y(), p.z()].iter().enumerate() {
+                        s_lo[a] = s_lo[a].min(*c);
+                        s_hi[a] = s_hi[a].max(*c);
+                    }
+                }
+            }
+
+            for a in 0..3 {
+                let slack = 1e-6 * (b_hi[a] - b_lo[a]).abs().max(1.0);
+                assert!(
+                    s_lo[a] <= b_lo[a] + slack && s_hi[a] >= b_hi[a] - slack,
+                    "{label} face {fid:?}: axis {a} -- the converted patch reaches \
+                     [{:.3}, {:.3}] but its own boundary needs [{:.3}, {:.3}]",
+                    s_lo[a],
+                    s_hi[a],
+                    b_lo[a],
+                    b_hi[a]
+                );
+            }
+        }
+    }
 }
