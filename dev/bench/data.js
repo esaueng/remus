@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787890302843,
+  "lastUpdate": 1787890844368,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -2699,6 +2699,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41081238,
             "range": "± 171930",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12ece62f6b2a4771ed2d7980eade02d52c5dc022",
+          "message": "fix(heal): preserve single-face periodic shells (#104)",
+          "timestamp": "2026-08-28T00:18:02-04:00",
+          "tree_id": "44fbb60374f8ef020cd9c88c155c06fffe55e439",
+          "url": "https://github.com/esaueng/remus/commit/12ece62f6b2a4771ed2d7980eade02d52c5dc022"
+        },
+        "date": 1787890843222,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1293171,
+            "range": "± 3121",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1381471,
+            "range": "± 1753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 13064,
+            "range": "± 125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 959703,
+            "range": "± 2331",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38852042,
+            "range": "± 154338",
             "unit": "ns/iter"
           }
         ]
