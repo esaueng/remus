@@ -3138,3 +3138,35 @@ fn tessellate_bspline_cylinder_seam_wall_watertight_and_correct() {
         );
     }
 }
+
+/// A perpendicular bore whose breakout rim crosses the shaft wall's seam
+/// meridian: the holed-wall chart mesher cuts the hole loop at the seam and
+/// fabricates a boundary vertex there, which the bore-wall band (stitching the
+/// shared rim polyline) previously never saw — leaving an isolated
+/// micro-triangle hole at (3, ~0, ~16.5). The pool pre-split now hands both
+/// faces the same seam-crossing vertex. 0.005 is the deflection that exposed
+/// it; the coarser values guard the other sampling densities.
+#[test]
+fn cross_drilled_shaft_bore_rim_on_seam_is_watertight() {
+    let (topo, solid) = shaft_drilled_with(1.5);
+    let brep_volume = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    for deflection in [0.05, 0.01, 0.005] {
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        assert_eq!(
+            (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh)),
+            (0, 0),
+            "deflection {deflection}: mesh indices must describe a closed manifold"
+        );
+        let quality = welded_mesh_quality(&mesh);
+        assert_eq!(
+            (quality.boundary_edges, quality.non_manifold_edges),
+            (0, 0),
+            "deflection {deflection}: position-welded mesh must be closed and manifold"
+        );
+        let mesh_volume = signed_volume_raw(&mesh).abs();
+        assert!(
+            (mesh_volume - brep_volume).abs() / brep_volume < 0.02,
+            "deflection {deflection}: mesh volume {mesh_volume:.6} vs B-rep {brep_volume:.6}"
+        );
+    }
+}
