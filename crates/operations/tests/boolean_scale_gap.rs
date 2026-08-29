@@ -80,7 +80,7 @@ fn unit_scale_through_cut_volume_is_correct() {
 /// even where a volume comparison might not.
 #[test]
 fn cut_result_never_escapes_the_blank() {
-    for exponent in [-3i32, -2, -1, 0, 3] {
+    for exponent in [-5i32, -4, -3, -2, -1, 0, 3] {
         let s = f64::from(10i32).powi(exponent);
         let mut topo = Topology::new();
         let (blank, tool) = through_cut(&mut topo, s);
@@ -109,48 +109,54 @@ fn cut_result_never_escapes_the_blank() {
 /// `ExactOnly` must refuse — the one thing it must never do is report success
 /// on the wrong solid, which is what this configuration did at 1e-3.
 ///
-/// 1e-3 has since moved to the good side of the boundary: the FF junction band
-/// is now capped relative to the face pair's extent, so the section endpoints
-/// stop snapping onto the tool's own cap rim and the exact pipeline holds. The
-/// assertion for that scale is therefore *strengthened* rather than dropped —
-/// refusing is no longer the correct answer there, so the test demands the
-/// exact one. `micron_scale_through_cut_volume_is_correct` and the vertex
-/// containment test above independently confirm that result is right.
+/// The boundary has moved twice, and both times the assertion for the freed
+/// scale was *strengthened* rather than dropped: 1e-3 flipped exact when the
+/// FF junction band's absolute 1e-3 floor was capped to the face pair's
+/// extent, and 1e-4 flipped when the `tol.linear * 1000.0` term — which had
+/// escaped that cap — was brought under it. Refusing is no longer the correct
+/// answer at either scale, so `small_scale_cut_is_exact_under_exact_only`
+/// demands the exact one; this test pins the scale where refusal still is.
 #[test]
 fn small_scale_cut_still_refuses_below_the_exact_boundary() {
-    let s = 1e-4;
+    let s = 1e-5;
     let mut topo = Topology::new();
     let (blank, tool) = through_cut(&mut topo, s);
     let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
     let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx);
     assert!(
         outcome.is_err(),
-        "scale 1e-4: exact-only returned a result where the exact pipeline does not \
+        "scale 1e-5: exact-only returned a result where the exact pipeline does not \
          hold; it must refuse instead"
     );
 }
 
-/// The other side of that boundary: at 1e-3 the exact pipeline now holds, so
-/// `ExactOnly` must return the exact answer — not refuse, and not fall back.
+/// The other side of that boundary: down to 1e-4 the exact pipeline now
+/// holds, so `ExactOnly` must return the exact answer — not refuse, and not
+/// fall back.
 #[test]
-fn micron_scale_cut_is_exact_under_exact_only() {
-    let s = 1e-3;
-    let mut topo = Topology::new();
-    let (blank, tool) = through_cut(&mut topo, s);
-    let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-    let outcome = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx)
-        .expect("exact-only must produce a result at 1e-3");
-    assert!(
-        matches!(outcome.quality, BooleanQuality::Exact),
-        "expected an exact result, got {:?}",
-        outcome.quality
-    );
-    let vol = solid_volume(&topo, outcome.solid, 0.01 * s).unwrap();
-    let expected = 0.84 * s * s * s;
-    assert!(
-        ((vol - expected) / expected).abs() < 1e-6,
-        "expected {expected:.6e}, got {vol:.6e}"
-    );
+fn small_scale_cut_is_exact_under_exact_only() {
+    for s in [1e-3, 2e-4, 1e-4] {
+        let mut topo = Topology::new();
+        let (blank, tool) = through_cut(&mut topo, s);
+        let ctx = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+        let result = boolean_with_context(&mut topo, BooleanOp::Cut, blank, tool, &ctx);
+        assert!(
+            result.is_ok(),
+            "exact-only must produce a result at {s:e}: {result:?}"
+        );
+        let outcome = result.unwrap();
+        assert!(
+            matches!(outcome.quality, BooleanQuality::Exact),
+            "scale {s:e}: expected an exact result, got {:?}",
+            outcome.quality
+        );
+        let vol = solid_volume(&topo, outcome.solid, 0.01 * s).unwrap();
+        let expected = 0.84 * s * s * s;
+        assert!(
+            ((vol - expected) / expected).abs() < 1e-6,
+            "scale {s:e}: expected {expected:.6e}, got {vol:.6e}"
+        );
+    }
 }
 
 /// Guards the reason the check tests VERTICES rather than the result's bounding

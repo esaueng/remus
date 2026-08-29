@@ -1253,10 +1253,18 @@ ledger, details in the named fixtures:
   more tests beside it. TRAP, cost four correct census rows in development: test the result's VERTICES,
   never its bounding box — `solid_bounding_box` bounds a trimmed curved patch by its untrimmed surface,
   so box∩sphere reports [−1,11]³ for a result really inside [0,10]³
-  (`curved_cut_result_is_not_rejected` pins this). Still open, unchanged in altitude: scaled tolerance
-  through OperationContext into the GFA bands, so these cases come back exact analytic instead of
-  falling back. Also noted while measuring: ExactOnly already refused this configuration at scale 1e6
-  BEFORE any of this work — a separate, unfiled large-scale cell.
+  (`curved_cut_result_is_not_rejected` pins this). ENGINE HALF CLOSED DOWN TO 1e-4 (2026-08-28, two
+  PRs): the mechanism was never tolerance-starvation — `JunctionRegistry::resolve` (phase_ff.rs)
+  snapped section endpoints to any boundary junction within a band floored at an ABSOLUTE 1e-3, so
+  below ~2e-3 a through-cut's sections adopted the tool's own cap-rim junctions. #110 capped the band
+  at 1% of the face pair's AABB diagonal (fixed 1e-3); the follow-up brought the
+  `tol.linear * 1000.0` term — which had escaped that cap and was the whole model at 1e-4 — under the
+  same cap (fixed 1e-4 and 2e-4, exact under ExactOnly, pinned in `boolean_scale_gap.rs`). 1e-5
+  still fails closed (open-shell abort inside GFA's store; at tol=1e-10 it is exact, so the residual
+  is the 100·tol weld bands, not this one). Also noted while measuring: ExactOnly already refused
+  this configuration at scale 1e6 BEFORE any of this work — a separate large-scale cell, now the
+  allocate-then-roll-back fixture in `boolean_context_authority.rs`; raw GFA there silently returns
+  vol/s³ = 0.9467 against 0.8400, unchased.
 - Blind-hole floor rim fillet: the stability matrix's wrong-direction defect NO LONGER REPRODUCES;
   concave inward plane/cylinder now shares the convex `r < r_c` bound with closed-form collar pins
   (`qualify_blind_hole_floor_fillet.rs`). resize_blend cylinder/cone positive radius stays a typed
