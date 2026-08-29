@@ -18,7 +18,7 @@ Issue 2.0's measured baseline is
 | 2.0f STEP per-use deterministic round-trip | Pending | — |
 | 2.0g Integration, zero gate, corpus, and docs | Pending | — |
 | 2.1 Honest-failure hygiene | Pending | — |
-| 2.2 Sphere in general position | Pending | — |
+| 2.2 Sphere in general position | In review | #128 |
 | 2.3 Steinmetz ellipses | Pending | — |
 | 2.4 Quadric × quadric transversal | Pending | — |
 | 2.5 NURBS × NURBS booleans | Pending | — |
