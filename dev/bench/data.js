@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787972158787,
+  "lastUpdate": 1787979082482,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3617,6 +3617,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 31892414,
             "range": "± 46631",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fbbdebfa26139051204e0eba0ae297aefcc19965",
+          "message": "fix(tessellate): share the seam-crossing vertex of a holed periodic wall (#121)\n\nA hole wire crossing a cylinder wall's seam meridian is cut there by the\ndeveloped-chart mesher, fabricating a boundary vertex on the seam that\nthe shared edge pool never carried. The adjacent face consuming the\nshared rim polyline (the bore wall band) stitched straight across the\ncrossing, leaving an isolated micro-triangle hole where the bore's\nbreakout rim touches the shaft's seam (cross-drilled shaft, bore rim on\nthe seam, deflection 0.005).\n\nPre-split the inner-wire polylines of holed cylindrical walls at their\nseam-meridian crossings when building the shared edge pool: the band\nmesher then stitches through the crossing, and the chart mesher's own\nfabricated point welds to it via the existing 1e-6 boundary snap.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-29T00:48:02-04:00",
+          "tree_id": "4091596f32486c0ae6f0ab92b55d8cfd181f07ee",
+          "url": "https://github.com/esaueng/remus/commit/fbbdebfa26139051204e0eba0ae297aefcc19965"
+        },
+        "date": 1787979081855,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1309681,
+            "range": "± 2916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1395388,
+            "range": "± 3011",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14412,
+            "range": "± 88",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 981518,
+            "range": "± 1861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 40190875,
+            "range": "± 177907",
             "unit": "ns/iter"
           }
         ]
