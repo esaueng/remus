@@ -19,13 +19,13 @@ A 2026 survey of the field supports one strategic claim: **the
 permissively-licensed, memory-safe, WASM-first exact B-Rep kernel niche is
 unoccupied.**
 
-- **OCCT** (7.9/8.0) is improving but carries decades of debt in exactly the
+- **The incumbent C++ kernel** (7.9/8.0) is improving but carries decades of debt in exactly the
   places users leave over: fillets that fail on legal input (the 10+ year
   "command not done" class), booleans slower and less stable than commercial
   kernels, a leaky per-entity tolerance model that makes heal-after-import
   mandatory, and an LGPL + CLA + paid-services posture. Its second life is
-  entirely browser wrappers (opencascade.js, replicad, chili3d) funneling
-  through Emscripten.
+  entirely browser wrappers (its Emscripten JS wrapper, replicad, chili3d),
+  all funneling through one aging C++ codebase.
 - **truck** is the closest Rust competitor and is pre-industrial: fragile
   curved booleans, no blends worth the name. **Fornjot is dead** (wound down
   by its author), **CADmium stalled**, **SolveSpace's kernel** documents its
@@ -44,16 +44,16 @@ unoccupied.**
   naming stack, which no open kernel ships natively.
 
 Remus's structural advantages, today: Apache-2.0 with no CLA; zero unsafe and
-no-panic as enforced lints (OCCT consumers wrap calls in segfault guards);
+no-panic as enforced lints (the incumbent's consumers wrap calls in segfault guards);
 native WASM without Emscripten-class baggage; a shipped GCS constraint solver
-(consumers keep gluing SolveSpace's solver onto OCCT because kernels don't
+(consumers keep gluing SolveSpace's solver onto the incumbent because kernels don't
 have one); disclosed degradation (`FallbackPolicy` + `BooleanQuality` +
 `approx_census`) where every other kernel is silent; and the naming/journal
 stack.
 
 **The winning position, in one sentence:** booleans and fillets that fail
 loudly and rarely, *proven* on public real-model corpora; kernel-native
-persistent naming; WASM-first APIs every OCCT wrapper is structurally
+persistent naming; WASM-first APIs every incumbent-kernel wrapper is structurally
 handicapped against; AP242 fidelity with analytic preservation; and a front
 door (Rust, JS, Python) people can actually walk through.
 
@@ -129,10 +129,10 @@ a typed refusal or a fix — the same verify-or-refuse doctrine, at scale.
 
 ### 1.2 Head-to-head benchmark harness (M)
 
-Reproducible comparisons against OCCT (via its Python/JS bindings or
-opencascade-rs), truck, and Manifold (mesh ops only), on booleans, fillets,
+Reproducible comparisons against the incumbent (via its Python/JS
+bindings), truck, and Manifold (mesh ops only), on booleans, fillets,
 STEP read, and tessellation — wall-clock *and* correctness (volume error,
-watertightness, silent-wrong-answer detection). OCCT 8.0 markets 17–20%
+watertightness, silent-wrong-answer detection). The incumbent's 8.0 release markets 17–20%
 boolean gains; the counter-position is not "faster on everything," it is
 **"comparable or better speed, and never silently wrong."** Publish losses
 too (R9); a benchmark that only reports wins converts nobody.
@@ -143,7 +143,7 @@ too (R9); a benchmark that only reports wins converts nobody.
 
 ### 1.3 Fillet torture suite (M)
 
-The OCCT fillet-fiasco cases — band-consumes-face, band-meets-band,
+The incumbent's fillet-fiasco cases — band-consumes-face, band-meets-band,
 radius-exceeds-support, vertex pileups — as a named public corpus. Every case
 resolves to *built-and-verified* or *typed refusal naming the limit*. This is
 M5's qualification work repackaged as the public artifact that targets the
@@ -282,7 +282,7 @@ close), so the first public version leads with its strongest boolean story.
 
 PyO3 `remus-py` over the facade, wheels via maturin for the platform matrix.
 Target audience: the CadQuery/build123d community, whose chronic pain is
-OCCT binding distribution (OCP) — a `pip install` that just works is the
+incumbent-kernel binding distribution (OCP) — a `pip install` that just works is the
 shortest path to a second serious consumer and their regression corpus.
 Scope v1 to the facade surface (primitives, booleans, fillets, measure,
 STEP, tessellate); no attempt at CadQuery API compatibility.
@@ -295,7 +295,7 @@ STEP, tessellate); no attempt at CadQuery API compatibility.
 The deferred stable-error-code registry (e5b) and versioned operation
 contract docs become public API documentation — the failure taxonomy is a
 *feature* to advertise (SolveSpace's known-issues honesty converts users;
-OCCT's silence repels them).
+the incumbent's silence repels them).
 
 > **Exit gate:** every public operation's error codes enumerated in rustdoc;
 > e5b closed; docs site (O6) renders the registry.
@@ -332,7 +332,7 @@ Stage 1: AP242 schema output (reader is already schema-agnostic) — required
 by modern PLM toolchains and a prerequisite for everything semantic. Stage
 2: PMI/GD&T read into an attribute-anchored representation (datums, FCFs,
 dimensions bound to persistent refs — the naming stack is precisely the
-right anchor, and kernel-level PMI-to-topology binding is something OCCT
+right anchor, and kernel-level PMI-to-topology binding is something the incumbent
 does not offer cleanly). Stage 3: semantic PMI write. Each stage gated on
 CAx-IF test rounds (1.4).
 
@@ -359,7 +359,7 @@ observed order of effect:
   (npm package is the ask), then CadQuery-class Python. Their regression
   corpora become Remus fixtures — the Manifold/OpenSCAD symbiosis.
 - **Contribution posture (S):** no CLA (Apache-2.0 inbound=outbound, the
-  direct contrast with OCCT), CONTRIBUTING.md, labeled starter issues from
+  direct contrast with the incumbent), CONTRIBUTING.md, labeled starter issues from
   the inherited queue, fork-provenance policy already documented.
 - **Sustainability note:** solo-maintainer kernels die (Fornjot); the
   mitigations are the consumer symbiosis above and the corpus/CI machinery
@@ -388,7 +388,7 @@ The program's definition of done — public numbers, each with its harness:
 | # | Claim | Evidence |
 |---|---|---|
 | S1 | Robustness leadership | ABC-scale scoreboard published per release; pass rate and trend public; zero silent-wrong classes open |
-| S2 | Fillets that don't fail | Torture suite: 100% built-or-typed-refusal, 0 crashes; side-by-side with OCCT dispositions |
+| S2 | Fillets that don't fail | Torture suite: 100% built-or-typed-refusal, 0 crashes; side-by-side with the incumbent's dispositions |
 | S3 | Honest speed | Head-to-head harness public with wins *and* losses; never-silently-wrong as the headline |
 | S4 | Three working doors | `cargo add` / `npm i` / `pip install` each to first solid in <10 lines |
 | S5 | Interchange trust | CAx-IF round-trip with validation properties; AP242 assemblies + attributes |

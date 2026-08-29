@@ -101,8 +101,8 @@ never a hand-picked model.
 **a — Protocol + runners (M).** Job spec in JSON (operation, operand files
 or generator params, deflection), result JSON out (wall-clock, volume,
 watertight, error class). Runners are isolated subprocesses so competitor
-deps never touch the workspace: Remus (native, via the O4.1 facade); OCCT
-(python subprocess via `build123d`/OCP, version pinned); truck (separate
+deps never touch the workspace: Remus (native, via the O4.1 facade); the incumbent
+C++ kernel (python subprocess via `build123d`/OCP, version pinned); truck (separate
 pinned cargo project under `tools/vs-bench/runners/truck/`); Manifold (npm
 subprocess; mesh-boolean scenarios only). A competitor missing locally =
 row marked "not run," never silently skipped.
@@ -141,7 +141,7 @@ test failure. Today most rows will pin refusals — that is the point: the
 suite is the fixed target M5 issues flip case by case.
 
 **b — Publication (S, after M5).** Disposition table (built / refused+code)
-rendered next to the O1.2 results, with the same cases run through OCCT for
+rendered next to the O1.2 results, with the same cases run through the incumbent kernel for
 the side-by-side.
 
 > **Exit gate:** every case built-or-typed; zero crashes; suite wired into
@@ -515,7 +515,7 @@ styling binds to the assembly-instanced representations, so land after
 **a — AP242 writer schema (S/M).** Emit AP242 headers/ap-schema (reader is
 already schema-agnostic); config on the write call
 (`StepSchema::{Ap203, Ap242}`), default unchanged until qualified.
-Receiving-system check scripted: import the output in OCCT-python and one
+Receiving-system check scripted: import the output in the incumbent's Python stack and one
 other independent reader in CI, assert solid count + volume.
 
 **b — PMI read (L).** Parse semantic PMI (datums, feature control frames,
@@ -591,7 +591,7 @@ to initiate.
 `CONTRIBUTING.md` (new) · issue templates ·
 `docs/production-readiness/fork-maintenance.md` (link)
 
-Inbound=outbound Apache-2.0 (no CLA — the OCCT contrast, stated),
+Inbound=outbound Apache-2.0 (no CLA — the incumbent-kernel contrast, stated),
 build/test quickstart, the conventional-commit + hooks contract, the
 clean-room/fork-provenance rules contributors must know, and ~10 starter
 issues seeded from the inherited queue + O3.1 bench list (real, bounded,
