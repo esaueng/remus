@@ -3713,6 +3713,79 @@ fn compute_raw_curves(
             )
         }
 
+        (FaceSurface::Cylinder(c1), FaceSurface::Cylinder(c2)) => {
+            // Equal-radius cylinders whose (non-parallel) axes intersect meet
+            // in two exact planar ellipses — the Steinmetz configuration. The
+            // sampled algebraic path root-sorts its two quadratic branches,
+            // so each traces the BENT curve through the tangency pinches
+            // instead of a planar ellipse, and the NURBS fit smooths across
+            // the corner; the equal-radius intersect then fell back to mesh.
+            // Non-degenerate pairs (None) fall through to the algebraic /
+            // marched path.
+            match analytic_intersection::exact_cylinder_cylinder(c1, c2)? {
+                Some(exacts) => {
+                    // The two ellipses cross at the two pinch points
+                    // `center ± r·(a₁×a₂)/|a₁×a₂|` (both on both cylinders).
+                    // Pre-split each ellipse there so the wire builder gets
+                    // arcs with shared junction vertices instead of two whole
+                    // closed curves it cannot weave; then split each half at
+                    // its parameter midpoint so no two arcs share both
+                    // endpoints (the merge-duplicate-edges co-endpoint rule).
+                    let w = c1.axis().cross(c2.axis()).normalize()?;
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        let analytic_intersection::ExactIntersectionCurve::Ellipse(ellipse) = exact
+                        else {
+                            continue;
+                        };
+                        let center = ellipse.center();
+                        let r = c1.radius();
+                        let pinch = [center + w * r, center + w * (-r)];
+                        let t_a = ellipse.project(pinch[0]);
+                        let mut t_b = ellipse.project(pinch[1]);
+                        if t_b <= t_a {
+                            t_b += std::f64::consts::TAU;
+                        }
+                        let quarters = [
+                            (t_a, f64::midpoint(t_a, t_b)),
+                            (f64::midpoint(t_a, t_b), t_b),
+                            (t_b, f64::midpoint(t_b, t_a + std::f64::consts::TAU)),
+                            (
+                                f64::midpoint(t_b, t_a + std::f64::consts::TAU),
+                                t_a + std::f64::consts::TAU,
+                            ),
+                        ];
+                        for (t0, t1) in quarters {
+                            let p_start = ParametricCurve::evaluate(&ellipse, t0);
+                            let p_end = ParametricCurve::evaluate(&ellipse, t1);
+                            // Arc-local bbox: the whole-ellipse box defeats
+                            // downstream midpoint dedup (the dovetail
+                            // full-circle-bbox lesson).
+                            let bbox = Aabb3::from_points((0..=16).map(|i| {
+                                let t = t0 + (t1 - t0) * f64::from(i) / 16.0;
+                                ParametricCurve::evaluate(&ellipse, t)
+                            }));
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Ellipse(ellipse.clone()),
+                                bbox,
+                                t_range: (t0, t1),
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
         (a, b) if a.as_analytic().is_some() && b.as_analytic().is_some() => {
             if let (Some(aa), Some(ab)) = (a.as_analytic(), b.as_analytic()) {
                 analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)

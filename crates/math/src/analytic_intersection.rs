@@ -1568,6 +1568,78 @@ pub fn exact_cone_cone(
     Ok(Some(vec![ExactIntersectionCurve::Circle(circle)]))
 }
 
+/// Exact equal-radius intersecting-axes cylinder-cylinder intersection: two
+/// planar ellipses (the Steinmetz configuration).
+///
+/// When two cylinders of the SAME radius have axes that intersect (at any
+/// non-parallel angle), subtracting their implicit equations
+/// `|q|² − (q·a₁)² = r²` and `|q|² − (q·a₂)² = r²` (with `q` measured from
+/// the axis crossing point) gives `(q·a₁)² = (q·a₂)²` — the whole
+/// intersection lies in the two bisector planes `q·(a₁−a₂) = 0` and
+/// `q·(a₁+a₂) = 0`. Each plane is oblique to the cylinder axis, so each cut
+/// is an exact [`Ellipse3D`]; the two ellipses cross at the two points
+/// `q = ±r·(a₁×a₂)/|a₁×a₂|`.
+///
+/// The general sampled path mishandles exactly this configuration: its two
+/// quadratic branches `v±(u)` are sorted by root value, so each traces the
+/// BENT curve `v = ±|r·cos u|` through the tangency pinches instead of a
+/// planar ellipse, and the NURBS interpolation smooths across the corner —
+/// the equal-radius perpendicular intersect then falls back to a mesh.
+///
+/// Returns `Some(vec![ellipse, ellipse])` for the degenerate configuration,
+/// and `None` (defer to the algebraic/marched path) when the axes are
+/// parallel, skew, or the radii differ.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if an `Ellipse3D` cannot be constructed from a
+/// malformed (non-finite) cylinder frame.
+pub fn exact_cylinder_cylinder(
+    c1: &CylindricalSurface,
+    c2: &CylindricalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let tol = Tolerance::new().linear;
+    let a1 = c1.axis();
+    let a2 = c2.axis();
+    let alpha = a1.dot(a2);
+
+    // Parallel axes (either sense) are a different configuration entirely.
+    if alpha.abs() > 1.0 - 1e-10 {
+        return Ok(None);
+    }
+    // The bisector-plane factorization requires equal radii.
+    if (c1.radius() - c2.radius()).abs() > tol {
+        return Ok(None);
+    }
+
+    // Closest points between the two axis lines; the axes must genuinely
+    // intersect (skew axes give an irreducible quartic — defer).
+    let d = c2.origin() - c1.origin();
+    let d_vec = Vec3::new(d.x(), d.y(), d.z());
+    let denom = alpha.mul_add(-alpha, 1.0);
+    let t1 = alpha.mul_add(-d_vec.dot(a2), d_vec.dot(a1)) / denom;
+    let t2 = alpha.mul_add(d_vec.dot(a1), -d_vec.dot(a2)) / denom;
+    let p1 = c1.origin() + a1 * t1;
+    let p2 = c2.origin() + a2 * t2;
+    if (p2 - p1).length() > tol {
+        return Ok(None);
+    }
+    let crossing = Point3::new(
+        f64::midpoint(p1.x(), p2.x()),
+        f64::midpoint(p1.y(), p2.y()),
+        f64::midpoint(p1.z(), p2.z()),
+    );
+
+    let mut curves = Vec::with_capacity(2);
+    for normal in [(a1 - a2).normalize()?, (a1 + a2).normalize()?] {
+        let plane_d = dot_np(normal, crossing);
+        // A bisector plane of non-parallel axes is always oblique to the
+        // cylinder axis (cos θ = √((1∓α)/2) > 0), so this yields an Ellipse.
+        curves.extend(exact_plane_cylinder(c1, normal, plane_d)?);
+    }
+    Ok(Some(curves))
+}
+
 /// Exact coaxial cone-cylinder intersection: returns the shared circle.
 ///
 /// A cone and a cylinder sharing an axis are concentric circles at every
@@ -2768,7 +2840,7 @@ fn surface_closures<'a>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::tolerance::Tolerance;
@@ -3218,6 +3290,86 @@ mod tests {
         zs.sort_by(f64::total_cmp);
         let z = 27.0_f64.sqrt();
         assert!((zs[0] + z).abs() < 1e-9 && (zs[1] - z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exact_cylinder_cylinder_steinmetz_two_ellipses() {
+        // Equal radii, perpendicular intersecting axes: the quartic factors
+        // into the two bisector planes → two exact ellipses, every point of
+        // which lies on BOTH cylinder surfaces.
+        let r = 3.0;
+        let c1 = CylindricalSurface::new(Point3::new(0.0, 0.0, -10.0), Vec3::new(0.0, 0.0, 1.0), r)
+            .unwrap();
+        let c2 = CylindricalSurface::new(Point3::new(-10.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), r)
+            .unwrap();
+        let curves = exact_cylinder_cylinder(&c1, &c2)
+            .unwrap()
+            .expect("degenerate configuration returns Some");
+        assert_eq!(curves.len(), 2, "two bisector-plane ellipses");
+        for curve in &curves {
+            let ExactIntersectionCurve::Ellipse(e) = curve else {
+                panic!("expected an exact ellipse, got {curve:?}");
+            };
+            assert!((e.semi_minor() - r).abs() < 1e-9, "semi-minor is r");
+            assert!(
+                (e.semi_major() - r * std::f64::consts::SQRT_2).abs() < 1e-9,
+                "semi-major is r·√2 for perpendicular axes"
+            );
+            for i in 0..64 {
+                let t = std::f64::consts::TAU * f64::from(i) / 64.0;
+                let p = e.evaluate(t);
+                let d1 = (p.x() * p.x() + p.y() * p.y()).sqrt();
+                let d2 = (p.y() * p.y() + p.z() * p.z()).sqrt();
+                assert!((d1 - r).abs() < 1e-9, "on cylinder 1: {d1}");
+                assert!((d2 - r).abs() < 1e-9, "on cylinder 2: {d2}");
+            }
+        }
+    }
+
+    #[test]
+    fn exact_cylinder_cylinder_oblique_axes_still_factor() {
+        // The factorization holds for any non-parallel angle between
+        // intersecting equal-radius axes.
+        let r = 2.0;
+        let axis2 = Vec3::new(0.5_f64.sqrt(), 0.0, 0.5_f64.sqrt());
+        let c1 = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r)
+            .unwrap();
+        let c2 = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), axis2, r).unwrap();
+        let curves = exact_cylinder_cylinder(&c1, &c2)
+            .unwrap()
+            .expect("oblique equal-radius intersecting axes return Some");
+        assert_eq!(curves.len(), 2);
+        for curve in &curves {
+            let ExactIntersectionCurve::Ellipse(e) = curve else {
+                panic!("expected an exact ellipse, got {curve:?}");
+            };
+            for i in 0..64 {
+                let t = std::f64::consts::TAU * f64::from(i) / 64.0;
+                let p = e.evaluate(t);
+                let d1 = (p.x() * p.x() + p.y() * p.y()).sqrt();
+                let q = Vec3::new(p.x(), p.y(), p.z());
+                let along = q.dot(axis2);
+                let d2 = (q - axis2 * along).length();
+                assert!((d1 - r).abs() < 1e-9 && (d2 - r).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn exact_cylinder_cylinder_defers_non_degenerate_pairs() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let o = Point3::new(0.0, 0.0, 0.0);
+        // Unequal radii → irreducible quartic.
+        let a = CylindricalSurface::new(o, z, 3.0).unwrap();
+        let b = CylindricalSurface::new(o, x, 2.0).unwrap();
+        assert!(exact_cylinder_cylinder(&a, &b).unwrap().is_none());
+        // Skew axes (offset along the common perpendicular).
+        let c = CylindricalSurface::new(Point3::new(0.0, 1.0, 0.0), x, 3.0).unwrap();
+        assert!(exact_cylinder_cylinder(&a, &c).unwrap().is_none());
+        // Parallel axes are a different configuration entirely.
+        let d = CylindricalSurface::new(Point3::new(1.0, 0.0, 0.0), z, 3.0).unwrap();
+        assert!(exact_cylinder_cylinder(&a, &d).unwrap().is_none());
     }
 
     #[test]

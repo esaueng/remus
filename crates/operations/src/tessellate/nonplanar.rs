@@ -2019,6 +2019,25 @@ pub(super) fn tessellate_nonplanar_cdt(
                 });
             }
 
+            // Slack for the "already placed" test below: the non-seam u
+            // interval under-measures the band edge by up to one boundary
+            // sample step (the traversal's closing-repeat pop removes the
+            // rim's seam-vertex sample), so a correctly unwrapped seam can
+            // sit just past `u_max_bnd`. Snapping it back onto the last rim
+            // sample column degenerates the polygon (the cross-drilled
+            // equal-radius band). A few percent of the period distinguishes
+            // that from the whole-period misplacement this repair exists for.
+            let u_slack = match face_data.surface() {
+                FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => std::f64::consts::TAU * 0.02,
+                FaceSurface::Nurbs(s) if s.is_periodic_u() => {
+                    let (a, b) = s.domain_u();
+                    (b - a).max(0.0) * 0.02
+                }
+                _ => 0.0,
+            };
             for run in &seam_runs {
                 // The periodic walk may already have placed a genuine seam
                 // inside the non-seam boundary's unwrapped u interval.  Keep
@@ -2027,7 +2046,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                 // fallback was introduced to repair.
                 let already_unwrapped = run.indices.iter().all(|&i| {
                     let u = boundary_uv[i].0;
-                    u >= u_min_bnd - 1e-6 && u <= u_max_bnd + 1e-6
+                    u >= u_min_bnd - u_slack - 1e-6 && u <= u_max_bnd + u_slack + 1e-6
                 });
                 if already_unwrapped {
                     continue;
@@ -2050,7 +2069,22 @@ pub(super) fn tessellate_nonplanar_cdt(
                     } else {
                         0.5
                     };
-                    let v = v_start + t * (v_end - v_start);
+                    // Prefer each seam sample's own projected v: a seam need
+                    // not span the face's whole v range (the cross-drilled
+                    // equal-radius band's seam stops at the hole while the
+                    // pinch vertices extend v further), and stretching it to
+                    // [v_min_bnd, v_max_bnd] warps the polygon over the hole.
+                    // The linear stretch remains the fallback for a
+                    // degenerate (non-finite / out-of-range) projection.
+                    let v_proj = boundary_uv[i].1;
+                    let v = if v_proj.is_finite()
+                        && v_proj >= v_min_bnd - 1e-6
+                        && v_proj <= v_max_bnd + 1e-6
+                    {
+                        v_proj
+                    } else {
+                        v_start + t * (v_end - v_start)
+                    };
                     boundary_uv[i] = (u_assign, v);
                 }
             }
@@ -2112,10 +2146,20 @@ pub(super) fn tessellate_nonplanar_cdt(
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) =
             interior_grid_resolution(face_data.surface(), du, dv, deflection, angular_tol);
+        let has_conic_wire = wire.edges().iter().any(|oe| {
+            topo.edge(oe.edge()).is_ok_and(|e| {
+                matches!(
+                    e.curve(),
+                    remus_topology::edge::EdgeCurve::Ellipse(_)
+                        | remus_topology::edge::EdgeCurve::Hyperbola(_)
+                        | remus_topology::edge::EdgeCurve::Parabola(_)
+                )
+            })
+        });
         validate_interior_grid_size(n_u, n_v)?;
 
         let boundary_uv_ref = &boundary_uv;
-        let interior_pts: Vec<Point2> = (1..n_u)
+        let mut interior_pts: Vec<Point2> = (1..n_u)
             .flat_map(|iu| {
                 (1..n_v).filter_map(move |iv| {
                     let u = u_min + du * (iu as f64 / n_u as f64);
@@ -2124,6 +2168,122 @@ pub(super) fn tessellate_nonplanar_cdt(
                 })
             })
             .collect();
+        // A conic-bounded quadric face's boundary curves through BOTH grid
+        // directions (a cross-drilled band's hole boundary dips its full
+        // conic depth into the band), so the flat direction's sparse rows
+        // leave whole boundary valleys with no interior node — the CDT then
+        // fills them with boundary-only triangles whose 3D chords cut
+        // through the solid (the cross-drilled STL volume deficit, mesh
+        // deviation ~r·(1−cos(Δu/2)) for chords a radian wide). Add
+        // supplemental rows at the curved direction's deflection-derived
+        // spacing, but ONLY across the v-band the conic arcs actually span,
+        // so flat regions keep the coarse grid.
+        if has_conic_wire {
+            let mut is_conic_edge: DetHashMap<usize, bool> = DetHashMap::default();
+            let mut cv0 = f64::INFINITY;
+            let mut cv1 = f64::NEG_INFINITY;
+            for (i, &(_, v)) in boundary_uv.iter().enumerate() {
+                let edge_id = boundary_3d[i].2;
+                let conic = *is_conic_edge.entry(edge_id.index()).or_insert_with(|| {
+                    topo.edge(edge_id).is_ok_and(|e| {
+                        matches!(
+                            e.curve(),
+                            remus_topology::edge::EdgeCurve::Ellipse(_)
+                                | remus_topology::edge::EdgeCurve::Hyperbola(_)
+                                | remus_topology::edge::EdgeCurve::Parabola(_)
+                        )
+                    })
+                });
+                if conic {
+                    cv0 = cv0.min(v);
+                    cv1 = cv1.max(v);
+                }
+            }
+            // Row spacing matched to the column spacing in CDT space.
+            let dense_dv = dv / n_u as f64;
+            if cv1 > cv0 && dense_dv > 1e-15 {
+                let lo = (cv0 - dense_dv).max(v_min);
+                let hi = (cv1 + dense_dv).min(v_max);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
+                validate_interior_grid_size(n_u, rows)?;
+                for k in 0..=rows {
+                    let v = lo + (hi - lo) * (k as f64 / rows as f64);
+                    for iu in 1..n_u {
+                        let u = u_min + du * (iu as f64 / n_u as f64);
+                        if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v)) {
+                            interior_pts.push(to_cdt(u, v));
+                        }
+                    }
+                }
+            }
+        }
+        // Two faces meeting along conic section arcs (the Steinmetz lens
+        // pair) can otherwise triangulate large near-boundary regions using
+        // EXCLUSIVELY the shared boundary samples: both faces then emit
+        // chordal triangles over the same global vertex set, and the
+        // duplicated opposite-winding patches read non-manifold at the solid
+        // level. One face-own Steiner point per boundary segment, offset
+        // inward and evaluated on THIS face's surface, anchors each face's
+        // Delaunay structure to its own geometry so the copies diverge.
+        // Gated to conic-bounded wires — no other boundary class shares a
+        // curved non-iso arc chain between two CDT-meshed quadric faces.
+        if has_conic_wire {
+            let n_pts = boundary_uv_ref.len();
+            let orient: f64 = (0..n_pts)
+                .map(|i| {
+                    let (u0, v0) = boundary_uv_ref[i];
+                    let (u1, v1) = boundary_uv_ref[(i + 1) % n_pts];
+                    u0.mul_add(v1, -(u1 * v0))
+                })
+                .sum();
+            let mut conic_memo: DetHashMap<usize, bool> = DetHashMap::default();
+            for i in 0..n_pts {
+                // Only segments interior to a conic edge's polyline get an
+                // anchor (BOTH endpoints sampled from a conic): seam/rim
+                // segments are never shared between two CDT-meshed quadrics,
+                // and a junction segment inheriting one conic endpoint can be
+                // a LONG straight column whose midpoint offset would fling an
+                // isolated deep point that attracts radian-wide chordal
+                // triangles (the cross-drilled seam column).
+                let mut conic_at = |idx: usize| -> bool {
+                    let edge_id = boundary_3d[idx].2;
+                    *conic_memo.entry(edge_id.index()).or_insert_with(|| {
+                        topo.edge(edge_id).is_ok_and(|e| {
+                            matches!(
+                                e.curve(),
+                                remus_topology::edge::EdgeCurve::Ellipse(_)
+                                    | remus_topology::edge::EdgeCurve::Hyperbola(_)
+                                    | remus_topology::edge::EdgeCurve::Parabola(_)
+                            )
+                        })
+                    })
+                };
+                if !conic_at(i) || !conic_at((i + 1) % n_pts) {
+                    continue;
+                }
+                let (u0, v0) = boundary_uv_ref[i];
+                let (u1, v1) = boundary_uv_ref[(i + 1) % n_pts];
+                let (su, sv) = (u1 - u0, v1 - v0);
+                let len = su.hypot(sv);
+                if len < 1e-12 {
+                    continue;
+                }
+                let (nu_in, nv_in) = if orient >= 0.0 {
+                    (-sv / len, su / len)
+                } else {
+                    (sv / len, -su / len)
+                };
+                // Cap the inward offset at the interior-grid column spacing
+                // so the anchor stays a boundary-hugging point.
+                let h = (0.35 * len).min(du / n_u as f64);
+                let cu = f64::midpoint(u0, u1) + nu_in * h;
+                let cv = f64::midpoint(v0, v1) + nv_in * h;
+                if point_in_polygon_2d(boundary_uv_ref, Point2::new(cu, cv)) {
+                    interior_pts.push(to_cdt(cu, cv));
+                }
+            }
+        }
         if !interior_pts.is_empty() {
             let interior_cdt_ids = cdt
                 .insert_points_hilbert(&interior_pts)

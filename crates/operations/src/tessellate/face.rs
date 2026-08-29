@@ -44,17 +44,26 @@ pub(super) fn cylinder_has_non_standard_boundary(
 ) -> Result<bool, crate::OperationsError> {
     let wire = topo.wire(face_data.outer_wire())?;
     let mut has_nurbs = false;
+    let mut has_conic = false;
     let mut all_line = true;
     for oe in wire.edges() {
         if let Ok(e) = topo.edge(oe.edge()) {
             match e.curve() {
                 EdgeCurve::NurbsCurve(_) => has_nurbs = true,
+                // A conic arc is never an iso-line of a cylinder, so the
+                // face is not a u×v rectangle: the plain grid mesher would
+                // mesh the full bounding rectangle and overrun the curved
+                // boundary (the Steinmetz lens walls).
+                EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                    has_conic = true;
+                    all_line = false;
+                }
                 EdgeCurve::Line => {}
-                _ => all_line = false,
+                EdgeCurve::Circle(_) => all_line = false,
             }
         }
     }
-    Ok(has_nurbs || (all_line && wire.edges().len() > 4))
+    Ok(has_nurbs || has_conic || (all_line && wire.edges().len() > 4))
 }
 
 /// Tessellate a face and return mesh with per-vertex UV coordinates.
