@@ -272,7 +272,15 @@ fn invalid_public_options_are_rejected_without_mutation() {
 
 #[test]
 fn failed_exact_pipeline_rolls_back_all_live_topology() {
-    let scale = 1e-4;
+    // The fixture needs a scale where GFA ASSEMBLES a result into the caller
+    // topology (so the attempt allocates) that the acceptance gate then
+    // rejects. 1e-4 stopped qualifying when the FF junction band's
+    // tolerance-scaled term was brought under the extent cap (the cut is
+    // exact there now), and below that GFA fails inside its own shape store
+    // without exporting. 1e6 is the remaining such scale: the through-cut
+    // assembles at the wrong volume and is rejected by the operand-bounds
+    // gate, so ExactOnly refuses after allocating.
+    let scale = 1e6;
     let mut topo = Topology::new();
     let blank = make_box(&mut topo, scale, scale, scale).unwrap();
     let tool = make_box(&mut topo, 0.4 * scale, 0.4 * scale, 2.0 * scale).unwrap();
