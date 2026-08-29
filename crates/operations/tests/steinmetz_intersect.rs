@@ -142,6 +142,58 @@ fn oblique_equal_radius_intersect_is_exact_analytic() {
 }
 
 #[test]
+fn perpendicular_equal_radius_fuse_and_cut_stay_exact() {
+    // The same exact ellipse sections now feed the union and difference:
+    // both must stay exact analytic with correct volumes
+    // (V∪ = 2·πr²h − 16/3·r³, V∖ = πr²h − 16/3·r³) and mesh watertight.
+    let r = 3.0_f64;
+    let h = 20.0_f64;
+    let steinmetz = 16.0 / 3.0 * r * r * r;
+    for (op, exact) in [
+        (
+            BooleanOp::Fuse,
+            2.0 * std::f64::consts::PI * r * r * h - steinmetz,
+        ),
+        (BooleanOp::Cut, std::f64::consts::PI * r * r * h - steinmetz),
+    ] {
+        let topo = &mut Topology::new();
+        let (c1, c2) = perpendicular_pair(topo, r);
+        let result = boolean(topo, op, c1, c2).expect("boolean");
+        let faces = solid_faces(topo, result).expect("faces");
+        assert!(
+            faces.iter().all(|&f| {
+                topo.face(f).is_ok_and(|face| {
+                    matches!(
+                        face.surface(),
+                        FaceSurface::Cylinder(_) | FaceSurface::Plane { .. }
+                    )
+                })
+            }),
+            "{op:?} must stay analytic (cylinders + caps)"
+        );
+        let vol = solid_volume(topo, result, 0.001).expect("volume");
+        let rel = (vol - exact).abs() / exact;
+        assert!(
+            rel < 1.0e-4,
+            "{op:?} volume {vol} vs {exact} (rel {rel:.2e})"
+        );
+        for defl in [0.05, 0.01] {
+            let mesh = tessellate_solid(topo, result, defl).expect("tessellate");
+            assert_eq!(
+                boundary_edge_count(&mesh),
+                0,
+                "{op:?} boundary edges at deflection {defl}"
+            );
+            assert_eq!(
+                non_manifold_edge_count(&mesh),
+                0,
+                "{op:?} non-manifold edges at deflection {defl}"
+            );
+        }
+    }
+}
+
+#[test]
 fn unequal_radius_perpendicular_intersect_still_answers() {
     // The exact arm must decline unequal radii (irreducible quartic); the
     // general path answers — bounded, whatever representation it picks.

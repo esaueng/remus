@@ -102,10 +102,17 @@ surface with no closed form.
 
 ## Terminal and open cases (do not re-burn effort)
 
-- **Perpendicular cylinder-union render is terminal.** The exact Steinmetz seam is
-  singular (figure-eight pinch); exact curves make the topology WORSE. The shipped
-  B-Rep with exact closed-form volume stands. `exact_cylinder_cylinder` does not exist
-  in the codebase; do not go looking for it. (ref. section 5)
+- **Perpendicular cylinder union/intersect/cut are all exact analytic now
+  (2026-08-28).** `exact_cylinder_cylinder` EXISTS
+  (`crates/math/src/analytic_intersection.rs`): equal radii + intersecting
+  axes factor into two bisector-plane ellipses; phase FF pre-splits them at
+  the pinch crossings and the splitter promotes the arc-only far-side lens to
+  a region. The union carries the TRUE seam through the pinch vertices and
+  tessellates watertight+manifold — the old "exact curves make the topology
+  WORSE" claim is superseded (pins:
+  `crates/operations/tests/steinmetz_intersect.rs`). Unequal radii and skew
+  axes still defer to the marcher by design. (ref. section 5 is stale on this
+  point)
 - **Plane-through-sphere across the seam is SOLVED** and is the reusable pattern:
   never test exact curves against discretized boundary chords; reconstruct the exact
   boundary curve and intersect analytically. (ref. section 5)

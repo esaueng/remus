@@ -2207,12 +2207,41 @@ pub(super) fn tessellate_nonplanar_cdt(
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let rows = (((hi - lo) / dense_dv).ceil() as usize).max(1);
                 validate_interior_grid_size(n_u, rows)?;
+                // Distance guard in CDT (aspect-normalized) space: a
+                // supplemental point sitting ON or within a fraction of the
+                // spacing of a boundary constraint makes the incremental CDT
+                // fail, dropping the whole face to the crack-prone snap path
+                // (the lite pad-graze foil caught exactly that).
+                let boundary_cdt: Vec<Point2> = boundary_uv_ref
+                    .iter()
+                    .map(|&(bu, bv)| to_cdt(bu, bv))
+                    .collect();
+                let clearance = 0.4 * du / n_u as f64;
+                let clear_of_boundary = |p: Point2| -> bool {
+                    let n = boundary_cdt.len();
+                    (0..n).all(|i| {
+                        let a = boundary_cdt[i];
+                        let b = boundary_cdt[(i + 1) % n];
+                        let ab = b - a;
+                        let len_sq = ab.dot(ab);
+                        let t = if len_sq > 1e-30 {
+                            ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let foot = Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
+                        (p - foot).length() > clearance
+                    })
+                };
                 for k in 0..=rows {
                     let v = lo + (hi - lo) * (k as f64 / rows as f64);
                     for iu in 1..n_u {
                         let u = u_min + du * (iu as f64 / n_u as f64);
-                        if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v)) {
-                            interior_pts.push(to_cdt(u, v));
+                        let p = to_cdt(u, v);
+                        if point_in_polygon_2d(boundary_uv_ref, Point2::new(u, v))
+                            && clear_of_boundary(p)
+                        {
+                            interior_pts.push(p);
                         }
                     }
                 }
