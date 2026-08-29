@@ -11,7 +11,7 @@ Issue 2.0's measured baseline is
 | Issue | State | PR |
 | --- | --- | --- |
 | 2.0a Measurement and semantic ratchet | Merged | [#120](https://github.com/esaueng/remus/pull/120) |
-| 2.0b Missing writers, invariants, oracles, and census | Partial — operations contribution complete; phase-FF pending | [#122](https://github.com/esaueng/remus/pull/122) |
+| 2.0b Missing writers, invariants, oracles, and census | Complete — operations and phase-FF contributions | [#122](https://github.com/esaueng/remus/pull/122) + [#125](https://github.com/esaueng/remus/pull/125) |
 | 2.0c Reader migration and seam-safe validation | Pending | — |
 | 2.0d Topology-owned atomic boundary mutation | Pending | — |
 | 2.0e Physical Loop/Coedge p-curve authority | Pending | — |
