@@ -9,6 +9,7 @@
 
 use std::collections::HashSet;
 
+use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
 use remus_topology::face::FaceId;
@@ -53,10 +54,24 @@ const IN_FACE_MAX_DEVIATION_ABS: f64 = 1e-2;
 /// # Errors
 ///
 /// Returns [`AlgoError`] if a topology lookup fails.
+#[allow(dead_code)]
 pub fn perform(topo: &Topology, arena: &mut GfaArena) -> Result<(), AlgoError> {
+    perform_with_tolerance(topo, arena, Tolerance::default())
+}
+
+/// Populate [`FaceInfo`] using the caller's geometric tolerance.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if a topology lookup fails.
+pub fn perform_with_tolerance(
+    topo: &Topology,
+    arena: &mut GfaArena,
+    tolerance: Tolerance,
+) -> Result<(), AlgoError> {
     fill_boundary_on(topo, arena)?;
     fill_section_sc(arena);
-    fill_ef_in(topo, arena);
+    fill_ef_in(topo, arena, tolerance);
     Ok(())
 }
 
@@ -172,7 +187,7 @@ fn dist_to_surface(
 /// Only the leaf pave blocks adjacent to the crossing parameter are
 /// inserted — the rest of the edge lies outside the face and would feed
 /// out-of-face fragments into the splitter as degenerate inner wires.
-fn fill_ef_in(topo: &Topology, arena: &mut GfaArena) {
+fn fill_ef_in(topo: &Topology, arena: &mut GfaArena, tolerance: Tolerance) {
     // Snapshot EF data
     let ef_data: Vec<_> = arena
         .interference
@@ -230,7 +245,7 @@ fn fill_ef_in(topo: &Topology, arena: &mut GfaArena) {
             // only when it actually hugs the face's surface: the pave
             // endpoints and interior curve samples must all sit within
             // max(weld band, deviation-ratio × chord).
-            let on_band = ON_SURFACE_BAND_FACTOR * remus_math::tolerance::Tolerance::new().linear;
+            let on_band = ON_SURFACE_BAND_FACTOR * tolerance.linear;
             let surface = match topo.face(face_id) {
                 Ok(f) => f.surface(),
                 Err(_) => continue,
