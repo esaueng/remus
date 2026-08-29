@@ -44,6 +44,24 @@ pub enum AlgoError {
         /// The `EdgeCurve::type_tag()` of the offending curve.
         variant: &'static str,
     },
+
+    /// A face-surface pair reached the GFA section writer with no
+    /// intersection arm for its combination.
+    ///
+    /// Returning empty sections here would let classification proceed as if
+    /// the faces provably do not meet — a silent wrong answer whenever the
+    /// pair in fact intersects. Raised as a typed refusal naming both
+    /// surface types instead (P-Class issue 2.1, standing rule R1).
+    #[error(
+        "unsupported surface pair `{a}` × `{b}`: no intersection arm exists \
+         for this face-surface combination"
+    )]
+    UnsupportedSurfacePair {
+        /// `FaceSurface::type_tag()` of face A.
+        a: &'static str,
+        /// `FaceSurface::type_tag()` of face B.
+        b: &'static str,
+    },
 }
 
 impl remus_math::diagnostic::ToDiagnostic for AlgoError {
@@ -83,6 +101,13 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
                 self.to_string(),
             )
             .with_detail("curveType", *variant),
+            Self::UnsupportedSurfacePair { a, b } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_surface_pair",
+                self.to_string(),
+            )
+            .with_detail("surfaceA", *a)
+            .with_detail("surfaceB", *b),
         }
     }
 }
@@ -111,6 +136,14 @@ mod diagnostic_registry_tests {
         let d = AlgoError::IntersectionFailed("invalid section range".into()).diagnostic();
         assert_eq!(d.category(), FailureCategory::Internal);
         assert_eq!(d.code(), "intersection_failed");
+
+        let d = AlgoError::UnsupportedSurfacePair {
+            a: "torus",
+            b: "cone",
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::Unsupported);
+        assert_eq!(d.code(), "unsupported_surface_pair");
     }
 
     #[test]
