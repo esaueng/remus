@@ -1,63 +1,62 @@
-# P-Class Program — running ledger
+# P-Class program status
 
-Issue → state → PR, so any session can resume the program cold. States:
-`open` → `in-progress` → `in-review (PR #N)` → `merged (PR #N)` /
-`deferred (reason)`. Update in each issue's final PR.
+Canonical plan: [p-class-program.md](p-class-program.md). This ledger is
+updated in the final PR for every issue. `Pending` means no implementation PR
+has landed; it is not evidence that the issue is unowned in another worktree,
+so the live open-PR inventory remains authoritative before work starts.
 
-Program plan: [p-class-program.md](p-class-program.md) (PR #119 at program
-start; move to a permanent link once merged).
+Issue 2.0's measured baseline is
+`39c7a7b7ccbfc746ed7d9e9b8f156d54d6cfe090`.
 
-## M2 — General curved booleans
-
-| Issue | Title | State | PR |
-|-------|-------|-------|----|
-| 2.0 | RFC 0002 completion: trims & p-curves | in-progress | 2.0a: trim writers |
-| 2.1 | Honest-failure hygiene (typed refusals) | open | — |
-| 2.2 | Sphere in general position | open | — |
-| 2.3 | Steinmetz ellipses (equal-radius cyl×cyl) | open | — |
-| 2.4 | Quadric×quadric transversal, NURBS seams | open | — |
-| 2.5 | NURBS×NURBS booleans | open | — |
-| 2.6 | Scale-relative band audit | open | — |
-| 2.7 | Tangency & sliver contacts (stretch) | open | — |
-| 2.8 | OperationContext budgets & cancellation | open | — |
-
-## M3 — Tolerant modeling
-
-| Issue | Title | State | PR |
-|-------|-------|-------|----|
-| 3.1 | RFC 0004: per-entity tolerance semantics | in-review (draft landed on branch docs/rfc-0004-draft) | — |
-| 3.2–3.6 | Substrate / predicates / GFA / import+sew / disclosure | open (blocked on 3.1) | — |
-
-## M4 — Body taxonomy
-
-| Issue | Title | State | PR |
-|-------|-------|-------|----|
-| 4.1 | RFC 0005: body classes & cellular results | in-review (draft landed on branch docs/rfc-0005-draft) | — |
-| 4.2–4.7 | Sheet bodies / split / trim / imprint / multi-region / wire | open (blocked on 4.1) | — |
-
-## M5–M8
-
-Not started. M7.5 and 8.2 are dependency-free filler for idle capacity.
-
-## Measured survey (issue 2.0 baseline, main @ abcbdc67)
-
-- `domain_with_endpoints`: 132 production call sites — 87 trim-aware
-  (`&Edge` delegate), 45 trim-blind (`EdgeCurve::` direct), of which 40 are
-  reader-reconstruction risks (34 in algo, 1 STEP-reader fallback, 5
-  legitimate new-geometry sites). No grep gate exists.
-- Trim writers: GFA (algo) result-assembly chain carries trims end-to-end.
-  Open gaps were: `merge_result_vertices` (operations/boolean/mod.rs), the
-  analytic fast paths (SphereCapFace / CylindricalFace / box-sphere octant
-  arcs), coaxial-cone rim trims, `copy_and_transform_solid`, extrude top
-  edges, loft ring edges, blend trimmer `split_edge_at`, blend/chamfer
-  vertex-substitute rebuilds, `unify_faces`, `unify_same_domain`, wasm
-  `reverseShape`.
-- SameParameter/SameRange validators (topology/validation.rs) have zero
-  external callers; no boolean-output CI coverage.
-- Transaction machinery exists and is adopted at 10 sites; the boundary
-  authority flip precondition (sanctioned mutation) is met at boolean/GFA/
-  blend entry points, not in heal/offset (79 uncontrolled in-place mutation
-  sites across five crates).
-- make_torus builds the minimal CW complex (degenerate Line seams) — no
-  circle rims to trim on a rebuilt torus; torus-side rim trims are moot
-  until M2.4's splitters.
+| Issue | State | PR |
+| --- | --- | --- |
+| 2.0a Measurement and semantic ratchet | Merged | [#120](https://github.com/esaueng/remus/pull/120) |
+| 2.0b Missing writers, invariants, oracles, and census | In progress — operations contribution in review; phase-FF pending | [#122](https://github.com/esaueng/remus/pull/122) |
+| 2.0c Reader migration and seam-safe validation | Pending | — |
+| 2.0d Topology-owned atomic boundary mutation | Pending | — |
+| 2.0e Physical Loop/Coedge p-curve authority | Pending | — |
+| 2.0f STEP per-use deterministic round-trip | Pending | — |
+| 2.0g Integration, zero gate, corpus, and docs | Pending | — |
+| 2.1 Honest-failure hygiene | Pending | — |
+| 2.2 Sphere in general position | Pending | — |
+| 2.3 Steinmetz ellipses | Pending | — |
+| 2.4 Quadric × quadric transversal | Pending | — |
+| 2.5 NURBS × NURBS booleans | Pending | — |
+| 2.6 Scale-relative band audit | Pending | — |
+| 2.7 Tangency and sliver contacts | Pending | — |
+| 2.8 OperationContext budgets and cancellation | Pending | — |
+| 3.1 RFC 0004 | Pending | — |
+| 3.2 Topology substrate | Pending | — |
+| 3.3 Predicate plumbing | Pending | — |
+| 3.4 GFA integration | Pending | — |
+| 3.5 Import and sew integration | Pending | — |
+| 3.6 Downstream disclosure | Pending | — |
+| 4.1 RFC 0005 | Pending | — |
+| 4.2 Sheet bodies first-class | Pending | — |
+| 4.3 Split solid by sheet | Pending | — |
+| 4.4 Trim sheet by solid / sheet × sheet | Pending | — |
+| 4.5 Imprint | Pending | — |
+| 4.6 Multi-region boolean output | Pending | — |
+| 4.7 Wire bodies | Pending | — |
+| 5.1 Variable-radius qualification | Pending | — |
+| 5.2 Curved-support blends | Pending | — |
+| 5.3 General vertex blends | Pending | — |
+| 5.4 Setbacks | Pending | — |
+| 5.5 Overflow and cliff handling | Pending | — |
+| 5.6 Face-face blends and hold lines | Pending | — |
+| 5.7 Offset self-intersection removal | Pending | — |
+| 6.1 Replace-surface re-limitation | Pending | — |
+| 6.2 Generalized move / rotate / offset face | Pending | — |
+| 6.3 Curved delete-face-and-heal | Pending | — |
+| 6.4 Curved-face draft | Pending | — |
+| 6.5 Journaled direct edits | Pending | — |
+| 7.1 Guided sweeps | Pending | — |
+| 7.2 Loft continuity and periodic lofts | Pending | — |
+| 7.3 Constrained N-sided fill | Pending | — |
+| 7.4 Surface extension and curve imprint | Pending | — |
+| 7.5 Interrogation | Pending | — |
+| 8.1 Differential testing harness | Pending | — |
+| 8.2 Performance budget gates | Pending | — |
+| 8.3 Parallel tessellation | Pending | — |
+| 8.4 Parallel boolean internals | Pending | — |
+| 8.5 Real-model corpus | Pending | — |

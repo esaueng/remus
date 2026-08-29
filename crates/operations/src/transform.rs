@@ -50,6 +50,22 @@ const DEGENERATE_SHAPE_RATIO: f64 = 1e-12;
 /// orders of magnitude above `8·f64::EPSILON`.
 const AFFINE_ROW_WOBBLE: f64 = 8.0 * f64::EPSILON;
 
+/// Relative error budget for recognizing an analytic image as exact.
+///
+/// The tests below only forgive the rounding accumulated by a handful of
+/// `f64` products, sums, square roots, and normalizations.  A looser geometric
+/// tolerance is unsafe here: its absolute error grows with the curve radius,
+/// so a coefficient that looks "close" at unit scale can move a point a large
+/// distance on a large model.  Sixteen ulps covers the arithmetic above while
+/// keeping any accepted discrepancy at the same scale as evaluating the
+/// transformed coordinates themselves.
+const ANALYTIC_ROUNDOFF_REL: f64 = 16.0 * f64::EPSILON;
+
+fn equal_within_analytic_roundoff(a: f64, b: f64) -> bool {
+    let scale = a.abs().max(b.abs());
+    scale.is_finite() && scale > 0.0 && (a - b).abs() <= scale * ANALYTIC_ROUNDOFF_REL
+}
+
 /// Reject a transform that collapses the model; accept every one that does not.
 ///
 /// Validates the affine bottom row before testing the 3×3 linear part.
@@ -430,8 +446,9 @@ pub(crate) fn ensure_orthogonal_conjugate_axes(
     v: Vec3,
     kind: &str,
 ) -> Result<(), crate::OperationsError> {
-    let scale = u.length() * v.length();
-    if u.dot(v).abs() > scale * 1e-9 {
+    let u_dir = u.normalize()?;
+    let v_dir = v.normalize()?;
+    if u_dir.dot(v_dir).abs() > ANALYTIC_ROUNDOFF_REL {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!(
                 "transform maps a {kind} edge to a skewed ellipse (non-orthogonal image \
@@ -680,18 +697,24 @@ fn is_uniform_scale(matrix: &Mat4) -> bool {
     let col = |j: usize| Vec3::new(m[0][j], m[1][j], m[2][j]);
     let (cx, cy, cz) = (col(0), col(1), col(2));
     let (nx, ny, nz) = (cx.length(), cy.length(), cz.length());
-    let avg = (nx + ny + nz) / 3.0;
-    if avg <= 0.0 {
+    if !nx.is_finite() || !ny.is_finite() || !nz.is_finite() {
         return false;
     }
-    let rel = 1e-9;
-    let norms_equal = (nx - avg).abs() < avg * rel
-        && (ny - avg).abs() < avg * rel
-        && (nz - avg).abs() < avg * rel;
-    let scale_sq = avg * avg;
-    let orthogonal = cx.dot(cy).abs() < scale_sq * rel
-        && cy.dot(cz).abs() < scale_sq * rel
-        && cz.dot(cx).abs() < scale_sq * rel;
+    let norms_equal = equal_within_analytic_roundoff(nx, ny)
+        && equal_within_analytic_roundoff(ny, nz)
+        && equal_within_analytic_roundoff(nz, nx);
+    let Ok(ux) = cx.normalize() else {
+        return false;
+    };
+    let Ok(uy) = cy.normalize() else {
+        return false;
+    };
+    let Ok(uz) = cz.normalize() else {
+        return false;
+    };
+    let orthogonal = ux.dot(uy).abs() <= ANALYTIC_ROUNDOFF_REL
+        && uy.dot(uz).abs() <= ANALYTIC_ROUNDOFF_REL
+        && uz.dot(ux).abs() <= ANALYTIC_ROUNDOFF_REL;
     norms_equal && orthogonal
 }
 
@@ -767,7 +790,7 @@ pub(crate) type TransformedEdgeCurve = (Option<EdgeCurve>, Option<(f64, f64)>);
 /// preserves the curve's parameterization (NURBS control-point maps, open
 /// conics under a similarity, scaled circles/ellipses), exactly remapped for
 /// the handled re-parameterization (Circle→Ellipse with swapped principal
-/// axes: `t ↦ π/2 − t`), and dropped otherwise — the endpoint-projection
+/// axes: `t ↦ t − π/2`), and dropped otherwise — the endpoint-projection
 /// fallback then re-derives the domain on the new parameterization.
 pub(crate) fn transform_edge_curve_with_trim(
     curve: &EdgeCurve,
@@ -779,7 +802,7 @@ pub(crate) fn transform_edge_curve_with_trim(
         matrix.mul_point(remus_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
     };
     let (new_curve, new_trim) = match curve {
-        EdgeCurve::Line => (None, trim),
+        EdgeCurve::Line => (None, None),
         // Exact under a similarity, typed refusal otherwise — see
         // `transform_open_conic`.
         c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
@@ -815,7 +838,7 @@ pub(crate) fn transform_edge_curve_with_trim(
             // emits a skewed frame — refuse instead.
             ensure_orthogonal_conjugate_axes(new_u, new_v, "circular")?;
             let new_normal = new_u.cross(new_v).normalize()?;
-            if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
+            if equal_within_analytic_roundoff(su, sv) {
                 (
                     Some(EdgeCurve::Circle(remus_math::curves::Circle3D::with_axes(
                         new_center,
@@ -840,11 +863,11 @@ pub(crate) fn transform_edge_curve_with_trim(
                         c.radius() * sv,
                         c.radius() * su,
                         new_v.normalize()?,
-                        new_u.normalize()?,
+                        -new_u.normalize()?,
                         trim.map(|(a, b)| {
                             (
-                                std::f64::consts::FRAC_PI_2 - a,
-                                std::f64::consts::FRAC_PI_2 - b,
+                                a - std::f64::consts::FRAC_PI_2,
+                                b - std::f64::consts::FRAC_PI_2,
                             )
                         }),
                     )
@@ -866,18 +889,37 @@ pub(crate) fn transform_edge_curve_with_trim(
             // Same conjugate-diameter reasoning as the Circle arm above.
             ensure_orthogonal_conjugate_axes(new_u, new_v, "elliptical")?;
             let new_normal = new_u.cross(new_v).normalize()?;
+            let u_extent = e.semi_major() * new_u.length();
+            let v_extent = e.semi_minor() * new_v.length();
+            let (semi_major, semi_minor, u_dir, v_dir, mapped_trim) = if u_extent >= v_extent {
+                (
+                    u_extent,
+                    v_extent,
+                    new_u.normalize()?,
+                    new_v.normalize()?,
+                    trim,
+                )
+            } else {
+                (
+                    v_extent,
+                    u_extent,
+                    new_v.normalize()?,
+                    -new_u.normalize()?,
+                    trim.map(|(a, b)| {
+                        (
+                            a - std::f64::consts::FRAC_PI_2,
+                            b - std::f64::consts::FRAC_PI_2,
+                        )
+                    }),
+                )
+            };
             (
                 Some(EdgeCurve::Ellipse(
                     remus_math::curves::Ellipse3D::with_axes(
-                        new_center,
-                        new_normal,
-                        e.semi_major() * new_u.length(),
-                        e.semi_minor() * new_v.length(),
-                        new_u.normalize()?,
-                        new_v.normalize()?,
+                        new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
                     )?,
                 )),
-                trim,
+                mapped_trim,
             )
         }
     };
@@ -901,6 +943,8 @@ pub(crate) fn transform_edges(
             let edge = topo.edge_mut(eid)?;
             edge.set_curve(curve);
             edge.set_trim(new_trim);
+        } else if topo.edge(eid)?.trim().is_some() {
+            topo.edge_mut(eid)?.set_trim(None);
         }
     }
     Ok(())

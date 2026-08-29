@@ -5,11 +5,12 @@
 //! shortcuts, solid copies, transforms, and the arena format must carry those
 //! intervals without reconstructing them from endpoints.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f64::consts::TAU;
 
 use remus_math::mat::Mat4;
+use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::copy::copy_solid;
 use remus_operations::primitives::{make_cone, make_cylinder};
@@ -56,17 +57,93 @@ fn solid_trims(topo: &Topology, solid: SolidId) -> Vec<(f64, f64)> {
     trims
 }
 
-fn stamp_exact_full_circle_trims(topo: &mut Topology, solid: SolidId) {
+fn assert_primitive_full_circle_contract(
+    topo: &Topology,
+    solid: SolidId,
+    expected_circles: usize,
+    expected_volume: f64,
+) {
+    let mut circles = 0;
     for edge_id in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
         let edge = topo.edge(edge_id).unwrap();
-        let EdgeCurve::Circle(circle) = edge.curve() else {
-            continue;
-        };
-        let start = topo.vertex(edge.start()).unwrap().point();
-        let parameter = circle.project(start);
-        topo.edge_mut(edge_id)
-            .unwrap()
-            .set_trim(Some((parameter, parameter + TAU)));
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                circles += 1;
+                let (t0, t1) = edge.trim().expect("primitive rim needs an explicit trim");
+                assert!(t0.is_finite() && t1.is_finite());
+                assert!((t1 - t0 - TAU).abs() < 1e-12);
+                let vertex = topo.vertex(edge.start()).unwrap().point();
+                assert!((circle.evaluate(t0) - vertex).length() < 1e-9);
+                assert!((circle.evaluate(t1) - vertex).length() < 1e-9);
+            }
+            EdgeCurve::Line => {
+                assert!(edge.trim().is_none(), "primitive seam lines stay untrimmed");
+            }
+            other => panic!("unexpected primitive edge curve: {}", other.type_tag()),
+        }
+    }
+    assert_eq!(circles, expected_circles);
+
+    let volume = remus_operations::measure::solid_volume(topo, solid, 0.001).unwrap();
+    assert!(
+        (volume - expected_volume).abs() < 1e-3,
+        "closed-form volume oracle: {volume} vs {expected_volume}"
+    );
+}
+
+#[test]
+fn primitive_cylinder_rims_are_explicit_full_turns() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
+    assert_primitive_full_circle_contract(&topo, solid, 2, std::f64::consts::PI * 9.0 * 4.0);
+}
+
+#[test]
+fn primitive_pointed_cone_rim_is_an_explicit_full_turn() {
+    for (bottom, top) in [(2.0, 0.0), (0.0, 2.0)] {
+        let mut topo = Topology::new();
+        let solid = make_cone(&mut topo, bottom, top, 3.0).unwrap();
+        let expected = std::f64::consts::PI * 4.0;
+        assert_primitive_full_circle_contract(&topo, solid, 1, expected);
+    }
+}
+
+#[test]
+fn primitive_frustum_rims_are_explicit_full_turns() {
+    let mut topo = Topology::new();
+    let solid = make_cone(&mut topo, 2.0, 1.0, 3.0).unwrap();
+    let expected = std::f64::consts::PI * 7.0;
+    assert_primitive_full_circle_contract(&topo, solid, 2, expected);
+}
+
+#[test]
+fn primitive_trim_writers_refuse_non_finite_dimensions() {
+    for (radius, height) in [
+        (f64::NAN, 1.0),
+        (f64::INFINITY, 1.0),
+        (1.0, f64::NAN),
+        (1.0, f64::INFINITY),
+    ] {
+        let mut topo = Topology::new();
+        assert!(matches!(
+            make_cylinder(&mut topo, radius, height),
+            Err(OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(topo.edges().len(), 0, "refusal must precede allocation");
+    }
+
+    for (bottom, top, height) in [
+        (f64::NAN, 1.0, 1.0),
+        (1.0, f64::INFINITY, 1.0),
+        (1.0, 0.0, f64::NAN),
+        (1.0, 0.0, f64::INFINITY),
+    ] {
+        let mut topo = Topology::new();
+        assert!(matches!(
+            make_cone(&mut topo, bottom, top, height),
+            Err(OperationsError::InvalidInput { .. })
+        ));
+        assert_eq!(topo.edges().len(), 0, "refusal must precede allocation");
     }
 }
 
@@ -102,8 +179,6 @@ fn coaxial_cylinder_fast_path_preserves_full_circle_trims() {
     let mut topo = Topology::new();
     let lower = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
     let upper = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
-    stamp_exact_full_circle_trims(&mut topo, lower);
-    stamp_exact_full_circle_trims(&mut topo, upper);
     transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
@@ -190,8 +265,6 @@ fn coaxial_cylinder_fast_path_keeps_each_rim_in_phase() {
     let mut topo = Topology::new();
     let lower = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
     let upper = make_cylinder(&mut topo, 2.0, 2.0).unwrap();
-    stamp_exact_full_circle_trims(&mut topo, lower);
-    stamp_exact_full_circle_trims(&mut topo, upper);
     transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
@@ -217,8 +290,19 @@ fn coaxial_cone_fast_path_preserves_full_circle_trims() {
     // Frustums of the same cone (apex z = -2, slope 0.5): r = 1..2 and 2..3.
     let lower = make_cone(&mut topo, 1.0, 2.0, 2.0).unwrap();
     let upper = make_cone(&mut topo, 2.0, 3.0, 2.0).unwrap();
-    stamp_exact_full_circle_trims(&mut topo, lower);
-    stamp_exact_full_circle_trims(&mut topo, upper);
+    // A source may encode a full circle with the opposite parameter sense.
+    // Fresh shortcut topology keeps its constructor's coedge winding and
+    // therefore canonicalizes the new rims to positive full turns.
+    for edge_id in remus_topology::explorer::solid_edges(&topo, lower).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        let start = circle.project(topo.vertex(edge.start()).unwrap().point());
+        topo.edge_mut(edge_id)
+            .unwrap()
+            .set_trim(Some((start, start - TAU)));
+    }
     transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 2.0)).unwrap();
 
     let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
@@ -288,8 +372,12 @@ fn box_sphere_intersect_shortcut_arcs_carry_quarter_span_trims() {
     // The analytic census and oracle are unchanged by storing the spans.
     let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
     assert_eq!((f, e, v), (4, 6, 4), "octant topology unchanged");
-    let vol = remus_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
-    assert!(vol > 0.0 && vol < 4.0 / 3.0 * std::f64::consts::PI * 343.0);
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+    let exact = std::f64::consts::PI * 7.0_f64.powi(3) / 6.0;
+    assert!(
+        (vol - exact).abs() < 0.5,
+        "closed-form octant volume: {vol} vs {exact}"
+    );
 }
 
 /// `copy_and_transform_solid` must apply the same exact trim policy as
@@ -306,6 +394,18 @@ fn copy_and_transform_solid_follows_the_exact_trim_policy() {
         .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
         .unwrap();
     topo.edge_mut(rim).unwrap().set_trim(Some((0.5, 2.5)));
+    let seam = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line))
+        .unwrap();
+    topo.edge_mut(seam).unwrap().set_trim(Some((2.0, 3.0)));
+    let partial_trims = |topo: &Topology, solid: SolidId| {
+        solid_trims(topo, solid)
+            .into_iter()
+            .filter(|(t0, t1)| ((t1 - t0).abs() - TAU).abs() > 1e-9)
+            .collect::<Vec<_>>()
+    };
 
     // Pure translation: the parameterization is untouched — trim retained.
     let moved = remus_operations::copy::copy_and_transform_solid(
@@ -314,7 +414,7 @@ fn copy_and_transform_solid_follows_the_exact_trim_policy() {
         &Mat4::translation(5.0, 0.0, 0.0),
     )
     .unwrap();
-    let moved_trims = solid_trims(&topo, moved);
+    let moved_trims = partial_trims(&topo, moved);
     assert_eq!(
         moved_trims,
         vec![(0.5, 2.5)],
@@ -328,25 +428,44 @@ fn copy_and_transform_solid_follows_the_exact_trim_policy() {
         &Mat4::rotation_z(std::f64::consts::FRAC_PI_2),
     )
     .unwrap();
-    let rotated_trims = solid_trims(&topo, rotated);
+    let rotated_trims = partial_trims(&topo, rotated);
     assert_eq!(rotated_trims, vec![(0.5, 2.5)], "rotation retains the trim");
 
-    // Anisotropic scale: the Circle becomes an Ellipse. Whichever arm the
-    // circle's reference frame lands in, the policy outcome is exact:
-    // major-first retains the interval; major-second remaps t ↦ π/2 − t.
+    // Anisotropic x-scale: the primitive circle's +Z frame has its major
+    // transformed extent on the second axis. The right-handed axis swap maps
+    // `t` exactly to `t - π/2`.
     let stretched = remus_operations::copy::copy_and_transform_solid(
         &mut topo,
         solid,
         &Mat4::scale(2.0, 1.0, 1.0),
     )
     .unwrap();
-    let stretched_trims = solid_trims(&topo, stretched);
+    let stretched_trims = partial_trims(&topo, stretched);
     let remapped = (
-        std::f64::consts::FRAC_PI_2 - 0.5,
-        std::f64::consts::FRAC_PI_2 - 2.5,
+        0.5 - std::f64::consts::FRAC_PI_2,
+        2.5 - std::f64::consts::FRAC_PI_2,
     );
+    assert_eq!(stretched_trims, vec![remapped]);
+    let stretched_rim = remus_topology::explorer::solid_edges(&topo, stretched)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| topo.edge(edge_id).unwrap().trim().is_some())
+        .unwrap();
+    let EdgeCurve::Ellipse(ellipse) = topo.edge(stretched_rim).unwrap().curve() else {
+        panic!("anisotropic circle transform must produce an ellipse");
+    };
     assert!(
-        stretched_trims == vec![(0.5, 2.5)] || stretched_trims == vec![remapped],
-        "scale follows the exact Circle→Ellipse trim policy: {stretched_trims:?}"
+        ellipse
+            .u_axis()
+            .cross(ellipse.v_axis())
+            .dot(ellipse.normal())
+            > 0.999_999,
+        "transformed ellipse frame must remain right-handed"
+    );
+
+    transform_solid(&mut topo, solid, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
+    assert!(
+        topo.edge(seam).unwrap().trim().is_none(),
+        "Line geometry is endpoint-normalized and cannot retain an explicit trim"
     );
 }

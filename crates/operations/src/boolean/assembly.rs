@@ -43,28 +43,48 @@ fn sub_trim(
     remus_algo::sub_trim(curve, parent?, start, end)
 }
 
-/// The CCW span of `circle` from `start` to `end`, as an explicit RFC 0002
-/// trim interval.
+/// The short CCW span of `circle` from `start` to `end`, as an explicit RFC
+/// 0002 trim interval.
 ///
 /// Fast paths that mint analytic arcs build the circle so its CCW run
 /// start→end IS the intended span (axis or reference direction chosen
 /// accordingly). This helper stores that span instead of leaving consumers
 /// to re-derive it through `EdgeCurve::domain_with_endpoints`' projection
-/// tolerance bands. Returns `None` for degenerate (coincident or
-/// full-period) spans, where the projection fallback is exact already.
+/// tolerance bands. Degenerate or complementary spans are refused rather
+/// than silently turning an open arc into a full circle.
 pub(crate) fn ccw_arc_trim(
     circle: &remus_math::curves::Circle3D,
     start: Point3,
     end: Point3,
-) -> Option<(f64, f64)> {
-    const SPAN_EPS: f64 = 1e-12;
+    tol: Tolerance,
+) -> Result<(f64, f64), crate::OperationsError> {
     let t0 = circle.project(start);
     let delta = (circle.project(end) - t0).rem_euclid(std::f64::consts::TAU);
-    if delta <= SPAN_EPS || delta >= std::f64::consts::TAU - SPAN_EPS {
-        None
-    } else {
-        Some((t0, t0 + delta))
+    let angular_band = tol.linear / circle.radius();
+    let chord = 2.0 * circle.radius() * (0.5 * delta.min(std::f64::consts::TAU - delta)).sin();
+    if !t0.is_finite() || !delta.is_finite() || chord <= tol.linear {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason: "open circle arc is degenerate within linear tolerance".into(),
+        });
     }
+    if delta > std::f64::consts::PI + angular_band {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason: "open circle arc selected the complementary periodic span".into(),
+        });
+    }
+    let t1 = t0 + delta;
+    let start_residual = (circle.evaluate(t0) - start).length();
+    let end_residual = (circle.evaluate(t1) - end).length();
+    if start_residual > tol.linear || end_residual > tol.linear {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason: "open circle arc endpoints exceed linear tolerance from the analytic curve"
+                .into(),
+        });
+    }
+    Ok((t0, t1))
 }
 
 /// Quantize a coordinate to a spatial hash key.
@@ -510,7 +530,10 @@ pub(crate) fn assemble_solid_mixed_with_history(
                     }
                     let (key_min, key_max) = if vi <= vj { (vi, vj) } else { (vj, vi) };
 
-                    let edge_id = *edge_map.entry((key_min, key_max)).or_insert_with(|| {
+                    let edge_key = (key_min, key_max);
+                    let edge_id = if let Some(&existing) = edge_map.get(&edge_key) {
+                        existing
+                    } else {
                         let start = vert_ids[i];
                         let end = vert_ids[j];
                         // The boundary between consecutive cap corners is the
@@ -521,27 +544,25 @@ pub(crate) fn assemble_solid_mixed_with_history(
                         let di = verts[i] - center;
                         let dj = verts[j] - center;
                         let axis = di.cross(dj);
-                        if let (true, Ok(circle)) = (
-                            axis.length() > 1e-12 * radius * radius,
-                            remus_math::curves::Circle3D::new(center, axis, radius),
-                        ) {
-                            // Pin the CCW great-circle span start→end (always
-                            // the short arc: |axis| encodes sin of the corner
-                            // angle, so the span is < π by construction).
-                            let trim = ccw_arc_trim(&circle, verts[i], verts[j]);
-                            topo.add_edge(edge_with_trim(
-                                start,
-                                end,
-                                EdgeCurve::Circle(circle),
-                                None,
-                                trim,
-                            ))
-                        } else {
-                            // Coincident or antipodal corners: no unique great
-                            // circle — fall back to a chord.
-                            topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
+                        let chord = (verts[j] - verts[i]).length();
+                        if chord <= tol.linear || axis.length() <= tol.linear * radius {
+                            return Err(crate::OperationsError::Unsupported {
+                                operation: "assemble_solid_mixed",
+                                reason: "sphere-cap boundary has no unique great-circle arc".into(),
+                            });
                         }
-                    });
+                        let circle = remus_math::curves::Circle3D::new(center, axis, radius)?;
+                        // Pin the CCW great-circle span start→end (always the
+                        // short arc: |axis| encodes sin of the corner angle,
+                        // so the span is < π by construction).
+                        let trim = ccw_arc_trim(&circle, verts[i], verts[j], tol)?;
+                        let mut arc =
+                            Edge::with_tolerance(start, end, EdgeCurve::Circle(circle), None);
+                        arc.set_trim(Some(trim));
+                        let minted = topo.add_edge(arc);
+                        edge_map.insert(edge_key, minted);
+                        minted
+                    };
                     let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
 
                     if oriented_edges
@@ -607,7 +628,10 @@ pub(crate) fn assemble_solid_mixed_with_history(
                     }
                     let (key_min, key_max) = if vi <= vj { (vi, vj) } else { (vj, vi) };
 
-                    let edge_id = *edge_map.entry((key_min, key_max)).or_insert_with(|| {
+                    let edge_key = (key_min, key_max);
+                    let edge_id = if let Some(&existing) = edge_map.get(&edge_key) {
+                        existing
+                    } else {
                         let start = vert_ids[i];
                         let end = vert_ids[j];
 
@@ -615,27 +639,24 @@ pub(crate) fn assemble_solid_mixed_with_history(
                         // by projecting both endpoints onto the cylinder.
                         let (u1, v1) = cylinder.project_point(verts[i]);
                         let (u2, v2) = cylinder.project_point(verts[j]);
-                        let u_diff = (u1 - u2).abs();
                         let v_diff = (v1 - v2).abs();
+                        let mut du = u2 - u1;
+                        if du > std::f64::consts::PI {
+                            du -= std::f64::consts::TAU;
+                        } else if du < -std::f64::consts::PI {
+                            du += std::f64::consts::TAU;
+                        }
+                        let chord = 2.0 * cylinder.radius() * (0.5 * du.abs()).sin();
 
-                        // Angular edge: endpoints at the same height (v) but different
-                        // angle (u). If v also differs, it's a diagonal/seam → Line.
-                        if u_diff > tol.linear
-                            && u_diff < (std::f64::consts::TAU - tol.linear)
-                            && v_diff < tol.linear * 100.0
-                        {
+                        // A cylinder boundary is either a constant-v circle arc or a
+                        // constant-u axial generator. A diagonal in UV is neither.
+                        let minted = if chord > tol.linear && v_diff <= tol.linear {
                             // A stored Circle arc runs CCW start→end around its
                             // axis. Build the arc along the polygon traversal
                             // i→j: when the wrapped u-step is negative the
                             // traversal runs clockwise around cylinder.axis(),
                             // so negate the axis — otherwise the stored arc
                             // would be the complement of the intended span.
-                            let mut du = u2 - u1;
-                            if du > std::f64::consts::PI {
-                                du -= std::f64::consts::TAU;
-                            } else if du < -std::f64::consts::PI {
-                                du += std::f64::consts::TAU;
-                            }
                             let axis = if du >= 0.0 {
                                 cylinder.axis()
                             } else {
@@ -643,27 +664,28 @@ pub(crate) fn assemble_solid_mixed_with_history(
                             };
                             // Create a Circle3D at the v-level of this edge.
                             let center = cylinder.origin() + cylinder.axis() * ((v1 + v2) * 0.5);
-                            if let Ok(circle) =
-                                remus_math::curves::Circle3D::new(center, axis, cylinder.radius())
-                            {
-                                // Pin the CCW angular span start→end (|du| ≤ π
-                                // after the wrapped-step axis choice above).
-                                let trim = ccw_arc_trim(&circle, verts[i], verts[j]);
-                                topo.add_edge(edge_with_trim(
-                                    start,
-                                    end,
-                                    EdgeCurve::Circle(circle),
-                                    None,
-                                    trim,
-                                ))
-                            } else {
-                                topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
-                            }
-                        } else {
+                            let circle =
+                                remus_math::curves::Circle3D::new(center, axis, cylinder.radius())?;
+                            // Pin the CCW angular span start→end (|du| ≤ π
+                            // after the wrapped-step axis choice above).
+                            let trim = ccw_arc_trim(&circle, verts[i], verts[j], tol)?;
+                            let mut arc =
+                                Edge::with_tolerance(start, end, EdgeCurve::Circle(circle), None);
+                            arc.set_trim(Some(trim));
+                            topo.add_edge(arc)
+                        } else if chord <= tol.linear && v_diff > tol.linear {
                             // Axial edge (same angle, different height): line.
                             topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
-                        }
-                    });
+                        } else {
+                            return Err(crate::OperationsError::Unsupported {
+                                operation: "assemble_solid_mixed",
+                                reason: "cylindrical face boundary is diagonal or degenerate in parameter space"
+                                    .into(),
+                            });
+                        };
+                        edge_map.insert(edge_key, minted);
+                        minted
+                    };
                     let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
 
                     if oriented_edges

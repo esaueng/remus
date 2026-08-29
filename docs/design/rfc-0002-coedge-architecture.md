@@ -1,26 +1,32 @@
 # RFC 0002: Coedge architecture
 
-Status: accepted design; implementation staged as backlog Issues 6–8.
+Status: accepted design; Stages 1–3 landed. The remaining boundary-authority
+flip is staged as P-Class Issue 2.0.
 Characterization anchors: `crates/topology/src/pcurve.rs`, module
-`seam_characterization` — three tests pin the current defect and state how
-they must flip.
+`seam_characterization` — the flipped tests pin the landed per-use behavior
+that the physical storage move must preserve.
 
 ## Problem
 
-A face boundary is an ordered `Vec<OrientedEdge>` (`wire.rs`), and p-curves
-are keyed by `(EdgeId, FaceId)` (`pcurve.rs`). One 3D edge used twice by the
-same face — the seam of every closed cylinder, cone, sphere, torus, and
-periodic NURBS surface — therefore cannot carry per-use data:
+The original defect combined face boundaries stored as ordered
+`Vec<OrientedEdge>` values (`wire.rs`) with p-curves keyed only by
+`(EdgeId, FaceId)`. One 3D edge used twice by the same face — the seam of
+every closed cylinder, cone, sphere, torus, and periodic NURBS surface —
+therefore could not carry per-use data:
 
-- the second seam p-curve **silently overwrites** the first
+- the second seam p-curve **silently overwrote** the first
   (`PCurveRegistry::set` is a plain map insert);
-- `pcurves_for_edge` reports one use where the face has two;
-- there is no identity to hang per-use trim intervals, periodic-branch
+- `pcurves_for_edge` reported one use where the face had two;
+- there was no identity to hang per-use trim intervals, periodic-branch
   winding, or per-use tolerance on (needed by Issue 8's explicit trims and
   SameParameter validation).
 
-Every seam-crossing capability cell is at best Partial until this is fixed
-(`docs/kernel-maturity/capability-matrix.md`, cross-family limitation 1).
+Stage 2 closed that data-loss defect with the mutation-robust
+`(edge, face, orientation)` key. The remaining problem is authority: wires
+are still stored face-boundary state, p-curves still live in the registry,
+and uncontrolled mutation can stale derived Loop/Coedge data. Seam-crossing
+capability remains Partial until Issue 2.0 completes the physical authority
+flip (`docs/kernel-maturity/capability-matrix.md`, cross-family limitation 1).
 
 ## Design
 
@@ -212,18 +218,174 @@ Queued:
 - The transactional wrapper (Issue 9) supplies the sanctioned-mutation
   boundary the remaining migration assumes.
 
-Result-assembly and analytic-fast-path completion (P-Class issue 2.0a): the
-boolean post-assembly vertex merge (`merge_result_vertices`), the sphere-cap
-and cylindrical-face spec arcs, the box-sphere octant arcs, and the
-coaxial-cone shortcut now write explicit trims into result topology;
-`copy_and_transform_solid` shares `transform_edges`' exact retention/remap
-policy instead of dropping the trim. The coaxial-torus shortcut is exempt —
-`make_torus` builds the minimal CW complex (degenerate seam lines), so a
-rebuilt torus has no circle edges to carry an interval.
+The operations contribution to P-Class issue 2.0b closes seven of the ten
+measured missing-writer paths: `merge_result_vertices`, the sphere-cap and
+cylindrical-face spec arcs, the box-sphere octant arcs, and the cylinder,
+pointed-cone, and frustum primitive rims. Primitive full turns are anchored at
+each rim's actual seam parameter. The three phase-FF emitters remain open.
+Carrier hardening in the same contribution keeps fresh coaxial-cylinder and
+coaxial-cone results on the primitive constructors' positive full-turn
+contract, makes `copy_and_transform_solid` share `transform_edges`' exact
+retention/remap policy, and clears malformed explicit domains from
+endpoint-normalized Lines.
+The coaxial-torus shortcut is exempt: `make_torus` builds the minimal CW
+complex with degenerate seam lines and no circle edge to carry an interval.
 
 ### Migration ratchet
 
-Once Stage 2 lands, new code must not construct face boundaries from raw
+#### Measured completion baseline
+
+The Issue 2.0 baseline is immutable `main` commit
+`39c7a7b7ccbfc746ed7d9e9b8f156d54d6cfe090`. The script carries checked-in
+identity manifests derived from that commit. Run
+`scripts/check-edge-domain-authority.py --list` to list and classify the
+identities on the **current HEAD** against those immutable manifests; the
+table and line numbers below are the immutable baseline snapshot. The
+default mode is the CI ratchet. It scans every whitespace-tolerant
+`domain_with_endpoints (` token, including UFCS and non-public definitions.
+An identity is its file, enclosing function, normalized local-context hash,
+and duplicate ordinal. Current approved inventories may only decrease; any
+unknown identity fails even if an old site was deleted and the total count
+did not change. Tests/examples are baseline-explicit identities, not a path
+or fixed-inline-module heuristic.
+
+| Inventory | Baseline | Classification |
+| --- | ---: | --- |
+| Production `domain_with_endpoints` readers | 131 | Calls in production Rust, excluding the two method definitions, the one `Edge` compatibility fallback, and test/example callers. |
+| Definitions | 2 | `EdgeCurve` and `Edge` accessors in `topology/src/edge.rs`. |
+| Internal compatibility fallback | 1 | `Edge` falling back to `EdgeCurve` when no explicit trim is stored. |
+| Test/example readers | 25 | Test modules, test targets, and examples; retained as characterization coverage. |
+| Existing result-construction trim preservation | 12 sites / 10 logical paths | GFA pave splitting, builder rebuild/split/weld paths, and operations boolean assembly/shortcuts. These required identities are non-decreasing: deleting or locally rewriting one fails the ratchet. They are the positive baseline, not the missing-writer inventory. Carrier-only copy, transform, serialization, offset, and healing writes are separate. |
+| Missing trim authority | 12 direct constructions + 1 snapshot omission / 10 logical paths | Immutable measured anchors, not automated detection. Three phase-FF emitters, two mixed-assembly branches, the box-sphere arc builder, merge-result-vertices snapshot/rebuild, and primitive cylinder/cone rims. A separate manually reviewed remaining-path manifest is reduced only as fixes and their oracles land. |
+| Stored face-boundary mutation | 30 | Production `wire_mut`, `inner_wires_mut`, and `set_outer_wire` sites; test mutations and `FaceSpec` mutation are excluded. |
+
+The 131 production readers, grouped by source file with exact baseline line
+numbers, are:
+
+| Source | Count | Lines |
+| --- | ---: | --- |
+| `crates/algo/src/builder/builder_solid.rs` | 2 | 2469, 2589 |
+| `crates/algo/src/builder/face_splitter/edge_splitting.rs` | 1 | 301 |
+| `crates/algo/src/builder/fill_images_faces.rs` | 8 | 1875, 2096, 2245, 2261, 2381, 2400, 2981, 3861 |
+| `crates/algo/src/builder/mod.rs` | 5 | 272, 1087, 1195, 1236, 1283 |
+| `crates/algo/src/builder/pcurve_compute.rs` | 2 | 234, 287 |
+| `crates/algo/src/builder/split_types.rs` | 4 | 63, 74, 77, 228 |
+| `crates/algo/src/classifier/mod.rs` | 1 | 421 |
+| `crates/algo/src/classifier/ray_cast.rs` | 2 | 443, 1275 |
+| `crates/algo/src/diagnostic.rs` | 1 | 137 |
+| `crates/algo/src/pave_filler/mod.rs` | 2 | 142, 330 |
+| `crates/algo/src/pave_filler/phase_ee.rs` | 1 | 115 |
+| `crates/algo/src/pave_filler/phase_ef.rs` | 2 | 167, 320 |
+| `crates/algo/src/pave_filler/phase_ff.rs` | 10 | 1062, 1289, 2275, 2350, 3267, 3340, 3408, 3444, 4566, 4985 |
+| `crates/algo/src/pave_filler/phase_ff_coplanar.rs` | 2 | 128, 402 |
+| `crates/algo/src/pave_filler/phase_ve.rs` | 2 | 112, 168 |
+| `crates/blend/src/builder_utils.rs` | 2 | 502, 595 |
+| `crates/blend/src/spine.rs` | 2 | 182, 202 |
+| `crates/check/src/properties/face_integrator.rs` | 5 | 280, 1205, 1234, 1356, 1364 |
+| `crates/check/src/util.rs` | 1 | 267 |
+| `crates/check/src/validate/edge.rs` | 1 | 163 |
+| `crates/check/src/validate/finite.rs` | 1 | 60 |
+| `crates/heal/src/analysis/edge.rs` | 2 | 111, 130 |
+| `crates/heal/src/analysis/face.rs` | 1 | 67 |
+| `crates/heal/src/analysis/wire.rs` | 2 | 100, 203 |
+| `crates/heal/src/construct/project_curve.rs` | 1 | 109 |
+| `crates/heal/src/custom/convert_to_bspline.rs` | 1 | 225 |
+| `crates/heal/src/fix/edge.rs` | 1 | 312 |
+| `crates/heal/src/fix/small_face.rs` | 1 | 126 |
+| `crates/heal/src/fix/wire.rs` | 4 | 602, 794, 890, 1011 |
+| `crates/heal/src/upgrade/merge_split_rim_arcs.rs` | 1 | 78 |
+| `crates/heal/src/upgrade/shell_sewing.rs` | 2 | 280, 281 |
+| `crates/heal/src/upgrade/unify_same_domain.rs` | 1 | 502 |
+| `crates/io/src/step/reader.rs` | 1 | 1665 |
+| `crates/operations/src/blend_ops.rs` | 3 | 152, 207, 371 |
+| `crates/operations/src/boolean/mod.rs` | 2 | 385, 4701 |
+| `crates/operations/src/extrude.rs` | 3 | 294, 517, 533 |
+| `crates/operations/src/feature_recognition.rs` | 1 | 281 |
+| `crates/operations/src/fillet/rolling_ball.rs` | 1 | 2690 |
+| `crates/operations/src/heal.rs` | 1 | 1661 |
+| `crates/operations/src/loft.rs` | 3 | 512, 513, 708 |
+| `crates/operations/src/measure/bounding_box.rs` | 2 | 321, 784 |
+| `crates/operations/src/measure/volume.rs` | 2 | 52, 1946 |
+| `crates/operations/src/query.rs` | 2 | 247, 292 |
+| `crates/operations/src/revolve.rs` | 3 | 56, 632, 1157 |
+| `crates/operations/src/split.rs` | 3 | 462, 469, 1052 |
+| `crates/operations/src/sweep.rs` | 1 | 458 |
+| `crates/operations/src/tessellate/edge_sampling.rs` | 14 | 145, 162, 186, 207, 321, 395, 399, 435, 447, 463, 632, 663, 683, 705 |
+| `crates/operations/src/tessellate/nonplanar.rs` | 1 | 841 |
+| `crates/operations/src/tessellate/nurbs.rs` | 6 | 121, 325, 332, 339, 348, 353 |
+| `crates/operations/src/tessellate/planar.rs` | 4 | 840, 871, 891, 911 |
+| `crates/operations/src/tessellate/rim_chain.rs` | 1 | 104 |
+| `crates/operations/src/tessellate/solid.rs` | 1 | 394 |
+| `crates/topology/src/validation.rs` | 1 | 329 |
+| `crates/wasm/src/bindings/batch.rs` | 1 | 583 |
+
+The 12 **existing preservation writes** are in these 10 logical paths:
+
+1. `pave_filler::make_split_edges::create_split_edge`;
+2. `builder::fill_images_faces::fill_images_faces`;
+3. `builder::fill_images_faces::rebuild_face_with_fresh_vertices`;
+4. `builder::fill_images_faces::rebuild_face_with_cb_edges`;
+5. `builder::fill_images_faces::instantiate_wire_edge` (two branch sites);
+6. `builder::builder_solid::weld_coincident_vertices`;
+7. `builder::builder_solid::split_arc_edges_at_collinear_vertices` (two split loops);
+8. `operations::boolean::assembly::edge_with_trim`;
+9. `operations::boolean::coaxial_cylinder_shortcut`; and
+10. `operations::boolean::unify_coincident_boundary_edges`.
+
+The missing-writer inventory is separate and immutable: it records what was
+measured at the baseline; it does not claim to detect whether current code
+has fixed an anchor. It has 12 direct edge-construction sites plus the
+`merge_result_vertices` snapshot omission that feeds one of them. Snapshot
+and rebuild are one logical loss path, so the inventory spans 10 logical
+paths. The script's `REMAINING_MISSING_TRIM_PATHS` is the manually reduced
+completion manifest reviewed alongside each fix and its oracle. Removing a
+path is coupled to writer evidence: its exact new identity hashes must be
+registered only in `FIXED_PATH_WRITER_IDENTITIES`. The ratchet derives the
+required preservation set exactly as the immutable 12-site baseline union
+those claims; fixed claims cannot reuse baseline writers or writers claimed
+by another path. Per-path cardinalities are pinned — 1 each for the
+three phase-FF paths, sphere-cap, cylinder-face, box-sphere, merge-result,
+and pointed-cone paths; 2 each for cylinder rims and frustum rims. The
+required preservation count is therefore `12 +` the weights of all fixed
+paths, and every required identity must exist on current HEAD:
+
+| Source anchor | Missing authority |
+| --- | --- |
+| `crates/algo/src/pave_filler/phase_ff.rs:876` | `perform_with_context` raw section edge |
+| `crates/algo/src/pave_filler/phase_ff.rs:976` | `emit_exact_arc` |
+| `crates/algo/src/pave_filler/phase_ff.rs:5193` | `emit_split_circle_arcs` |
+| `crates/operations/src/boolean/assembly.rs:504` | mixed assembly `SphereCapFace` circle |
+| `crates/operations/src/boolean/assembly.rs:615` | mixed assembly `CylindricalFace` circle |
+| `crates/operations/src/boolean/mod.rs:2359` | box-sphere `build_arc_edge` |
+| `crates/operations/src/boolean/mod.rs:4330` and `:4501` | `merge_result_vertices` omits trim in `FaceSnap`, then rebuilds without it |
+| `crates/operations/src/primitives.rs:189` and `:190` | cylinder bottom/top rims |
+| `crates/operations/src/primitives.rs:347` | pointed-cone rim |
+| `crates/operations/src/primitives.rs:405` and `:406` | frustum bottom/top rims |
+
+Issue 2.0 lands in seven independently reviewable stages:
+
+1. **2.0a — measurement and ratchet:** land this immutable survey, CI
+   ceiling, and program ledger.
+2. **2.0b — missing writers:** close all 12 direct construction gaps and the
+   `merge_result_vertices` snapshot omission; pin exact trim invariants,
+   geometric oracles, boolean census, and result validators.
+3. **2.0c — readers and seam validation:** migrate all 131 production
+   readers to the authoritative contract, preserving reconstruction only in
+   explicit import/healing adapters; make SameParameter/SameRange seam-safe
+   and run them over boolean outputs.
+4. **2.0d — atomic boundary mutation:** add topology-owned sanctioned
+   boundary mutation, migrate all 30 direct mutation sites, and pin atomic
+   checkpoint rollback. This lands before any storage authority flip.
+5. **2.0e — physical Loop/Coedge authority:** move boundary and p-curve
+   authority into Loop/Coedge behind additive compatibility adapters, then
+   flip the existing seam characterization tests.
+6. **2.0f — STEP per-use round-trip:** map loop-positioned STEP p-curves to
+   distinct coedge uses and pin deterministic write/read/write behavior.
+7. **2.0g — integration and zero gate:** require zero production readers,
+   run the boolean/corpus/WASM/rollback suites, remove obsolete facades, and
+   update capability and stability evidence.
+
+Once Issue 2.0e lands, new code must not construct face boundaries from raw
 `OrientedEdge` lists. Enforcement:
 
 - `Wire::new` stays public (free wires are legitimate); the ratchet is on
@@ -254,11 +416,11 @@ STEP's model already matches this design: an `EDGE_LOOP` of
 `ORIENTED_EDGE`s where a seam edge legitimately appears twice, and per-use
 2D geometry via `SURFACE_CURVE`/`PCURVE` associated geometry.
 
-- **Reader** (after Stage 2): a repeated oriented edge in an edge loop maps
+- **Reader** (after Issue 2.0f): a repeated oriented edge in an edge loop maps
   to two coedges; each `PCURVE` binds to its coedge by loop position, not by
   `(edge, face)`. Today's reader collapses these — the RFC 0002 fixture
   (write/read/write of the seam face) becomes an active I/O regression at
-  Stage 2, not before.
+  Issue 2.0f, not before.
 - **Writer**: emits one `ORIENTED_EDGE` per coedge and one per-use
   `PCURVE`. Deterministic entity ordering follows loop order.
 

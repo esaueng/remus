@@ -2,6 +2,7 @@
 
 use remus_math::mat::Mat4;
 use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::face::FaceSurface;
 use remus_topology::test_utils::make_unit_cube_non_manifold;
@@ -1180,5 +1181,110 @@ fn anisotropic_scale_gives_sphere_the_true_ellipsoid_volume() {
     assert!(
         (volume - expected).abs() / expected < 0.01,
         "sphere scaled volume {volume} should be ~{expected}"
+    );
+}
+
+#[test]
+fn transformed_ellipse_reorders_axes_with_an_exact_parameter_map() {
+    let source = remus_math::curves::Ellipse3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        2.0,
+        1.0,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    )
+    .unwrap();
+    let matrix = Mat4::scale(0.1, 10.0, 1.0);
+    let (curve, trim) = transform_edge_curve_with_trim(
+        &EdgeCurve::Ellipse(source.clone()),
+        Some((0.3, 1.7)),
+        &matrix,
+    )
+    .unwrap();
+    let EdgeCurve::Ellipse(image) = curve.unwrap() else {
+        panic!("ellipse image must stay an ellipse");
+    };
+    assert!(image.semi_major() >= image.semi_minor());
+    assert!(image.u_axis().cross(image.v_axis()).dot(image.normal()) > 0.999_999);
+    assert_eq!(
+        trim,
+        Some((
+            0.3 - std::f64::consts::FRAC_PI_2,
+            1.7 - std::f64::consts::FRAC_PI_2,
+        ))
+    );
+    for t in [0.0, 0.3, 1.7, 3.0] {
+        let expected = matrix.mul_point(source.evaluate(t));
+        let actual = image.evaluate(t - std::f64::consts::FRAC_PI_2);
+        assert!((actual - expected).length() < 1e-12);
+    }
+}
+
+#[test]
+fn tiny_relative_circle_anisotropy_still_produces_an_ellipse() {
+    let source = remus_math::curves::Circle3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    )
+    .unwrap();
+    let matrix = Mat4::scale(1.0e-6, 1.000_000_5e-6, 1.0);
+    let (curve, _) =
+        transform_edge_curve_with_trim(&EdgeCurve::Circle(source), None, &matrix).unwrap();
+    assert!(matches!(curve, Some(EdgeCurve::Ellipse(_))));
+}
+
+#[test]
+fn large_radius_circle_does_not_hide_near_anisotropy_as_roundoff() {
+    let radius = 1.0e18;
+    let source = remus_math::curves::Circle3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        radius,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    )
+    .unwrap();
+    let stretch = 1.0 + 1.0e-12;
+    let matrix = Mat4::scale(stretch, 1.0, 1.0);
+
+    // Treating this as a circle would move the x extremum by about one
+    // million model units.  The coefficient delta is small, but it is far
+    // outside the rounding budget and must retain the exact elliptic image.
+    assert!(radius * (stretch - 1.0) > 100_000.0);
+    assert!(!is_uniform_scale(&matrix));
+    let (curve, _) =
+        transform_edge_curve_with_trim(&EdgeCurve::Circle(source), None, &matrix).unwrap();
+    let Some(EdgeCurve::Ellipse(image)) = curve else {
+        panic!("near-anisotropic image of a large circle must be an ellipse");
+    };
+    assert!(image.semi_major() > image.semi_minor());
+}
+
+#[test]
+fn large_radius_circle_refuses_near_shear_outside_roundoff() {
+    let source = remus_math::curves::Circle3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0e18,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    )
+    .unwrap();
+    let shear = Mat4([
+        [1.0, 1.0e-12, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+
+    assert!(!is_uniform_scale(&shear));
+    let result = transform_edge_curve_with_trim(&EdgeCurve::Circle(source), None, &shear);
+    assert!(
+        matches!(result, Err(crate::OperationsError::InvalidInput { .. })),
+        "near shear outside the arithmetic roundoff budget must be typed-refused: {result:?}"
     );
 }
