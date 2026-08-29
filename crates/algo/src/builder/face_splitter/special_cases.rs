@@ -480,9 +480,7 @@ pub(super) fn split_sphere_face_by_crossing_circle(
 
     // The chain endpoints must lie on the face's seam circle: this is what
     // makes the configuration "a circle crossing the face boundary".
-    let Some((seam_circle, plane_n)) = face_seam_circle(surface, boundary_edges, tol) else {
-        return None;
-    };
+    let (seam_circle, plane_n) = face_seam_circle(surface, boundary_edges, tol)?;
     let on_seam = |p: Point3| -> bool {
         let r = p - seam_circle.center();
         r.dot(plane_n).abs() < weld && ((r.length() - seam_circle.radius()).abs() < weld)

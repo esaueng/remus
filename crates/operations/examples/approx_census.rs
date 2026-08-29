@@ -205,6 +205,18 @@ fn boolean_matrix() {
         transform_solid(t, c, &Mat4::translation(0.0, 0.0, -15.0))?;
         Ok((s, c))
     });
+    bool_pair("sphere / sphere (general)", |t| {
+        let s1 = primitives::make_sphere(t, 6.0, 24)?;
+        let s2 = primitives::make_sphere(t, 6.0, 24)?;
+        transform_solid(t, s2, &Mat4::translation(6.0, 0.0, 0.0))?;
+        Ok((s1, s2))
+    });
+    bool_pair("sphere / sphere (near-tangent)", |t| {
+        let s1 = primitives::make_sphere(t, 6.0, 24)?;
+        let s2 = primitives::make_sphere(t, 6.0, 24)?;
+        transform_solid(t, s2, &Mat4::translation(10.2, 0.0, 0.0))?;
+        Ok((s1, s2))
+    });
     bool_pair("cyl / cyl (perp cross)", |t| {
         let c1 = primitives::make_cylinder(t, 3.0, 20.0)?;
         transform_solid(t, c1, &Mat4::translation(0.0, 0.0, -10.0))?;
