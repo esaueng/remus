@@ -148,12 +148,12 @@ pub fn make_cylinder(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
-    if radius <= tol.linear {
+    if !radius.is_finite() || radius <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("cylinder radius must be positive, got {radius}"),
         });
     }
-    if height <= tol.linear {
+    if !height.is_finite() || height <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("cylinder height must be positive, got {height}"),
         });
@@ -186,8 +186,14 @@ pub fn make_cylinder(
     )
     .map_err(crate::OperationsError::Math)?;
 
-    let e_bot_circle = topo.add_edge(Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle)));
-    let e_top_circle = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+    let bot_start = bot_circle.project(topo.vertex(v_bot)?.point());
+    let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle));
+    bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+    let e_bot_circle = topo.add_edge(bot_edge);
+    let top_start = top_circle.project(topo.vertex(v_top)?.point());
+    let mut top_edge = Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle));
+    top_edge.set_trim(Some((top_start, top_start + std::f64::consts::TAU)));
+    let e_top_circle = topo.add_edge(top_edge);
     let e_seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
 
     let lateral_wire = Wire::new(
@@ -262,12 +268,16 @@ pub fn make_cone(
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
-    if height <= tol.linear {
+    if !height.is_finite() || height <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("cone height must be positive, got {height}"),
         });
     }
-    if bottom_radius < 0.0 || top_radius < 0.0 {
+    if !bottom_radius.is_finite()
+        || !top_radius.is_finite()
+        || bottom_radius < 0.0
+        || top_radius < 0.0
+    {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!(
                 "cone radii must be non-negative, got bottom={bottom_radius}, top={top_radius}"
@@ -344,7 +354,10 @@ pub fn make_cone(
             r_big,
         )
         .map_err(crate::OperationsError::Math)?;
-        let e_circle = topo.add_edge(Edge::new(v_base, v_base, EdgeCurve::Circle(base_circle)));
+        let circle_start = base_circle.project(topo.vertex(v_base)?.point());
+        let mut circle_edge = Edge::new(v_base, v_base, EdgeCurve::Circle(base_circle));
+        circle_edge.set_trim(Some((circle_start, circle_start + std::f64::consts::TAU)));
+        let e_circle = topo.add_edge(circle_edge);
         let e_seam = topo.add_edge(Edge::new(v_base, v_apex, EdgeCurve::Line));
 
         let lateral_wire = Wire::new(
@@ -402,8 +415,14 @@ pub fn make_cone(
             top_radius,
         )
         .map_err(crate::OperationsError::Math)?;
-        let e_bot = topo.add_edge(Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle)));
-        let e_top = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+        let bot_start = bot_circle.project(topo.vertex(v_bot)?.point());
+        let mut bot_edge = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle));
+        bot_edge.set_trim(Some((bot_start, bot_start + std::f64::consts::TAU)));
+        let e_bot = topo.add_edge(bot_edge);
+        let top_start = top_circle.project(topo.vertex(v_top)?.point());
+        let mut top_edge = Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle));
+        top_edge.set_trim(Some((top_start, top_start + std::f64::consts::TAU)));
+        let e_top = topo.add_edge(top_edge);
         let e_seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
 
         let lateral_wire = Wire::new(
