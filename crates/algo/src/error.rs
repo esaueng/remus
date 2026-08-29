@@ -107,6 +107,10 @@ mod diagnostic_registry_tests {
         let d = AlgoError::AssemblyFailed("open shell".into()).diagnostic();
         assert_eq!(d.category(), FailureCategory::Internal);
         assert_eq!(d.code(), "assembly_failed");
+
+        let d = AlgoError::IntersectionFailed("invalid section range".into()).diagnostic();
+        assert_eq!(d.category(), FailureCategory::Internal);
+        assert_eq!(d.code(), "intersection_failed");
     }
 
     #[test]

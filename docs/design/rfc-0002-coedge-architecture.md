@@ -218,11 +218,14 @@ Queued:
 - The transactional wrapper (Issue 9) supplies the sanctioned-mutation
   boundary the remaining migration assumes.
 
-The operations contribution to P-Class issue 2.0b closes seven of the ten
-measured missing-writer paths: `merge_result_vertices`, the sphere-cap and
-cylindrical-face spec arcs, the box-sphere octant arcs, and the cylinder,
+The operations contribution in PR #122 to P-Class issue 2.0b closes seven of
+the ten measured missing-writer paths: `merge_result_vertices`, the sphere-cap
+and cylindrical-face spec arcs, the box-sphere octant arcs, and the cylinder,
 pointed-cone, and frustum primitive rims. Primitive full turns are anchored at
-each rim's actual seam parameter. The three phase-FF emitters remain open.
+each rim's actual seam parameter. The phase-FF follow-on closes all three
+remaining paths: `perform_with_context`, `emit_exact_arc`, and
+`emit_split_circle_arcs`. The ratchet now requires all 24 preservation writers
+and reports zero remaining missing-writer paths.
 Carrier hardening in the same contribution keeps fresh coaxial-cylinder and
 coaxial-cone results on the primitive constructors' positive full-turn
 contract, makes `copy_and_transform_solid` share `transform_edges`' exact
