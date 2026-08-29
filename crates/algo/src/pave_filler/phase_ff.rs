@@ -9,6 +9,7 @@
 
 use remus_math::aabb::Aabb3;
 use remus_math::analytic_intersection;
+use remus_math::context::OperationContext;
 use remus_math::nurbs::intersection as nurbs_isect;
 use remus_math::tolerance::Tolerance;
 use remus_math::traits::ParametricCurve;
@@ -254,6 +255,7 @@ impl JunctionRegistry {
     }
 }
 
+#[allow(dead_code)]
 pub fn perform(
     topo: &mut Topology,
     solid_a: SolidId,
@@ -261,6 +263,27 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let context = OperationContext::new().with_tolerance(tol);
+    perform_with_context(topo, solid_a, solid_b, &context, arena)
+}
+
+/// Detect face-face intersections under an explicit operation context.
+///
+/// The context tolerance drives geometric predicates and its work budgets
+/// bound NURBS surface-surface marching.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any topology lookup or intersection computation fails.
+#[allow(clippy::too_many_lines)]
+pub fn perform_with_context(
+    topo: &mut Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+    arena: &mut GfaArena,
+) -> Result<(), AlgoError> {
+    let tol = context.tolerance;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
@@ -392,8 +415,9 @@ pub fn perform(
 
             let v_range_a = v_ranges_a[idx_a];
             let v_range_b = v_ranges_b[idx_b];
-            let raw_curves =
-                compute_raw_curves(surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b)?;
+            let raw_curves = compute_raw_curves(
+                surf_a, surf_b, bbox_a, bbox_b, v_range_a, v_range_b, context,
+            )?;
             if std::env::var("BK_RAWC").is_ok() {
                 log::debug!(
                     "RAWC a[{idx_a}]={} b[{idx_b}]={} n={}",
@@ -3456,6 +3480,7 @@ fn compute_raw_curves(
     bbox_b: &Aabb3,
     v_range_a: Option<(f64, f64)>,
     v_range_b: Option<(f64, f64)>,
+    context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     match (surf_a, surf_b) {
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
@@ -3483,7 +3508,7 @@ fn compute_raw_curves(
 
         (FaceSurface::Plane { normal, d }, other) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic, bbox_b)
+                plane_analytic_intersection(*normal, *d, &analytic, bbox_b, context.tolerance)
             } else {
                 Ok(Vec::new())
             }
@@ -3491,7 +3516,7 @@ fn compute_raw_curves(
 
         (other, FaceSurface::Plane { normal, d }) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic, bbox_a)
+                plane_analytic_intersection(*normal, *d, &analytic, bbox_a, context.tolerance)
             } else {
                 Ok(Vec::new())
             }
@@ -3727,13 +3752,15 @@ fn compute_raw_curves(
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
-            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs)
+            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs, context)
         }
         (FaceSurface::Nurbs(nurbs), analytic_surf) if analytic_surf.as_analytic().is_some() => {
-            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs)
+            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs, context)
         }
 
-        (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => nurbs_nurbs_intersection(na, nb),
+        (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => {
+            nurbs_nurbs_intersection(na, nb, context)
+        }
 
         // Fallback: unsupported pair
         _ => Ok(Vec::new()),
@@ -3846,6 +3873,7 @@ fn plane_analytic_intersection(
     d: f64,
     analytic: &analytic_intersection::AnalyticSurface<'_>,
     analytic_bbox: &Aabb3,
+    tolerance: Tolerance,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     let cone_v_max = match analytic {
         analytic_intersection::AnalyticSurface::Cone(cone) => {
@@ -3912,9 +3940,10 @@ fn plane_analytic_intersection(
                 // interferences are EE/EF/VF territory).
                 let mut pts_dedup: Vec<Point3> = Vec::with_capacity(pts.len());
                 for &p in &pts {
-                    if pts_dedup.last().is_none_or(|&q| {
-                        (p - q).length() > remus_math::tolerance::Tolerance::new().linear
-                    }) {
+                    if pts_dedup
+                        .last()
+                        .is_none_or(|&q| (p - q).length() > tolerance.linear)
+                    {
                         pts_dedup.push(p);
                     }
                 }
@@ -4160,6 +4189,7 @@ fn analytic_nurbs_intersection(
     analytic: &FaceSurface,
     v_range: Option<(f64, f64)>,
     nurbs: &remus_math::nurbs::surface::NurbsSurface,
+    context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     // The wire-derived v-range under-covers curved faces slightly (5 samples
     // per edge); pad it so the marcher sees the whole face. Overshoot is
@@ -4195,14 +4225,21 @@ fn analytic_nurbs_intersection(
             ));
         }
     };
-    nurbs_nurbs_intersection(&converted, nurbs)
+    nurbs_nurbs_intersection(&converted, nurbs, context)
 }
 
 fn nurbs_nurbs_intersection(
     na: &remus_math::nurbs::surface::NurbsSurface,
     nb: &remus_math::nurbs::surface::NurbsSurface,
+    context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
-    let isect_curves = nurbs_isect::intersect_nurbs_nurbs(na, nb, NURBS_SAMPLES, NURBS_MARCH_STEP)?;
+    let isect_curves = nurbs_isect::intersect_nurbs_nurbs_with_context(
+        na,
+        nb,
+        NURBS_SAMPLES,
+        NURBS_MARCH_STEP,
+        context,
+    )?;
 
     let mut results = Vec::new();
     for ic in isect_curves {
@@ -6217,5 +6254,79 @@ mod ellipse_span_tests {
         // A small window stays ONE arc (no perturbation of the normal case).
         let small = trim_closed_curve_to_inboth_arc(&raw, 10, 20, 64);
         assert_eq!(small.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod context_budget_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::context::{OperationContext, WorkBudgets};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::EdgeCurve;
+
+    use super::nurbs_nurbs_intersection;
+
+    fn flat_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn tilted_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, -0.5), Point3::new(0.0, 1.0, -0.5)],
+                vec![Point3::new(1.0, 0.0, 0.5), Point3::new(1.0, 1.0, 0.5)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn control_point_count(curves: &[super::RawCurve]) -> usize {
+        curves
+            .iter()
+            .map(|raw| match &raw.curve {
+                EdgeCurve::NurbsCurve(curve) => curve.control_points().len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn caller_budgets_reach_nurbs_ff_marching() {
+        let a = flat_surface();
+        let b = tilted_surface();
+        let full = nurbs_nurbs_intersection(&a, &b, &OperationContext::new()).unwrap();
+        let tiny = OperationContext::new().with_budgets(
+            WorkBudgets::new()
+                .with_march_steps(2)
+                .with_segments(1)
+                .with_queue_size(1),
+        );
+        let bounded = nurbs_nurbs_intersection(&a, &b, &tiny).unwrap();
+
+        let full_points = control_point_count(&full);
+        let bounded_points = control_point_count(&bounded);
+        assert!(full_points > 4, "fixture must trace a real FF curve");
+        assert!(
+            bounded_points < full_points,
+            "tiny caller budget must bound FF output ({bounded_points} vs {full_points})"
+        );
     }
 }

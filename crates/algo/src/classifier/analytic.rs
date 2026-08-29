@@ -352,8 +352,18 @@ fn classify_convex_analytic(
 /// if the solid is not suitable for analytic classification.
 #[must_use]
 pub fn classify_analytic(topo: &Topology, solid: SolidId, point: Point3) -> Option<FaceClass> {
-    let classifier = try_build_analytic_classifier(topo, solid)?;
-    let tol = Tolerance::new();
+    classify_analytic_with_tolerance(topo, solid, point, Tolerance::default())
+}
+
+/// Try to classify a point using analytic geometry and the caller's tolerance.
+#[must_use]
+pub fn classify_analytic_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    point: Point3,
+    tol: Tolerance,
+) -> Option<FaceClass> {
+    let classifier = try_build_analytic_classifier_with_tolerance(topo, solid, tol)?;
     classifier.classify(point, tol)
 }
 
@@ -372,6 +382,17 @@ pub fn try_build_analytic_classifier(
     topo: &Topology,
     solid: SolidId,
 ) -> Option<AnalyticClassifier> {
+    try_build_analytic_classifier_with_tolerance(topo, solid, Tolerance::default())
+}
+
+/// Try to build an analytic classifier using the caller's tolerance.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn try_build_analytic_classifier_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    tol: Tolerance,
+) -> Option<AnalyticClassifier> {
     let s = topo.solid(solid).ok()?;
     // Separate inner shells represent cavities. None of the single-region
     // analytic classifiers below can subtract those voids, so defer to the
@@ -380,8 +401,6 @@ pub fn try_build_analytic_classifier(
         return None;
     }
     let shell = topo.shell(s.outer_shell()).ok()?;
-    let tol = Tolerance::new();
-
     if shell.faces().len() > 50 {
         return None;
     }
@@ -392,7 +411,7 @@ pub fn try_build_analytic_classifier(
         .iter()
         .any(|&fid| topo.face(fid).ok().is_some_and(Face::is_reversed));
     if has_reversed {
-        return try_build_composite_classifier(topo, solid);
+        return try_build_composite_classifier(topo, solid, tol);
     }
 
     let mut sphere_info: Option<(Point3, f64)> = None;
@@ -517,7 +536,7 @@ pub fn try_build_analytic_classifier(
 
     // Mixed plane+cone/cylinder: try ConvexAnalytic.
     if has_planar && (has_cone || has_cylinder) && !has_sphere {
-        return try_build_convex_analytic(topo, solid);
+        return try_build_convex_analytic(topo, solid, tol);
     }
 
     None
@@ -579,7 +598,7 @@ fn try_build_planar_classifier(
     }
 
     // Non-convex all-planar solid — try composite.
-    try_build_composite_classifier(topo, solid)
+    try_build_composite_classifier(topo, solid, *tol)
 }
 
 /// Try to build an axis-aligned box classifier from 6 plane faces.
@@ -843,11 +862,13 @@ fn try_build_cone_classifier(
 
 /// Build a `ConvexAnalytic` classifier from a convex solid with mixed surface types.
 #[allow(clippy::too_many_lines)]
-fn try_build_convex_analytic(topo: &Topology, solid: SolidId) -> Option<AnalyticClassifier> {
+fn try_build_convex_analytic(
+    topo: &Topology,
+    solid: SolidId,
+    tol: Tolerance,
+) -> Option<AnalyticClassifier> {
     let s = topo.solid(solid).ok()?;
     let shell = topo.shell(s.outer_shell()).ok()?;
-    let tol = Tolerance::new();
-
     let mut planes: Vec<(Vec3, f64)> = Vec::new();
     let mut cylinders: Vec<(Point3, Vec3, f64, f64, f64)> = Vec::new();
     let mut cones: Vec<(Point3, Vec3, f64, f64, f64, f64)> = Vec::new();
@@ -961,11 +982,13 @@ fn try_build_convex_analytic(topo: &Topology, solid: SolidId) -> Option<Analytic
 
 /// Try to build a composite classifier for a shelled/hollow solid.
 #[allow(clippy::too_many_lines)]
-fn try_build_composite_classifier(topo: &Topology, solid: SolidId) -> Option<AnalyticClassifier> {
+fn try_build_composite_classifier(
+    topo: &Topology,
+    solid: SolidId,
+    tol: Tolerance,
+) -> Option<AnalyticClassifier> {
     let s = topo.solid(solid).ok()?;
     let shell = topo.shell(s.outer_shell()).ok()?;
-    let tol = Tolerance::new();
-
     // Compute vertex centroid for inner/outer classification.
     let centroid = {
         let mut c = Vec3::new(0.0, 0.0, 0.0);
