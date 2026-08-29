@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787982024741,
+  "lastUpdate": 1787985354445,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3725,6 +3725,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41482094,
             "range": "± 338009",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3292fd7373d2a51421e6109caff27bbc6ec85332",
+          "message": "chore(ci): raise Linux Test job timeout to 30 minutes (#124)\n\nThe workspace nextest run alone now takes ~18.5 min with a warm cache, so\nthe 20-minute cap regularly cancels the job at the trailing complexity-guard\nstep even though all tests passed. Match the platform-test job's 30-minute\ncap.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-29T02:32:27-04:00",
+          "tree_id": "79cab5e9336165c7ce0dca81cc0183261fc8cba4",
+          "url": "https://github.com/esaueng/remus/commit/3292fd7373d2a51421e6109caff27bbc6ec85332"
+        },
+        "date": 1787985353436,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1310351,
+            "range": "± 6055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1400977,
+            "range": "± 7156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14643,
+            "range": "± 149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 990450,
+            "range": "± 4024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39572724,
+            "range": "± 149113",
             "unit": "ns/iter"
           }
         ]
