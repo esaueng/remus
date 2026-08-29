@@ -327,22 +327,24 @@ fn the_body_is_the_cross_drilled_shaft_it_claims_to_be() {
         "expected the closed form {expected:.6}, got {v:.6}"
     );
 
-    // And the wall really is a holed cylindrical face — the shape that gets
-    // declined by the structured band path and lands on the snap path this
-    // fix is about. Without an inner wire the body would never exercise it.
+    // Since the exact Steinmetz seam (2026-08), the equal-radius wall is no
+    // longer a holed face: it splits into two seam-free bands bounded by the
+    // exact seam ellipse arcs, so THIS body no longer reaches the snap path.
+    // The snap-path rim-closure coverage lives in the unequal-bore tests in
+    // this file (their walls still carry the bore rims as inner wires); this
+    // test keeps the closed-form volume and rim-closure checks on the new
+    // canonical shape and pins that shape so a silent change is caught.
     let holed = remus_topology::explorer::solid_faces(&topo, solid)
         .unwrap()
         .into_iter()
         .filter(|&fid| {
             let f = topo.face(fid).unwrap();
-            matches!(f.surface(), FaceSurface::Cylinder(c) if (c.radius() - R).abs() < 1e-9)
-                && !f.inner_wires().is_empty()
+            matches!(f.surface(), FaceSurface::Cylinder(_)) && !f.inner_wires().is_empty()
         })
         .count();
     assert_eq!(
-        holed, 1,
-        "the shaft wall is not a holed cylindrical face; this body does not \
-         reach the snap path at all"
+        holed, 0,
+        "the exact-seam equal-radius cross-drill leaves no holed wall"
     );
 
     // The hole-aware cylindrical path must retain the bore openings and share
