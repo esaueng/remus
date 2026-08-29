@@ -18,9 +18,8 @@ use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::{SolidId, Topology};
 
-/// A cylinder whose rim circle edge gets an explicit (partial) trim
-/// stamped on it, standing in for a boolean split arc.
-fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId) {
+/// A cylinder with one authoritative seam-anchored full-turn rim.
+fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId, (f64, f64)) {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
     let rims: Vec<_> = topo
@@ -29,15 +28,9 @@ fn cylinder_with_trimmed_rim() -> (Topology, remus_topology::SolidId) {
         .filter(|(_, e)| matches!(e.curve(), EdgeCurve::Circle(_)))
         .map(|(id, _)| id)
         .collect();
-    for &rim in &rims {
-        topo.edge_mut(rim).unwrap().set_trim(None);
-    }
-    // Not geometrically meaningful for the closed rim; the point is purely
-    // that the stored interval survives every copy path bit-for-bit.
-    let mut edge = topo.edge(rims[0]).unwrap().clone();
-    edge.set_trim(Some((0.5, 2.5)));
-    *topo.edge_mut(rims[0]).unwrap() = edge;
-    (topo, solid)
+    let trim = topo.edge(rims[0]).unwrap().trim().unwrap();
+    topo.edge_mut(rims[1]).unwrap().set_trim(None);
+    (topo, solid, trim)
 }
 
 fn trimmed_edges(topo: &Topology) -> usize {
@@ -149,7 +142,7 @@ fn primitive_trim_writers_refuse_non_finite_dimensions() {
 
 #[test]
 fn trims_survive_solid_copy() {
-    let (mut topo, solid) = cylinder_with_trimmed_rim();
+    let (mut topo, solid, _) = cylinder_with_trimmed_rim();
     assert_eq!(trimmed_edges(&topo), 1);
     let copied = copy_solid(&mut topo, solid).unwrap();
     assert_ne!(copied, solid);
@@ -162,7 +155,7 @@ fn trims_survive_solid_copy() {
 
 #[test]
 fn trims_survive_arena_round_trip() {
-    let (topo, solid) = cylinder_with_trimmed_rim();
+    let (topo, solid, expected) = cylinder_with_trimmed_rim();
     let bytes = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
     let mut restored = Topology::new();
     let _ = remus_io::arena_io::deserialize_solid(&bytes, &mut restored).unwrap();
@@ -171,7 +164,7 @@ fn trims_survive_arena_round_trip() {
         .iter()
         .filter_map(|(_, e)| e.trim())
         .collect();
-    assert_eq!(trims, vec![(0.5, 2.5)]);
+    assert_eq!(trims, vec![expected]);
 }
 
 #[test]
@@ -388,24 +381,14 @@ fn box_sphere_intersect_shortcut_arcs_carry_quarter_span_trims() {
 fn copy_and_transform_solid_follows_the_exact_trim_policy() {
     let mut topo = Topology::new();
     let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
-    let rim = remus_topology::explorer::solid_edges(&topo, solid)
-        .unwrap()
-        .into_iter()
-        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
-        .unwrap();
-    topo.edge_mut(rim).unwrap().set_trim(Some((0.5, 2.5)));
+    let source_trims = solid_trims(&topo, solid);
+    assert_eq!(source_trims.len(), 2);
     let seam = remus_topology::explorer::solid_edges(&topo, solid)
         .unwrap()
         .into_iter()
         .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line))
         .unwrap();
     topo.edge_mut(seam).unwrap().set_trim(Some((2.0, 3.0)));
-    let partial_trims = |topo: &Topology, solid: SolidId| {
-        solid_trims(topo, solid)
-            .into_iter()
-            .filter(|(t0, t1)| ((t1 - t0).abs() - TAU).abs() > 1e-9)
-            .collect::<Vec<_>>()
-    };
 
     // Pure translation: the parameterization is untouched — trim retained.
     let moved = remus_operations::copy::copy_and_transform_solid(
@@ -414,12 +397,7 @@ fn copy_and_transform_solid_follows_the_exact_trim_policy() {
         &Mat4::translation(5.0, 0.0, 0.0),
     )
     .unwrap();
-    let moved_trims = partial_trims(&topo, moved);
-    assert_eq!(
-        moved_trims,
-        vec![(0.5, 2.5)],
-        "translation retains the trim"
-    );
+    assert_eq!(solid_trims(&topo, moved), source_trims);
 
     // Rotation: still a similarity — trim retained.
     let rotated = remus_operations::copy::copy_and_transform_solid(
@@ -428,8 +406,7 @@ fn copy_and_transform_solid_follows_the_exact_trim_policy() {
         &Mat4::rotation_z(std::f64::consts::FRAC_PI_2),
     )
     .unwrap();
-    let rotated_trims = partial_trims(&topo, rotated);
-    assert_eq!(rotated_trims, vec![(0.5, 2.5)], "rotation retains the trim");
+    assert_eq!(solid_trims(&topo, rotated), source_trims);
 
     // Anisotropic x-scale: the primitive circle's +Z frame has its major
     // transformed extent on the second axis. The right-handed axis swap maps
@@ -440,28 +417,39 @@ fn copy_and_transform_solid_follows_the_exact_trim_policy() {
         &Mat4::scale(2.0, 1.0, 1.0),
     )
     .unwrap();
-    let stretched_trims = partial_trims(&topo, stretched);
-    let remapped = (
-        0.5 - std::f64::consts::FRAC_PI_2,
-        2.5 - std::f64::consts::FRAC_PI_2,
-    );
-    assert_eq!(stretched_trims, vec![remapped]);
-    let stretched_rim = remus_topology::explorer::solid_edges(&topo, stretched)
-        .unwrap()
-        .into_iter()
-        .find(|&edge_id| topo.edge(edge_id).unwrap().trim().is_some())
-        .unwrap();
-    let EdgeCurve::Ellipse(ellipse) = topo.edge(stretched_rim).unwrap().curve() else {
-        panic!("anisotropic circle transform must produce an ellipse");
-    };
-    assert!(
-        ellipse
-            .u_axis()
-            .cross(ellipse.v_axis())
-            .dot(ellipse.normal())
-            > 0.999_999,
-        "transformed ellipse frame must remain right-handed"
-    );
+    let mut expected_stretched: Vec<_> = source_trims
+        .iter()
+        .map(|(t0, t1)| {
+            (
+                t0 - std::f64::consts::FRAC_PI_2,
+                t1 - std::f64::consts::FRAC_PI_2,
+            )
+        })
+        .collect();
+    expected_stretched.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    assert_eq!(solid_trims(&topo, stretched), expected_stretched);
+    let stretched_edges = remus_topology::explorer::solid_edges(&topo, stretched).unwrap();
+    let mut ellipse_count = 0;
+    for edge_id in stretched_edges {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Ellipse(ellipse) = edge.curve() else {
+            continue;
+        };
+        ellipse_count += 1;
+        assert!(
+            ellipse
+                .u_axis()
+                .cross(ellipse.v_axis())
+                .dot(ellipse.normal())
+                > 0.999_999,
+            "transformed ellipse frame must remain right-handed"
+        );
+        let (t0, t1) = edge.trim().unwrap();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        assert!((ellipse.evaluate(t0) - start).length() < 1e-9);
+        assert!((ellipse.evaluate(t1) - start).length() < 1e-9);
+    }
+    assert_eq!(ellipse_count, 2);
 
     transform_solid(&mut topo, solid, &Mat4::translation(0.0, 0.0, 1.0)).unwrap();
     assert!(

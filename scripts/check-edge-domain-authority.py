@@ -87,7 +87,7 @@ REMAINING_MISSING_TRIM_PATHS = (
 # each tuple length must match the pinned path weight.
 FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
     "boolean::assembly::SphereCapFace": ("b4495bb8cfd29eeb",),
-    "boolean::assembly::CylindricalFace": ("1f13af33585ee6cc",),
+    "boolean::assembly::CylindricalFace": ("1ee00d4def91bbfd",),
     "boolean::box_sphere::build_arc_edge": ("e947102e0733a63b",),
     "boolean::merge_result_vertices::snapshot_and_rebuild": ("8fa4ac4bcd5a517f",),
     "primitives::make_cylinder::rims": (

@@ -1288,3 +1288,56 @@ fn large_radius_circle_refuses_near_shear_outside_roundoff() {
         "near shear outside the arithmetic roundoff budget must be typed-refused: {result:?}"
     );
 }
+
+#[test]
+fn scaled_parabola_remaps_its_length_valued_trim() {
+    let source = remus_math::curves::Parabola3D::with_axes(
+        Point3::new(1.0, 2.0, 3.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        2.0,
+    )
+    .unwrap();
+    let scale = 3.5;
+    let matrix = Mat4::scale(scale, scale, scale);
+    let source_trim = (-1.25, 2.75);
+    let (curve, trim) = transform_edge_curve_with_trim(
+        &EdgeCurve::Parabola(source.clone()),
+        Some(source_trim),
+        &matrix,
+    )
+    .unwrap();
+    let EdgeCurve::Parabola(image) = curve.unwrap() else {
+        panic!("similarity image of a parabola must remain a parabola");
+    };
+    let mapped = (source_trim.0 * scale, source_trim.1 * scale);
+    assert_eq!(trim, Some(mapped));
+    assert!(
+        (image.evaluate(mapped.0) - matrix.mul_point(source.evaluate(source_trim.0))).length()
+            < 1e-12
+    );
+    assert!(
+        (image.evaluate(mapped.1) - matrix.mul_point(source.evaluate(source_trim.1))).length()
+            < 1e-12
+    );
+}
+
+#[test]
+fn large_parabola_refuses_near_anisotropy_outside_roundoff() {
+    let source = remus_math::curves::Parabola3D::with_axes(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        1.0e18,
+    )
+    .unwrap();
+    let matrix = Mat4::scale(1.0 + 1.0e-12, 1.0, 1.0);
+    let result = transform_edge_curve_with_trim(&EdgeCurve::Parabola(source), None, &matrix);
+    assert!(matches!(
+        result,
+        Err(crate::OperationsError::Unsupported {
+            operation: "transform",
+            ..
+        })
+    ));
+}

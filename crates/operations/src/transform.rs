@@ -787,11 +787,12 @@ pub(crate) type TransformedEdgeCurve = (Option<EdgeCurve>, Option<(f64, f64)>);
 ///
 /// Returns `(Some(new_curve), new_trim)`; `None` for `Line`, whose geometry
 /// is defined by its vertices. The trim is retained where the map provably
-/// preserves the curve's parameterization (NURBS control-point maps, open
-/// conics under a similarity, scaled circles/ellipses), exactly remapped for
-/// the handled re-parameterization (Circle→Ellipse with swapped principal
-/// axes: `t ↦ t − π/2`), and dropped otherwise — the endpoint-projection
-/// fallback then re-derives the domain on the new parameterization.
+/// preserves the curve's parameterization (NURBS control-point maps,
+/// hyperbolas under a similarity, scaled circles/ellipses), exactly remapped
+/// for handled re-parameterizations (parabola `t ↦ s·t`; Circle→Ellipse with
+/// swapped principal axes `t ↦ t − π/2`), and dropped otherwise — the
+/// endpoint-projection fallback then re-derives the domain on the new
+/// parameterization.
 pub(crate) fn transform_edge_curve_with_trim(
     curve: &EdgeCurve,
     trim: Option<(f64, f64)>,
@@ -806,7 +807,11 @@ pub(crate) fn transform_edge_curve_with_trim(
         // Exact under a similarity, typed refusal otherwise — see
         // `transform_open_conic`.
         c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
-            (Some(transform_open_conic(c, matrix)?), trim)
+            let (image, parameter_scale) = transform_open_conic(c, matrix)?;
+            (
+                Some(image),
+                trim.map(|(t0, t1)| (t0 * parameter_scale, t1 * parameter_scale)),
+            )
         }
         EdgeCurve::NurbsCurve(c) => {
             let new_control_points: Vec<_> = c
@@ -1127,13 +1132,9 @@ mod tests;
 pub(crate) fn transform_open_conic(
     curve: &EdgeCurve,
     matrix: &Mat4,
-) -> Result<EdgeCurve, crate::OperationsError> {
+) -> Result<(EdgeCurve, f64), crate::OperationsError> {
     use remus_math::curves::{Hyperbola3D, Parabola3D};
     use remus_math::vec::Point3;
-
-    /// Relative band for "same length" and "still orthogonal". Dimensionless:
-    /// both quantities are normalized by the scale factor before comparison.
-    const SIMILARITY_EPS: f64 = 1e-12;
 
     let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
     let dir = |d: Vec3| -> Vec3 { matrix.mul_point(Point3::new(d.x(), d.y(), d.z())) - origin };
@@ -1143,11 +1144,13 @@ pub(crate) fn transform_open_conic(
     let in_plane_scale = |a: Vec3, b: Vec3| -> Option<f64> {
         let (ia, ib) = (dir(a), dir(b));
         let (la, lb) = (ia.length(), ib.length());
-        let s = la.max(lb);
-        if s <= 0.0 || (la - lb).abs() > SIMILARITY_EPS * s {
+        if !equal_within_analytic_roundoff(la, lb) {
             return None;
         }
-        if ia.dot(ib).abs() > SIMILARITY_EPS * la * lb {
+        let (Ok(ua), Ok(ub)) = (ia.normalize(), ib.normalize()) else {
+            return None;
+        };
+        if ua.dot(ub).abs() > ANALYTIC_ROUNDOFF_REL {
             return None;
         }
         Some(f64::midpoint(la, lb))
@@ -1165,22 +1168,28 @@ pub(crate) fn transform_open_conic(
     match curve {
         EdgeCurve::Hyperbola(h) => {
             let s = in_plane_scale(h.u_axis(), h.v_axis()).ok_or_else(|| refuse("hyperbola"))?;
-            Ok(EdgeCurve::Hyperbola(Hyperbola3D::with_axes(
-                matrix.mul_point(h.center()),
-                dir(h.u_axis()).cross(dir(h.v_axis())),
-                dir(h.u_axis()),
-                h.semi_major() * s,
-                h.semi_minor() * s,
-            )?))
+            Ok((
+                EdgeCurve::Hyperbola(Hyperbola3D::with_axes(
+                    matrix.mul_point(h.center()),
+                    dir(h.u_axis()).cross(dir(h.v_axis())),
+                    dir(h.u_axis()),
+                    h.semi_major() * s,
+                    h.semi_minor() * s,
+                )?),
+                1.0,
+            ))
         }
         EdgeCurve::Parabola(p) => {
             let s = in_plane_scale(p.axis_dir(), p.u_axis()).ok_or_else(|| refuse("parabola"))?;
-            Ok(EdgeCurve::Parabola(Parabola3D::with_axes(
-                matrix.mul_point(p.vertex()),
-                dir(p.axis_dir()),
-                dir(p.u_axis()),
-                p.focal_length() * s,
-            )?))
+            Ok((
+                EdgeCurve::Parabola(Parabola3D::with_axes(
+                    matrix.mul_point(p.vertex()),
+                    dir(p.axis_dir()),
+                    dir(p.u_axis()),
+                    p.focal_length() * s,
+                )?),
+                s,
+            ))
         }
         EdgeCurve::Line
         | EdgeCurve::Circle(_)

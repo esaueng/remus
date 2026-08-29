@@ -8450,6 +8450,108 @@ fn mixed_cylindrical_face_arcs_carry_explicit_short_trims() {
 }
 
 #[test]
+fn mixed_cylindrical_face_reversal_does_not_select_the_complementary_arc() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let r = 2.0;
+    let h = 3.0;
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            cylinder.evaluate(0.0, 0.0),
+            cylinder.evaluate(std::f64::consts::FRAC_PI_2, 0.0),
+            cylinder.evaluate(std::f64::consts::FRAC_PI_2, h),
+            cylinder.evaluate(0.0, h),
+        ],
+        cylinder,
+        reversed: true,
+        inner_wires: vec![],
+    }];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    let mut circle_count = 0;
+    for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+            circle_count += 1;
+            let (t0, t1) = edge.trim().unwrap();
+            assert!((t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        }
+    }
+    assert_eq!(circle_count, 2);
+}
+
+#[test]
+fn mixed_cylindrical_face_span_is_stable_across_the_seam_and_large_axial_offset() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let z0 = 1.0e12;
+    let z1 = z0 + 3.0;
+    let u0 = 7.0 * std::f64::consts::FRAC_PI_4;
+    let u1 = std::f64::consts::FRAC_PI_4;
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            cylinder.evaluate(u0, z0),
+            cylinder.evaluate(u1, z0),
+            cylinder.evaluate(u1, z1),
+            cylinder.evaluate(u0, z1),
+        ],
+        cylinder,
+        reversed: false,
+        inner_wires: vec![],
+    }];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    let mut circle_count = 0;
+    for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+            circle_count += 1;
+            let (t0, t1) = edge.trim().unwrap();
+            assert!((t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        }
+    }
+    assert_eq!(circle_count, 2);
+}
+
+#[test]
+fn mixed_cylindrical_face_refuses_inconsistent_rim_segmentation() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let u135 = 3.0 * std::f64::consts::FRAC_PI_4;
+    let u270 = 3.0 * std::f64::consts::FRAC_PI_2;
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            cylinder.evaluate(0.0, 0.0),
+            cylinder.evaluate(u135, 0.0),
+            cylinder.evaluate(u270, 0.0),
+            cylinder.evaluate(u270, 3.0),
+            cylinder.evaluate(0.0, 3.0),
+        ],
+        cylinder,
+        reversed: false,
+        inner_wires: vec![],
+    }];
+    let result = assemble_solid_mixed(&mut topo, &specs, Tolerance::new());
+
+    assert!(matches!(
+        result,
+        Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            ref reason,
+        }) if reason == "cylindrical face boundary winding does not select a unique periodic span"
+    ));
+}
+
+#[test]
 fn mixed_cylindrical_face_uses_scale_relative_arc_detection() {
     use remus_math::surfaces::CylindricalSurface;
 
@@ -8581,6 +8683,81 @@ fn mixed_cylindrical_face_refuses_diagonal_uv_boundary() {
             reason,
         } if reason == "cylindrical face boundary is diagonal or degenerate in parameter space"
     ));
+}
+
+#[test]
+fn mixed_cylindrical_face_preserves_a_270_degree_sector() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let r = 2.0;
+    let h = 3.0;
+    let o0 = Point3::new(0.0, 0.0, 0.0);
+    let oh = Point3::new(0.0, 0.0, h);
+    let cylinder = CylindricalSurface::new(o0, Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let u270 = 3.0 * std::f64::consts::FRAC_PI_2;
+    let a0 = cylinder.evaluate(0.0, 0.0);
+    let ah = cylinder.evaluate(0.0, h);
+    let b0 = cylinder.evaluate(u270, 0.0);
+    let bh = cylinder.evaluate(u270, h);
+    let tangent0 = cylinder.axis().cross(a0 - o0).normalize().unwrap();
+    let tangent270 = cylinder.axis().cross(b0 - o0).normalize().unwrap();
+    let specs = vec![
+        FaceSpec::CylindricalFace {
+            vertices: vec![a0, b0, bh, ah],
+            cylinder,
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, b0, a0],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![oh, ah, bh],
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: h,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, a0, ah, oh],
+            normal: -tangent0,
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, oh, bh, b0],
+            normal: tangent270,
+            d: 0.0,
+            inner_wires: vec![],
+        },
+    ];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+    let mut circles = 0;
+    for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        circles += 1;
+        let (t0, t1) = edge.trim().unwrap();
+        assert!((t1 - t0 - u270).abs() < 1e-9);
+        assert!((circle.evaluate(t0) - topo.vertex(edge.start()).unwrap().point()).length() < 1e-9);
+        assert!((circle.evaluate(t1) - topo.vertex(edge.end()).unwrap().point()).length() < 1e-9);
+    }
+    assert_eq!(circles, 2);
+    assert!(
+        validate_shell_manifold(
+            topo.shell(topo.solid(solid).unwrap().outer_shell())
+                .unwrap(),
+            &topo
+        )
+        .is_ok()
+    );
+    let exact = 3.0 * std::f64::consts::PI * r * r * h / 4.0;
+    assert_volume_near(&topo, solid, exact, 0.01);
 }
 
 #[test]

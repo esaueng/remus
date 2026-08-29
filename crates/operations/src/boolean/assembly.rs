@@ -43,15 +43,16 @@ fn sub_trim(
     remus_algo::sub_trim(curve, parent?, start, end)
 }
 
-/// The short CCW span of `circle` from `start` to `end`, as an explicit RFC
-/// 0002 trim interval.
+/// The directed CCW span of `circle` from `start` to `end`, as an explicit
+/// RFC 0002 trim interval.
 ///
 /// Fast paths that mint analytic arcs build the circle so its CCW run
 /// start→end IS the intended span (axis or reference direction chosen
 /// accordingly). This helper stores that span instead of leaving consumers
 /// to re-derive it through `EdgeCurve::domain_with_endpoints`' projection
-/// tolerance bands. Degenerate or complementary spans are refused rather
-/// than silently turning an open arc into a full circle.
+/// tolerance bands. Degenerate spans are refused rather than silently turning
+/// an open arc into a full circle. The caller chooses the axis and therefore
+/// whether the directed span is the minor or major arc.
 pub(crate) fn ccw_arc_trim(
     circle: &remus_math::curves::Circle3D,
     start: Point3,
@@ -60,18 +61,11 @@ pub(crate) fn ccw_arc_trim(
 ) -> Result<(f64, f64), crate::OperationsError> {
     let t0 = circle.project(start);
     let delta = (circle.project(end) - t0).rem_euclid(std::f64::consts::TAU);
-    let angular_band = tol.linear / circle.radius();
     let chord = 2.0 * circle.radius() * (0.5 * delta.min(std::f64::consts::TAU - delta)).sin();
     if !t0.is_finite() || !delta.is_finite() || chord <= tol.linear {
         return Err(crate::OperationsError::Unsupported {
             operation: "assemble_solid_mixed",
             reason: "open circle arc is degenerate within linear tolerance".into(),
-        });
-    }
-    if delta > std::f64::consts::PI + angular_band {
-        return Err(crate::OperationsError::Unsupported {
-            operation: "assemble_solid_mixed",
-            reason: "open circle arc selected the complementary periodic span".into(),
         });
     }
     let t1 = t0 + delta;
@@ -85,6 +79,101 @@ pub(crate) fn ccw_arc_trim(
         });
     }
     Ok((t0, t1))
+}
+
+fn cylindrical_boundary_spans(
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    verts: &[Point3],
+    tol: Tolerance,
+) -> Result<Vec<Option<f64>>, crate::OperationsError> {
+    let params: Vec<_> = verts
+        .iter()
+        .map(|point| cylinder.project_point(*point))
+        .collect();
+    let mut short = Vec::with_capacity(verts.len());
+    for i in 0..verts.len() {
+        let j = (i + 1) % verts.len();
+        let mut du = params[j].0 - params[i].0;
+        if du > std::f64::consts::PI {
+            du -= std::f64::consts::TAU;
+        } else if du < -std::f64::consts::PI {
+            du += std::f64::consts::TAU;
+        }
+        let chord = 2.0 * cylinder.radius() * (0.5 * du.abs()).sin();
+        let v_diff = (params[j].1 - params[i].1).abs();
+        if chord > tol.linear && v_diff <= tol.linear {
+            short.push(Some(du));
+        } else if chord <= tol.linear {
+            // Axial edges have a non-zero v span. Consecutive duplicate
+            // vertices also land here and are skipped during wire assembly.
+            short.push(None);
+        } else {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "assemble_solid_mixed",
+                reason: "cylindrical face boundary is diagonal or degenerate in parameter space"
+                    .into(),
+            });
+        }
+    }
+
+    let has_positive_closed_uv_area = |spans: &[Option<f64>]| {
+        let total_du: f64 = spans.iter().flatten().sum();
+        let total_abs_du: f64 = spans.iter().flatten().map(|du| du.abs()).sum();
+        let closure_band =
+            64.0 * f64::EPSILON * (verts.len() as f64) * total_abs_du.max(std::f64::consts::TAU);
+        if total_du.abs() > closure_band {
+            return false;
+        }
+
+        // Translate the axial parameter before the shoelace sum. Absolute v
+        // can be arbitrarily large on the same infinite cylinder and must not
+        // change the periodic-branch verdict through cancellation.
+        let v_ref = params[0].1;
+        let mut u = 0.0;
+        let mut area2 = 0.0;
+        let mut term_magnitude = 0.0;
+        for i in 0..verts.len() {
+            let j = (i + 1) % verts.len();
+            let next_u = u + spans[i].unwrap_or(0.0);
+            let v_i = params[i].1 - v_ref;
+            let v_j = params[j].1 - v_ref;
+            let lhs = u * v_j;
+            let rhs = next_u * v_i;
+            area2 += lhs - rhs;
+            term_magnitude += lhs.abs() + rhs.abs();
+            u = next_u;
+        }
+        let area_roundoff_band = 64.0 * f64::EPSILON * term_magnitude;
+        area2 > area_roundoff_band
+    };
+    // Face reversal changes only the effective face normal; curved FaceSpec
+    // producers retain the surface's positive UV wire winding.
+    if has_positive_closed_uv_area(&short) {
+        return Ok(short);
+    }
+
+    if short.iter().filter(|span| span.is_some()).count() == 2 {
+        let major: Vec<_> = short
+            .iter()
+            .map(|span| {
+                span.map(|du| {
+                    if du >= 0.0 {
+                        du - std::f64::consts::TAU
+                    } else {
+                        du + std::f64::consts::TAU
+                    }
+                })
+            })
+            .collect();
+        if has_positive_closed_uv_area(&major) {
+            return Ok(major);
+        }
+    }
+
+    Err(crate::OperationsError::Unsupported {
+        operation: "assemble_solid_mixed",
+        reason: "cylindrical face boundary winding does not select a unique periodic span".into(),
+    })
 }
 
 /// Quantize a coordinate to a spatial hash key.
@@ -608,6 +697,11 @@ pub(crate) fn assemble_solid_mixed_with_history(
                     continue;
                 }
 
+                // The positive UV wire winding selects the minor or major
+                // periodic branch for every constant-v boundary. Face
+                // reversal changes only the effective normal, not this wire.
+                let boundary_spans = cylindrical_boundary_spans(cylinder, verts, tol)?;
+
                 let vert_ids: Vec<VertexId> = verts
                     .iter()
                     .map(|p| {
@@ -621,6 +715,9 @@ pub(crate) fn assemble_solid_mixed_with_history(
                 let mut oriented_edges = Vec::with_capacity(n);
                 for i in 0..n {
                     let j = (i + 1) % n;
+                    if (verts[j] - verts[i]).length() <= tol.linear {
+                        continue;
+                    }
                     let vi = vert_ids[i].index();
                     let vj = vert_ids[j].index();
                     if vi == vj {
@@ -635,22 +732,9 @@ pub(crate) fn assemble_solid_mixed_with_history(
                         let start = vert_ids[i];
                         let end = vert_ids[j];
 
-                        // Determine if this edge is angular (arc) or axial (line)
-                        // by projecting both endpoints onto the cylinder.
-                        let (u1, v1) = cylinder.project_point(verts[i]);
-                        let (u2, v2) = cylinder.project_point(verts[j]);
-                        let v_diff = (v1 - v2).abs();
-                        let mut du = u2 - u1;
-                        if du > std::f64::consts::PI {
-                            du -= std::f64::consts::TAU;
-                        } else if du < -std::f64::consts::PI {
-                            du += std::f64::consts::TAU;
-                        }
-                        let chord = 2.0 * cylinder.radius() * (0.5 * du.abs()).sin();
-
-                        // A cylinder boundary is either a constant-v circle arc or a
-                        // constant-u axial generator. A diagonal in UV is neither.
-                        let minted = if chord > tol.linear && v_diff <= tol.linear {
+                        let minted = if let Some(du) = boundary_spans[i] {
+                            let (_, v1) = cylinder.project_point(verts[i]);
+                            let (_, v2) = cylinder.project_point(verts[j]);
                             // A stored Circle arc runs CCW start→end around its
                             // axis. Build the arc along the polygon traversal
                             // i→j: when the wrapped u-step is negative the
@@ -666,22 +750,23 @@ pub(crate) fn assemble_solid_mixed_with_history(
                             let center = cylinder.origin() + cylinder.axis() * ((v1 + v2) * 0.5);
                             let circle =
                                 remus_math::curves::Circle3D::new(center, axis, cylinder.radius())?;
-                            // Pin the CCW angular span start→end (|du| ≤ π
-                            // after the wrapped-step axis choice above).
+                            // Pin the winding-selected CCW span start→end.
                             let trim = ccw_arc_trim(&circle, verts[i], verts[j], tol)?;
+                            if ((trim.1 - trim.0) - du.abs()).abs() * cylinder.radius() > tol.linear
+                            {
+                                return Err(crate::OperationsError::Unsupported {
+                                    operation: "assemble_solid_mixed",
+                                    reason: "cylindrical face arc did not realize the winding-selected span"
+                                        .into(),
+                                });
+                            }
                             let mut arc =
                                 Edge::with_tolerance(start, end, EdgeCurve::Circle(circle), None);
                             arc.set_trim(Some(trim));
                             topo.add_edge(arc)
-                        } else if chord <= tol.linear && v_diff > tol.linear {
+                        } else {
                             // Axial edge (same angle, different height): line.
                             topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
-                        } else {
-                            return Err(crate::OperationsError::Unsupported {
-                                operation: "assemble_solid_mixed",
-                                reason: "cylindrical face boundary is diagonal or degenerate in parameter space"
-                                    .into(),
-                            });
                         };
                         edge_map.insert(edge_key, minted);
                         minted
