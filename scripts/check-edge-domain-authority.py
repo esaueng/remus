@@ -81,18 +81,25 @@ REMAINING_MISSING_TRIM_PATHS = (
     "phase_ff::perform_with_context",
     "phase_ff::emit_exact_arc",
     "phase_ff::emit_split_circle_arcs",
-    "boolean::assembly::SphereCapFace",
-    "boolean::assembly::CylindricalFace",
-    "boolean::box_sphere::build_arc_edge",
-    "boolean::merge_result_vertices::snapshot_and_rebuild",
-    "primitives::make_cylinder::rims",
-    "primitives::make_cone::pointed_rim",
-    "primitives::make_cone::frustum_rims",
 )
 # Removing a path above requires its exact new set_trim identities here. This
 # mapping is the sole registration point for post-baseline required writers;
 # each tuple length must match the pinned path weight.
-FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {}
+FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
+    "boolean::assembly::SphereCapFace": ("b4495bb8cfd29eeb",),
+    "boolean::assembly::CylindricalFace": ("1ee00d4def91bbfd",),
+    "boolean::box_sphere::build_arc_edge": ("e947102e0733a63b",),
+    "boolean::merge_result_vertices::snapshot_and_rebuild": ("8fa4ac4bcd5a517f",),
+    "primitives::make_cylinder::rims": (
+        "3be2b1df6dc3bc40",
+        "8ea7c2b262f86493",
+    ),
+    "primitives::make_cone::pointed_rim": ("fc2617ad85a661d5",),
+    "primitives::make_cone::frustum_rims": (
+        "770c0c4e72efbff5",
+        "0b80bd84fb7a0dfe",
+    ),
+}
 
 DOMAIN_PATTERN = re.compile(r"domain_with_endpoints\s*\(")
 BOUNDARY_PATTERN = re.compile(r"\.(?:wire_mut|inner_wires_mut|set_outer_wire)\s*\(")

@@ -8316,3 +8316,608 @@ fn compound_cluster_fuse_keeps_the_caller_context() {
     assert_eq!(run(Tolerance::new()), 12);
     assert_eq!(run(Tolerance::loose()), 6);
 }
+
+fn assert_result_circle_trims(topo: &Topology, solid: SolidId, expected: usize) {
+    let mut circles = 0;
+    for edge_id in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        circles += 1;
+        let (t0, t1) = edge.trim().expect("result circle needs an explicit trim");
+        assert!(t0.is_finite() && t1.is_finite());
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        assert!((circle.evaluate(t0) - start).length() < 1e-9);
+        assert!((circle.evaluate(t1) - end).length() < 1e-9);
+        assert!((t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    }
+    assert_eq!(circles, expected);
+}
+
+#[test]
+fn mixed_sphere_cap_arcs_carry_explicit_short_trims() {
+    use remus_math::surfaces::SphericalSurface;
+
+    let mut topo = Topology::new();
+    let r = 2.0;
+    let o = Point3::new(0.0, 0.0, 0.0);
+    let x = Point3::new(r, 0.0, 0.0);
+    let y = Point3::new(0.0, r, 0.0);
+    let z = Point3::new(0.0, 0.0, r);
+    let sphere = SphericalSurface::new(o, r).unwrap();
+    let specs = vec![
+        FaceSpec::SphereCapFace {
+            vertices: vec![x, y, z],
+            sphere,
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o, y, x],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o, z, y],
+            normal: Vec3::new(-1.0, 0.0, 0.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o, x, z],
+            normal: Vec3::new(0.0, -1.0, 0.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+    ];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    assert_result_circle_trims(&topo, solid, 3);
+    assert!(
+        validate_shell_manifold(
+            topo.shell(topo.solid(solid).unwrap().outer_shell())
+                .unwrap(),
+            &topo
+        )
+        .is_ok()
+    );
+    let exact = std::f64::consts::PI * r.powi(3) / 6.0;
+    assert_volume_near(&topo, solid, exact, 0.01);
+}
+
+#[test]
+fn mixed_cylindrical_face_arcs_carry_explicit_short_trims() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let r = 2.0;
+    let h = 3.0;
+    let o0 = Point3::new(0.0, 0.0, 0.0);
+    let oh = Point3::new(0.0, 0.0, h);
+    let xb = Point3::new(r, 0.0, 0.0);
+    let yb = Point3::new(0.0, r, 0.0);
+    let yt = Point3::new(0.0, r, h);
+    let xt = Point3::new(r, 0.0, h);
+    let cylinder = CylindricalSurface::new(o0, Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let specs = vec![
+        FaceSpec::CylindricalFace {
+            vertices: vec![xb, yb, yt, xt],
+            cylinder,
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, yb, xb],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![oh, xt, yt],
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: h,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, xb, xt, oh],
+            normal: Vec3::new(0.0, -1.0, 0.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, oh, yt, yb],
+            normal: Vec3::new(-1.0, 0.0, 0.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+    ];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    assert_result_circle_trims(&topo, solid, 2);
+    assert!(
+        validate_shell_manifold(
+            topo.shell(topo.solid(solid).unwrap().outer_shell())
+                .unwrap(),
+            &topo
+        )
+        .is_ok()
+    );
+    let exact = std::f64::consts::PI * r * r * h / 4.0;
+    assert_volume_near(&topo, solid, exact, 0.01);
+}
+
+#[test]
+fn mixed_cylindrical_face_reversal_does_not_select_the_complementary_arc() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let r = 2.0;
+    let h = 3.0;
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            cylinder.evaluate(0.0, 0.0),
+            cylinder.evaluate(std::f64::consts::FRAC_PI_2, 0.0),
+            cylinder.evaluate(std::f64::consts::FRAC_PI_2, h),
+            cylinder.evaluate(0.0, h),
+        ],
+        cylinder,
+        reversed: true,
+        inner_wires: vec![],
+    }];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    let mut circle_count = 0;
+    for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+            circle_count += 1;
+            let (t0, t1) = edge.trim().unwrap();
+            assert!((t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        }
+    }
+    assert_eq!(circle_count, 2);
+}
+
+#[test]
+fn mixed_cylindrical_face_span_is_stable_across_the_seam_and_large_axial_offset() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let z0 = 1.0e12;
+    let z1 = z0 + 3.0;
+    let u0 = 7.0 * std::f64::consts::FRAC_PI_4;
+    let u1 = std::f64::consts::FRAC_PI_4;
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            cylinder.evaluate(u0, z0),
+            cylinder.evaluate(u1, z0),
+            cylinder.evaluate(u1, z1),
+            cylinder.evaluate(u0, z1),
+        ],
+        cylinder,
+        reversed: false,
+        inner_wires: vec![],
+    }];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    let mut circle_count = 0;
+    for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+            circle_count += 1;
+            let (t0, t1) = edge.trim().unwrap();
+            assert!((t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        }
+    }
+    assert_eq!(circle_count, 2);
+}
+
+#[test]
+fn mixed_cylindrical_face_refuses_inconsistent_rim_segmentation() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let u135 = 3.0 * std::f64::consts::FRAC_PI_4;
+    let u270 = 3.0 * std::f64::consts::FRAC_PI_2;
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            cylinder.evaluate(0.0, 0.0),
+            cylinder.evaluate(u135, 0.0),
+            cylinder.evaluate(u270, 0.0),
+            cylinder.evaluate(u270, 3.0),
+            cylinder.evaluate(0.0, 3.0),
+        ],
+        cylinder,
+        reversed: false,
+        inner_wires: vec![],
+    }];
+    let result = assemble_solid_mixed(&mut topo, &specs, Tolerance::new());
+
+    assert!(matches!(
+        result,
+        Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            ref reason,
+        }) if reason == "cylindrical face boundary winding does not select a unique periodic span"
+    ));
+}
+
+#[test]
+fn mixed_cylindrical_face_uses_scale_relative_arc_detection() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let r = 10.0;
+    let h = 1.0;
+    let angle = 9.0e-8_f64;
+    let o0 = Point3::new(0.0, 0.0, 0.0);
+    let oh = Point3::new(0.0, 0.0, h);
+    let xb = Point3::new(r, 0.0, 0.0);
+    let xt = Point3::new(r, 0.0, h);
+    let rb = Point3::new(r * angle.cos(), r * angle.sin(), 0.0);
+    let rt = Point3::new(r * angle.cos(), r * angle.sin(), h);
+    let cylinder = CylindricalSurface::new(o0, Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let radial_normal = Vec3::new(-angle.sin(), angle.cos(), 0.0);
+    let specs = vec![
+        FaceSpec::CylindricalFace {
+            vertices: vec![xb, rb, rt, xt],
+            cylinder,
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, rb, xb],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![oh, xt, rt],
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: h,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, xb, xt, oh],
+            normal: Vec3::new(0.0, -1.0, 0.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, oh, rt, rb],
+            normal: radial_normal,
+            d: 0.0,
+            inner_wires: vec![],
+        },
+    ];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+
+    let trims: Vec<_> = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter_map(|edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            matches!(edge.curve(), EdgeCurve::Circle(_)).then(|| edge.trim().unwrap())
+        })
+        .collect();
+    assert_eq!(trims.len(), 2);
+    assert!(trims.iter().all(|(t0, t1)| (t1 - t0 - angle).abs() < 1e-12));
+    let exact_chord = 2.0 * r * (0.5 * angle).sin();
+    assert!(exact_chord > Tolerance::new().linear);
+}
+
+#[test]
+fn ccw_arc_trim_refuses_a_degenerate_open_span() {
+    let circle = remus_math::curves::Circle3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+    )
+    .unwrap();
+    let error = assembly::ccw_arc_trim(
+        &circle,
+        circle.evaluate(0.0),
+        circle.evaluate(1e-10),
+        Tolerance::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, crate::OperationsError::Unsupported { .. }));
+}
+
+#[test]
+fn ccw_arc_trim_refuses_endpoints_off_the_analytic_circle() {
+    let circle = remus_math::curves::Circle3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+    )
+    .unwrap();
+    let error = assembly::ccw_arc_trim(
+        &circle,
+        Point3::new(2.0, 0.0, 0.0),
+        Point3::new(0.0, 2.0, 0.0),
+        Tolerance::new(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason,
+        } if reason == "open circle arc endpoints exceed linear tolerance from the analytic curve"
+    ));
+}
+
+#[test]
+fn mixed_cylindrical_face_refuses_diagonal_uv_boundary() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let specs = [FaceSpec::CylindricalFace {
+        vertices: vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 1.0),
+            Point3::new(0.0, 1.0, 2.0),
+            Point3::new(1.0, 0.0, 1.0),
+        ],
+        cylinder,
+        reversed: false,
+        inner_wires: vec![],
+    }];
+    let error = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason,
+        } if reason == "cylindrical face boundary is diagonal or degenerate in parameter space"
+    ));
+}
+
+#[test]
+fn mixed_cylindrical_face_preserves_a_270_degree_sector() {
+    use remus_math::surfaces::CylindricalSurface;
+
+    let mut topo = Topology::new();
+    let r = 2.0;
+    let h = 3.0;
+    let o0 = Point3::new(0.0, 0.0, 0.0);
+    let oh = Point3::new(0.0, 0.0, h);
+    let cylinder = CylindricalSurface::new(o0, Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let u270 = 3.0 * std::f64::consts::FRAC_PI_2;
+    let a0 = cylinder.evaluate(0.0, 0.0);
+    let ah = cylinder.evaluate(0.0, h);
+    let b0 = cylinder.evaluate(u270, 0.0);
+    let bh = cylinder.evaluate(u270, h);
+    let tangent0 = cylinder.axis().cross(a0 - o0).normalize().unwrap();
+    let tangent270 = cylinder.axis().cross(b0 - o0).normalize().unwrap();
+    let specs = vec![
+        FaceSpec::CylindricalFace {
+            vertices: vec![a0, b0, bh, ah],
+            cylinder,
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, b0, a0],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![oh, ah, bh],
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: h,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, a0, ah, oh],
+            normal: -tangent0,
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![o0, oh, bh, b0],
+            normal: tangent270,
+            d: 0.0,
+            inner_wires: vec![],
+        },
+    ];
+    let solid = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+    let mut circles = 0;
+    for edge_id in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        circles += 1;
+        let (t0, t1) = edge.trim().unwrap();
+        assert!((t1 - t0 - u270).abs() < 1e-9);
+        assert!((circle.evaluate(t0) - topo.vertex(edge.start()).unwrap().point()).length() < 1e-9);
+        assert!((circle.evaluate(t1) - topo.vertex(edge.end()).unwrap().point()).length() < 1e-9);
+    }
+    assert_eq!(circles, 2);
+    assert!(
+        validate_shell_manifold(
+            topo.shell(topo.solid(solid).unwrap().outer_shell())
+                .unwrap(),
+            &topo
+        )
+        .is_ok()
+    );
+    let exact = 3.0 * std::f64::consts::PI * r * r * h / 4.0;
+    assert_volume_near(&topo, solid, exact, 0.01);
+}
+
+#[test]
+fn mixed_sphere_cap_refuses_an_ambiguous_antipodal_boundary() {
+    use remus_math::surfaces::SphericalSurface;
+
+    let mut topo = Topology::new();
+    let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+    let specs = [FaceSpec::SphereCapFace {
+        vertices: vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ],
+        sphere,
+        reversed: false,
+        inner_wires: vec![],
+    }];
+    let error = assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap_err();
+    assert!(matches!(error, crate::OperationsError::Unsupported { .. }));
+}
+
+/// `merge_result_vertices` rebuilds every edge touching a merged vertex —
+/// the rebuilt edge must carry the source edge's explicit trim (RFC 0002).
+/// The GFA-side welds and `unify_coincident_boundary_edges` already carried
+/// their trims; this was the one boolean post-assembly path that dropped it.
+#[test]
+fn merge_result_vertices_rebuilt_edges_carry_trim() {
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let tol = Tolerance::default();
+
+    // Two triangle faces whose corner vertices duplicate within tolerance:
+    // v2d/v3d quantize (at 1/tol.linear scale) to the same keys as v2/v3.
+    let v1 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), tol.linear));
+    let v2 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), tol.linear));
+    let v3 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), tol.linear));
+    let v4 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.5, 0.0), tol.linear));
+    let v2d = topo.add_vertex(Vertex::new(Point3::new(1.0 + 1e-9, 0.0, 0.0), tol.linear));
+    let v3d = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0 + 1e-9, 0.0), tol.linear));
+
+    let e12 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+    let e23 = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
+    let e31 = topo.add_edge(Edge::new(v3, v1, EdgeCurve::Line));
+    // Face B carries an arc edge with an explicit trim between the
+    // duplicate vertices — the interval must survive the canonical rebuild.
+    let arc_circle = remus_math::curves::Circle3D::new(
+        Point3::new(0.5, 0.5, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        std::f64::consts::FRAC_1_SQRT_2,
+    )
+    .unwrap();
+    let arc_t0 = arc_circle.project(topo.vertex(v3d).unwrap().point());
+    let arc_delta = (arc_circle.project(topo.vertex(v2d).unwrap().point()) - arc_t0)
+        .rem_euclid(std::f64::consts::TAU);
+    let marker_trim = (arc_t0, arc_t0 + arc_delta);
+    let arc = topo.add_edge({
+        let mut e = Edge::new(v3d, v2d, EdgeCurve::Circle(arc_circle));
+        e.set_trim(Some(marker_trim));
+        e
+    });
+    let e42 = topo.add_edge(Edge::new(v4, v2d, EdgeCurve::Line));
+    let e43 = topo.add_edge(Edge::new(v4, v3d, EdgeCurve::Line));
+
+    let wire_a = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e12, true),
+                OrientedEdge::new(e23, true),
+                OrientedEdge::new(e31, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face_a = topo.add_face(Face::new(
+        wire_a,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let wire_b = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e43, true),
+                OrientedEdge::new(arc, true),
+                OrientedEdge::new(e42, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face_b = topo.add_face(Face::new(
+        wire_b,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+
+    let shell = topo.add_shell(Shell::new(vec![face_a, face_b]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+    merge_result_vertices(&mut topo, solid, tol).unwrap();
+
+    // The duplicate vertices were canonicalized and the arc edge rebuilt.
+    // (The orphaned source edge stays in the arena; count what the solid
+    // actually references.)
+    let mut referenced_arcs = Vec::new();
+    let shell = topo.solid(solid).unwrap().outer_shell();
+    for fid in topo.shell(shell).unwrap().faces() {
+        let face = topo.face(*fid).unwrap();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                let e = topo.edge(oe.edge()).unwrap();
+                if matches!(e.curve(), EdgeCurve::Circle(_)) {
+                    referenced_arcs.push((oe.edge(), e.clone()));
+                }
+            }
+        }
+    }
+    assert_eq!(referenced_arcs.len(), 1, "arc rebuilt exactly once");
+    let (edge_id, rebuilt) = &referenced_arcs[0];
+    assert_eq!(
+        rebuilt.trim(),
+        Some(marker_trim),
+        "rebuilt edge must carry the source trim verbatim"
+    );
+    // The rebuilt edge connects the CANONICAL vertices.
+    assert_eq!(rebuilt.start(), v3);
+    assert_eq!(rebuilt.end(), v2);
+    let (t0, t1) = rebuilt.trim().unwrap();
+    let EdgeCurve::Circle(circle) = rebuilt.curve() else {
+        panic!("rebuilt marker edge must remain circular");
+    };
+    let vertex_tol = topo
+        .vertex(rebuilt.start())
+        .unwrap()
+        .tolerance()
+        .max(topo.vertex(rebuilt.end()).unwrap().tolerance());
+    let effective_tol = rebuilt.effective_tolerance(vertex_tol);
+    assert!(
+        (circle.evaluate(t0) - topo.vertex(rebuilt.start()).unwrap().point()).length()
+            <= effective_tol
+    );
+    assert!(
+        (circle.evaluate(t1) - topo.vertex(rebuilt.end()).unwrap().point()).length()
+            <= effective_tol
+    );
+    // And the rebuilt wire references the rebuilt edge.
+    assert!(
+        topo.edges()
+            .iter()
+            .any(|(id, _)| id == *edge_id && id != arc),
+        "referenced arc is the rebuilt edge, not the orphaned source"
+    );
+}

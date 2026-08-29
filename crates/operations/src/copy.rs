@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use remus_math::curves::{Circle3D, Ellipse3D};
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
@@ -429,8 +428,6 @@ pub fn copy_and_transform_solid(
     solid_id: SolidId,
     matrix: &remus_math::mat::Mat4,
 ) -> Result<SolidId, crate::OperationsError> {
-    use remus_math::nurbs::NurbsCurve;
-
     crate::transform::reject_degenerate_transform(matrix)?;
     let normal_matrix = matrix.inverse()?.transpose();
 
@@ -553,99 +550,21 @@ pub fn copy_and_transform_solid(
     for esnap in &edge_snaps {
         let new_start = vertex_map[&esnap.start_index];
         let new_end = vertex_map[&esnap.end_index];
-        let new_curve = match &esnap.curve {
-            EdgeCurve::Line => EdgeCurve::Line,
-            // Exact under a similarity, typed refusal otherwise — see
-            // `transform::transform_open_conic`.
-            c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
-                crate::transform::transform_open_conic(c, matrix)?
-            }
-            EdgeCurve::NurbsCurve(c) => {
-                let new_cps: Vec<_> = c
-                    .control_points()
-                    .iter()
-                    .map(|pt| matrix.mul_point(*pt))
-                    .collect();
-                EdgeCurve::NurbsCurve(NurbsCurve::new(
-                    c.degree(),
-                    c.knots().to_vec(),
-                    new_cps,
-                    c.weights().to_vec(),
-                )?)
-            }
-            EdgeCurve::Circle(c) => {
-                let new_center = matrix.mul_point(c.center());
-                let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
-                let transform_dir = |d: remus_math::vec::Vec3| -> remus_math::vec::Vec3 {
-                    matrix.mul_point(Point3::new(d.x(), d.y(), d.z())) - origin
-                };
-                let new_u = transform_dir(c.u_axis());
-                let new_v = transform_dir(c.v_axis());
-                let su = new_u.length();
-                let sv = new_v.length();
-                // Transformed axes are conjugate diameters of the image
-                // ellipse; only orthogonal images keep them principal (see
-                // `transform::ensure_orthogonal_conjugate_axes`).
-                crate::transform::ensure_orthogonal_conjugate_axes(new_u, new_v, "circular")?;
-                let new_normal = new_u.cross(new_v).normalize()?;
-                if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
-                    EdgeCurve::Circle(Circle3D::with_axes(
-                        new_center,
-                        new_normal,
-                        c.radius() * su,
-                        new_u.normalize()?,
-                        new_v.normalize()?,
-                    )?)
-                } else {
-                    let (semi_major, semi_minor, u_dir, v_dir) = if su >= sv {
-                        (
-                            c.radius() * su,
-                            c.radius() * sv,
-                            new_u.normalize()?,
-                            new_v.normalize()?,
-                        )
-                    } else {
-                        (
-                            c.radius() * sv,
-                            c.radius() * su,
-                            new_v.normalize()?,
-                            new_u.normalize()?,
-                        )
-                    };
-                    EdgeCurve::Ellipse(Ellipse3D::with_axes(
-                        new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
-                    )?)
-                }
-            }
-            EdgeCurve::Ellipse(e) => {
-                let new_center = matrix.mul_point(e.center());
-                let origin = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
-                let transform_dir = |d: remus_math::vec::Vec3| -> remus_math::vec::Vec3 {
-                    matrix.mul_point(Point3::new(d.x(), d.y(), d.z())) - origin
-                };
-                let new_u = transform_dir(e.u_axis());
-                let new_v = transform_dir(e.v_axis());
-                crate::transform::ensure_orthogonal_conjugate_axes(new_u, new_v, "elliptical")?;
-                let new_normal = new_u.cross(new_v).normalize()?;
-                EdgeCurve::Ellipse(Ellipse3D::with_axes(
-                    new_center,
-                    new_normal,
-                    e.semi_major() * new_u.length(),
-                    e.semi_minor() * new_v.length(),
-                    new_u.normalize()?,
-                    new_v.normalize()?,
-                )?)
-            }
-        };
-        // No trim carry-over: the transformed curve re-derives its frame,
-        // which can shift the parameterization the trim was recorded on.
-        let copied_edge = topo.add_edge(Edge::with_tolerance(
+        // Shared with `transform::transform_edges` — including its exact trim
+        // policy: retain where the map provably preserves the
+        // parameterization, remap the handled Circle→Ellipse axis swap,
+        // drop otherwise (RFC 0002).
+        let (new_curve, new_trim) =
+            crate::transform::transform_edge_curve_with_trim(&esnap.curve, esnap.trim, matrix)?;
+        let mut copied_edge = Edge::with_tolerance(
             new_start,
             new_end,
-            new_curve,
+            new_curve.unwrap_or(EdgeCurve::Line),
             esnap.tolerance,
-        ));
-        edge_map.insert(esnap.old_index, copied_edge);
+        );
+        copied_edge.set_trim(new_trim);
+        let copied = topo.add_edge(copied_edge);
+        edge_map.insert(esnap.old_index, copied);
     }
 
     // Wires carry no geometry to transform.
