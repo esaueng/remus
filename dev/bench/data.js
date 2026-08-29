@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787965577772,
+  "lastUpdate": 1787968214482,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3509,6 +3509,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39144604,
             "range": "± 145904",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ba1178765680213c08745ff3369b27bc9df7680",
+          "message": "docs(kernel-maturity): add P-Class program roadmap (#119)",
+          "timestamp": "2026-08-28T21:47:34-04:00",
+          "tree_id": "b8c5747a7c5da34ba6daa6b04c1a374efc7e469f",
+          "url": "https://github.com/esaueng/remus/commit/1ba1178765680213c08745ff3369b27bc9df7680"
+        },
+        "date": 1787968213642,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1447188,
+            "range": "± 2099",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1483720,
+            "range": "± 5096",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15770,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1012423,
+            "range": "± 2727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41732030,
+            "range": "± 107224",
             "unit": "ns/iter"
           }
         ]
