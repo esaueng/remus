@@ -12,7 +12,7 @@ use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 
 use crate::Topology;
-use crate::edge::{Edge, EdgeCurve, EdgeId};
+use crate::edge::{Edge, EdgeCurve, EdgeId, periodic_curve_domain_is_valid};
 use crate::face::{Face, FaceId, FaceSurface};
 use crate::vertex::Vertex;
 use crate::wire::{OrientedEdge, Wire, WireId};
@@ -58,7 +58,8 @@ pub fn make_line_edge(
 ///
 /// # Errors
 ///
-/// Returns an error if `radius` is non-positive or `normal` is a zero vector.
+/// Returns an error if `radius` is non-positive, `normal` is a zero vector,
+/// `tolerance` is invalid, or the numeric full-turn range cannot be certified.
 pub fn make_circle_edge_with_ref(
     topo: &mut Topology,
     center: Point3,
@@ -67,14 +68,27 @@ pub fn make_circle_edge_with_ref(
     ref_dir: Vec3,
     tolerance: f64,
 ) -> Result<EdgeId, crate::TopologyError> {
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(crate::TopologyError::NonManifold {
+            reason: format!("circle tolerance must be finite and non-negative, got {tolerance}"),
+        });
+    }
     let circle = Circle3D::new_with_ref(center, normal, radius, ref_dir).map_err(|e| {
         crate::TopologyError::NonManifold {
             reason: format!("invalid circle: {e}"),
         }
     })?;
     let seam = circle.evaluate(0.0);
+    let curve = EdgeCurve::Circle(circle);
+    if !periodic_curve_domain_is_valid(&curve, 0.0, std::f64::consts::TAU, true, tolerance) {
+        return Err(crate::TopologyError::NonManifold {
+            reason: "circle full-turn parameter range cannot be certified".to_owned(),
+        });
+    }
     let v = topo.add_vertex(Vertex::new(seam, tolerance));
-    Ok(topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle))))
+    let mut edge = Edge::with_tolerance(v, v, curve, Some(tolerance));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    Ok(topo.add_edge(edge))
 }
 
 /// Create a closed circular edge.
@@ -88,7 +102,8 @@ pub fn make_circle_edge_with_ref(
 ///
 /// # Errors
 ///
-/// Returns an error if `radius` is non-positive or `normal` is a zero vector.
+/// Returns an error if `radius` is non-positive, `normal` is a zero vector,
+/// `tolerance` is invalid, or the numeric full-turn range cannot be certified.
 pub fn make_circle_edge(
     topo: &mut Topology,
     center: Point3,
@@ -120,7 +135,8 @@ pub fn make_circle_edge(
 /// # Errors
 ///
 /// Returns an error if either semi-axis is non-positive, `semi_minor`
-/// exceeds `semi_major`, or `normal` is a zero vector.
+/// exceeds `semi_major`, `normal` is a zero vector, `tolerance` is invalid,
+/// or the numeric full-turn range cannot be certified.
 pub fn make_ellipse_edge_with_ref(
     topo: &mut Topology,
     center: Point3,
@@ -130,13 +146,26 @@ pub fn make_ellipse_edge_with_ref(
     ref_dir: Vec3,
     tolerance: f64,
 ) -> Result<EdgeId, crate::TopologyError> {
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(crate::TopologyError::NonManifold {
+            reason: format!("ellipse tolerance must be finite and non-negative, got {tolerance}"),
+        });
+    }
     let ellipse = Ellipse3D::new_with_ref(center, normal, semi_major, semi_minor, ref_dir)
         .map_err(|e| crate::TopologyError::NonManifold {
             reason: format!("invalid ellipse: {e}"),
         })?;
     let seam = ellipse.evaluate(0.0);
+    let curve = EdgeCurve::Ellipse(ellipse);
+    if !periodic_curve_domain_is_valid(&curve, 0.0, std::f64::consts::TAU, true, tolerance) {
+        return Err(crate::TopologyError::NonManifold {
+            reason: "ellipse full-turn parameter range cannot be certified".to_owned(),
+        });
+    }
     let v = topo.add_vertex(Vertex::new(seam, tolerance));
-    Ok(topo.add_edge(Edge::new(v, v, EdgeCurve::Ellipse(ellipse))))
+    let mut edge = Edge::with_tolerance(v, v, curve, Some(tolerance));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    Ok(topo.add_edge(edge))
 }
 
 /// Create a closed elliptical edge.
@@ -152,7 +181,8 @@ pub fn make_ellipse_edge_with_ref(
 /// # Errors
 ///
 /// Returns an error if either semi-axis is non-positive, `semi_minor`
-/// exceeds `semi_major`, or `normal` is a zero vector.
+/// exceeds `semi_major`, `normal` is a zero vector, `tolerance` is invalid,
+/// or the numeric full-turn range cannot be certified.
 pub fn make_ellipse_edge(
     topo: &mut Topology,
     center: Point3,
@@ -175,16 +205,17 @@ pub fn make_ellipse_edge(
 ///
 /// Builds an [`Ellipse3D`] from `center`, `normal`, the semi-axes, and the
 /// `ref_dir` major-axis direction, then an edge whose distinct start/end
-/// vertices trim it. [`EdgeCurve::domain_with_endpoints`] projects those
-/// endpoints onto the ellipse and returns the CCW angular range, so the edge
-/// traces exactly the arc. `start`/`end` must lie on the ellipse. When the
-/// endpoints coincide the edge is closed (full `[0, 2π]` domain).
+/// vertices trim it. The builder projects those endpoints onto the ellipse
+/// and stores the lifted CCW angular range, so the edge traces exactly the
+/// arc. `start`/`end` must lie on the ellipse. When the endpoints coincide the
+/// edge stores a full turn anchored at that seam.
 ///
 /// # Errors
 ///
 /// Returns an error if either semi-axis is non-positive, `semi_minor` exceeds
 /// `semi_major`, `normal`/`ref_dir` is degenerate, or an endpoint does not lie
-/// on the ellipse within tolerance.
+/// on the ellipse within tolerance, or if the numeric parameter range cannot
+/// be certified.
 #[allow(clippy::too_many_arguments)]
 pub fn make_ellipse_arc(
     topo: &mut Topology,
@@ -197,32 +228,65 @@ pub fn make_ellipse_arc(
     end: Point3,
     tolerance: f64,
 ) -> Result<EdgeId, crate::TopologyError> {
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(crate::TopologyError::NonManifold {
+            reason: format!(
+                "ellipse arc tolerance must be finite and non-negative, got {tolerance}"
+            ),
+        });
+    }
     let ellipse = Ellipse3D::new_with_ref(center, normal, semi_major, semi_minor, ref_dir)
         .map_err(|e| crate::TopologyError::NonManifold {
             reason: format!("invalid ellipse: {e}"),
         })?;
-    let endpoint_tolerance = Tolerance {
-        linear: tolerance,
-        ..Tolerance::new()
-    };
     for (name, point) in [("start", start), ("end", end)] {
         let point_on_ellipse = ellipse.evaluate(ellipse.project(point));
-        if !endpoint_tolerance.approx_eq(point.x(), point_on_ellipse.x())
-            || !endpoint_tolerance.approx_eq(point.y(), point_on_ellipse.y())
-            || !endpoint_tolerance.approx_eq(point.z(), point_on_ellipse.z())
-        {
+        let residual = (point - point_on_ellipse).length();
+        if !residual.is_finite() || residual > tolerance {
             return Err(crate::TopologyError::NonManifold {
                 reason: format!("ellipse arc {name} point does not lie on the ellipse"),
             });
         }
     }
+    let same_point = start.x().to_bits() == end.x().to_bits()
+        && start.y().to_bits() == end.y().to_bits()
+        && start.z().to_bits() == end.z().to_bits();
+    if !same_point && (start - end).length() <= tolerance {
+        return Err(crate::TopologyError::NonManifold {
+            reason: "ellipse arc has distinct endpoints inside the closure tolerance".to_owned(),
+        });
+    }
+    let closed = same_point;
+    let t_start = ellipse.project(start);
+    let span = if closed {
+        std::f64::consts::TAU
+    } else {
+        (ellipse.project(end) - t_start).rem_euclid(std::f64::consts::TAU)
+    };
+    if !t_start.is_finite()
+        || !span.is_finite()
+        || (!closed && span.partial_cmp(&0.0) == Some(std::cmp::Ordering::Equal))
+    {
+        return Err(crate::TopologyError::NonManifold {
+            reason: "ellipse arc endpoints do not establish a non-zero angular span".to_owned(),
+        });
+    }
+    let trim = (t_start, t_start + span);
+    let curve = EdgeCurve::Ellipse(ellipse);
+    if !periodic_curve_domain_is_valid(&curve, trim.0, trim.1, closed, tolerance) {
+        return Err(crate::TopologyError::NonManifold {
+            reason: "ellipse arc parameter range cannot be certified".to_owned(),
+        });
+    }
     let v_start = topo.add_vertex(Vertex::new(start, tolerance));
-    let v_end = if (start - end).length() < tolerance * 100.0 {
+    let v_end = if closed {
         v_start
     } else {
         topo.add_vertex(Vertex::new(end, tolerance))
     };
-    Ok(topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::Ellipse(ellipse))))
+    let mut edge = Edge::with_tolerance(v_start, v_end, curve, Some(tolerance));
+    edge.set_trim(Some(trim));
+    Ok(topo.add_edge(edge))
 }
 
 /// Create a closed wire from an ordered list of points.
@@ -778,30 +842,58 @@ pub fn make_nurbs_edge(
     curve: NurbsCurve,
     tolerance: f64,
 ) -> EdgeId {
+    let (domain_start, domain_end) = remus_math::traits::ParametricCurve::domain(&curve);
+    let natural_start = curve.evaluate(domain_start);
+    let natural_end = curve.evaluate(domain_end);
+    let forward_residual = (start - natural_start)
+        .length()
+        .max((end - natural_end).length());
+    let reverse_residual = (start - natural_end)
+        .length()
+        .max((end - natural_start).length());
+    let authority_band = if tolerance.is_finite() && !tolerance.is_sign_negative() {
+        tolerance.min(Tolerance::new().linear)
+    } else {
+        -1.0
+    };
+    let forward_matches = forward_residual <= authority_band;
+    let reverse_matches = reverse_residual <= authority_band;
+    let trim = match (forward_matches, reverse_matches) {
+        (true, false) => Some((domain_start, domain_end)),
+        (false, true) => Some((domain_end, domain_start)),
+        (true, true) if forward_residual < reverse_residual => Some((domain_start, domain_end)),
+        (true, true) if reverse_residual < forward_residual => Some((domain_end, domain_start)),
+        (true, true) if (natural_start - natural_end).length() <= authority_band => {
+            Some((domain_start, domain_end))
+        }
+        _ => None,
+    };
     let v_start = topo.add_vertex(Vertex::new(start, tolerance));
     let v_end = topo.add_vertex(Vertex::new(end, tolerance));
-    topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve)))
+    let mut edge = Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(trim);
+    topo.add_edge(edge)
 }
 
 /// Create an edge from a NURBS curve, evaluating its endpoints.
 ///
-/// The start and end points are obtained by evaluating the curve at its
-/// first and last knot values.
+/// The start and end points are obtained by evaluating the curve at the bounds
+/// of its valid parameter domain. NURBS evaluation already clamps outer knots
+/// to those bounds, so this preserves the legacy endpoint geometry while
+/// recording the parameters that actually produced it.
 pub fn make_nurbs_edge_from_curve(
     topo: &mut Topology,
     curve: &NurbsCurve,
     tolerance: f64,
 ) -> EdgeId {
-    let knots = curve.knots();
-    let start = curve.evaluate(knots[0]);
-    let end = curve.evaluate(knots[knots.len() - 1]);
+    let (t_start, t_end) = remus_math::traits::ParametricCurve::domain(curve);
+    let start = curve.evaluate(t_start);
+    let end = curve.evaluate(t_end);
     let v_start = topo.add_vertex(Vertex::new(start, tolerance));
     let v_end = topo.add_vertex(Vertex::new(end, tolerance));
-    topo.add_edge(Edge::new(
-        v_start,
-        v_end,
-        EdgeCurve::NurbsCurve(curve.clone()),
-    ))
+    let mut edge = Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve.clone()));
+    edge.set_trim(Some((t_start, t_end)));
+    topo.add_edge(edge)
 }
 
 /// Create a face from a NURBS surface with a rectangular domain wire.
@@ -895,9 +987,9 @@ mod tests {
         assert_eq!(edge.curve().type_tag(), "circle");
 
         let seam = topo.vertex(edge.start()).unwrap().point();
-        let (t_min, t_max) = edge.domain_with_endpoints(seam, seam);
-        assert!((t_min - 0.0).abs() < 1e-12);
-        assert!((t_max - std::f64::consts::TAU).abs() < 1e-12);
+        assert_eq!(edge.trim(), Some((0.0, std::f64::consts::TAU)));
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, std::f64::consts::TAU));
+        assert!((edge.curve().evaluate_with_endpoints(0.0, seam, seam) - seam).length() < 1e-12);
     }
 
     #[test]
@@ -948,9 +1040,9 @@ mod tests {
         assert_eq!(edge.curve().type_tag(), "ellipse");
 
         let seam = topo.vertex(edge.start()).unwrap().point();
-        let (t_min, t_max) = edge.domain_with_endpoints(seam, seam);
-        assert!((t_min - 0.0).abs() < 1e-12);
-        assert!((t_max - std::f64::consts::TAU).abs() < 1e-12);
+        assert_eq!(edge.trim(), Some((0.0, std::f64::consts::TAU)));
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, std::f64::consts::TAU));
+        assert!((edge.curve().evaluate_with_endpoints(0.0, seam, seam) - seam).length() < 1e-12);
     }
 
     #[test]
@@ -1107,7 +1199,7 @@ mod tests {
 
         // The trimmed domain is the CCW angular range [0, π/2]; its midpoint
         // angle π/4 maps to (5·cos45, 2·sin45, 0) ≈ (3.5355, 1.4142, 0).
-        let (a0, a1) = edge.domain_with_endpoints(start, end);
+        let (a0, a1) = edge.strict_domain().unwrap();
         assert!(a0.abs() < 1e-9, "a0 {a0}");
         assert!((a1 - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "a1 {a1}");
         let mid = edge
@@ -1117,6 +1209,342 @@ mod tests {
         assert!((mid.x() - 5.0 * s).abs() < 1e-9, "mid.x {}", mid.x());
         assert!((mid.y() - 2.0 * s).abs() < 1e-9, "mid.y {}", mid.y());
         assert!(mid.z().abs() < 1e-9, "mid.z {}", mid.z());
+    }
+
+    #[test]
+    fn make_ellipse_arc_stores_wrapped_and_closed_authority() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let ellipse = Ellipse3D::new_with_ref(center, normal, 5.0, 2.0, ref_dir).unwrap();
+
+        let mut topo = Topology::new();
+        let start_t = 2.8;
+        let end_t = 0.2;
+        let wrapped = make_ellipse_arc(
+            &mut topo,
+            center,
+            normal,
+            5.0,
+            2.0,
+            ref_dir,
+            ellipse.evaluate(start_t),
+            ellipse.evaluate(end_t),
+            TOL,
+        )
+        .unwrap();
+        let edge = topo.edge(wrapped).unwrap();
+        let range = edge.strict_domain().unwrap();
+        assert!((range.0 - start_t).abs() < 1e-12);
+        assert!((range.1 - (end_t + std::f64::consts::TAU)).abs() < 1e-12);
+        assert!(
+            (ellipse.evaluate(range.0) - topo.vertex(edge.start()).unwrap().point()).length()
+                < 1e-12
+        );
+        assert!(
+            (ellipse.evaluate(range.1) - topo.vertex(edge.end()).unwrap().point()).length() < 1e-12
+        );
+        assert!(range.1 > std::f64::consts::TAU);
+        let expected_mid = ellipse.evaluate(start_t.midpoint(end_t + std::f64::consts::TAU));
+        assert!((ellipse.evaluate(range.0.midpoint(range.1)) - expected_mid).length() < 1e-12);
+
+        let seam_t = 2.8;
+        let seam = ellipse.evaluate(seam_t);
+        let closed = make_ellipse_arc(
+            &mut topo, center, normal, 5.0, 2.0, ref_dir, seam, seam, TOL,
+        )
+        .unwrap();
+        let edge = topo.edge(closed).unwrap();
+        let range = edge.strict_domain().unwrap();
+        assert!((range.0 - seam_t).abs() < 1e-12);
+        assert!((range.1 - (seam_t + std::f64::consts::TAU)).abs() < 1e-12);
+        assert!((ellipse.evaluate(range.0) - seam).length() < 1e-12);
+        assert!((ellipse.evaluate(range.1) - seam).length() < 1e-12);
+        let expected_mid = ellipse.evaluate(seam_t + std::f64::consts::PI);
+        assert!((ellipse.evaluate(range.0.midpoint(range.1)) - expected_mid).length() < 1e-12);
+    }
+
+    #[test]
+    fn make_ellipse_arc_rejects_translated_off_curve_and_invalid_tolerance_atomically() {
+        let center = Point3::new(1e15, 1e15, 1e15);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let ellipse = Ellipse3D::new_with_ref(center, normal, 5.0, 2.0, ref_dir).unwrap();
+        let end = ellipse.evaluate(std::f64::consts::FRAC_PI_2);
+
+        for (start, tolerance) in [
+            (ellipse.evaluate(0.0) + normal, TOL),
+            (ellipse.evaluate(0.0) + normal * 10_000.0, TOL),
+            (ellipse.evaluate(0.0), f64::NAN),
+            (ellipse.evaluate(0.0), f64::INFINITY),
+            (ellipse.evaluate(0.0), -TOL),
+        ] {
+            let mut topo = Topology::new();
+            let result = make_ellipse_arc(
+                &mut topo, center, normal, 5.0, 2.0, ref_dir, start, end, tolerance,
+            );
+            assert!(result.is_err());
+            assert_eq!(topo.vertices().len(), 0);
+            assert_eq!(topo.edges().len(), 0);
+        }
+    }
+
+    #[test]
+    fn periodic_builders_refuse_uncertified_large_scale_authority_atomically() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+
+        let mut circle_topo = Topology::new();
+        let circle =
+            make_circle_edge_with_ref(&mut circle_topo, center, normal, 1e15, ref_dir, TOL);
+        assert!(circle.is_err());
+        assert_eq!(circle_topo.vertices().len(), 0);
+        assert_eq!(circle_topo.edges().len(), 0);
+
+        let mut ellipse_topo = Topology::new();
+        let ellipse =
+            make_ellipse_edge_with_ref(&mut ellipse_topo, center, normal, 1e15, 5e14, ref_dir, TOL);
+        assert!(ellipse.is_err());
+        assert_eq!(ellipse_topo.vertices().len(), 0);
+        assert_eq!(ellipse_topo.edges().len(), 0);
+
+        let ellipse = Ellipse3D::new_with_ref(center, normal, 1e15, 5e14, ref_dir).unwrap();
+        let seam = ellipse.evaluate(2.8);
+        let mut arc_topo = Topology::new();
+        let arc = make_ellipse_arc(
+            &mut arc_topo,
+            center,
+            normal,
+            1e15,
+            5e14,
+            ref_dir,
+            seam,
+            seam,
+            TOL,
+        );
+        assert!(arc.is_err());
+        assert_eq!(arc_topo.vertices().len(), 0);
+        assert_eq!(arc_topo.edges().len(), 0);
+    }
+
+    #[test]
+    fn periodic_builders_preserve_the_tolerance_that_certified_authority() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let tolerance = 1e-5;
+
+        let mut topo = Topology::new();
+        let circle =
+            make_circle_edge_with_ref(&mut topo, center, normal, 1e10, ref_dir, tolerance).unwrap();
+        let circle = topo.edge(circle).unwrap();
+        assert_eq!(circle.tolerance(), Some(tolerance));
+        assert_eq!(
+            circle.strict_domain().unwrap(),
+            (0.0, std::f64::consts::TAU)
+        );
+
+        let ellipse =
+            make_ellipse_edge_with_ref(&mut topo, center, normal, 1e10, 5e9, ref_dir, tolerance)
+                .unwrap();
+        let ellipse = topo.edge(ellipse).unwrap();
+        assert_eq!(ellipse.tolerance(), Some(tolerance));
+        assert_eq!(
+            ellipse.strict_domain().unwrap(),
+            (0.0, std::f64::consts::TAU)
+        );
+
+        let geometry = Ellipse3D::new_with_ref(center, normal, 1e10, 5e9, ref_dir).unwrap();
+        let seam = geometry.evaluate(2.8);
+        let arc = make_ellipse_arc(
+            &mut topo, center, normal, 1e10, 5e9, ref_dir, seam, seam, tolerance,
+        )
+        .unwrap();
+        let arc = topo.edge(arc).unwrap();
+        assert_eq!(arc.tolerance(), Some(tolerance));
+        let range = arc.strict_domain().unwrap();
+        assert_eq!(range, arc.trim().unwrap());
+        assert!((range.0 - 2.8).abs() < 1e-12);
+        assert!((range.1 - range.0 - std::f64::consts::TAU).abs() < 1e-12);
+    }
+
+    #[test]
+    fn make_ellipse_arc_accepts_translated_endpoints_only_when_exactly_proven() {
+        let center = Point3::new(1e15, -1e15, 1e15);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let ellipse = Ellipse3D::new_with_ref(center, normal, 5.0, 2.0, ref_dir).unwrap();
+        let start = ellipse.evaluate(0.7);
+        let end = ellipse.evaluate(1.2);
+        let mut topo = Topology::new();
+        let edge_id = make_ellipse_arc(
+            &mut topo, center, normal, 5.0, 2.0, ref_dir, start, end, TOL,
+        )
+        .unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!((edge.curve().evaluate_with_endpoints(t0, start, end) - start).length() <= TOL);
+        assert!((edge.curve().evaluate_with_endpoints(t1, start, end) - end).length() <= TOL);
+    }
+
+    #[test]
+    fn make_ellipse_arc_preserves_large_radius_tiny_angle() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let radius = 1e15;
+        let ellipse = Ellipse3D::new_with_ref(center, normal, radius, radius, ref_dir).unwrap();
+        let start_t = 0.0;
+        let end_t = 1e-13;
+        let start = ellipse.evaluate(start_t);
+        let end = ellipse.evaluate(end_t);
+        assert!((end - start).length() > 99.0);
+
+        let mut topo = Topology::new();
+        let edge_id = make_ellipse_arc(
+            &mut topo, center, normal, radius, radius, ref_dir, start, end, TOL,
+        )
+        .unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!(t1 > t0);
+        assert!((t1 - t0 - end_t).abs() < 1e-15);
+        let expected_mid = ellipse.evaluate(start_t.midpoint(end_t));
+        let actual_mid = edge
+            .curve()
+            .evaluate_with_endpoints(t0.midpoint(t1), start, end);
+        assert!((actual_mid - expected_mid).length() < 1.0);
+    }
+
+    #[test]
+    fn make_ellipse_arc_refuses_distinct_endpoints_inside_closure_tolerance() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let ellipse = Ellipse3D::new_with_ref(center, normal, 1.0, 1.0, ref_dir).unwrap();
+        let mut topo = Topology::new();
+        let result = make_ellipse_arc(
+            &mut topo,
+            center,
+            normal,
+            1.0,
+            1.0,
+            ref_dir,
+            ellipse.evaluate(0.0),
+            ellipse.evaluate(5e-8),
+            TOL,
+        );
+        assert!(result.is_err());
+        assert_eq!(topo.vertices().len(), 0);
+        assert_eq!(topo.edges().len(), 0);
+    }
+
+    #[test]
+    fn make_ellipse_arc_zero_tolerance_closed_edge_is_anchored() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let ref_dir = Vec3::new(1.0, 0.0, 0.0);
+        let ellipse = Ellipse3D::new_with_ref(center, normal, 5.0, 2.0, ref_dir).unwrap();
+        let seam_t = 0.7;
+        let seam = ellipse.evaluate(seam_t);
+        let mut topo = Topology::new();
+        let edge_id = make_ellipse_arc(
+            &mut topo, center, normal, 5.0, 2.0, ref_dir, seam, seam, 0.0,
+        )
+        .unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let range = edge.strict_domain().unwrap();
+        assert!((range.0 - seam_t).abs() < 1e-12);
+        assert!((range.1 - (seam_t + std::f64::consts::TAU)).abs() < 1e-12);
+        assert_eq!(edge.start(), edge.end());
+    }
+
+    #[test]
+    fn nurbs_builders_store_only_proven_domains() {
+        use remus_math::diagnostic::ToDiagnostic;
+        use remus_math::traits::ParametricCurve;
+
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(2.0, -0.5, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+        ];
+        let curve = remus_math::nurbs::fitting::interpolate(&points, 3).unwrap();
+        let (d0, d1) = ParametricCurve::domain(&curve);
+        let p0 = curve.evaluate(d0);
+        let p1 = curve.evaluate(d1);
+
+        let mut topo = Topology::new();
+        let natural = make_nurbs_edge(&mut topo, p0, p1, curve.clone(), TOL);
+        assert_eq!(
+            topo.edge(natural).unwrap().strict_domain().unwrap(),
+            (d0, d1)
+        );
+
+        let reversed = make_nurbs_edge(&mut topo, p1, p0, curve.clone(), TOL);
+        assert_eq!(
+            topo.edge(reversed).unwrap().strict_domain().unwrap(),
+            (d1, d0)
+        );
+        let reversed_large_tolerance = make_nurbs_edge(&mut topo, p1, p0, curve.clone(), 1e9);
+        let edge = topo.edge(reversed_large_tolerance).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), (d1, d0));
+        assert!((curve.evaluate(d1) - topo.vertex(edge.start()).unwrap().point()).length() < 1e-12);
+        assert!((curve.evaluate(d0) - topo.vertex(edge.end()).unwrap().point()).length() < 1e-12);
+
+        let ta = d0 + 0.25 * (d1 - d0);
+        let tb = d0 + 0.75 * (d1 - d0);
+        let unproven = make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(ta),
+            curve.evaluate(tb),
+            curve.clone(),
+            TOL,
+        );
+        let error = topo.edge(unproven).unwrap().strict_domain().unwrap_err();
+        assert_eq!(error.diagnostic().code(), "edge_domain_missing");
+
+        let from_curve = make_nurbs_edge_from_curve(&mut topo, &curve, TOL);
+        let expected = ParametricCurve::domain(&curve);
+        let edge = topo.edge(from_curve).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), expected);
+        assert!(
+            (curve.evaluate(expected.0) - topo.vertex(edge.start()).unwrap().point()).length()
+                < 1e-12
+        );
+        assert!(
+            (curve.evaluate(expected.1) - topo.vertex(edge.end()).unwrap().point()).length()
+                < 1e-12
+        );
+
+        let non_clamped = NurbsCurve::new(
+            1,
+            vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+            ],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let non_clamped_domain = ParametricCurve::domain(&non_clamped);
+        let from_non_clamped = make_nurbs_edge_from_curve(&mut topo, &non_clamped, TOL);
+        let edge = topo.edge(from_non_clamped).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), non_clamped_domain);
+        assert!(
+            (non_clamped.evaluate(non_clamped_domain.0)
+                - topo.vertex(edge.start()).unwrap().point())
+            .length()
+                < 1e-12
+        );
+        assert!(
+            (non_clamped.evaluate(non_clamped_domain.1) - topo.vertex(edge.end()).unwrap().point())
+                .length()
+                < 1e-12
+        );
     }
 
     #[test]

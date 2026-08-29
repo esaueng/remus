@@ -3,9 +3,23 @@
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::FaceId;
+use remus_topology::validation::CurveUseValidationError;
 
 use super::checks::{CheckId, EntityRef, Severity, ValidationIssue};
 use crate::CheckError;
+
+fn curve_use_error_issue(error: &CurveUseValidationError, edge_id: EdgeId) -> ValidationIssue {
+    use remus_math::diagnostic::ToDiagnostic;
+
+    let diagnostic = error.diagnostic();
+    ValidationIssue {
+        check: CheckId::EdgeSameParameter,
+        severity: Severity::Error,
+        entity: EntityRef::Edge(edge_id),
+        description: format!("{}: {}", diagnostic.code(), diagnostic.message()),
+        deviation: None,
+    }
+}
 
 /// Check that an edge's parameter range is valid (non-degenerate).
 pub fn check_edge_range(
@@ -137,64 +151,54 @@ pub fn check_edge_same_parameter(
     topo: &Topology,
     edge_id: EdgeId,
     face_id: FaceId,
+    forward: bool,
     tolerance: f64,
 ) -> Result<Vec<ValidationIssue>, CheckError> {
-    let pcurve = match topo.pcurve(edge_id, face_id)? {
-        Some(pc) => pc,
-        None => return Ok(vec![]), // No PCurve registered — can't check
-    };
-
-    let edge = topo.edge(edge_id)?;
-    let face = topo.face(face_id)?;
-
-    // Skip planes — they have no UV parameterization for evaluate().
-    if matches!(
-        face.surface(),
-        remus_topology::face::FaceSurface::Plane { .. }
+    let mut issues = Vec::new();
+    let report = match remus_topology::validation::check_same_parameter_strict(
+        topo, edge_id, face_id, forward, 10,
     ) {
-        return Ok(vec![]);
-    }
-
-    let n_samples = 10;
-    let mut max_deviation = 0.0f64;
-
-    let start_pt = topo.vertex(edge.start())?.point();
-    let end_pt = topo.vertex(edge.end())?.point();
-    let (t_start, t_end) = edge.domain_with_endpoints(start_pt, end_pt);
-
-    for i in 0..=n_samples {
-        let t_norm = i as f64 / n_samples as f64;
-        let t_pcurve = pcurve.t_start() + (pcurve.t_end() - pcurve.t_start()) * t_norm;
-
-        let uv = pcurve.evaluate(t_pcurve);
-
-        // Evaluate surface at (u, v) to get 3D point from PCurve path.
-        let pcurve_3d = match face.surface().evaluate(uv.x(), uv.y()) {
-            Some(pt) => pt,
-            None => continue, // Should not happen for non-Plane surfaces
-        };
-
-        // Evaluate 3D curve at same parameter in native domain.
-        let t_curve = t_start + (t_end - t_start) * t_norm;
-        let curve_3d = edge
-            .curve()
-            .evaluate_with_endpoints(t_curve, start_pt, end_pt);
-
-        let deviation = (pcurve_3d - curve_3d).length();
-        max_deviation = max_deviation.max(deviation);
-    }
-
-    if max_deviation > tolerance {
-        return Ok(vec![ValidationIssue {
+        Ok(report) => report,
+        Err(CurveUseValidationError::Topology(error)) => return Err(error.into()),
+        Err(error) => return Ok(vec![curve_use_error_issue(&error, edge_id)]),
+    };
+    if let Some(report) = report
+        && report.max_deviation > tolerance
+    {
+        issues.push(ValidationIssue {
             check: CheckId::EdgeSameParameter,
             severity: Severity::Error,
             entity: EntityRef::Edge(edge_id),
             description: format!(
-                "3D curve deviates {max_deviation:.2e} from PCurve(surface) (tolerance {tolerance:.2e})"
+                "SameParameter deviation {:.2e} exceeds tolerance {tolerance:.2e} on the {} use",
+                report.max_deviation,
+                if forward { "forward" } else { "reversed" }
             ),
-            deviation: Some(max_deviation),
-        }]);
+            deviation: Some(report.max_deviation),
+        });
     }
 
-    Ok(vec![])
+    let max_deviation = match remus_topology::validation::check_same_range_strict(
+        topo, edge_id, face_id, forward,
+    ) {
+        Ok(max_deviation) => max_deviation,
+        Err(CurveUseValidationError::Topology(error)) => return Err(error.into()),
+        Err(error) => return Ok(vec![curve_use_error_issue(&error, edge_id)]),
+    };
+    if let Some(max_deviation) = max_deviation
+        && max_deviation > tolerance
+    {
+        issues.push(ValidationIssue {
+            check: CheckId::EdgeSameParameter,
+            severity: Severity::Error,
+            entity: EntityRef::Edge(edge_id),
+            description: format!(
+                "SameRange deviation {max_deviation:.2e} exceeds tolerance {tolerance:.2e} on the {} use",
+                if forward { "forward" } else { "reversed" }
+            ),
+            deviation: Some(max_deviation),
+        });
+    }
+
+    Ok(issues)
 }
