@@ -4,7 +4,7 @@
 //! and torus surfaces with planes, as well as a general marching approach
 //! for analytic-analytic surface intersections.
 
-use std::f64::consts::{FRAC_PI_2, TAU};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, SQRT_2, TAU};
 
 use crate::MathError;
 use crate::curves::{Circle3D, Ellipse3D};
@@ -1436,6 +1436,8 @@ pub fn intersect_analytic_analytic_bounded(
 /// Currently handles:
 /// - **Sphere-sphere**: intersection is a circle (plane through the two centers)
 /// - **Coaxial cylinders**: same axis → circle(s) or empty
+/// - **Cylinder-cylinder**: quadratic in `v`; the equal-radius perpendicular
+///   crossing degenerates to two exact ellipses ([`exact_cylinder_cylinder`])
 /// - **Sphere-cylinder**: reduce to quadratic in one parameter
 #[allow(clippy::too_many_lines)]
 fn try_algebraic_intersection(
@@ -1993,6 +1995,95 @@ fn algebraic_torus_cylinder(
     Ok(Some(curves))
 }
 
+/// Exact equal-radius perpendicular cylinder-cylinder intersection: the two
+/// Steinmetz ellipses.
+///
+/// Two cylinders of equal radius `r` whose axes are perpendicular and cross
+/// at a point `p0` degenerate the usual quartic seam into two planar
+/// ellipses. In the frame where axis 1 is `z` and axis 2 is `x` (both
+/// through `p0`, radius `r`) the surfaces are `x² + y² = r²` and
+/// `y² + z² = r²`; subtracting leaves `x² = z²`, i.e. the two bisector
+/// planes `z = ±x`. Each plane cuts cylinder 1 at 45°, giving an ellipse
+/// with semi-minor `r` (across the common perpendicular `a₁×a₂`) and
+/// semi-major `r/cos45° = r√2` (the diagonal), centred where the cylinder's
+/// axis meets the plane — the crossing point `p0` itself:
+///
+/// - `E₁`: plane normal `(a₂ − a₁)/√2`, major direction `(a₁ + a₂)/√2`
+/// - `E₂`: plane normal `(a₁ + a₂)/√2`, major direction `(a₁ − a₂)/√2`
+///
+/// The minor direction of both is the common perpendicular `a₁ × a₂`. The
+/// two ellipses touch at the antipodal pinch points `p0 ± r·(a₁ × a₂)` —
+/// the figure-eight seam — so each ellipse alone is closed but NOT simple;
+/// the integration stage must split the pinch.
+///
+/// Returns `Some(vec![E₁, E₂])` for the gated case and `None` for every
+/// other configuration (parallel or oblique axes, unequal radii, skew axes
+/// whose lines do not cross), which defers to the sampled quadratic path in
+/// [`algebraic_cylinder_cylinder`]. Phase FF can call this directly and mint
+/// exact `EdgeCurve::Ellipse` section edges, as it already does for the
+/// plane-analytic ellipse arm.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if an `Ellipse3D` cannot be constructed.
+#[allow(clippy::too_many_lines)]
+pub fn exact_cylinder_cylinder(
+    c1: &CylindricalSurface,
+    c2: &CylindricalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let a1 = c1.axis();
+    let a2 = c2.axis();
+    let cross = a1.cross(a2);
+    let cross_len = cross.length();
+
+    // Parallel axes are coaxial/overlap territory — never this arm.
+    if cross_len < 1e-9 {
+        return Ok(None);
+    }
+    // Perpendicular gate: |a1·a2| is first-order in the angular error near
+    // 90°, so this demands genuine orthogonality.
+    if a1.dot(a2).abs() > 1e-9 {
+        return Ok(None);
+    }
+
+    let r1 = c1.radius();
+    let r2 = c2.radius();
+    // Equal-radius gate (relative — the seam is two ellipses only for equal
+    // radii; anything else is a genuine quartic pair).
+    if (r1 - r2).abs() > 1e-9 * r1.max(r2) {
+        return Ok(None);
+    }
+
+    // The axis LINES must actually cross: for skew perpendicular cylinders the
+    // subtracted equations keep a linear `y` term and the seam is non-planar.
+    let delta = c1.origin() - c2.origin();
+    let delta_vec = Vec3::new(delta.x(), delta.y(), delta.z());
+    if delta_vec.dot(cross).abs() / cross_len > 1e-9 * r1 {
+        return Ok(None);
+    }
+
+    // Crossing point: closest point on axis 1 to axis 2 (zero-distance
+    // limit). With b = a1·a2 ≈ 0 the denominator is safely away from zero.
+    let b = a1.dot(a2);
+    let sc = (b * delta_vec.dot(a2) - delta_vec.dot(a1)) / (1.0 - b * b);
+    let p0 = c1.origin() + a1 * sc;
+
+    // Both ellipses: centre p0, semi-minor r along the common perpendicular,
+    // semi-major r√2 along the in-plane diagonal.
+    let semi_major = r1 * SQRT_2;
+    let n1 = (a2 - a1) * FRAC_1_SQRT_2;
+    let u1 = (a1 + a2) * FRAC_1_SQRT_2;
+    let n2 = (a1 + a2) * FRAC_1_SQRT_2;
+    let u2 = (a1 - a2) * FRAC_1_SQRT_2;
+
+    let e1 = Ellipse3D::with_axes(p0, n1, semi_major, r1, u1, n1.cross(u1))?;
+    let e2 = Ellipse3D::with_axes(p0, n2, semi_major, r1, u2, n2.cross(u2))?;
+    Ok(Some(vec![
+        ExactIntersectionCurve::Ellipse(e1),
+        ExactIntersectionCurve::Ellipse(e2),
+    ]))
+}
+
 /// Algebraic cylinder-cylinder intersection for non-coaxial cylinders.
 ///
 /// For two cylinders with axes that are NOT parallel, the intersection
@@ -2127,6 +2218,27 @@ fn algebraic_cylinder_cylinder(
     };
 
     if samples.iter().all(Option::is_some) {
+        // Equal-radius perpendicular cylinders whose axes cross: the exact
+        // Steinmetz arm replaces the 128-sample quadratic sweep with the two
+        // bisector-plane ellipses (the figure-eight seam). The sampled path
+        // below remains for every other configuration.
+        if let Some(exacts) = exact_cylinder_cylinder(c1, c2)? {
+            for exact in exacts {
+                let ExactIntersectionCurve::Ellipse(ellipse) = exact else {
+                    continue;
+                };
+                let n_samples = 33;
+                let mut pts: Vec<Point3> = Vec::with_capacity(n_samples + 1);
+                #[allow(clippy::cast_precision_loss)]
+                for i in 0..n_samples {
+                    let theta = TAU * i as f64 / (n_samples - 1) as f64;
+                    pts.push(crate::traits::ParametricCurve::evaluate(&ellipse, theta));
+                }
+                push_curve(&pts);
+            }
+            return Ok(Some(curves));
+        }
+
         // Cylinder 2 reaches every angle of cylinder 1 (equal radii, or an
         // axis separation small enough that the sweep never leaves it): the two
         // algebraic branches are each a closed loop over the full period.
@@ -3230,6 +3342,355 @@ mod tests {
         assert!(
             exact_sphere_cylinder(&sphere, &cyl).unwrap().is_none(),
             "non-coaxial sphere/cylinder defers to the marcher"
+        );
+    }
+
+    // ── Steinmetz: equal-radius perpendicular cylinders ──────────────────
+
+    /// Distance from `p` to the line through `o` with unit direction `a`.
+    fn dist_to_axis(p: Point3, o: Point3, a: Vec3) -> f64 {
+        let v = Vec3::new(p.x() - o.x(), p.y() - o.y(), p.z() - o.z());
+        let along = v.dot(a);
+        (v - a * along).length()
+    }
+
+    /// Witness check: every sample of every emitted ellipse lies on BOTH
+    /// cylinders (relative axial-distance error) and in that ellipse's own
+    /// plane. Returns the max relative on-surface error seen.
+    fn assert_steinmetz_on_surfaces(
+        curves: &[ExactIntersectionCurve],
+        cyl1: &CylindricalSurface,
+        cyl2: &CylindricalSurface,
+    ) -> f64 {
+        let mut max_err = 0.0_f64;
+        for curve in curves {
+            assert!(
+                matches!(curve, ExactIntersectionCurve::Ellipse(_)),
+                "Steinmetz seam must be exact ellipses"
+            );
+            let ExactIntersectionCurve::Ellipse(e) = curve else {
+                continue;
+            };
+            for p in collect_points(curve) {
+                let d1 = dist_to_axis(p, cyl1.origin(), cyl1.axis());
+                let d2 = dist_to_axis(p, cyl2.origin(), cyl2.axis());
+                let err = ((d1 - cyl1.radius()).abs() / cyl1.radius())
+                    .max((d2 - cyl2.radius()).abs() / cyl2.radius());
+                max_err = max_err.max(err);
+                let planar = (p - e.center()).dot(e.normal());
+                assert!(planar.abs() < 1e-9, "point off the ellipse plane");
+            }
+        }
+        assert!(
+            max_err < 1e-12,
+            "ellipse sample off a cylinder surface by {max_err:.3e} (relative)"
+        );
+        max_err
+    }
+
+    #[test]
+    fn steinmetz_exact_two_ellipses_canonical() {
+        // Cylinder A: axis z through origin; cylinder B: axis x through
+        // origin; both radius 2. The seam is the figure-eight pair of
+        // bisector-plane ellipses z = ±x.
+        let r = 2.0;
+        let cyl_z =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r)
+                .unwrap();
+        let cyl_x =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), r)
+                .unwrap();
+
+        let curves = exact_cylinder_cylinder(&cyl_z, &cyl_x)
+            .unwrap()
+            .expect("equal-radius perpendicular crossing is the exact arm");
+        assert_eq!(curves.len(), 2, "two bisector-plane ellipses");
+
+        let sq2 = 2.0_f64.sqrt();
+        for curve in &curves {
+            assert!(
+                matches!(curve, ExactIntersectionCurve::Ellipse(_)),
+                "expected exact Ellipse"
+            );
+            let ExactIntersectionCurve::Ellipse(e) = curve else {
+                continue;
+            };
+            assert!(
+                (e.semi_major() - r * sq2).abs() < 1e-12,
+                "semi-major must be the diagonal r√2, got {}",
+                e.semi_major()
+            );
+            assert!(
+                (e.semi_minor() - r).abs() < 1e-12,
+                "semi-minor must be the cylinder radius"
+            );
+            assert!(
+                e.center().x().abs() < 1e-12
+                    && e.center().y().abs() < 1e-12
+                    && e.center().z().abs() < 1e-12,
+                "centre at the axis crossing (the origin)"
+            );
+            // Planes: z = x (normal (a2-a1)/√2) and z = -x (normal (a1+a2)/√2);
+            // major directions (a1+a2)/√2 and (a1-a2)/√2 up to sign.
+            let major_is_sum = e.u_axis().dot(Vec3::new(1.0, 0.0, 1.0)).abs() > 0.999;
+            let n = e.normal();
+            let expected = if major_is_sum {
+                Vec3::new(1.0, 0.0, -1.0)
+            } else {
+                Vec3::new(1.0, 0.0, 1.0)
+            } * FRAC_1_SQRT_2;
+            assert!(
+                (n - expected).length() < 1e-12,
+                "plane normal must be a bisector of the axes, got {n:?}"
+            );
+        }
+        // The majors span the two diagonals — one per ellipse.
+        let majors: Vec<Vec3> = curves
+            .iter()
+            .filter_map(|c| match c {
+                ExactIntersectionCurve::Ellipse(e) => Some(e.u_axis()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(majors.len(), 2);
+        let dot = majors[0].dot(majors[1]).abs();
+        assert!(
+            dot < 1e-9,
+            "the two major directions must be the orthogonal diagonals"
+        );
+    }
+
+    #[test]
+    fn steinmetz_pinch_points_shared_by_both_ellipses() {
+        // The two ellipses touch at p0 ± r·(a1×a2) = (0, ±2, 0): the
+        // figure-eight seam. Each ellipse must pass through BOTH points.
+        let r = 2.0;
+        let cyl_z =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r)
+                .unwrap();
+        let cyl_x =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), r)
+                .unwrap();
+        let curves = exact_cylinder_cylinder(&cyl_z, &cyl_x)
+            .unwrap()
+            .expect("exact arm fires");
+        let pinches = [Point3::new(0.0, r, 0.0), Point3::new(0.0, -r, 0.0)];
+        for curve in &curves {
+            let pts = collect_points(curve);
+            for pinch in &pinches {
+                let best = pts
+                    .iter()
+                    .map(|p| (*p - *pinch).length())
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    best < 1e-9,
+                    "ellipse misses the pinch {pinch:?} (closest {best:.3e})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn steinmetz_witness_max_error_below_1e_12() {
+        // Canonical axes …
+        let r = 2.0;
+        let cyl_z =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r)
+                .unwrap();
+        let cyl_x =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), r)
+                .unwrap();
+        let err = assert_steinmetz_on_surfaces(
+            &exact_cylinder_cylinder(&cyl_z, &cyl_x)
+                .unwrap()
+                .expect("exact arm"),
+            &cyl_z,
+            &cyl_x,
+        );
+        // General position: axes still perpendicular and crossing, but
+        // rotated away from the canonical frame and shifted off the origin.
+        let a1 = Vec3::new(0.0, 0.0, 1.0);
+        let a2 = Vec3::new(1.0, 1.0, 0.0).normalize().unwrap(); // ⊥ a1, 45° tilt
+        let p0 = Point3::new(4.0, -1.0, 7.0);
+        let rr = 1.3;
+        let cyl1 = CylindricalSurface::new(p0, a1, rr).unwrap();
+        let cyl2 = CylindricalSurface::new(
+            Point3::new(
+                p0.x() + a2.x() * 5.0,
+                p0.y() + a2.y() * 5.0,
+                p0.z() + a2.z() * 5.0,
+            ),
+            a2,
+            rr,
+        )
+        .unwrap();
+        let curves = exact_cylinder_cylinder(&cyl2, &cyl1)
+            .unwrap()
+            .expect("general-position crossing is still exact");
+        let err2 = assert_steinmetz_on_surfaces(&curves, &cyl1, &cyl2);
+        assert!(err.max(err2) < 1e-12);
+    }
+
+    #[test]
+    fn steinmetz_unequal_radii_fall_through() {
+        use crate::traits::ParametricCurve;
+        // Shaft r=3 along z through the origin; bore r=1 along x through the
+        // axis: unequal radii → the sampled quadratic path, never the exact
+        // ellipses. (Regression guard for the breakout-window sampler.)
+        let shaft =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0)
+                .unwrap();
+        let bore =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 15.0), Vec3::new(1.0, 0.0, 0.0), 1.0)
+                .unwrap();
+        assert!(exact_cylinder_cylinder(&shaft, &bore).unwrap().is_none());
+
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Cylinder(&shaft),
+            AnalyticSurface::Cylinder(&bore),
+            16,
+        )
+        .unwrap();
+        assert!(!curves.is_empty(), "bore still breaks out of the shaft");
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=100 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 100.0;
+                let p = ParametricCurve::evaluate(&c.curve, t);
+                let radius = p.x().hypot(p.y());
+                // Interpolated (non-exact) path: cubic NURBS misfit ~1e-4.
+                assert!((radius - 3.0).abs() < 1e-3, "off the r=3 shaft: {p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn steinmetz_oblique_axes_fall_through() {
+        // Equal radii, axes crossing, but tilted 30° off perpendicular: a
+        // genuine quartic pair — the exact arm must defer.
+        let r = 2.0;
+        let angle = 30.0_f64.to_radians();
+        let cyl1 = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r)
+            .unwrap();
+        let a2 = Vec3::new(angle.cos(), 0.0, angle.sin()); // 30° off perpendicular
+        let cyl2 = CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), a2, r).unwrap();
+        assert!(exact_cylinder_cylinder(&cyl1, &cyl2).unwrap().is_none());
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Cylinder(&cyl1),
+            AnalyticSurface::Cylinder(&cyl2),
+            16,
+        )
+        .unwrap();
+        assert!(
+            !curves.is_empty(),
+            "oblique equal-radius crossing must still intersect"
+        );
+    }
+
+    #[test]
+    fn steinmetz_skew_axes_fall_through() {
+        use crate::traits::ParametricCurve;
+        // Perpendicular, equal radius, but the axis LINES do not cross (bore
+        // offset 0.5 off the shaft axis): the subtracted equations keep a
+        // linear term, so the seam is NOT planar — the sampled window path
+        // must still serve it.
+        let shaft =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap();
+        let bore =
+            CylindricalSurface::new(Point3::new(0.0, 0.5, 0.0), Vec3::new(1.0, 0.0, 0.0), 1.0)
+                .unwrap();
+        assert!(exact_cylinder_cylinder(&shaft, &bore).unwrap().is_none());
+
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Cylinder(&shaft),
+            AnalyticSurface::Cylinder(&bore),
+            32,
+        )
+        .unwrap();
+        assert!(!curves.is_empty(), "skew equal-radius pair must intersect");
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=100 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 100.0;
+                let p = ParametricCurve::evaluate(&c.curve, t);
+                let on1 = dist_to_axis(p, shaft.origin(), shaft.axis()) - 1.0;
+                let on2 = dist_to_axis(p, bore.origin(), bore.axis());
+                // Interpolated (non-exact) path: cubic NURBS misfit ~1e-5.
+                assert!(
+                    on1.abs() < 1e-4 && (on2 - 1.0).abs() < 1e-2,
+                    "skew fall-through sample off a surface: on1={on1:.3e} d2={on2:.3e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn steinmetz_parallel_and_tangent_unchanged() {
+        // Coaxial equal-radius cylinders: the dispatch's existing overlap
+        // handling (None → marcher) is untouched by the new arm, and
+        // disjoint coaxial radii stay empty.
+        let exact_none =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0)
+                .unwrap();
+        let shifted =
+            CylindricalSurface::new(Point3::new(5.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5)
+                .unwrap();
+        assert!(
+            exact_cylinder_cylinder(&exact_none, &shifted)
+                .unwrap()
+                .is_none(),
+            "parallel axes never take the Steinmetz arm"
+        );
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Cylinder(&exact_none),
+            AnalyticSurface::Cylinder(&shifted),
+            16,
+        )
+        .unwrap();
+        assert!(
+            curves.is_empty(),
+            "coaxial different radii: no intersection"
+        );
+    }
+
+    #[test]
+    fn steinmetz_dispatch_emits_two_exact_loops() {
+        use crate::traits::ParametricCurve;
+        // Through the public entry the canonical Steinmetz pair yields two
+        // clean closed curves whose samples lie on BOTH cylinders.
+        let r = 2.0;
+        let cyl_z =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r)
+                .unwrap();
+        let cyl_x =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), r)
+                .unwrap();
+
+        let curves = intersect_analytic_analytic(
+            AnalyticSurface::Cylinder(&cyl_z),
+            AnalyticSurface::Cylinder(&cyl_x),
+            16,
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 2, "two seam loops");
+        let mut max_err = 0.0_f64;
+        for c in &curves {
+            let (t0, t1) = c.curve.domain();
+            for i in 0..=64 {
+                #[allow(clippy::cast_precision_loss)]
+                let t = t0 + (t1 - t0) * (i as f64) / 100.0;
+                let p = ParametricCurve::evaluate(&c.curve, t);
+                let e1 = (dist_to_axis(p, cyl_z.origin(), cyl_z.axis()) - r).abs() / r;
+                let e2 = (dist_to_axis(p, cyl_x.origin(), cyl_x.axis()) - r).abs() / r;
+                max_err = max_err.max(e1).max(e2);
+            }
+        }
+        assert!(
+            max_err < 5e-4,
+            "dispatch-level Steinmetz samples off the surfaces by {max_err:.3e}"
         );
     }
 
