@@ -1726,9 +1726,8 @@ pub(super) fn split_face_with_internal_loops(
     reversed: bool,
     face_id: FaceId,
     wire_pts: &[Point3],
+    tol_3d: f64,
 ) -> Vec<SplitSubFace> {
-    let tol_3d = remus_math::tolerance::Tolerance::new().linear;
-
     // Convert each section edge to an OrientedPCurveEdge, preserving the
     // original EdgeCurve (NURBS, Circle, etc.) without polyline approximation.
     let mut forward_edges: Vec<OrientedPCurveEdge> = Vec::new();
