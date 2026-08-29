@@ -412,6 +412,63 @@ fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -
             v: (-FRAC_PI_2, FRAC_PI_2),
         };
     }
+    // Traversal-ordered azimuth winding. A boundary that winds the longitude
+    // EXACTLY once — a section circle crossing the seam, the collar a
+    // sphere-sphere boolean leaves — bounds a region that contains a pole as
+    // an interior point, so the face occupies the full latitude range even
+    // though its boundary's latitudes do not. The set-based gap heuristic
+    // below cannot see that winding (its threshold is calibrated for rims),
+    // so it is decided here from the oriented traversal.
+    let wraps_by_winding = (|| {
+        let Ok(face) = topo.face(face_id) else {
+            return false;
+        };
+        let Ok(wire) = topo.wire(face.outer_wire()) else {
+            return false;
+        };
+        let unwrap_delta = |from: f64, to: f64| -> f64 {
+            let delta = to - from;
+            delta - TAU * ((delta + PI) / TAU).floor()
+        };
+        let mut prev_u: Option<f64> = None;
+        let mut first_u: Option<f64> = None;
+        let mut winding = 0.0_f64;
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                return false;
+            };
+            let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                return false;
+            };
+            let (p_start, p_end) = (sv.point(), ev.point());
+            let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
+            for i in 0..=TRIM_SAMPLES_PER_EDGE {
+                #[allow(clippy::cast_precision_loss)]
+                let frac = (i as f64) / (TRIM_SAMPLES_PER_EDGE as f64);
+                let t_fwd = (t1 - t0).mul_add(frac, t0);
+                let t = if oe.is_forward() {
+                    t_fwd
+                } else {
+                    t1 - (t_fwd - t0)
+                };
+                let p = edge.curve().evaluate_with_endpoints(t, p_start, p_end);
+                let (u, _) = s.project_point(p);
+                match prev_u {
+                    Some(pu) => winding += unwrap_delta(pu, u),
+                    None => first_u = Some(u),
+                }
+                prev_u = Some(u);
+            }
+        }
+        let Some(last) = prev_u else {
+            return false;
+        };
+        let Some(first) = first_u else {
+            return false;
+        };
+        winding += unwrap_delta(last, first);
+        (winding.abs() - TAU).abs() <= 1e-6
+    })();
     let pts = face_boundary_samples(topo, face_id, TRIM_SAMPLES_PER_EDGE);
     let mut us = Vec::with_capacity(pts.len());
     let mut vs = Vec::with_capacity(pts.len());
@@ -421,7 +478,7 @@ fn sphere_patch_domain(topo: &Topology, face_id: FaceId, s: &SphericalSurface) -
         vs.push(v);
     }
     let u = compute_angular_range(&mut us);
-    let wraps_longitude = u.1 - u.0 >= TAU - 1e-12;
+    let wraps_longitude = wraps_by_winding || u.1 - u.0 >= TAU - 1e-12;
     let v = if wraps_longitude || vs.is_empty() {
         (-FRAC_PI_2, FRAC_PI_2)
     } else {

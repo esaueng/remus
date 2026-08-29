@@ -1177,12 +1177,15 @@ fn boolean_with_context_impl(
                 // so the bare rejection below says nothing about the cause —
                 // and when `validate` is None the result is topologically fine
                 // and something else declined it.
+                let represented = operands_are_represented(topo, op, result, a, b, tol);
+                let within_bounds = result_within_operand_bounds(topo, op, result, a, b, tol);
                 log::debug!(
                     "GFA reject detail {op:?}: euler={euler} euler_eff={euler_eff} \
                      inner_wires={inner_wire_count} inner_shell_surplus={inner_shell_surplus} \
                      euler_ok={euler_ok} open_shell_ok={open_shell_ok} \
                      closed_manifold={closed_manifold} components={components} \
                      cut_safe={cut_safe} intersect_safe={intersect_safe} \
+                     represented={represented} within_bounds={within_bounds} \
                      euler_multi_ok={} surplus={} bound={} disjoint={}",
                     euler_balanced(
                         euler,

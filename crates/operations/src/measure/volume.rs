@@ -301,6 +301,16 @@ fn analytic_faces_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
         return steinmetz_lens_fuse_volume(topo, &faces);
     }
 
+    // The two-sphere lens family — fuse / cut / intersect of two spheres in
+    // general position, bounded by cap and collar patches of the two sphere
+    // surfaces over the shared radical-plane circle. The sphere-patch meshes
+    // are chord-limited (the collars cannot reach 1e-6 relative within the
+    // tessellation work bound), so the inclusion–exclusion closed form is the
+    // only measurement that meets the kernel's exactness bar here.
+    if let Some(v) = two_sphere_lens_volume(topo, solid, &faces) {
+        return Some(v);
+    }
+
     let mut has_bored_quadric = false;
     for &fid in &faces {
         let notched_quadric = quadric_wall_is_notched_band(topo, fid);
@@ -654,6 +664,230 @@ fn steinmetz_lens_fuse_volume(topo: &Topology, faces: &[FaceId]) -> Option<f64> 
     let v_cyls = PI * r * r * (heights[0] + heights[1]);
     let v_steinmetz = 16.0 / 3.0 * r * r * r;
     Some(v_cyls - v_steinmetz)
+}
+
+/// EXACT volume of a two-sphere lens boolean result — the fuse, cut, or
+/// intersect of two spheres in general position (`|R−r| < d < R+r`), bounded
+/// by cap/collar patches of the two sphere surfaces meeting along the
+/// radical-plane section circle.
+///
+/// The inclusion–exclusion closed form: with `a = (d²+R²−r²)/(2d)` the
+/// radical-plane distance from center 1, the lens is two spherical caps,
+///
+///   `V_lens = π(R−a)²(2R+a)/3 + π(r−d+a)²(2r+d−a)/3`,
+///
+/// and the results are `4/3·π(R³+r³) − V_lens` (fuse), `4/3·π·R_b³ − V_lens`
+/// (cut, `R_b` the blank), and `V_lens` (intersect).
+///
+/// Recognition is structural AND geometric, so a foreign sphere-patch solid
+/// defers to tessellation rather than borrowing a closed form that drops it:
+/// exactly four unholed sphere faces on exactly two distinct sphere surfaces
+/// in a proper overlap; every boundary edge a `Circle` lying on its own
+/// face's sphere; exactly one circle (the section circle) shared by both
+/// spheres plus one seam circle per sphere; and the operation read off the
+/// face regions themselves — a face whose seam arc lies on the far side of
+/// the section plane is a collar, on the near side a cap — so collar+collar
+/// is a fuse, cap+cap an intersect, and a mixed pair a cut whose blank is
+/// the collar sphere. Witness-probe classification is deliberately not used:
+/// the ray caster's majority vote is not dependable for probes deep inside
+/// one operand's collar on these four-face solids. Returns `None` outside
+/// the family or on any lookup failure.
+#[allow(clippy::too_many_lines)]
+fn two_sphere_lens_volume(topo: &Topology, solid: SolidId, faces: &[FaceId]) -> Option<f64> {
+    use std::f64::consts::PI;
+
+    let _ = solid;
+    if faces.len() != 4 {
+        return None;
+    }
+    // Two distinct sphere surfaces, two faces each, no inner wires anywhere.
+    let mut spheres: Vec<(Point3, f64)> = Vec::with_capacity(2);
+    for &fid in faces {
+        let face = topo.face(fid).ok()?;
+        if !face.inner_wires().is_empty() {
+            return None;
+        }
+        let FaceSurface::Sphere(s) = face.surface() else {
+            return None;
+        };
+        let (c, r) = (s.center(), s.radius());
+        if !spheres
+            .iter()
+            .any(|&(sc, sr)| (sc - c).length() < sr.max(r) * 1e-6 && (sr - r).abs() < r * 1e-6)
+        {
+            if spheres.len() < 2 {
+                spheres.push((c, r));
+            } else {
+                return None;
+            }
+        }
+    }
+    if spheres.len() != 2 {
+        return None;
+    }
+    let ((c1, r1), (c2, r2)) = (spheres[0], spheres[1]);
+    let delta = c2 - c1;
+    let d = delta.length();
+    if d < 1e-12 {
+        return None; // Concentric — not a general-position lens.
+    }
+    // Proper overlap only: tangent / contained configurations are other
+    // families with different section structure.
+    if d <= (r1 - r2).abs() + 1e-9 * r1.max(r2) || d >= r1 + r2 - 1e-9 * r1.max(r2) {
+        return None;
+    }
+    let n = delta * (1.0 / d);
+    let a = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
+    if r1 * r1 - a * a <= 0.0 {
+        return None;
+    }
+
+    let on_sphere = |c_e: Point3, r_e: f64, c_s: Point3, r_s: f64| -> bool {
+        ((c_e - c_s).length_squared() + r_e * r_e - r_s * r_s).abs() <= r_s * r_s * 1e-9
+    };
+    let same_circle = |x: (Point3, f64, Vec3), y: &(Point3, f64, Vec3)| -> bool {
+        (x.0 - y.0).length() < d * 1e-9
+            && (x.1 - y.1).abs() < d * 1e-9
+            && x.2.dot(y.2).abs() > 1.0 - 1e-9
+    };
+
+    // Distinct circles per face; each must lie on that face's own sphere.
+    let face_circles = |fid: FaceId| -> Option<Vec<(Point3, f64, Vec3)>> {
+        let face = topo.face(fid).ok()?;
+        let FaceSurface::Sphere(s) = face.surface() else {
+            return None;
+        };
+        let wire = topo.wire(face.outer_wire()).ok()?;
+        let mut all: Vec<(Point3, f64, Vec3)> = Vec::new();
+        for oe in wire.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            let EdgeCurve::Circle(c) = edge.curve() else {
+                return None;
+            };
+            if !on_sphere(c.center(), c.radius(), s.center(), s.radius()) {
+                return None;
+            }
+            all.push((c.center(), c.radius(), c.normal()));
+        }
+        let mut distinct: Vec<(Point3, f64, Vec3)> = Vec::new();
+        for c in all {
+            if !distinct.iter().any(|x| same_circle(*x, &c)) {
+                distinct.push(c);
+            }
+        }
+        Some(distinct)
+    };
+
+    let circles_per_face: Vec<Vec<(Point3, f64, Vec3)>> = faces
+        .iter()
+        .map(|&fid| face_circles(fid))
+        .collect::<Option<Vec<_>>>()?;
+
+    // Exactly one section circle (on both spheres) per face, exactly two
+    // distinct circles per face, and exactly three distinct circles overall.
+    let mut distinct: Vec<(Point3, f64, Vec3)> = Vec::new();
+    for circles in &circles_per_face {
+        if circles.len() != 2 {
+            return None;
+        }
+        let section_count = circles
+            .iter()
+            .filter(|&&(c_e, r_e, _)| on_sphere(c_e, r_e, c1, r1) && on_sphere(c_e, r_e, c2, r2))
+            .count();
+        if section_count != 1 {
+            return None;
+        }
+        for c in circles {
+            if !distinct.iter().any(|x| same_circle(*x, c)) {
+                distinct.push(*c);
+            }
+        }
+    }
+    if distinct.len() != 3 {
+        return None;
+    }
+    let seam1_count = distinct
+        .iter()
+        .filter(|&&(c_e, r_e, _)| on_sphere(c_e, r_e, c1, r1) && !on_sphere(c_e, r_e, c2, r2))
+        .count();
+    let seam2_count = distinct
+        .iter()
+        .filter(|&&(c_e, r_e, _)| on_sphere(c_e, r_e, c2, r2) && !on_sphere(c_e, r_e, c1, r1))
+        .count();
+    if seam1_count != 1 || seam2_count != 1 {
+        return None;
+    }
+
+    // Per-face region kind from the seam arc's side of the section plane.
+    // The seam-arc sub-pieces straddle the arc's true midpoint, so the
+    // largest-|side| piece carries the arc's extremum. A collar is the region
+    // on the side of the section plane AWAY from the other sphere: for
+    // sphere 1 that is the −n side, for sphere 2 the +n side.
+    let face_is_collar =
+        |fid: FaceId, circles: &[(Point3, f64, Vec3)], is_sphere1: bool| -> Option<bool> {
+            let section = *circles.iter().find(|&&(c_e, r_e, _)| {
+                on_sphere(c_e, r_e, c1, r1) && on_sphere(c_e, r_e, c2, r2)
+            })?;
+            let seam = *circles.iter().find(|&&(c_e, r_e, _)| {
+                on_sphere(c_e, r_e, c1, r1) ^ on_sphere(c_e, r_e, c2, r2)
+            })?;
+            let face = topo.face(fid).ok()?;
+            let wire = topo.wire(face.outer_wire()).ok()?;
+            let mut best: Option<f64> = None;
+            for oe in wire.edges() {
+                let edge = topo.edge(oe.edge()).ok()?;
+                let EdgeCurve::Circle(c) = edge.curve() else {
+                    continue;
+                };
+                if !same_circle((c.center(), c.radius(), c.normal()), &seam) {
+                    continue;
+                }
+                let sv = topo.vertex(edge.start()).ok()?.point();
+                let ev = topo.vertex(edge.end()).ok()?.point();
+                let (t0, t1) = edge.domain_with_endpoints(sv, ev);
+                let mid = c.evaluate(f64::midpoint(t0, t1));
+                let side = (mid - section.0).dot(n);
+                if best.is_none_or(|b| side.abs() > b.abs()) {
+                    best = Some(side);
+                }
+            }
+            best.map(|side| if is_sphere1 { side < 0.0 } else { side > 0.0 })
+        };
+
+    // Per sphere: both of its faces must agree on the region kind.
+    let mut kind1: Option<bool> = None;
+    let mut kind2: Option<bool> = None;
+    for (&fid, circles) in faces.iter().zip(&circles_per_face) {
+        let face = topo.face(fid).ok()?;
+        let FaceSurface::Sphere(s) = face.surface() else {
+            return None;
+        };
+        let on_1 = (s.center() - c1).length() < r1.max(1.0) * 1e-6
+            && (s.center() - c2).length() > r1.max(1.0) * 1e-6;
+        let kind = face_is_collar(fid, circles, on_1)?;
+        let slot = if on_1 { &mut kind1 } else { &mut kind2 };
+        match *slot {
+            None => *slot = Some(kind),
+            Some(prev) if prev == kind => {}
+            Some(_) => return None,
+        }
+    }
+    let (collar1, collar2) = (kind1?, kind2?);
+
+    let cap1 = PI * (r1 - a) * (r1 - a) * (2.0 * r1 + a) / 3.0;
+    let a2 = d - a;
+    let cap2 = PI * (r2 - a2) * (r2 - a2) * (2.0 * r2 + a2) / 3.0;
+    let v_lens = cap1 + cap2;
+    let ball = |rr: f64| 4.0 / 3.0 * PI * rr * rr * rr;
+    if collar1 && collar2 {
+        Some(ball(r1) + ball(r2) - v_lens) // fuse
+    } else if !collar1 && !collar2 {
+        Some(v_lens) // intersect
+    } else if collar1 {
+        Some(ball(r1) - v_lens) // cut, sphere 1 is the blank
+    } else {
+        Some(ball(r2) - v_lens) // cut, sphere 2 is the blank
+    }
 }
 
 /// Whether the solid is the STEINMETZ LENS FUSE — two equal-radius cylinders

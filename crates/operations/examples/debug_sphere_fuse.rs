@@ -15,10 +15,19 @@ use remus_topology::Topology;
 
 fn main() {
     env_logger::builder().format_timestamp(None).init();
+    let _ = measure::solid_volume;
     for (op, dx) in [
         (BooleanOp::Fuse, 1.0),
         (BooleanOp::Cut, 1.0),
         (BooleanOp::Intersect, 1.0),
+        (BooleanOp::Fuse, 0.4),
+        (BooleanOp::Cut, 0.4),
+        (BooleanOp::Intersect, 0.4),
+        (BooleanOp::Fuse, 1.7),
+        (BooleanOp::Cut, 1.7),
+        (BooleanOp::Intersect, 1.7),
+        (BooleanOp::Fuse, 0.3),
+        (BooleanOp::Intersect, 0.3),
     ] {
         let mut topo = Topology::new();
         let a = primitives::make_sphere(&mut topo, 1.0, 32).unwrap();
@@ -41,7 +50,7 @@ fn main() {
                     *types.entry(t).or_insert(0usize) += 1;
                 }
                 print!("{op:?} dx={dx}: faces={} types={types:?}", faces.len());
-                for d in [0.01_f64, 0.001, 0.0001] {
+                for d in [0.0001_f64] {
                     let vol = measure::solid_volume(&topo, sid, d).unwrap();
                     print!(" vol@{d}={vol:.6}");
                 }
