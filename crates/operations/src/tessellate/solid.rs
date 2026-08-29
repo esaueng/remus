@@ -347,6 +347,100 @@ fn tessellate_solid_core(
         }
     }
 
+    // A holed periodic wall (cylinder with inner wires) is meshed in its
+    // developed chart; a hole loop crossing the chart's seam meridian gets cut
+    // there, which fabricates a boundary vertex ON the seam that no shared
+    // edge sample carries. The face sharing that hole edge (e.g. the bore
+    // wall) stitches the shared polyline directly and skips the fabricated
+    // point, leaving a micro-triangle hole at the seam. Pre-split every
+    // inner-wire polyline of such a wall at its seam-meridian crossings so
+    // both consumers see the same vertex (the chart mesher's own crossing
+    // then welds to it via the 1e-6 boundary snap).
+    {
+        let refine_tol = remus_math::tolerance::Tolerance::new().linear * 10.0;
+        for &face_id in &all_faces {
+            let face_data = topo.face(face_id)?;
+            let FaceSurface::Cylinder(cyl) = face_data.surface() else {
+                continue;
+            };
+            if face_data.inner_wires().is_empty() {
+                continue;
+            }
+            // The seam meridian: an open outer-wire edge used twice (the
+            // full-turn chart's cut line). A partial band has none — skip.
+            let outer = topo.wire(face_data.outer_wire())?;
+            let mut edge_uses: DetHashMap<usize, usize> = DetHashMap::default();
+            for oe in outer.edges() {
+                *edge_uses.entry(oe.edge().index()).or_default() += 1;
+            }
+            let mut seam_u = None;
+            for oe in outer.edges() {
+                if edge_uses.get(&oe.edge().index()).copied().unwrap_or(0) < 2 {
+                    continue;
+                }
+                let e = topo.edge(oe.edge())?;
+                if e.start() == e.end() {
+                    continue;
+                }
+                let sp = topo.vertex(e.start())?.point();
+                let ep = topo.vertex(e.end())?.point();
+                let mid = sp + (ep - sp) * 0.5;
+                seam_u = Some(cyl.project_point(mid).0);
+                break;
+            }
+            let Some(seam_u) = seam_u else {
+                continue;
+            };
+            let tau = std::f64::consts::TAU;
+            // Signed angular offset from the seam meridian, in (-pi, pi].
+            let meridian_offset = |p: Point3| {
+                let d = (cyl.project_point(p).0 - seam_u).rem_euclid(tau);
+                if d > std::f64::consts::PI { d - tau } else { d }
+            };
+            for &wire_id in face_data.inner_wires() {
+                let wire = topo.wire(wire_id)?;
+                for oe in wire.edges() {
+                    let edge_idx = oe.edge().index();
+                    let Some(pts) = edge_points.get(&edge_idx) else {
+                        continue;
+                    };
+                    let offsets: Vec<f64> = pts.iter().map(|&p| meridian_offset(p)).collect();
+                    let mut insertions: Vec<(usize, Point3)> = Vec::new();
+                    for i in 0..pts.len().saturating_sub(1) {
+                        let (a, b) = (offsets[i], offsets[i + 1]);
+                        // A genuine meridian crossing changes sign over a
+                        // short angular step; a sign change spanning >= pi is
+                        // the far side of the period, not the seam.
+                        if a == 0.0 || b == 0.0 || a.signum() == b.signum() {
+                            continue;
+                        }
+                        if (a - b).abs() >= std::f64::consts::PI {
+                            continue;
+                        }
+                        let t = a / (a - b);
+                        let va = cyl.project_point(pts[i]).1;
+                        let vb = cyl.project_point(pts[i + 1]).1;
+                        let crossing = cyl.evaluate(seam_u, (vb - va).mul_add(t, va));
+                        if (crossing - pts[i]).length() < refine_tol
+                            || (crossing - pts[i + 1]).length() < refine_tol
+                        {
+                            continue;
+                        }
+                        insertions.push((i + 1, crossing));
+                    }
+                    if insertions.is_empty() {
+                        continue;
+                    }
+                    let mut new_pts = pts.clone();
+                    for &(at, p) in insertions.iter().rev() {
+                        new_pts.insert(at, p);
+                    }
+                    edge_points.insert(edge_idx, new_pts);
+                }
+            }
+        }
+    }
+
     let mut merged = TriangleMesh::default();
     let mut point_to_global: DetHashMap<(i64, i64, i64), u32> = DetHashMap::default();
     let mut edge_global_indices: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
