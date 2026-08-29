@@ -2423,6 +2423,205 @@ fn nurbs_estimated_radius(s: &remus_math::nurbs::surface::NurbsSurface) -> f64 {
     r.max(1e-9)
 }
 
+/// Fill a sphere face whose boundary wraps the full longitude exactly once
+/// while VARying in latitude — the "collar" a section circle crossing the
+/// seam leaves on a sphere hemisphere (the sphere∪sphere / sphere−sphere
+/// booleans).
+///
+/// Such a region contains the hemisphere pole as an INTERIOR point, so its UV
+/// image is not a simple polygon and the CDT path cannot bound it (the
+/// polygon closes through the seam and fills the removed cap instead). The
+/// region is however star-shaped about the pole — exactly one boundary point
+/// per longitude — so the fill is a structured meridian grid: interior rows
+/// interpolate each boundary column's latitude toward the pole at constant
+/// longitude (every generated vertex evaluates exactly on the sphere), the
+/// rings stitch column-aligned, and a single pole vertex closes the top.
+///
+/// Gates (all must hold, else returns `false` without emitting anything and
+/// the caller keeps its existing path): every boundary vertex on the sphere
+/// and clear of both poles; the loop winds the longitude exactly once
+/// (monotone azimuth — partial-turn caps and scalloped multi-chain boundaries
+/// decline); the boundary latitudes genuinely vary (constant-v rims are the
+/// latitude band/cap paths' territory); and the winding about the sphere axis
+/// picks a definite pole.
+#[allow(clippy::too_many_lines)]
+fn fill_sphere_polar_zone(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    boundary: &[u32],
+    deflection: f64,
+    angular_tol: f64,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> bool {
+    use std::f64::consts::FRAC_PI_2;
+
+    let radius = sphere.radius();
+    if boundary.len() < 3 || radius <= 0.0 {
+        return false;
+    }
+
+    // Boundary columns: one entry per distinct vertex, in traversal order,
+    // with its sphere longitude/latitude.
+    let mut seen: DetHashSet<u32> = DetHashSet::default();
+    let mut ring: Vec<(f64, f64, u32)> = Vec::with_capacity(boundary.len());
+    let mut winding = 0.0_f64;
+    for (i, &gid) in boundary.iter().enumerate() {
+        let next_gid = boundary[(i + 1) % boundary.len()];
+        let p = merged.positions[gid as usize];
+        let radial = p - sphere.center();
+        if (radial.length() - radius).abs() > radius * 1e-6 {
+            return false;
+        }
+        let next = merged.positions[next_gid as usize];
+        winding += radial.cross(next - sphere.center()).dot(sphere.z_axis());
+        if seen.insert(gid) {
+            let (u, v) = sphere.project_point(p);
+            // A pole vertex has degenerate longitude — the zone configuration
+            // never has one; anything else is another path's territory.
+            if v.abs() > FRAC_PI_2 - 1e-6 {
+                return false;
+            }
+            ring.push((u, v, gid));
+        }
+    }
+    if ring.len() < 3 {
+        return false;
+    }
+    let v_min = ring
+        .iter()
+        .map(|&(_, v, _)| v)
+        .fold(f64::INFINITY, f64::min);
+    let v_max = ring
+        .iter()
+        .map(|&(_, v, _)| v)
+        .fold(f64::NEG_INFINITY, f64::max);
+    // Latitude must genuinely vary, else this is a constant-v band or cap.
+    if v_max - v_min <= 1e-6 {
+        return false;
+    }
+    // Exactly one full turn of longitude, traversed monotonically.
+    let us: Vec<f64> = ring.iter().map(|&(u, _, _)| u).collect();
+    if !has_single_period_winding(&us) {
+        return false;
+    }
+    // The winding about the sphere axis must pick a definite pole: the zone
+    // contains the pole its boundary loop encircles.
+    let winding_tol = radius * radius * 1e-10;
+    let pole_v = if winding > winding_tol {
+        FRAC_PI_2
+    } else if winding < -winding_tol {
+        -FRAC_PI_2
+    } else {
+        return false;
+    };
+
+    // Column-aligned rings: canonical ascending-longitude order.
+    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let boundary_row: LatRing = ring.iter().map(|&(u, _, gid)| (u, gid)).collect();
+
+    // Row count from the worst meridian chord: the longest column's
+    // latitude span to the pole.
+    let v_span_max = ring
+        .iter()
+        .map(|&(_, v, _)| (pole_v - v).abs())
+        .fold(0.0_f64, f64::max);
+    if v_span_max < 1e-9 {
+        return false;
+    }
+    let n_v =
+        segments_for_chord_deviation_a(radius, v_span_max, deflection, angular_tol, true).max(1);
+    if validate_interior_grid_size(ring.len(), n_v).is_err() {
+        return false;
+    }
+
+    let surf_eval = |u, v| sphere.evaluate(u, v);
+    let surf_normal = |u, v| sphere.normal(u, v);
+    let project = |p| sphere.project_point(p);
+    let emit = make_band_emit(&project, &surf_normal);
+
+    let mut prev = boundary_row;
+    for iv in 1..n_v {
+        let t = iv as f64 / n_v as f64;
+        let mut row: LatRing = Vec::with_capacity(ring.len());
+        for &(u, v, _) in &ring {
+            let v_j = v + (pole_v - v) * t;
+            let p = surf_eval(u, v_j);
+            let key = point_merge_key(p, MERGE_GRID);
+            let gid = *point_to_global.entry(key).or_insert_with(|| {
+                let idx = merged.positions.len() as u32;
+                merged.positions.push(p);
+                merged.normals.push(surf_normal(u, v_j));
+                idx
+            });
+            row.push((u, gid));
+        }
+        stitch_rings(merged, &prev, &row, &emit);
+        prev = row;
+    }
+
+    let pole = sphere.evaluate(0.0, pole_v);
+    let pole_key = point_merge_key(pole, MERGE_GRID);
+    let pole_gid = *point_to_global.entry(pole_key).or_insert_with(|| {
+        let idx = merged.positions.len() as u32;
+        merged.positions.push(pole);
+        merged.normals.push(sphere.normal(0.0, pole_v));
+        idx
+    });
+    for i in 0..prev.len() {
+        emit(merged, prev[i].1, prev[(i + 1) % prev.len()].1, pole_gid);
+    }
+    true
+}
+
+/// Sphere-face fill attempt shared by the standalone and solid tessellation
+/// paths: the seam-crossing section-circle collar. See
+/// [`fill_sphere_polar_zone`] for the gates and the fill.
+pub(super) fn tessellate_sphere_polar_zone_shared(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    deflection: f64,
+    angular_tol: f64,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Sphere(sphere) = face_data.surface() else {
+        return Ok(false);
+    };
+    if !face_data.inner_wires().is_empty() {
+        return Ok(false);
+    }
+    let pos_save = merged.positions.len();
+    let idx_save = merged.indices.len();
+    let boundary = collect_boundary_loop(
+        topo,
+        face_data,
+        deflection,
+        angular_tol,
+        edge_global_indices,
+        merged,
+        point_to_global,
+    )?;
+    if fill_sphere_polar_zone(
+        sphere,
+        &boundary,
+        deflection,
+        angular_tol,
+        merged,
+        point_to_global,
+    ) {
+        Ok(true)
+    } else {
+        // Roll back any boundary vertices this attempt interned so the next
+        // path starts from the same state it would have seen.
+        merged.positions.truncate(pos_save);
+        merged.normals.truncate(pos_save);
+        merged.indices.truncate(idx_save);
+        point_to_global.retain(|_, v| (*v as usize) < pos_save);
+        Ok(false)
+    }
+}
+
 /// Fill a spherical polar cap from a shared constant-latitude boundary.
 ///
 /// A primitive sphere's hemispheres meet on one faceted equatorial wire. After
@@ -2903,7 +3102,17 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
         &mut merged,
         &mut point_to_global,
     )
-    .unwrap_or(false);
+    .unwrap_or(false)
+        || tessellate_sphere_polar_zone_shared(
+            topo,
+            face_data,
+            deflection,
+            angular_tol,
+            &empty_pool,
+            &mut merged,
+            &mut point_to_global,
+        )
+        .unwrap_or(false);
 
     if !web_ok {
         if !try_cdt {

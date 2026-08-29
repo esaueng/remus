@@ -374,6 +374,317 @@ fn split_noseam_by_arrangement(
     }]
 }
 
+/// Split a sphere face along ONE section circle that crosses the face's seam
+/// (boundary) plane, into BOTH regions the circle bounds on the face.
+///
+/// Sphere-sphere booleans pre-open their exact section circle at the seam
+/// crossings (`emit_split_circle_arcs`), so this face receives the ≤π
+/// sub-arcs of one circle as open sections. The sub-arcs chain end-to-end
+/// into a single open chain whose endpoints sit on the seam circle: the
+/// section enters the face at one crossing and leaves at the other, dividing
+/// the face into the cap-side region and the remainder collar. Both are
+/// emitted — which one survives is the classifier's call, so fuse (collars),
+/// cut (collar + opposing caps) and intersect (caps) all read off the same
+/// split.
+///
+/// Each region wire is [seam arc pieces in the parent boundary's traversal
+/// direction] + [the section chain the other way], traversed with the region
+/// interior on the left. The seam is reconstructed as its exact circle (the
+/// inscribed boundary chords miss the crossings by the polygon sagitta), and
+/// seam arcs longer than 0.9π are sub-split so every piece keeps the
+/// unambiguous shorter-arc reading an open circle edge gets downstream.
+///
+/// Returns `None` (deferring to the generic paths) for anything else:
+/// other surfaces, closed/interior sections, multiple section circles,
+/// disconnected arcs, endpoints off the seam circle, or a section circle
+/// riding the seam plane.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn split_sphere_face_by_crossing_circle(
+    surface: &FaceSurface,
+    boundary_edges: &[OrientedPCurveEdge],
+    sections: &[SectionEdge],
+    rank: Rank,
+    reversed: bool,
+    face_id: FaceId,
+    wire_pts: &[Point3],
+    tol: f64,
+) -> Option<Vec<SplitSubFace>> {
+    use std::f64::consts::{PI, TAU};
+
+    let FaceSurface::Sphere(sphere) = surface else {
+        return None;
+    };
+    let weld = tol * 100.0;
+
+    // Every section must be an OPEN arc (the FF pre-split already opened the
+    // crossing circle); any closed section means a different configuration.
+    let open: Vec<&SectionEdge> = sections
+        .iter()
+        .filter(|s| (s.start - s.end).length() > tol)
+        .collect();
+    if open.is_empty() || open.len() != sections.len() {
+        return None;
+    }
+
+    // All arcs must ride ONE carrier circle (the ≤π sub-arcs of the single
+    // section circle emitted by the FF closed-circle split).
+    let EdgeCurve::Circle(carrier) = &open[0].curve_3d else {
+        return None;
+    };
+    for s in &open {
+        match &s.curve_3d {
+            EdgeCurve::Circle(c)
+                if (c.center() - carrier.center()).length() < weld
+                    && (c.normal() - carrier.normal()).length() < 1e-6
+                    && (c.radius() - carrier.radius()).abs() < weld => {}
+            _ => return None,
+        }
+    }
+
+    // Chain the sub-arcs into ONE ordered open chain. `chain[i]` is
+    // (section index, traversed forward); orientation flips as needed so the
+    // walk runs end-to-end.
+    let mut used = vec![false; open.len()];
+    let mut chain: Vec<(usize, bool)> = vec![(0, true)];
+    used[0] = true;
+    let mut cur_end = open[0].end;
+    while used.iter().any(|&u| !u) {
+        let next = used.iter().position(|&u| !u).and_then(|i| {
+            if (open[i].start - cur_end).length() < weld {
+                Some((i, true))
+            } else if (open[i].end - cur_end).length() < weld {
+                Some((i, false))
+            } else {
+                None
+            }
+        });
+        match next {
+            Some((i, fwd)) => {
+                cur_end = if fwd { open[i].end } else { open[i].start };
+                chain.push((i, fwd));
+                used[i] = true;
+            }
+            // Disconnected arcs (multiple circles, or a fragment) — defer.
+            None => return None,
+        }
+    }
+    let chain_start = if chain[0].1 {
+        open[0].start
+    } else {
+        open[0].end
+    };
+    if (cur_end - chain_start).length() < weld {
+        return None; // The chain closes on itself — not a seam-crossing split.
+    }
+    let (p1, p2) = (chain_start, cur_end);
+
+    // The chain endpoints must lie on the face's seam circle: this is what
+    // makes the configuration "a circle crossing the face boundary".
+    let Some((seam_circle, plane_n)) = face_seam_circle(surface, boundary_edges, tol) else {
+        return None;
+    };
+    let on_seam = |p: Point3| -> bool {
+        let r = p - seam_circle.center();
+        r.dot(plane_n).abs() < weld && ((r.length() - seam_circle.radius()).abs() < weld)
+    };
+    if !on_seam(p1) || !on_seam(p2) {
+        return None;
+    }
+
+    // The section circle must genuinely lie on this sphere, and must cut the
+    // seam plane transversally (a circle riding the seam plane is the
+    // boundary-coincident configuration the coplanar machinery owns).
+    let radial = carrier.center() - sphere.center();
+    let carrier_r_sq = carrier.radius() * carrier.radius();
+    let on_sphere_err =
+        (radial.length_squared() + carrier_r_sq - sphere.radius() * sphere.radius()).abs();
+    if on_sphere_err > 2.0 * sphere.radius() * weld {
+        return None;
+    }
+    if carrier.normal().dot(plane_n).abs() > 1.0 - 1e-9 {
+        return None;
+    }
+
+    // Split the seam circle at the two crossings. Arc A runs P1→P2 in the
+    // parent boundary's traversal direction (increasing angle around the
+    // Newell normal); arc B runs P2→P1 the same angular way. Together they
+    // tile the seam, so each region pairs one arc with the section chain.
+    let a1 = seam_circle.project(p1);
+    let a2 = seam_circle.project(p2);
+    let span_a = (a2 - a1).rem_euclid(TAU);
+    if span_a < 1e-9 || TAU - span_a < 1e-9 {
+        return None; // Degenerate crossing set (tangent seam contact).
+    }
+    let seam_pieces = |start_angle: f64, span: f64| -> Option<Vec<OrientedPCurveEdge>> {
+        const MAX_ARC: f64 = 0.9 * PI;
+        // At least TWO pieces per seam arc: the two operands' seam circles
+        // are different circles (different centers) whose crossing arcs share
+        // BOTH endpoints, so a single-piece arc from each would share a
+        // quantized endpoint pair and `merge_duplicate_edges` would fold the
+        // two DISTINCT arcs into one edge — a 4-face non-manifold edge. The
+        // per-operand arc midpoints differ, so sub-splitting keeps every
+        // merge an identity.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let steps = (((span / MAX_ARC).ceil() as usize).max(1)).max(2);
+        let step = span / steps as f64;
+        let mut out = Vec::with_capacity(steps);
+        for k in 0..steps {
+            let (ta, tb) = (
+                start_angle + step * k as f64,
+                start_angle + step * (k + 1) as f64,
+            );
+            let s3 = seam_circle.evaluate(ta);
+            let e3 = seam_circle.evaluate(tb);
+            let curve = EdgeCurve::Circle(seam_circle.clone());
+            let pcurve = super::super::pcurve_compute::compute_pcurve_on_surface(
+                &curve,
+                s3,
+                e3,
+                surface,
+                &[],
+                None,
+            );
+            out.push(OrientedPCurveEdge {
+                curve_3d: curve,
+                trim: None,
+                pcurve,
+                start_uv: super::super::pcurve_compute::project_point_on_surface(
+                    s3,
+                    surface,
+                    &[],
+                    None,
+                ),
+                end_uv: super::super::pcurve_compute::project_point_on_surface(
+                    e3,
+                    surface,
+                    &[],
+                    None,
+                ),
+                start_3d: s3,
+                end_3d: e3,
+                forward: true,
+                source_edge_idx: None,
+                pave_block_id: None,
+                source_topo_edge: None,
+            });
+        }
+        Some(out)
+    };
+    let arc_a = seam_pieces(a1, span_a)?;
+    let arc_b = seam_pieces(a2, TAU - span_a)?;
+
+    // The section chain as oriented pcurve edges, forward or reversed per the
+    // chain walk.
+    let section_piece = |(i, fwd): &(usize, bool)| -> Option<OrientedPCurveEdge> {
+        let s = open[*i];
+        let pcurve_on_this_face = match rank {
+            Rank::A => &s.pcurve_a,
+            Rank::B => &s.pcurve_b,
+        };
+        let precomputed_uv = match rank {
+            Rank::A => s.start_uv_a.zip(s.end_uv_a),
+            Rank::B => s.start_uv_b.zip(s.end_uv_b),
+        };
+        let (start_uv, end_uv) = precomputed_uv.unwrap_or_else(|| {
+            uv_endpoints_from_pcurve(pcurve_on_this_face, s.start, s.end, surface, wire_pts)
+        });
+        let (su, eu, s3, e3) = if *fwd {
+            (start_uv, end_uv, s.start, s.end)
+        } else {
+            (end_uv, start_uv, s.end, s.start)
+        };
+        Some(OrientedPCurveEdge {
+            curve_3d: s.curve_3d.clone(),
+            trim: s.trim,
+            pcurve: pcurve_on_this_face.clone(),
+            start_uv: su,
+            end_uv: eu,
+            start_3d: s3,
+            end_3d: e3,
+            forward: *fwd,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        })
+    };
+
+    // Region 1: seam arc P1→P2 + section chain walked back P2→P1.
+    let mut loop_1 = arc_a;
+    for (i, fwd) in chain.iter().rev() {
+        loop_1.push(section_piece(&(*i, !*fwd))?);
+    }
+    // Region 2: section chain P1→P2 + seam arc P2→P1.
+    let mut loop_2 = Vec::with_capacity(chain.len() + arc_b.len());
+    for c in &chain {
+        loop_2.push(section_piece(c)?);
+    }
+    loop_2.extend(arc_b);
+
+    let mut sub_faces = Vec::with_capacity(2);
+    for loop_edges in [loop_1, loop_2] {
+        let interior = sphere_loop_interior(surface, &loop_edges)?;
+        sub_faces.push(SplitSubFace {
+            surface: surface.clone(),
+            outer_wire: loop_edges,
+            inner_wires: Vec::new(),
+            reversed,
+            parent: face_id,
+            rank,
+            precomputed_interior: Some(interior),
+        });
+    }
+    Some(sub_faces)
+}
+
+/// Reconstruct a sphere face's seam (boundary) as its exact circle.
+///
+/// Returns the circle (the intersection of the boundary polygon's plane with
+/// the sphere) and the plane's Newell normal — the polygon traversal direction
+/// defines the seam's parent-direction traversal sense. `None` for
+/// non-sphere faces or a degenerate boundary plane.
+fn face_seam_circle(
+    surface: &FaceSurface,
+    boundary_edges: &[OrientedPCurveEdge],
+    tol: f64,
+) -> Option<(remus_math::curves::Circle3D, remus_math::vec::Vec3)> {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+
+    let FaceSurface::Sphere(sphere) = surface else {
+        return None;
+    };
+    let verts: Vec<Point3> = boundary_edges.iter().map(|e| e.start_3d).collect();
+    if verts.len() < 3 {
+        return None;
+    }
+    let mut nrm = Vec3::new(0.0, 0.0, 0.0);
+    let mut cen = Vec3::new(0.0, 0.0, 0.0);
+    let n = verts.len();
+    for i in 0..n {
+        let a = verts[i];
+        let b = verts[(i + 1) % n];
+        nrm += Vec3::new(
+            (a.y() - b.y()) * (a.z() + b.z()),
+            (a.z() - b.z()) * (a.x() + b.x()),
+            (a.x() - b.x()) * (a.y() + b.y()),
+        );
+        cen += Vec3::new(a.x(), a.y(), a.z());
+    }
+    let plane_n = nrm.normalize().ok()?;
+    #[allow(clippy::cast_precision_loss)]
+    let inv_n = 1.0 / n as f64;
+    let plane_pt = Point3::new(cen.x() * inv_n, cen.y() * inv_n, cen.z() * inv_n);
+
+    let h = (plane_pt - sphere.center()).dot(plane_n);
+    let rr = sphere.radius() * sphere.radius() - h * h;
+    if rr <= tol * tol {
+        return None;
+    }
+    let seam_center = sphere.center() + plane_n * h;
+    let seam_circle = Circle3D::new(seam_center, plane_n, rr.sqrt()).ok()?;
+    Some((seam_circle, plane_n))
+}
+
 /// Reconstruct a sphere face's seam (boundary) as its exact circle and split it
 /// at the open arcs' crossing points into seam-arc edges.
 ///

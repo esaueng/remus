@@ -1259,6 +1259,23 @@ pub(super) fn tessellate_face_with_shared_edges(
                     edge_global_indices,
                     merged,
                     point_to_global,
+                )?)
+            // A seam-crossing section-circle collar (sphere∪sphere /
+            // sphere−sphere): a full-longitude, varying-latitude boundary
+            // whose region contains the pole — not a simple UV polygon, so
+            // the CDT below fills the removed cap instead of the kept
+            // collar. Filled as a structured meridian grid from the shared
+            // boundary samples; self-gated, returns false for any other
+            // sphere face.
+            || (matches!(face_data.surface(), FaceSurface::Sphere(_))
+                && super::nonplanar::tessellate_sphere_polar_zone_shared(
+                    topo,
+                    face_data,
+                    deflection,
+                    angular_tol,
+                    edge_global_indices,
+                    merged,
+                    point_to_global,
                 )?);
 
         if !handled_band {

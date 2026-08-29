@@ -885,6 +885,7 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
     let shell = topo.shell(solid_data.outer_shell()).ok()?;
 
     let mut sphere_r: Option<f64> = None;
+    let mut sphere_center: Option<Point3> = None;
     let mut cyl: Option<(Point3, Vec3, f64)> = None; // (origin, axis, radius)
     let mut cone_params: Option<(Point3, Vec3)> = None; // (apex, axis)
     let mut torus_params: Option<(f64, f64)> = None; // (major_r, minor_r)
@@ -914,6 +915,18 @@ fn try_analytic_solid_volume(topo: &Topology, solid: SolidId) -> Option<f64> {
                     None => sphere_r = Some(r),
                     // Multiple sphere faces must all share the same radius.
                     Some(existing) if (r - existing).abs() > existing * 1e-6 => return None,
+                    Some(_) => {}
+                }
+                // …and the same CENTER: a whole ball's faces lie on one sphere.
+                // Two equal-radius spheres in general position (a lens boolean
+                // keeps patches of BOTH operands, and every wire start vertex
+                // sits on the first sphere) would otherwise read as a whole
+                // ball below.
+                match sphere_center {
+                    None => sphere_center = Some(s.center()),
+                    Some(existing) if (existing - s.center()).length() > r * 1e-6 => {
+                        return None;
+                    }
                     Some(_) => {}
                 }
             }

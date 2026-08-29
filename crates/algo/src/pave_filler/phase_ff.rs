@@ -3721,6 +3721,46 @@ fn compute_raw_curves(
             }
         }
 
+        (FaceSurface::Sphere(s1), FaceSurface::Sphere(s2)) => {
+            // Two spheres in general position meet in one exact circle in the
+            // radical plane. Emit it as an exact Circle so the closed-circle
+            // boundary-crossing split (`emit_split_circle_arcs`) can pre-open
+            // it into per-hemisphere arcs the noseam sphere splitter carves
+            // into cap + remainder; the marcher's 33-sample NURBS never
+            // triggered that split and the lens booleans fell to the mesh
+            // fallback. Deferred configurations (identical spheres, tangent
+            // contact) fall through to the general path unchanged.
+            match analytic_intersection::exact_sphere_sphere(s1, s2)? {
+                Some(exacts) => {
+                    let mut results = Vec::new();
+                    for exact in exacts {
+                        if let analytic_intersection::ExactIntersectionCurve::Circle(circle) = exact
+                        {
+                            let bbox = circle_bbox(&circle);
+                            let domain = (0.0, std::f64::consts::TAU);
+                            let p_start = ParametricCurve::evaluate(&circle, domain.0);
+                            let p_end = ParametricCurve::evaluate(&circle, domain.1);
+                            results.push(RawCurve {
+                                curve: EdgeCurve::Circle(circle),
+                                bbox,
+                                t_range: domain,
+                                p_start,
+                                p_end,
+                            });
+                        }
+                    }
+                    Ok(results)
+                }
+                None => {
+                    if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
+                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                }
+            }
+        }
+
         (FaceSurface::Cylinder(c1), FaceSurface::Cylinder(c2))
             if c1.axis().dot(c2.axis()).abs() > 1.0 - 1e-10 =>
         {

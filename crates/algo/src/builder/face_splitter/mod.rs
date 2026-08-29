@@ -43,7 +43,8 @@ use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic, sample_wire_lo
 use special_cases::{
     split_closed_torus_into_bands, split_face_with_internal_loops, split_noseam_face_direct,
     split_periodic_face_into_bands, split_periodic_face_into_sectors,
-    split_torus_band_by_arrangement, try_split_crossing_plane_face, try_split_disk_by_chords,
+    split_sphere_face_by_crossing_circle, split_torus_band_by_arrangement,
+    try_split_crossing_plane_face, try_split_disk_by_chords,
 };
 
 /// Number of probe points (plus one for the closing sample) walked along a
@@ -5110,6 +5111,22 @@ fn split_face_2d_impl(
         .iter()
         .any(|s| (s.start - s.end).length() > tol.linear);
     if all_boundary_line && !is_plane && has_open_section {
+        // Sphere face + single seam-crossing section circle: carve BOTH
+        // regions (cap + remainder) directly. The generic noseam path only
+        // emits the encircling collar, which loses the cap the lens-side
+        // boolean results need.
+        if let Some(subs) = split_sphere_face_by_crossing_circle(
+            &surface,
+            &boundary_edges,
+            sections,
+            rank,
+            reversed,
+            face_id,
+            &wire_pts,
+            tol.linear,
+        ) {
+            return subs;
+        }
         return split_noseam_face_direct(
             &surface,
             &boundary_edges,

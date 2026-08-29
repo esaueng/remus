@@ -24,33 +24,9 @@ fn main() {
         let a = primitives::make_sphere(&mut topo, 1.0, 32).unwrap();
         let b = primitives::make_sphere(&mut topo, 1.0, 32).unwrap();
         transform_solid(&mut topo, b, &Mat4::translation(dx, 0.0, 0.0)).unwrap();
-        // Direct GFA call to see the underlying error.
-        {
-            let mut topo2 = Topology::new();
-            let a2 = primitives::make_sphere(&mut topo2, 1.0, 32).unwrap();
-            let b2 = primitives::make_sphere(&mut topo2, 1.0, 32).unwrap();
-            transform_solid(&mut topo2, b2, &Mat4::translation(dx, 0.0, 0.0)).unwrap();
-            let gfa_op = match op {
-                BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
-                BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
-                BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
-            };
-            let g = remus_algo::gfa::boolean_with_context(
-                &mut topo2,
-                gfa_op,
-                a2,
-                b2,
-                &remus_math::context::OperationContext::new(),
-            );
-            eprintln!("  gfa direct: {:?}", g.map(|_| "ok"));
-        }
-        let r = boolean(&mut topo, op, a, b).map_err(|e| {
-            eprintln!("  boolean(): {e:?}");
-            e
-        });
+        let r = boolean(&mut topo, op, a, b);
         match r {
             Ok(sid) => {
-                let vol = measure::solid_volume(&topo, sid, 0.001).unwrap();
                 let faces = remus_topology::explorer::solid_faces(&topo, sid).unwrap();
                 let mut types = std::collections::BTreeMap::new();
                 for f in &faces {
@@ -64,10 +40,14 @@ fn main() {
                     };
                     *types.entry(t).or_insert(0usize) += 1;
                 }
-                println!(
-                    "{op:?} dx={dx}: OK vol={vol:.6} faces={} types={types:?}",
-                    faces.len()
-                );
+                print!("{op:?} dx={dx}: faces={} types={types:?}", faces.len());
+                for d in [0.01_f64, 0.001, 0.0001] {
+                    let vol = measure::solid_volume(&topo, sid, d).unwrap();
+                    print!(" vol@{d}={vol:.6}");
+                }
+                let area = measure::solid_surface_area(&topo, sid, 0.001).unwrap();
+                print!(" area={area:.6}");
+                println!();
             }
             Err(e) => println!("{op:?} dx={dx}: ERR {e:?}"),
         }

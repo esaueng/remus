@@ -86,6 +86,36 @@ pub fn face_area(
                 let mesh = tessellate::tessellate(topo, face_id, deflection)?;
                 return Ok(triangle_mesh_area(&mesh));
             }
+            // A boundary whose latitudes genuinely vary (a section circle
+            // crossing the seam — the sphere-sphere booleans' collar/cap
+            // patches) is no full-revolution zone between two latitudes; the
+            // zone formula below would integrate the wrong band. Its mesh is
+            // boundary-exact, so measure that instead.
+            {
+                let wire = topo.wire(face.outer_wire())?;
+                let mut v_min = f64::INFINITY;
+                let mut v_max = f64::NEG_INFINITY;
+                let mut sampled = 0;
+                for oe in wire.edges() {
+                    let edge = topo.edge(oe.edge())?;
+                    let sv = topo.vertex(edge.start())?.point();
+                    let ev = topo.vertex(edge.end())?.point();
+                    let (t0, t1) = edge.curve().domain_with_endpoints(sv, ev);
+                    for k in 0..=8 {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = t0 + (t1 - t0) * (f64::from(k) / 8.0);
+                        let p = edge.curve().evaluate_with_endpoints(t, sv, ev);
+                        let (_, v) = sph.project_point(p);
+                        v_min = v_min.min(v);
+                        v_max = v_max.max(v);
+                        sampled += 1;
+                    }
+                }
+                if sampled > 0 && v_max - v_min > 1e-6 {
+                    let mesh = tessellate::tessellate(topo, face_id, deflection)?;
+                    return Ok(triangle_mesh_area(&mesh));
+                }
+            }
             // Spherical zone area = 2*pi*r^2 * (sin(v_max) - sin(v_min))
             // where v is the latitude parameter (-pi/2 to pi/2).
             let r = sph.radius();
