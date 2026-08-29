@@ -757,6 +757,133 @@ fn transform_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::Operatio
     Ok(raw.normalize()?)
 }
 
+/// The transformed curve (None for Line) and its new explicit trim.
+pub(crate) type TransformedEdgeCurve = (Option<EdgeCurve>, Option<(f64, f64)>);
+
+/// Transform one edge curve and its explicit RFC 0002 trim by `matrix`.
+///
+/// Returns `(Some(new_curve), new_trim)`; `None` for `Line`, whose geometry
+/// is defined by its vertices. The trim is retained where the map provably
+/// preserves the curve's parameterization (NURBS control-point maps, open
+/// conics under a similarity, scaled circles/ellipses), exactly remapped for
+/// the handled re-parameterization (Circle→Ellipse with swapped principal
+/// axes: `t ↦ π/2 − t`), and dropped otherwise — the endpoint-projection
+/// fallback then re-derives the domain on the new parameterization.
+pub(crate) fn transform_edge_curve_with_trim(
+    curve: &EdgeCurve,
+    trim: Option<(f64, f64)>,
+    matrix: &Mat4,
+) -> Result<TransformedEdgeCurve, crate::OperationsError> {
+    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
+    let transform_dir = |d: Vec3| -> Vec3 {
+        matrix.mul_point(remus_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
+    };
+    let (new_curve, new_trim) = match curve {
+        EdgeCurve::Line => (None, trim),
+        // Exact under a similarity, typed refusal otherwise — see
+        // `transform_open_conic`.
+        c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
+            (Some(transform_open_conic(c, matrix)?), trim)
+        }
+        EdgeCurve::NurbsCurve(c) => {
+            let new_control_points: Vec<_> = c
+                .control_points()
+                .iter()
+                .map(|pt| matrix.mul_point(*pt))
+                .collect();
+            (
+                Some(EdgeCurve::NurbsCurve(NurbsCurve::new(
+                    c.degree(),
+                    c.knots().to_vec(),
+                    new_control_points,
+                    c.weights().to_vec(),
+                )?)),
+                trim,
+            )
+        }
+        EdgeCurve::Circle(c) => {
+            let new_center = matrix.mul_point(c.center());
+            let new_u = transform_dir(c.u_axis());
+            let new_v = transform_dir(c.v_axis());
+            let su = new_u.length();
+            let sv = new_v.length();
+            // The transformed axes are conjugate diameters of the image
+            // ellipse, not its principal axes. When they stay orthogonal
+            // they ARE principal and the arms below are exact; when they
+            // do not (a shear, or an anisotropic scale oblique to the
+            // circle plane), building a Circle/Ellipse from them silently
+            // emits a skewed frame — refuse instead.
+            ensure_orthogonal_conjugate_axes(new_u, new_v, "circular")?;
+            let new_normal = new_u.cross(new_v).normalize()?;
+            if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
+                (
+                    Some(EdgeCurve::Circle(remus_math::curves::Circle3D::with_axes(
+                        new_center,
+                        new_normal,
+                        c.radius() * su,
+                        new_u.normalize()?,
+                        new_v.normalize()?,
+                    )?)),
+                    trim,
+                )
+            } else {
+                let (semi_major, semi_minor, u_dir, v_dir, mapped_trim) = if su >= sv {
+                    (
+                        c.radius() * su,
+                        c.radius() * sv,
+                        new_u.normalize()?,
+                        new_v.normalize()?,
+                        trim,
+                    )
+                } else {
+                    (
+                        c.radius() * sv,
+                        c.radius() * su,
+                        new_v.normalize()?,
+                        new_u.normalize()?,
+                        trim.map(|(a, b)| {
+                            (
+                                std::f64::consts::FRAC_PI_2 - a,
+                                std::f64::consts::FRAC_PI_2 - b,
+                            )
+                        }),
+                    )
+                };
+                (
+                    Some(EdgeCurve::Ellipse(
+                        remus_math::curves::Ellipse3D::with_axes(
+                            new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
+                        )?,
+                    )),
+                    mapped_trim,
+                )
+            }
+        }
+        EdgeCurve::Ellipse(e) => {
+            let new_center = matrix.mul_point(e.center());
+            let new_u = transform_dir(e.u_axis());
+            let new_v = transform_dir(e.v_axis());
+            // Same conjugate-diameter reasoning as the Circle arm above.
+            ensure_orthogonal_conjugate_axes(new_u, new_v, "elliptical")?;
+            let new_normal = new_u.cross(new_v).normalize()?;
+            (
+                Some(EdgeCurve::Ellipse(
+                    remus_math::curves::Ellipse3D::with_axes(
+                        new_center,
+                        new_normal,
+                        e.semi_major() * new_u.length(),
+                        e.semi_minor() * new_v.length(),
+                        new_u.normalize()?,
+                        new_v.normalize()?,
+                    )?,
+                )),
+                trim,
+            )
+        }
+    };
+    Ok((new_curve, new_trim))
+}
+
 /// Transform a set of edge curves in place.
 ///
 /// Line edges need no update — their geometry is defined by vertices.
@@ -766,116 +893,10 @@ pub(crate) fn transform_edges(
     edge_ids: &HashSet<EdgeId>,
     matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
-    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
-    let transform_dir = |d: Vec3| -> Vec3 {
-        matrix.mul_point(remus_math::vec::Point3::new(d.x(), d.y(), d.z())) - origin
-    };
     for &eid in edge_ids {
         let edge = topo.edge(eid)?;
-        let trim = edge.trim();
-        let (new_curve, new_trim) = match edge.curve() {
-            EdgeCurve::Line => (None, trim),
-            // Exact under a similarity, typed refusal otherwise — see
-            // `transform_open_conic`.
-            c @ (EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => {
-                (Some(transform_open_conic(c, matrix)?), trim)
-            }
-            EdgeCurve::NurbsCurve(c) => {
-                let new_control_points: Vec<_> = c
-                    .control_points()
-                    .iter()
-                    .map(|pt| matrix.mul_point(*pt))
-                    .collect();
-                (
-                    Some(EdgeCurve::NurbsCurve(NurbsCurve::new(
-                        c.degree(),
-                        c.knots().to_vec(),
-                        new_control_points,
-                        c.weights().to_vec(),
-                    )?)),
-                    trim,
-                )
-            }
-            EdgeCurve::Circle(c) => {
-                let new_center = matrix.mul_point(c.center());
-                let new_u = transform_dir(c.u_axis());
-                let new_v = transform_dir(c.v_axis());
-                let su = new_u.length();
-                let sv = new_v.length();
-                // The transformed axes are conjugate diameters of the image
-                // ellipse, not its principal axes. When they stay orthogonal
-                // they ARE principal and the arms below are exact; when they
-                // do not (a shear, or an anisotropic scale oblique to the
-                // circle plane), building a Circle/Ellipse from them silently
-                // emits a skewed frame — refuse instead.
-                ensure_orthogonal_conjugate_axes(new_u, new_v, "circular")?;
-                let new_normal = new_u.cross(new_v).normalize()?;
-                if (su - sv).abs() < 1e-12 * su.max(sv).max(1.0) {
-                    (
-                        Some(EdgeCurve::Circle(remus_math::curves::Circle3D::with_axes(
-                            new_center,
-                            new_normal,
-                            c.radius() * su,
-                            new_u.normalize()?,
-                            new_v.normalize()?,
-                        )?)),
-                        trim,
-                    )
-                } else {
-                    let (semi_major, semi_minor, u_dir, v_dir, mapped_trim) = if su >= sv {
-                        (
-                            c.radius() * su,
-                            c.radius() * sv,
-                            new_u.normalize()?,
-                            new_v.normalize()?,
-                            trim,
-                        )
-                    } else {
-                        (
-                            c.radius() * sv,
-                            c.radius() * su,
-                            new_v.normalize()?,
-                            new_u.normalize()?,
-                            trim.map(|(a, b)| {
-                                (
-                                    std::f64::consts::FRAC_PI_2 - a,
-                                    std::f64::consts::FRAC_PI_2 - b,
-                                )
-                            }),
-                        )
-                    };
-                    (
-                        Some(EdgeCurve::Ellipse(
-                            remus_math::curves::Ellipse3D::with_axes(
-                                new_center, new_normal, semi_major, semi_minor, u_dir, v_dir,
-                            )?,
-                        )),
-                        mapped_trim,
-                    )
-                }
-            }
-            EdgeCurve::Ellipse(e) => {
-                let new_center = matrix.mul_point(e.center());
-                let new_u = transform_dir(e.u_axis());
-                let new_v = transform_dir(e.v_axis());
-                // Same conjugate-diameter reasoning as the Circle arm above.
-                ensure_orthogonal_conjugate_axes(new_u, new_v, "elliptical")?;
-                let new_normal = new_u.cross(new_v).normalize()?;
-                (
-                    Some(EdgeCurve::Ellipse(
-                        remus_math::curves::Ellipse3D::with_axes(
-                            new_center,
-                            new_normal,
-                            e.semi_major() * new_u.length(),
-                            e.semi_minor() * new_v.length(),
-                            new_u.normalize()?,
-                            new_v.normalize()?,
-                        )?,
-                    )),
-                    trim,
-                )
-            }
-        };
+        let (new_curve, new_trim) =
+            transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
         if let Some(curve) = new_curve {
             let edge = topo.edge_mut(eid)?;
             edge.set_curve(curve);

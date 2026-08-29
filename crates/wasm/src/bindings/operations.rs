@@ -2004,7 +2004,10 @@ impl BrepKernel {
         // Try as edge
         if let Ok(edge_id) = self.resolve_edge(id) {
             let edge = self.topo.edge(edge_id)?;
-            let new_edge = Edge::new(edge.end(), edge.start(), edge.curve().clone());
+            // A reversed span (t0 > t1) traces start → end (RFC 0002), so
+            // swapping the vertices flips the trim interval.
+            let mut new_edge = Edge::new(edge.end(), edge.start(), edge.curve().clone());
+            new_edge.set_trim(edge.trim().map(|(t0, t1)| (t1, t0)));
             let new_eid = self.topo_mut().add_edge(new_edge);
             return Ok(edge_id_to_u32(new_eid));
         }

@@ -12,7 +12,7 @@ use std::f64::consts::TAU;
 use remus_math::mat::Mat4;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::copy::copy_solid;
-use remus_operations::primitives::make_cylinder;
+use remus_operations::primitives::{make_cone, make_cylinder};
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::{SolidId, Topology};
@@ -207,4 +207,146 @@ fn coaxial_cylinder_fast_path_keeps_each_rim_in_phase() {
             "stored interval must start at this rim's own vertex: {t0} vs {anchor}"
         );
     }
+}
+
+/// Same full-circle contract as the cylinder shortcut, on the coaxial-cone
+/// frustum merge.
+#[test]
+fn coaxial_cone_fast_path_preserves_full_circle_trims() {
+    let mut topo = Topology::new();
+    // Frustums of the same cone (apex z = -2, slope 0.5): r = 1..2 and 2..3.
+    let lower = make_cone(&mut topo, 1.0, 2.0, 2.0).unwrap();
+    let upper = make_cone(&mut topo, 2.0, 3.0, 2.0).unwrap();
+    stamp_exact_full_circle_trims(&mut topo, lower);
+    stamp_exact_full_circle_trims(&mut topo, upper);
+    transform_solid(&mut topo, upper, &Mat4::translation(0.0, 0.0, 2.0)).unwrap();
+
+    let result = boolean(&mut topo, BooleanOp::Fuse, lower, upper).unwrap();
+    assert_eq!(
+        remus_topology::explorer::solid_entity_counts(&topo, result).unwrap(),
+        (3, 3, 2),
+        "coaxial shortcut must return one analytic cone frustum"
+    );
+    let result_trims = solid_trims(&topo, result);
+    assert_eq!(result_trims.len(), 2, "both rims must carry intervals");
+    assert!(
+        result_trims
+            .iter()
+            .all(|(start, end)| ((end - start) - TAU).abs() < 1e-12),
+        "rebuilt rims must retain exact full-turn domains: {result_trims:?}"
+    );
+
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.01).unwrap();
+    // Frustum of slope 0.5 from z=0 (r=1) to z=4 (r=3):
+    // V = pi*h/3*(R^2 + R*r + r^2) = pi*4/3*(9+3+1) = 52/3*pi.
+    let expected = 52.0 / 3.0 * std::f64::consts::PI;
+    assert!(
+        (vol - expected).abs() < 1e-3,
+        "volume oracle: {vol} vs {expected}"
+    );
+}
+
+/// Analytic fast paths that mint arc edges into RESULT topology must store
+/// the exact CCW span instead of leaving consumers to re-derive it through
+/// the projection fallback (RFC 0002 reader migration). The box-sphere
+/// octant shortcut's three boundary arcs are quarter circles.
+#[test]
+fn box_sphere_intersect_shortcut_arcs_carry_quarter_span_trims() {
+    let mut topo = Topology::new();
+    let bx = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let sp = remus_operations::primitives::make_sphere(&mut topo, 7.0, 16).unwrap();
+    let result = boolean(&mut topo, BooleanOp::Intersect, bx, sp).unwrap();
+
+    let mut arc_trims = Vec::new();
+    for edge_id in remus_topology::explorer::solid_edges(&topo, result).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if let EdgeCurve::Circle(_) = edge.curve() {
+            arc_trims.push(edge.trim().expect("octant arc carries an exact span"));
+        }
+    }
+    assert_eq!(arc_trims.len(), 3, "three quarter-arc edges: {arc_trims:?}");
+    for (t0, t1) in &arc_trims {
+        assert!(
+            (t1 - t0 - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+            "each octant arc spans exactly a quarter turn: ({t0}, {t1})"
+        );
+    }
+
+    // The stored span must anchor at each arc's own start vertex.
+    for edge_id in remus_topology::explorer::solid_edges(&topo, result).unwrap() {
+        let edge = topo.edge(edge_id).unwrap();
+        if let EdgeCurve::Circle(circle) = edge.curve() {
+            let (t0, _) = edge.trim().expect("octant arc carries an exact span");
+            let anchor = circle.project(topo.vertex(edge.start()).unwrap().point());
+            assert!(
+                (t0 - anchor).abs() < 1e-9,
+                "trim anchors at the arc's own start vertex: {t0} vs {anchor}"
+            );
+        }
+    }
+
+    // The analytic census and oracle are unchanged by storing the spans.
+    let (f, e, v) = remus_topology::explorer::solid_entity_counts(&topo, result).unwrap();
+    assert_eq!((f, e, v), (4, 6, 4), "octant topology unchanged");
+    let vol = remus_operations::measure::solid_volume(&topo, result, 0.1).unwrap();
+    assert!(vol > 0.0 && vol < 4.0 / 3.0 * std::f64::consts::PI * 343.0);
+}
+
+/// `copy_and_transform_solid` must apply the same exact trim policy as
+/// `transform_edges` (they duplicated the curve math until the helper was
+/// shared): retain under a similarity, remap the Circle→Ellipse axis swap,
+/// drop only where the parameterization provably changes.
+#[test]
+fn copy_and_transform_solid_follows_the_exact_trim_policy() {
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 3.0, 4.0).unwrap();
+    let rim = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    topo.edge_mut(rim).unwrap().set_trim(Some((0.5, 2.5)));
+
+    // Pure translation: the parameterization is untouched — trim retained.
+    let moved = remus_operations::copy::copy_and_transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::translation(5.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let moved_trims = solid_trims(&topo, moved);
+    assert_eq!(
+        moved_trims,
+        vec![(0.5, 2.5)],
+        "translation retains the trim"
+    );
+
+    // Rotation: still a similarity — trim retained.
+    let rotated = remus_operations::copy::copy_and_transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::rotation_z(std::f64::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    let rotated_trims = solid_trims(&topo, rotated);
+    assert_eq!(rotated_trims, vec![(0.5, 2.5)], "rotation retains the trim");
+
+    // Anisotropic scale: the Circle becomes an Ellipse. Whichever arm the
+    // circle's reference frame lands in, the policy outcome is exact:
+    // major-first retains the interval; major-second remaps t ↦ π/2 − t.
+    let stretched = remus_operations::copy::copy_and_transform_solid(
+        &mut topo,
+        solid,
+        &Mat4::scale(2.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let stretched_trims = solid_trims(&topo, stretched);
+    let remapped = (
+        std::f64::consts::FRAC_PI_2 - 0.5,
+        std::f64::consts::FRAC_PI_2 - 2.5,
+    );
+    assert!(
+        stretched_trims == vec![(0.5, 2.5)] || stretched_trims == vec![remapped],
+        "scale follows the exact Circle→Ellipse trim policy: {stretched_trims:?}"
+    );
 }

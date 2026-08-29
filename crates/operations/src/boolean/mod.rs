@@ -580,8 +580,12 @@ fn boolean_with_context_impl(
                 (Some(sa), Some(sb)) => (sa - sb).abs() < tol.linear,
                 _ => false,
             };
-            if let (true, Some(slope)) = (same_axis_dir && same_apex && same_half_angle, slope_a)
-                && let Some(result) = coaxial_cone_shortcut(
+            if let (true, Some(slope)) = (same_axis_dir && same_apex && same_half_angle, slope_a) {
+                let rim_turn = match exact_circle_turn_on_solid(topo, a)? {
+                    Some(turn) => Some(turn),
+                    None => exact_circle_turn_on_solid(topo, b)?,
+                };
+                if let Some(result) = coaxial_cone_shortcut(
                     topo,
                     op,
                     *oa,
@@ -589,10 +593,11 @@ fn boolean_with_context_impl(
                     slope,
                     (*za_min, *za_max),
                     (*zb_min, *zb_max),
+                    rim_turn,
                     tol,
-                )?
-            {
-                return Ok(result);
+                )? {
+                    return Ok(result);
+                }
             }
         }
 
@@ -2039,6 +2044,7 @@ fn coaxial_cone_shortcut(
     slope: f64,
     a_range: (f64, f64),
     b_range: (f64, f64),
+    rim_turn: Option<f64>,
     tol: remus_math::tolerance::Tolerance,
 ) -> Result<Option<SolidId>, crate::OperationsError> {
     let (za_min, za_max) = a_range;
@@ -2094,6 +2100,20 @@ fn coaxial_cone_shortcut(
     }
     let xform = xform_from_canonical_z(world_origin, axis, tol);
     crate::transform::transform_solid(topo, cone, &xform)?;
+    // Same full-circle rim trims as the coaxial-cylinder shortcut: the
+    // rebuilt rims are FULL circles and only the parents' winding direction
+    // is transferable, anchored per rim at its own start vertex.
+    if let Some(turn) = rim_turn {
+        for edge_id in remus_topology::explorer::solid_edges(topo, cone)? {
+            let edge = topo.edge(edge_id)?;
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                continue;
+            };
+            let start = circle.project(topo.vertex(edge.start())?.point());
+            topo.edge_mut(edge_id)?
+                .set_trim(Some((start, start + turn)));
+        }
+    }
     Ok(Some(cone))
 }
 
@@ -2355,8 +2375,14 @@ fn build_box_sphere_octant(
                     reason: format!("box-sphere octant: circle construction failed: {e}"),
                 }
             })?;
-        let _ = p_end; // p_end is used only via end_vid (already pre-placed at the correct sphere point)
-        Ok(topo.add_edge(Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle))))
+        // Pin the quarter-arc span: u_ref points at p_start (t=0) and the
+        // inward normal makes CCW start→end the octant's quarter arc, so the
+        // stored trim is exactly the interval the projection fallback would
+        // reconstruct — minus its tolerance dependence.
+        let trim = assembly::ccw_arc_trim(&circle, p_start, p_end);
+        let mut edge = Edge::new(start_vid, end_vid, EdgeCurve::Circle(circle));
+        edge.set_trim(trim);
+        Ok(topo.add_edge(edge))
     };
 
     // Arc on cut plane 0 (between v_y and v_z, i.e., the edge "opposite" v_x).
@@ -2568,6 +2594,11 @@ fn coaxial_torus_shortcut(
 
     // Build a fresh torus at the origin then transform to the shared
     // center / axis. `make_torus` builds with axis = +z by default.
+    //
+    // Note: no full-circle rim trims here, unlike the cylinder/cone
+    // shortcuts — `make_torus` builds the minimal CW complex (1 vertex, 2
+    // degenerate seam lines, 1 face), so a rebuilt torus has no circle
+    // edges to carry an interval. Revisit with the M2.4 torus splitters.
     let torus = crate::primitives::make_torus(topo, major_radius, minor_result, segments)?;
     let xform = xform_from_canonical_z(center, axis, tol);
     crate::transform::transform_solid(topo, torus, &xform)?;
@@ -4388,29 +4419,21 @@ fn merge_result_vertices(
     > = HashMap::default();
 
     // Snapshot face data, then rebuild with merged vertices
+    type OeSnap = (
+        remus_topology::edge::EdgeId,
+        bool,
+        remus_topology::edge::EdgeCurve,
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
+        Option<f64>,        // edge tolerance
+        Option<(f64, f64)>, // RFC 0002 explicit trim — carried verbatim
+    );
     struct FaceSnap {
         surface: remus_topology::face::FaceSurface,
         reversed: bool,
-        outer_oes: Vec<(
-            remus_topology::edge::EdgeId,
-            bool,
-            remus_topology::edge::EdgeCurve,
-            remus_topology::vertex::VertexId,
-            remus_topology::vertex::VertexId,
-            Option<f64>, // edge tolerance
-        )>,
+        outer_oes: Vec<OeSnap>,
         outer_closed: bool,
-        inner_wires: Vec<(
-            Vec<(
-                remus_topology::edge::EdgeId,
-                bool,
-                remus_topology::edge::EdgeCurve,
-                remus_topology::vertex::VertexId,
-                remus_topology::vertex::VertexId,
-                Option<f64>,
-            )>,
-            bool, // wire closed flag
-        )>,
+        inner_wires: Vec<(Vec<OeSnap>, bool)>, // wire closed flag
     }
 
     let mut snaps = Vec::with_capacity(face_ids.len());
@@ -4432,6 +4455,7 @@ fn merge_result_vertices(
                     e.start(),
                     e.end(),
                     e.tolerance(),
+                    e.trim(),
                 ))
             })
             .collect::<Result<_, _>>()?;
@@ -4452,6 +4476,7 @@ fn merge_result_vertices(
                         e.start(),
                         e.end(),
                         e.tolerance(),
+                        e.trim(),
                     ))
                 })
                 .collect::<Result<_, _>>()?;
@@ -4467,14 +4492,7 @@ fn merge_result_vertices(
     }
 
     #[allow(clippy::type_complexity)]
-    let remap_oes = |oes: &[(
-        remus_topology::edge::EdgeId,
-        bool,
-        remus_topology::edge::EdgeCurve,
-        remus_topology::vertex::VertexId,
-        remus_topology::vertex::VertexId,
-        Option<f64>,
-    )],
+    let remap_oes = |oes: &[OeSnap],
                      replacements: &HashMap<
         remus_topology::vertex::VertexId,
         remus_topology::vertex::VertexId,
@@ -4490,7 +4508,7 @@ fn merge_result_vertices(
                      topo: &mut Topology|
      -> Vec<remus_topology::wire::OrientedEdge> {
         oes.iter()
-            .map(|(eid, fwd, curve, start, end, edge_tol)| {
+            .map(|(eid, fwd, curve, start, end, edge_tol, trim)| {
                 let ns = replacements.get(start).copied().unwrap_or(*start);
                 let ne = replacements.get(end).copied().unwrap_or(*end);
                 if ns == *start && ne == *end {
@@ -4498,12 +4516,17 @@ fn merge_result_vertices(
                 }
                 let key = (*eid, ns, ne);
                 let new_eid = *edge_cache.entry(key).or_insert_with(|| {
-                    topo.add_edge(remus_topology::edge::Edge::with_tolerance(
+                    // Carry the source edge's explicit trim (RFC 0002): the
+                    // curve is cloned unchanged and the canonical remap keeps
+                    // start→end order, so the interval transfers verbatim.
+                    let mut rebuilt = remus_topology::edge::Edge::with_tolerance(
                         ns,
                         ne,
                         curve.clone(),
                         *edge_tol,
-                    ))
+                    );
+                    rebuilt.set_trim(*trim);
+                    topo.add_edge(rebuilt)
                 });
                 remus_topology::wire::OrientedEdge::new(new_eid, *fwd)
             })

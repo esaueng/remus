@@ -43,6 +43,30 @@ fn sub_trim(
     remus_algo::sub_trim(curve, parent?, start, end)
 }
 
+/// The CCW span of `circle` from `start` to `end`, as an explicit RFC 0002
+/// trim interval.
+///
+/// Fast paths that mint analytic arcs build the circle so its CCW run
+/// start→end IS the intended span (axis or reference direction chosen
+/// accordingly). This helper stores that span instead of leaving consumers
+/// to re-derive it through `EdgeCurve::domain_with_endpoints`' projection
+/// tolerance bands. Returns `None` for degenerate (coincident or
+/// full-period) spans, where the projection fallback is exact already.
+pub(crate) fn ccw_arc_trim(
+    circle: &remus_math::curves::Circle3D,
+    start: Point3,
+    end: Point3,
+) -> Option<(f64, f64)> {
+    const SPAN_EPS: f64 = 1e-12;
+    let t0 = circle.project(start);
+    let delta = (circle.project(end) - t0).rem_euclid(std::f64::consts::TAU);
+    if delta <= SPAN_EPS || delta >= std::f64::consts::TAU - SPAN_EPS {
+        None
+    } else {
+        Some((t0, t0 + delta))
+    }
+}
+
 /// Quantize a coordinate to a spatial hash key.
 #[inline]
 #[allow(clippy::cast_possible_truncation)] // coordinate * 1e7 fits in i64
@@ -501,7 +525,17 @@ pub(crate) fn assemble_solid_mixed_with_history(
                             axis.length() > 1e-12 * radius * radius,
                             remus_math::curves::Circle3D::new(center, axis, radius),
                         ) {
-                            topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)))
+                            // Pin the CCW great-circle span start→end (always
+                            // the short arc: |axis| encodes sin of the corner
+                            // angle, so the span is < π by construction).
+                            let trim = ccw_arc_trim(&circle, verts[i], verts[j]);
+                            topo.add_edge(edge_with_trim(
+                                start,
+                                end,
+                                EdgeCurve::Circle(circle),
+                                None,
+                                trim,
+                            ))
                         } else {
                             // Coincident or antipodal corners: no unique great
                             // circle — fall back to a chord.
@@ -612,7 +646,16 @@ pub(crate) fn assemble_solid_mixed_with_history(
                             if let Ok(circle) =
                                 remus_math::curves::Circle3D::new(center, axis, cylinder.radius())
                             {
-                                topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)))
+                                // Pin the CCW angular span start→end (|du| ≤ π
+                                // after the wrapped-step axis choice above).
+                                let trim = ccw_arc_trim(&circle, verts[i], verts[j]);
+                                topo.add_edge(edge_with_trim(
+                                    start,
+                                    end,
+                                    EdgeCurve::Circle(circle),
+                                    None,
+                                    trim,
+                                ))
                             } else {
                                 topo.add_edge(Edge::new(start, end, EdgeCurve::Line))
                             }

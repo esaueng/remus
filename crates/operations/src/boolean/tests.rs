@@ -8316,3 +8316,123 @@ fn compound_cluster_fuse_keeps_the_caller_context() {
     assert_eq!(run(Tolerance::new()), 12);
     assert_eq!(run(Tolerance::loose()), 6);
 }
+
+/// `merge_result_vertices` rebuilds every edge touching a merged vertex —
+/// the rebuilt edge must carry the source edge's explicit trim (RFC 0002).
+/// The GFA-side welds and `unify_coincident_boundary_edges` already carried
+/// their trims; this was the one boolean post-assembly path that dropped it.
+#[test]
+fn merge_result_vertices_rebuilt_edges_carry_trim() {
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let tol = Tolerance::default();
+
+    // Two triangle faces whose corner vertices duplicate within tolerance:
+    // v2d/v3d quantize (at 1/tol.linear scale) to the same keys as v2/v3.
+    let v1 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), tol.linear));
+    let v2 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), tol.linear));
+    let v3 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), tol.linear));
+    let v4 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 1.0), tol.linear));
+    let v2d = topo.add_vertex(Vertex::new(Point3::new(1.0 + 1e-9, 0.0, 0.0), tol.linear));
+    let v3d = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0 + 1e-9, 0.0), tol.linear));
+
+    let e12 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
+    let e23 = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
+    let e31 = topo.add_edge(Edge::new(v3, v1, EdgeCurve::Line));
+    // Face B carries an arc edge with an explicit trim between the
+    // duplicate vertices — the interval must survive the canonical rebuild.
+    let arc_circle = remus_math::curves::Circle3D::new(
+        Point3::new(0.5, 0.5, 1.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        std::f64::consts::FRAC_1_SQRT_2,
+    )
+    .unwrap();
+    let arc = topo.add_edge({
+        let mut e = Edge::new(v3d, v2d, EdgeCurve::Circle(arc_circle));
+        e.set_trim(Some((0.3, 1.9)));
+        e
+    });
+    let e42 = topo.add_edge(Edge::new(v4, v2d, EdgeCurve::Line));
+    let e43 = topo.add_edge(Edge::new(v4, v3d, EdgeCurve::Line));
+
+    let wire_a = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e12, true),
+                OrientedEdge::new(e23, true),
+                OrientedEdge::new(e31, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face_a = topo.add_face(Face::new(
+        wire_a,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let wire_b = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(e43, true),
+                OrientedEdge::new(arc, true),
+                OrientedEdge::new(e42, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face_b = topo.add_face(Face::new(
+        wire_b,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 1.0,
+        },
+    ));
+
+    let shell = topo.add_shell(Shell::new(vec![face_a, face_b]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+    merge_result_vertices(&mut topo, solid, tol).unwrap();
+
+    // The duplicate vertices were canonicalized and the arc edge rebuilt.
+    // (The orphaned source edge stays in the arena; count what the solid
+    // actually references.)
+    let mut referenced_arcs = Vec::new();
+    let shell = topo.solid(solid).unwrap().outer_shell();
+    for fid in topo.shell(shell).unwrap().faces() {
+        let face = topo.face(*fid).unwrap();
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
+                let e = topo.edge(oe.edge()).unwrap();
+                if matches!(e.curve(), EdgeCurve::Circle(_)) {
+                    referenced_arcs.push((oe.edge(), e.clone()));
+                }
+            }
+        }
+    }
+    assert_eq!(referenced_arcs.len(), 1, "arc rebuilt exactly once");
+    let (edge_id, rebuilt) = &referenced_arcs[0];
+    assert_eq!(
+        rebuilt.trim(),
+        Some((0.3, 1.9)),
+        "rebuilt edge must carry the source trim verbatim"
+    );
+    // The rebuilt edge connects the CANONICAL vertices.
+    assert_eq!(rebuilt.start(), v3);
+    assert_eq!(rebuilt.end(), v2);
+    // And the rebuilt wire references the rebuilt edge.
+    assert!(
+        topo.edges()
+            .iter()
+            .any(|(id, _)| id == *edge_id && id != arc),
+        "referenced arc is the rebuilt edge, not the orphaned source"
+    );
+}

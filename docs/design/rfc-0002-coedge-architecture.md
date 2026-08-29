@@ -212,6 +212,15 @@ Queued:
 - The transactional wrapper (Issue 9) supplies the sanctioned-mutation
   boundary the remaining migration assumes.
 
+Result-assembly and analytic-fast-path completion (P-Class issue 2.0a): the
+boolean post-assembly vertex merge (`merge_result_vertices`), the sphere-cap
+and cylindrical-face spec arcs, the box-sphere octant arcs, and the
+coaxial-cone shortcut now write explicit trims into result topology;
+`copy_and_transform_solid` shares `transform_edges`' exact retention/remap
+policy instead of dropping the trim. The coaxial-torus shortcut is exempt —
+`make_torus` builds the minimal CW complex (degenerate seam lines), so a
+rebuilt torus has no circle edges to carry an interval.
+
 ### Migration ratchet
 
 Once Stage 2 lands, new code must not construct face boundaries from raw
