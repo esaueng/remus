@@ -133,14 +133,20 @@ impl JunctionRegistry {
         tol: Tolerance,
     ) -> Point3 {
         // The band must track the geometry it searches, never a fixed length.
-        let trigger_max = Self::BOUNDARY_TRIGGER_MAX
+        // The extent cap applies to the WHOLE band, including the
+        // tolerance-scaled term: at default tolerance `tol.linear * 1000.0`
+        // is 1e-4, which is the whole model at scale 1e-4 and ten models at
+        // 1e-5 — leaving it outside the cap re-created the exact defect the
+        // cap exists for, one decade down. At default tolerance, pairs whose
+        // extent exceeds 0.1 keep the historical band bit-for-bit.
+        let trigger = (tol.linear * 1000.0)
+            .max(Self::BOUNDARY_TRIGGER_MAX)
             .min(self.pair_extent(topo, fa, fb, tol) * Self::BOUNDARY_TRIGGER_EXTENT_FRACTION)
             .max(tol.linear);
         // A broad trigger is safe only for finding a boundary candidate: the
         // returned point is recomputed on a boundary of this exact face pair.
         // Never adopt a registry point directly from the untrusted fitted
         // endpoint, because an unrelated nearby feature could redirect it.
-        let trigger = (tol.linear * 1000.0).max(trigger_max);
         let Some(boundary_junction) = snap_to_boundary_junction_band(topo, fa, fb, p, tol, trigger)
         else {
             return p;
@@ -177,12 +183,12 @@ impl JunctionRegistry {
                     [prev_a, prev_b].contains(&fa) || [prev_a, prev_b].contains(&fb)
                 });
                 if (!shares_face && !face_uses_source)
-                    || (entry.point - boundary_junction).length() > trigger_max
+                    || (entry.point - boundary_junction).length() > trigger
                 {
                     return None;
                 }
                 let validated =
-                    snap_to_boundary_junction_band(topo, fa, fb, entry.point, tol, trigger_max)?;
+                    snap_to_boundary_junction_band(topo, fa, fb, entry.point, tol, trigger)?;
                 ((validated - entry.point).length() <= weld).then_some(entry.point)
             })
             .collect::<Vec<_>>();
