@@ -619,8 +619,44 @@ pub(super) fn split_sphere_face_by_crossing_circle(
     loop_2.extend(arc_b);
 
     let mut sub_faces = Vec::with_capacity(2);
+    // The collar (full-turn) region contains the parent hemisphere's pole, so
+    // probe there; the cap-side region is spherically convex and its
+    // midpoint-centroid sample is safe. The centroid alone can misplace the
+    // collar sample when the radical plane falls beyond the partner's center
+    // (unequal radii): the seam arc then outweighs the section arc and pulls
+    // the centroid onto the cap side.
+    let pole = sphere.center() + plane_n * sphere.radius();
+    let pole_side_sign = (pole - carrier.center()).dot(carrier.normal());
+    let seam_side_of = |loop_edges: &[OrientedPCurveEdge]| -> Option<f64> {
+        let mut best: Option<f64> = None;
+        for e in loop_edges {
+            let EdgeCurve::Circle(c) = &e.curve_3d else {
+                continue;
+            };
+            // The section chain rides the carrier, not the seam circle.
+            if (c.center() - carrier.center()).length() < weld
+                && (c.normal() - carrier.normal()).length() < 1e-6
+            {
+                continue;
+            }
+            let mid = super::super::pcurve_compute::evaluate_edge_at_t(
+                &e.curve_3d,
+                e.start_3d,
+                e.end_3d,
+                0.5,
+            );
+            let side = (mid - carrier.center()).dot(carrier.normal());
+            if best.is_none_or(|b| side.abs() > b.abs()) {
+                best = Some(side);
+            }
+        }
+        best
+    };
     for loop_edges in [loop_1, loop_2] {
-        let interior = sphere_loop_interior(surface, &loop_edges)?;
+        let interior = match seam_side_of(&loop_edges) {
+            Some(s) if s.signum() == pole_side_sign.signum() => pole,
+            _ => sphere_loop_interior(surface, &loop_edges)?,
+        };
         sub_faces.push(SplitSubFace {
             surface: surface.clone(),
             outer_wire: loop_edges,
