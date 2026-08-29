@@ -11,6 +11,63 @@ use crate::vertex::VertexId;
 /// Typed handle for an [`Edge`] stored in an [`Arena`](crate::Arena).
 pub type EdgeId = arena::Id<Edge>;
 
+/// Failure to obtain an authoritative parameter range for an edge.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum EdgeDomainError {
+    /// A non-Line edge has no stored trim interval.
+    #[error("{curve_type} edge has no authoritative parameter range")]
+    Missing {
+        /// Stable edge-curve type tag.
+        curve_type: &'static str,
+    },
+    /// A stored interval violates the edge-domain invariant.
+    #[error("{curve_type} edge has invalid parameter range [{start}, {end}]")]
+    Invalid {
+        /// Stable edge-curve type tag.
+        curve_type: &'static str,
+        /// Stored range start.
+        start: f64,
+        /// Stored range end.
+        end: f64,
+    },
+}
+
+impl remus_math::diagnostic::ToDiagnostic for EdgeDomainError {
+    fn diagnostic(&self) -> remus_math::diagnostic::Diagnostic {
+        use remus_math::diagnostic::{Diagnostic, FailureCategory};
+
+        let message = self.to_string();
+        match self {
+            Self::Missing { curve_type } => Diagnostic::new(
+                FailureCategory::InvalidTopology,
+                "edge_domain_missing",
+                message,
+            )
+            .with_detail("curveType", *curve_type),
+            Self::Invalid {
+                curve_type,
+                start,
+                end,
+            } => {
+                let diagnostic = Diagnostic::new(
+                    FailureCategory::InvalidTopology,
+                    "edge_domain_invalid",
+                    message,
+                )
+                .with_detail("curveType", *curve_type);
+                if start.is_finite() && end.is_finite() {
+                    diagnostic
+                        .with_detail("start", *start)
+                        .with_detail("end", *end)
+                } else {
+                    diagnostic
+                }
+            }
+        }
+    }
+}
+
 /// The geometric curve associated with an edge.
 #[derive(Debug, Clone)]
 pub enum EdgeCurve {
@@ -73,7 +130,7 @@ impl EdgeCurve {
         }
     }
 
-    /// Parameter domain of this curve.
+    /// Reconstructs a parameter domain from endpoint geometry.
     ///
     /// `Line` uses `[0, 1]`. Closed Circle and Ellipse edges (`start ≈ end`)
     /// use the full `[0, 2π]` domain. Open arcs project both endpoints onto
@@ -85,7 +142,7 @@ impl EdgeCurve {
     /// validated open sub-span returns the projected `[t₀, t₁]` so the edge
     /// samples only its own piece of a shared curve.
     #[must_use]
-    pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
+    pub fn reconstruct_domain_from_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
         const TAU: f64 = std::f64::consts::TAU;
         // Below this chord the endpoints are considered coincident and the
         // edge is treated as a closed (full) curve.
@@ -163,6 +220,17 @@ impl EdgeCurve {
                 (d0, d1)
             }
         }
+    }
+
+    /// Parameter domain reconstructed from endpoint geometry.
+    ///
+    /// This compatibility accessor is retained for raw construction and
+    /// controlled import/healing adapters. Stored topology readers use
+    /// [`Edge::strict_domain`] instead so a missing trim cannot silently
+    /// select a different arc.
+    #[must_use]
+    pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
+        self.reconstruct_domain_from_endpoints(start, end)
     }
 
     /// Type tag string for debugging and serialization.
@@ -299,7 +367,7 @@ impl Edge {
 
     /// The edge's parameter domain: the stored trim when present, otherwise
     /// reconstructed from the endpoints via
-    /// [`EdgeCurve::domain_with_endpoints`].
+    /// [`EdgeCurve::reconstruct_domain_from_endpoints`].
     ///
     /// This is the preferred domain accessor (RFC 0002, Stage 3): explicit
     /// trims are exact where projection-based reconstruction depends on
@@ -308,7 +376,65 @@ impl Edge {
     #[must_use]
     pub fn domain_with_endpoints(&self, start: Point3, end: Point3) -> (f64, f64) {
         self.trim
-            .unwrap_or_else(|| self.curve.domain_with_endpoints(start, end))
+            .unwrap_or_else(|| self.curve.reconstruct_domain_from_endpoints(start, end))
+    }
+
+    /// Returns the edge's authoritative parameter range.
+    ///
+    /// Lines are intrinsically endpoint-local on `[0, 1]`. Every other curve
+    /// requires a finite stored trim; `None` means the topology has not yet
+    /// established parameter authority and callers must refuse or enter an
+    /// explicitly named reconstruction adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EdgeDomainError::Missing`] when a non-Line edge lacks a trim,
+    /// or [`EdgeDomainError::Invalid`] when stored authority violates the
+    /// edge-domain invariant.
+    pub fn strict_domain(&self) -> Result<(f64, f64), EdgeDomainError> {
+        if matches!(self.curve, EdgeCurve::Line) {
+            return if let Some((start, end)) = self.trim {
+                if start.partial_cmp(&0.0) == Some(std::cmp::Ordering::Equal)
+                    && end.partial_cmp(&1.0) == Some(std::cmp::Ordering::Equal)
+                {
+                    Ok((0.0, 1.0))
+                } else {
+                    Err(EdgeDomainError::Invalid {
+                        curve_type: self.curve.type_tag(),
+                        start,
+                        end,
+                    })
+                }
+            } else {
+                Ok((0.0, 1.0))
+            };
+        }
+
+        let (start, end) = self.trim.ok_or_else(|| EdgeDomainError::Missing {
+            curve_type: self.curve.type_tag(),
+        })?;
+        let invalid_common = !start.is_finite()
+            || !end.is_finite()
+            || start.partial_cmp(&end) == Some(std::cmp::Ordering::Equal);
+        let invalid_for_curve = match &self.curve {
+            EdgeCurve::Line => true,
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                (end - start).abs() > std::f64::consts::TAU + 1e-12
+            }
+            EdgeCurve::NurbsCurve(curve) => {
+                let (domain_start, domain_end) = curve.domain();
+                start < domain_start || start > domain_end || end < domain_start || end > domain_end
+            }
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
+        };
+        if invalid_common || invalid_for_curve {
+            return Err(EdgeDomainError::Invalid {
+                curve_type: self.curve.type_tag(),
+                start,
+                end,
+            });
+        }
+        Ok((start, end))
     }
 
     /// Returns the edge-specific tolerance, or `None` if the edge inherits
@@ -706,5 +832,82 @@ mod trim_tests {
         assert_eq!(edge.trim(), None);
         edge.set_trim(Some((0.0, f64::INFINITY)));
         assert_eq!(edge.trim(), None);
+    }
+
+    #[test]
+    fn strict_domain_requires_non_line_authority() {
+        use remus_math::curves::Circle3D;
+        use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
+
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        let line = Edge::new(v0, v1, EdgeCurve::Line);
+        assert_eq!(line.strict_domain().unwrap(), (0.0, 1.0));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut curved = Edge::new(v0, v1, EdgeCurve::Circle(circle));
+        let missing = curved.strict_domain().unwrap_err();
+        assert_eq!(
+            missing.diagnostic().category(),
+            FailureCategory::InvalidTopology
+        );
+        assert_eq!(missing.diagnostic().code(), "edge_domain_missing");
+
+        curved.set_trim(Some((2.0, -1.0)));
+        assert_eq!(curved.strict_domain().unwrap(), (2.0, -1.0));
+
+        curved.set_trim(Some((0.5, 0.5)));
+        let invalid = curved.strict_domain().unwrap_err();
+        assert_eq!(
+            invalid.diagnostic().category(),
+            FailureCategory::InvalidTopology
+        );
+        assert_eq!(invalid.diagnostic().code(), "edge_domain_invalid");
+
+        curved.set_trim(Some((0.0, std::f64::consts::TAU + 1e-6)));
+        assert!(matches!(
+            curved.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+
+        let nurbs = fitted_open_nurbs();
+        let (d0, d1) = nurbs.domain();
+        let mut nurbs_edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs));
+        nurbs_edge.set_trim(Some((d1, d0)));
+        assert_eq!(nurbs_edge.strict_domain().unwrap(), (d1, d0));
+        nurbs_edge.set_trim(Some((d0 - 1.0, d1)));
+        assert!(matches!(
+            nurbs_edge.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn strict_domain_accepts_only_canonical_line_trim_and_rejects_non_finite_storage() {
+        use remus_math::curves::Circle3D;
+
+        let (v0, v1) = vertices(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0));
+        let mut line = Edge::new(v0, v1, EdgeCurve::Line);
+        line.set_trim(Some((0.2, 0.8)));
+        assert!(matches!(
+            line.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
+        assert_eq!(
+            line.domain_with_endpoints(Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)),
+            (0.2, 0.8),
+            "compatibility access must continue honoring an explicit Line trim"
+        );
+        line.set_trim(Some((0.0, 1.0)));
+        assert_eq!(line.strict_domain().unwrap(), (0.0, 1.0));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut curved = Edge::new(v0, v1, EdgeCurve::Circle(circle));
+        curved.trim = Some((f64::NAN, 1.0));
+        assert!(matches!(
+            curved.strict_domain(),
+            Err(EdgeDomainError::Invalid { .. })
+        ));
     }
 }
