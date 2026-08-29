@@ -2363,17 +2363,116 @@ fn algebraic_parallel_cone_cylinder(
     Ok(Some(curves))
 }
 
-/// Algebraic sphere-sphere intersection.
+/// Exact sphere-sphere intersection: the shared circle in the radical plane.
 ///
-/// Two spheres intersect in a circle lying in the radical plane.
-/// The radical plane is perpendicular to the line connecting the centers,
-/// at a distance d1 from center1 where:
-///   d1 = (D² + R1² - R2²) / (2D)
-/// and D is the distance between centers.
+/// Two spheres meet in a circle lying in the radical plane, perpendicular to
+/// the center line at distance `d1 = (D² + R1² − R2²)/(2D)` from center 1 and
+/// of radius `rc = sqrt(R1² − d1²)`. Returns:
+///
+/// - `Some(vec![circle])` for a proper overlap (`|R1−R2| < D < R1+R2`)
+/// - `Some(vec![])` when the surfaces provably do not meet: separated, or one
+///   strictly inside the other, or concentric with different radii
+/// - `None` to defer to the general path — concentric equal-radius spheres
+///   (full overlap; no section curve exists, the same-domain machinery owns
+///   the pair) and tangent contact (the section degenerates to a point, not a
+///   circle, and the historical point-emission path handles it)
+///
+/// Mirrors [`exact_sphere_cylinder`] so phase FF can emit the section as an
+/// exact `Circle3D`, which the closed-circle split + seam adoption recognise,
+/// instead of the 33-sample interpolated NURBS the marcher produces.
+///
+/// # Errors
+///
+/// Returns [`MathError`] if the shared `Circle3D` cannot be constructed (a
+/// non-finite center or radius from a malformed sphere).
+pub fn exact_sphere_sphere(
+    s1: &SphericalSurface,
+    s2: &SphericalSurface,
+) -> Result<Option<Vec<ExactIntersectionCurve>>, MathError> {
+    let c1 = s1.center();
+    let c2 = s2.center();
+    let r1 = s1.radius();
+    let r2 = s2.radius();
+
+    let delta = c2 - c1;
+    let d_sq = delta.x() * delta.x() + delta.y() * delta.y() + delta.z() * delta.z();
+    let d = d_sq.sqrt();
+
+    if d < 1e-12 {
+        // Concentric spheres: identical (full overlap, no section — defer to
+        // the same-domain handling) or strictly nested (no intersection).
+        return Ok(if (r1 - r2).abs() < 1e-12 {
+            None
+        } else {
+            Some(vec![])
+        });
+    }
+
+    // Separated or one sphere strictly inside the other: exactly no meeting.
+    if d > r1 + r2 + 1e-10 {
+        return Ok(Some(vec![]));
+    }
+    if d + r2.min(r1) + 1e-10 < r1.max(r2) {
+        return Ok(Some(vec![]));
+    }
+
+    // Distance from c1 to the radical plane along the center line, and the
+    // section-circle radius about it.
+    let d1 = (d_sq + r1 * r1 - r2 * r2) / (2.0 * d);
+    let r_circle_sq = r1.mul_add(r1, -(d1 * d1));
+    if r_circle_sq <= 0.0 {
+        // Tangent contact (the section degenerates to a point) or numerical
+        // noise near it — the historical point-emission path owns these.
+        return Ok(None);
+    }
+    let r_circle = r_circle_sq.sqrt();
+    let axis = Vec3::new(delta.x() / d, delta.y() / d, delta.z() / d);
+    let center = Point3::new(
+        c1.x() + axis.x() * d1,
+        c1.y() + axis.y() * d1,
+        c1.z() + axis.z() * d1,
+    );
+    let circle = Circle3D::new(center, axis, r_circle)?;
+    Ok(Some(vec![ExactIntersectionCurve::Circle(circle)]))
+}
+
+/// Algebraic sphere-sphere intersection (NURBS form for the general bounded
+/// path). Delegates to [`exact_sphere_sphere`] and samples each exact circle
+/// into an interpolated NURBS `IntersectionCurve`; the deferred degenerate
+/// configurations (concentric equal-radius overlap, tangent contact) keep the
+/// historical handling below.
 fn algebraic_sphere_sphere(
     s1: &SphericalSurface,
     s2: &SphericalSurface,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
+    if let Some(exacts) = exact_sphere_sphere(s1, s2)? {
+        let mut curves = Vec::new();
+        for exact in exacts {
+            let ExactIntersectionCurve::Circle(circle) = exact else {
+                continue;
+            };
+            let n_samples = 33;
+            let mut points = Vec::with_capacity(n_samples);
+            let mut positions = Vec::with_capacity(n_samples);
+            #[allow(clippy::cast_precision_loss)]
+            for i in 0..n_samples {
+                let theta = TAU * i as f64 / (n_samples - 1) as f64;
+                let pt = crate::traits::ParametricCurve::evaluate(&circle, theta);
+                positions.push(pt);
+                points.push(IntersectionPoint {
+                    point: pt,
+                    param1: (0.0, 0.0),
+                    param2: (0.0, 0.0),
+                });
+            }
+            let degree = 3.min(positions.len() - 1);
+            let curve = interpolate(&positions, degree)?;
+            curves.push(IntersectionCurve { curve, points });
+        }
+        return Ok(curves);
+    }
+
+    // Deferred degenerate configurations — historical handling.
     let c1 = s1.center();
     let c2 = s2.center();
     let r1 = s1.radius();
@@ -2388,81 +2487,28 @@ fn algebraic_sphere_sphere(
         return Ok(vec![]);
     }
 
-    // Check separation conditions.
-    if d > r1 + r2 + 1e-10 {
-        return Ok(vec![]); // Too far apart
-    }
-    if d + r2.min(r1) + 1e-10 < r1.max(r2) {
-        return Ok(vec![]); // One inside the other
-    }
-
-    // Distance from c1 to the radical plane along the center line.
+    // Tangent contact: single point.
     let d1 = (d_sq + r1 * r1 - r2 * r2) / (2.0 * d);
-
-    // Radius of the intersection circle.
-    let r_circle_sq = r1 * r1 - d1 * d1;
-    if r_circle_sq < 0.0 {
-        // Tangent or no intersection (numerical noise).
-        if r_circle_sq > -1e-10 {
-            // Tangent: single point.
-            let axis = Vec3::new(delta.x() / d, delta.y() / d, delta.z() / d);
-            let tangent_pt = Point3::new(
-                c1.x() + axis.x() * d1,
-                c1.y() + axis.y() * d1,
-                c1.z() + axis.z() * d1,
-            );
-            let ipt = IntersectionPoint {
-                point: tangent_pt,
-                param1: (0.0, 0.0),
-                param2: (0.0, 0.0),
-            };
-            // Single-point "curve" — not very useful but correct.
-            return Ok(vec![IntersectionCurve {
-                curve: interpolate(&[tangent_pt, tangent_pt], 1)?,
-                points: vec![ipt],
-            }]);
-        }
-        return Ok(vec![]);
-    }
-
-    let r_circle = r_circle_sq.sqrt();
-    let axis = Vec3::new(delta.x() / d, delta.y() / d, delta.z() / d);
-    let center = Point3::new(
-        c1.x() + axis.x() * d1,
-        c1.y() + axis.y() * d1,
-        c1.z() + axis.z() * d1,
-    );
-
-    // Build a reference frame for the circle.
-    let basis = Frame3::from_normal(center, axis)?;
-    let u_dir = basis.x;
-    let v_dir = basis.y;
-
-    // Sample the circle for the IntersectionCurve representation.
-    let n_samples = 33; // Odd for symmetry
-    let mut points = Vec::with_capacity(n_samples);
-    let mut positions = Vec::with_capacity(n_samples);
-    #[allow(clippy::cast_precision_loss)]
-    for i in 0..n_samples {
-        let theta = TAU * i as f64 / (n_samples - 1) as f64;
-        let (sin_t, cos_t) = theta.sin_cos();
-        let pt = Point3::new(
-            center.x() + (u_dir.x() * cos_t + v_dir.x() * sin_t) * r_circle,
-            center.y() + (u_dir.y() * cos_t + v_dir.y() * sin_t) * r_circle,
-            center.z() + (u_dir.z() * cos_t + v_dir.z() * sin_t) * r_circle,
+    let r_circle_sq = r1.mul_add(r1, -(d1 * d1));
+    if r_circle_sq > -1e-10 {
+        let axis = Vec3::new(delta.x() / d, delta.y() / d, delta.z() / d);
+        let tangent_pt = Point3::new(
+            c1.x() + axis.x() * d1,
+            c1.y() + axis.y() * d1,
+            c1.z() + axis.z() * d1,
         );
-        positions.push(pt);
-        points.push(IntersectionPoint {
-            point: pt,
+        let ipt = IntersectionPoint {
+            point: tangent_pt,
             param1: (0.0, 0.0),
             param2: (0.0, 0.0),
-        });
+        };
+        // Single-point "curve" — not very useful but correct.
+        return Ok(vec![IntersectionCurve {
+            curve: interpolate(&[tangent_pt, tangent_pt], 1)?,
+            points: vec![ipt],
+        }]);
     }
-
-    let degree = 3.min(positions.len() - 1);
-    let curve = interpolate(&positions, degree)?;
-
-    Ok(vec![IntersectionCurve { curve, points }])
+    Ok(vec![])
 }
 
 /// Newton correction: project a point back onto the intersection curve
@@ -3231,6 +3277,156 @@ mod tests {
             exact_sphere_cylinder(&sphere, &cyl).unwrap().is_none(),
             "non-coaxial sphere/cylinder defers to the marcher"
         );
+    }
+
+    /// Assert every sampled point of the returned circle lies on both spheres
+    /// (surface equations, closed form) and matches the expected center/radius.
+    fn assert_circle_on_both_spheres(
+        exacts: &[ExactIntersectionCurve],
+        s1: &SphericalSurface,
+        s2: &SphericalSurface,
+        want_center: Point3,
+        want_radius: f64,
+        want_axis: Vec3,
+    ) {
+        assert_eq!(exacts.len(), 1, "proper overlap yields exactly one circle");
+        let ExactIntersectionCurve::Circle(circle) = &exacts[0] else {
+            assert!(
+                exacts
+                    .iter()
+                    .any(|c| matches!(c, ExactIntersectionCurve::Circle(_))),
+                "expected an exact circle"
+            );
+            return;
+        };
+        assert!(
+            (circle.center() - want_center).length() < 1e-9,
+            "center {:?} != {want_center:?}",
+            circle.center()
+        );
+        assert!((circle.radius() - want_radius).abs() < 1e-9);
+        assert!(
+            circle.normal().dot(want_axis) > 1.0 - 1e-9,
+            "axis {:?} != {want_axis:?}",
+            circle.normal()
+        );
+        for i in 0..=32 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = TAU * f64::from(i) / 32.0;
+            let p = crate::traits::ParametricCurve::evaluate(circle, t);
+            let d1 = (p - s1.center()).length() - s1.radius();
+            let d2 = (p - s2.center()).length() - s2.radius();
+            assert!(d1.abs() < 1e-9, "point off sphere 1 by {d1:.2e}");
+            assert!(d2.abs() < 1e-9, "point off sphere 2 by {d2:.2e}");
+        }
+    }
+
+    #[test]
+    fn exact_sphere_sphere_proper_overlap_closed_form() {
+        // Two unit spheres at distance 1: radical plane x = 0.5, circle of
+        // radius sqrt(1 − 0.25) = sqrt(3)/2 about (0.5, 0, 0), axis +x.
+        let s1 = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let s2 = SphericalSurface::new(Point3::new(1.0, 0.0, 0.0), 1.0).unwrap();
+        let exacts = exact_sphere_sphere(&s1, &s2)
+            .unwrap()
+            .expect("proper overlap returns Some");
+        assert_circle_on_both_spheres(
+            &exacts,
+            &s1,
+            &s2,
+            Point3::new(0.5, 0.0, 0.0),
+            3.0_f64.sqrt() / 2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+    }
+
+    #[test]
+    fn exact_sphere_sphere_general_position_closed_form() {
+        // Tilted center line: sphere r=2 at origin, sphere r=1 at (0, 1.2, 1.6),
+        // so D = 2 along the unit axis (0, 0.6, 0.8). d1 = (4 + 4 − 1)/4 = 1.75
+        // from center 1; circle radius sqrt(4 − 1.75²) = sqrt(0.9375); center
+        // (0, 1.05, 1.4).
+        let s1 = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 2.0).unwrap();
+        let s2 = SphericalSurface::new(Point3::new(0.0, 1.2, 1.6), 1.0).unwrap();
+        let exacts = exact_sphere_sphere(&s1, &s2)
+            .unwrap()
+            .expect("proper overlap returns Some");
+        assert_circle_on_both_spheres(
+            &exacts,
+            &s1,
+            &s2,
+            Point3::new(0.0, 1.05, 1.4),
+            0.9375_f64.sqrt(),
+            Vec3::new(0.0, 0.6, 0.8),
+        );
+    }
+
+    #[test]
+    fn exact_sphere_sphere_separated_and_contained_are_empty() {
+        let s1 = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 2.0).unwrap();
+        // Separated: D = 5 > 2 + 1.
+        let far = SphericalSurface::new(Point3::new(5.0, 0.0, 0.0), 1.0).unwrap();
+        assert!(
+            exact_sphere_sphere(&s1, &far)
+                .unwrap()
+                .is_some_and(|c| c.is_empty()),
+            "separated spheres meet nowhere"
+        );
+        // Contained: D + 0.5 < 2.
+        let inner = SphericalSurface::new(Point3::new(0.5, 0.0, 0.0), 0.5).unwrap();
+        assert!(
+            exact_sphere_sphere(&s1, &inner)
+                .unwrap()
+                .is_some_and(|c| c.is_empty()),
+            "contained sphere meets the outer one nowhere"
+        );
+        // Concentric, different radii: no meeting.
+        let shell = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        assert!(
+            exact_sphere_sphere(&s1, &shell)
+                .unwrap()
+                .is_some_and(|c| c.is_empty()),
+            "concentric different radii meet nowhere"
+        );
+    }
+
+    #[test]
+    fn exact_sphere_sphere_identical_and_tangent_defer() {
+        // Identical (concentric equal radius): full overlap, no section curve.
+        let s1 = SphericalSurface::new(Point3::new(1.0, 2.0, 3.0), 2.0).unwrap();
+        let s2 = SphericalSurface::new(Point3::new(1.0, 2.0, 3.0), 2.0).unwrap();
+        assert!(
+            exact_sphere_sphere(&s1, &s2).unwrap().is_none(),
+            "identical spheres defer to the same-domain path"
+        );
+        // External tangent: section degenerates to a point.
+        let a = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let b = SphericalSurface::new(Point3::new(2.0, 0.0, 0.0), 1.0).unwrap();
+        assert!(
+            exact_sphere_sphere(&a, &b).unwrap().is_none(),
+            "external tangency defers to the historical point path"
+        );
+        // Internal tangent: section degenerates to a point.
+        let big = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0).unwrap();
+        let small = SphericalSurface::new(Point3::new(2.0, 0.0, 0.0), 1.0).unwrap();
+        assert!(
+            exact_sphere_sphere(&big, &small).unwrap().is_none(),
+            "internal tangency defers to the historical point path"
+        );
+    }
+
+    #[test]
+    fn algebraic_sphere_sphere_still_yields_nurbs_for_overlap() {
+        // The NURBS-sampling wrapper keeps working for the general path: a
+        // proper overlap returns one interpolated curve through points on
+        // both spheres.
+        let s1 = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0).unwrap();
+        let s2 = SphericalSurface::new(Point3::new(1.0, 0.0, 0.0), 1.0).unwrap();
+        let curves = algebraic_sphere_sphere(&s1, &s2).unwrap();
+        assert_eq!(curves.len(), 1);
+        let mid = crate::traits::ParametricCurve::evaluate(&curves[0].curve, 0.5);
+        assert!(((mid - s1.center()).length() - 1.0).abs() < 1e-6);
+        assert!(((mid - s2.center()).length() - 1.0).abs() < 1e-6);
     }
 
     #[test]
