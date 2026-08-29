@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788041848126,
+  "lastUpdate": 1788047934950,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3941,6 +3941,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41936222,
             "range": "± 213976",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6ba6946d3011e6075b598b251b71c43874fe2fc6",
+          "message": "docs(kernel-maturity): open kernel program and unified forward roadmap (#133)\n\n* docs(kernel-maturity): open kernel program — strategy beyond P-Class\n\nCompanion program to the P-Class plan covering the axes that make the\nkernel the best open-source one of its kind rather than only correct:\npublic robustness proof (ABC-scale corpus gauntlet, head-to-head benches,\nfillet torture suite, CAx-IF conformance), exactness hardening beyond M2\n(native revolution/extrusion surfaces, conic booleans, the general\nUV-arrangement splitter), native performance baselines, a Rust/JS/Python\nfront door and publishing gates, STEP assemblies/colors/AP242/PMI depth,\necosystem levers, and the deferred mesh+B-Rep hybrid horizon. Sequenced\naround the P-Class file footprint for parallel sessions.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016SQhj3H8VK9kNkN6QMgr5A\n\n* docs(kernel-maturity): open kernel implementation plan and status ledger\n\nDecompose the Open Kernel Program into 46 staged issues with files,\nsizes, dependencies, and typed exit gates (open-kernel-implementation.md),\nplus the per-issue status ledger (open-kernel-status.md). Adds the\nrepository conventions the program introduces (tools/ workspace members,\nfacade layer row, out-of-workspace Python bindings, manifest-only corpora,\nregenerable scoreboards), the wave schedule for parallel sessions, and the\ncross-program conflict table against P-Class file ownership.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016SQhj3H8VK9kNkN6QMgr5A\n\n* docs(kernel-maturity): unified forward roadmap and bridge backlog\n\nAdd docs/kernel-maturity/roadmap.md: the single queue merging the\nP-Class program, the Open Kernel program, and a 14-row bridge backlog of\nready items neither program owns — healing-disclosure typing (the last\nUnsupported-untyped cell), closed-rim chamfers, v2 trimmer completion,\noffset provenance, batched evidence matrices, pave-block attachment for\nmarched FF curves, torus tangent cut, and the small-hygiene set — plus\nhorizons H0-H4 with a v1.0 definition and a session playbook. Point the\nroadmap skill's work-selection doctrine at the new queue while keeping\nits filters, TERMINAL list, and acceptance bar authoritative.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016SQhj3H8VK9kNkN6QMgr5A\n\n* docs(kernel-maturity): use incumbent-kernel indirection in program docs\n\nReplace direct reference-kernel names in the Open Kernel program docs\nwith the repo's standard indirection, per the banned-name compliance\nrule in the pr-workflow skill.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_016SQhj3H8VK9kNkN6QMgr5A\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-08-29T19:56:07-04:00",
+          "tree_id": "7350479f72786ecb0f5ecc622d1e1d4ee004719c",
+          "url": "https://github.com/esaueng/remus/commit/6ba6946d3011e6075b598b251b71c43874fe2fc6"
+        },
+        "date": 1788047933997,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1382054,
+            "range": "± 3147",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1479927,
+            "range": "± 1305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15692,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1020204,
+            "range": "± 1610",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41548333,
+            "range": "± 54373",
             "unit": "ns/iter"
           }
         ]
