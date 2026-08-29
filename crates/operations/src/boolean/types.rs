@@ -206,20 +206,21 @@ impl FaceSpec {
 /// Options for boolean operations.
 #[derive(Debug, Clone, Copy)]
 pub struct BooleanOptions {
-    /// Tessellation deflection for non-planar faces.
+    /// Tessellation deflection for the mesh fallback, in model units.
     ///
     /// Lower values produce more triangles (more accurate but slower).
     /// Default: 0.1.
     pub deflection: f64,
     /// Tolerance for geometric comparisons.
     ///
-    /// Controls vertex merging, point classification, and predicate
-    /// thresholds throughout the boolean pipeline. Default: `Tolerance::new()`.
+    /// Controls fast-path decisions, GFA predicates, mesh welding,
+    /// validation thresholds, and requested post-processing. Default:
+    /// `Tolerance::new()`.
     pub tolerance: Tolerance,
     /// Merge co-surface face fragments after assembly.
     ///
-    /// When `true`, the pipeline calls `unify_faces` to merge adjacent faces
-    /// that share the same underlying surface (same-domain
+    /// When `true`, the result is post-processed to merge adjacent faces that
+    /// share the same underlying surface (same-domain
     /// analysis). This dramatically reduces face count -- e.g. sequential
     /// booleans on curved surfaces drop from 2871 to ~106 faces.
     ///
@@ -227,9 +228,16 @@ pub struct BooleanOptions {
     /// `polygon_clip_intervals` fallback in the analytic chord splitter,
     /// so this is safe for intermediate results fed into further booleans.
     ///
+    /// Internal validity repairs may still merge faces even when this is
+    /// `false`; this flag controls the optional result simplification pass.
+    /// If same-domain merging would make an otherwise valid boolean result
+    /// invalid, that simplification is rolled back and the valid unsimplified
+    /// result is returned.
     /// Default: `true`.
     pub unify_faces: bool,
-    /// Run full shape healing on the boolean result via [`crate::heal::heal_solid`].
+    /// Run full shape healing on every successful boolean result via
+    /// [`crate::heal::heal_solid`]. A healing or post-heal validation failure
+    /// fails and rolls back the whole operation.
     ///
     /// Use for final results only -- healing can corrupt intermediates fed into
     /// further booleans (non-convex merged faces confuse chord splitting).
@@ -246,6 +254,22 @@ impl Default for BooleanOptions {
             unify_faces: true,
             heal_after_boolean: false,
         }
+    }
+}
+
+impl BooleanOptions {
+    /// Convert these legacy options into the authoritative operation context.
+    ///
+    /// The option tolerance becomes the context tolerance and `deflection`
+    /// becomes the allowed-approximation budget. Work budgets retain their
+    /// context defaults because `BooleanOptions` has never exposed them.
+    #[must_use]
+    pub fn operation_context(self) -> remus_math::context::OperationContext {
+        remus_math::context::OperationContext::new()
+            .with_tolerance(self.tolerance)
+            .with_fallback(remus_math::context::FallbackPolicy::AllowApproximate {
+                budget: self.deflection,
+            })
     }
 }
 

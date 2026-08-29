@@ -6860,12 +6860,15 @@ fn fuse_multi_component_tool_folds_each_piece() {
     let components = super::assembly::face_components(&topo, tool);
     assert_eq!(components.len(), 2, "tool must split into two pieces");
 
+    let context = remus_math::context::OperationContext::new();
+    let opts = BooleanOptions::default();
     let mut used_fallback = false;
     let result = super::fuse_multi_component_tool(
         &mut topo,
         base,
         components,
-        super::default_fallback_policy(),
+        &context,
+        &opts,
         &mut used_fallback,
     )
     .unwrap();
@@ -8241,4 +8244,75 @@ mod fallback_policy_refusal {
             "the permissive policy must not produce the exact-only refusal"
         );
     }
+}
+
+#[test]
+fn recursive_multi_component_fuse_keeps_the_caller_context() {
+    use remus_math::context::{FallbackPolicy, OperationContext};
+
+    fn run(tolerance: Tolerance) -> usize {
+        let gap = 5e-5;
+        let mut topo = Topology::new();
+        let target = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+        let near = make_unit_cube_manifold_at(&mut topo, 1.0 + gap, 0.0, 0.0);
+        let far = make_unit_cube_manifold_at(&mut topo, 5.0, 0.0, 0.0);
+        let tool = crate::compound_ops::merge_disjoint_solids(&mut topo, &[near, far]).unwrap();
+        let components = crate::boolean::assembly::face_components(&topo, tool);
+        assert_eq!(
+            components.len(),
+            2,
+            "fixture must enter recursive tool handling"
+        );
+
+        let context = OperationContext::new()
+            .with_tolerance(tolerance)
+            .with_fallback(FallbackPolicy::ExactOnly);
+        let opts = super::boolean_options_from_context(&context);
+        let mut used_fallback = false;
+        let result = super::fuse_multi_component_tool(
+            &mut topo,
+            target,
+            components,
+            &context,
+            &opts,
+            &mut used_fallback,
+        )
+        .unwrap();
+        assert!(!used_fallback);
+        remus_topology::explorer::solid_faces(&topo, result)
+            .unwrap()
+            .len()
+    }
+
+    let default_faces = run(Tolerance::new());
+    let loose_faces = run(Tolerance::loose());
+    assert_eq!(
+        default_faces, 18,
+        "default tolerance keeps three components"
+    );
+    assert_eq!(loose_faces, 12, "loose tolerance joins the near component");
+}
+
+#[test]
+fn compound_cluster_fuse_keeps_the_caller_context() {
+    use remus_math::context::{FallbackPolicy, OperationContext};
+
+    fn run(tolerance: Tolerance) -> usize {
+        let gap = 5e-5;
+        let mut topo = Topology::new();
+        let a = make_unit_cube_manifold_at(&mut topo, 0.0, 0.0, 0.0);
+        let b = make_unit_cube_manifold_at(&mut topo, 1.0 + gap, 0.0, 0.0);
+        let context = OperationContext::new()
+            .with_tolerance(tolerance)
+            .with_fallback(FallbackPolicy::ExactOnly);
+        let opts = super::boolean_options_from_context(&context);
+        let result = super::fuse_cluster_with_context(&mut topo, &[a, b], &context, &opts)
+            .expect("compound cluster should fuse under either tolerance");
+        remus_topology::explorer::solid_faces(&topo, result)
+            .unwrap()
+            .len()
+    }
+
+    assert_eq!(run(Tolerance::new()), 12);
+    assert_eq!(run(Tolerance::loose()), 6);
 }
