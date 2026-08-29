@@ -685,11 +685,12 @@ impl Builder {
                     };
                     sf.classification = match coincident {
                         Some(class) => class,
-                        None => classifier::classify_point_cached(
+                        None => classifier::classify_point_cached_with_tolerance(
                             &self.topo,
                             opposing_solid,
                             opposing_geoms,
                             point,
+                            self.tol,
                         )?,
                     };
                     log::trace!(
@@ -869,7 +870,13 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
             if j == own || !others(j) {
                 continue;
             }
-            match classifier::classify_point_cached(topo, other, geoms[j].as_ref(), sample)? {
+            match classifier::classify_point_cached_with_tolerance(
+                topo,
+                other,
+                geoms[j].as_ref(),
+                sample,
+                tol,
+            )? {
                 FaceClass::Inside => return Ok(false),
                 FaceClass::On | FaceClass::CoplanarSame | FaceClass::CoplanarOpposite => {
                     return Err(AlgoError::AssemblyFailed(

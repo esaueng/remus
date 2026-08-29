@@ -1,8 +1,8 @@
 # RFC 0001: OperationContext
 
-Status: accepted; first integration landed (surface-surface intersection
-budgets, GFA boolean tolerance). This RFC governs how the context grows and
-how further paths migrate onto it.
+Status: accepted; surface-surface intersection budgets and the public boolean
+pipeline are integrated. This RFC governs how the context grows and how
+further paths migrate onto it.
 
 ## Problem
 
@@ -67,16 +67,29 @@ only policy values move into the context; mathematical constants stay put:
   (their values live only in `WorkBudgets::new()`). Differential and
   tiny-budget regression tests.
 - `algo::gfa::boolean_with_context`: context entry point for the GFA
-  pipeline; consumes `context.tolerance` (same code path as
-  `boolean_with_tolerance`). `boolean` now routes through it.
+  pipeline. The caller's tolerance reaches pave filling, face splitting,
+  classification, assembly, and validation; NURBS face-face intersection
+  also consumes the context's marching/exploration budgets. `boolean` now
+  routes through it.
+- `operations::boolean_with_context`: carries the same context through
+  analytic shortcuts, GFA, mesh fallback, and recursive/multi-component
+  handling. Public boolean entry points are transactional, including failed
+  post-processing.
+- `operations::BooleanOptions`: every field is consumed. `tolerance` and
+  `deflection` map into an `OperationContext`; `unify_faces` and
+  `heal_after_boolean` control explicit post-processing. Unification runs in
+  a nested transaction and is discarded if it would invalidate an otherwise
+  valid boolean result; healing failures propagate and roll back the whole
+  operation.
 
 ## Migration queue (dependency order)
 
 1. `MAX_NEWTON_ITER` (`refine_ssi_point` and the line/plane/curve-surface
    Newton loops) — one `max_newton_iterations` budget field, threaded
    through the ~7 call sites in one change.
-2. Pave-filler and face-splitter budgets in `algo`, so
-   `boolean_with_context` budgets reach the intersection phases.
+2. ~~Pave-filler propagation~~ — **landed**: NURBS face-face intersection
+   receives the context's existing work budgets. Other iterative limits gain
+   context fields only alongside a real consumer, per ground rule 3.
 3. Parameter-space tolerance policy (replacing seeding's local `1e-6`),
    coordinated with the intersection result model (Issue 10).
 4. Cancellation state and diagnostics sink — added when the first consumer

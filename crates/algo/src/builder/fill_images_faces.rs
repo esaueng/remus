@@ -249,7 +249,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     // above are, so it is opened into arcs instead. Computed once for the
     // whole result and applied to every face, so both sides of a shared curve
     // carry identical arcs and merge_duplicate_edges can pair their edges.
-    let winding_loop_cuts = compute_winding_loop_cuts(topo, arena);
+    let winding_loop_cuts = compute_winding_loop_cuts(topo, arena, tol);
     for &cut in &winding_loop_cuts {
         pb_vertex_registry
             .entry(qpos(cut))
@@ -1368,7 +1368,7 @@ const WINDING_LOOP_MIN_TURN: f64 = 1.5 * std::f64::consts::PI;
 /// Restricted to NURBS curves for the same reason: a closed CIRCLE on a
 /// lateral also winds `u` — that is the ordinary constant-`v` band cut — and
 /// it already has the re-anchoring path.
-fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena) -> Vec<Point3> {
+fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) -> Vec<Point3> {
     use remus_math::traits::ParametricCurve;
     use std::f64::consts::{PI, TAU};
 
@@ -1471,7 +1471,7 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena) -> Vec<Point3> {
                 .partial_cmp(&mean_v(&b.1))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let gap = remus_math::tolerance::Tolerance::new().linear * 100.0;
+        let gap = tol.linear * 100.0;
         if loops
             .windows(2)
             .any(|w| !loops_strictly_ordered(&w[0].1, &w[1].1, gap))
@@ -3771,7 +3771,8 @@ fn build_topology_face(
         // different per-call vertex caches, so shared edges would have wrong
         // VertexId connections at wire junctions.
         // merge_duplicate_edges in BuilderSolid handles cross-face sharing.
-        let (edge_id, forward) = instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge);
+        let (edge_id, forward) =
+            instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear);
         if let Some(pb) = pcurve_edge.pave_block_id {
             lineage.to_pave_block.insert(edge_id.index(), pb);
         }
@@ -3807,7 +3808,8 @@ fn build_topology_face(
                 &quantize,
                 tol,
             );
-            let (edge_id, forward) = instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge);
+            let (edge_id, forward) =
+                instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear);
             if let Some(pb) = pcurve_edge.pave_block_id {
                 lineage.to_pave_block.insert(edge_id.index(), pb);
             }
@@ -3912,6 +3914,7 @@ fn instantiate_wire_edge(
     start_vid: remus_topology::vertex::VertexId,
     end_vid: remus_topology::vertex::VertexId,
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
+    tolerance: f64,
 ) -> (remus_topology::edge::EdgeId, bool) {
     let is_arc = matches!(
         pcurve_edge.curve_3d,
@@ -3919,18 +3922,23 @@ fn instantiate_wire_edge(
     );
     if is_arc && start_vid != end_vid && !pcurve_edge.forward {
         let mut edge = Edge::new(end_vid, start_vid, pcurve_edge.curve_3d.clone());
-        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim));
+        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim, tolerance));
         let edge_id = topo.add_edge(edge);
         (edge_id, false)
     } else {
         let mut edge = Edge::new(start_vid, end_vid, pcurve_edge.curve_3d.clone());
-        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim));
+        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim, tolerance));
         let edge_id = topo.add_edge(edge);
         (edge_id, start_vid != end_vid || pcurve_edge.forward)
     }
 }
 
-fn validated_trim(topo: &Topology, edge: &Edge, trim: Option<(f64, f64)>) -> Option<(f64, f64)> {
+fn validated_trim(
+    topo: &Topology,
+    edge: &Edge,
+    trim: Option<(f64, f64)>,
+    tolerance: f64,
+) -> Option<(f64, f64)> {
     let trim = trim?;
     let (start_vertex, end_vertex) = (
         topo.vertex(edge.start()).ok()?,
@@ -3940,7 +3948,7 @@ fn validated_trim(topo: &Topology, edge: &Edge, trim: Option<(f64, f64)>) -> Opt
     let guard = start_vertex
         .tolerance()
         .max(end_vertex.tolerance())
-        .max(remus_math::tolerance::Tolerance::new().linear)
+        .max(tolerance)
         * 100.0;
     let curve_start = edge.curve().evaluate_with_endpoints(trim.0, start, end);
     let curve_end = edge.curve().evaluate_with_endpoints(trim.1, start, end);
@@ -4246,8 +4254,15 @@ mod tests {
         let end_id = topo.add_vertex(Vertex::new(end, 1e-7));
         let edge = Edge::new(start_id, end_id, EdgeCurve::NurbsCurve(nurbs));
 
-        assert_eq!(validated_trim(&topo, &edge, Some(valid)), Some(valid));
-        assert_eq!(validated_trim(&topo, &edge, Some((0.0, 0.1))), None);
+        let tolerance = Tolerance::default().linear;
+        assert_eq!(
+            validated_trim(&topo, &edge, Some(valid), tolerance),
+            Some(valid)
+        );
+        assert_eq!(
+            validated_trim(&topo, &edge, Some((0.0, 0.1)), tolerance),
+            None
+        );
     }
 
     #[test]
