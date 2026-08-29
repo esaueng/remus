@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787961789735,
+  "lastUpdate": 1787965577772,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3455,6 +3455,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 32295783,
             "range": "± 140430",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9bd8f5c2653974572753a6727f0860e1f81d668c",
+          "message": "fix(algo): bring the FF junction band's tolerance term under the extent cap (#118)\n\nPR #110 capped the boundary-junction snap band at 1% of the face pair's\nAABB diagonal, but only the fixed 1e-3 half: the tolerance-scaled\n`tol.linear * 1000.0` term stayed outside the cap. At the default\ntolerance that term is 1e-4 — the whole model at scale 1e-4 and ten\nmodels at 1e-5 — so the exact defect the cap exists for came back one\ndecade down: through-cut section endpoints adopted the tool's own\ncap-rim junctions and the tool's protruding ends survived into the\nresult.\n\nMeasured on the box-minus-box through-cut, raw GFA, volume / s^3\nagainst a correct 0.840000:\n\n    before  s=2e-4  1.020000    s=1e-4  1.200000    s=1e-5  error\n    after   s=2e-4  0.840000    s=1e-4  0.840000    s=1e-5  error\n\nLowering the caller tolerance to 1e-9 already produced the exact result\nat both scales before this change, which isolates the mechanism to this\nterm. The fix applies the same extent cap to the whole band; at default\ntolerance every pair with extent above 0.1 keeps the historical band\nbit-for-bit. 1e-5 still fails closed inside GFA's shape store (the\n100-tol weld bands, a separate mechanism).\n\nPins: small_scale_cut_is_exact_under_exact_only now sweeps 1e-3, 2e-4,\n1e-4 demanding BooleanQuality::Exact; the refusal boundary test moves to\n1e-5; the vertex-containment sweep gains the two new decades. The\nrollback fixture in boolean_context_authority.rs retargets to scale 1e6\n(the pre-existing large-scale cell), the remaining scale where GFA\nassembles a result into the caller topology that acceptance then\nrejects.\n\nVerified: workspace nextest 4082/4082, remus-io corpus 473/473,\napprox_census identical to baseline modulo timing, wasm\nno-default-features tests + wasm-target clippy + gridfinity contract\ntests green, clippy/fmt clean.\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-28T21:03:38-04:00",
+          "tree_id": "a841c2ed4a84f4459351917132ebf08bb4a5cb51",
+          "url": "https://github.com/esaueng/remus/commit/9bd8f5c2653974572753a6727f0860e1f81d668c"
+        },
+        "date": 1787965577131,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1309747,
+            "range": "± 5160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1398276,
+            "range": "± 2684",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14567,
+            "range": "± 32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 978390,
+            "range": "± 1898",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39144604,
+            "range": "± 145904",
             "unit": "ns/iter"
           }
         ]
