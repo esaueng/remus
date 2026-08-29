@@ -289,11 +289,13 @@ fn validate_shell_checks(
                 let wire_data = topo.wire(wid)?;
                 for oe in wire_data.edges() {
                     let eid = oe.edge();
-                    if sp_checked.insert((eid, fid)) {
+                    let forward = oe.is_forward();
+                    if sp_checked.insert((eid, fid, forward)) {
                         issues.extend(edge::check_edge_same_parameter(
                             topo,
                             eid,
                             fid,
+                            forward,
                             options.tolerance_scale * 1e-4,
                         )?);
                     }
@@ -309,8 +311,20 @@ fn validate_shell_checks(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use remus_topology::Topology;
+    use std::f64::consts::TAU;
+
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::face::{Face, FaceId, FaceSurface};
+    use remus_topology::pcurve::PCurve;
+    use remus_topology::shell::{Shell, ShellId};
     use remus_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    use remus_topology::{Topology, TopologyError};
+
+    use remus_math::surfaces::CylindricalSurface;
 
     use super::*;
 
@@ -371,5 +385,107 @@ mod tests {
             euler_issues.is_empty(),
             "cube Euler characteristic should be 2, got issues: {euler_issues:?}"
         );
+    }
+
+    fn seam_pcurve(u: f64, forward: bool) -> PCurve {
+        let (v0, dv) = if forward { (0.0, 1.0) } else { (1.0, -1.0) };
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(u, v0), Vec2::new(0.0, dv)).unwrap()),
+            0.0,
+            1.0,
+        )
+    }
+
+    fn cylinder_seam_shell() -> (Topology, EdgeId, FaceId, ShellId) {
+        let mut topo = Topology::new();
+        let bottom = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let top = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let seam = topo.add_edge(Edge::new(bottom, top, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(
+                CylindricalSurface::with_ref_dir(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    1.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap(),
+            ),
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        (topo, seam, face, shell)
+    }
+
+    #[test]
+    fn shell_validation_checks_both_seam_branches_by_orientation() {
+        let (mut topo, seam, face, shell) = cylinder_seam_shell();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0, true));
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU, false));
+
+        let options = ValidateOptions::default();
+        let report = validate_shell(&topo, shell, &options).unwrap();
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| issue.check != CheckId::EdgeSameParameter),
+            "both exact seam branches must pass: {:?}",
+            report.issues
+        );
+
+        topo.set_pcurve_oriented(seam, face, false, seam_pcurve(TAU + 0.2, false));
+        let report = validate_shell(&topo, shell, &options).unwrap();
+        let seam_issues: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|issue| issue.check == CheckId::EdgeSameParameter)
+            .collect();
+        assert_eq!(
+            seam_issues.len(),
+            2,
+            "SameParameter and SameRange must both fail"
+        );
+        assert!(
+            seam_issues
+                .iter()
+                .all(|issue| issue.description.contains("reversed"))
+        );
+
+        assert!(
+            edge::check_edge_same_parameter(&topo, seam, face, true, 1e-7)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            edge::check_edge_same_parameter(&topo, seam, face, false, 1e-7)
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut disabled = ValidateOptions::default();
+        disabled.disabled_checks.insert(CheckId::EdgeSameParameter);
+        let report = validate_shell(&topo, shell, &disabled).unwrap();
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| issue.check != CheckId::EdgeSameParameter)
+        );
+        assert!(matches!(
+            topo.pcurve(seam, face),
+            Err(TopologyError::SeamPcurveAmbiguous { .. })
+        ));
     }
 }
