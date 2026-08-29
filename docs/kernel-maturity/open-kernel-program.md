@@ -6,6 +6,8 @@ kernel correct and capable; this program makes it provably best, adoptable,
 and durable as an open-source project.
 
 - **Drafted:** 2026-08-29, baseline `main` @ `d154e64`.
+- **Issue-level plan:** [open-kernel-implementation.md](open-kernel-implementation.md)
+  · ledger: [open-kernel-status.md](open-kernel-status.md).
 - **Relationship to P-Class:** strictly complementary. Nothing here changes
   P-Class scope, ordering, or gates. Every pillar below is scheduled around
   P-Class's file footprint so parallel sessions don't collide (see §8).
