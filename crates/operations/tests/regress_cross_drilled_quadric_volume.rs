@@ -106,40 +106,40 @@ fn cross_drilled_shaft_measures_its_closed_form() {
     }
 }
 
-/// The body is built from faces that carry both defects, so a green volume is
-/// not on its own evidence that the integrator handled them.
+/// Pin the shape the exact Steinmetz seam (2026-08) produces, so a silent
+/// representation change is caught. The wall no longer arrives holed — each
+/// wall splits into two seam-free bands bounded by the exact seam ellipse
+/// arcs, and the bore contributes lens patches bounded by the same arcs.
+/// (The pre-exact-seam topology this fixture used to pin — one holed wall +
+/// two single-closed-edge lobes — no longer arises from this construction;
+/// the integrator's inner-wire and closed-edge paths keep their direct unit
+/// coverage in `remus-check`.)
 #[test]
-fn the_shaft_really_has_a_holed_wall_and_closed_edge_bore_lobes() {
+fn the_shaft_splits_into_wall_bands_and_bore_lens_patches() {
     let (topo, solid) = cross_drilled_shaft();
     let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
 
+    let mut cylinder_faces = 0;
     let mut holed_walls = 0;
-    let mut closed_edge_lobes = 0;
+    let mut planes = 0;
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
-        if !matches!(face.surface(), FaceSurface::Cylinder(_)) {
-            continue;
-        }
-        if !face.inner_wires().is_empty() {
-            holed_walls += 1;
-        }
-        let outer = topo.wire(face.outer_wire()).unwrap();
-        let single_closed = outer.edges().len() == 1
-            && topo
-                .edge(outer.edges()[0].edge())
-                .is_ok_and(|e| e.start() == e.end());
-        if single_closed {
-            closed_edge_lobes += 1;
+        match face.surface() {
+            FaceSurface::Cylinder(_) => {
+                cylinder_faces += 1;
+                if !face.inner_wires().is_empty() {
+                    holed_walls += 1;
+                }
+            }
+            FaceSurface::Plane { .. } => planes += 1,
+            other => panic!("unexpected non-analytic face {other:?}"),
         }
     }
-
+    assert_eq!(planes, 2, "the two shaft caps");
+    assert_eq!(holed_walls, 0, "the exact seam leaves no holed wall");
     assert_eq!(
-        holed_walls, 1,
-        "the shaft wall must carry the two bore rims as inner wires"
-    );
-    assert_eq!(
-        closed_edge_lobes, 2,
-        "the bore wall must arrive as two lobes, each bounded by one closed edge"
+        cylinder_faces, 5,
+        "two shaft wall bands plus the bore's three lens patches"
     );
 }
 
