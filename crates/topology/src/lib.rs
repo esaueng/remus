@@ -165,9 +165,10 @@ pub enum TopologyError {
         edge: edge::EdgeId,
         /// The face carrying the pcurve.
         face: face::FaceId,
-        /// Largest sampled deviation, in model units.
+        /// Largest measured deviation or certified upper bound, in model units.
         max_deviation: f64,
-        /// The pcurve parameter where it occurred.
+        /// Associated measured witness parameter. A certified upper bound need
+        /// not be attained at this parameter.
         at_parameter: f64,
         /// The limit that was exceeded.
         tolerance: f64,
