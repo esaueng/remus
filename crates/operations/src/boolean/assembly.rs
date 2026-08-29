@@ -967,7 +967,16 @@ pub(super) fn validate_boolean_result(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<(), crate::OperationsError> {
-    validate_boolean_result_lenient(topo, solid)?;
+    validate_boolean_result_with_tolerance(topo, solid, remus_math::tolerance::Tolerance::new())
+}
+
+/// Strict boolean-result validation under the caller's geometric tolerance.
+pub(super) fn validate_boolean_result_with_tolerance(
+    topo: &Topology,
+    solid: SolidId,
+    tolerance: remus_math::tolerance::Tolerance,
+) -> Result<(), crate::OperationsError> {
+    validate_boolean_result_lenient_with_tolerance(topo, solid, tolerance)?;
 
     // Unclosed wires and non-manifold edges are hard failures here: both
     // defects break downstream tessellation and export, so a GFA result
@@ -1058,11 +1067,10 @@ pub(super) fn validate_boolean_result(
     Ok(())
 }
 
-/// Lenient validation for terminal results with no remaining fallback
-/// (mesh boolean output): rejects only degenerate topology.
-pub(super) fn validate_boolean_result_lenient(
+fn validate_boolean_result_lenient_with_tolerance(
     topo: &Topology,
     solid: SolidId,
+    tolerance: remus_math::tolerance::Tolerance,
 ) -> Result<(), crate::OperationsError> {
     let s = topo.solid(solid)?;
     let shell = topo.shell(s.outer_shell())?;
@@ -1100,6 +1108,7 @@ pub(super) fn validate_boolean_result_lenient(
     // report — defeature, draft, split, chamfer, and `validateSolid` in the
     // app — keep the default order.
     let options = crate::validate::ValidationOptions {
+        tolerance_scale: tolerance.linear / remus_math::tolerance::Tolerance::new().linear,
         orientation: crate::validate::OrientationCheck::Order(1),
         ..crate::validate::ValidationOptions::default()
     };

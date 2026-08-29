@@ -55,11 +55,10 @@ pub fn boolean(
 /// [`OperationContext`].
 ///
 /// This is the context-carrying entry point the pipeline converges on. The
-/// context's tolerance drives every GFA stage today; its work budgets are
-/// not yet threaded into the pave filler and will take effect here as those
-/// stages migrate (see `docs/design/rfc-0001-operation-context.md`). The
-/// default context reproduces [`boolean_with_tolerance`] with the default
-/// tolerance exactly; like that function, this runs the full pipeline even
+/// context's tolerance drives every GFA stage, and its work budgets bound
+/// NURBS surface-surface marching in the pave filler. The default context
+/// reproduces [`boolean_with_tolerance`] with the default tolerance exactly;
+/// like that function, this runs the full pipeline even
 /// for identical operands ([`boolean`] carries the identical-solid fast
 /// path).
 ///
@@ -73,7 +72,9 @@ pub fn boolean_with_context(
     solid_b: SolidId,
     context: &OperationContext,
 ) -> Result<SolidId, AlgoError> {
-    boolean_with_tolerance(topo, op, solid_a, solid_b, context.tolerance)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        boolean_with_context_impl(topo, op, solid_a, solid_b, context)
+    })
 }
 
 /// Run the complete GFA boolean operation with custom tolerance.
@@ -93,6 +94,18 @@ pub fn boolean_with_tolerance(
     solid_b: SolidId,
     tol: Tolerance,
 ) -> Result<SolidId, AlgoError> {
+    let context = OperationContext::new().with_tolerance(tol);
+    boolean_with_context(topo, op, solid_a, solid_b, &context)
+}
+
+fn boolean_with_context_impl(
+    topo: &mut Topology,
+    op: BooleanOp,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &OperationContext,
+) -> Result<SolidId, AlgoError> {
+    let tol = context.tolerance;
     // Refuse unsupported curve types up front, by name. The pave filler,
     // face splitter and classifier all lack hyperbola/parabola support;
     // letting such an input through would make them fall back to a chord
@@ -109,11 +122,11 @@ pub fn boolean_with_tolerance(
 
     // Stage 1: PaveFiller — intersection + pave block construction
     let mut arena = GfaArena::new();
-    pave_filler::run_pave_filler(
+    pave_filler::run_pave_filler_with_context(
         &mut store.topo,
         store.solid_a,
         store.solid_b,
-        tol,
+        context,
         &mut arena,
     )?;
 
@@ -154,6 +167,29 @@ pub fn boolean_with_tolerance(
 ///
 /// Returns [`AlgoError`] if `sources` is empty or any GFA stage fails.
 pub fn fuse_n(topo: &mut Topology, sources: &[SolidId]) -> Result<SolidId, AlgoError> {
+    fuse_n_with_context(topo, sources, &OperationContext::new())
+}
+
+/// Fuse **N** solids under an explicit [`OperationContext`].
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if `sources` is empty or any GFA stage fails.
+pub fn fuse_n_with_context(
+    topo: &mut Topology,
+    sources: &[SolidId],
+    context: &OperationContext,
+) -> Result<SolidId, AlgoError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        fuse_n_with_context_impl(topo, sources, context)
+    })
+}
+
+fn fuse_n_with_context_impl(
+    topo: &mut Topology,
+    sources: &[SolidId],
+    context: &OperationContext,
+) -> Result<SolidId, AlgoError> {
     // Same up-front refusal as `boolean_with_tolerance`; see that function.
     for &sid in sources {
         reject_unsupported_curves(topo, sid)?;
@@ -169,11 +205,16 @@ pub fn fuse_n(topo: &mut Topology, sources: &[SolidId]) -> Result<SolidId, AlgoE
             store.export_solid(topo, store.sources[0])
         }
         _ => {
-            let tol = Tolerance::default();
+            let tol = context.tolerance;
             let mut store = GfaShapeStoreN::new(topo, sources)?;
 
             let mut arena = GfaArena::new();
-            pave_filler::run_pave_filler_n(&mut store.topo, &store.sources, tol, &mut arena)?;
+            pave_filler::run_pave_filler_n_with_context(
+                &mut store.topo,
+                &store.sources,
+                context,
+                &mut arena,
+            )?;
 
             let (store_topo, store_result) = crate::builder::build_fuse_n(
                 std::mem::take(&mut store.topo),
@@ -338,38 +379,45 @@ mod context_tests {
 
     #[test]
     fn boolean_with_context_carries_tolerance() {
-        // A context with a loose tolerance must reach the pipeline: fusing
-        // two cubes separated by a gap below the loose linear tolerance
-        // behaves differently from the default-tolerance run. We only assert
-        // both runs complete and the context run consumed its tolerance
-        // (same outcome as calling boolean_with_tolerance directly).
-        let loose =
-            OperationContext::new().with_tolerance(remus_math::tolerance::Tolerance::loose());
+        // Cubes separated by 5e-5 are distinct under the 1e-7 default but
+        // coincident at the loose context's 1e-4 linear tolerance. This runs
+        // GFA directly (no operations-layer disjoint shortcut): the default
+        // keeps two closed regions, while the loose run treats the gap as a
+        // coincident interface and refuses the resulting open growth shell.
+        // That outcome change proves the caller tolerance reached the pave
+        // filler and builder rather than being replaced with a default.
+        let gap = 5e-5;
 
         let mut topo_a = Topology::new();
         let a1 = make_unit_cube_manifold_at(&mut topo_a, 0.0, 0.0, 0.0);
-        let a2 = make_unit_cube_manifold_at(&mut topo_a, 0.5, 0.5, 0.5);
-        let via_ctx = boolean_with_context(&mut topo_a, BooleanOp::Cut, a1, a2, &loose).unwrap();
-
-        let mut topo_b = Topology::new();
-        let b1 = make_unit_cube_manifold_at(&mut topo_b, 0.0, 0.0, 0.0);
-        let b2 = make_unit_cube_manifold_at(&mut topo_b, 0.5, 0.5, 0.5);
-        let via_tol = boolean_with_tolerance(
-            &mut topo_b,
-            BooleanOp::Cut,
-            b1,
-            b2,
-            remus_math::tolerance::Tolerance::loose(),
+        let a2 = make_unit_cube_manifold_at(&mut topo_a, 1.0 + gap, 0.0, 0.0);
+        let default = boolean_with_context(
+            &mut topo_a,
+            BooleanOp::Fuse,
+            a1,
+            a2,
+            &OperationContext::new(),
         )
         .unwrap();
 
-        let faces_ctx = remus_topology::explorer::solid_faces(&topo_a, via_ctx)
+        let mut topo_b = Topology::new();
+        let b1 = make_unit_cube_manifold_at(&mut topo_b, 0.0, 0.0, 0.0);
+        let b2 = make_unit_cube_manifold_at(&mut topo_b, 1.0 + gap, 0.0, 0.0);
+        let loose =
+            OperationContext::new().with_tolerance(remus_math::tolerance::Tolerance::loose());
+        let context_result = boolean_with_context(&mut topo_b, BooleanOp::Fuse, b1, b2, &loose);
+
+        let default_faces = remus_topology::explorer::solid_faces(&topo_a, default)
             .unwrap()
             .len();
-        let faces_tol = remus_topology::explorer::solid_faces(&topo_b, via_tol)
-            .unwrap()
-            .len();
-        assert_eq!(faces_ctx, faces_tol);
+        assert_eq!(
+            default_faces, 12,
+            "default tolerance keeps both cube boundaries"
+        );
+        assert!(
+            context_result.is_err(),
+            "loose tolerance must materially change the sub-tolerance gap classification"
+        );
     }
 }
 
