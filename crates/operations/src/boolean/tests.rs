@@ -1941,9 +1941,12 @@ fn fuse_perpendicular_cylinders_is_analytic_watertight() {
             other => panic!("unexpected non-analytic face {other:?}"),
         }
     }
+    // The exact ellipse seam (2026-08) splits each wall into two bands that
+    // meet the partner's bands along the shared seam arcs — four cylindrical
+    // faces where the legacy marched-NURBS seam produced two holed walls.
     assert_eq!(
-        cylinders, 2,
-        "expected two mutually-trimmed walls, got {cylinders}"
+        cylinders, 4,
+        "expected four mutually-trimmed wall bands, got {cylinders}"
     );
     assert_eq!(planes, 4, "expected four end caps, got {planes}");
     assert!(

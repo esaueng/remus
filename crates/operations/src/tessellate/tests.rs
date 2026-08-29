@@ -2423,25 +2423,39 @@ fn pinched_ledge_prism_is_watertight() {
 // the hole-free analytic grid used to span the whole UV box and paste over both
 // bore rims. The regression below pins the dedicated hole-aware route.
 
-/// A shaft of radius 3 and height 30 with an equal-radius bore driven clean
-/// through its side at mid-height. Equal radii keep the cut analytic: the two
-/// cylinders meet in a pair of plane ellipses, and each becomes an inner wire
-/// on the shaft wall.
+/// A shaft of radius 3 and height 30 with a NARROWER (r = 1.5) bore driven
+/// clean through its side at mid-height. The bore's two breakout rims stay
+/// inner wires on the one shaft wall — the holed-cylindrical-wall shape these
+/// tests exist to protect. (The original fixture used an EQUAL-radius bore;
+/// since the exact Steinmetz sections landed, that configuration splits the
+/// wall into two seam-free bands with the ellipses as OUTER boundaries — no
+/// holed wall — and its fidelity is pinned by `cross_drilled_stl.rs` and
+/// `steinmetz_intersect.rs` instead.)
 fn cross_drilled_shaft() -> (Topology, remus_topology::solid::SolidId) {
     use remus_math::mat::Mat4;
 
     let mut topo = Topology::new();
     let shaft = crate::primitives::make_cylinder(&mut topo, 3.0, 30.0).unwrap();
     let len = 30.0 + 4.0 * 3.0;
-    let bore = crate::primitives::make_cylinder(&mut topo, 3.0, len).unwrap();
+    let bore = crate::primitives::make_cylinder(&mut topo, 1.5, len).unwrap();
     crate::transform::transform_solid(
         &mut topo,
         bore,
         &Mat4::rotation_y(std::f64::consts::FRAC_PI_2),
     )
     .unwrap();
-    crate::transform::transform_solid(&mut topo, bore, &Mat4::translation(-len / 2.0, 0.0, 15.0))
-        .unwrap();
+    // Swing the bore 1 rad about the shaft axis so the breakout rims stay
+    // clear of the shaft's seam meridian: a rim point exactly ON the seam
+    // opens a pre-existing sub-deflection pinhole at fine deflections
+    // (bd=3 at 0.005 on unmodified main) that is not this test's subject.
+    crate::transform::transform_solid(&mut topo, bore, &Mat4::rotation_z(1.0)).unwrap();
+    let (ca, sa) = (1.0_f64.cos(), 1.0_f64.sin());
+    crate::transform::transform_solid(
+        &mut topo,
+        bore,
+        &Mat4::translation(-len / 2.0 * ca, -len / 2.0 * sa, 15.0),
+    )
+    .unwrap();
     let res =
         crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, shaft, bore).unwrap();
     (topo, res)
@@ -2505,12 +2519,25 @@ fn a_cut_keeps_a_cylindrical_face_that_carries_holes() {
 fn holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid() {
     type PosKey = (i64, i64, i64);
 
-    // Closed form for the wall that is left. The full wall is 2*pi*r*h =
-    // 565.486678. The bore removes, in the wall's (u, z) parameters, the region
-    // |z - h/2| < r|cos u| — its area on the surface is
-    // r * integral over 0..2pi of 2r|cos u| du = 4r^2 * 2 = 72 for r = 3.
-    // So the drilled wall is 565.486678 - 72 = 493.486678.
-    //
+    // Reference for the wall that is left: the full wall 2*pi*r*h minus the
+    // two breakout windows, integrated numerically — at each wall angle u the
+    // bore (radius rb, axis through mid-height) removes a z-extent of
+    // 2*sqrt(rb^2 - y^2) wherever |y(u)| < rb.
+    let (r_shaft, r_bore, h) = (3.0_f64, 1.5_f64, 30.0_f64);
+    let n_steps = 200_000;
+    let du = std::f64::consts::TAU / n_steps as f64;
+    let removed: f64 = (0..n_steps)
+        .map(|i| {
+            let y = r_shaft * (du * i as f64).cos();
+            if y.abs() < r_bore {
+                2.0 * (r_bore * r_bore - y * y).sqrt() * r_shaft * du
+            } else {
+                0.0
+            }
+        })
+        .sum();
+    let expected = 2.0 * std::f64::consts::PI * r_shaft * h - removed;
+
     let (topo, solid) = cross_drilled_shaft();
     let wall = holed_cylindrical_face(&topo, solid);
     let deflection = 0.005;
@@ -2573,7 +2600,6 @@ fn holed_cylindrical_wall_mesh_preserves_bores_and_closes_the_solid() {
     }
 
     let area = tessellated_area(&topo, wall, deflection);
-    let expected = 2.0 * std::f64::consts::PI * 3.0 * 30.0 - 72.0;
     assert!(
         (area - expected).abs() < 0.01 * expected,
         "the rendered wall should be the drilled wall {expected:.6}, got {area:.6}"

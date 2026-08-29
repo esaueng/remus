@@ -613,23 +613,22 @@ fn planar_face_arcs_centered_on_axis(
 fn steinmetz_lens_fuse_volume(topo: &Topology, faces: &[FaceId]) -> Option<f64> {
     use std::f64::consts::PI;
 
+    // Group the cylindrical walls into the two coaxial families (one wall
+    // each in the legacy holed shape; two bands each in the exact-seam
+    // shape) and take each family's combined cap-to-cap axial extent.
     let mut r: Option<f64> = None;
-    let mut heights: Vec<f64> = Vec::new();
+    let mut groups: Vec<(remus_math::surfaces::CylindricalSurface, f64, f64)> = Vec::new();
     for &fid in faces {
         let face = topo.face(fid).ok()?;
         let FaceSurface::Cylinder(cyl) = face.surface() else {
             continue;
         };
-        if face.inner_wires().is_empty() {
-            continue; // Only the two holed walls.
-        }
-        // Equal radii: confirm the second wall matches the first.
+        // Equal radii: confirm every wall matches the first.
         match r {
             None => r = Some(cyl.radius()),
             Some(r0) if (r0 - cyl.radius()).abs() > 1e-6 * r0.max(1.0) => return None,
             Some(_) => {}
         }
-        // Cap-to-cap height = the axial (v) extent of the wall's outer wire.
         let wire = topo.wire(face.outer_wire()).ok()?;
         let mut v_min = f64::INFINITY;
         let mut v_max = f64::NEG_INFINITY;
@@ -645,12 +644,25 @@ fn steinmetz_lens_fuse_volume(topo: &Topology, faces: &[FaceId]) -> Option<f64> 
         if !v_min.is_finite() || !v_max.is_finite() || v_max <= v_min {
             return None;
         }
-        heights.push(v_max - v_min);
+        if let Some(g) = groups
+            .iter_mut()
+            .find(|(c, _, _)| c.axis().dot(cyl.axis()).abs() > 1.0 - 1e-9)
+        {
+            // Same family: the surfaces share an axis line, so v values are
+            // directly comparable up to the frames' origins; re-project the
+            // recorded extremes through THIS surface would be equivalent —
+            // the bands of one cylinder carry the same surface object.
+            g.1 = g.1.min(v_min);
+            g.2 = g.2.max(v_max);
+        } else {
+            groups.push((cyl.clone(), v_min, v_max));
+        }
     }
     let r = r?;
-    if heights.len() != 2 {
+    if groups.len() != 2 {
         return None;
     }
+    let heights: Vec<f64> = groups.iter().map(|(_, lo, hi)| hi - lo).collect();
     let v_cyls = PI * r * r * (heights[0] + heights[1]);
     let v_steinmetz = 16.0 / 3.0 * r * r * r;
     Some(v_cyls - v_steinmetz)
@@ -663,10 +675,12 @@ fn steinmetz_lens_fuse_volume(topo: &Topology, faces: &[FaceId]) -> Option<f64> 
 /// Validated by both topology AND geometry, so a different equal-radius two-
 /// cylinder fuse with the same topology (e.g. oblique or parallel-offset axes,
 /// whose intersection is NOT `16r³/3`) is rejected and defers to tessellation:
-///   * exactly two cylindrical faces, each carrying inner wires (the two seam
-///     ellipses as holes); every other face planar (the four end caps);
-///   * the two holed walls SHARE their inner-wire edges (the same seam ellipses
-///     bound both);
+///   * cylindrical walls in one of two admissible shapes — LEGACY: exactly two
+///     walls, each carrying inner wires (the two seam ellipses as holes),
+///     sharing those inner-wire edges; or EXACT-SEAM (2026-08, the shape the
+///     exact ellipse sections produce): four un-holed walls in two coaxial
+///     pairs whose OUTER wires share the seam ellipse-arc edges across the
+///     pairs. Every other face planar (the four end caps);
 ///   * the two cylinders are EQUAL RADIUS, their axes PERPENDICULAR
 ///     (`|a₁·a₂| ≈ 0`) and INTERSECTING (closest-approach of the two axis lines
 ///     ≈ 0). The closed form holds only for that right-angle configuration.
@@ -677,6 +691,7 @@ fn solid_is_steinmetz_lens_fuse(topo: &Topology, faces: &[FaceId]) -> bool {
     use std::collections::HashSet;
 
     let mut holed_cyl_walls: Vec<FaceId> = Vec::new();
+    let mut plain_cyl_walls: Vec<FaceId> = Vec::new();
     let mut planar_normals: Vec<Vec3> = Vec::new();
     for &fid in faces {
         let Ok(face) = topo.face(fid) else {
@@ -684,37 +699,116 @@ fn solid_is_steinmetz_lens_fuse(topo: &Topology, faces: &[FaceId]) -> bool {
         };
         match face.surface() {
             FaceSurface::Cylinder(_) if !face.inner_wires().is_empty() => holed_cyl_walls.push(fid),
-            // An UNHOLED cylinder face means a third cylinder is attached (its
-            // wall carries no lens hole); the lens fuse has EXACTLY two
-            // cylindrical faces, both holed. Reject so its volume isn't dropped.
-            FaceSurface::Cylinder(_) => return false,
+            FaceSurface::Cylinder(_) => plain_cyl_walls.push(fid),
             FaceSurface::Plane { normal, .. } => planar_normals.push(*normal),
             // Any sphere/cone/torus/NURBS face, or a holed non-cylinder, is not
-            // the cyl∪cyl lens signature.
+            // the lens-fuse signature.
             _ => return false,
         }
     }
-    if holed_cyl_walls.len() != 2 {
-        return false;
-    }
-    // The two holed walls must SHARE their inner-wire edges (the seam ellipses).
-    let inner_edges = |fid: FaceId| -> HashSet<usize> {
-        let mut s = HashSet::new();
-        if let Ok(face) = topo.face(fid) {
-            for &wid in face.inner_wires() {
-                if let Ok(wire) = topo.wire(wid) {
+    // Two admissible wall shapes; anything else (an attached third cylinder,
+    // a mixed holed/un-holed set) is rejected so its volume isn't dropped.
+    let wall_groups: [Vec<FaceId>; 2] = if plain_cyl_walls.is_empty() && holed_cyl_walls.len() == 2
+    {
+        [vec![holed_cyl_walls[0]], vec![holed_cyl_walls[1]]]
+    } else if holed_cyl_walls.is_empty() && plain_cyl_walls.len() == 4 {
+        // EXACT-SEAM shape: group the four un-holed walls into two coaxial
+        // pairs by axis parallelism; each pair must be the SAME cylinder.
+        let surf = |fid: FaceId| -> Option<remus_math::surfaces::CylindricalSurface> {
+            match topo.face(fid).ok()?.surface() {
+                FaceSurface::Cylinder(c) => Some(c.clone()),
+                _ => None,
+            }
+        };
+        let Some(first) = surf(plain_cyl_walls[0]) else {
+            return false;
+        };
+        let mut group_a: Vec<FaceId> = Vec::new();
+        let mut group_b: Vec<FaceId> = Vec::new();
+        for &fid in &plain_cyl_walls {
+            let Some(c) = surf(fid) else {
+                return false;
+            };
+            if c.axis().dot(first.axis()).abs() > 1.0 - 1e-9 {
+                group_a.push(fid);
+            } else {
+                group_b.push(fid);
+            }
+        }
+        if group_a.len() != 2 || group_b.len() != 2 {
+            return false;
+        }
+        // Same-cylinder within each pair: equal radius + coincident axis line.
+        let same_cylinder = |x: FaceId, y: FaceId| -> bool {
+            let (Some(cx), Some(cy)) = (surf(x), surf(y)) else {
+                return false;
+            };
+            if (cx.radius() - cy.radius()).abs() > 1e-6 * cx.radius().max(1.0) {
+                return false;
+            }
+            let d = cy.origin() - cx.origin();
+            let d = Vec3::new(d.x(), d.y(), d.z());
+            let along = d.dot(cx.axis());
+            (d - cx.axis() * along).length() < 1e-6
+        };
+        if !same_cylinder(group_a[0], group_a[1]) || !same_cylinder(group_b[0], group_b[1]) {
+            return false;
+        }
+        // The two pairs must share their seam ellipse-arc edges across the
+        // outer wires (each band is bounded by the ellipses on both sides).
+        let ellipse_edges = |walls: &[FaceId]| -> HashSet<usize> {
+            let mut s = HashSet::new();
+            for &fid in walls {
+                if let Ok(face) = topo.face(fid)
+                    && let Ok(wire) = topo.wire(face.outer_wire())
+                {
                     for oe in wire.edges() {
-                        s.insert(oe.edge().index());
+                        if let Ok(e) = topo.edge(oe.edge())
+                            && matches!(e.curve(), remus_topology::edge::EdgeCurve::Ellipse(_))
+                        {
+                            s.insert(oe.edge().index());
+                        }
                     }
                 }
             }
+            s
+        };
+        let ea = ellipse_edges(&group_a);
+        let eb = ellipse_edges(&group_b);
+        if ea.is_empty() || ea != eb {
+            return false;
         }
-        s
-    };
-    let a = inner_edges(holed_cyl_walls[0]);
-    let b = inner_edges(holed_cyl_walls[1]);
-    if a.is_empty() || a != b {
+        [group_a, group_b]
+    } else {
         return false;
+    };
+    let holed_cyl_walls = [wall_groups[0][0], wall_groups[1][0]];
+    // LEGACY shape only: the two holed walls must SHARE their inner-wire
+    // edges (the seam ellipses). The exact-seam shape checked its shared
+    // ellipse arcs above.
+    let legacy = wall_groups[0].len() == 1
+        && topo
+            .face(holed_cyl_walls[0])
+            .is_ok_and(|f| !f.inner_wires().is_empty());
+    if legacy {
+        let inner_edges = |fid: FaceId| -> HashSet<usize> {
+            let mut s = HashSet::new();
+            if let Ok(face) = topo.face(fid) {
+                for &wid in face.inner_wires() {
+                    if let Ok(wire) = topo.wire(wid) {
+                        for oe in wire.edges() {
+                            s.insert(oe.edge().index());
+                        }
+                    }
+                }
+            }
+            s
+        };
+        let a = inner_edges(holed_cyl_walls[0]);
+        let b = inner_edges(holed_cyl_walls[1]);
+        if a.is_empty() || a != b {
+            return false;
+        }
     }
 
     // Geometry: equal radius, perpendicular + intersecting axes.
@@ -766,8 +860,54 @@ fn solid_is_steinmetz_lens_fuse(topo: &Topology, faces: &[FaceId]) -> bool {
     // the lens. Each wall must extend ≥ r past the axis-intersection point on
     // both sides (project the intersection onto each axis; both caps ≥ r away).
     let r = c0.radius();
-    wall_extends_past(topo, holed_cyl_walls[0], c0, axis_isect, r)
-        && wall_extends_past(topo, holed_cyl_walls[1], c1, axis_isect, r)
+    wall_groups[0]
+        .iter()
+        .any(|&w| wall_extends_past(topo, w, c0, axis_isect, r))
+        && wall_groups[1]
+            .iter()
+            .any(|&w| wall_extends_past(topo, w, c1, axis_isect, r))
+        || (wall_group_extends_past(topo, &wall_groups[0], c0, axis_isect, r)
+            && wall_group_extends_past(topo, &wall_groups[1], c1, axis_isect, r))
+}
+
+/// Combined-extent variant of [`wall_extends_past`] for a wall split into
+/// several coaxial pieces (the exact-seam lens fuse): the UNION of the
+/// pieces' axial extents must reach ≥ r past the axis crossing on both sides.
+fn wall_group_extends_past(
+    topo: &Topology,
+    walls: &[FaceId],
+    cyl: &remus_math::surfaces::CylindricalSurface,
+    axis_isect: Point3,
+    r: f64,
+) -> bool {
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for &wall in walls {
+        let Ok(face) = topo.face(wall) else {
+            return false;
+        };
+        let Ok(wire) = topo.wire(face.outer_wire()) else {
+            return false;
+        };
+        for oe in wire.edges() {
+            let Ok(e) = topo.edge(oe.edge()) else {
+                return false;
+            };
+            for vid in [e.start(), e.end()] {
+                let Ok(v) = topo.vertex(vid) else {
+                    return false;
+                };
+                let (_, vv) = cyl.project_point(v.point());
+                v_min = v_min.min(vv);
+                v_max = v_max.max(vv);
+            }
+        }
+    }
+    if !v_min.is_finite() || !v_max.is_finite() {
+        return false;
+    }
+    let (_, v_isect) = cyl.project_point(axis_isect);
+    v_min <= v_isect - r + 1e-9 && v_max >= v_isect + r - 1e-9
 }
 
 /// Whether a cylinder wall's cap-to-cap extent reaches at least `r` past the
