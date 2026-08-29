@@ -77,15 +77,14 @@ MISSING_TRIM_PATH_WRITER_COUNTS = {
     "primitives::make_cone::frustum_rims": 2,
 }
 # Reduce only when the path's implementation, tests, and oracles have landed.
-REMAINING_MISSING_TRIM_PATHS = (
-    "phase_ff::perform_with_context",
-    "phase_ff::emit_exact_arc",
-    "phase_ff::emit_split_circle_arcs",
-)
+REMAINING_MISSING_TRIM_PATHS: tuple[str, ...] = ()
 # Removing a path above requires its exact new set_trim identities here. This
 # mapping is the sole registration point for post-baseline required writers;
 # each tuple length must match the pinned path weight.
 FIXED_PATH_WRITER_IDENTITIES: dict[str, tuple[str, ...]] = {
+    "phase_ff::perform_with_context": ("f2c1c0502a6555dd",),
+    "phase_ff::emit_exact_arc": ("c4f42adb4b69bf8b",),
+    "phase_ff::emit_split_circle_arcs": ("17f3591d66b9ff10",),
     "boolean::assembly::SphereCapFace": ("b4495bb8cfd29eeb",),
     "boolean::assembly::CylindricalFace": ("1ee00d4def91bbfd",),
     "boolean::box_sphere::build_arc_edge": ("e947102e0733a63b",),
