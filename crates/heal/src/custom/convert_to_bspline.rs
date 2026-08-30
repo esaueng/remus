@@ -1137,8 +1137,10 @@ mod tests {
             let mut topo = Topology::default();
             let start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), start_tolerance));
             let end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
-            let mut source = Edge::new(start, end, EdgeCurve::Line);
-            source.set_tolerance(edge_tolerance);
+            // The validated setter refuses these values by design; inject the
+            // invalid tolerance through the unchecked construction path the
+            // validators exist to catch.
+            let source = Edge::with_tolerance(start, end, EdgeCurve::Line, edge_tolerance);
             let edge = topo.add_edge(source);
             let (solid, face) = single_edge_solid(&mut topo, edge, false);
             let counts_before = (

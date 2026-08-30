@@ -649,12 +649,26 @@ mod tests {
     }
 
     fn arc(topo: &mut Topology, start: VertexId, end: VertexId, circle: &Circle3D) -> EdgeId {
+        arc_with_tolerance(topo, start, end, circle, None)
+    }
+
+    // The validated setter refuses invalid values by design; tests that need
+    // an invalid stored tolerance inject it through the unchecked
+    // construction path the validators exist to catch.
+    fn arc_with_tolerance(
+        topo: &mut Topology,
+        start: VertexId,
+        end: VertexId,
+        circle: &Circle3D,
+        tolerance: Option<f64>,
+    ) -> EdgeId {
         let start_parameter = circle.project(topo.vertex(start).unwrap().point());
         let mut end_parameter = circle.project(topo.vertex(end).unwrap().point());
         if end_parameter <= start_parameter {
             end_parameter += std::f64::consts::TAU;
         }
-        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+        let mut edge =
+            Edge::with_tolerance(start, end, EdgeCurve::Circle(circle.clone()), tolerance);
         edge.set_trim(Some((start_parameter, end_parameter)));
         topo.add_edge(edge)
     }
@@ -884,9 +898,8 @@ mod tests {
             let c = circle(Z);
             let a = topo.add_vertex(Vertex::new(c.evaluate(0.0), anchor_tolerance));
             let b = vertex(&mut topo, &c, std::f64::consts::PI);
-            let e0 = arc(&mut topo, a, b, &c);
+            let e0 = arc_with_tolerance(&mut topo, a, b, &c, edge_tolerance);
             let e1 = arc(&mut topo, b, a, &c);
-            topo.edge_mut(e0).unwrap().set_tolerance(edge_tolerance);
             let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
             let counts_before = (
                 topo.num_vertices(),
