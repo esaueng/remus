@@ -99,6 +99,12 @@ question), v1-fillet API migration (product decision, owner's).
 
 ## §D External roadmap dispositions
 
+- **K-S3 SSI Newton budget — done (2026-08-30, this PR):**
+  `WorkBudgets::newton_iterations` is authoritative across NURBS×NURBS seed,
+  branch, and march refinement; cancellation is polled inside the coupled
+  Newton loop and propagates through the existing typed, transactional WASM
+  boolean contract. Default behavior remains the historical 20 iterations.
+  Subdivision and parameter-space budgets remain queued under P-Class 2.8.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,

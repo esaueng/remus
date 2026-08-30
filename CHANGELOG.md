@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+* **context:** make the caller's NURBS SSI Newton-iteration budget authoritative
+  across seed discovery and marching, with cooperative cancellation inside the
+  refinement loop.
+
 ### Bug Fixes
 
 * **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the
