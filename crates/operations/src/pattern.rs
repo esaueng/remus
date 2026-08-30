@@ -13,6 +13,10 @@ use crate::copy::copy_solid_with_face_map;
 use crate::evolution::EvolutionMap;
 use crate::transform::transform_solid;
 
+/// Dimensionless floor below which an intersection is indistinguishable from
+/// contact at the patterned pair's scale.
+const MATERIAL_OVERLAP_RELATIVE_FLOOR: f64 = 1e-9;
+
 /// Provenance bookkeeping shared by every pattern.
 ///
 /// A pattern instance is a copy, so its faces map to the source body's faces by
@@ -54,8 +58,9 @@ impl PatternTracker {
 ///
 /// # Errors
 ///
-/// Returns an error if `count < 1`, `spacing` is non-positive,
-/// the direction is zero-length, or copy/transform fails.
+/// Returns an error if `count < 1`, `spacing` is non-positive, the direction
+/// is zero-length, copy/transform fails, or two instances have a material
+/// overlap. Touching instances remain supported.
 pub fn linear_pattern(
     topo: &mut Topology,
     solid: SolidId,
@@ -76,6 +81,18 @@ pub fn linear_pattern(
 ///
 /// Same as [`linear_pattern`].
 pub fn linear_pattern_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    direction: Vec3,
+    spacing: f64,
+    count: usize,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        linear_pattern_impl(topo, solid, direction, spacing, count)
+    })
+}
+
+fn linear_pattern_impl(
     topo: &mut Topology,
     solid: SolidId,
     direction: Vec3,
@@ -111,8 +128,7 @@ pub fn linear_pattern_with_evolution(
         solids.push(copy);
     }
 
-    let compound = Compound::new(solids);
-    Ok((topo.add_compound(compound), tracker.evo))
+    finish_pattern(topo, solids, tracker)
 }
 
 /// Create a circular pattern of a solid.
@@ -124,8 +140,9 @@ pub fn linear_pattern_with_evolution(
 ///
 /// # Errors
 ///
-/// Returns an error if `count < 2`, the axis is zero-length, or
-/// copy/transform fails.
+/// Returns an error if `count < 2`, the axis is zero-length, copy/transform
+/// fails, or two instances have a material overlap. Touching instances remain
+/// supported.
 pub fn circular_pattern(
     topo: &mut Topology,
     solid: SolidId,
@@ -142,6 +159,17 @@ pub fn circular_pattern(
 ///
 /// Same as [`circular_pattern`].
 pub fn circular_pattern_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    axis_direction: Vec3,
+    count: usize,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        circular_pattern_impl(topo, solid, axis_direction, count)
+    })
+}
+
+fn circular_pattern_impl(
     topo: &mut Topology,
     solid: SolidId,
     axis_direction: Vec3,
@@ -173,8 +201,7 @@ pub fn circular_pattern_with_evolution(
         solids.push(copy);
     }
 
-    let compound = Compound::new(solids);
-    Ok((topo.add_compound(compound), tracker.evo))
+    finish_pattern(topo, solids, tracker)
 }
 
 /// Create a 2D grid pattern of a solid.
@@ -188,7 +215,8 @@ pub fn circular_pattern_with_evolution(
 /// # Errors
 ///
 /// Returns an error if either count is less than 1, either spacing is
-/// non-positive, either direction is zero-length, or copy/transform fails.
+/// non-positive, either direction is zero-length, copy/transform fails, or
+/// two instances have a material overlap. Touching instances remain supported.
 #[allow(clippy::too_many_arguments)]
 pub fn grid_pattern(
     topo: &mut Topology,
@@ -214,6 +242,24 @@ pub fn grid_pattern(
 /// Same as [`grid_pattern`].
 #[allow(clippy::too_many_arguments)]
 pub fn grid_pattern_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    dir_x: Vec3,
+    dir_y: Vec3,
+    spacing_x: f64,
+    spacing_y: f64,
+    count_x: usize,
+    count_y: usize,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        grid_pattern_impl(
+            topo, solid, dir_x, dir_y, spacing_x, spacing_y, count_x, count_y,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grid_pattern_impl(
     topo: &mut Topology,
     solid: SolidId,
     dir_x: Vec3,
@@ -272,8 +318,89 @@ pub fn grid_pattern_with_evolution(
         }
     }
 
-    let compound = Compound::new(solids);
-    Ok((topo.add_compound(compound), tracker.evo))
+    finish_pattern(topo, solids, tracker)
+}
+
+fn finish_pattern(
+    topo: &mut Topology,
+    solids: Vec<SolidId>,
+    tracker: PatternTracker,
+) -> Result<(CompoundId, EvolutionMap), crate::OperationsError> {
+    refuse_material_overlap(topo, &solids)?;
+    Ok((topo.add_compound(Compound::new(solids)), tracker.evo))
+}
+
+/// Refuse a pattern that would silently represent intersecting material as
+/// independent compound members. The boolean runs on a scratch clone so the
+/// overlap probe itself cannot leak topology or contaminate provenance.
+fn refuse_material_overlap(
+    topo: &Topology,
+    solids: &[SolidId],
+) -> Result<(), crate::OperationsError> {
+    let tolerance = Tolerance::new();
+    let boxes = solids
+        .iter()
+        .map(|&solid| crate::measure::solid_bounding_box(topo, solid))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sweep_order = (0..solids.len()).collect::<Vec<_>>();
+    sweep_order.sort_by(|&left, &right| {
+        boxes[left]
+            .min
+            .x()
+            .total_cmp(&boxes[right].min.x())
+            .then_with(|| left.cmp(&right))
+    });
+    let mut scratch = topo.clone();
+    let context = remus_math::context::OperationContext::new()
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
+
+    for (sweep_position, &first) in sweep_order.iter().enumerate() {
+        for &second in &sweep_order[(sweep_position + 1)..] {
+            let a = boxes[first];
+            let b = boxes[second];
+            if b.min.x() - a.max.x() > tolerance.linear {
+                break;
+            }
+            let overlap = [
+                a.max.x().min(b.max.x()) - a.min.x().max(b.min.x()),
+                a.max.y().min(b.max.y()) - a.min.y().max(b.min.y()),
+                a.max.z().min(b.max.z()) - a.min.z().max(b.min.z()),
+            ];
+            if overlap.into_iter().any(|extent| extent <= tolerance.linear) {
+                continue;
+            }
+
+            let intersection = match crate::boolean::boolean_with_context(
+                &mut scratch,
+                crate::boolean::BooleanOp::Intersect,
+                solids[first],
+                solids[second],
+                &context,
+            ) {
+                Ok(outcome) => outcome.solid,
+                Err(crate::OperationsError::EmptyResult { .. }) => continue,
+                Err(error) => return Err(error),
+            };
+            let overlap_volume = crate::measure::solid_volume(&scratch, intersection, 0.1)?;
+            let pair_box = a.union(b);
+            let diagonal = (pair_box.max - pair_box.min).length();
+            let threshold = diagonal * diagonal * diagonal * MATERIAL_OVERLAP_RELATIVE_FLOOR;
+            if overlap_volume > threshold {
+                let (first, second) = if first < second {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                return Err(crate::OperationsError::PatternInstancesOverlap {
+                    first,
+                    second,
+                    overlap_volume,
+                    threshold,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build a rotation matrix for a given axis and angle (Rodrigues' formula).
@@ -317,6 +444,131 @@ mod tests {
     use remus_topology::Topology;
 
     use super::*;
+
+    fn live_counts(topo: &Topology) -> [usize; 8] {
+        [
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.num_compounds(),
+            topo.num_compsolids(),
+        ]
+    }
+
+    fn assert_near(actual: f64, expected: f64, tolerance: f64, label: &str) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{label}: expected {expected:e} +/- {tolerance:e}, got {actual:e}"
+        );
+    }
+
+    #[test]
+    fn linear_pattern_refuses_measured_overlap_and_rolls_back_across_scale() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut topo = Topology::new();
+            let side = 20.0 * scale;
+            let solid = crate::primitives::make_box(&mut topo, side, side, side).unwrap();
+            let counts_before = live_counts(&topo);
+
+            let error = linear_pattern(&mut topo, solid, Vec3::new(1.0, 0.0, 0.0), 10.0 * scale, 2)
+                .unwrap_err();
+
+            match error {
+                crate::OperationsError::PatternInstancesOverlap {
+                    first,
+                    second,
+                    overlap_volume,
+                    threshold,
+                } => {
+                    assert_eq!((first, second), (0, 1));
+                    let oracle = 10.0 * 20.0 * 20.0 * scale.powi(3);
+                    assert_near(overlap_volume, oracle, oracle * 1e-9, "intersection volume");
+                    assert!(overlap_volume > threshold);
+                }
+                other => assert!(
+                    matches!(
+                        other,
+                        crate::OperationsError::PatternInstancesOverlap { .. }
+                    ),
+                    "expected typed pattern-overlap refusal, got {other}"
+                ),
+            }
+
+            assert_eq!(
+                live_counts(&topo),
+                counts_before,
+                "a refused pattern must retire every staged copy"
+            );
+            assert!(
+                topo.solid(solid).is_ok(),
+                "the input handle must survive rollback"
+            );
+            let source_volume = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+            assert_near(
+                source_volume,
+                side.powi(3),
+                side.powi(3) * 1e-9,
+                "source volume",
+            );
+        }
+    }
+
+    #[test]
+    fn linear_pattern_keeps_touching_and_disjoint_instances() {
+        for scale in [1e-3, 1.0, 1e3] {
+            for spacing_factor in [1.0, 1.5] {
+                let mut topo = Topology::new();
+                let side = 20.0 * scale;
+                let solid = crate::primitives::make_box(&mut topo, side, side, side).unwrap();
+                let compound = linear_pattern(
+                    &mut topo,
+                    solid,
+                    Vec3::new(1.0, 0.0, 0.0),
+                    side * spacing_factor,
+                    2,
+                )
+                .unwrap();
+                assert_eq!(topo.compound(compound).unwrap().solids().len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn circular_and_grid_patterns_share_the_overlap_refusal() {
+        let mut circular_topo = Topology::new();
+        let cylinder = crate::primitives::make_cylinder(&mut circular_topo, 4.0, 10.0).unwrap();
+        assert!(matches!(
+            circular_pattern(&mut circular_topo, cylinder, Vec3::new(0.0, 0.0, 1.0), 2),
+            Err(crate::OperationsError::PatternInstancesOverlap {
+                first: 0,
+                second: 1,
+                ..
+            })
+        ));
+
+        let mut grid_topo = Topology::new();
+        let cube = crate::primitives::make_box(&mut grid_topo, 20.0, 20.0, 20.0).unwrap();
+        assert!(matches!(
+            grid_pattern(
+                &mut grid_topo,
+                cube,
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                10.0,
+                30.0,
+                2,
+                1,
+            ),
+            Err(crate::OperationsError::PatternInstancesOverlap {
+                first: 0,
+                second: 1,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn linear_pattern_3_boxes() {
