@@ -109,7 +109,10 @@ does not itself promote or demote anything.
   bore/shaft radius ratios 1, 2/3, and 1/3 and scales 0.1, 1, and 10:
   independent orthogonal-cylinder volume oracles match, and coarse/fine
   display meshes are non-empty, closed, and manifold through the deterministic
-  WASM batch path and a versioned replay bundle.
+  WASM batch path and a versioned replay bundle. The CI-ratcheted
+  `approx_census` additionally exposes exact/fallback/error path and result
+  face-count drift across its representative operation matrix; it is a drift
+  detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
   not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;

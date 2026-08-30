@@ -347,6 +347,44 @@ export interface GcsSolveResult {
 }
 
 /**
+ * Typed result for `getFaceCurvature`.
+ *
+ * Principal curvatures at `(u, v)` on a face\'s surface, sorted `k1 >= k2`,
+ * signed positive for convex-outward relative to the face\'s effective
+ * outward normal (flipping the face orientation flips `k1`, `k2`, `mean`;
+ * `gaussian` is orientation-independent). `directions` is `null` at
+ * umbilic points (sphere, plane, near-umbilic NURBS regions), where every
+ * tangent direction is principal.
+ */
+export interface FaceCurvatureResult {
+    /**
+     * Largest principal curvature (convex-outward positive).
+     */
+    k1: number;
+    /**
+     * Smallest principal curvature.
+     */
+    k2: number;
+    /**
+     * Gaussian curvature `K = k1·k2` (orientation-independent).
+     */
+    gaussian: number;
+    /**
+     * Mean curvature `H = (k1 + k2)/2` (flips with face orientation).
+     */
+    mean: number;
+    /**
+     * Unit principal direction of `k1` `[x, y, z]`, or `null` at an
+     * umbilic point.
+     */
+    d1: number[] | undefined;
+    /**
+     * Unit principal direction of `k2`, or `null` at an umbilic point.
+     */
+    d2: number[] | undefined;
+}
+
+/**
  * Typed result for `massProperties`.
  */
 export interface MassPropertiesResult {
@@ -1710,11 +1748,50 @@ export class BrepKernel {
      */
     getEntityCounts(solid: number): Uint32Array;
     /**
+     * Principal curvatures at `(u, v)` on a face's surface.
+     *
+     * Returns a JSON string `{ k1, k2, gaussian, mean, d1, d2 }` (see the
+     * `FaceCurvatureResult` TypeScript type). Curvatures are sorted
+     * `k1 >= k2` and signed positive for convex-outward relative to the
+     * face's effective outward normal; flipping the face orientation flips
+     * `k1`, `k2`, and `mean`, while `gaussian` is orientation-independent.
+     * `d1`/`d2` are the unit principal directions matching `(k1, k2)`, or
+     * `null` at umbilic points (sphere, plane, near-umbilic NURBS regions)
+     * where every tangent direction is principal.
+     *
+     * `(u, v)` are parameters of the underlying surface, not restricted to
+     * the face's trimmed region. For a plane face the report is identically
+     * zero and the directions are `null`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or curvature is
+     * undefined at `(u, v)`: a cone at or below its apex, a torus parallel
+     * that degenerates (self-intersecting configurations only), a
+     * non-finite parameter, or a NURBS point where the parametrization
+     * collapses (e.g. a sphere pole).
+     */
+    getFaceCurvature(face: number, u: number, v: number): any;
+    /**
      * Get the edge handles of a face.
      *
      * Returns an array of edge handles (`u32[]`).
      */
     getFaceEdges(face: number): Uint32Array;
+    /**
+     * Minimum radius of curvature over a face (`1 / max(|k1|, |k2|)` across
+     * the face's trimmed domain), orientation-independent.
+     *
+     * Exact for the five analytic surface types; a coarse-grid-plus-
+     * refinement approximation for NURBS. A plane face has no curvature and
+     * returns `Infinity`; a cone face reaching its apex returns `0`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or the face boundary
+     * cannot be projected onto its surface.
+     */
+    getFaceMinRadius(face: number): number;
     /**
      * A face's semantic name, or null.
      */

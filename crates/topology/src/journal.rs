@@ -1021,6 +1021,57 @@ mod tests {
         draft
     }
 
+    // ── Tolerance raises are journal events (RFC 0004, Stage 1) ─────────
+
+    /// A tolerance raise is recordable as an `EntityEvent::Modified` on the
+    /// raised entity — no new event kind. The raising operation journals
+    /// the subject (the post-raise entity) as a `Modified` piece of itself
+    /// (the pre-raise entity), for vertices and edges alike.
+    #[test]
+    fn tolerance_raise_records_as_a_modified_event() {
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        topo.vertex_mut(v).unwrap().set_tolerance(2e-5).unwrap();
+
+        let pending = topo.journal_begin("raise_tolerance");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::vertex(v.index()),
+            EventDraft::Modified {
+                from: EntityKey::vertex(v.index()),
+            },
+        );
+        draft.push(
+            EntityKey::edge(0),
+            EventDraft::Modified {
+                from: EntityKey::edge(0),
+            },
+        );
+        let _op = topo.journal_record_evolution(pending, draft).unwrap();
+
+        let v_ordinal = topo
+            .journal()
+            .ordinal_of(EntityKey::vertex(v.index()))
+            .unwrap();
+        let events = topo.journal().events_for(v_ordinal);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(events[0].1, EntityEvent::Modified { .. }),
+            "a raise on the entity itself is a Modified event, got {:?}",
+            events[0].1
+        );
+
+        // And the event survives serialization.
+        let snapshot = topo.journal().snapshot();
+        let rebuilt = Journal::from_snapshot(snapshot.clone()).unwrap();
+        assert_eq!(rebuilt.snapshot(), snapshot);
+        let rebuilt_ordinal = rebuilt.ordinal_of(EntityKey::vertex(v.index())).unwrap();
+        assert!(matches!(
+            rebuilt.events_for(rebuilt_ordinal)[0].1,
+            EntityEvent::Modified { .. }
+        ));
+    }
+
     // ── Journal-driven attribute propagation (RFC 0003, Stage 4) ────────
 
     /// A minimal live face (one open-wire edge, planar surface) so

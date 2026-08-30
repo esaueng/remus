@@ -153,6 +153,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getBlendRegion"
         | "getSolidFaces"
         | "getFaceNormal"
+        | "getFaceCurvature"
+        | "getFaceMinRadius"
         | "getFaceVertexPositions"
         | "getOpposingPlanarFacePairs"
         | "volume" => Some(BatchOpKind::ReadOnly),
@@ -1804,6 +1806,50 @@ impl BrepKernel {
                     other => other.normal(0.0, 0.0),
                 };
                 Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
+            }
+            "getFaceCurvature" => {
+                // Principal curvatures at (u, v) on a face's surface, sorted
+                // k1 >= k2, signed positive for convex-outward relative to
+                // the face's effective outward normal. d1/d2 are null at
+                // umbilic points (sphere, plane) rather than fabricated.
+                let f = get_u32(args, "face")?;
+                let u = get_f64(args, "u")?;
+                let v = get_f64(args, "v")?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let report =
+                    remus_check::analyze::curvature::surface_curvature(self.topo(), face_id, u, v)
+                        .map_err(StructuredWasmError::from)?;
+                let (d1, d2) = match report.directions {
+                    Some((d1, d2)) => (
+                        serde_json::json!([d1.x(), d1.y(), d1.z()]),
+                        serde_json::json!([d2.x(), d2.y(), d2.z()]),
+                    ),
+                    None => (serde_json::Value::Null, serde_json::Value::Null),
+                };
+                Ok(serde_json::json!({
+                    "k1": report.k1,
+                    "k2": report.k2,
+                    "gaussian": report.gaussian,
+                    "mean": report.mean,
+                    "d1": d1,
+                    "d2": d2,
+                }))
+            }
+            "getFaceMinRadius" => {
+                // 1 / max(|k1|, |k2|) over the face's trimmed domain.
+                // Orientation-independent; exact on analytic surfaces,
+                // approximate on NURBS. JSON has no Infinity, so a plane's
+                // infinite radius is reported as `minRadius: null` with the
+                // explicit `isInfinite` flag.
+                let f = get_u32(args, "face")?;
+                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
+                let min_radius =
+                    remus_check::analyze::curvature::min_radius_of_curvature(self.topo(), face_id)
+                        .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!({
+                    "minRadius": min_radius,
+                    "isInfinite": !min_radius.is_finite(),
+                }))
             }
             "getFaceVertexPositions" => {
                 // Flat [x, y, z, ...] positions of every vertex the face's
