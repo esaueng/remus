@@ -14,6 +14,15 @@ const volume = kernel.volume(box, 0.05);
 const inertia = kernel.inertiaTensor(box); // row-major 3x3, about the CoM
 ```
 
+`meshQuality(solid, deflection, angularTolerance?)` inspects the same
+tessellation controls as `tessellateSolid` and `tessellateSolidGrouped`.
+Pass the render/export angular tolerance when checking that mesh; otherwise
+both methods use the historical `0.35` radian default. The JSON result contains
+`triangleCount`, `boundaryEdges`, `nonManifoldEdges`, `eulerCharacteristic`,
+and `isWatertight`. Watertightness requires at least one non-degenerate
+triangle, so an empty mesh never passes vacuously. Batch `meshQuality` accepts
+the same optional `angularTolerance` field.
+
 JavaScript receives opaque numeric handles. A handle is valid only for the
 kernel instance that created it. Methods throw JavaScript errors for invalid
 input or failed kernel operations; do not continue with a missing handle.

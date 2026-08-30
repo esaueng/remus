@@ -19,13 +19,17 @@ pub const COINCIDENT_DEDUPE_GRID: f64 = 1e-6;
 
 /// Check if a mesh is a closed 2-manifold.
 ///
-/// Returns `true` iff every edge is shared by exactly 2 triangles: no gaps
-/// (boundary edges), no branching (non-manifold edges). Useful for
+/// Returns `true` iff the mesh contains at least one triangle and every edge
+/// is shared by exactly 2 triangles: no gaps (boundary edges), no branching
+/// (non-manifold edges). Useful for
 /// validating that `tessellate_solid` produces watertight meshes suitable
 /// for slicers and downstream geometric operations.
 #[must_use]
 pub fn is_watertight(mesh: &TriangleMesh) -> bool {
-    boundary_edge_count(mesh) == 0 && non_manifold_edge_count(mesh) == 0
+    !mesh.indices.is_empty()
+        && mesh.indices.len().is_multiple_of(3)
+        && boundary_edge_count(mesh) == 0
+        && non_manifold_edge_count(mesh) == 0
 }
 
 /// Count boundary (one-sided) edges in a mesh.
@@ -80,6 +84,8 @@ pub fn non_manifold_edge_count(mesh: &TriangleMesh) -> usize {
 /// at coincident coordinates) cannot mask a leak or fake a boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct WeldedMeshQuality {
+    /// Non-degenerate triangles retained after position welding.
+    pub triangle_count: usize,
     /// Edges used by exactly one triangle (0 for a watertight mesh).
     pub boundary_edges: usize,
     /// Edges used by three or more triangles.
@@ -90,10 +96,11 @@ pub struct WeldedMeshQuality {
 }
 
 impl WeldedMeshQuality {
-    /// True when the welded mesh has no boundary and no non-manifold edges.
+    /// True when the welded mesh is non-empty and has no boundary or
+    /// non-manifold edges.
     #[must_use]
     pub const fn is_watertight(&self) -> bool {
-        self.boundary_edges == 0 && self.non_manifold_edges == 0
+        self.triangle_count > 0 && self.boundary_edges == 0 && self.non_manifold_edges == 0
     }
 }
 
@@ -128,6 +135,7 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
             .map(|((a, b), c)| (a, b, c))
         else {
             return WeldedMeshQuality {
+                triangle_count: 0,
                 boundary_edges: usize::MAX,
                 non_manifold_edges: usize::MAX,
                 euler_characteristic: 0,
@@ -151,6 +159,7 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
 
     #[allow(clippy::cast_possible_wrap)]
     WeldedMeshQuality {
+        triangle_count: face_count as usize,
         boundary_edges: edges.values().filter(|&&c| c == 1).count(),
         non_manifold_edges: edges.values().filter(|&&c| c > 2).count(),
         euler_characteristic: verts.len() as i64 - edges.len() as i64 + face_count,

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "name": "cross-drilled-render-measure",
+  "description": "K-S1 cross-drilled shaft: the exact OpenZCAD operation sequence measures the Steinmetz remainder and its display-density mesh is non-empty, closed, and manifold. Pins angular-tolerance parity between rendering and meshQuality so an empty mesh cannot pass watertightness vacuously.",
+  "revision": "39872bec",
+  "operations": [
+    {"op": "makeCylinder", "args": {"radius": 3, "height": 30}},
+    {"op": "makeCylinder", "args": {"radius": 3, "height": 40}},
+    {"op": "transform", "args": {"solid": 1, "matrix": [0,0,1,0, 0,1,0,0, -1,0,0,0, 0,0,0,1]}},
+    {"op": "transform", "args": {"solid": 1, "matrix": [1,0,0,-20, 0,1,0,0, 0,0,1,15, 0,0,0,1]}},
+    {"op": "cut", "args": {"solidA": 0, "solidB": 1}},
+    {"op": "volume", "args": {"solid": 2, "deflection": 0.08}},
+    {"op": "meshQuality", "args": {"solid": 2, "deflection": 0.3, "angularTolerance": 0.06}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"ok": 1},
+    {"ok": 1},
+    {"ok": 1},
+    {"ok": 2},
+    {"okNear": 704.2300164692424, "tol": 0.08},
+    {"ok": {"triangleCount": 48236, "boundaryEdges": 0, "nonManifoldEdges": 0, "eulerCharacteristic": 4, "isWatertight": true}}
+  ]
+}
