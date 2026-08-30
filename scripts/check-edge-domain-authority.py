@@ -20,7 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATES = ROOT / "crates"
 
 BASELINE_SHA = "39c7a7b7ccbfc746ed7d9e9b8f156d54d6cfe090"
-BASELINE_PRODUCTION_READERS = 131
+# 131 baseline readers + the vertex-ball validator's trim-aware reader
+# (954b157c7a8b16c4, RFC 0004 Stage 1, PR #148) = 132.
+BASELINE_PRODUCTION_READERS = 132
 BASELINE_DEFINITIONS = 2
 BASELINE_INTERNAL_FALLBACKS = 1
 BASELINE_TEST_READERS = 25
