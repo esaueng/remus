@@ -357,7 +357,7 @@ impl Builder {
     /// Returns [`AlgoError`] if topology lookups or classification fails.
     pub fn perform(&mut self) -> Result<(), AlgoError> {
         self.build_face_ranks()?;
-        self.fill_images();
+        self.fill_images()?;
         self.classify_sub_faces()?;
         if let Ok(v) = std::env::var("BK_CLS3")
             && let Ok(want) = v.parse::<usize>()
@@ -514,7 +514,7 @@ impl Builder {
     }
 
     /// Phase 1: map edges to split images and build sub-faces.
-    fn fill_images(&mut self) {
+    fn fill_images(&mut self) -> Result<(), AlgoError> {
         let edge_images = fill_images::fill_edge_images(&self.arena);
         log::debug!(
             "Builder: {} original edges mapped to split images",
@@ -528,7 +528,7 @@ impl Builder {
             &self.face_ranks,
             self.tol,
             &mut self.edge_lineage,
-        );
+        )?;
         log::debug!("Builder: {} sub-faces created", self.sub_faces.len());
 
         // Step 3: same-domain detection (records pairs, does NOT set FaceClass)
@@ -551,6 +551,7 @@ impl Builder {
         // is to let BOP keep A's face and discard B's (which it already does),
         // then fix edge sharing at the BuilderSolid level via
         // merge_duplicate_edges.
+        Ok(())
     }
 
     /// Map each input face to an ordinal unique per shell across both operand
@@ -829,7 +830,7 @@ pub fn build_fuse_n<S: std::hash::BuildHasher>(
         &all_a_ranks,
         tol,
         &mut nway_lineage,
-    );
+    )?;
 
     // The global source of each sub-face is its parent input face's source.
     let sub_source: Vec<usize> = sub_faces

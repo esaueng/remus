@@ -15,6 +15,8 @@ use remus_geometry::convert::{
 
 use crate::HealError;
 
+type EdgeConversion = (EdgeId, EdgeCurve, Option<(f64, f64)>);
+
 /// Try to recognize and replace NURBS surfaces with analytic equivalents.
 ///
 /// Returns the number of surfaces converted.
@@ -132,6 +134,17 @@ pub fn convert_edges_to_elementary(
     solid_id: SolidId,
     tolerance: &Tolerance,
 ) -> Result<usize, HealError> {
+    for (label, value) in [
+        ("linear", tolerance.linear),
+        ("angular", tolerance.angular),
+        ("relative", tolerance.relative),
+    ] {
+        if !value.is_finite() || value.is_sign_negative() {
+            return Err(HealError::InvalidConfig(format!(
+                "invalid {label} conversion tolerance {value}"
+            )));
+        }
+    }
     let face_ids: Vec<FaceId> = solid_faces(topo, solid_id)?;
 
     // Collect unique edge IDs across all faces (edges may be shared
@@ -151,7 +164,7 @@ pub fn convert_edges_to_elementary(
         }
     }
 
-    let mut converted = 0;
+    let mut conversions: Vec<EdgeConversion> = Vec::new();
     for eid in edge_ids {
         let edge = topo.edge(eid)?;
         let nurbs = match edge.curve() {
@@ -163,16 +176,51 @@ pub fn convert_edges_to_elementary(
             | EdgeCurve::Hyperbola(_)
             | EdgeCurve::Parabola(_) => continue,
         };
-        match recognize_curve(&nurbs, tolerance.linear) {
+        let start_vertex = topo.vertex(edge.start())?;
+        let end_vertex = topo.vertex(edge.end())?;
+        for (label, value) in [
+            ("start vertex", start_vertex.tolerance()),
+            ("end vertex", end_vertex.tolerance()),
+        ] {
+            if !value.is_finite() || value.is_sign_negative() {
+                return Err(HealError::UpgradeFailed(format!(
+                    "edge {eid:?} has invalid {label} tolerance {value}"
+                )));
+            }
+        }
+        if let Some(value) = edge.tolerance()
+            && (!value.is_finite() || value.is_sign_negative())
+        {
+            return Err(HealError::UpgradeFailed(format!(
+                "edge {eid:?} has invalid explicit tolerance {value}"
+            )));
+        }
+        let source_domain = edge.strict_domain().map_err(|error| {
+            HealError::UpgradeFailed(format!("edge {eid:?} cannot be converted: {error}"))
+        })?;
+        let endpoint_tolerance =
+            edge.effective_tolerance(start_vertex.tolerance().max(end_vertex.tolerance()));
+        validate_source_endpoints(
+            eid,
+            &nurbs,
+            source_domain,
+            start_vertex.point(),
+            end_vertex.point(),
+            endpoint_tolerance,
+        )?;
+
+        let planned = match recognize_curve(&nurbs, tolerance.linear) {
             RecognizedCurve::Circle {
                 center,
                 normal,
                 radius,
             } => {
                 if let Ok(c) = Circle3D::new(center, normal, radius) {
-                    let edge_mut = topo.edge_mut(eid)?;
-                    edge_mut.set_curve(EdgeCurve::Circle(c));
-                    converted += 1;
+                    let curve = EdgeCurve::Circle(c);
+                    let trim = mapped_trim(eid, &nurbs, source_domain, &curve, endpoint_tolerance)?;
+                    Some((curve, Some(trim)))
+                } else {
+                    None
                 }
             }
             RecognizedCurve::Ellipse {
@@ -202,18 +250,26 @@ pub fn convert_edges_to_elementary(
                 if let Ok(e) =
                     Ellipse3D::with_axes(center, normal, semi_major, semi_minor, u_axis, v_axis)
                 {
-                    let edge_mut = topo.edge_mut(eid)?;
-                    edge_mut.set_curve(EdgeCurve::Ellipse(e));
-                    converted += 1;
+                    let curve = EdgeCurve::Ellipse(e);
+                    let trim = mapped_trim(eid, &nurbs, source_domain, &curve, endpoint_tolerance)?;
+                    Some((curve, Some(trim)))
+                } else {
+                    None
                 }
             }
             RecognizedCurve::Line { .. } => {
                 // EdgeCurve::Line stores no geometry — vertex
                 // positions imply the line. Replace the NURBS with
                 // the implicit Line variant.
-                let edge_mut = topo.edge_mut(eid)?;
-                edge_mut.set_curve(EdgeCurve::Line);
-                converted += 1;
+                validate_line_conversion(
+                    eid,
+                    &nurbs,
+                    source_domain,
+                    start_vertex.point(),
+                    end_vertex.point(),
+                    endpoint_tolerance,
+                )?;
+                Some((EdgeCurve::Line, None))
             }
             RecognizedCurve::Hyperbola {
                 center,
@@ -237,9 +293,11 @@ pub fn convert_edges_to_elementary(
                 if let Ok(h) =
                     Hyperbola3D::with_axes(center, normal, u_axis, semi_major, semi_minor)
                 {
-                    let edge_mut = topo.edge_mut(eid)?;
-                    edge_mut.set_curve(EdgeCurve::Hyperbola(h));
-                    converted += 1;
+                    let curve = EdgeCurve::Hyperbola(h);
+                    let trim = mapped_trim(eid, &nurbs, source_domain, &curve, endpoint_tolerance)?;
+                    Some((curve, Some(trim)))
+                } else {
+                    None
                 }
             }
             RecognizedCurve::Parabola {
@@ -254,16 +312,155 @@ pub fn convert_edges_to_elementary(
                 // in-plane direction, so the plane survives the conversion.
                 let u_axis = normal.cross(axis_dir);
                 if let Ok(p) = Parabola3D::with_axes(vertex, axis_dir, u_axis, focal_length) {
-                    let edge_mut = topo.edge_mut(eid)?;
-                    edge_mut.set_curve(EdgeCurve::Parabola(p));
-                    converted += 1;
+                    let curve = EdgeCurve::Parabola(p);
+                    let trim = mapped_trim(eid, &nurbs, source_domain, &curve, endpoint_tolerance)?;
+                    Some((curve, Some(trim)))
+                } else {
+                    None
                 }
             }
-            RecognizedCurve::NotRecognized => {}
+            RecognizedCurve::NotRecognized => None,
+        };
+        if let Some((curve, trim)) = planned {
+            conversions.push((eid, curve, trim));
         }
     }
 
-    Ok(converted)
+    for (eid, curve, trim) in &conversions {
+        let edge = topo.edge_mut(*eid)?;
+        edge.set_curve(curve.clone());
+        edge.set_trim(*trim);
+    }
+
+    Ok(conversions.len())
+}
+
+fn validate_source_endpoints(
+    edge_id: EdgeId,
+    source: &remus_math::nurbs::curve::NurbsCurve,
+    (t0, t1): (f64, f64),
+    start: remus_math::vec::Point3,
+    end: remus_math::vec::Point3,
+    tolerance: f64,
+) -> Result<(), HealError> {
+    for (label, parameter, expected) in [("start", t0, start), ("end", t1, end)] {
+        let residual = (source.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(HealError::UpgradeFailed(format!(
+                "edge {edge_id:?} source {label} residual {residual} exceeds tolerance {tolerance}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn mapped_trim(
+    edge_id: EdgeId,
+    source: &remus_math::nurbs::curve::NurbsCurve,
+    (source_t0, source_t1): (f64, f64),
+    target: &EdgeCurve,
+    tolerance: f64,
+) -> Result<(f64, f64), HealError> {
+    const SAMPLE_COUNT: usize = 32;
+    let project = |point| -> Result<f64, HealError> {
+        match target {
+            EdgeCurve::Circle(curve) => Ok(curve.project(point)),
+            EdgeCurve::Ellipse(curve) => Ok(curve.project(point)),
+            EdgeCurve::Hyperbola(curve) => Ok(curve.project(point)),
+            EdgeCurve::Parabola(curve) => Ok(curve.project(point)),
+            EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => Err(HealError::UpgradeFailed(format!(
+                "edge {edge_id:?} has no analytic parameter map"
+            ))),
+        }
+    };
+
+    let periodic = matches!(target, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_));
+    let mut mapped: Vec<f64> = Vec::with_capacity(SAMPLE_COUNT + 1);
+    for index in 0..=SAMPLE_COUNT {
+        let fraction = index as f64 / SAMPLE_COUNT as f64;
+        let source_parameter = source_t0 + (source_t1 - source_t0) * fraction;
+        let source_point = source.evaluate(source_parameter);
+        let raw_parameter = project(source_point)?;
+        let parameter = if periodic {
+            if let Some(previous) = mapped.last().copied() {
+                previous
+                    + (raw_parameter - previous + std::f64::consts::PI)
+                        .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI
+            } else {
+                raw_parameter
+            }
+        } else {
+            raw_parameter
+        };
+        let residual = (target.evaluate_with_endpoints(parameter, source_point, source_point)
+            - source_point)
+            .length();
+        if !parameter.is_finite() || !residual.is_finite() || residual > tolerance {
+            return Err(HealError::UpgradeFailed(format!(
+                "edge {edge_id:?} analytic conversion residual {residual} at fraction {fraction} exceeds tolerance {tolerance}"
+            )));
+        }
+        mapped.push(parameter);
+    }
+
+    let direction = (mapped[SAMPLE_COUNT] - mapped[0]).signum();
+    if direction == 0.0
+        || mapped
+            .windows(2)
+            .any(|pair| (pair[1] - pair[0]) * direction < -64.0 * f64::EPSILON)
+    {
+        return Err(HealError::UpgradeFailed(format!(
+            "edge {edge_id:?} analytic parameter map is ambiguous or non-monotone"
+        )));
+    }
+    let trim = (mapped[0], mapped[SAMPLE_COUNT]);
+    let span = (trim.1 - trim.0).abs();
+    if !trim.0.is_finite()
+        || !trim.1.is_finite()
+        || span == 0.0
+        || (periodic && span > std::f64::consts::TAU + 4.0 * f64::EPSILON)
+    {
+        return Err(HealError::UpgradeFailed(format!(
+            "edge {edge_id:?} mapped trim [{}, {}] is invalid",
+            trim.0, trim.1
+        )));
+    }
+    Ok(trim)
+}
+
+fn validate_line_conversion(
+    edge_id: EdgeId,
+    source: &remus_math::nurbs::curve::NurbsCurve,
+    (t0, t1): (f64, f64),
+    start: remus_math::vec::Point3,
+    end: remus_math::vec::Point3,
+    tolerance: f64,
+) -> Result<(), HealError> {
+    let chord = end - start;
+    let length_squared = chord.dot(chord);
+    if !length_squared.is_finite() || length_squared <= 0.0 {
+        return Err(HealError::UpgradeFailed(format!(
+            "edge {edge_id:?} cannot convert a degenerate NURBS to Line"
+        )));
+    }
+    for index in 1..4 {
+        let fraction = f64::from(index) / 4.0;
+        let source_point = source.evaluate(t0 + (t1 - t0) * fraction);
+        let line_fraction = (source_point - start).dot(chord) / length_squared;
+        let expected = start + chord * line_fraction;
+        let residual = (source_point - expected).length();
+        if !line_fraction.is_finite()
+            || !(0.0..=1.0).contains(&line_fraction)
+            || !residual.is_finite()
+            || residual > tolerance
+        {
+            return Err(HealError::UpgradeFailed(format!(
+                "edge {edge_id:?} line conversion residual {residual} at fraction {fraction} exceeds tolerance {tolerance}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Choose the sign of a recognized hyperbola's real axis so it points at
@@ -313,9 +510,13 @@ mod tests {
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.5).unwrap();
         let nurbs = circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU).unwrap();
 
-        // Closed circle: start_vertex == end_vertex.
-        let v = topo.add_vertex(Vertex::new(Point3::new(2.5, 0.0, 0.0), 1e-7));
-        let edge_id = topo.add_edge(Edge::new(v, v, EdgeCurve::NurbsCurve(nurbs)));
+        // Closed circle: start_vertex == end_vertex. Use the NURBS carrier's
+        // own seam; its parameter frame need not share Circle3D's u-axis.
+        let domain = nurbs.domain();
+        let v = topo.add_vertex(Vertex::new(nurbs.evaluate(domain.0), 1e-7));
+        let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(nurbs));
+        edge.set_trim(Some(domain));
+        let edge_id = topo.add_edge(edge);
 
         // Wrap in a wire / face / shell / solid scaffold so the iterator
         // in `convert_edges_to_elementary` can find the edge.
@@ -338,6 +539,8 @@ mod tests {
 
         // Verify the edge is now Circle3D, not NurbsCurve.
         let edge = topo.edge(edge_id).unwrap();
+        let (mapped_start, mapped_end) = edge.strict_domain().unwrap();
+        assert!(((mapped_end - mapped_start).abs() - std::f64::consts::TAU).abs() < 1e-12);
         match edge.curve() {
             EdgeCurve::Circle(c) => {
                 assert!(
@@ -479,7 +682,10 @@ mod tests {
             let mut topo = Topology::new();
             let v0 = topo.add_vertex(Vertex::new(src.evaluate(t0), 1e-7 * k));
             let v1 = topo.add_vertex(Vertex::new(src.evaluate(t1), 1e-7 * k));
-            let eid = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs)));
+            let domain = nurbs.domain();
+            let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs));
+            edge.set_trim(Some(domain));
+            let eid = topo.add_edge(edge);
             let solid_id = scaffold(&mut topo, eid);
 
             let mut tol = Tolerance::new();
@@ -493,6 +699,7 @@ mod tests {
                     topo.edge(eid).unwrap().curve()
                 );
             };
+            assert!(topo.edge(eid).unwrap().strict_domain().is_ok());
 
             assert!(
                 (got.semi_major() - a).abs() < 1e-6 * a && (got.semi_minor() - b).abs() < 1e-6 * b,
@@ -584,7 +791,10 @@ mod tests {
             let mut topo = Topology::new();
             let v0 = topo.add_vertex(Vertex::new(par.evaluate(t0), 1e-7 * k));
             let v1 = topo.add_vertex(Vertex::new(par.evaluate(t1), 1e-7 * k));
-            let eid = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs)));
+            let domain = nurbs.domain();
+            let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs));
+            edge.set_trim(Some(domain));
+            let eid = topo.add_edge(edge);
             let solid_id = scaffold(&mut topo, eid);
 
             // Recognition tolerance is expressed relative to the model, so
@@ -596,6 +806,7 @@ mod tests {
 
             match topo.edge(eid).unwrap().curve() {
                 EdgeCurve::Parabola(got) => {
+                    assert!(topo.edge(eid).unwrap().strict_domain().is_ok());
                     assert!(
                         (got.focal_length() - focal).abs() < 1e-6 * focal,
                         "focal length {} vs {focal} at {k}x",
@@ -648,7 +859,10 @@ mod tests {
         let mut topo = Topology::new();
         let v0 = topo.add_vertex(Vertex::new(hyp.evaluate(t0), 1e-7));
         let v1 = topo.add_vertex(Vertex::new(hyp.evaluate(t1), 1e-7));
-        let eid = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs)));
+        let domain = nurbs.domain();
+        let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs));
+        edge.set_trim(Some(domain));
+        let eid = topo.add_edge(edge);
         let solid_id = scaffold(&mut topo, eid);
 
         let tol = Tolerance::new();
@@ -657,6 +871,7 @@ mod tests {
 
         match topo.edge(eid).unwrap().curve() {
             EdgeCurve::Hyperbola(got) => {
+                assert!(topo.edge(eid).unwrap().strict_domain().is_ok());
                 assert!(
                     (got.semi_major() - a).abs() < 1e-6 * a,
                     "semi_major {} vs {a}",
