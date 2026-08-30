@@ -99,7 +99,7 @@ question), v1-fillet API migration (product decision, owner's).
 
 ## §D External roadmap dispositions
 
-- **K-S1 pattern overlap — Shipped and verified (2026-08-30):** linear,
+- **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,
   direct WASM, and `executeBatchV2` repro coverage. Touching and disjoint
