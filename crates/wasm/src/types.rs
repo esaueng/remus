@@ -41,6 +41,33 @@ pub struct BoundingBoxResult {
     pub max_z: f64,
 }
 
+/// Typed result for `getFaceCurvature`.
+///
+/// Principal curvatures at `(u, v)` on a face's surface, sorted `k1 >= k2`,
+/// signed positive for convex-outward relative to the face's effective
+/// outward normal (flipping the face orientation flips `k1`, `k2`, `mean`;
+/// `gaussian` is orientation-independent). `directions` is `null` at
+/// umbilic points (sphere, plane, near-umbilic NURBS regions), where every
+/// tangent direction is principal.
+#[derive(serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub struct FaceCurvatureResult {
+    /// Largest principal curvature (convex-outward positive).
+    pub k1: f64,
+    /// Smallest principal curvature.
+    pub k2: f64,
+    /// Gaussian curvature `K = k1·k2` (orientation-independent).
+    pub gaussian: f64,
+    /// Mean curvature `H = (k1 + k2)/2` (flips with face orientation).
+    pub mean: f64,
+    /// Unit principal direction of `k1` `[x, y, z]`, or `null` at an
+    /// umbilic point.
+    pub d1: Option<Vec<f64>>,
+    /// Unit principal direction of `k2`, or `null` at an umbilic point.
+    pub d2: Option<Vec<f64>>,
+}
+
 /// Current version of the WASM face-evolution payload.
 pub const FACE_EVOLUTION_SCHEMA_VERSION: u32 = 1;
 
