@@ -22,6 +22,12 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
   (19,200 instead of 21,713.274 cubic millimetres); current native and WASM
   contracts retain the operand across the ratio/scale matrix, with exact-only
   refusal and explicit approximation provenance where the exact path is unavailable.
+- **External K-S1 disposition — cross-drilled render/measure:** done in PR
+  #144. The OpenZCAD operation sequence now has a deterministic replay bundle,
+  independent volume oracles, ratio/scale display-mesh qualification, and a
+  non-vacuous WASM `meshQuality` contract. Follow-ups remain for the separate
+  face-orientation inconsistency and the sub-millimeter fine-mesh boundary
+  residue; neither is hidden by this disposition.
 
 ## §H Horizons
 
