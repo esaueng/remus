@@ -967,10 +967,14 @@ fn fillet_radius_too_large_rejected() {
     // Unit cube has edge length 2.0 — a radius of 3.0 exceeds adjacent edges.
     let result = fillet_rolling_ball(&mut topo, solid, &edges[..1], 3.0);
     assert!(result.is_err(), "should reject radius exceeding face size");
-    let msg = format!("{}", result.unwrap_err());
     assert!(
-        msg.contains("exceeds"),
-        "error should mention exceeds: {msg}"
+        matches!(
+            result,
+            Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::RadiusTooLarge { .. }
+            ))
+        ),
+        "oversized radius should have a typed refusal"
     );
 }
 

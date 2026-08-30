@@ -91,6 +91,7 @@ this file are now §B rows there; this file remains authoritative for
 TERMINAL/REFUTED history and the campaign lessons.
 
 - O1.1a gauntlet pipeline — BLOCKED 2026-08-29: mandatory workspace registration changes `Cargo.lock`, claimed by open PR #131; see `docs/kernel-maturity/open-kernel-status.md`.
+- O1.3a fillet torture corpus — CLOSED 2026-08-30: built-or-typed dispositions and the support-width cliff are pinned by `crates/operations/tests/fillet_torture.rs` in PR #139.
 
 ## The priority filters (rules with reasons)
 
