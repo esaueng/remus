@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788120583653,
+  "lastUpdate": 1788120731892,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5075,6 +5075,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 32299025,
             "range": "± 52432",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "408be601dcaeb576bbca18751547124de8635b83",
+          "message": "ci(audit): audit the committed Cargo.lock instead of re-resolving (#158)\n\nDrop the cargo generate-lockfile step so rustsec/audit-check judges the\npinned resolution consumers actually build. New advisories still fail\n(the DB is fetched live); new dep releases now only reach CI through a\nlockfile bump. Updates the pr-workflow skill to match.",
+          "timestamp": "2026-08-30T16:06:01-04:00",
+          "tree_id": "52f5ec2e4319a05c15c53f64cacb6784ee381b53",
+          "url": "https://github.com/esaueng/remus/commit/408be601dcaeb576bbca18751547124de8635b83"
+        },
+        "date": 1788120731135,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1071554,
+            "range": "± 1276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1150566,
+            "range": "± 5074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 12065,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 789154,
+            "range": "± 1276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 32536997,
+            "range": "± 248193",
             "unit": "ns/iter"
           }
         ]
