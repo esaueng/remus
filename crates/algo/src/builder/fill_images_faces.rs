@@ -4043,7 +4043,8 @@ fn preflight_wire_edge(
             (true, false) => false,
             (false, true) => true,
             (true, true) => !pcurve_edge.forward,
-            (false, false) => unreachable!(),
+            // Statically excluded by the !direct && !reversed early return.
+            (false, false) => false,
         };
     let reverse_storage = authority_reversed
         && matches!(

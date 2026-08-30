@@ -575,6 +575,41 @@ pub fn radial_distance(p: Point3, origin: Point3, axis: Vec3) -> f64 {
     (d - axis * axis.dot(d)).length()
 }
 
+/// Refuse a closed-rim wall rebuild whose wire carries a curved edge touching
+/// the rim vertex.
+///
+/// Moving one endpoint preserves an endpoint-local Line, but it does not
+/// preserve the parameter authority of an arbitrary curved carrier. This must
+/// run BEFORE any replacement topology is allocated: callers fall back to the
+/// trim path on this error, so nothing may have landed in the arena or in the
+/// face-replacement map first.
+///
+/// # Errors
+///
+/// Returns [`BlendError::TrimmingFailure`] naming `wall_face` when a non-Line
+/// edge of the wire touches `old_rim_vertex`, and propagates topology lookup
+/// failures.
+pub fn refuse_non_line_rim_neighbors(
+    topo: &Topology,
+    wall_oriented: &[OrientedEdge],
+    rim_edge: EdgeId,
+    old_rim_vertex: VertexId,
+    wall_face: FaceId,
+) -> Result<(), BlendError> {
+    for oriented in wall_oriented {
+        if oriented.edge() == rim_edge {
+            continue;
+        }
+        let edge = topo.edge(oriented.edge())?;
+        if (edge.start() == old_rim_vertex || edge.end() == old_rim_vertex)
+            && !matches!(edge.curve(), EdgeCurve::Line)
+        {
+            return Err(BlendError::TrimmingFailure { face: wall_face });
+        }
+    }
+    Ok(())
+}
+
 /// How far a wire reaches along the axis, either side of `origin`, as
 /// `(min, max)` signed distances.
 ///
@@ -731,6 +766,71 @@ pub fn wire_radial_extremum(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn rim_neighbor_preflight_refuses_curved_seam_without_mutation() {
+        let mut topo = Topology::new();
+        let rim_circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam_arc = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(1.0, 0.0, 0.5),
+            Vec3::new(0.0, 1.0, 0.0),
+            0.5,
+            Vec3::new(0.0, 0.0, -1.0),
+        )
+        .unwrap();
+        let rim_v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let top_v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let rim_edge = topo.add_edge(Edge::new(rim_v, rim_v, EdgeCurve::Circle(rim_circle)));
+        // A curved (non-Line) edge touching the rim vertex must trip the guard.
+        let curved_seam = topo.add_edge(Edge::new(rim_v, top_v, EdgeCurve::Circle(seam_arc)));
+        let wall_oriented = vec![
+            OrientedEdge::new(rim_edge, true),
+            OrientedEdge::new(curved_seam, true),
+        ];
+        let wall_wire = topo.add_wire(Wire::new(wall_oriented.clone(), true).unwrap());
+        let wall_face = topo.add_face(Face::new(
+            wall_wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let vertices = topo.num_vertices();
+        let edges = topo.num_edges();
+        let wires = topo.num_wires();
+        let faces = topo.num_faces();
+
+        let refusal =
+            refuse_non_line_rim_neighbors(&topo, &wall_oriented, rim_edge, rim_v, wall_face);
+        assert!(matches!(
+            refusal,
+            Err(BlendError::TrimmingFailure { face }) if face == wall_face
+        ));
+        // The guard takes &Topology, so refusal cannot have mutated the arena.
+        assert_eq!(topo.num_vertices(), vertices);
+        assert_eq!(topo.num_edges(), edges);
+        assert_eq!(topo.num_wires(), wires);
+        assert_eq!(topo.num_faces(), faces);
+
+        // A Line seam in the same position passes.
+        let line_seam = topo.add_edge(Edge::new(rim_v, top_v, EdgeCurve::Line));
+        let ok_oriented = vec![
+            OrientedEdge::new(rim_edge, true),
+            OrientedEdge::new(line_seam, true),
+        ];
+        assert!(
+            refuse_non_line_rim_neighbors(&topo, &ok_oriented, rim_edge, rim_v, wall_face).is_ok()
+        );
+    }
 
     #[test]
     #[allow(clippy::unwrap_used)]

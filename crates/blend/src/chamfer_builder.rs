@@ -18,8 +18,8 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic;
 use crate::builder_utils::{
-    add_certified_curve_edge, project_onto_axis, radial_distance, sample_nurbs_endpoints,
-    wire_axial_range, wire_radial_extremum,
+    add_certified_curve_edge, project_onto_axis, radial_distance, refuse_non_line_rim_neighbors,
+    sample_nurbs_endpoints, wire_axial_range, wire_radial_extremum,
 };
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
@@ -724,22 +724,13 @@ fn assemble_closed_rim(
     let wall_oriented: Vec<OrientedEdge> = topo.wire(wall_outer_wire)?.edges().to_vec();
     let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
 
-    // Moving one endpoint preserves an endpoint-local Line, but it does not
-    // preserve the parameter authority of an arbitrary curved carrier. Refuse
-    // before allocating any replacement topology.
-    for oriented in &wall_oriented {
-        if oriented.edge() == rim.rim_edge {
-            continue;
-        }
-        let edge = topo.edge(oriented.edge())?;
-        if (edge.start() == old_rim_vertex || edge.end() == old_rim_vertex)
-            && !matches!(edge.curve(), EdgeCurve::Line)
-        {
-            return Err(BlendError::TrimmingFailure {
-                face: rim.wall_face,
-            });
-        }
-    }
+    refuse_non_line_rim_neighbors(
+        topo,
+        &wall_oriented,
+        rim.rim_edge,
+        old_rim_vertex,
+        rim.wall_face,
+    )?;
 
     // Vertices for the two closed contact circles (start == end → degenerate).
     let plate_point = rim.plate_circle.evaluate(0.0);

@@ -20,7 +20,8 @@ use crate::analytic;
 use crate::blend_func::{ConstRadBlend, EvolRadBlend};
 use crate::builder_utils::{
     FlippedNormalSurface, add_certified_curve_edge, project_onto_axis, radial_distance,
-    sample_nurbs_endpoints, surface_ref_or_adapter, wire_axial_range, wire_radial_extremum,
+    refuse_non_line_rim_neighbors, sample_nurbs_endpoints, surface_ref_or_adapter,
+    wire_axial_range, wire_radial_extremum,
 };
 use crate::corner;
 use crate::g1_chain;
@@ -1293,6 +1294,15 @@ fn assemble_closed_rim(
         }
     }
 
+    let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
+    refuse_non_line_rim_neighbors(
+        topo,
+        &wall_oriented,
+        rim.rim_edge,
+        old_rim_vertex,
+        rim.wall_face,
+    )?;
+
     // Vertices for the two closed contact circles (start == end → degenerate).
     let plate_point = rim.plate_circle.evaluate(0.0);
     let wall_point = rim.wall_circle.evaluate(0.0);
@@ -1405,7 +1415,6 @@ fn assemble_closed_rim(
     // any seam edge touching the old rim vertex so its lower endpoint becomes
     // the new wall-circle vertex (otherwise the wire no longer closes — the
     // seam would still start at the old rim height).
-    let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
     // A seam edge may appear twice in the wall wire (fwd + rev); rebuild each
     // distinct edge once so both references share the new edge (otherwise the
     // two copies each become a free edge).
