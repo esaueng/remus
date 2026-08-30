@@ -176,6 +176,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "fuse"
         | "cut"
         | "intersect"
+        | "booleanWithQuality"
         | "fuseWithOptions"
         | "cutWithOptions"
         | "intersectWithOptions"
@@ -754,6 +755,59 @@ impl BrepKernel {
                 let result = boolean(self.topo_mut(), BooleanOp::Intersect, a_id, b_id)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "booleanWithQuality" => {
+                use remus_math::context::{FallbackPolicy, OperationContext};
+                use remus_operations::boolean::{BooleanQuality, boolean_with_context};
+
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                let operation = args["operation"].as_str().ok_or_else(|| {
+                    StructuredWasmError::invalid_argument(
+                        "missing or invalid 'operation' string",
+                        Some("operation"),
+                    )
+                })?;
+                let bool_op = match operation {
+                    "fuse" | "union" => BooleanOp::Fuse,
+                    "cut" | "difference" => BooleanOp::Cut,
+                    "intersect" | "intersection" => BooleanOp::Intersect,
+                    _ => {
+                        return Err(StructuredWasmError::invalid_argument(
+                            format!("unknown boolean op: {operation}"),
+                            Some("operation"),
+                        ));
+                    }
+                };
+                let exact_only = match args.get("exactOnly") {
+                    None | Some(serde_json::Value::Null) => false,
+                    Some(value) => value.as_bool().ok_or_else(|| {
+                        StructuredWasmError::invalid_argument(
+                            "invalid 'exactOnly': expected boolean",
+                            Some("exactOnly"),
+                        )
+                    })?,
+                };
+                let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
+                let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
+                let context = if exact_only {
+                    OperationContext::new().with_fallback(FallbackPolicy::ExactOnly)
+                } else {
+                    OperationContext::new()
+                };
+                let outcome = boolean_with_context(self.topo_mut(), bool_op, a_id, b_id, &context)
+                    .map_err(StructuredWasmError::from)?;
+                match outcome.quality {
+                    BooleanQuality::Exact => Ok(serde_json::json!({
+                        "solid": solid_id_to_u32(outcome.solid),
+                        "quality": "exact"
+                    })),
+                    BooleanQuality::Approximate { deflection } => Ok(serde_json::json!({
+                        "solid": solid_id_to_u32(outcome.solid),
+                        "quality": "approximate",
+                        "deflection": deflection
+                    })),
+                }
             }
             "fuseWithOptions" | "cutWithOptions" | "intersectWithOptions" => {
                 let a = get_u32(args, "solidA")?;
@@ -2565,6 +2619,54 @@ mod batch_contract_tests {
         ));
         assert_eq!(response[1]["error"]["code"], "operation_failed");
         assert_eq!(response[1]["error"]["details"]["operation"], "cut");
+    }
+
+    #[test]
+    fn tangent_boss_batch_contract_refuses_exact_or_discloses_approximation() {
+        let mut kernel = BrepKernel::new();
+        let response = parse(&kernel.execute_batch_v2(
+            r#"[
+                {"op":"makeBox","args":{"width":60,"height":40,"depth":8}},
+                {"op":"makeCylinder","args":{"radius":10,"height":16}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,20,0,0,1,0,0,0,0,1]}},
+                {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true}},
+                {"op":"volume","args":{"solid":0,"deflection":0.01}},
+                {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1}},
+                {"op":"volume","args":{"solid":5,"deflection":0.01}},
+                {"op":"validateSolid","args":{"solid":5}}
+            ]"#,
+        ));
+
+        assert_eq!(response[3]["error"]["code"], "operation_failed");
+        assert_eq!(response[3]["error"]["category"], "quality_refused");
+        assert_eq!(
+            response[3]["error"]["details"]["kernelCode"],
+            "exact_only_unattainable"
+        );
+        assert_eq!(
+            response[3]["error"]["details"]["operation"],
+            "booleanWithQuality"
+        );
+        assert_eq!(response[4]["ok"], 19_200.0, "refusal must roll back");
+        assert_eq!(
+            response[5]["ok"]["solid"], 5,
+            "rolled-back handles must not alias the later result"
+        );
+        assert_eq!(response[5]["ok"]["quality"], "approximate");
+        assert_eq!(response[5]["ok"]["deflection"], 0.1);
+        let volume = response[6]["ok"].as_f64().expect("numeric volume");
+        let radius = 10.0_f64;
+        let d = -0.001_f64;
+        let wall_from_axis = radius + d;
+        let outside_segment = radius.powi(2) * (wall_from_axis / radius).acos()
+            - wall_from_axis * (radius.powi(2) - wall_from_axis.powi(2)).sqrt();
+        let shared_area = std::f64::consts::PI * radius.powi(2) - outside_segment;
+        let expected = 19_200.0 + std::f64::consts::PI * radius.powi(2) * 16.0 - shared_area * 8.0;
+        assert!(
+            (volume - expected).abs() / expected < 4e-3,
+            "tangent-boss fallback volume {volume} against {expected}"
+        );
+        assert_eq!(response[7]["ok"], 0);
     }
 
     #[test]

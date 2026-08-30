@@ -341,6 +341,15 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
     fn from(error: remus_operations::OperationsError) -> Self {
         let message = error.to_string();
         match error {
+            remus_operations::OperationsError::ExactOnlyUnattainable => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::QualityRefused.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("exact_only_unattainable"),
+                );
+                structured
+            }
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }

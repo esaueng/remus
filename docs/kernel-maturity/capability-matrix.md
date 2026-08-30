@@ -97,9 +97,13 @@ does not itself promote or demote anything.
   (as fast paths under the contract) or retired.
 - Known qualified evidence: cavity semantics regressions, fail-closed bounded
   mesh fallback, 64-cut determinism gate, analytic cylinder-crossing-plane
-  overlap sweep with operand-loss acceptance gate.
-- Known Unsupported-untyped / Partial cells: exact tangency (falls over to the
-  approximate path; pinch vertex not built), sliver crossings (~1e-5 to
+  overlap sweep with operand-loss acceptance gate. The tangent-boss witness is
+  also pinned at d/r +0.01, 0, and -0.01 over 1e-3/1/1e3 scale: the 1e-3 and
+  unit tangent cells are exact, while the 1e3 tangent cell refuses under
+  `ExactOnly` and succeeds only with disclosed approximation quality. Native,
+  direct WASM, batch-v2, and versioned repro coverage all retain the operand.
+- Known Unsupported-untyped / Partial cells: exact plane/cylinder tangency is
+  not generally qualified beyond those witnesses; sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
   seam-crossing, nested-shell, sheet-solid, and multi-body General Fuse cells
   Unqualified.

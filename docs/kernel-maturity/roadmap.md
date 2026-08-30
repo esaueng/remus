@@ -17,6 +17,11 @@ are living documents: update the relevant row in the same PR that changes
 its state. Before claiming anything: `gh pr list --state open` (R6).
 
 - **Drafted:** 2026-08-29, baseline `main` @ `3c232e8`.
+- **External K-S1 disposition — tangent-boss operand drop: done (PR #TBD,
+  2026-08-30).** The historical pre-fix sequence returned the unchanged plate
+  (19,200 instead of 21,713.274 cubic millimetres); current native and WASM contracts retain
+  the operand across the ratio/scale matrix, with exact-only refusal and
+  explicit approximation provenance where the exact path is unavailable.
 
 ## §H Horizons
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **wasm:** preserve the `quality_refused` / `exact_only_unattainable`
+  diagnostic through `executeBatchV2` and expose `booleanWithQuality` through
+  batch dispatch.
+
+### Tests
+
+* **boolean:** qualify the historical tangent-boss operand-loss fix with a
+  versioned WASM repro, closed-form ratio/scale oracles, and exact-or-disclosed
+  fallback policy checks.
+
 ## 2.130.0
 
 ### Licensing

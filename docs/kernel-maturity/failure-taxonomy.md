@@ -25,7 +25,9 @@ Implementation: the categories and the native code registry live in
 currently implemented for `MathError`, `TopologyError`, and `AlgoError` with
 pinned registry tests. `executeBatchV2` errors carry `category` and, when the
 failure originated in a typed native error, `details.kernelCode` — see the
-book's WebAssembly chapter for the wire contract.
+book's WebAssembly chapter for the wire contract. The batch
+`booleanWithQuality` path pins `ExactOnlyUnattainable` as
+`quality_refused` / `exact_only_unattainable`, including rollback.
 
 ## Categories
 
