@@ -97,6 +97,16 @@ watertightness (below the chase filter until a live case routes there),
 kumiko lattice family (probe only per the roadmap skill's engine-side
 question), v1-fillet API migration (product decision, owner's).
 
+## §D External roadmap dispositions
+
+- **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
+  circular, and grid patterns now refuse measured material overlap with the
+  typed `pattern_instances_overlap` contract and full rollback across native,
+  direct WASM, and `executeBatchV2` repro coverage. Touching and disjoint
+  instances remain supported across a 1e-3/1/1e3 scale sweep. Exact instance
+  fusing is intentionally deferred until the separately queued
+  pattern-through-fuse provenance work can make its evolution claims truthful.
+
 ## §S Session playbook
 
 Match session type to lane; check both ledgers and `gh pr list` first.
