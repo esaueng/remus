@@ -245,6 +245,10 @@ disclosed, not silent.
 
 ### 2.8 OperationContext completion: budgets & cancellation (M)
 
+— partial: boolean/NURBS-SSI cooperative cancellation is typed,
+transactional, and WASM-bound; Newton and parameter-space budgets plus wider
+operation-family adoption remain (this PR).
+
 `crates/math/src/context.rs` · `crates/algo/src/pave_filler/` ·
 `crates/math/src/nurbs/intersection/` · `crates/wasm/src/bindings/`
 

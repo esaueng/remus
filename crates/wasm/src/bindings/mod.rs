@@ -7,6 +7,7 @@
 pub mod assembly;
 pub mod batch;
 pub mod booleans;
+pub mod cancellation;
 pub mod checkpoint;
 pub mod evolution;
 pub mod gcs_sketch;
