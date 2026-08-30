@@ -175,6 +175,16 @@ impl Default for WorkBudgets {
     }
 }
 
+/// The default per-entity tolerance raise cap (RFC 0004, Stage 1): one
+/// thousand times the default linear tolerance.
+///
+/// Mirrors the widest acceptance band the boolean currently uses (the
+/// section-endpoint weld band in the GFA's face-face phase), so a raise
+/// beyond it is by definition outside every band the engine acts within
+/// today. Operations may raise an entity tolerance up to this cap; a raise
+/// beyond it is a typed error, never a clamp.
+pub const DEFAULT_MAX_ENTITY_TOLERANCE: f64 = 1000.0 * Tolerance::new().linear;
+
 /// Explicit per-operation policy: tolerances and work budgets.
 ///
 /// The default context ([`OperationContext::new`]) reproduces legacy
@@ -195,11 +205,17 @@ pub struct OperationContext {
     /// Optional cooperative cancellation signal. `None` preserves the legacy
     /// non-cancellable behavior without allocating a token per operation.
     pub cancellation: Option<CancellationToken>,
+    /// Upper bound on any single entity-tolerance raise an operation may
+    /// assign (RFC 0004, "growth discipline"): a raise above the cap is a
+    /// typed error, not a clamp. Defaults to
+    /// [`DEFAULT_MAX_ENTITY_TOLERANCE`]. Consumed by the raise paths as the
+    /// tolerant-modeling stages land.
+    pub max_entity_tolerance: f64,
 }
 
 impl OperationContext {
-    /// The default context: default [`Tolerance`] and default
-    /// [`WorkBudgets`].
+    /// The default context: default [`Tolerance`], default
+    /// [`WorkBudgets`], and the default entity-tolerance cap.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -209,6 +225,7 @@ impl OperationContext {
                 budget: DEFAULT_APPROXIMATION_BUDGET,
             },
             cancellation: None,
+            max_entity_tolerance: DEFAULT_MAX_ENTITY_TOLERANCE,
         }
     }
 
@@ -237,6 +254,13 @@ impl OperationContext {
     #[must_use]
     pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
         self.cancellation = Some(cancellation);
+        self
+    }
+
+    /// Returns the context with the given entity-tolerance raise cap.
+    #[must_use]
+    pub const fn with_max_entity_tolerance(mut self, cap: f64) -> Self {
+        self.max_entity_tolerance = cap;
         self
     }
 
@@ -269,6 +293,8 @@ impl Default for OperationContext {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+
     use super::*;
 
     #[test]
@@ -296,6 +322,25 @@ mod tests {
         assert_eq!(ctx.tolerance, Tolerance::loose());
         assert_eq!(ctx.budgets.march_steps, 7);
         assert_eq!(ctx.budgets.queue_size, 100);
+    }
+
+    #[test]
+    fn default_entity_tolerance_cap_mirrors_the_boolean_weld_band_scale() {
+        let ctx = OperationContext::new();
+        assert_eq!(ctx.max_entity_tolerance, DEFAULT_MAX_ENTITY_TOLERANCE);
+        assert_eq!(
+            ctx.max_entity_tolerance,
+            1000.0 * Tolerance::new().linear,
+            "the default cap is 1000× the global linear tolerance (RFC 0004)"
+        );
+
+        let raised = OperationContext::new().with_max_entity_tolerance(2.5e-3);
+        assert_eq!(raised.max_entity_tolerance, 2.5e-3);
+        assert_eq!(
+            raised.tolerance,
+            Tolerance::new(),
+            "the cap builder replaces only the cap field"
+        );
     }
 
     #[test]

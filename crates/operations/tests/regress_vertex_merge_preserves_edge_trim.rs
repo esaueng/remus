@@ -30,7 +30,7 @@ fn unit_box(topo: &mut Topology) -> (SolidId, Vec<EdgeId>) {
     for &e in &edges {
         let em = topo.edge_mut(e).unwrap();
         em.set_trim(Some(TRIM));
-        em.set_tolerance(Some(EDGE_TOL));
+        em.set_tolerance(Some(EDGE_TOL)).unwrap();
     }
     (solid, edges)
 }

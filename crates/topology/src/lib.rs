@@ -154,6 +154,57 @@ pub enum TopologyError {
         value: f64,
     },
 
+    /// A tolerance raise violates the validated-setter contract (RFC 0004,
+    /// Stage 1): the value is non-finite or negative, so no predicate could
+    /// compare against it honestly. The stored value is left unchanged.
+    #[error("invalid {entity} tolerance {value}: must be finite and non-negative")]
+    InvalidToleranceValue {
+        /// Which entity kind the rejected raise targeted.
+        entity: &'static str,
+        /// The rejected value.
+        value: f64,
+    },
+
+    /// A vertex's tolerance ball fails the ball-containment invariant
+    /// (RFC 0004): an incident edge's curve, evaluated at that edge end's
+    /// parameter, lies outside the vertex's ball.
+    #[error(
+        "edge {edge:?} leaves the ball of vertex {vertex:?}: curve endpoint \
+         is {deviation} from the vertex point (ball {tolerance})"
+    )]
+    VertexBallExceeded {
+        /// The vertex whose ball is violated.
+        vertex: vertex::VertexId,
+        /// The incident edge whose end strays outside the ball.
+        edge: edge::EdgeId,
+        /// Measured distance from the curve's endpoint evaluation to the
+        /// vertex point, in model units.
+        deviation: f64,
+        /// The ball radius that was claimed.
+        tolerance: f64,
+    },
+
+    /// An edge use's pcurve deviates from the 3D edge curve beyond the
+    /// edge's effective tolerance (`EdgeTube`, RFC 0004 invariant 2).
+    #[error(
+        "pcurve of edge {edge:?} on face {face:?} deviates {max_deviation} \
+         from the 3D curve, beyond the effective tube tolerance {tolerance} \
+         at parameter {at_parameter}"
+    )]
+    EdgeTubeExceeded {
+        /// The edge whose tube is violated.
+        edge: edge::EdgeId,
+        /// The face carrying the pcurve.
+        face: face::FaceId,
+        /// Largest measured 3D↔p-curve deviation (SameParameter and
+        /// SameRange both measured; the larger wins), in model units.
+        max_deviation: f64,
+        /// Witness parameter of the deviation.
+        at_parameter: f64,
+        /// The effective tube tolerance that was exceeded.
+        tolerance: f64,
+    },
+
     /// A pcurve's surface image deviates from the 3D edge beyond tolerance
     /// under the shared parameterization (`SameParameter`).
     #[error(
@@ -338,6 +389,49 @@ impl remus_math::diagnostic::ToDiagnostic for TopologyError {
             )
             .with_detail("channel", *channel)
             .with_detail("value", *value),
+            Self::InvalidToleranceValue { entity, value } => {
+                let diagnostic = Diagnostic::new(
+                    FailureCategory::InvalidInput,
+                    "entity_tolerance_invalid",
+                    message,
+                )
+                .with_detail("entity", *entity);
+                if value.is_finite() {
+                    diagnostic.with_detail("value", *value)
+                } else {
+                    diagnostic
+                }
+            }
+            Self::VertexBallExceeded {
+                vertex,
+                edge,
+                deviation,
+                tolerance,
+            } => Diagnostic::new(
+                FailureCategory::ToleranceViolation,
+                "vertex_ball_violation",
+                message,
+            )
+            .with_detail("vertex", vertex.index())
+            .with_detail("edge", edge.index())
+            .with_detail("deviation", *deviation)
+            .with_detail("tolerance", *tolerance),
+            Self::EdgeTubeExceeded {
+                edge,
+                face,
+                max_deviation,
+                at_parameter,
+                tolerance,
+            } => Diagnostic::new(
+                FailureCategory::ToleranceViolation,
+                "edge_tube_violation",
+                message,
+            )
+            .with_detail("edge", edge.index())
+            .with_detail("face", face.index())
+            .with_detail("maxDeviation", *max_deviation)
+            .with_detail("atParameter", *at_parameter)
+            .with_detail("tolerance", *tolerance),
             Self::JournalDuplicateEvent { ordinal } => Diagnostic::new(
                 FailureCategory::InvalidInput,
                 "journal_duplicate_event",

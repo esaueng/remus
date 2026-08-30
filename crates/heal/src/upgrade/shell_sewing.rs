@@ -681,7 +681,7 @@ mod tests {
         for &eid in &edge_ids {
             let e = topo.edge_mut(eid).unwrap();
             e.set_trim(Some((0.0, 1.0)));
-            e.set_tolerance(Some(3.5e-8));
+            e.set_tolerance(Some(3.5e-8)).unwrap();
         }
 
         sew_shell(&mut topo, shell_id, 1e-6).unwrap();
