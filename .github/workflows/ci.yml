@@ -70,6 +70,20 @@ jobs:
       - name: Complexity guards
         run: cargo nextest run -p remus-operations --features perf-counters -E 'test(scaling_)'
 
+  approx-census:
+    name: Approximation Census
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test census contract
+        run: python3 scripts/check-approx-census.py --self-test
+      - name: Compare approximation census
+        run: python3 scripts/check-approx-census.py
+
   platform-test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -390,7 +404,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, workflow-contracts, deny, audit, docs, machete, secrets-scan, taplo, apache-lineage, doc-paths]
+    needs: [fmt, clippy, test, approx-census, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, workflow-contracts, deny, audit, docs, machete, secrets-scan, taplo, apache-lineage, doc-paths]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs

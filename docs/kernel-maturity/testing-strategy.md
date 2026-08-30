@@ -75,6 +75,17 @@ scales, cavities and nested shells, high-degree NURBS, realistic mechanical
 parts, long operation sequences. Corpus replay is deterministic and becomes a
 CI stage.
 
+## Approximation census
+
+CI runs `scripts/check-approx-census.py` against the committed
+`crates/operations/examples/approx_census.snapshot`. The snapshot is a
+semantic ratchet: operation and case identity, result face count,
+exact/fallback/error provenance, and revolve surface counts are authoritative.
+Wall-clock timings and rebuild-local arena IDs are normalized away. Any other
+movement fails with a reviewable diff; an intentional change updates the
+snapshot in the same PR after the affected geometry has its own oracle-backed
+regression.
+
 ## Performance and resource qualification
 
 Track runtime, peak memory, entity growth, iteration counts, generated
