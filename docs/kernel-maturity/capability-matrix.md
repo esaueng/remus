@@ -97,7 +97,10 @@ does not itself promote or demote anything.
   (as fast paths under the contract) or retired.
 - Known qualified evidence: cavity semantics regressions, fail-closed bounded
   mesh fallback, 64-cut determinism gate, analytic cylinder-crossing-plane
-  overlap sweep with operand-loss acceptance gate.
+  overlap sweep with operand-loss acceptance gate, and exact coaxial blind-bore
+  cuts across wall/radius 0.01–0.10 and 1e-3–1e3 scale
+  (`regress_thin_wall_coaxial_bore.rs`; six canonical edges, closed-form
+  volume, closed B-Rep, and watertight indexed meshes).
 - Known Unsupported-untyped / Partial cells: exact tangency (falls over to the
   approximate path; pinch vertex not built), sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
@@ -119,8 +122,10 @@ does not itself promote or demote anything.
   sphere–cylinder.
 - Known gaps: remaining surface pairs delegate to the legacy path and are
   wrapped as Unclassified/incomplete (declared, not silent); curve-curve
-  and curve-surface qualification pending; hard iteration budgets
-  incomplete; conic curve cells (hyperbola, parabola) Unqualified;
+  and curve-surface qualification pending; hard iteration budgets remain
+  incomplete. NURBS SSI is cooperatively cancellable at phase and marcher
+  checkpoints through `OperationContext`; conic curve cells (hyperbola,
+  parabola) Unqualified;
   periodic seam parameter reporting and pole cells Unqualified.
 
 ### Blends (fillet, chamfer, blend resize/removal)
@@ -147,6 +152,19 @@ does not itself promote or demote anything.
 - Known Unsupported-typed cells (kept typed, target of future work): global
   self-intersection removal; NURBS-NURBS 3D intersection in the offset path;
   excluded faces on cavity solids.
+
+### Direct edits (push/pull and move face)
+
+- Ledger row: "Push/pull face" (Stable for the declared domain, guarded).
+- **Qualified cell:** moving either untrimmed cap of a three-face analytic
+  cylinder is exact for positive and negative distances, both cap sides,
+  rotated and translated frames, and 1e-3/1/1e3 model scales. The height-collapse
+  boundary is a typed invalid-input error. Native closed-form volume and
+  topology oracles plus the versioned WASM `push-pull-cylinder-top-cap` repro
+  bundle pin the public contract.
+- Known Partial/Unqualified cells: decorated cylindrical solids and general
+  planar faces retain the validated boolean/re-limitation paths; generalized
+  curved-face re-limitation and direct-edit evolution remain roadmap work.
 
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 
@@ -369,9 +387,11 @@ claim, and they are the first implementation targets of the program:
    SameRange validation cannot be stated, let alone enforced.
 3. **Face-only, one-level evolution.** No vertex/edge events, no lineage
    graph, no persistent references.
-4. **No operation context.** Tolerance, budget, fallback, cancellation, and
-   determinism options are not carried explicitly; high-risk paths use local
-   constants.
+4. **Partial operation-context coverage.** Public booleans carry tolerance,
+   fallback policy, NURBS marching budgets, and cooperative cancellation
+   explicitly. Newton/subdivision/generated-topology/memory budgets,
+   parameter-space tolerance, determinism policy, and non-boolean operation
+   families remain local or unmigrated.
 
 ## Maintenance rules
 

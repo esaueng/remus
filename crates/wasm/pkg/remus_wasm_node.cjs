@@ -265,6 +265,29 @@ class BrepKernel {
         return ret >>> 0;
     }
     /**
+     * Performs a boolean governed by a cooperative cancellation token.
+     *
+     * Cancellation is typed (`operation_cancelled`) and transactional: no
+     * partial topology is retained. Result quality follows
+     * `booleanWithQuality`, including the optional exact-only policy.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @param {OperationCancellationToken} token
+     * @param {boolean | null} [exact_only]
+     * @returns {CancellableBooleanResult}
+     */
+    booleanWithCancellation(op, a, b, token, exact_only) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        _assertClass(token, OperationCancellationToken);
+        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Perform a boolean with disclosed result quality.
      *
      * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
@@ -6933,6 +6956,53 @@ if (Symbol.dispose) JsVec3.prototype[Symbol.dispose] = JsVec3.prototype.free;
 exports.JsVec3 = JsVec3;
 
 /**
+ * A one-shot cooperative cancellation signal for a modeling operation.
+ *
+ * Clones share one monotonic flag. Native multithreaded hosts can signal it
+ * concurrently; cancelling before a call also refuses that call without
+ * touching topology. A single-threaded browser worker cannot process a new
+ * JS call while WASM is running, so active browser cancellation still needs
+ * the app's worker/shared-memory transport.
+ */
+class OperationCancellationToken {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        OperationCancellationTokenFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_operationcancellationtoken_free(ptr, 0);
+    }
+    /**
+     * Requests cancellation. The request cannot be reset.
+     */
+    cancel() {
+        wasm.operationcancellationtoken_cancel(this.__wbg_ptr);
+    }
+    /**
+     * Whether cancellation has been requested.
+     * @returns {boolean}
+     */
+    isCancelled() {
+        const ret = wasm.operationcancellationtoken_isCancelled(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Creates an uncancelled token.
+     */
+    constructor() {
+        const ret = wasm.operationcancellationtoken_new();
+        this.__wbg_ptr = ret;
+        OperationCancellationTokenFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) OperationCancellationToken.prototype[Symbol.dispose] = OperationCancellationToken.prototype.free;
+exports.OperationCancellationToken = OperationCancellationToken;
+
+/**
  * Clears the stored panic message so later reads reflect only new panics.
  */
 function clearLastPanicMessage() {
@@ -7110,11 +7180,20 @@ const JsPoint3Finalization = (typeof FinalizationRegistry === 'undefined')
 const JsVec3Finalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jsvec3_free(ptr, 1));
+const OperationCancellationTokenFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_operationcancellationtoken_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_externrefs.set(idx, obj);
     return idx;
+}
+
+function _assertClass(instance, klass) {
+    if (!(instance instanceof klass)) {
+        throw new Error(`expected instance of ${klass.name}`);
+    }
 }
 
 function debugString(val) {

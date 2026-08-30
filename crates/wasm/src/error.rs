@@ -63,6 +63,7 @@ pub(crate) enum WasmErrorCode {
     InvalidHandle,
     TopologyError,
     OperationFailed,
+    Cancelled,
     #[cfg_attr(not(feature = "io"), allow(dead_code))]
     ResourceLimitExceeded,
     InternalError,
@@ -83,6 +84,7 @@ impl WasmErrorCode {
                 FailureCategory::ResourceLimit
             }
             Self::TopologyError => FailureCategory::InvalidTopology,
+            Self::Cancelled => FailureCategory::Cancelled,
             Self::OperationFailed | Self::InternalError => FailureCategory::Internal,
         }
     }
@@ -320,6 +322,7 @@ impl From<remus_math::MathError> for StructuredWasmError {
     fn from(error: remus_math::MathError) -> Self {
         let code = match &error {
             remus_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
+            remus_math::MathError::Cancelled => WasmErrorCode::Cancelled,
             _ => WasmErrorCode::InvalidArgument,
         };
         Self::new(code, error.to_string()).with_kernel_diagnostic(&error)
@@ -346,6 +349,9 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             }
             remus_operations::OperationsError::Topology(error) => Self::from(error),
             remus_operations::OperationsError::Math(error) => Self::from(error),
+            remus_operations::OperationsError::Algo(remus_algo::error::AlgoError::Math(error)) => {
+                Self::from(error)
+            }
             remus_operations::OperationsError::Check(error) => {
                 let mut structured = Self::from(error);
                 structured.message = message;
