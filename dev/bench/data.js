@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788088994676,
+  "lastUpdate": 1788090556008,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4157,6 +4157,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41614596,
             "range": "± 64227",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9dfead7a8692faaf79e1ec919268c2698d4daad7",
+          "message": "docs(design): draft RFC 0005 body taxonomy (#127)",
+          "timestamp": "2026-08-30T07:40:31-04:00",
+          "tree_id": "cab8af1c0526a8f75cf96509cf531c851c2dab3b",
+          "url": "https://github.com/esaueng/remus/commit/9dfead7a8692faaf79e1ec919268c2698d4daad7"
+        },
+        "date": 1788090555337,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1317787,
+            "range": "± 2422",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1405499,
+            "range": "± 2761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14737,
+            "range": "± 52",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 986407,
+            "range": "± 2866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39951907,
+            "range": "± 117786",
             "unit": "ns/iter"
           }
         ]
