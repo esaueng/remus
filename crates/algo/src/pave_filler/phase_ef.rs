@@ -156,7 +156,7 @@ fn sample_wire_outline(
     tol: Tolerance,
 ) -> Result<(Vec<Point3>, f64), AlgoError> {
     let mut points = Vec::new();
-    let mut max_chord = 0.0_f64;
+    let mut max_boundary_error = 0.0_f64;
     let wire = topo.wire(wire_id)?;
     let oriented: Vec<_> = wire.edges().to_vec();
     let mut prev: Option<Point3> = None;
@@ -167,6 +167,7 @@ fn sample_wire_outline(
         let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
         let is_curved = !matches!(edge.curve(), EdgeCurve::Line);
         let n = N_BOUNDARY_SAMPLES;
+        let mut prev_t: Option<f64> = None;
         // Sample inclusive of the edge's end vertex (0..=n) so the closing
         // segment of a closed wire reaches the true endpoint; consecutive
         // edges share a vertex, so dedup against the previous point.
@@ -177,13 +178,34 @@ fn sample_wire_outline(
             let pt = edge.curve().evaluate_with_endpoints(t, start_pos, end_pos);
             if let Some(p) = prev {
                 if (pt - p).length() <= tol.linear {
+                    prev_t = Some(t);
                     continue;
                 }
                 if is_curved {
-                    max_chord = max_chord.max((pt - p).length());
+                    let error = if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                        let mid = edge.curve().evaluate_with_endpoints(
+                            f64::midpoint(prev_t.unwrap_or(t), t),
+                            start_pos,
+                            end_pos,
+                        );
+                        let chord = pt - p;
+                        let chord_len_sq = chord.length_squared();
+                        if chord_len_sq <= tol.linear * tol.linear {
+                            0.0
+                        } else {
+                            let along = ((mid - p).dot(chord) / chord_len_sq).clamp(0.0, 1.0);
+                            (mid - (p + chord * along)).length()
+                        }
+                    } else {
+                        // A half-chord is conservative for boundary types whose
+                        // curvature extrema are not available here.
+                        (pt - p).length() * 0.5
+                    };
+                    max_boundary_error = max_boundary_error.max(error);
                 }
             }
             prev = Some(pt);
+            prev_t = Some(t);
             points.push(pt);
         }
     }
@@ -196,7 +218,7 @@ fn sample_wire_outline(
     {
         points.pop();
     }
-    Ok((points, max_chord))
+    Ok((points, max_boundary_error))
 }
 
 /// Sample a face's boundary into an AABB plus, for planar faces, in-plane
@@ -209,15 +231,15 @@ fn build_face_containment(
     let face = topo.face(fid)?;
     let surface = face.surface().clone();
 
-    let (outer_points, mut max_chord) = sample_wire_outline(topo, face.outer_wire(), tol)?;
+    let (outer_points, mut max_boundary_error) = sample_wire_outline(topo, face.outer_wire(), tol)?;
     let mut all_points = outer_points.clone();
 
     // Hole outlines get the same treatment as the outer wire — they are face
     // boundary too, and their sagitta feeds the same margin.
     let mut hole_points: Vec<Vec<Point3>> = Vec::new();
     for &inner_wid in face.inner_wires() {
-        let (pts, chord) = sample_wire_outline(topo, inner_wid, tol)?;
-        max_chord = max_chord.max(chord);
+        let (pts, boundary_error) = sample_wire_outline(topo, inner_wid, tol)?;
+        max_boundary_error = max_boundary_error.max(boundary_error);
         all_points.extend_from_slice(&pts);
         if pts.len() >= 3 {
             hole_points.push(pts);
@@ -234,12 +256,13 @@ fn build_face_containment(
 
     if let FaceSurface::Plane { normal, .. } = &surface {
         if outer_points.len() >= 3 {
-            // Sampled chords undercut curved boundary arcs by at most the
-            // sagitta. For an arc of half-angle φ the sagitta/chord ratio is
-            // tan(φ/2)/2, which reaches 0.5 at a 180° arc, so half the chord
-            // length is a conservative bound for sub-semicircle samples.
-            // The margin keeps true near-boundary crossings accepted.
-            let margin = (max_chord * 0.5).max(tol.linear * 10.0);
+            // Sampled chords undercut curved boundaries. Circle segments use
+            // their measured midpoint sagitta; other curves retain the
+            // conservative half-chord bound. Using half a circle chord here
+            // inflated an r=30.4 disc by nearly 3 mm, so a nearby r=32.9
+            // cylinder seam was falsely classified inside the disc and split
+            // at the blind-bore floor.
+            let margin = max_boundary_error.max(tol.linear * 10.0);
             let frame = PlaneFrame::from_normal_and_point(*normal, outer_points[0]);
             let polygon: Vec<Point2> = outer_points.iter().map(|&p| frame.project(p)).collect();
             let holes: Vec<Vec<Point2>> = hole_points

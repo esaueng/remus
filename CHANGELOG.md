@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the
+  wall/radius boundary and scale sweep.
+
 ## 2.130.0
 
 ### Licensing
