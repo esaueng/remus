@@ -97,7 +97,10 @@ does not itself promote or demote anything.
   (as fast paths under the contract) or retired.
 - Known qualified evidence: cavity semantics regressions, fail-closed bounded
   mesh fallback, 64-cut determinism gate, analytic cylinder-crossing-plane
-  overlap sweep with operand-loss acceptance gate.
+  overlap sweep with operand-loss acceptance gate. The CI-ratcheted
+  `approx_census` additionally exposes exact/fallback/error path and result
+  face-count drift across its representative operation matrix; it is a drift
+  detector, not by itself qualification evidence for a cell.
 - Known Unsupported-untyped / Partial cells: exact tangency (falls over to the
   approximate path; pinch vertex not built), sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;

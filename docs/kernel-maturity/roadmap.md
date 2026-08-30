@@ -26,6 +26,10 @@ P-Class 2.0 partially landed (#125 FF section ranges, #130 edge domain
 authority), RFC 0004 merged (#126); open: 2.1 honest-failure hygiene
 (#129), RFC 0005 draft (#127), the program docs themselves (#133).
 
+OpenZCAD consumer-roadmap K-S4 (`approx_census` CI enforcement): **done in
+this PR**. Its authoritative disposition line remains in OpenZCAD's planning
+PR #140 so the two repositories retain separate commit streams.
+
 ### H1 — now: three non-colliding lanes
 
 1. **Geometry lane (P-Class M2 track — one session at a time in
