@@ -1,0 +1,53 @@
+# Semantic approximation census. Update only after reviewing every changed row.
+# Runtime and rebuild-local arena IDs are intentionally excluded.
+boolean	box / box (overlap) ∪	faces=12	exact analytic
+boolean	box / box (overlap) −	faces=9	exact analytic
+boolean	box / box (overlap) ∩	faces=6	exact analytic
+boolean	box / box (flush coplanar) ∪	faces=6	exact analytic
+boolean	box / box (flush coplanar) −	faces=6	exact analytic
+boolean	box / box (flush coplanar) ∩ [empty]	faces=0	exact analytic
+boolean	box / cyl (through) ∪	faces=10	exact analytic
+boolean	box / cyl (through) −	faces=7	exact analytic
+boolean	box / cyl (through) ∩	faces=3	exact analytic
+boolean	box / sphere ∪	faces=1192	FALLBACK x1: boolean Fuse: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost
+boolean	box / sphere −	faces=8	exact analytic
+boolean	box / sphere ∩	faces=8	exact analytic
+boolean	sphere / cyl (3 pieces) ∪	faces=6	exact analytic
+boolean	sphere / cyl (3 pieces) −	faces=3	exact analytic
+boolean	sphere / cyl (3 pieces) ∩	faces=3	exact analytic
+boolean	cyl / cyl (perp cross) ∪	faces=6	exact analytic
+boolean	cyl / cyl (perp cross) −	faces=5	exact analytic
+boolean	cyl / cyl (perp cross) ∩	faces=70	FALLBACK x1: boolean Intersect: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost
+boolean	cyl / cyl (coaxial) ∪	faces=3	exact analytic
+boolean	cyl / cyl (coaxial) −	faces=3	exact analytic
+boolean	cyl / cyl (coaxial) ∩	faces=3	exact analytic
+boolean	cone / box ∪	faces=11	exact analytic
+boolean	cone / box −	faces=3	exact analytic
+boolean	cone / box ∩	faces=3	exact analytic
+boolean	torus / box ∪	faces=7	exact analytic
+boolean	torus / box −	faces=5	exact analytic
+boolean	torus / box ∩	faces=312	FALLBACK x1: boolean Intersect: GFA unusable — using mesh (co-refinement) fallback; analytic surface types will be lost
+boolean	cyl / box (slot) ∪	faces=8	exact analytic
+boolean	cyl / box (slot) −	faces=8	exact analytic
+boolean	cyl / box (slot) ∩	faces=6	exact analytic
+offset	box	faces=6	exact analytic
+offset	cylinder	faces=3	exact analytic
+offset	cone	faces=3	exact analytic
+offset	sphere	faces=2	exact analytic
+offset	torus	faces=1	exact analytic
+shell	box (1 face open)	faces=14	exact analytic
+offset	nurbs-loft [ERR]	faces=0	FALLBACK x5: offset: NURBS face Id(_) offset via 16x16 sampled-NURBS refit (degree 3) — not an exact analytic offset | offset: NURBS face Id(_) offset via 16x16 sampled-NURBS refit (degree 3) — not an exact analytic offset | offset: NURBS face Id(_) offset via 16x16 sampled-NURBS refit (degree 3) — not an exact analytic offset | offset: NURBS face Id(_) offset via 16x16 sampled-NURBS refit (degree 3) — not an exact analytic offset | err: invalid input: intersection failed between faces Id(_) and Id(_): NURBS surface intersection not yet implemented
+revolve	frustum (oblique→Cone, caps→Plane)	faces=3	exact analytic	surfaces=plane=2 cyl=0 cone=1 sphere=0 torus=0 NURBS=0
+revolve	cylinder (parallel→Cyl, caps→Plane)	faces=3	exact analytic	surfaces=plane=2 cyl=1 cone=0 sphere=0 torus=0 NURBS=0
+revolve	pointed cone (apex on axis)	faces=2	exact analytic	surfaces=plane=1 cyl=0 cone=1 sphere=0 torus=0 NURBS=0
+revolve	washer (annulus caps w/ hole)	faces=4	exact analytic	surfaces=plane=2 cyl=2 cone=0 sphere=0 torus=0 NURBS=0
+revolve	half-disc (arc→Torus)	faces=2	exact analytic	surfaces=plane=1 cyl=0 cone=0 sphere=0 torus=1 NURBS=0
+revolve	circle 120° (trimmed Torus)	faces=3	exact analytic	surfaces=plane=2 cyl=0 cone=0 sphere=0 torus=1 NURBS=0
+fillet-rb	box all edges	faces=26	exact analytic
+fillet-v2	box all edges	faces=26	exact analytic
+chamfer	box all edges	faces=26	exact analytic
+fillet-v2	torus (walker) [ERR]	faces=0	FALLBACK x1: err: blend: unsupported vertex blend at Id(_): 2 stripes meet
+chamfer-v2	torus [ERR]	faces=0	FALLBACK x3: chamfer: analytic path unavailable for torus+torus — v1 has no walker fallback, returning UnsupportedSurface | err: chamfer produced a partial result: 0 succeeded, 2 failed
+offset_face	gentle +0.3	faces=1	FALLBACK x1: offset_trim: SSI curve detection found nothing — falling back to grid-sampling trim (20x20)
+offset_face	inward -3.0	faces=1	FALLBACK x2: offset_trim: SSI curve detection found nothing — falling back to grid-sampling trim (20x20) | offset_face: raw-offset-surface fallback (SSI trim failed: invalid input: offset self-intersection covers 100% of the surface (limit: 50%), offset distance may be too large)
+fillet-rb	pyramid (4-valence apex)	faces=18	FALLBACK x5: fillet(rolling-ball): corner patch fell back to flat planar blend (non-triangular/degenerate corner)

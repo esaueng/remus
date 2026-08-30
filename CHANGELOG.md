@@ -31,6 +31,11 @@
   render tessellation's angular tolerance, with cross-drilled ratio/scale
   qualification.
 
+### CI
+
+* Ratchet the semantic `approx_census` output so approximation-path, result
+  topology, error, and revolve-surface drift requires explicit review.
+
 ### Licensing
 
 * Establish the permanent Apache-2.0 line from the last pre-AGPL fork state.
