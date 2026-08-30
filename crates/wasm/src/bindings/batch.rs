@@ -837,9 +837,30 @@ impl BrepKernel {
                         )
                     }
                 };
+                let subdivision_budget = match args.get("subdivisionDepth") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let raw = value.as_f64().ok_or_else(|| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'subdivisionDepth': expected number",
+                                Some("subdivisionDepth"),
+                            )
+                        })?;
+                        Some(
+                            crate::error::validate_iteration_budget(raw, "subdivisionDepth")
+                                .map_err(|e| {
+                                    StructuredWasmError::invalid_argument(
+                                        e.to_string(),
+                                        Some("subdivisionDepth"),
+                                    )
+                                })?,
+                        )
+                    }
+                };
                 let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
                 let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
-                let context = super::booleans::quality_context(exact_only, newton_budget);
+                let context =
+                    super::booleans::quality_context(exact_only, newton_budget, subdivision_budget);
                 let outcome = boolean_with_context(self.topo_mut(), bool_op, a_id, b_id, &context)
                     .map_err(StructuredWasmError::from)?;
                 match outcome.quality {
@@ -2716,15 +2737,19 @@ mod batch_contract_tests {
     }
 
     #[test]
-    fn batch_boolean_with_quality_accepts_newton_iterations() {
-        // Default omitted vs explicit budgets (the historical 20, and 0 which
-        // disables NURBS Newton refinement entirely): analytic operands never
-        // enter that refinement, so all three must produce the identical
+    fn batch_boolean_with_quality_accepts_ssi_budgets() {
+        // Default omitted vs explicit budgets (the historical values, and 0
+        // which disables the governed work): analytic operands never enter
+        // NURBS SSI, so every case must produce the identical
         // exact result — the cap is additive, never a behavior change for
         // exact-analytic paths. The JS-value-to-context link is pinned by
         // `bindings::booleans` unit tests; math and FF regressions pin the
         // context's authority below that.
-        for extra in ["", r#","newtonIterations":20"#, r#","newtonIterations":0"#] {
+        for extra in [
+            "",
+            r#","newtonIterations":20,"subdivisionDepth":6"#,
+            r#","newtonIterations":0,"subdivisionDepth":0"#,
+        ] {
             let mut kernel = BrepKernel::new();
             let script = format!(
                 r#"[
@@ -2765,6 +2790,29 @@ mod batch_contract_tests {
             );
             assert_eq!(
                 response[2]["error"]["details"]["argument"], "newtonIterations",
+                "error must name the argument: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_rejects_invalid_subdivision_depth() {
+        for bad in ["-1", "2.5", r#""deep""#, "10001", "true"] {
+            let mut kernel = BrepKernel::new();
+            let script = format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                    {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"subdivisionDepth":{bad}}}}}
+                ]"#
+            );
+            let response = parse(&kernel.execute_batch_v2(&script));
+            assert_eq!(
+                response[2]["error"]["code"], "invalid_argument",
+                "subdivisionDepth={bad} must be a typed argument error: {response}"
+            );
+            assert_eq!(
+                response[2]["error"]["details"]["argument"], "subdivisionDepth",
                 "error must name the argument: {response}"
             );
         }

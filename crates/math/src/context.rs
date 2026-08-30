@@ -129,6 +129,9 @@ pub struct WorkBudgets {
     /// Maximum coupled Newton iterations for one NURBS surface-surface
     /// intersection refinement.
     pub newton_iterations: usize,
+    /// Maximum recursive subdivision depth while finding NURBS
+    /// surface-surface intersection seeds.
+    pub subdivision_depth: usize,
 }
 
 impl WorkBudgets {
@@ -141,6 +144,7 @@ impl WorkBudgets {
             segments: 50,
             branches_per_direction: 10,
             newton_iterations: 20,
+            subdivision_depth: 6,
         }
     }
 
@@ -176,6 +180,13 @@ impl WorkBudgets {
     #[must_use]
     pub const fn with_newton_iterations(mut self, value: usize) -> Self {
         self.newton_iterations = value;
+        self
+    }
+
+    /// Returns budgets with the given SSI seed-subdivision depth cap.
+    #[must_use]
+    pub const fn with_subdivision_depth(mut self, value: usize) -> Self {
+        self.subdivision_depth = value;
         self
     }
 }
@@ -316,6 +327,7 @@ mod tests {
         assert_eq!(b.segments, 50);
         assert_eq!(b.branches_per_direction, 10);
         assert_eq!(b.newton_iterations, 20);
+        assert_eq!(b.subdivision_depth, 6);
     }
 
     #[test]
@@ -334,6 +346,7 @@ mod tests {
         assert_eq!(ctx.tolerance, Tolerance::loose());
         assert_eq!(ctx.budgets.march_steps, 7);
         assert_eq!(ctx.budgets.queue_size, 100);
+        assert_eq!(ctx.budgets.subdivision_depth, 6);
     }
 
     #[test]
