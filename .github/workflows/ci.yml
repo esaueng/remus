@@ -383,9 +383,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Deliberately discard the committed Cargo.lock: audit should judge the
-      # freshest resolvable dependency set, not just the pinned one.
-      - run: cargo generate-lockfile
+      # Audit the committed Cargo.lock — the resolution consumers actually
+      # build — so a new dep release cannot fail an unrelated PR. New
+      # advisories against the pinned versions still fail (the advisory DB
+      # is fetched live), and dependabot bumps re-audit the updated lock.
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ github.token }}
