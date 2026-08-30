@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788114821866,
+  "lastUpdate": 1788117200139,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4859,6 +4859,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 42012320,
             "range": "± 171926",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a2557b811a9585478d34fcab56ac8d93aca3a36",
+          "message": "ci: accelerate validation workflows (#156)\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-30T15:10:29-04:00",
+          "tree_id": "1874327f65a28530ecf718127d74b5da91acfb59",
+          "url": "https://github.com/esaueng/remus/commit/6a2557b811a9585478d34fcab56ac8d93aca3a36"
+        },
+        "date": 1788117199500,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1313406,
+            "range": "± 4526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1400954,
+            "range": "± 7141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14564,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 990437,
+            "range": "± 1890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39392179,
+            "range": "± 161115",
             "unit": "ns/iter"
           }
         ]
