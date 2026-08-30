@@ -568,7 +568,9 @@ mod tests {
             let mut topo = Topology::new();
             let left = topo.add_vertex(Vertex::new(parabola.evaluate(-w), 1e-9 * w));
             let right = topo.add_vertex(Vertex::new(parabola.evaluate(w), 1e-9 * w));
-            let arc = topo.add_edge(Edge::new(left, right, EdgeCurve::Parabola(parabola)));
+            let mut arc_edge = Edge::new(left, right, EdgeCurve::Parabola(parabola));
+            arc_edge.set_trim(Some((-w, w)));
+            let arc = topo.add_edge(arc_edge);
             let chord = topo.add_edge(Edge::new(right, left, EdgeCurve::Line));
             let wire = Wire::new(
                 vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
