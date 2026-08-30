@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788111259492,
+  "lastUpdate": 1788113995421,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4751,6 +4751,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41555949,
             "range": "± 118217",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9a4774a36bd92ace50cecfaaa1a49d0ec18ca83c",
+          "message": "chore(deps): bump the minor-and-patch group with 2 updates (#131)\n\n* chore(deps): bump the minor-and-patch group with 2 updates\n\nBumps the minor-and-patch group with 2 updates: [log](https://github.com/rust-lang/log) and [tsify](https://github.com/madonoharu/tsify).\n\n\nUpdates `log` from 0.4.33 to 0.4.34\n- [Release notes](https://github.com/rust-lang/log/releases)\n- [Changelog](https://github.com/rust-lang/log/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/log/compare/0.4.33...0.4.34)\n\nUpdates `tsify` from 0.5.6 to 0.5.7\n- [Changelog](https://github.com/madonoharu/tsify/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/madonoharu/tsify/commits/v0.5.7)\n\n---\nupdated-dependencies:\n- dependency-name: log\n  dependency-version: 0.4.34\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: minor-and-patch\n- dependency-name: tsify\n  dependency-version: 0.5.7\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* chore(deps): pin tsify to 0.5.6 pending tsify::Ts migration\n\ntsify 0.5.8 deprecates into_wasm_abi/from_wasm_abi (memory leaks,\nmadonoharu/tsify#65); with -D warnings that fails the build at all 26\nattribute sites in crates/wasm/src/types.rs. Keep the log 0.4.34 bump,\npin tsify/tsify-macros at 0.5.6, and ignore tsify in dependabot until\nthe bindings migrate to tsify::Ts.\n\n* chore(deps): drop tsify pin after Ts migration; keep log 0.4.34\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Peter <171875562+petergstfsn@users.noreply.github.com>",
+          "timestamp": "2026-08-30T14:17:09-04:00",
+          "tree_id": "a0aea696d9fa13a39d906b06cca2737f8d6baca7",
+          "url": "https://github.com/esaueng/remus/commit/9a4774a36bd92ace50cecfaaa1a49d0ec18ca83c"
+        },
+        "date": 1788113994474,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1327934,
+            "range": "± 5625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1412157,
+            "range": "± 30344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14689,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1003529,
+            "range": "± 3304",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39613460,
+            "range": "± 94473",
             "unit": "ns/iter"
           }
         ]
