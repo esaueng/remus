@@ -119,7 +119,7 @@ What actually runs, verified against the workflow file and a live merge
 
 ## CI failures you did not cause
 
-Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock` is committed (tracked; dependabot updates it), so most jobs build the pinned resolution reproducibly — but the `audit` job runs `cargo generate-lockfile` explicitly (its ci.yml comment claiming the lock is gitignored is stale), discarding the committed pins and resolving fresh, and both `deny` and `audit` fetch the advisory database live. So a newly published advisory, or (for `audit` only) a newly released dep version, changes the verdict with zero diff on your branch.
+Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock` is committed (tracked; dependabot updates it), so most jobs build the pinned resolution reproducibly — but the `audit` job runs `cargo generate-lockfile` explicitly, deliberately discarding the committed pins to judge the freshest resolvable set, and both `deny` and `audit` fetch the advisory database live. So a newly published advisory, or (for `audit` only) a newly released dep version, changes the verdict with zero diff on your branch.
 
 ### cargo-deny / audit / OSV advisories
 
