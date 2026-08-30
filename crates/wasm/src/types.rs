@@ -11,7 +11,6 @@ use tsify::Tsify;
 /// Typed result for `tessellateSolidGrouped`.
 #[derive(serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct GroupedMeshResult {
     pub positions: Vec<f64>,
     pub normals: Vec<f64>,
@@ -21,7 +20,6 @@ pub struct GroupedMeshResult {
 
 /// Typed result for `tessellateSolidUV`.
 #[derive(serde::Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
 pub struct UvMeshResult {
     pub positions: Vec<f64>,
     pub normals: Vec<f64>,
@@ -30,8 +28,10 @@ pub struct UvMeshResult {
 }
 
 /// Typed result for `boundingBox`.
+// Only referenced by the emitted TypeScript declaration, never constructed
+// in Rust (the binding serializes to JSON directly).
+#[allow(dead_code)]
 #[derive(serde::Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
 pub struct BoundingBoxResult {
     pub min_x: f64,
     pub min_y: f64,
@@ -51,7 +51,6 @@ pub struct BoundingBoxResult {
 /// tangent direction is principal.
 #[derive(serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct FaceCurvatureResult {
     /// Largest principal curvature (convex-outward positive).
     pub k1: f64,
@@ -75,7 +74,6 @@ pub const FACE_EVOLUTION_SCHEMA_VERSION: u32 = 1;
 /// evolution operation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct EvolutionShapeV1 {
     pub solid: u32,
     pub faces: Vec<u32>,
@@ -84,7 +82,6 @@ pub struct EvolutionShapeV1 {
 /// One source face and the final-result faces related to it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct EvolutionRelationV1 {
     pub source: u32,
     pub results: Vec<u32>,
@@ -93,7 +90,6 @@ pub struct EvolutionRelationV1 {
 /// A final-result face whose source could not be established.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct UnresolvedEvolutionResultV1 {
     pub result: u32,
     pub candidates: Vec<u32>,
@@ -102,7 +98,6 @@ pub struct UnresolvedEvolutionResultV1 {
 /// Whether the payload contains construction history or an explicit refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub enum EvolutionProvenanceV1 {
     Construction,
     Unavailable,
@@ -111,7 +106,6 @@ pub enum EvolutionProvenanceV1 {
 /// Version 1 face-evolution claims.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct FaceEvolutionClaimsV1 {
     pub provenance: EvolutionProvenanceV1,
     pub modified: Vec<EvolutionRelationV1>,
@@ -130,7 +124,6 @@ pub struct FaceEvolutionClaimsV1 {
 /// kinds, and incomplete coverage.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct FaceEvolutionPayloadV1 {
     /// Contract version; currently always `1`.
     pub schema_version: u32,
@@ -654,7 +647,6 @@ mod evolution_payload_tests {
 /// Typed result for `massProperties`.
 #[derive(serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct MassPropertiesResult {
     /// Solid volume (mass at unit density).
     pub volume: f64,
@@ -673,7 +665,6 @@ pub struct MassPropertiesResult {
 /// Typed result for `meshQuality`.
 #[derive(serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct MeshQualityResult {
     /// Non-degenerate triangles retained after position welding. A value of
     /// zero is never watertight.
@@ -694,7 +685,6 @@ pub struct MeshQualityResult {
 /// One issue reported by detailed solid validation.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct ValidationIssueResult {
     /// Issue severity: `error` or `warning`.
     pub severity: String,
@@ -706,7 +696,6 @@ pub struct ValidationIssueResult {
 /// `validateSolidDetailedWithOptions`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct ValidationReportResult {
     /// Number of error-severity issues.
     pub error_count: u32,
@@ -717,8 +706,10 @@ pub struct ValidationReportResult {
 }
 
 /// Typed result for `sketchSolve`.
+// Only referenced by the emitted TypeScript declaration, never constructed
+// in Rust (the binding serializes to JSON directly).
+#[allow(dead_code)]
 #[derive(serde::Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
 pub struct SketchSolveResult {
     pub converged: bool,
     pub points: Vec<f64>,
@@ -728,7 +719,6 @@ pub struct SketchSolveResult {
 /// Per-step entry in a `HealPipelineResult`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct HealStepResult {
     /// Operator name that ran.
     pub step: String,
@@ -743,7 +733,6 @@ pub struct HealStepResult {
 /// Typed result for `fixShapeWithConfig`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct HealFixResult {
     /// Handle of the healed solid (may differ from the input).
     pub solid: u32,
@@ -758,7 +747,6 @@ pub struct HealFixResult {
 /// Typed result for `runHealPipeline`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct HealPipelineResult {
     /// Handle of the healed solid (may differ from the input).
     pub solid: u32,
@@ -769,7 +757,6 @@ pub struct HealPipelineResult {
 /// Typed result for `gcsSolve`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct GcsSolveResult {
     /// Whether the solver converged within tolerance.
     pub converged: bool,
@@ -787,7 +774,6 @@ pub struct GcsSolveResult {
 /// into every constraint sharing its parameters.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct GcsConstraintResidual {
     /// The `gcsAddConstraint` handle this magnitude belongs to.
     pub constraint: u32,
@@ -806,7 +792,6 @@ pub struct GcsConstraintResidual {
 /// equation is ever attributed to a caller's constraint.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct GcsSolveDiagnostics {
     /// Whether the solver reached the requested tolerance.
     pub converged: bool,
@@ -854,7 +839,6 @@ pub struct GcsSolveDiagnostics {
 /// building a face with holes must know which loops bound material and
 /// which remove it.
 #[derive(Debug, Default, serde::Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
 pub struct PolygonBoolean2dResult {
     /// Counter-clockwise outer boundary loops, each a flat `[x, y, ...]` array.
     pub outer: Vec<Vec<f64>>,
@@ -865,7 +849,6 @@ pub struct PolygonBoolean2dResult {
 /// Typed result for `gcsDof`.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub struct GcsDofResult {
     /// Degrees of freedom remaining (under-constrained dimensions).
     pub dof: u32,
@@ -882,7 +865,6 @@ pub struct GcsDofResult {
 /// mesh-fallback one instead of silently losing analytic surfaces.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct BooleanQualityResult {
     /// Handle of the result solid.
     pub solid: u32,
@@ -899,7 +881,6 @@ pub struct BooleanQualityResult {
 /// Terminal state of a cancellable operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi)]
 pub enum CancellableOperationStatus {
     /// The operation committed a result.
     Completed,
@@ -914,7 +895,6 @@ pub enum CancellableOperationStatus {
 /// operation failures still reject the call normally.
 #[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[tsify(into_wasm_abi)]
 pub struct CancellableBooleanResult {
     /// Discriminates a committed result from a rolled-back cancellation.
     pub status: CancellableOperationStatus,
