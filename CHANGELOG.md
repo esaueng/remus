@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Features
+
+* **context:** make the caller's NURBS SSI Newton-iteration budget authoritative
+  across seed discovery and marching, with cooperative cancellation inside the
+  refinement loop.
+* **wasm:** expose the Newton-iteration cap to JS — additive optional
+  `newton_iterations` argument on `booleanWithQuality` and
+  `booleanWithCancellation`, and an optional `newtonIterations` field on the
+  `executeBatch` `booleanWithQuality` op; values are validated as non-negative
+  integers within the public work budget, and omitting them reproduces prior
+  behavior exactly.
+
 ### Bug Fixes
 
 * **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the

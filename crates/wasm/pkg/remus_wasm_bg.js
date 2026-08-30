@@ -267,19 +267,21 @@ export class BrepKernel {
      *
      * Cancellation is typed (`operation_cancelled`) and transactional: no
      * partial topology is retained. Result quality follows
-     * `booleanWithQuality`, including the optional exact-only policy.
+     * `booleanWithQuality`, including the optional exact-only policy and the
+     * optional `newton_iterations` refinement cap.
      * @param {string} op
      * @param {number} a
      * @param {number} b
      * @param {OperationCancellationToken} token
      * @param {boolean | null} [exact_only]
+     * @param {number | null} [newton_iterations]
      * @returns {CancellableBooleanResult}
      */
-    booleanWithCancellation(op, a, b, token, exact_only) {
+    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         _assertClass(token, OperationCancellationToken);
-        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -296,20 +298,28 @@ export class BrepKernel {
      * `exact_only = true` turns the fallback into a typed refusal so an
      * exact-or-nothing caller never receives a faceted body.
      *
+     * `newton_iterations` optionally caps the coupled Newton refinement
+     * iterations of every NURBS surface-surface intersection inside the
+     * operation (a non-negative integer; `0` disables refinement). Omitted
+     * or `null` keeps the kernel default, reproducing prior behavior.
+     *
      * # Errors
      *
-     * Returns an error if a handle is invalid, the op string is unknown, or
-     * (under `exact_only`) the exact pipeline cannot produce the result.
+     * Returns an error if a handle is invalid, the op string is unknown,
+     * `newton_iterations` is not a non-negative integer within the public
+     * work budget, or (under `exact_only`) the exact pipeline cannot
+     * produce the result.
      * @param {string} op
      * @param {number} a
      * @param {number} b
      * @param {boolean | null} [exact_only]
+     * @param {number | null} [newton_iterations]
      * @returns {BooleanQualityResult}
      */
-    booleanWithQuality(op, a, b, exact_only) {
+    booleanWithQuality(op, a, b, exact_only, newton_iterations) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
