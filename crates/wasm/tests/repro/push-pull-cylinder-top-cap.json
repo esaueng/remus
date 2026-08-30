@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "name": "push-pull-cylinder-top-cap",
+  "description": "OpenZCAD K-S1 repro: pushing the top cap of an analytic r10 h30 cylinder inward by 5 must preserve the three-face analytic cylinder and exact closed-form volume instead of returning a faceted boolean result.",
+  "revision": "3c232e86",
+  "operations": [
+    {"op": "makeCylinder", "args": {"radius": 10.0, "height": 30.0}},
+    {"op": "pushPullFace", "args": {"solid": 0, "face": 2, "distance": -5.0}},
+    {"op": "getSolidFaces", "args": {"solid": 1}},
+    {"op": "volume", "args": {"solid": 1, "deflection": 0.01}},
+    {"op": "validateSolid", "args": {"solid": 1}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"ok": 1},
+    {"ok": [3, 4, 5]},
+    {"okNear": 7853.981633974483, "tol": 1e-9},
+    {"ok": 0}
+  ]
+}
