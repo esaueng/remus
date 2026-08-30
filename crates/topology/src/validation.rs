@@ -519,7 +519,9 @@ pub fn check_same_parameter(
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.domain_with_endpoints(start, end);
+    let (t0, t1) = edge
+        .trim()
+        .unwrap_or_else(|| edge.curve().reconstruct_domain_from_endpoints(start, end));
     let (p0, p1) = (pcurve.t_start(), pcurve.t_end());
 
     let samples = samples.max(1);
