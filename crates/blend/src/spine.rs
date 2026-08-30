@@ -179,7 +179,7 @@ impl Spine {
         let p_start = topo.vertex(edge.start())?.point();
         let p_end = topo.vertex(edge.end())?.point();
         let curve = edge.curve();
-        let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
+        let (t0, t1) = edge.strict_domain().map_err(crate::edge_domain_input)?;
         let param = t0 + (t1 - t0) * t;
         Ok(curve.evaluate_with_endpoints(param, p_start, p_end))
     }
@@ -199,7 +199,7 @@ impl Spine {
         let p_start = topo.vertex(edge.start())?.point();
         let p_end = topo.vertex(edge.end())?.point();
         let curve = edge.curve();
-        let (t0, t1) = edge.domain_with_endpoints(p_start, p_end);
+        let (t0, t1) = edge.strict_domain().map_err(crate::edge_domain_input)?;
         let param = t0 + (t1 - t0) * t;
         let tan = curve.tangent_with_endpoints(param, p_start, p_end);
         let tan = if fwd { tan } else { -tan };
@@ -214,6 +214,8 @@ mod tests {
     use remus_topology::Topology;
     use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::vertex::Vertex;
+
+    use remus_math::curves::Circle3D;
 
     fn make_line_edge(topo: &mut Topology, a: Point3, b: Point3) -> EdgeId {
         let v0 = topo.add_vertex(Vertex::new(a, 1e-7));
@@ -260,5 +262,35 @@ mod tests {
         let spine = Spine::from_single_edge(&topo, eid).unwrap();
         let mid = spine.evaluate(&topo, 5.0).unwrap();
         assert!((mid - Point3::new(5.0, 0.0, 0.0)).length() < 1e-10);
+    }
+
+    #[test]
+    fn curved_spine_uses_stored_reversed_major_range_and_refuses_missing_authority() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let range = (5.5, 0.5);
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(range.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(range.1), 1e-7));
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+        edge.set_trim(Some(range));
+        let edge_id = topo.add_edge(edge);
+        let spine = Spine::from_single_edge(&topo, edge_id).unwrap();
+
+        let midpoint = spine.evaluate(&topo, spine.length() * 0.5).unwrap();
+        let expected = circle.evaluate(f64::midpoint(range.0, range.1));
+        assert!((midpoint - expected).length() < 1e-12);
+        let complementary =
+            circle.evaluate(f64::midpoint(range.0, range.1 + std::f64::consts::TAU));
+        assert!((midpoint - complementary).length() > 1.0);
+
+        topo.edge_mut(edge_id).unwrap().set_trim(None);
+        let error = spine.evaluate(&topo, spine.length() * 0.5).unwrap_err();
+        assert!(matches!(error, BlendError::InvalidInput { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("no authoritative parameter range")
+        );
     }
 }
