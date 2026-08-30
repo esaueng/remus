@@ -24,160 +24,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
-name = "remus-algo"
-version = "0.1.0"
-dependencies = [
- "remus-math",
- "remus-topology",
- "log",
- "thiserror",
-]
-
-[[package]]
-name = "remus-blend"
-version = "0.1.0"
-dependencies = [
- "remus-math",
- "remus-topology",
- "log",
- "thiserror",
-]
-
-[[package]]
-name = "remus-check"
-version = "0.1.0"
-dependencies = [
- "remus-geometry",
- "remus-math",
- "remus-topology",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "remus-fuzz"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "remus-io",
- "remus-math",
- "remus-operations",
- "remus-topology",
- "remus-wasm",
- "libfuzzer-sys",
-]
-
-[[package]]
-name = "remus-geometry"
-version = "0.1.0"
-dependencies = [
- "remus-math",
- "thiserror",
-]
-
-[[package]]
-name = "remus-heal"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "remus-geometry",
- "remus-math",
- "remus-topology",
- "log",
- "thiserror",
-]
-
-[[package]]
-name = "remus-io"
-version = "0.1.0"
-dependencies = [
- "remus-math",
- "remus-operations",
- "remus-topology",
- "quick-xml",
- "serde",
- "serde_json",
- "thiserror",
- "zip",
-]
-
-[[package]]
-name = "remus-math"
-version = "0.1.0"
-dependencies = [
- "log",
- "robust",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "remus-offset"
-version = "0.1.0"
-dependencies = [
- "remus-geometry",
- "remus-math",
- "remus-topology",
- "log",
- "thiserror",
-]
-
-[[package]]
-name = "remus-operations"
-version = "0.1.0"
-dependencies = [
- "remus-algo",
- "remus-blend",
- "remus-check",
- "remus-geometry",
- "remus-heal",
- "remus-math",
- "remus-offset",
- "remus-sketch",
- "remus-topology",
- "log",
- "rayon",
- "thiserror",
-]
-
-[[package]]
-name = "remus-sketch"
-version = "0.1.0"
-dependencies = [
- "thiserror",
-]
-
-[[package]]
-name = "remus-topology"
-version = "0.1.0"
-dependencies = [
- "remus-math",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "remus-wasm"
-version = "2.130.0"
-dependencies = [
- "remus-algo",
- "remus-check",
- "remus-geometry",
- "remus-heal",
- "remus-io",
- "remus-math",
- "remus-operations",
- "remus-sketch",
- "remus-topology",
- "log",
- "serde",
- "serde_json",
- "thiserror",
- "tsify",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -469,6 +315,160 @@ dependencies = [
 ]
 
 [[package]]
+name = "remus-algo"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "remus-math",
+ "remus-topology",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-blend"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "remus-math",
+ "remus-topology",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-check"
+version = "0.1.0"
+dependencies = [
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-fuzz"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "libfuzzer-sys",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "remus-wasm",
+]
+
+[[package]]
+name = "remus-geometry"
+version = "0.1.0"
+dependencies = [
+ "remus-math",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-heal"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "log",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-io"
+version = "0.1.0"
+dependencies = [
+ "quick-xml",
+ "remus-math",
+ "remus-operations",
+ "remus-topology",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
+name = "remus-math"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "robust",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-offset"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "remus-geometry",
+ "remus-math",
+ "remus-topology",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-operations"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rayon",
+ "remus-algo",
+ "remus-blend",
+ "remus-check",
+ "remus-geometry",
+ "remus-heal",
+ "remus-math",
+ "remus-offset",
+ "remus-sketch",
+ "remus-topology",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-sketch"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "remus-topology"
+version = "0.1.0"
+dependencies = [
+ "remus-math",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "remus-wasm"
+version = "2.130.0"
+dependencies = [
+ "log",
+ "remus-algo",
+ "remus-check",
+ "remus-geometry",
+ "remus-heal",
+ "remus-io",
+ "remus-math",
+ "remus-operations",
+ "remus-sketch",
+ "remus-topology",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tsify",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -613,9 +613,9 @@ dependencies = [
 
 [[package]]
 name = "tsify"
-version = "0.5.6"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ec5505497c87f1c050b4392d3f11b49a04537fcb9dc0da57bc0af168a6331f2"
+checksum = "ea3af6b48c5c5624f7eb3c2f578d1335fadac433321980cae0063e8eb0acaa44"
 dependencies = [
  "gloo-utils",
  "serde",
@@ -627,9 +627,9 @@ dependencies = [
 
 [[package]]
 name = "tsify-macros"
-version = "0.5.6"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fc2c44dc9fe4baf55b88e032621b7a11b215a1f0a7de8d0aa04367207d915bc"
+checksum = "ef1e2e93369379d0a527c7d6632b58c55d52db7a106d8afbde3b354f3a57a9f1"
 dependencies = [
  "proc-macro2",
  "quote",
