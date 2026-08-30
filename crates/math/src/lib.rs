@@ -113,6 +113,10 @@ pub enum MathError {
         /// Number of iterations attempted.
         iterations: usize,
     },
+
+    /// The caller requested cooperative cancellation at a safe checkpoint.
+    #[error("operation cancelled")]
+    Cancelled,
 }
 
 pub mod aabb;

@@ -230,6 +230,9 @@ impl ToDiagnostic for MathError {
                 Diagnostic::new(Nonconvergence, "newton_nonconvergence", message)
                     .with_detail("iterations", *iterations)
             }
+            Self::Cancelled => {
+                Diagnostic::new(FailureCategory::Cancelled, "operation_cancelled", message)
+            }
         }
     }
 }
@@ -297,6 +300,11 @@ mod tests {
                 MathError::ConvergenceFailure { iterations: 20 },
                 FailureCategory::Nonconvergence,
                 "newton_nonconvergence",
+            ),
+            (
+                MathError::Cancelled,
+                FailureCategory::Cancelled,
+                "operation_cancelled",
             ),
         ];
         for (error, category, code) in cases {

@@ -18,7 +18,57 @@
 //! so future policy fields (fallback policy, cancellation, diagnostics) can
 //! be added without breaking callers.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::MathError;
 use crate::tolerance::Tolerance;
+
+/// A cooperative cancellation signal shared between an operation and its
+/// caller.
+///
+/// Cancellation is monotonic: once requested, every clone observes it. Long
+/// running algorithms poll the token only at documented safe points, so a
+/// cancellation never exposes partially-mutated topology.
+#[derive(Clone, Debug)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    /// Creates an uncancelled token.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Requests cancellation. The request cannot be reset.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Whether cancellation has been requested.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for CancellationToken {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cancelled, &other.cancelled)
+    }
+}
+
+impl Eq for CancellationToken {}
 
 /// The historical mesh-fallback deflection, used as the default
 /// approximation budget so the default context reproduces legacy behavior.
@@ -130,7 +180,7 @@ impl Default for WorkBudgets {
 /// The default context ([`OperationContext::new`]) reproduces legacy
 /// behavior exactly; `*_with_context` entry points called with it return the
 /// same results as their context-free counterparts.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct OperationContext {
     /// Geometric comparison tolerances.
@@ -142,6 +192,9 @@ pub struct OperationContext {
     /// [`FallbackPolicy::AllowApproximate`] with
     /// [`DEFAULT_APPROXIMATION_BUDGET`].
     pub fallback: FallbackPolicy,
+    /// Optional cooperative cancellation signal. `None` preserves the legacy
+    /// non-cancellable behavior without allocating a token per operation.
+    pub cancellation: Option<CancellationToken>,
 }
 
 impl OperationContext {
@@ -155,6 +208,7 @@ impl OperationContext {
             fallback: FallbackPolicy::AllowApproximate {
                 budget: DEFAULT_APPROXIMATION_BUDGET,
             },
+            cancellation: None,
         }
     }
 
@@ -177,6 +231,33 @@ impl OperationContext {
     pub const fn with_fallback(mut self, fallback: FallbackPolicy) -> Self {
         self.fallback = fallback;
         self
+    }
+
+    /// Returns the context with a shared cooperative cancellation token.
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    /// Fails with the kernel-wide typed cancellation result when requested.
+    ///
+    /// Algorithms call this only at points where abandoning work is safe; the
+    /// public operation transaction then restores all staged topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MathError::Cancelled`] after the attached token is cancelled.
+    pub fn check_cancelled(&self) -> Result<(), MathError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            Err(MathError::Cancelled)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -215,5 +296,19 @@ mod tests {
         assert_eq!(ctx.tolerance, Tolerance::loose());
         assert_eq!(ctx.budgets.march_steps, 7);
         assert_eq!(ctx.budgets.queue_size, 100);
+    }
+
+    #[test]
+    fn cancellation_is_shared_and_monotonic() {
+        let token = CancellationToken::new();
+        let context = OperationContext::new().with_cancellation(token.clone());
+        assert!(context.check_cancelled().is_ok());
+
+        token.cancel();
+        assert!(token.is_cancelled());
+        assert!(matches!(
+            context.check_cancelled(),
+            Err(MathError::Cancelled)
+        ));
     }
 }

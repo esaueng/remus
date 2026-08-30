@@ -24,7 +24,7 @@ Issue 2.0's measured baseline is
 | 2.5 NURBS × NURBS booleans | Pending | — |
 | 2.6 Scale-relative band audit | Pending | — |
 | 2.7 Tangency and sliver contacts | Pending | — |
-| 2.8 OperationContext budgets and cancellation | Pending | — |
+| 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation; Newton and parameter-space budgets remain | [PR #138](https://github.com/esaueng/remus/pull/138) |
 | 3.1 RFC 0004 | Pending | — |
 | 3.2 Topology substrate | Pending | — |
 | 3.3 Predicate plumbing | Pending | — |

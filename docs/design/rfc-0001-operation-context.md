@@ -1,8 +1,8 @@
 # RFC 0001: OperationContext
 
-Status: accepted; surface-surface intersection budgets and the public boolean
-pipeline are integrated. This RFC governs how the context grows and how
-further paths migrate onto it.
+Status: accepted; surface-surface intersection budgets, the public boolean
+pipeline, and cooperative cancellation are integrated. This RFC governs how
+the context grows and how further paths migrate onto it.
 
 ## Problem
 
@@ -61,6 +61,12 @@ only policy values move into the context; mathematical constants stay put:
 ## Landed in this slice
 
 - `math::context` with the two structs, builders, defaults, unit tests.
+- `CancellationToken`: a cloneable monotonic signal carried optionally by
+  `OperationContext`. GFA checks it between phases and face pairs; NURBS SSI
+  checks it at phase boundaries and every marcher/adaptive-step iteration.
+  Cancellation is `MathError::Cancelled` / diagnostic code
+  `operation_cancelled`, propagates past the approximate fallback, and relies
+  on the existing boolean transaction to restore staged topology.
 - `intersect_nurbs_nurbs_with_context`: the four marching/exploration
   budgets threaded through seeding and marching; module constants
   `MAX_QUEUE_SIZE` / `MAX_SEGMENTS` / `MAX_BRANCHES_PER_DIRECTION` deleted
@@ -92,8 +98,13 @@ only policy values move into the context; mathematical constants stay put:
    context fields only alongside a real consumer, per ground rule 3.
 3. Parameter-space tolerance policy (replacing seeding's local `1e-6`),
    coordinated with the intersection result model (Issue 10).
-4. Cancellation state and diagnostics sink — added when the first consumer
-   (long-running boolean or corpus runner) lands, not before.
+4. ~~Cancellation state~~ — **landed for booleans and NURBS SSI**. WASM
+   exposes `OperationCancellationToken` + `booleanWithCancellation`; other
+   long-running operation families adopt the same token as they gain context
+   entry points. The current single-threaded WASM worker can pre-cancel but
+   cannot process a new JS call during an active operation; active browser
+   cancellation still requires the app-side worker/shared-memory transport.
+   The diagnostics sink remains queued.
 5. ~~Fallback policy~~ — **landed** (Issue 11): `FallbackPolicy` on the
    context (`ExactOnly` / `AllowApproximate{budget}` /
    `ApproximateOnly{budget}`, default reproducing the legacy mesh

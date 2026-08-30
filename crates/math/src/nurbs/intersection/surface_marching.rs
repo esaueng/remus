@@ -1,10 +1,10 @@
 //! SSI marching: tracing intersection curves from seed points, including
 //! branch detection, RKF45 adaptive stepping, and singular tangent analysis.
 
+use crate::MathError;
+use crate::context::OperationContext;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
-
-use crate::context::WorkBudgets;
 
 use super::IntersectionPoint;
 use super::surface_seeding::refine_ssi_point;
@@ -22,18 +22,19 @@ pub(super) fn march_with_branches(
     seed: &IntersectionPoint,
     step_size: f64,
     tolerance: f64,
-    budgets: &WorkBudgets,
-) -> (Vec<IntersectionPoint>, Vec<IntersectionPoint>) {
+    context: &OperationContext,
+) -> Result<(Vec<IntersectionPoint>, Vec<IntersectionPoint>), MathError> {
+    context.check_cancelled()?;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // March forward, collecting branch points.
     let (forward, fwd_branches) =
-        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, budgets);
+        march_direction_with_branches(s1, s2, seed, true, step_size, tolerance, context)?;
     branch_seeds.extend(fwd_branches);
 
     // March backward, collecting branch points.
     let (backward, bwd_branches) =
-        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, budgets);
+        march_direction_with_branches(s1, s2, seed, false, step_size, tolerance, context)?;
     branch_seeds.extend(bwd_branches);
 
     // Combine: backward (reversed) + seed + forward.
@@ -41,7 +42,7 @@ pub(super) fn march_with_branches(
     result.push(*seed);
     result.extend(forward);
 
-    (result, branch_seeds)
+    Ok((result, branch_seeds))
 }
 
 /// Detect branch directions at a near-tangential point.
@@ -57,7 +58,8 @@ fn find_branch_directions(
     current_tangent: Vec3,
     step_size: f64,
     tolerance: f64,
-) -> Vec<IntersectionPoint> {
+    context: &OperationContext,
+) -> Result<Vec<IntersectionPoint>, MathError> {
     let eps = step_size * 0.1;
     let (u1, v1) = point.param1;
     let (u2, v2) = point.param2;
@@ -77,6 +79,7 @@ fn find_branch_directions(
     let mut branch_seeds = Vec::new();
 
     for &(du, dv) in &directions {
+        context.check_cancelled()?;
         let u1p = u1 + du;
         let v1p = v1 + dv;
 
@@ -98,7 +101,7 @@ fn find_branch_directions(
         }
     }
 
-    branch_seeds
+    Ok(branch_seeds)
 }
 
 /// March in one direction, detecting branch points where `|n1 x n2|`
@@ -111,8 +114,8 @@ fn march_direction_with_branches(
     forward: bool,
     step_size: f64,
     tolerance: f64,
-    budgets: &WorkBudgets,
-) -> (Vec<IntersectionPoint>, Vec<IntersectionPoint>) {
+    context: &OperationContext,
+) -> Result<(Vec<IntersectionPoint>, Vec<IntersectionPoint>), MathError> {
     let traced = march_direction(
         s1,
         s2,
@@ -120,15 +123,17 @@ fn march_direction_with_branches(
         forward,
         step_size,
         tolerance,
-        budgets.march_steps,
-    );
+        context.budgets.march_steps,
+        context,
+    )?;
     let mut branch_seeds: Vec<IntersectionPoint> = Vec::new();
 
     // Post-process: scan traced points for near-tangential locations.
     let branch_threshold = tolerance * 1000.0;
 
     for pt in &traced {
-        if branch_seeds.len() >= budgets.branches_per_direction {
+        context.check_cancelled()?;
+        if branch_seeds.len() >= context.budgets.branches_per_direction {
             break;
         }
 
@@ -210,11 +215,12 @@ fn march_direction_with_branches(
                 .unwrap_or(Vec3::new(1.0, 0.0, 0.0))
         };
 
-        let new_seeds = find_branch_directions(s1, s2, pt, current_tangent, step_size, tolerance);
+        let new_seeds =
+            find_branch_directions(s1, s2, pt, current_tangent, step_size, tolerance, context)?;
         branch_seeds.extend(new_seeds);
     }
 
-    (traced, branch_seeds)
+    Ok((traced, branch_seeds))
 }
 
 /// March along an intersection curve from a seed point.
@@ -235,11 +241,18 @@ pub(super) fn march_intersection(
     tolerance: f64,
 ) -> Vec<IntersectionPoint> {
     let max_steps = 200;
+    let context = OperationContext::new();
 
     // March forward.
-    let forward = march_direction(s1, s2, seed, true, step_size, tolerance, max_steps);
+    let forward = march_direction(
+        s1, s2, seed, true, step_size, tolerance, max_steps, &context,
+    )
+    .unwrap_or_default();
     // March backward.
-    let backward = march_direction(s1, s2, seed, false, step_size, tolerance, max_steps);
+    let backward = march_direction(
+        s1, s2, seed, false, step_size, tolerance, max_steps, &context,
+    )
+    .unwrap_or_default();
 
     // Combine: backward (reversed) + seed + forward.
     let mut result: Vec<IntersectionPoint> = backward.into_iter().rev().collect();
@@ -559,6 +572,7 @@ fn at_boundary(state: &[f64; 4], s1: &NurbsSurface, s2: &NurbsSurface) -> bool {
 ///   high-curvature regions (tight bends) and efficient large steps on
 ///   straight portions.
 #[allow(clippy::too_many_lines, clippy::many_single_char_names)]
+#[allow(clippy::too_many_arguments)]
 fn march_direction(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
@@ -567,7 +581,8 @@ fn march_direction(
     step_size: f64,
     tolerance: f64,
     max_steps: usize,
-) -> Vec<IntersectionPoint> {
+    context: &OperationContext,
+) -> Result<Vec<IntersectionPoint>, MathError> {
     // Maximum number of turning points (tangent reversals) to traverse.
     // Realistic SSI curves have at most 2-3 turning points; the limit
     // prevents infinite loops on degenerate near-tangential cases.
@@ -608,6 +623,7 @@ fn march_direction(
     let mut turning_points_count = 0_usize;
 
     for _ in 0..max_steps {
+        context.check_cancelled()?;
         let y = [
             current.param1.0,
             current.param1.1,
@@ -617,13 +633,14 @@ fn march_direction(
 
         // Try RKF45 with adaptive step, allowing a few retries per accepted step.
         let (y4, accepted_h) = loop {
+            context.check_cancelled()?;
             total_evals += 1;
             if total_evals > max_evals {
-                return points;
+                return Ok(points);
             }
 
             let Some(result) = rkf45_step(s1, s2, &y, h, sign) else {
-                return points;
+                return Ok(points);
             };
 
             let (y4, y5) = result;
@@ -770,7 +787,7 @@ fn march_direction(
         }
     }
 
-    points
+    Ok(points)
 }
 
 /// Perform one RKF45 step. Returns `(y_4th, y_5th)` or `None` if
