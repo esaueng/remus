@@ -1700,6 +1700,77 @@ impl BrepKernel {
     }
 }
 
+// ── Curvature interrogation ─────────────────────────────────────────
+
+/// Bindings for surface curvature analysis (backed by `remus-check`'s
+/// `analyze::curvature` module).
+#[wasm_bindgen]
+impl BrepKernel {
+    /// Principal curvatures at `(u, v)` on a face's surface.
+    ///
+    /// Returns a JSON string `{ k1, k2, gaussian, mean, d1, d2 }` (see the
+    /// `FaceCurvatureResult` TypeScript type). Curvatures are sorted
+    /// `k1 >= k2` and signed positive for convex-outward relative to the
+    /// face's effective outward normal; flipping the face orientation flips
+    /// `k1`, `k2`, and `mean`, while `gaussian` is orientation-independent.
+    /// `d1`/`d2` are the unit principal directions matching `(k1, k2)`, or
+    /// `null` at umbilic points (sphere, plane, near-umbilic NURBS regions)
+    /// where every tangent direction is principal.
+    ///
+    /// `(u, v)` are parameters of the underlying surface, not restricted to
+    /// the face's trimmed region. For a plane face the report is identically
+    /// zero and the directions are `null`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the face handle is invalid or curvature is
+    /// undefined at `(u, v)`: a cone at or below its apex, a torus parallel
+    /// that degenerates (self-intersecting configurations only), a
+    /// non-finite parameter, or a NURBS point where the parametrization
+    /// collapses (e.g. a sphere pole).
+    #[wasm_bindgen(js_name = "getFaceCurvature")]
+    pub fn get_face_curvature(&self, face: u32, u: f64, v: f64) -> Result<JsValue, JsError> {
+        validate_finite(u, "u")?;
+        validate_finite(v, "v")?;
+        let face_id = self.resolve_face(face)?;
+        let report = remus_check::analyze::curvature::surface_curvature(&self.topo, face_id, u, v)?;
+        let result = crate::types::FaceCurvatureResult {
+            k1: report.k1,
+            k2: report.k2,
+            gaussian: report.gaussian,
+            mean: report.mean,
+            d1: report
+                .directions
+                .map(|(d1, _)| vec![d1.x(), d1.y(), d1.z()]),
+            d2: report
+                .directions
+                .map(|(_, d2)| vec![d2.x(), d2.y(), d2.z()]),
+        };
+        serde_json::to_string(&result)
+            .map(JsValue::from)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Minimum radius of curvature over a face (`1 / max(|k1|, |k2|)` across
+    /// the face's trimmed domain), orientation-independent.
+    ///
+    /// Exact for the five analytic surface types; a coarse-grid-plus-
+    /// refinement approximation for NURBS. A plane face has no curvature and
+    /// returns `Infinity`; a cone face reaching its apex returns `0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the face handle is invalid or the face boundary
+    /// cannot be projected onto its surface.
+    #[wasm_bindgen(js_name = "getFaceMinRadius")]
+    pub fn get_face_min_radius(&self, face: u32) -> Result<f64, JsError> {
+        let face_id = self.resolve_face(face)?;
+        Ok(remus_check::analyze::curvature::min_radius_of_curvature(
+            &self.topo, face_id,
+        )?)
+    }
+}
+
 // Non-exported helpers. `JsError` cannot be constructed on non-wasm targets,
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
