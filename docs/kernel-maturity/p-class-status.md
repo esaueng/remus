@@ -54,7 +54,7 @@ Issue 2.0's measured baseline is
 | 7.2 Loft continuity and periodic lofts | Pending | — |
 | 7.3 Constrained N-sided fill | Pending | — |
 | 7.4 Surface extension and curve imprint | Pending | — |
-| 7.5 Interrogation | Pending | — |
+| 7.5 Interrogation | Partial — curvature analysis slice (`analyze::curvature` + `getFaceCurvature`/`getFaceMinRadius`); clash, silhouettes, draft pending | — |
 | 8.1 Differential testing harness | Pending | — |
 | 8.2 Performance budget gates | Pending | — |
 | 8.3 Parallel tessellation | Pending | — |

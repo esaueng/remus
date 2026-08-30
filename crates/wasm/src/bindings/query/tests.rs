@@ -3,6 +3,7 @@
 use remus_math::vec::Point3;
 
 use crate::handles::face_id_to_u32;
+use crate::kernel::BrepKernel;
 use crate::kernel::test_fixtures::{kernel_with_box, kernel_with_cylinder};
 
 // ── get_solid_faces ───────────────────────────────────────────
@@ -693,4 +694,215 @@ fn fillet_arc_span_is_the_quarter_arc_not_the_complement() {
             "sample strayed off the quarter arc: {p:?}"
         );
     }
+}
+
+// ── get_face_curvature / get_face_min_radius (batch contract) ────
+//
+// Every call goes through `execute_batch` per the binding-contract rule:
+// `JsError` cannot be constructed on non-wasm targets, so the batch API is
+// the only natively-testable surface.
+
+fn batch_run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let json = serde_json::Value::Array(ops.to_vec()).to_string();
+    serde_json::from_str(&k.execute_batch(&json)).unwrap()
+}
+
+fn batch_ok(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
+    let results = batch_ok_all(k, &[op_name_args(op, args)]);
+    results.into_iter().next().unwrap()
+}
+
+fn batch_ok_all(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let results = batch_run(k, ops);
+    for (i, r) in results.iter().enumerate() {
+        assert!(
+            r.get("ok").is_some(),
+            "op {i} ({}) failed: {r}",
+            ops[i]["op"]
+        );
+    }
+    results
+        .into_iter()
+        .map(|r| r.get("ok").cloned().unwrap())
+        .collect()
+}
+
+fn op_name_args(op: &str, args: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"op": op, "args": args})
+}
+
+fn batch_faces(k: &mut BrepKernel, solid: serde_json::Value) -> Vec<u32> {
+    let v = &batch_ok(k, "getSolidFaces", serde_json::json!({"solid": solid}));
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|h| u32::try_from(h.as_u64().unwrap()).unwrap())
+        .collect()
+}
+
+/// The batch `getFaceCurvature` payload of one face, as a JSON object.
+fn face_curvature(k: &mut BrepKernel, face: u32, u: f64, v: f64) -> serde_json::Value {
+    batch_ok(
+        k,
+        "getFaceCurvature",
+        serde_json::json!({"face": face, "u": u, "v": v}),
+    )
+}
+
+#[test]
+fn batch_curvature_on_cylinder_wall_matches_closed_form() {
+    let (mut k, solid) = kernel_with_cylinder();
+    let radius = 1.0_f64;
+    // The lateral wall is the only face with nonzero curvature.
+    let wall = batch_faces(&mut k, serde_json::json!(solid))
+        .into_iter()
+        .find(|&f| {
+            let c = face_curvature(&mut k, f, 0.7, 0.5);
+            c["k1"].as_f64().unwrap().abs() > 1e-6
+        })
+        .expect("cylinder solid must have a curved wall face");
+
+    let c = face_curvature(&mut k, wall, 0.7, 0.5);
+    let k1 = c["k1"].as_f64().unwrap();
+    let k2 = c["k2"].as_f64().unwrap();
+    assert!((k1 - 1.0 / radius).abs() < 1e-12, "cylinder k1: {k1}");
+    assert!(k2.abs() < 1e-12, "cylinder k2 must be 0, got {k2}");
+    assert!((c["gaussian"].as_f64().unwrap()).abs() < 1e-12);
+    assert!((c["mean"].as_f64().unwrap() - 1.0 / (2.0 * radius)).abs() < 1e-12);
+    // Non-umbilic: directions reported, k2 direction axial.
+    let d2 = c["d2"].as_array().unwrap();
+    assert!(
+        (d2[2].as_f64().unwrap() - 1.0).abs() < 1e-12,
+        "k2 dir must be axial"
+    );
+
+    // A planar cap must report zero curvature with null directions.
+    let cap = batch_faces(&mut k, serde_json::json!(solid))
+        .into_iter()
+        .find(|&f| {
+            let c = face_curvature(&mut k, f, 0.0, 0.0);
+            c["k1"].as_f64().unwrap().abs() <= 1e-6 && c["k2"].as_f64().unwrap().abs() <= 1e-6
+        })
+        .expect("cylinder must have planar caps");
+    let c = face_curvature(&mut k, cap, 0.0, 0.0);
+    assert!(c["k1"].as_f64().unwrap().abs() < 1e-15, "{c}");
+    assert!(c["d1"].is_null() && c["d2"].is_null(), "plane is umbilic");
+}
+
+#[test]
+fn batch_curvature_on_sphere_is_umbilic_positive() {
+    let mut k = BrepKernel::new();
+    let out = batch_ok_all(
+        &mut k,
+        &[op_name_args(
+            "makeSphere",
+            serde_json::json!({"radius": 2.0}),
+        )],
+    );
+    let solid = out[0].as_u64().unwrap();
+    let faces = batch_faces(&mut k, serde_json::json!(solid));
+    assert_eq!(faces.len(), 2, "sphere solid has two hemispheres");
+    for &f in &faces {
+        let c = face_curvature(&mut k, f, 0.7, 0.5);
+        assert!((c["k1"].as_f64().unwrap() - 0.5).abs() < 1e-12, "{c}");
+        assert!((c["k2"].as_f64().unwrap() - 0.5).abs() < 1e-12, "{c}");
+        assert!((c["gaussian"].as_f64().unwrap() - 0.25).abs() < 1e-12);
+        assert!((c["mean"].as_f64().unwrap() - 0.5).abs() < 1e-12);
+        // A sphere is umbilic: directions must be null, never fabricated.
+        assert!(c["d1"].is_null() && c["d2"].is_null(), "{c}");
+    }
+}
+
+#[test]
+fn batch_curvature_on_torus_special_parallels() {
+    let mut k = BrepKernel::new();
+    let out = batch_ok_all(
+        &mut k,
+        &[op_name_args(
+            "makeTorus",
+            serde_json::json!({"majorRadius": 4.0, "minorRadius": 1.0}),
+        )],
+    );
+    let solid = out[0].as_u64().unwrap();
+    let faces = batch_faces(&mut k, serde_json::json!(solid));
+    assert_eq!(faces.len(), 1, "torus solid is a single face");
+    let f = faces[0];
+
+    // Outer equator (v = 0): tube 1/r, ring 1/(R + r), both convex.
+    let outer = face_curvature(&mut k, f, 0.0, 0.0);
+    assert!(
+        (outer["k1"].as_f64().unwrap() - 1.0).abs() < 1e-12,
+        "{outer}"
+    );
+    assert!(
+        (outer["k2"].as_f64().unwrap() - 0.2).abs() < 1e-12,
+        "{outer}"
+    );
+    // Inner equator (v = π): ring direction concave, saddle (K < 0).
+    let inner = face_curvature(&mut k, f, 0.0, std::f64::consts::PI);
+    assert!(
+        (inner["k1"].as_f64().unwrap() - 1.0).abs() < 1e-12,
+        "{inner}"
+    );
+    assert!(
+        (inner["k2"].as_f64().unwrap() + 1.0 / 3.0).abs() < 1e-12,
+        "{inner}"
+    );
+    assert!(inner["gaussian"].as_f64().unwrap() < 0.0, "{inner}");
+    // Top circle (v = π/2): ring curvature vanishes.
+    let top = face_curvature(&mut k, f, 0.0, std::f64::consts::FRAC_PI_2);
+    assert!((top["k2"].as_f64().unwrap() - 0.0).abs() < 1e-12, "{top}");
+    // Min radius: tube curvature 1/r dominates (1 > 1/3).
+    let min_radius = batch_ok(&mut k, "getFaceMinRadius", serde_json::json!({"face": f}));
+    assert!(
+        (min_radius["minRadius"].as_f64().unwrap() - 1.0).abs() < 1e-12,
+        "{min_radius}"
+    );
+    assert!(!min_radius["isInfinite"].as_bool().unwrap());
+}
+
+#[test]
+fn batch_min_radius_on_planar_face_is_infinite() {
+    let (mut k, solid) = kernel_with_box();
+    let f = batch_faces(&mut k, serde_json::json!(solid))[0];
+    let r = batch_ok(&mut k, "getFaceMinRadius", serde_json::json!({"face": f}));
+    assert!(r["isInfinite"].as_bool().unwrap(), "{r}");
+    assert!(
+        r["minRadius"].is_null(),
+        "JSON Infinity serializes as null: {r}"
+    );
+}
+
+#[test]
+fn batch_curvature_error_at_cone_apex() {
+    let mut k = BrepKernel::new();
+    let out = batch_ok_all(
+        &mut k,
+        &[op_name_args(
+            "makeCone",
+            serde_json::json!({"bottomRadius": 2.0, "topRadius": 1.0, "height": 2.0}),
+        )],
+    );
+    let solid = out[0].as_u64().unwrap();
+    let faces = batch_faces(&mut k, serde_json::json!(solid));
+    // The lateral face's underlying conical surface has its apex at v = 0.
+    let lateral = faces
+        .iter()
+        .copied()
+        .find(|&f| {
+            let c = face_curvature(&mut k, f, 0.0, 1.0);
+            c["k1"].as_f64().is_some_and(|k1| k1.abs() > 1e-6)
+        })
+        .expect("cone solid must have a conical wall face");
+    let results = batch_run(
+        &mut k,
+        &[op_name_args(
+            "getFaceCurvature",
+            serde_json::json!({"face": lateral, "u": 0.0, "v": 0.0}),
+        )],
+    );
+    assert!(
+        results[0].get("error").is_some(),
+        "curvature at the apex must error: {results:?}"
+    );
 }

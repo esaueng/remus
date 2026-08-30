@@ -5,6 +5,7 @@
 
 pub mod basis;
 pub mod bezier_clip;
+pub mod curvature;
 pub mod curve;
 pub mod decompose;
 pub mod evaluator;
