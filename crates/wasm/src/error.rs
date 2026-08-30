@@ -357,6 +357,32 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 structured.message = message;
                 structured
             }
+            remus_operations::OperationsError::PatternInstancesOverlap {
+                first,
+                second,
+                overlap_volume,
+                threshold,
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("pattern_instances_overlap"),
+                );
+                structured
+                    .details
+                    .insert("firstInstance".to_string(), Value::from(first));
+                structured
+                    .details
+                    .insert("secondInstance".to_string(), Value::from(second));
+                structured
+                    .details
+                    .insert("overlapVolume".to_string(), Value::from(overlap_volume));
+                structured
+                    .details
+                    .insert("threshold".to_string(), Value::from(threshold));
+                structured
+            }
             _ => Self::operation_failed(message),
         }
     }

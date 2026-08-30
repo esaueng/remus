@@ -183,8 +183,18 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Coons fill, sew, untrim" (blocked); "Primitives" (blocked);
   mirror/pattern under the offset row (guarded).
+- Pattern qualification: linear, circular, and grid patterns now preflight
+  pairwise material overlap using exact-only intersections and a
+  scale-relative volume floor. Material overlap is a typed, transactional
+  `pattern_instances_overlap` refusal at native and WASM batch boundaries;
+  touching and disjoint instances preserve copy-derived face provenance.
+  Native tests pin closed-form box intersection volume, rollback, contact, and
+  1e-3/1/1e3 scale behavior; the versioned
+  `pattern-overlap-typed-refusal` bundle pins deterministic WASM behavior.
 - Known gaps: native/WASM invalid-input, scale, and postcondition matrices
-  incomplete; convex hull / Minkowski degenerate coverage incomplete.
+  incomplete outside the qualified pattern cells; exact fusing of overlapping
+  pattern instances and provenance through that fuse remain unimplemented;
+  convex hull / Minkowski degenerate coverage incomplete.
 
 ### Measurement, classification, distance
 
