@@ -10,9 +10,6 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
-    ignore:
-      # Blocked on the tsify::Ts migration (into_wasm_abi deprecated in 0.5.8).
-      - dependency-name: tsify
     open-pull-requests-limit: 5
 
   - package-ecosystem: npm

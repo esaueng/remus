@@ -32,11 +32,8 @@ smallvec = "1"
 
 # WASM
 serde-wasm-bindgen = "0.6"
-# Pinned: 0.5.8 deprecates into_wasm_abi/from_wasm_abi (memory leaks,
-# madonoharu/tsify#65) and -D warnings makes that a hard error. Unpin when
-# the wasm bindings migrate to tsify::Ts.
-tsify = {version = "=0.5.6", features = ["js"]}
-wasm-bindgen = "=0.2.126"                    # Pinned: must match wasm-bindgen-cli in CI
+tsify = {version = "0.5.8", features = ["js"]}
+wasm-bindgen = "=0.2.126"                      # Pinned: must match wasm-bindgen-cli in CI
 
 # Testing
 proptest = "1"
