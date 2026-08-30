@@ -640,6 +640,50 @@ mod tests {
     }
 
     #[test]
+    fn cylinder_surface_area_is_exact_in_direct_and_batch_contracts() {
+        let (radius, height) = (3.0_f64, 10.0_f64);
+        let expected = 2.0 * std::f64::consts::PI * radius * (radius + height);
+        let expected_cap = std::f64::consts::PI * radius * radius;
+        let mut k = BrepKernel::new();
+        let solid = k.make_cylinder_solid(radius, height).unwrap();
+        let faces = k.get_solid_faces(solid).unwrap();
+
+        for deflection in [1e-6, 1e6] {
+            let mut face_areas: Vec<_> = faces
+                .iter()
+                .map(|&face| k.face_area(face, deflection).unwrap())
+                .collect();
+            face_areas.sort_by(f64::total_cmp);
+            assert_eq!(face_areas.len(), 3, "cylinder must expose three faces");
+            for cap in &face_areas[..2] {
+                let rel = (*cap - expected_cap).abs() / expected_cap;
+                assert!(
+                    rel < 1e-12,
+                    "direct faceArea cap: expected {expected_cap}, got {cap}, rel={rel:e}"
+                );
+            }
+
+            let direct = k.surface_area(solid, deflection).unwrap();
+            let direct_rel = (direct - expected).abs() / expected;
+            assert!(
+                direct_rel < 1e-12,
+                "direct surfaceArea: expected {expected}, got {direct}, rel={direct_rel:e}"
+            );
+
+            let batch = k.execute_batch(&format!(
+                r#"[{{"op":"surfaceArea","args":{{"solid":{solid},"deflection":{deflection}}}}}]"#
+            ));
+            let parsed: serde_json::Value = serde_json::from_str(&batch).unwrap();
+            let actual = parsed[0]["ok"].as_f64().unwrap();
+            let batch_rel = (actual - expected).abs() / expected;
+            assert!(
+                batch_rel < 1e-12,
+                "batch surfaceArea: expected {expected}, got {actual}, rel={batch_rel:e}"
+            );
+        }
+    }
+
+    #[test]
     fn surface_area_invalid_handle_is_error() {
         let mut k = BrepKernel::new();
         let r = k.execute_batch(r#"[{"op": "surfaceArea", "args": {"solid": 9999}}]"#);
