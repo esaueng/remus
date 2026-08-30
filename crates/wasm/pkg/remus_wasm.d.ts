@@ -11,6 +11,7 @@ export type BatchErrorCodeV2 =
 | "invalid_handle"
 | "topology_error"
 | "operation_failed"
+| "cancelled"
 | "resource_limit_exceeded"
 | "internal_error";
 
@@ -147,6 +148,33 @@ export interface FaceEvolutionPayloadV1 {
      * Validated evolution claims between the two handle domains.
      */
     evolution: FaceEvolutionClaimsV1;
+}
+
+/**
+ * Terminal state of a cancellable operation.
+ */
+export type CancellableOperationStatus = "completed" | "cancelled";
+
+/**
+ * Typed result for `booleanWithCancellation`.
+ *
+ * Cancellation is returned as data rather than an unstructured JavaScript
+ * exception, so callers can distinguish it without parsing prose. Other
+ * operation failures still reject the call normally.
+ */
+export interface CancellableBooleanResult {
+    /**
+     * Discriminates a committed result from a rolled-back cancellation.
+     */
+    status: CancellableOperationStatus;
+    /**
+     * Stable native cancellation code, present only when cancelled.
+     */
+    code?: string;
+    /**
+     * Completed boolean result, absent when cancelled.
+     */
+    result?: BooleanQualityResult;
 }
 
 /**
@@ -558,6 +586,14 @@ export class BrepKernel {
      * Create a new empty assembly. Returns an assembly index.
      */
     assemblyNew(name: string): number;
+    /**
+     * Performs a boolean governed by a cooperative cancellation token.
+     *
+     * Cancellation is typed (`operation_cancelled`) and transactional: no
+     * partial topology is retained. Result quality follows
+     * `booleanWithQuality`, including the optional exact-only policy.
+     */
+    booleanWithCancellation(op: string, a: number, b: number, token: OperationCancellationToken, exact_only?: boolean | null): CancellableBooleanResult;
     /**
      * Perform a boolean with disclosed result quality.
      *
@@ -3553,6 +3589,32 @@ export class JsVec3 {
      * Z component.
      */
     z: number;
+}
+
+/**
+ * A one-shot cooperative cancellation signal for a modeling operation.
+ *
+ * Clones share one monotonic flag. Native multithreaded hosts can signal it
+ * concurrently; cancelling before a call also refuses that call without
+ * touching topology. A single-threaded browser worker cannot process a new
+ * JS call while WASM is running, so active browser cancellation still needs
+ * the app's worker/shared-memory transport.
+ */
+export class OperationCancellationToken {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Requests cancellation. The request cannot be reset.
+     */
+    cancel(): void;
+    /**
+     * Whether cancellation has been requested.
+     */
+    isCancelled(): boolean;
+    /**
+     * Creates an uncancelled token.
+     */
+    constructor();
 }
 
 /**
