@@ -121,3 +121,12 @@ debug = true
 inherits = "release"
 lto = false
 opt-level = 3
+
+# CI's geometry-heavy tests spend far more time executing than compiling.
+# Keep test assertions and overflow checks while enabling lightweight
+# optimization and omitting debug info that hosted runners never consume.
+[profile.ci-test]
+debug = false
+incremental = false
+inherits = "test"
+opt-level = 1
