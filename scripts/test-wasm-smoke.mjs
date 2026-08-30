@@ -245,6 +245,7 @@ console.log(`ok - massProperties: volume=${props.volume}, Ixx=${props.inertia[0]
 
 // 6. Mesh quality
 const quality = JSON.parse(kernel.meshQuality(boxId, DEFLECTION));
+assert.ok(quality.triangleCount > 0, 'box mesh should contain triangles');
 assert.equal(quality.boundaryEdges, 0, 'box mesh should have no boundary edges');
 assert.equal(quality.isWatertight, true, 'box mesh should be watertight');
 console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`);
