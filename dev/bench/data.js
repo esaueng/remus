@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788102682929,
+  "lastUpdate": 1788102949694,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4427,6 +4427,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39111165,
             "range": "± 220647",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c4ff69c009a9d7f993725417237e8ba6d399c48b",
+          "message": "feat(check): surface curvature queries + WASM bindings (interrogation slice) (#145)\n\n* feat(check): surface curvature queries\n\nPrincipal, Gaussian, and mean curvature queries plus minimum-radius\nof curvature over a face, in a new remus-check analyze module backed\nby L0 curvature primitives.\n\n- math: analytic principal curvatures for sphere/cylinder/cone/torus\n  and a generic fundamental-forms solver (shape operator eigenproblem\n  with a numerically stable discriminant); NURBS surfaces evaluated\n  through second-order derivatives at (u, v)\n- sign convention documented at the type: positive for convex-outward\n  relative to the surface's natural normal; flipped by face reversal\n- umbilic points (sphere, plane, near-umbilic NURBS) report no\n  principal directions rather than fabricating them\n- min_radius_of_curvature is exact on all five analytic types\n  (cone/torus restricted to the face's parameter extent) and\n  grid-approximated on NURBS\n- oracle tests: exact values on all five analytic primitives and the\n  exact rational NURBS sphere within 1e-9\n\n* feat(wasm): curvature bindings\n\n- getFaceCurvature(face, u, v): principal curvatures, Gaussian, mean,\n  and principal directions (null at umbilic points) as a typed\n  FaceCurvatureResult payload\n- getFaceMinRadius: minimum radius of curvature over a face; JSON\n  batch arm reports non-finite radii as minRadius: null plus an\n  explicit isInfinite flag\n- both wired into executeBatch as read-only ops with contract tests\n  through execute_batch (cylinder closed form, sphere umbilic, torus\n  special parallels, planar infinity, cone-apex error path)\n- P-Class ledger: 7.5 Interrogation marked partial (curvature slice)\n\n* docs(kernel): map the curvature modules",
+          "timestamp": "2026-08-30T11:13:04-04:00",
+          "tree_id": "762f6aa00f721646e1aef8942d6f6c2082feb494",
+          "url": "https://github.com/esaueng/remus/commit/c4ff69c009a9d7f993725417237e8ba6d399c48b"
+        },
+        "date": 1788102948791,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1419780,
+            "range": "± 35819",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1477523,
+            "range": "± 1822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15465,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1022310,
+            "range": "± 8915",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41502434,
+            "range": "± 92038",
             "unit": "ns/iter"
           }
         ]
