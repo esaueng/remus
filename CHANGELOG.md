@@ -9,6 +9,10 @@
 
 ## 2.130.0
 
+### Features
+
+* **context:** add typed, transactional cooperative cancellation for GFA and NURBS SSI, including the WASM `OperationCancellationToken` contract.
+
 ### Licensing
 
 * Establish the permanent Apache-2.0 line from the last pre-AGPL fork state.
