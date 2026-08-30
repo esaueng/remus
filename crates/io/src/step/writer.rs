@@ -1324,7 +1324,8 @@ mod tests {
             let edge_id = solid_edges(&topo, solid).unwrap()[0];
             topo.edge_mut(edge_id)
                 .unwrap()
-                .set_tolerance(Some(tolerance));
+                .set_tolerance(Some(tolerance))
+                .unwrap();
             let vertex_id = solid_vertices(&topo, solid).unwrap()[0];
             let point = topo.vertex(vertex_id).unwrap().point();
             *topo.vertex_mut(vertex_id).unwrap() = Vertex::new(point, tolerance * 0.5);
@@ -1349,7 +1350,19 @@ mod tests {
             let mut topo = Topology::new();
             let solid = make_unit_cube_non_manifold(&mut topo);
             let edge_id = solid_edges(&topo, solid).unwrap()[0];
-            topo.edge_mut(edge_id).unwrap().set_tolerance(Some(invalid));
+            // The validated setter refuses these values by design; inject the
+            // invalid tolerance through the unchecked construction path the
+            // writer's own validation exists to catch.
+            let (start, end) = {
+                let edge = topo.edge(edge_id).unwrap();
+                (edge.start(), edge.end())
+            };
+            *topo.edge_mut(edge_id).unwrap() = remus_topology::edge::Edge::with_tolerance(
+                start,
+                end,
+                EdgeCurve::Line,
+                Some(invalid),
+            );
 
             assert!(matches!(
                 write_step(&topo, &[solid]),
