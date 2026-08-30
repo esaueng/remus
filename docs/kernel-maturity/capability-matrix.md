@@ -148,6 +148,19 @@ does not itself promote or demote anything.
   self-intersection removal; NURBS-NURBS 3D intersection in the offset path;
   excluded faces on cavity solids.
 
+### Direct edits (push/pull and move face)
+
+- Ledger row: "Push/pull face" (Stable for the declared domain, guarded).
+- **Qualified cell:** moving either untrimmed cap of a three-face analytic
+  cylinder is exact for positive and negative distances, both cap sides,
+  rotated and translated frames, and 1e-3/1/1e3 model scales. The height-collapse
+  boundary is a typed invalid-input error. Native closed-form volume and
+  topology oracles plus the versioned WASM `push-pull-cylinder-top-cap` repro
+  bundle pin the public contract.
+- Known Partial/Unqualified cells: decorated cylindrical solids and general
+  planar faces retain the validated boolean/re-limitation paths; generalized
+  curved-face re-limitation and direct-edit evolution remain roadmap work.
+
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 
 - Ledger rows: "Extrude", "Revolve, sweep, loft, pipe", "Helical sweep"
