@@ -33,8 +33,10 @@
 
 use std::f64::consts::PI;
 
+use remus_math::context::{FallbackPolicy, OperationContext};
 use remus_math::mat::Mat4;
-use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::OperationsError;
+use remus_operations::boolean::{BooleanOp, BooleanQuality, boolean, boolean_with_context};
 use remus_operations::measure::{mass_properties, solid_volume};
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::transform::transform_solid;
@@ -49,6 +51,7 @@ const PLATE_Z: f64 = 8.0;
 const R: f64 = 10.0;
 const H: f64 = 16.0;
 const DEFLECTION: f64 = 0.01;
+const SCALE_SWEEP: [f64; 3] = [1e-3, 1.0, 1e3];
 
 /// Overlaps at which the analytic path must carry the whole operation: the boss
 /// clear of the wall, then crossing it at depths spanning seven orders of
@@ -72,9 +75,18 @@ const FULL_SWEEP: [f64; 13] = [
 /// `(R + d, 20)`. `d > 0` clears the `x = 0` wall, `d = 0` is tangent to it,
 /// `d < 0` crosses it.
 fn build(topo: &mut Topology, d: f64) -> (SolidId, SolidId) {
-    let plate = make_box(topo, PLATE_X, PLATE_Y, PLATE_Z).unwrap();
-    let boss = make_cylinder(topo, R, H).unwrap();
-    transform_solid(topo, boss, &Mat4::translation(R + d, PLATE_Y / 2.0, 0.0)).unwrap();
+    build_scaled(topo, d, 1.0)
+}
+
+fn build_scaled(topo: &mut Topology, d: f64, scale: f64) -> (SolidId, SolidId) {
+    let plate = make_box(topo, PLATE_X * scale, PLATE_Y * scale, PLATE_Z * scale).unwrap();
+    let boss = make_cylinder(topo, R * scale, H * scale).unwrap();
+    transform_solid(
+        topo,
+        boss,
+        &Mat4::translation((R + d) * scale, PLATE_Y * scale / 2.0, 0.0),
+    )
+    .unwrap();
     (plate, boss)
 }
 
@@ -111,6 +123,10 @@ fn expected(op: BooleanOp, d: f64) -> f64 {
     } else {
         cut_volume(d)
     }
+}
+
+fn expected_scaled(op: BooleanOp, d: f64, scale: f64) -> f64 {
+    expected(op, d) * scale.powi(3)
 }
 
 /// `(planes, cylinders, other)` over the result's faces.
@@ -235,6 +251,99 @@ fn a_tangent_boss_is_never_silently_dropped() {
             "{what}: volume {got:.4} against closed form {want:.4} ({:.4} %)",
             rel * 100.0
         );
+    }
+}
+
+/// The operand-loss gate is scale-relative, not an accidental fit to the
+/// original millimetre witness. Probe both sides of tangency as well as at the
+/// knife edge: a clear boss and a crossing boss stay analytic,
+/// while exact tangency may use the bounded fallback but must retain the
+/// requested material.
+#[test]
+fn tangent_boundary_is_stable_across_scale() {
+    for scale in SCALE_SWEEP {
+        for d in [0.1, 0.0, -0.1] {
+            for &(op, name) in &[(BooleanOp::Fuse, "fuse"), (BooleanOp::Cut, "cut")] {
+                let mut topo = Topology::new();
+                let (plate, boss) = build_scaled(&mut topo, d, scale);
+                let what = format!("{name} at d/r={} and scale={scale}", d / R);
+
+                let (result, approximate) = if d.abs() <= f64::EPSILON {
+                    let exact_expected = scale < 1e3;
+                    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+                    match boolean_with_context(&mut topo, op, plate, boss, &exact) {
+                        Ok(outcome) => {
+                            assert!(
+                                exact_expected,
+                                "{what}: the 1e3 cell must refuse rather than silently change its declared quality"
+                            );
+                            assert_eq!(outcome.quality, BooleanQuality::Exact, "{what}");
+                            (outcome.solid, false)
+                        }
+                        Err(err) => {
+                            assert!(
+                                !exact_expected,
+                                "{what}: the 1e-3 and unit cells are qualified exact"
+                            );
+                            assert!(
+                                matches!(err, OperationsError::ExactOnlyUnattainable),
+                                "{what}: expected exact-only refusal, got {err}"
+                            );
+                            assert!(
+                                topo.solid(plate).is_ok() && topo.solid(boss).is_ok(),
+                                "{what}: exact-only refusal did not roll back"
+                            );
+
+                            let budget = DEFLECTION * scale;
+                            let approximate = OperationContext::new()
+                                .with_fallback(FallbackPolicy::AllowApproximate { budget });
+                            let outcome =
+                                boolean_with_context(&mut topo, op, plate, boss, &approximate)
+                                    .unwrap_or_else(|e| {
+                                        panic!("{what}: disclosed fallback failed: {e}")
+                                    });
+                            assert_eq!(
+                                outcome.quality,
+                                BooleanQuality::Approximate { deflection: budget },
+                                "{what}: exact tangency must disclose its fallback"
+                            );
+                            (outcome.solid, true)
+                        }
+                    }
+                } else {
+                    let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+                    let outcome = boolean_with_context(&mut topo, op, plate, boss, &exact)
+                        .unwrap_or_else(|e| panic!("{what}: exact side of boundary failed: {e}"));
+                    assert_eq!(outcome.quality, BooleanQuality::Exact, "{what}");
+                    (outcome.solid, false)
+                };
+
+                assert_watertight(&topo, result, &what);
+
+                let want = expected_scaled(op, d, scale);
+                let got = if approximate {
+                    solid_volume(&topo, result, DEFLECTION * scale).unwrap()
+                } else {
+                    integrated_volume(&topo, result)
+                };
+                let rel = (got - want).abs() / want;
+                let limit = if approximate { 4e-3 } else { 1e-9 };
+                assert!(
+                    rel < limit,
+                    "{what}: volume {got:.10} against closed form {want:.10} ({:.6} %)",
+                    rel * 100.0
+                );
+
+                if !approximate {
+                    let (_, cylinders, other) = surface_census(&topo, result);
+                    assert!(
+                        cylinders >= 1 && other == 0,
+                        "{what}: expected an analytic curved wall, got {cylinders} cylinder(s) \
+                         and {other} other non-planar face(s)"
+                    );
+                }
+            }
+        }
     }
 }
 
