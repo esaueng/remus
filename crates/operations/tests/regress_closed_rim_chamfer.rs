@@ -308,9 +308,9 @@ fn closed_rim_chamfer_refuses_nonlinear_changed_endpoint_without_mutation() {
     let center = start + (end - start) * 0.5;
     let hostile_curve =
         Circle3D::new_with_ref(center, Vec3::new(0.0, 1.0, 0.0), H * 0.5, start - center).unwrap();
-    topo.edge_mut(seam)
-        .unwrap()
-        .set_curve(EdgeCurve::Circle(hostile_curve));
+    let hostile_edge = topo.edge_mut(seam).unwrap();
+    hostile_edge.set_curve(EdgeCurve::Circle(hostile_curve));
+    hostile_edge.set_trim(Some((0.0, std::f64::consts::PI)));
     let counts = (
         topo.num_vertices(),
         topo.num_edges(),
@@ -324,10 +324,13 @@ fn closed_rim_chamfer_refuses_nonlinear_changed_endpoint_without_mutation() {
         Err(error) => error,
         Ok(_) => panic!("moving one endpoint of a nonlinear carrier must be refused"),
     };
-    assert!(matches!(
-        error,
-        OperationsError::Blend(BlendError::TrimmingFailure { .. })
-    ));
+    assert!(
+        matches!(
+            error,
+            OperationsError::Blend(BlendError::TrimmingFailure { .. })
+        ),
+        "unexpected refusal: {error:?}"
+    );
     assert_eq!(
         (
             topo.num_vertices(),

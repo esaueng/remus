@@ -57,7 +57,9 @@ fn parabolic_segment_face(topo: &mut Topology, w: f64) -> remus_topology::face::
     let v_left = topo.add_vertex(Vertex::new(left, vtol));
     let v_right = topo.add_vertex(Vertex::new(right, vtol));
 
-    let arc = topo.add_edge(Edge::new(v_left, v_right, EdgeCurve::Parabola(par)));
+    let mut arc_edge = Edge::new(v_left, v_right, EdgeCurve::Parabola(par));
+    arc_edge.set_trim(Some((-w, w)));
+    let arc = topo.add_edge(arc_edge);
     let chord = topo.add_edge(Edge::new(v_right, v_left, EdgeCurve::Line));
 
     let wire = Wire::new(

@@ -64,7 +64,9 @@ pub fn analyze_face(
             let edge = topo.edge(oe.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) = edge
+                .strict_domain()
+                .map_err(crate::error::analysis_edge_domain)?;
             for i in 0..=BOUNDARY_SAMPLES {
                 #[allow(clippy::cast_precision_loss)]
                 let t = t0 + (t1 - t0) * (i as f64) / (BOUNDARY_SAMPLES as f64);
