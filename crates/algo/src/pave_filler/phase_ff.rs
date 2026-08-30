@@ -6744,6 +6744,21 @@ mod context_budget_tests {
         .unwrap()
     }
 
+    fn off_center_tilted_surface() -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, -0.3), Point3::new(0.0, 1.0, -0.3)],
+                vec![Point3::new(1.0, 0.0, 0.7), Point3::new(1.0, 1.0, 0.7)],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
     fn control_point_count(curves: &[super::RawCurve]) -> usize {
         curves
             .iter()
@@ -6773,6 +6788,25 @@ mod context_budget_tests {
         assert!(
             bounded_points < full_points,
             "tiny caller budget must bound FF output ({bounded_points} vs {full_points})"
+        );
+    }
+
+    #[test]
+    fn caller_newton_budget_reaches_nurbs_ff_refinement() {
+        let a = flat_surface();
+        let b = off_center_tilted_surface();
+        let full = nurbs_nurbs_intersection(&a, &b, &OperationContext::new()).unwrap();
+        assert!(
+            control_point_count(&full) > 4,
+            "default Newton budget must recover the off-centre FF curve"
+        );
+
+        let disabled =
+            OperationContext::new().with_budgets(WorkBudgets::new().with_newton_iterations(0));
+        let bounded = nurbs_nurbs_intersection(&a, &b, &disabled).unwrap();
+        assert!(
+            bounded.is_empty(),
+            "a zero-iteration caller budget must prevent FF Newton refinement"
         );
     }
 }
