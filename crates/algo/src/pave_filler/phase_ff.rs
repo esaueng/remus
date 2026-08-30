@@ -3864,8 +3864,16 @@ fn compute_raw_curves(
             nurbs_nurbs_intersection(na, nb, context)
         }
 
-        // Fallback: unsupported pair
-        _ => Ok(Vec::new()),
+        // Defensive: every face-surface pair combination is armed above
+        // (specific exact arms, the generic analytic×analytic marcher, and
+        // the NURBS arms). If a future surface variant or refactor makes
+        // this arm reachable, refuse typed instead of returning empty
+        // sections — empty would tell classification the faces provably do
+        // not meet, a silent wrong answer whenever they do (issue 2.1, R1).
+        (a, b) => Err(AlgoError::UnsupportedSurfacePair {
+            a: a.type_tag(),
+            b: b.type_tag(),
+        }),
     }
 }
 
