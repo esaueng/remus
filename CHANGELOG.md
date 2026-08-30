@@ -6,6 +6,9 @@
 
 * **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the
   wall/radius boundary and scale sweep.
+* **operations:** refuse overlapping linear, circular, and grid pattern
+  instances transactionally instead of returning a compound that double-counts
+  material.
 
 ## 2.130.0
 
