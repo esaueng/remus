@@ -597,9 +597,9 @@ fn fix_self_intersection(
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(oe.oriented_start(edge))?.point();
         let end_pos = topo.vertex(oe.oriented_end(edge))?.point();
-        let raw_start = topo.vertex(edge.start())?.point();
-        let raw_end = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.domain_with_endpoints(raw_start, raw_end);
+        let (t0, t1) = edge
+            .strict_domain()
+            .map_err(crate::error::fix_edge_domain)?;
         let (t0, t1) = if oe.is_forward() || matches!(edge.curve(), EdgeCurve::Line) {
             (t0, t1)
         } else {
@@ -791,7 +791,9 @@ fn fix_lacking(
             continue;
         }
 
-        let (t0, t1) = edge.domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) = edge
+            .strict_domain()
+            .map_err(crate::error::fix_edge_domain)?;
         let curve_start = edge.curve().evaluate_with_endpoints(t0, start_pos, end_pos);
         let curve_end = edge.curve().evaluate_with_endpoints(t1, start_pos, end_pos);
 
@@ -887,7 +889,9 @@ fn fix_notched(
         let o_end_pos = topo.vertex(end_vid)?.point();
         let length = (o_end_pos - o_start_pos).length();
 
-        let (t0, t1) = edge.domain_with_endpoints(raw_start, raw_end);
+        let (t0, t1) = edge
+            .strict_domain()
+            .map_err(crate::error::fix_edge_domain)?;
         let (ts, te) = if oe.is_forward() {
             (
                 edge.curve().tangent_with_endpoints(t0, raw_start, raw_end),
@@ -1006,9 +1010,9 @@ fn fix_intersecting_edges(
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(oe.oriented_start(edge))?.point();
         let end_pos = topo.vertex(oe.oriented_end(edge))?.point();
-        let raw_start = topo.vertex(edge.start())?.point();
-        let raw_end = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.domain_with_endpoints(raw_start, raw_end);
+        let (t0, t1) = edge
+            .strict_domain()
+            .map_err(crate::error::fix_edge_domain)?;
         let (t0, t1) = if oe.is_forward() || matches!(edge.curve(), EdgeCurve::Line) {
             (t0, t1)
         } else {

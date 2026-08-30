@@ -108,7 +108,9 @@ pub fn vertex_curve_deviation(topo: &Topology, edge_id: EdgeId) -> Result<(f64, 
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
 
-    let (t_min, t_max) = edge.domain_with_endpoints(start_pos, end_pos);
+    let (t_min, t_max) = edge
+        .strict_domain()
+        .map_err(crate::error::analysis_edge_domain)?;
     let curve_start = edge
         .curve()
         .evaluate_with_endpoints(t_min, start_pos, end_pos);
@@ -127,7 +129,9 @@ fn approx_arc_length(topo: &Topology, edge_id: EdgeId) -> Result<f64, HealError>
     let edge = topo.edge(edge_id)?;
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
-    let (t_min, t_max) = edge.domain_with_endpoints(start_pos, end_pos);
+    let (t_min, t_max) = edge
+        .strict_domain()
+        .map_err(crate::error::analysis_edge_domain)?;
 
     let mut length = 0.0;
     let mut prev = edge
@@ -175,4 +179,48 @@ pub fn analyze_edge(
         curve_length_approx: arc_len,
         status,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    use super::*;
+
+    #[test]
+    fn analysis_uses_reversed_major_authority_and_refuses_a_missing_range() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let range = (5.5, 0.5);
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(range.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(range.1), 1e-7));
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge.set_trim(Some(range));
+        let edge_id = topo.add_edge(edge);
+
+        let analysis = analyze_edge(&topo, edge_id, &Tolerance::new()).unwrap();
+        assert!(analysis.vertex_start_deviation < 1e-12);
+        assert!(analysis.vertex_end_deviation < 1e-12);
+        assert!(
+            analysis.curve_length_approx > 4.9,
+            "the reversed major branch must not collapse to its short complement: {}",
+            analysis.curve_length_approx
+        );
+
+        topo.edge_mut(edge_id).unwrap().set_trim(None);
+        let error = analyze_edge(&topo, edge_id, &Tolerance::new()).unwrap_err();
+        assert!(matches!(error, HealError::AnalysisFailed(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("no authoritative parameter range")
+        );
+    }
 }

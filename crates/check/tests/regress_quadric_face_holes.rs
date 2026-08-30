@@ -49,6 +49,26 @@ fn cylinder() -> CylindricalSurface {
     CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), R).unwrap()
 }
 
+fn circle_edge(
+    topo: &mut Topology,
+    start: remus_topology::vertex::VertexId,
+    end: remus_topology::vertex::VertexId,
+    circle: Circle3D,
+) -> remus_topology::edge::EdgeId {
+    let start_parameter = circle.project(topo.vertex(start).unwrap().point());
+    let canonical_end = circle.project(topo.vertex(end).unwrap().point());
+    let end_parameter = if start == end {
+        start_parameter + TAU
+    } else if canonical_end <= start_parameter {
+        canonical_end + TAU
+    } else {
+        canonical_end
+    };
+    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((start_parameter, end_parameter)));
+    topo.add_edge(edge)
+}
+
 /// A UV-axis-aligned loop on the cylinder: two constant-`v` arcs joined by two
 /// constant-`u` lines. `ccw` builds it in the `+u` sense, otherwise in `−u` —
 /// a hole is wound opposite the boundary it sits inside.
@@ -75,9 +95,9 @@ fn uv_rect_wire(
         let axis = Vec3::new(0.0, 0.0, if up { 1.0 } else { -1.0 });
         Circle3D::new(Point3::new(0.0, 0.0, vv), axis, R).unwrap()
     };
-    let e0 = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(ring(v0, true))));
+    let e0 = circle_edge(topo, a, b, ring(v0, true));
     let e1 = topo.add_edge(Edge::new(b, c, EdgeCurve::Line));
-    let e2 = topo.add_edge(Edge::new(c, d, EdgeCurve::Circle(ring(v1, false))));
+    let e2 = circle_edge(topo, c, d, ring(v1, false));
     let e3 = topo.add_edge(Edge::new(d, a, EdgeCurve::Line));
     let oriented = if ccw {
         vec![
@@ -102,7 +122,7 @@ fn uv_rect_wire(
 fn ring_wire(topo: &mut Topology, v: f64, forward: bool) -> remus_topology::wire::WireId {
     let c = Circle3D::new(Point3::new(0.0, 0.0, v), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
     let seam = topo.add_vertex(Vertex::new(c.evaluate(0.0), TOL));
-    let e = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(c)));
+    let e = circle_edge(topo, seam, seam, c);
     topo.add_wire(Wire::new(vec![OrientedEdge::new(e, forward)], true).unwrap())
 }
 
@@ -160,8 +180,8 @@ fn a_hole_in_a_full_revolution_wall_is_not_material() {
     let vt = topo.add_vertex(Vertex::new(s.evaluate(0.0, 10.0), TOL));
     let bottom = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
     let top = Circle3D::new(Point3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 1.0), R).unwrap();
-    let eb = topo.add_edge(Edge::new(vb, vb, EdgeCurve::Circle(bottom)));
-    let et = topo.add_edge(Edge::new(vt, vt, EdgeCurve::Circle(top)));
+    let eb = circle_edge(&mut topo, vb, vb, bottom);
+    let et = circle_edge(&mut topo, vt, vt, top);
     let seam = topo.add_edge(Edge::new(vb, vt, EdgeCurve::Line));
     let outer = topo.add_wire(
         Wire::new(

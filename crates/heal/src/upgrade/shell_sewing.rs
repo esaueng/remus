@@ -277,8 +277,12 @@ fn curves_agree(
 ) -> Result<bool, HealError> {
     let edge_a = topo.edge(a.id)?;
     let edge_b = topo.edge(b.id)?;
-    let (a0, a1) = edge_a.domain_with_endpoints(a.start_pos, a.end_pos);
-    let (b0, b1) = edge_b.domain_with_endpoints(b.start_pos, b.end_pos);
+    let (a0, a1) = edge_a
+        .strict_domain()
+        .map_err(crate::error::upgrade_edge_domain)?;
+    let (b0, b1) = edge_b
+        .strict_domain()
+        .map_err(crate::error::upgrade_edge_domain)?;
 
     for k in 1..=CURVE_SAMPLES {
         let frac = f64::from(k) / f64::from(CURVE_SAMPLES + 1);
@@ -475,6 +479,26 @@ mod tests {
     use remus_topology::wire::{OrientedEdge, Wire};
 
     const TOL: f64 = 1e-7;
+
+    fn circle_edge(
+        topo: &mut Topology,
+        start: VertexId,
+        end: VertexId,
+        circle: Circle3D,
+    ) -> EdgeId {
+        let start_parameter = circle.project(topo.vertex(start).unwrap().point());
+        let canonical_end = circle.project(topo.vertex(end).unwrap().point());
+        let end_parameter = if start == end {
+            start_parameter + std::f64::consts::TAU
+        } else if canonical_end <= start_parameter {
+            canonical_end + std::f64::consts::TAU
+        } else {
+            canonical_end
+        };
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((start_parameter, end_parameter)));
+        topo.add_edge(edge)
+    }
 
     /// Build a planar quad face from four corner points, allocating fresh
     /// vertices and edges for every corner. Independent allocation is the
@@ -835,7 +859,7 @@ mod tests {
             topo.add_edge(Edge::new(v_b, v_c, EdgeCurve::Line)),
             topo.add_edge(Edge::new(v_c, v_d, EdgeCurve::Line)),
             // (0,0,0) -> (1,0,0) along the arc, not the chord.
-            topo.add_edge(Edge::new(v_d, v_a, EdgeCurve::Circle(arc))),
+            circle_edge(&mut topo, v_d, v_a, arc),
         ];
 
         let n = Vec3::new(0.0, 0.0, 1.0);
@@ -973,7 +997,7 @@ mod tests {
             topo.add_edge(Edge::new(v_a, v_b, EdgeCurve::Line)),
             topo.add_edge(Edge::new(v_b, v_c, EdgeCurve::Line)),
             topo.add_edge(Edge::new(v_c, v_d, EdgeCurve::Line)),
-            topo.add_edge(Edge::new(v_d, v_a, EdgeCurve::Circle(arc))),
+            circle_edge(&mut topo, v_d, v_a, arc),
         ];
         let n = Vec3::new(0.0, 0.0, 1.0);
         let ft = quad_face_from_edges(&mut topo, top_edges, n, 0.0);
@@ -1006,7 +1030,7 @@ mod tests {
 
         let mut disc = |normal: Vec3| {
             let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
-            let rim = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle.clone())));
+            let rim = circle_edge(&mut topo, seam, seam, circle.clone());
             let wire = Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap();
             let wid = topo.add_wire(wire);
             topo.add_face(Face::new(

@@ -264,7 +264,9 @@ pub fn wire_polygon_curve_sampled(
                 // branch above uses.
                 let start_pt = topo.vertex(start_vid)?.point();
                 let end_pt = topo.vertex(end_vid)?.point();
-                let (t0, t1) = edge.domain_with_endpoints(start_pt, end_pt);
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(crate::error::edge_domain_validation)?;
                 let traversal_start = topo.vertex(from_vid)?.point();
                 #[allow(clippy::cast_precision_loss)]
                 let mut seq: Vec<Point3> = (0..=open_samples)

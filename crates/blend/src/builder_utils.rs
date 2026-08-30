@@ -644,7 +644,7 @@ pub fn wire_axial_range(
             // endpoints already bound it.
             continue;
         }
-        let (t0, t1) = e.domain_with_endpoints(sp, ep);
+        let (t0, t1) = e.strict_domain().map_err(crate::edge_domain_input)?;
         let mut prev: Option<Point3> = None;
         let mut spacing: f64 = 0.0;
         let (mut c_lo, mut c_hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -724,6 +724,7 @@ pub fn wire_radial_extremum(
             EdgeCurve::Circle(c)
                 if e.start() == e.end() && c.normal().cross(axis).length() < 1e-9 =>
             {
+                let _ = e.strict_domain().map_err(crate::edge_domain_input)?;
                 // A whole circle in a plane perpendicular to the axis: the
                 // radial distance sweeps the full interval about its centre.
                 let d = radial_distance(c.center(), origin, axis);
@@ -737,7 +738,7 @@ pub fn wire_radial_extremum(
                 );
             }
             curve => {
-                let (t0, t1) = e.domain_with_endpoints(sp, ep);
+                let (t0, t1) = e.strict_domain().map_err(crate::edge_domain_input)?;
                 let mut prev: Option<Point3> = None;
                 let mut spacing: f64 = 0.0;
                 for k in 0..=SAMPLES {
