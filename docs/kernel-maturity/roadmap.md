@@ -99,7 +99,8 @@ question), v1-fillet API migration (product decision, owner's).
 
 ## §D External roadmap dispositions
 
-- **K-S3 SSI Newton budget — done (2026-08-30, this PR):**
+- **K-S3 SSI Newton budget — done
+  ([PR #147](https://github.com/esaueng/remus/pull/147), 2026-08-30):**
   `WorkBudgets::newton_iterations` is authoritative across NURBS×NURBS seed,
   branch, and march refinement; cancellation is polled inside the coupled
   Newton loop and propagates through the existing typed, transactional WASM
