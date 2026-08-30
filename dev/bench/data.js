@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788120731892,
+  "lastUpdate": 1788124145224,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -5129,6 +5129,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 32536997,
             "range": "± 248193",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6d00e3bd4f2f7aa4f871a188018640a9681f8e1",
+          "message": "fix(measure): integrate planar curved boundaries exactly (#151)\n\n* fix(measure): integrate planar curved boundaries exactly\n\n* chore(wasm): sync package after main refresh\n\n* docs(roadmap): record K-S2 disposition\n\n* chore(wasm): sync package after topology refresh\n\n* chore(wasm): sync package after analytic refresh\n\n* chore(wasm): sync package after tsify refresh\n\n* chore(wasm): sync package after dependency refresh\n\n* chore(wasm): restore committed package.json metadata from main\n\nThe pkg rebuild dropped the homepage field and rewrote the repository\nURL (local wasm-pack drift); keep the CI toolchain's metadata so the\nnext automated pkg refresh does not churn it back.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* test(measure): store parabolic edge domain\n\n* test(shell): store rounded corner domains\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-30T17:06:05-04:00",
+          "tree_id": "e7dc0a948c3b5b11d79cc5723e2592920adc2c86",
+          "url": "https://github.com/esaueng/remus/commit/d6d00e3bd4f2f7aa4f871a188018640a9681f8e1"
+        },
+        "date": 1788124143996,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1264828,
+            "range": "± 14440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1379142,
+            "range": "± 34224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14814,
+            "range": "± 193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 977797,
+            "range": "± 3185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 38477789,
+            "range": "± 202592",
             "unit": "ns/iter"
           }
         ]
