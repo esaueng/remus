@@ -1,0 +1,32 @@
+[profile.default]
+fail-fast = false
+
+# Start the known long tail first so it overlaps the rest of the suite instead
+# of extending the end of every Linux, macOS, and coverage run.
+[[profile.default.overrides]]
+filter = 'test(hammer_holder_arm_moves_plus_and_minus_five_with_blend_intact)'
+priority = 100
+
+[[profile.default.overrides]]
+filter = 'test(hexwall_sequential_cuts_full)'
+priority = 100
+
+[[profile.default.overrides]]
+filter = 'test(halfsockets_export_fuse_is_analytic_and_watertight)'
+priority = 95
+
+[[profile.default.overrides]]
+filter = 'test(shapr3d_hammer_holder_blend_refusal_preserves_exact_acceptance_contract)'
+priority = 95
+
+[[profile.default.overrides]]
+filter = 'test(cross_drilled_render_and_measure_agree_across_ratios_and_scales)'
+priority = 90
+
+[[profile.default.overrides]]
+filter = 'test(honeycomb_cut_no_longer_throws) | test(honeycomb_cut_residual_documented)'
+priority = 85
+
+[[profile.default.overrides]]
+filter = 'test(all_committed_bundles_replay)'
+priority = 80

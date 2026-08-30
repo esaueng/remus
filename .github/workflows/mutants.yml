@@ -29,9 +29,7 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.62.30
         with:
-          tool: nextest
-      - name: Install cargo-mutants
-        run: cargo install cargo-mutants --version 27.0.0 --locked
+          tool: nextest,cargo-mutants@27.0.0
       # The package list and mutants.toml's examine_globs INTERSECT: a glob for
       # a package not named here is silently inert. Adding the engine crates to
       # mutants.toml alone would have changed nothing.
