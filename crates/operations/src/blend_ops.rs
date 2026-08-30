@@ -702,6 +702,9 @@ fn fillet_group(
         // fall-through starts from a clean arena.
         match transactional(topo, |t| planar_fillet_result(t, solid, edges, radius)) {
             Ok(result) => return Ok(result),
+            Err(error @ OperationsError::Blend(BlendError::RadiusTooLarge { .. })) => {
+                return Err(error);
+            }
             Err(e) => {
                 log::warn!("planar fillet fast path failed ({e}); falling back to walking builder");
             }
