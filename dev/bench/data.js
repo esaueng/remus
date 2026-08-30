@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788107074860,
+  "lastUpdate": 1788108474114,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4589,6 +4589,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 48089187,
             "range": "± 191587",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f11e67e970e42340d3ef51dd15eff35e7f36d06d",
+          "message": "feat(math): exact Steinmetz ellipse arm for equal-radius perpendicular cylinders (#146)\n\n* feat(math): exact Steinmetz ellipse arm for equal-radius perpendicular cylinders\n\n* fix(math): keep the Steinmetz exact arm unwired until the pinch-split integration\n\n* docs(math): unlink private algebraic_cylinder_cylinder reference",
+          "timestamp": "2026-08-30T12:43:19-04:00",
+          "tree_id": "b7531c65d8f94284a3c4e23aabb23eda7d4c94fe",
+          "url": "https://github.com/esaueng/remus/commit/f11e67e970e42340d3ef51dd15eff35e7f36d06d"
+        },
+        "date": 1788108473453,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 887326,
+            "range": "± 719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 956438,
+            "range": "± 2419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 10276,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 650828,
+            "range": "± 32277",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 31673022,
+            "range": "± 1550322",
             "unit": "ns/iter"
           }
         ]
