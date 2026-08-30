@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "pattern-overlap-typed-refusal",
+  "description": "K-S1 silent-wrongness regression: two 20 mm boxes patterned at 10 mm spacing share 4000 mm^3. The kernel refuses the unsupported overlap instead of returning a double-counted compound, and the source remains intact after rollback.",
+  "revision": "39872bec",
+  "operations": [
+    {"op": "makeBox", "args": {"width": 20.0, "height": 20.0, "depth": 20.0}},
+    {"op": "linearPattern", "args": {"solid": 0, "dx": 1.0, "dy": 0.0, "dz": 0.0, "spacing": 10.0, "count": 2}},
+    {"op": "volume", "args": {"solid": 0, "deflection": 0.1}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"errorCode": "operation_failed"},
+    {"okNear": 8000.0, "tol": 1e-6}
+  ]
+}
