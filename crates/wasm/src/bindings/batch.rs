@@ -768,7 +768,6 @@ impl BrepKernel {
                 Ok(serde_json::json!(solid_id_to_u32(result)))
             }
             "booleanWithQuality" => {
-                use remus_math::context::{FallbackPolicy, OperationContext};
                 use remus_operations::boolean::{BooleanQuality, boolean_with_context};
 
                 let a = get_u32(args, "solidA")?;
@@ -799,13 +798,29 @@ impl BrepKernel {
                         )
                     })?,
                 };
+                let newton_budget = match args.get("newtonIterations") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => {
+                        let raw = value.as_f64().ok_or_else(|| {
+                            StructuredWasmError::invalid_argument(
+                                "invalid 'newtonIterations': expected number",
+                                Some("newtonIterations"),
+                            )
+                        })?;
+                        Some(
+                            crate::error::validate_iteration_budget(raw, "newtonIterations")
+                                .map_err(|e| {
+                                    StructuredWasmError::invalid_argument(
+                                        e.to_string(),
+                                        Some("newtonIterations"),
+                                    )
+                                })?,
+                        )
+                    }
+                };
                 let a_id = self.resolve_solid(a).map_err(StructuredWasmError::from)?;
                 let b_id = self.resolve_solid(b).map_err(StructuredWasmError::from)?;
-                let context = if exact_only {
-                    OperationContext::new().with_fallback(FallbackPolicy::ExactOnly)
-                } else {
-                    OperationContext::new()
-                };
+                let context = super::booleans::quality_context(exact_only, newton_budget);
                 let outcome = boolean_with_context(self.topo_mut(), bool_op, a_id, b_id, &context)
                     .map_err(StructuredWasmError::from)?;
                 match outcome.quality {
@@ -2635,6 +2650,61 @@ mod batch_contract_tests {
         ));
         assert_eq!(response[1]["error"]["code"], "operation_failed");
         assert_eq!(response[1]["error"]["details"]["operation"], "cut");
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_accepts_newton_iterations() {
+        // Default omitted vs explicit budgets (the historical 20, and 0 which
+        // disables NURBS Newton refinement entirely): analytic operands never
+        // enter that refinement, so all three must produce the identical
+        // exact result — the cap is additive, never a behavior change for
+        // exact-analytic paths. The JS-value-to-context link is pinned by
+        // `bindings::booleans` unit tests; math and FF regressions pin the
+        // context's authority below that.
+        for extra in ["", r#","newtonIterations":20"#, r#","newtonIterations":0"#] {
+            let mut kernel = BrepKernel::new();
+            let script = format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                    {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true{extra}}}}},
+                    {{"op":"volume","args":{{"solid":2,"deflection":0.05}}}}
+                ]"#
+            );
+            let response = parse(&kernel.execute_batch_v2(&script));
+            assert_eq!(
+                response[2]["ok"]["quality"], "exact",
+                "budget '{extra}' must not disturb the exact analytic path: {response}"
+            );
+            let volume = response[3]["ok"].as_f64().expect("numeric volume");
+            assert!(
+                (volume - 8.0).abs() < 1e-6,
+                "budget '{extra}' fused volume {volume}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_boolean_with_quality_rejects_invalid_newton_iterations() {
+        for bad in ["-1", "2.5", r#""twenty""#, "10001", "true"] {
+            let mut kernel = BrepKernel::new();
+            let script = format!(
+                r#"[
+                    {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
+                    {{"op":"makeBox","args":{{"width":1,"height":1,"depth":1}}}},
+                    {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1,"newtonIterations":{bad}}}}}
+                ]"#
+            );
+            let response = parse(&kernel.execute_batch_v2(&script));
+            assert_eq!(
+                response[2]["error"]["code"], "invalid_argument",
+                "newtonIterations={bad} must be a typed argument error: {response}"
+            );
+            assert_eq!(
+                response[2]["error"]["details"]["argument"], "newtonIterations",
+                "error must name the argument: {response}"
+            );
+        }
     }
 
     #[test]

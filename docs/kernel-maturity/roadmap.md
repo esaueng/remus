@@ -115,8 +115,14 @@ question), v1-fillet API migration (product decision, owner's).
   `WorkBudgets::newton_iterations` is authoritative across NURBS×NURBS seed,
   branch, and march refinement; cancellation is polled inside the coupled
   Newton loop and propagates through the existing typed, transactional WASM
-  boolean contract. Default behavior remains the historical 20 iterations.
-  Subdivision and parameter-space budgets remain queued under P-Class 2.8.
+  boolean contract. Per R8 the cap is JS-callable: an additive optional
+  `newton_iterations` argument on `booleanWithQuality` /
+  `booleanWithCancellation` and a `newtonIterations` field on the
+  `executeBatch` `booleanWithQuality` op, validated (non-negative integer
+  within the public work budget) with contract tests on the default,
+  bounded, and rejection paths. Default behavior remains the historical 20
+  iterations. Subdivision and parameter-space budgets remain queued under
+  P-Class 2.8.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,
