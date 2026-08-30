@@ -31,6 +31,7 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::ds::{GfaArena, PaveBlockId, Rank};
+use crate::error::AlgoError;
 
 use super::SubFace;
 use super::face_class::FaceClass;
@@ -42,6 +43,11 @@ use super::split_types::{SectionEdge, SurfaceInfo};
 /// For faces with section edges (from FF intersection), calls the full
 /// face splitter to produce geometrically split sub-faces. Faces
 /// without intersection data pass through as single sub-faces.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::FaceSplitFailed`] when a generated non-Line boundary
+/// lacks valid parameter authority or its carried range misses its endpoints.
 #[allow(clippy::too_many_lines, clippy::type_complexity)]
 pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     topo: &mut Topology,
@@ -50,7 +56,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
     face_ranks: &HashMap<FaceId, Rank, S2>,
     tol: Tolerance,
     lineage: &mut super::split_types::EdgeLineageLog,
-) -> Vec<SubFace> {
+) -> Result<Vec<SubFace>, AlgoError> {
     let mut sub_faces = Vec::new();
 
     // Shared edge cache: (face_id, source_edge_idx) → EdgeId. Ensures section
@@ -575,7 +581,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
                 rank_pool,
                 &mut pb_vertex_registry,
                 arena,
-            );
+            )?;
             let resolved_face_id = new_face_id.unwrap_or(face_id);
             // For a curved-lens-hole wall (cylinder/cone with closed
             // Circle/Ellipse/NURBS holes) the generic `interior_point_3d` is
@@ -765,7 +771,7 @@ pub fn fill_images_faces<S: BuildHasher, S2: BuildHasher>(
         }
     }
 
-    sub_faces
+    Ok(sub_faces)
 }
 
 /// Create a NEW face from an unsplit face using fresh pool vertices.
@@ -3709,9 +3715,21 @@ fn build_topology_face(
     rank_pool: Option<&BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>>,
     pb_vertex_registry: &mut BTreeMap<(i64, i64, i64), remus_topology::vertex::VertexId>,
     arena: &crate::ds::GfaArena,
-) -> Option<FaceId> {
+) -> Result<Option<FaceId>, AlgoError> {
     if split.outer_wire.is_empty() {
-        return None;
+        return Ok(None);
+    }
+
+    // Refuse every missing, invalid, or geometrically inconsistent carried
+    // range before this sub-face allocates any topology. The later per-edge
+    // check is deterministic for the same transient edge, so neither an outer
+    // boundary nor a later hole can strand an earlier allocation.
+    for edge in split
+        .outer_wire
+        .iter()
+        .chain(split.inner_wires.iter().flatten())
+    {
+        preflight_wire_edge(edge, tol.linear)?;
     }
 
     // Step 1: Create/find vertices for each unique 3D endpoint.
@@ -3772,7 +3790,7 @@ fn build_topology_face(
         // VertexId connections at wire junctions.
         // merge_duplicate_edges in BuilderSolid handles cross-face sharing.
         let (edge_id, forward) =
-            instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear);
+            instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear)?;
         if let Some(pb) = pcurve_edge.pave_block_id {
             lineage.to_pave_block.insert(edge_id.index(), pb);
         }
@@ -3783,13 +3801,15 @@ fn build_topology_face(
     }
 
     if oriented_edges.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     orient_planar_outer_wire(topo, &split.surface, split.reversed, &mut oriented_edges);
 
     // Step 3: Build wire.
-    let wire = Wire::new(oriented_edges, true).ok()?;
+    let Some(wire) = Wire::new(oriented_edges, true).ok() else {
+        return Ok(None);
+    };
     let wire_id = topo.add_wire(wire);
 
     // Step 4: Build inner wires (holes).
@@ -3809,7 +3829,7 @@ fn build_topology_face(
                 tol,
             );
             let (edge_id, forward) =
-                instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear);
+                instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear)?;
             if let Some(pb) = pcurve_edge.pave_block_id {
                 lineage.to_pave_block.insert(edge_id.index(), pb);
             }
@@ -3830,7 +3850,7 @@ fn build_topology_face(
     }
     let face_id = topo.add_face(face);
 
-    Some(face_id)
+    Ok(Some(face_id))
 }
 
 /// Orient a planar outer wire to agree with the face's effective normal.
@@ -3902,57 +3922,206 @@ fn orient_planar_outer_wire(
 /// Create a topology edge for a wire's pcurve edge, returning the edge id
 /// and the oriented-edge forward flag for the wire traversal.
 ///
-/// Open Line edges encode the traversal in their vertex order and are
-/// always forward. Open Circle/Ellipse edges must keep their vertex order
-/// aligned with the curve parameterization — an open arc edge implicitly
-/// spans the CCW range from its start vertex to its end vertex, so storing
-/// traversal order for a reverse-traversed arc would flip the geometry to
-/// the complementary arc. Closed curved edges (start == end) cannot encode
-/// direction via vertices and keep the pcurve flag for winding.
+/// Open Line edges encode traversal in their vertex order and stay trimless.
+/// Reversed open Circle/Ellipse uses preserve their legacy reverse-storage
+/// representation. Other curves preserve wire-order storage and reverse the
+/// carried bounds instead. Closed curves keep the pcurve use's orientation.
 fn instantiate_wire_edge(
     topo: &mut Topology,
     start_vid: remus_topology::vertex::VertexId,
     end_vid: remus_topology::vertex::VertexId,
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
     tolerance: f64,
-) -> (remus_topology::edge::EdgeId, bool) {
-    let is_arc = matches!(
-        pcurve_edge.curve_3d,
-        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
-    );
-    if is_arc && start_vid != end_vid && !pcurve_edge.forward {
-        let mut edge = Edge::new(end_vid, start_vid, pcurve_edge.curve_3d.clone());
-        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim, tolerance));
-        let edge_id = topo.add_edge(edge);
-        (edge_id, false)
+) -> Result<(remus_topology::edge::EdgeId, bool), AlgoError> {
+    let orientation = preflight_wire_edge(pcurve_edge, tolerance)?;
+    let is_line = matches!(pcurve_edge.curve_3d, EdgeCurve::Line);
+    let (storage_start, storage_end) = if orientation.reverse_storage {
+        (end_vid, start_vid)
     } else {
-        let mut edge = Edge::new(start_vid, end_vid, pcurve_edge.curve_3d.clone());
-        edge.set_trim(validated_trim(topo, &edge, pcurve_edge.trim, tolerance));
-        let edge_id = topo.add_edge(edge);
-        (edge_id, start_vid != end_vid || pcurve_edge.forward)
+        (start_vid, end_vid)
+    };
+    let mut edge = Edge::with_tolerance(
+        storage_start,
+        storage_end,
+        pcurve_edge.curve_3d.clone(),
+        Some(tolerance),
+    );
+    if !is_line {
+        edge.set_trim(orientation.trim);
+        edge.strict_domain().map_err(|error| {
+            AlgoError::FaceSplitFailed(format!(
+                "invalid carried {} range: {error}",
+                edge.curve().type_tag()
+            ))
+        })?;
     }
+    let edge_id = topo.add_edge(edge);
+    Ok((edge_id, orientation.forward))
 }
 
-fn validated_trim(
-    topo: &Topology,
-    edge: &Edge,
+#[derive(Clone, Copy)]
+struct WireEdgeOrientation {
+    reverse_storage: bool,
     trim: Option<(f64, f64)>,
+    forward: bool,
+}
+
+fn preflight_wire_edge(
+    pcurve_edge: &super::split_types::OrientedPCurveEdge,
     tolerance: f64,
-) -> Option<(f64, f64)> {
-    let trim = trim?;
-    let (start_vertex, end_vertex) = (
-        topo.vertex(edge.start()).ok()?,
-        topo.vertex(edge.end()).ok()?,
+) -> Result<WireEdgeOrientation, AlgoError> {
+    if matches!(pcurve_edge.curve_3d, EdgeCurve::Line) {
+        return Ok(WireEdgeOrientation {
+            reverse_storage: false,
+            trim: None,
+            forward: true,
+        });
+    }
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(AlgoError::FaceSplitFailed(format!(
+            "invalid edge tolerance {tolerance} while instantiating {}",
+            pcurve_edge.curve_3d.type_tag()
+        )));
+    }
+
+    let trim = pcurve_edge.trim.ok_or_else(|| {
+        AlgoError::FaceSplitFailed(format!(
+            "missing carried {} range for {:?}->{:?} forward={} source_edge={:?} pave_block={:?}",
+            pcurve_edge.curve_3d.type_tag(),
+            pcurve_edge.start_3d,
+            pcurve_edge.end_3d,
+            pcurve_edge.forward,
+            pcurve_edge.source_topo_edge,
+            pcurve_edge.pave_block_id
+        ))
+    })?;
+    let trim = canonicalize_carried_trim(&pcurve_edge.curve_3d, trim)?;
+    let guard = tolerance * 100.0;
+    let curve_start = pcurve_edge.curve_3d.evaluate_with_endpoints(
+        trim.0,
+        pcurve_edge.start_3d,
+        pcurve_edge.end_3d,
     );
-    let (start, end) = (start_vertex.point(), end_vertex.point());
-    let guard = start_vertex
-        .tolerance()
-        .max(end_vertex.tolerance())
-        .max(tolerance)
-        * 100.0;
-    let curve_start = edge.curve().evaluate_with_endpoints(trim.0, start, end);
-    let curve_end = edge.curve().evaluate_with_endpoints(trim.1, start, end);
-    ((curve_start - start).length() <= guard && (curve_end - end).length() <= guard).then_some(trim)
+    let curve_end = pcurve_edge.curve_3d.evaluate_with_endpoints(
+        trim.1,
+        pcurve_edge.start_3d,
+        pcurve_edge.end_3d,
+    );
+    let start_distance = (curve_start - pcurve_edge.start_3d).length();
+    let end_distance = (curve_end - pcurve_edge.end_3d).length();
+    let reverse_start_distance = (curve_start - pcurve_edge.end_3d).length();
+    let reverse_end_distance = (curve_end - pcurve_edge.start_3d).length();
+    let direct = start_distance.is_finite()
+        && end_distance.is_finite()
+        && start_distance <= guard
+        && end_distance <= guard;
+    let reversed = reverse_start_distance.is_finite()
+        && reverse_end_distance.is_finite()
+        && reverse_start_distance <= guard
+        && reverse_end_distance <= guard;
+    if !direct && !reversed {
+        return Err(AlgoError::FaceSplitFailed(format!(
+            "carried {} range endpoints do not match the wire edge",
+            pcurve_edge.curve_3d.type_tag()
+        )));
+    }
+
+    let quantized = |point: Point3| {
+        (
+            (point.x() * VERTEX_DEDUP_SCALE).round() as i64,
+            (point.y() * VERTEX_DEDUP_SCALE).round() as i64,
+            (point.z() * VERTEX_DEDUP_SCALE).round() as i64,
+        )
+    };
+    // Match the exact vertex-identity policy used by instantiation.  The
+    // broader weld band is appropriate for endpoint certification, but it
+    // must not turn a short open arc into a closed edge: doing so reverses its
+    // oriented use and can weave an out-and-back boundary re-trace.
+    let closed = quantized(pcurve_edge.start_3d) == quantized(pcurve_edge.end_3d);
+    let authority_reversed = !closed
+        && match (direct, reversed) {
+            (true, false) => false,
+            (false, true) => true,
+            (true, true) => !pcurve_edge.forward,
+            // Statically excluded by the !direct && !reversed early return.
+            (false, false) => false,
+        };
+    let reverse_storage = authority_reversed
+        && matches!(
+            pcurve_edge.curve_3d,
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
+        );
+    let reverse_trim = authority_reversed && !reverse_storage;
+    let strict_trim = if reverse_trim { (trim.1, trim.0) } else { trim };
+    let (start, end) = (pcurve_edge.start_3d, pcurve_edge.end_3d);
+
+    // `strict_domain` also needs the closed/open topology bit. Mirror the
+    // face-builder's positional vertex dedup in a scratch arena so this
+    // validation cannot mutate the result topology.
+    let mut scratch = Topology::new();
+    let start_id = scratch.add_vertex(Vertex::new(start, tolerance));
+    let end_id = if quantized(start) == quantized(end) {
+        start_id
+    } else {
+        scratch.add_vertex(Vertex::new(end, tolerance))
+    };
+    let (storage_start, storage_end) = if reverse_storage {
+        (end_id, start_id)
+    } else {
+        (start_id, end_id)
+    };
+    let mut candidate = Edge::with_tolerance(
+        storage_start,
+        storage_end,
+        pcurve_edge.curve_3d.clone(),
+        Some(tolerance),
+    );
+    candidate.set_trim(Some(strict_trim));
+    candidate.strict_domain().map_err(|error| {
+        AlgoError::FaceSplitFailed(format!(
+            "invalid carried {} range: {error}",
+            candidate.curve().type_tag()
+        ))
+    })?;
+
+    Ok(WireEdgeOrientation {
+        reverse_storage,
+        trim: Some(strict_trim),
+        forward: if closed {
+            pcurve_edge.forward
+        } else {
+            !reverse_storage
+        },
+    })
+}
+
+fn canonicalize_carried_trim(curve: &EdgeCurve, trim: (f64, f64)) -> Result<(f64, f64), AlgoError> {
+    let EdgeCurve::NurbsCurve(nurbs) = curve else {
+        return Ok(trim);
+    };
+    let (domain_start, domain_end) = nurbs.domain();
+    let roundoff = 1024.0 * f64::EPSILON * domain_start.abs().max(domain_end.abs()).max(1.0);
+    let canonicalize = |parameter: f64| {
+        if parameter < domain_start && domain_start - parameter <= roundoff {
+            domain_start
+        } else if parameter > domain_end && parameter - domain_end <= roundoff {
+            domain_end
+        } else {
+            parameter
+        }
+    };
+    let canonical = (canonicalize(trim.0), canonicalize(trim.1));
+    if canonical.0 < domain_start
+        || canonical.0 > domain_end
+        || canonical.1 < domain_start
+        || canonical.1 > domain_end
+    {
+        return Err(AlgoError::FaceSplitFailed(format!(
+            "carried NURBS range [{}, {}] lies outside [{domain_start}, {domain_end}]",
+            trim.0, trim.1
+        )));
+    }
+    Ok(canonical)
 }
 
 /// Pre-split sections at registered split points that lie on their curves.
@@ -3984,7 +4153,7 @@ fn presplit_sections_at_registry(
     let on_curve =
         |s: &crate::builder::split_types::SectionEdge, p: remus_math::vec::Point3| -> bool {
             const N: usize = 64;
-            let (d0, d1) = s.domain();
+            let (d0, d1) = s.trim.unwrap_or_else(|| s.domain());
             let mut best_k = 0;
             let mut best = f64::MAX;
             for k in 0..=N {
@@ -4019,6 +4188,7 @@ fn presplit_sections_at_registry(
         };
     let mut out = Vec::with_capacity(sections.len());
     for s in sections {
+        let parent_trim = s.trim.unwrap_or_else(|| s.domain());
         let points: &[remus_math::vec::Point3] = match s.pave_block_id {
             Some(pb_id) => registry.get(&pb_id).map_or(&[], Vec::as_slice),
             None => &all_points,
@@ -4046,7 +4216,7 @@ fn presplit_sections_at_registry(
         let mut prev = s.start;
         for (_, p) in &cuts {
             let mut piece = s.clone();
-            piece.trim = super::split_types::sub_trim(&s.curve_3d, s.domain(), prev, *p);
+            piece.trim = super::split_types::sub_trim(&s.curve_3d, parent_trim, prev, *p);
             piece.start = prev;
             piece.end = *p;
             piece.start_uv_a = None;
@@ -4058,7 +4228,7 @@ fn presplit_sections_at_registry(
             prev = *p;
         }
         let mut last = s.clone();
-        last.trim = super::split_types::sub_trim(&s.curve_3d, s.domain(), prev, s.end);
+        last.trim = super::split_types::sub_trim(&s.curve_3d, parent_trim, prev, s.end);
         last.start = prev;
         last.start_uv_a = None;
         last.end_uv_a = None;
@@ -4175,7 +4345,7 @@ mod clip_tests {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use remus_math::curves::Circle3D;
+    use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
     use remus_math::curves2d::{Curve2D, Line2D};
     use remus_math::nurbs::fitting::interpolate;
     use remus_math::traits::ParametricCurve;
@@ -4237,32 +4407,325 @@ mod tests {
         }
     }
 
+    fn circle_wire_edge(
+        trim: Option<(f64, f64)>,
+        forward: bool,
+    ) -> super::super::split_types::OrientedPCurveEdge {
+        let circle =
+            Circle3D::new(Point3::new(3.0, -2.0, 5.0), Vec3::new(0.0, 0.0, 1.0), 4.0).unwrap();
+        let (native_start, native_end) = trim.map_or_else(
+            || (circle.evaluate(0.0), circle.evaluate(1.0)),
+            |(start, end)| (circle.evaluate(start), circle.evaluate(end)),
+        );
+        let (start_3d, end_3d) = if forward {
+            (native_start, native_end)
+        } else {
+            (native_end, native_start)
+        };
+        super::super::split_types::OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Circle(circle),
+            trim,
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(1.0, 0.0),
+            start_3d,
+            end_3d,
+            forward,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        }
+    }
+
+    fn instantiate_test_edge(
+        topo: &mut Topology,
+        edge: &super::super::split_types::OrientedPCurveEdge,
+    ) -> Result<(EdgeId, bool), AlgoError> {
+        let start_id = topo.add_vertex(Vertex::new(edge.start_3d, 1e-7));
+        let end_id = topo.add_vertex(Vertex::new(edge.end_3d, 1e-7));
+        instantiate_wire_edge(topo, start_id, end_id, edge, 1e-7)
+    }
+
     #[test]
-    fn final_edge_writer_keeps_valid_trim_and_drops_mismatched_metadata() {
+    fn final_edge_writer_refuses_missing_and_mismatched_authority_without_allocating_edge() {
+        let mut topo = Topology::new();
+        let missing = circle_wire_edge(None, true);
+        let start_id = topo.add_vertex(Vertex::new(missing.start_3d, 1e-7));
+        let end_id = topo.add_vertex(Vertex::new(missing.end_3d, 1e-7));
+        let edge_count = topo.num_edges();
+        let error = instantiate_wire_edge(&mut topo, start_id, end_id, &missing, 1e-7)
+            .expect_err("missing authority must refuse");
+        assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
+        assert_eq!(topo.num_edges(), edge_count);
+
+        let mut mismatch = circle_wire_edge(Some((0.2, 1.7)), true);
+        mismatch.end_3d = Point3::new(20.0, 30.0, 40.0);
+        let start_id = topo.add_vertex(Vertex::new(mismatch.start_3d, 1e-7));
+        let end_id = topo.add_vertex(Vertex::new(mismatch.end_3d, 1e-7));
+        let edge_count = topo.num_edges();
+        let error = instantiate_wire_edge(&mut topo, start_id, end_id, &mismatch, 1e-7)
+            .expect_err("endpoint mismatch must refuse");
+        assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
+        assert_eq!(topo.num_edges(), edge_count);
+    }
+
+    #[test]
+    fn final_edge_writer_refuses_two_turn_circle_without_allocating_edge() {
+        use std::f64::consts::TAU;
+
+        let edge = circle_wire_edge(Some((0.0, 2.0 * TAU)), true);
+        let mut topo = Topology::new();
+        let seam = topo.add_vertex(Vertex::new(edge.start_3d, 1e-7));
+        let edge_count = topo.num_edges();
+        let error = instantiate_wire_edge(&mut topo, seam, seam, &edge, 1e-7)
+            .expect_err("multi-turn authority must refuse");
+        assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
+        assert_eq!(topo.num_edges(), edge_count);
+    }
+
+    #[test]
+    fn final_edge_writer_preserves_reversed_major_wrapped_circle_range() {
+        let trim = (5.5, 9.7);
+        let edge = circle_wire_edge(Some(trim), false);
+        let circle = match &edge.curve_3d {
+            EdgeCurve::Circle(circle) => circle.clone(),
+            _ => unreachable!(),
+        };
+        let mut topo = Topology::new();
+        let (edge_id, forward) = instantiate_test_edge(&mut topo, &edge).unwrap();
+        let stored = topo.edge(edge_id).unwrap();
+        let start = topo.vertex(stored.start()).unwrap().point();
+        let end = topo.vertex(stored.end()).unwrap().point();
+
+        assert!(!forward);
+        assert_eq!(stored.strict_domain().unwrap(), trim);
+        assert_eq!(stored.tolerance(), Some(1e-7));
+        assert!((start - circle.evaluate(trim.0)).length() < 1e-12);
+        assert!((end - circle.evaluate(trim.1)).length() < 1e-12);
+        assert!((end - edge.start_3d).length() < 1e-12);
+        assert!((start - edge.end_3d).length() < 1e-12);
+        let midpoint = stored
+            .curve()
+            .evaluate_with_endpoints((trim.0 + trim.1) * 0.5, start, end);
+        assert!((midpoint - circle.evaluate((trim.0 + trim.1) * 0.5)).length() < 1e-12);
+    }
+
+    #[test]
+    fn final_edge_writer_preserves_reversed_ellipse_range_with_reverse_storage() {
+        let ellipse = Ellipse3D::new(
+            Point3::new(-1.0, 3.0, 2.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            5.0,
+            2.0,
+        )
+        .unwrap();
+        let trim = (0.4, 4.9);
+        let transient = super::super::split_types::OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Ellipse(ellipse.clone()),
+            trim: Some(trim),
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(1.0, 0.0),
+            start_3d: ellipse.evaluate(trim.1),
+            end_3d: ellipse.evaluate(trim.0),
+            forward: false,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
+        let mut topo = Topology::new();
+        let (edge_id, forward) = instantiate_test_edge(&mut topo, &transient).unwrap();
+        let stored = topo.edge(edge_id).unwrap();
+        let stored_start = topo.vertex(stored.start()).unwrap().point();
+        let stored_end = topo.vertex(stored.end()).unwrap().point();
+
+        assert!(!forward);
+        assert_eq!(stored.strict_domain().unwrap(), trim);
+        assert!((stored_start - ellipse.evaluate(trim.0)).length() < 1e-12);
+        assert!((stored_end - ellipse.evaluate(trim.1)).length() < 1e-12);
+        assert!((stored_end - transient.start_3d).length() < 1e-12);
+        assert!((stored_start - transient.end_3d).length() < 1e-12);
+    }
+
+    #[test]
+    fn final_edge_writer_reverses_hyperbola_and_parabola_ranges_in_wire_order() {
+        let curves = [
+            EdgeCurve::Hyperbola(
+                Hyperbola3D::with_axes(
+                    Point3::new(1.0, 2.0, 3.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    2.0,
+                    1.5,
+                )
+                .unwrap(),
+            ),
+            EdgeCurve::Parabola(
+                Parabola3D::with_axes(
+                    Point3::new(-2.0, 1.0, 4.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    1.25,
+                )
+                .unwrap(),
+            ),
+        ];
+        let trim = (-0.6, 0.8);
+
+        for curve in curves {
+            let start = curve.evaluate_with_endpoints(
+                trim.1,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            );
+            let end = curve.evaluate_with_endpoints(
+                trim.0,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            );
+            let transient = super::super::split_types::OrientedPCurveEdge {
+                curve_3d: curve.clone(),
+                trim: Some(trim),
+                pcurve: Curve2D::Line(
+                    Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
+                ),
+                start_uv: Point2::new(0.0, 0.0),
+                end_uv: Point2::new(1.0, 0.0),
+                start_3d: start,
+                end_3d: end,
+                forward: false,
+                source_edge_idx: None,
+                pave_block_id: None,
+                source_topo_edge: None,
+            };
+            let mut topo = Topology::new();
+            let (edge_id, forward) = instantiate_test_edge(&mut topo, &transient).unwrap();
+            let stored = topo.edge(edge_id).unwrap();
+            let stored_start = topo.vertex(stored.start()).unwrap().point();
+            let stored_end = topo.vertex(stored.end()).unwrap().point();
+
+            assert!(forward, "{} use must follow storage", curve.type_tag());
+            assert_eq!(stored.strict_domain().unwrap(), (trim.1, trim.0));
+            assert!((stored_start - start).length() < 1e-12);
+            assert!((stored_end - end).length() < 1e-12);
+            let midpoint = stored.curve().evaluate_with_endpoints(
+                (trim.0 + trim.1) * 0.5,
+                stored_start,
+                stored_end,
+            );
+            let expected =
+                curve.evaluate_with_endpoints((trim.0 + trim.1) * 0.5, stored_start, stored_end);
+            assert!((midpoint - expected).length() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn final_edge_writer_uses_nurbs_range_endpoints_as_orientation_authority() {
         let points: Vec<Point3> = (0..=6)
-            .map(|k| {
-                let x = f64::from(k);
+            .map(|index| {
+                let x = f64::from(index);
                 Point3::new(x, 0.1 * x * x, 0.0)
             })
             .collect();
         let nurbs = interpolate(&points, 3).unwrap();
-        let valid = (0.2, 0.8);
-        let start = ParametricCurve::evaluate(&nurbs, valid.0);
-        let end = ParametricCurve::evaluate(&nurbs, valid.1);
+        let trim = (0.2, 0.8);
+        let start = ParametricCurve::evaluate(&nurbs, trim.0);
+        let end = ParametricCurve::evaluate(&nurbs, trim.1);
+        let transient = super::super::split_types::OrientedPCurveEdge {
+            curve_3d: EdgeCurve::NurbsCurve(nurbs.clone()),
+            trim: Some(trim),
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(1.0, 0.0),
+            start_3d: start,
+            end_3d: end,
+            // Some arrangement paths flip this use flag without reversing
+            // the already-authoritative carried range and endpoints.
+            forward: false,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
         let mut topo = Topology::new();
-        let start_id = topo.add_vertex(Vertex::new(start, 1e-7));
-        let end_id = topo.add_vertex(Vertex::new(end, 1e-7));
-        let edge = Edge::new(start_id, end_id, EdgeCurve::NurbsCurve(nurbs));
+        let (edge_id, forward) = instantiate_test_edge(&mut topo, &transient).unwrap();
+        let stored = topo.edge(edge_id).unwrap();
+        let stored_start = topo.vertex(stored.start()).unwrap().point();
+        let stored_end = topo.vertex(stored.end()).unwrap().point();
 
-        let tolerance = Tolerance::default().linear;
-        assert_eq!(
-            validated_trim(&topo, &edge, Some(valid), tolerance),
-            Some(valid)
+        assert!(forward);
+        assert_eq!(stored.strict_domain().unwrap(), trim);
+        assert!((stored_start - start).length() < 1e-12);
+        assert!((stored_end - end).length() < 1e-12);
+        let midpoint = stored
+            .curve()
+            .evaluate_with_endpoints(0.5, stored_start, stored_end);
+        assert!((midpoint - ParametricCurve::evaluate(&nurbs, 0.5)).length() < 1e-12);
+    }
+
+    #[test]
+    fn final_edge_writer_reverses_nurbs_range_without_reversing_wire_storage() {
+        let points: Vec<Point3> = (0..=6)
+            .map(|index| {
+                let x = f64::from(index);
+                Point3::new(x, 0.1 * x * x, 0.0)
+            })
+            .collect();
+        let nurbs = interpolate(&points, 3).unwrap();
+        let trim = (0.2, 0.8);
+        let start = ParametricCurve::evaluate(&nurbs, trim.1);
+        let end = ParametricCurve::evaluate(&nurbs, trim.0);
+        let transient = super::super::split_types::OrientedPCurveEdge {
+            curve_3d: EdgeCurve::NurbsCurve(nurbs),
+            trim: Some(trim),
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(1.0, 0.0),
+            start_3d: start,
+            end_3d: end,
+            forward: false,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
+        let mut topo = Topology::new();
+        let (edge_id, forward) = instantiate_test_edge(&mut topo, &transient).unwrap();
+        let stored = topo.edge(edge_id).unwrap();
+        let stored_start = topo.vertex(stored.start()).unwrap().point();
+        let stored_end = topo.vertex(stored.end()).unwrap().point();
+        let reversed_trim = (trim.1, trim.0);
+
+        assert!(forward);
+        assert_eq!(stored.strict_domain().unwrap(), reversed_trim);
+        assert!((stored_start - start).length() < 1e-12);
+        assert!((stored_end - end).length() < 1e-12);
+        assert!(
+            (stored
+                .curve()
+                .evaluate_with_endpoints(reversed_trim.0, stored_start, stored_end)
+                - start)
+                .length()
+                < 1e-12
         );
-        assert_eq!(
-            validated_trim(&topo, &edge, Some((0.0, 0.1)), tolerance),
-            None
+        assert!(
+            (stored
+                .curve()
+                .evaluate_with_endpoints(reversed_trim.1, stored_start, stored_end)
+                - end)
+                .length()
+                < 1e-12
         );
+    }
+
+    #[test]
+    fn final_edge_writer_keeps_lines_trimless() {
+        let mut edge = circle_wire_edge(Some((0.2, 1.7)), false);
+        edge.curve_3d = EdgeCurve::Line;
+        let mut topo = Topology::new();
+        let (edge_id, forward) = instantiate_test_edge(&mut topo, &edge).unwrap();
+        let stored = topo.edge(edge_id).unwrap();
+        assert!(forward);
+        assert_eq!(stored.trim(), None);
+        assert_eq!(stored.strict_domain().unwrap(), (0.0, 1.0));
     }
 
     #[test]
@@ -4292,6 +4755,49 @@ mod tests {
 
         assert_eq!(pieces.len(), 2);
         assert!((pieces[0].end - Point3::new(0.5, 0.0, 0.0)).length() < 1e-9);
+    }
+
+    #[test]
+    fn registry_presplit_preserves_reversed_wrapped_ellipse_authority() {
+        let ellipse = Ellipse3D::new(
+            Point3::new(2.0, -3.0, 1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+            2.5,
+        )
+        .unwrap();
+        let trim = (7.0, 5.5);
+        let cut = 6.4;
+        let pcurve =
+            Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let section = crate::builder::split_types::SectionEdge {
+            curve_3d: EdgeCurve::Ellipse(ellipse.clone()),
+            trim: Some(trim),
+            pcurve_a: pcurve.clone(),
+            pcurve_b: pcurve,
+            start: ellipse.evaluate(trim.0),
+            end: ellipse.evaluate(trim.1),
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: None,
+        };
+        let registry = std::collections::HashMap::from([(3, vec![ellipse.evaluate(cut)])]);
+
+        let pieces = presplit_sections_at_registry(&[section], &registry, 1e-7);
+
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].trim, Some((trim.0, cut)));
+        assert_eq!(pieces[1].trim, Some((cut, trim.1)));
+        for piece in &pieces {
+            let (t0, t1) = piece.trim.unwrap();
+            assert!((ellipse.evaluate(t0) - piece.start).length() < 1e-9);
+            assert!((ellipse.evaluate(t1) - piece.end).length() < 1e-9);
+            let midpoint = ellipse.evaluate(0.5 * (t0 + t1));
+            assert!(midpoint.x().is_finite() && midpoint.y().is_finite());
+        }
     }
 
     #[test]

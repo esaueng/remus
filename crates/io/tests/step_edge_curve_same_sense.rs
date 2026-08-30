@@ -93,6 +93,36 @@ fn direction_components(body: &str) -> [f64; 3] {
     [parts[0], parts[1], parts[2]]
 }
 
+/// Reverse the parameterization of a writer-produced circular
+/// `TRIMMED_CURVE` after its carrier axis has been negated.
+fn reverse_circular_trim(body: &str, id: u64) -> String {
+    const MARKER: &str = "PARAMETER_VALUE(";
+    let mut spans = Vec::with_capacity(2);
+    let mut search_from = 0;
+    while let Some(relative) = body[search_from..].find(MARKER) {
+        let start = search_from + relative + MARKER.len();
+        let end = body[start..].find(')').unwrap() + start;
+        spans.push((start, end, body[start..end].trim().parse::<f64>().unwrap()));
+        search_from = end + 1;
+    }
+    assert_eq!(spans.len(), 2, "TRIMMED_CURVE #{id} needs two parameters");
+    assert!(
+        body.contains(".T."),
+        "TRIMMED_CURVE #{id} was not written .T."
+    );
+
+    let (start0, end0, t0) = spans[0];
+    let (start1, end1, t1) = spans[1];
+    format!(
+        "{}{:.17}{}{:.17}{}",
+        &body[..start0],
+        -t1,
+        &body[end0..start1],
+        -t0,
+        &body[end1..]
+    )
+}
+
 /// Rewrite a remus-written STEP into the equivalent `.F.` spelling.
 ///
 /// Returns the new text and how many EDGE_CURVEs were flipped.
@@ -110,10 +140,22 @@ fn to_reversed_sense_formulation(step: &str) -> (String, usize) {
         }
     }
 
+    let trimmed_to_circle: HashMap<u64, u64> = ents
+        .iter()
+        .filter_map(|(id, ty, attrs)| {
+            if ty != "TRIMMED_CURVE" {
+                return None;
+            }
+            let basis = *refs_in(attrs).first()?;
+            (by_id[&basis].0 == "CIRCLE").then_some((*id, basis))
+        })
+        .collect();
+    let circles: HashSet<u64> = trimmed_to_circle.values().copied().collect();
+    let trimmed: HashSet<u64> = trimmed_to_circle.keys().copied().collect();
+
     let mut axes_to_negate = HashSet::new();
-    let mut circles = HashSet::new();
     for (id, ty, attrs) in &ents {
-        if ty != "CIRCLE" {
+        if ty != "CIRCLE" || !circles.contains(id) {
             continue;
         }
         let placement = refs_in(attrs)[0];
@@ -128,7 +170,6 @@ fn to_reversed_sense_formulation(step: &str) -> (String, usize) {
         assert_eq!(refcount[&placement], 1, "CIRCLE #{id} shares its placement");
         assert_eq!(refcount[&axis], 1, "CIRCLE #{id} shares its axis direction");
         axes_to_negate.insert(axis);
-        circles.insert(*id);
     }
     assert!(
         !circles.is_empty(),
@@ -149,8 +190,11 @@ fn to_reversed_sense_formulation(step: &str) -> (String, usize) {
                 let [x, y, z] = direction_components(body);
                 let _ = write!(out, "#{id} = DIRECTION('', ({}, {}, {}));", -x, -y, -z);
             }
+            Some((id, body)) if trimmed.contains(&id) => {
+                let _ = write!(out, "#{id} = {}", reverse_circular_trim(body, id));
+            }
             Some((id, body))
-                if body.starts_with("EDGE_CURVE") && circles.contains(&refs_in(body)[2]) =>
+                if body.starts_with("EDGE_CURVE") && trimmed.contains(&refs_in(body)[2]) =>
             {
                 assert!(body.contains(".T."), "EDGE_CURVE #{id} was not written .T.");
                 let _ = write!(out, "#{id} = {}", body.replace(".T.", ".F."));

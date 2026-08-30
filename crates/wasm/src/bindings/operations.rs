@@ -1425,11 +1425,7 @@ impl BrepKernel {
     /// Returns an error if the distance is zero or the solid is invalid.
     #[wasm_bindgen(js_name = "offsetSolid")]
     pub fn offset_solid(&mut self, solid: u32, distance: f64) -> Result<u32, JsError> {
-        validate_finite(distance, "distance")?;
-        let solid_id = self.resolve_solid(solid)?;
-        let result =
-            remus_operations::offset_v2::offset_solid_v2(self.topo_mut(), solid_id, distance)?;
-        Ok(solid_id_to_u32(result))
+        Ok(self.offset_solid_impl(solid, distance)?)
     }
 
     /// Offset all faces of a solid outward or inward (V2 pipeline).
@@ -1441,10 +1437,7 @@ impl BrepKernel {
     /// Returns an error if the distance is not finite or the solid is invalid.
     #[wasm_bindgen(js_name = "offsetSolidV2")]
     pub fn offset_solid_v2(&mut self, solid: u32, distance: f64) -> Result<u32, JsError> {
-        validate_finite(distance, "distance")?;
-        let sid = self.resolve_solid(solid)?;
-        let result = remus_operations::offset_v2::offset_solid_v2(self.topo_mut(), sid, distance)?;
-        Ok(solid_id_to_u32(result))
+        Ok(self.offset_solid_impl(solid, distance)?)
     }
 
     /// Thicken a face into a solid by offsetting it by the given distance.
@@ -2004,7 +1997,37 @@ impl BrepKernel {
         // Try as edge
         if let Ok(edge_id) = self.resolve_edge(id) {
             let edge = self.topo.edge(edge_id)?;
-            let new_edge = Edge::new(edge.end(), edge.start(), edge.curve().clone());
+            let start = edge.end();
+            let end = edge.start();
+            let curve = edge.curve().clone();
+            let tolerance = edge.tolerance();
+            let trim = if matches!(curve, EdgeCurve::Line) {
+                None
+            } else {
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(|error| WasmError::InvalidInput {
+                        reason: format!("cannot reverse edge without authoritative trim: {error}"),
+                    })?;
+                let start_point = self.topo.vertex(start)?.point();
+                let end_point = self.topo.vertex(end)?.point();
+                let vertex_tolerance = self
+                    .topo
+                    .vertex(start)?
+                    .tolerance()
+                    .max(self.topo.vertex(end)?.tolerance());
+                Self::certify_curve_trim(
+                    &curve,
+                    (t1, t0),
+                    start_point,
+                    end_point,
+                    start == end,
+                    tolerance.unwrap_or(vertex_tolerance),
+                )?;
+                Some((t1, t0))
+            };
+            let mut new_edge = Edge::with_tolerance(start, end, curve, tolerance);
+            new_edge.set_trim(trim);
             let new_eid = self.topo_mut().add_edge(new_edge);
             return Ok(edge_id_to_u32(new_eid));
         }
@@ -2174,6 +2197,22 @@ impl BrepKernel {
     }
 }
 
+impl BrepKernel {
+    /// Shared fallible implementation for both direct solid-offset exports.
+    pub(crate) fn offset_solid_impl(
+        &mut self,
+        solid: u32,
+        distance: f64,
+    ) -> Result<u32, WasmError> {
+        validate_finite(distance, "distance")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let result = self.with_topology_transaction(|topology| {
+            remus_operations::offset_v2::offset_solid_v2(topology, solid_id, distance)
+        })?;
+        Ok(solid_id_to_u32(result))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -2183,7 +2222,7 @@ mod tests {
     use remus_math::vec::Point3;
     use remus_topology::builder::make_polygon_wire;
 
-    use crate::handles::{solid_id_to_u32, wire_id_to_u32};
+    use crate::handles::{edge_id_to_u32, solid_id_to_u32, wire_id_to_u32};
     use crate::helpers::TOL;
     use crate::kernel::BrepKernel;
 
@@ -2196,6 +2235,43 @@ mod tests {
         ];
         let wid = make_polygon_wire(k.topo_mut(), &pts, TOL).unwrap();
         wire_id_to_u32(wid)
+    }
+
+    fn topology_counts(
+        topology: &remus_topology::Topology,
+    ) -> (usize, usize, usize, usize, usize, usize) {
+        (
+            topology.num_vertices(),
+            topology.num_edges(),
+            topology.num_wires(),
+            topology.num_faces(),
+            topology.num_shells(),
+            topology.num_solids(),
+        )
+    }
+
+    #[test]
+    fn direct_offset_exports_rollback_postcondition_failure() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let before = topology_counts(kernel.topo());
+
+        let mut unguarded = kernel.topo().clone();
+        let solid_id = kernel.resolve_solid(solid).unwrap();
+        remus_operations::offset_v2::offset_solid_v2(&mut unguarded, solid_id, -6.0)
+            .expect_err("collapsed offset must fail its postcondition");
+        assert_ne!(
+            topology_counts(&unguarded),
+            before,
+            "witness must exercise a failure after topology allocation"
+        );
+
+        let error = kernel
+            .offset_solid_impl(solid, -6.0)
+            .expect_err("direct offset must surface the collapse refusal");
+        assert!(error.to_string().contains("collapsed"));
+        assert_eq!(topology_counts(kernel.topo()), before);
+        assert!(kernel.resolve_solid(solid).is_ok());
     }
 
     fn dispatch(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
@@ -3015,5 +3091,50 @@ mod tests {
             entry.get("error").is_some(),
             "unknown join type should error: {entry}"
         );
+    }
+
+    #[test]
+    fn reverse_shape_reverses_authoritative_curve_trim() {
+        let mut kernel = BrepKernel::new();
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+        )
+        .unwrap();
+        let start_parameter = 0.7;
+        let end_parameter = 2.2;
+        let start = circle.evaluate(start_parameter);
+        let end = circle.evaluate(end_parameter);
+        let expected_midpoint = circle.evaluate(f64::midpoint(start_parameter, end_parameter));
+        let edge = kernel
+            .add_certified_curve_edge(
+                remus_topology::edge::EdgeCurve::Circle(circle),
+                (start_parameter, end_parameter),
+                start,
+                end,
+                false,
+                TOL,
+            )
+            .unwrap();
+
+        let reversed = kernel.reverse_shape(edge_id_to_u32(edge)).unwrap();
+        let reversed_id = kernel.resolve_edge(reversed).unwrap();
+        let reversed_edge = kernel.topo().edge(reversed_id).unwrap();
+        assert_eq!(
+            reversed_edge.strict_domain().unwrap(),
+            (end_parameter, start_parameter)
+        );
+        assert!(
+            (kernel.topo().vertex(reversed_edge.start()).unwrap().point() - end).length() < 1e-12
+        );
+        assert!(
+            (kernel.topo().vertex(reversed_edge.end()).unwrap().point() - start).length() < 1e-12
+        );
+        let midpoint = BrepKernel::curve_point(
+            reversed_edge.curve(),
+            f64::midpoint(end_parameter, start_parameter),
+        );
+        assert!((midpoint - expected_midpoint).length() < 1e-12);
     }
 }
