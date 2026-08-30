@@ -858,7 +858,7 @@ pub fn make_nurbs_edge(
     };
     let forward_matches = forward_residual <= authority_band;
     let reverse_matches = reverse_residual <= authority_band;
-    let trim = match (forward_matches, reverse_matches) {
+    let mut trim = match (forward_matches, reverse_matches) {
         (true, false) => Some((domain_start, domain_end)),
         (false, true) => Some((domain_end, domain_start)),
         (true, true) if forward_residual < reverse_residual => Some((domain_start, domain_end)),
@@ -868,6 +868,30 @@ pub fn make_nurbs_edge(
         }
         _ => None,
     };
+    // Preserve the infallible public builder contract while establishing
+    // authority for uniquely parameterized interior spans on open curves.
+    // Closed curves need an explicit branch witness beyond two endpoints, so
+    // ambiguous interior spans deliberately remain trimless compatibility
+    // topology and the strict STEP writer continues to refuse them.
+    if trim.is_none() && (natural_start - natural_end).length() > authority_band {
+        let candidate =
+            EdgeCurve::NurbsCurve(curve.clone()).reconstruct_domain_from_endpoints(start, end);
+        let midpoint = curve.evaluate(f64::midpoint(candidate.0, candidate.1));
+        let candidate_is_proven = candidate.0.is_finite()
+            && candidate.1.is_finite()
+            && (candidate.1 - candidate.0).abs()
+                > 1e-12 * (domain_end - domain_start).abs().max(1.0)
+            && candidate.0 >= domain_start
+            && candidate.0 <= domain_end
+            && candidate.1 >= domain_start
+            && candidate.1 <= domain_end
+            && midpoint.0.iter().all(|value| value.is_finite())
+            && (curve.evaluate(candidate.0) - start).length() <= authority_band
+            && (curve.evaluate(candidate.1) - end).length() <= authority_band;
+        if candidate_is_proven {
+            trim = Some(candidate);
+        }
+    }
     let v_start = topo.add_vertex(Vertex::new(start, tolerance));
     let v_end = topo.add_vertex(Vertex::new(end, tolerance));
     let mut edge = Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve));
@@ -1496,15 +1520,69 @@ mod tests {
 
         let ta = d0 + 0.25 * (d1 - d0);
         let tb = d0 + 0.75 * (d1 - d0);
-        let unproven = make_nurbs_edge(
+        let interior = make_nurbs_edge(
             &mut topo,
             curve.evaluate(ta),
             curve.evaluate(tb),
             curve.clone(),
             TOL,
         );
+        let interior_range = topo.edge(interior).unwrap().strict_domain().unwrap();
+        assert!((interior_range.0 - ta).abs() < 1e-8);
+        assert!((interior_range.1 - tb).abs() < 1e-8);
+        let reverse_interior = make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(tb),
+            curve.evaluate(ta),
+            curve.clone(),
+            TOL,
+        );
+        let reverse_range = topo
+            .edge(reverse_interior)
+            .unwrap()
+            .strict_domain()
+            .unwrap();
+        assert!((reverse_range.0 - tb).abs() < 1e-8);
+        assert!((reverse_range.1 - ta).abs() < 1e-8);
+
+        let unproven = make_nurbs_edge(
+            &mut topo,
+            Point3::new(ta, 100.0, 0.0),
+            Point3::new(tb, 100.0, 0.0),
+            curve.clone(),
+            TOL,
+        );
         let error = topo.edge(unproven).unwrap().strict_domain().unwrap_err();
         assert_eq!(error.diagnostic().code(), "edge_domain_missing");
+
+        let closed = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let ambiguous = make_nurbs_edge(
+            &mut topo,
+            closed.evaluate(0.5),
+            closed.evaluate(2.5),
+            closed,
+            TOL,
+        );
+        assert_eq!(
+            topo.edge(ambiguous)
+                .unwrap()
+                .strict_domain()
+                .unwrap_err()
+                .diagnostic()
+                .code(),
+            "edge_domain_missing"
+        );
 
         let from_curve = make_nurbs_edge_from_curve(&mut topo, &curve, TOL);
         let expected = ParametricCurve::domain(&curve);

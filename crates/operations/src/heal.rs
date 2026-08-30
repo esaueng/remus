@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::SolidId;
@@ -1128,6 +1128,16 @@ pub(crate) fn unify_faces_with_history(
     topo: &mut Topology,
     solid: SolidId,
 ) -> Result<FaceUnifyHistory, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        unify_faces_with_history_impl(topo, solid)
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn unify_faces_with_history_impl(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<FaceUnifyHistory, crate::OperationsError> {
     /// Maximum boundary edges for a merged face. Groups whose boundary
     /// exceeds this are skipped to prevent O(N²) slowdowns in subsequent
     /// boolean intersection computations. 200 edges is generous for any
@@ -1497,6 +1507,7 @@ pub(crate) fn unify_faces_with_history(
 
     // Build edge replacement map: old EdgeId → new EdgeId with canonical vertices.
     let mut edge_replace: HashMap<usize, EdgeId> = HashMap::new();
+    let mut replacement_plans = Vec::new();
     for gd in &group_data {
         for oe in &gd.boundary_edges {
             let eid = oe.edge();
@@ -1519,11 +1530,98 @@ pub(crate) fn unify_faces_with_history(
                     reason: "canonical vertex not found for edge end".to_string(),
                 })?;
             if canon_start != edge.start() || canon_end != edge.end() {
-                let new_edge = Edge::new(canon_start, canon_end, edge.curve().clone());
-                let new_eid = topo.add_edge(new_edge);
-                edge_replace.insert(eid.index(), new_eid);
+                let source_start_tolerance = topo.vertex(edge.start())?.tolerance();
+                let source_end_tolerance = topo.vertex(edge.end())?.tolerance();
+                let canonical_start_tolerance = topo.vertex(canon_start)?.tolerance();
+                let canonical_end_tolerance = topo.vertex(canon_end)?.tolerance();
+                let edge_tolerance = edge.tolerance();
+                if [
+                    source_start_tolerance,
+                    source_end_tolerance,
+                    canonical_start_tolerance,
+                    canonical_end_tolerance,
+                ]
+                .into_iter()
+                .any(|value| !value.is_finite() || value < 0.0)
+                    || edge_tolerance.is_some_and(|value| !value.is_finite() || value < 0.0)
+                {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "unify_faces edge has invalid tolerance authority (source \
+                             {source_start_tolerance}/{source_end_tolerance}, canonical \
+                             {canonical_start_tolerance}/{canonical_end_tolerance}, edge \
+                             {edge_tolerance:?})"
+                        ),
+                    });
+                }
+                let source_range =
+                    edge.strict_domain()
+                        .map_err(|error| crate::OperationsError::InvalidInput {
+                            reason: format!(
+                                "unify_faces cannot canonicalize an edge without parameter \
+                             authority: {error}"
+                            ),
+                        })?;
+                let trim = (!matches!(edge.curve(), EdgeCurve::Line)).then_some(source_range);
+                let curve = edge.curve().clone();
+                if let Some(range) = trim {
+                    let tolerance = edge_tolerance
+                        .unwrap_or_else(|| canonical_start_tolerance.max(canonical_end_tolerance));
+                    let source_start = topo.vertex(edge.start())?.point();
+                    let source_end = topo.vertex(edge.end())?.point();
+                    let expected_points = [
+                        topo.vertex(canon_start)?.point(),
+                        curve.evaluate_with_endpoints(
+                            f64::midpoint(range.0, range.1),
+                            source_start,
+                            source_end,
+                        ),
+                        topo.vertex(canon_end)?.point(),
+                    ];
+                    for (label, parameter, expected) in [
+                        ("start", range.0, expected_points[0]),
+                        (
+                            "midpoint",
+                            f64::midpoint(range.0, range.1),
+                            expected_points[1],
+                        ),
+                        ("end", range.1, expected_points[2]),
+                    ] {
+                        let actual = curve.evaluate_with_endpoints(
+                            parameter,
+                            expected_points[0],
+                            expected_points[2],
+                        );
+                        let residual = (actual - expected).length();
+                        if !residual.is_finite() || residual > tolerance {
+                            return Err(crate::OperationsError::InvalidInput {
+                                reason: format!(
+                                    "unify_faces canonical edge {label} changes its certified \
+                                     curve by {residual} (tolerance {tolerance})"
+                                ),
+                            });
+                        }
+                    }
+                }
+                let mut probe =
+                    Edge::with_tolerance(canon_start, canon_end, curve.clone(), edge_tolerance);
+                probe.set_trim(trim);
+                probe
+                    .strict_domain()
+                    .map_err(|error| crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "unify_faces canonical edge has invalid parameter authority: {error}"
+                        ),
+                    })?;
+                replacement_plans.push((eid, canon_start, canon_end, curve, edge_tolerance, trim));
             }
         }
+    }
+    for (eid, canon_start, canon_end, curve, tolerance, trim) in replacement_plans {
+        let mut new_edge = Edge::with_tolerance(canon_start, canon_end, curve, tolerance);
+        new_edge.set_trim(trim);
+        let new_eid = topo.add_edge(new_edge);
+        edge_replace.insert(eid.index(), new_eid);
     }
 
     // Step 5: For each merge group, form loops and build merged faces.

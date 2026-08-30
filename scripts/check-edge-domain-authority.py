@@ -36,6 +36,13 @@ DOMAIN_TEST_MANIFEST = """8277dadb9701777b 51c0813fea3b625a d47f8b4a5f77d05a 175
 BOUNDARY_PRODUCTION_MANIFEST = """fb55de050adbb88c 1d3d3b084411fd14 c23d815cf0a862cd 3cb826f4d02579b5 f003ef01c6bb6b5c 4d8b6fc07e8c3a9d 9e53b906967cfd5e d01b54e628597143 91e219e53e6d8d3e 4446f3cec3e34692 0875bdbd1dff21b7 56e6d89d2bea1373 c109e6e08cc65763 5736f9fd5fbf1c76 bc4653b22d2d6cd0 45aa5e7848f4c888 ff6f52ee9ee26c6a 7bd5ba190dcf648f 75fe315ba99522ed 29abde1caf2c1a69 604d510e5b233e40 a3f1a4d3efa9e063 323be0bc1cd3bf59 a4b432acb8a1243d 7af1bcf9abc3f7d1 47d5c5ce79b171a7 b1da5ab122bcc9e3 5821968b9ea57cc4 8f42785da0314cf8 fb8b14d8cb0fe464""".split()
 BOUNDARY_EXCLUDED_MANIFEST = """8fe14bd9c408d729 0562c28e114de4de c0f2a1f22c2e8a8c 7cc937c159b16539 b01c467494ff98a6 68f26eecb04615d0 31b2abde73d32ea3 1c6bd024fe00c4b8""".split()
 BASELINE_PRESERVATION_MANIFEST = """409e26059e7657d1 4fcd3d400dabcb8c 7eb3fdf95ecd461e 2ef78a8d560c9b51 f8dac04156521ab6 c0079d093e520988 d6672a48aeae38c1 f36ef17e09585a9d 3c435d48ac3cd69f b77ddaa8423159bb 793fa734cab8252d fe75393c672bf17d""".split()
+# Reviewed one-for-one migrations keep the immutable baseline obligations while
+# allowing their implementation identity to move. Keys and values stay exact;
+# aggregate-count substitution is not accepted.
+BASELINE_PRESERVATION_REPLACEMENTS = {
+    "d6672a48aeae38c1": "efe8e8c8ecccf2c6",
+    "f36ef17e09585a9d": "744a329cf5b02ebf",
+}
 
 MISSING_TRIM_CONSTRUCTION_ANCHORS = (
     "crates/algo/src/pave_filler/phase_ff.rs:876 perform_with_context raw section edge",
@@ -264,8 +271,22 @@ def validate_static_configuration() -> bool:
         fail("boundary identity manifests overlap")
         valid = False
     identity_hash_pattern = re.compile(r"^[0-9a-f]{16}$")
+    replacement_keys = set(BASELINE_PRESERVATION_REPLACEMENTS)
+    replacement_values = list(BASELINE_PRESERVATION_REPLACEMENTS.values())
+    if not replacement_keys <= set(BASELINE_PRESERVATION_MANIFEST):
+        fail("baseline preservation replacements name unknown obligations")
+        valid = False
+    if len(replacement_values) != len(set(replacement_values)):
+        fail("baseline preservation replacement identities overlap")
+        valid = False
+    if set(replacement_values) & set(BASELINE_PRESERVATION_MANIFEST):
+        fail("baseline preservation replacements reuse baseline identities")
+        valid = False
     all_hashes = (
-        domain_hashes + boundary_hashes + BASELINE_PRESERVATION_MANIFEST
+        domain_hashes
+        + boundary_hashes
+        + BASELINE_PRESERVATION_MANIFEST
+        + replacement_values
     )
     if any(identity_hash_pattern.fullmatch(value) is None for value in all_hashes):
         fail("identity manifests contain a malformed SHA-256 prefix")
@@ -353,7 +374,11 @@ def main() -> int:
         fail("manually reduced missing-trim path manifest is invalid")
         failed = True
 
-    baseline_preservation = set(BASELINE_PRESERVATION_MANIFEST)
+    immutable_baseline_preservation = set(BASELINE_PRESERVATION_MANIFEST)
+    baseline_preservation = {
+        BASELINE_PRESERVATION_REPLACEMENTS.get(hashed, hashed)
+        for hashed in BASELINE_PRESERVATION_MANIFEST
+    }
     fixed_writer_count = 0
     claimed_fixed_identities: set[str] = set()
     for path in BASELINE_MISSING_TRIM_PATHS:
@@ -373,7 +398,7 @@ def main() -> int:
             )
             failed = True
         for hashed in fixed_identities:
-            if hashed in baseline_preservation:
+            if hashed in immutable_baseline_preservation or hashed in baseline_preservation:
                 fail(
                     f"fixed writer identity for {path} reuses immutable "
                     f"baseline writer: {hashed}"

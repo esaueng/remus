@@ -13,7 +13,7 @@ use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError, EdgeId};
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
@@ -32,12 +32,26 @@ use crate::HealError;
 ///
 /// # Errors
 ///
-/// Returns [`HealError`] when a topology lookup or wire replacement fails.
+/// Returns [`HealError`] when a topology lookup or wire replacement fails, a
+/// source arc lacks a valid authoritative parameter range, or the replacement
+/// full-turn range cannot be certified.
 pub fn merge_split_rim_arcs(
     topo: &mut Topology,
     solid_id: SolidId,
     tol: Tolerance,
 ) -> Result<usize, HealError> {
+    for (label, value) in [
+        ("linear", tol.linear),
+        ("angular", tol.angular),
+        ("relative", tol.relative),
+    ] {
+        if !value.is_finite() || value.is_sign_negative() {
+            return Err(HealError::UpgradeFailed(format!(
+                "rim-arc merge caller tolerance `{label}` is invalid: {value}"
+            )));
+        }
+    }
+
     let face_ids = remus_topology::explorer::solid_faces(topo, solid_id)?;
     let mut wire_ids = Vec::new();
     let mut edge_to_faces: HashMap<EdgeId, HashSet<FaceId>> = HashMap::new();
@@ -73,15 +87,47 @@ pub fn merge_split_rim_arcs(
         let EdgeCurve::Circle(circle) = edge.curve() else {
             continue;
         };
-        let start = topo.vertex(edge.start())?.point();
-        let end = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.domain_with_endpoints(start, end);
+        let start_vertex = topo.vertex(edge.start())?;
+        let end_vertex = topo.vertex(edge.end())?;
+        let start_tolerance = start_vertex.tolerance();
+        let end_tolerance = end_vertex.tolerance();
+        for (label, tolerance) in [
+            ("start vertex", start_tolerance),
+            ("end vertex", end_tolerance),
+        ] {
+            if !tolerance.is_finite() || tolerance.is_sign_negative() {
+                return Err(HealError::UpgradeFailed(format!(
+                    "circle edge {edge_id:?} has invalid {label} tolerance {tolerance}"
+                )));
+            }
+        }
+        if let Some(tolerance) = edge.tolerance()
+            && (!tolerance.is_finite() || tolerance.is_sign_negative())
+        {
+            return Err(HealError::UpgradeFailed(format!(
+                "circle edge {edge_id:?} has invalid explicit tolerance {tolerance}"
+            )));
+        }
+        let (t0, t1) = edge.strict_domain().map_err(map_edge_domain_error)?;
+        let endpoint_tolerance = edge.effective_tolerance(start_tolerance.max(end_tolerance));
+        for (label, point, parameter) in [
+            ("start", start_vertex.point(), t0),
+            ("end", end_vertex.point(), t1),
+        ] {
+            let residual = (circle.evaluate(parameter) - point).length();
+            if !residual.is_finite() || residual > endpoint_tolerance {
+                return Err(HealError::UpgradeFailed(format!(
+                    "circle edge {edge_id:?} {label} parameter misses its vertex by {residual} (tolerance {endpoint_tolerance})"
+                )));
+            }
+        }
         arcs.insert(
             edge_id,
             ArcInfo {
                 start: edge.start(),
                 end: edge.end(),
                 circle: circle.clone(),
+                domain: (t0, t1),
                 span: t1 - t0,
                 midpoint: circle.evaluate((t0 + t1) * 0.5),
             },
@@ -137,12 +183,43 @@ pub fn merge_split_rim_arcs(
             &wire_ids,
             tol,
         )? {
+            certify_candidate_geometry(&candidate, &arcs, tol.linear)?;
             candidates.push(candidate);
         }
     }
 
-    let mut merged = 0;
+    // Certify every replacement edge before the first allocation. In
+    // particular, a huge seam parameter may not be able to represent one
+    // further full turn; that is a refusal, never permission to leave an
+    // untrimmed periodic edge behind.
+    let mut certified = Vec::with_capacity(candidates.len());
     for candidate in candidates {
+        let anchor_vertex = topo.vertex(candidate.anchor)?;
+        let anchor_point = anchor_vertex.point();
+        let anchor_parameter = candidate.circle.project(anchor_point);
+        let replacement_tolerance = tol.linear.max(anchor_vertex.tolerance());
+        let seam_deviation = (candidate.circle.evaluate(anchor_parameter) - anchor_point).length();
+        if !seam_deviation.is_finite() || seam_deviation > replacement_tolerance {
+            return Err(HealError::UpgradeFailed(format!(
+                "closed-circle replacement seam deviation {seam_deviation} exceeds tolerance {replacement_tolerance}"
+            )));
+        }
+        let mut replacement = Edge::with_tolerance(
+            candidate.anchor,
+            candidate.anchor,
+            EdgeCurve::Circle(candidate.circle.clone()),
+            Some(replacement_tolerance),
+        );
+        replacement.set_trim(Some((
+            anchor_parameter,
+            anchor_parameter + std::f64::consts::TAU,
+        )));
+        let _ = replacement.strict_domain().map_err(map_edge_domain_error)?;
+        certified.push((candidate, replacement));
+    }
+
+    let mut merged = 0;
+    for (candidate, replacement) in certified {
         // Re-preflight against the current wires. Components are disjoint, so
         // an earlier rewrite cannot consume this plan's edges, but the check
         // keeps the mutation boundary explicit and fail-closed.
@@ -150,11 +227,7 @@ pub fn merge_split_rim_arcs(
         if rewrites.is_empty() {
             continue;
         }
-        let new_edge = topo.add_edge(Edge::new(
-            candidate.anchor,
-            candidate.anchor,
-            EdgeCurve::Circle(candidate.circle),
-        ));
+        let new_edge = topo.add_edge(replacement);
         for rewrite in rewrites {
             let mut edges = Vec::with_capacity(rewrite.remaining.len() + 1);
             edges.push(OrientedEdge::new(new_edge, rewrite.forward));
@@ -168,11 +241,16 @@ pub fn merge_split_rim_arcs(
     Ok(merged)
 }
 
+fn map_edge_domain_error(error: EdgeDomainError) -> HealError {
+    HealError::UpgradeFailed(error.to_string())
+}
+
 #[derive(Clone)]
 struct ArcInfo {
     start: VertexId,
     end: VertexId,
     circle: Circle3D,
+    domain: (f64, f64),
     span: f64,
     midpoint: Point3,
 }
@@ -187,6 +265,117 @@ struct PlannedRewrite {
     wire: WireId,
     forward: bool,
     remaining: Vec<OrientedEdge>,
+}
+
+/// Prove that every point of every source arc stays within `linear_tol` of
+/// the replacement circle. The aligned pointwise difference of two oriented
+/// circles is `A + B cos(t) + C sin(t)`; bounding each coordinate at the arc
+/// endpoints and its analytic stationary points therefore bounds the whole
+/// interval, without a scale-dependent sampling gap.
+fn certify_candidate_geometry(
+    candidate: &Candidate,
+    arcs: &HashMap<EdgeId, ArcInfo>,
+    linear_tol: f64,
+) -> Result<(), HealError> {
+    let mut edge_ids: Vec<_> = candidate.edges.iter().copied().collect();
+    edge_ids.sort_unstable();
+    for edge_id in edge_ids {
+        let arc = &arcs[&edge_id];
+        let bound = aligned_arc_deviation_bound(&arc.circle, arc.domain, &candidate.circle)
+            .ok_or_else(|| {
+                HealError::UpgradeFailed(format!(
+                    "circle edge {edge_id:?} cannot be certified against its replacement at this numeric scale"
+                ))
+            })?;
+        if !linear_tol.is_finite()
+            || linear_tol.is_sign_negative()
+            || !bound.is_finite()
+            || bound > linear_tol
+        {
+            return Err(HealError::UpgradeFailed(format!(
+                "circle edge {edge_id:?} replacement-deviation bound {bound} exceeds linear tolerance {linear_tol}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn aligned_arc_deviation_bound(
+    source: &Circle3D,
+    domain: (f64, f64),
+    replacement: &Circle3D,
+) -> Option<f64> {
+    let phase_cos = source.u_axis().dot(replacement.u_axis());
+    let phase_sin = source.u_axis().dot(replacement.v_axis());
+    let phase_norm = phase_cos.hypot(phase_sin);
+    if !phase_norm.is_finite() || phase_norm <= f64::EPSILON {
+        return None;
+    }
+    let phase_cos = phase_cos / phase_norm;
+    let phase_sin = phase_sin / phase_norm;
+    let replacement_u = replacement.u_axis() * phase_cos + replacement.v_axis() * phase_sin;
+    let replacement_v = replacement.v_axis() * phase_cos - replacement.u_axis() * phase_sin;
+
+    let constant = source.center() - replacement.center();
+    let cosine = source.u_axis() * source.radius() - replacement_u * replacement.radius();
+    let sine = source.v_axis() * source.radius() - replacement_v * replacement.radius();
+    let values = [
+        constant.x(),
+        constant.y(),
+        constant.z(),
+        cosine.x(),
+        cosine.y(),
+        cosine.z(),
+        sine.x(),
+        sine.y(),
+        sine.z(),
+        source.center().x(),
+        source.center().y(),
+        source.center().z(),
+        replacement.center().x(),
+        replacement.center().y(),
+        replacement.center().z(),
+        source.radius(),
+        replacement.radius(),
+        domain.0,
+        domain.1,
+    ];
+    if values.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+
+    let x = harmonic_abs_max(constant.x(), cosine.x(), sine.x(), domain)?;
+    let y = harmonic_abs_max(constant.y(), cosine.y(), sine.y(), domain)?;
+    let z = harmonic_abs_max(constant.z(), cosine.z(), sine.z(), domain)?;
+    let raw_bound = x.hypot(y).hypot(z);
+    let coordinate_scale = values
+        .iter()
+        .fold(1.0_f64, |scale, value| scale.max(value.abs()));
+    // Covers the dot products, frame rotation, coefficient construction and
+    // trigonometric extrema above. If this band alone exceeds the requested
+    // linear tolerance, the correct result is a typed refusal.
+    let arithmetic_band = 128.0 * f64::EPSILON * coordinate_scale;
+    Some(raw_bound + arithmetic_band)
+}
+
+fn harmonic_abs_max(a: f64, b: f64, c: f64, domain: (f64, f64)) -> Option<f64> {
+    let span = (domain.1 - domain.0).abs();
+    if !span.is_finite() {
+        return None;
+    }
+    let start = domain.0.min(domain.1).rem_euclid(std::f64::consts::TAU);
+    let end = start + span;
+    let evaluate = |parameter: f64| b.mul_add(parameter.cos(), c.mul_add(parameter.sin(), a));
+    let mut maximum = evaluate(start).abs().max(evaluate(end).abs());
+    let stationary = c.atan2(b);
+    for base in [stationary, stationary + std::f64::consts::PI] {
+        let turns = ((start - base) / std::f64::consts::TAU).ceil();
+        let parameter = turns.mul_add(std::f64::consts::TAU, base);
+        if parameter >= start && parameter <= end {
+            maximum = maximum.max(evaluate(parameter).abs());
+        }
+    }
+    maximum.is_finite().then_some(maximum)
 }
 
 fn candidate_cycle(
@@ -435,7 +624,7 @@ fn run_start(edges: &[OrientedEdge], plan: &HashSet<EdgeId>) -> Option<usize> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use remus_math::curves::Circle3D;
     use remus_math::vec::{Point3, Vec3};
@@ -460,7 +649,14 @@ mod tests {
     }
 
     fn arc(topo: &mut Topology, start: VertexId, end: VertexId, circle: &Circle3D) -> EdgeId {
-        topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle.clone())))
+        let start_parameter = circle.project(topo.vertex(start).unwrap().point());
+        let mut end_parameter = circle.project(topo.vertex(end).unwrap().point());
+        if end_parameter <= start_parameter {
+            end_parameter += std::f64::consts::TAU;
+        }
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle.clone()));
+        edge.set_trim(Some((start_parameter, end_parameter)));
+        topo.add_edge(edge)
     }
 
     fn solid_with_two_arc_wires(topo: &mut Topology, arcs: &[EdgeId]) -> (SolidId, WireId, WireId) {
@@ -496,15 +692,28 @@ mod tests {
         )
     }
 
-    fn assert_merged(topo: &Topology, a: WireId, b: WireId) {
+    fn assert_merged(topo: &Topology, a: WireId, b: WireId) -> EdgeId {
         let wa = topo.wire(a).unwrap();
         let wb = topo.wire(b).unwrap();
         assert_eq!(wa.edges().len(), 1);
         assert_eq!(wb.edges().len(), 1);
         assert_eq!(wa.edges()[0].edge(), wb.edges()[0].edge());
+        assert!(wa.edges()[0].is_forward());
+        assert!(!wb.edges()[0].is_forward());
         let edge = topo.edge(wa.edges()[0].edge()).unwrap();
         assert_eq!(edge.start(), edge.end());
         assert!(matches!(edge.curve(), EdgeCurve::Circle(_)));
+        edge.strict_domain().unwrap();
+        wa.edges()[0].edge()
+    }
+
+    fn oriented_edge_snapshot(topo: &Topology, wire: WireId) -> Vec<(EdgeId, bool)> {
+        topo.wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|edge| (edge.edge(), edge.is_forward()))
+            .collect()
     }
 
     #[test]
@@ -541,6 +750,285 @@ mod tests {
             1
         );
         assert_merged(&topo, w0, w1);
+    }
+
+    #[test]
+    fn replacement_retains_anchored_full_turn_and_circle_geometry() {
+        let mut topo = Topology::new();
+        let c = circle(Z);
+        let seam_parameter = 0.75;
+        let seam = vertex(&mut topo, &c, seam_parameter);
+        let opposite = vertex(&mut topo, &c, seam_parameter + std::f64::consts::PI);
+        let e0 = arc(&mut topo, seam, opposite, &c);
+        let e1 = arc(&mut topo, opposite, seam, &c);
+        let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
+
+        assert_eq!(
+            merge_split_rim_arcs(&mut topo, solid, Tolerance::new()).unwrap(),
+            1
+        );
+        let replacement_id = assert_merged(&topo, w0, w1);
+        let replacement = topo.edge(replacement_id).unwrap();
+        let (t0, t1) = replacement.strict_domain().unwrap();
+        assert!((t0 - seam_parameter).abs() <= 1e-14);
+        assert!(((t1 - t0) - std::f64::consts::TAU).abs() <= 1e-14);
+
+        let EdgeCurve::Circle(replacement_circle) = replacement.curve() else {
+            unreachable!();
+        };
+        let seam_point = topo.vertex(replacement.start()).unwrap().point();
+        assert!((replacement_circle.evaluate(t0) - seam_point).length() <= 1e-14);
+        assert!((replacement_circle.evaluate(t1) - seam_point).length() <= 1e-14);
+        assert!(
+            (replacement_circle.evaluate((t0 + t1) * 0.5)
+                - c.evaluate(seam_parameter + std::f64::consts::PI))
+            .length()
+                <= 1e-14
+        );
+        assert!((replacement_circle.tangent(t0) - c.tangent(seam_parameter)).length() <= 1e-14);
+    }
+
+    #[test]
+    fn missing_source_domain_refuses_without_mutating_topology() {
+        let mut topo = Topology::new();
+        let c = circle(Z);
+        let a = vertex(&mut topo, &c, 0.0);
+        let b = vertex(&mut topo, &c, std::f64::consts::PI);
+        let e0 = arc(&mut topo, a, b, &c);
+        let e1 = arc(&mut topo, b, a, &c);
+        topo.edge_mut(e1).unwrap().set_trim(None);
+        let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
+        let counts_before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.allocated_slot_count(),
+        );
+        let w0_before = oriented_edge_snapshot(&topo, w0);
+        let w1_before = oriented_edge_snapshot(&topo, w1);
+
+        let error = merge_split_rim_arcs(&mut topo, solid, Tolerance::new()).unwrap_err();
+        assert!(
+            matches!(error, HealError::UpgradeFailed(ref message) if message.contains("no authoritative parameter range"))
+        );
+        assert_eq!(
+            counts_before,
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.allocated_slot_count(),
+            )
+        );
+        assert_eq!(oriented_edge_snapshot(&topo, w0), w0_before);
+        assert_eq!(oriented_edge_snapshot(&topo, w1), w1_before);
+    }
+
+    #[test]
+    fn shifted_source_domain_refuses_without_mutating_topology() {
+        let mut topo = Topology::new();
+        let c = circle(Z);
+        let a = vertex(&mut topo, &c, 0.0);
+        let b = vertex(&mut topo, &c, std::f64::consts::PI);
+        let e0 = arc(&mut topo, a, b, &c);
+        let e1 = arc(&mut topo, b, a, &c);
+        topo.edge_mut(e1).unwrap().set_trim(Some((
+            std::f64::consts::PI + 0.25,
+            std::f64::consts::TAU + 0.25,
+        )));
+        let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
+        let counts_before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.allocated_slot_count(),
+        );
+        let w0_before = oriented_edge_snapshot(&topo, w0);
+        let w1_before = oriented_edge_snapshot(&topo, w1);
+
+        let error = merge_split_rim_arcs(&mut topo, solid, Tolerance::new()).unwrap_err();
+        assert!(
+            matches!(error, HealError::UpgradeFailed(ref message) if message.contains("parameter misses its vertex"))
+        );
+        assert_eq!(
+            counts_before,
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.allocated_slot_count(),
+            )
+        );
+        assert_eq!(oriented_edge_snapshot(&topo, w0), w0_before);
+        assert_eq!(oriented_edge_snapshot(&topo, w1), w1_before);
+    }
+
+    #[test]
+    fn invalid_individual_tolerances_refuse_without_mutating_topology() {
+        for (anchor_tolerance, edge_tolerance, expected) in
+            [(f64::NAN, None, "vertex"), (1e-7, Some(-1.0), "explicit")]
+        {
+            let mut topo = Topology::new();
+            let c = circle(Z);
+            let a = topo.add_vertex(Vertex::new(c.evaluate(0.0), anchor_tolerance));
+            let b = vertex(&mut topo, &c, std::f64::consts::PI);
+            let e0 = arc(&mut topo, a, b, &c);
+            let e1 = arc(&mut topo, b, a, &c);
+            topo.edge_mut(e0).unwrap().set_tolerance(edge_tolerance);
+            let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
+            let counts_before = (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.allocated_slot_count(),
+            );
+            let w0_before = oriented_edge_snapshot(&topo, w0);
+            let w1_before = oriented_edge_snapshot(&topo, w1);
+
+            let error = merge_split_rim_arcs(&mut topo, solid, Tolerance::new()).unwrap_err();
+
+            assert!(
+                matches!(error, HealError::UpgradeFailed(ref message) if message.contains(expected)),
+                "unexpected error: {error}"
+            );
+            assert_eq!(
+                counts_before,
+                (
+                    topo.num_vertices(),
+                    topo.num_edges(),
+                    topo.num_wires(),
+                    topo.num_faces(),
+                    topo.num_shells(),
+                    topo.num_solids(),
+                    topo.allocated_slot_count(),
+                )
+            );
+            assert_eq!(oriented_edge_snapshot(&topo, w0), w0_before);
+            assert_eq!(oriented_edge_snapshot(&topo, w1), w1_before);
+        }
+    }
+
+    #[test]
+    fn invalid_caller_tolerance_fields_refuse_without_mutating_topology() {
+        let invalid_values = [f64::NAN, f64::INFINITY, -1.0];
+        for (field, invalid) in ["linear", "angular", "relative"]
+            .into_iter()
+            .flat_map(|field| invalid_values.map(|invalid| (field, invalid)))
+        {
+            let mut topo = Topology::new();
+            let c = circle(Z);
+            let a = vertex(&mut topo, &c, 0.0);
+            let b = vertex(&mut topo, &c, std::f64::consts::PI);
+            let e0 = arc(&mut topo, a, b, &c);
+            let e1 = arc(&mut topo, b, a, &c);
+            let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
+            let counts_before = (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.allocated_slot_count(),
+            );
+            let w0_before = oriented_edge_snapshot(&topo, w0);
+            let w1_before = oriented_edge_snapshot(&topo, w1);
+            let mut tolerance = Tolerance::new();
+            match field {
+                "linear" => tolerance.linear = invalid,
+                "angular" => tolerance.angular = invalid,
+                "relative" => tolerance.relative = invalid,
+                _ => unreachable!(),
+            }
+
+            let error = merge_split_rim_arcs(&mut topo, solid, tolerance).unwrap_err();
+
+            assert!(
+                matches!(error, HealError::UpgradeFailed(ref message) if message.contains(field)),
+                "unexpected error for {field}={invalid}: {error}"
+            );
+            assert_eq!(
+                counts_before,
+                (
+                    topo.num_vertices(),
+                    topo.num_edges(),
+                    topo.num_wires(),
+                    topo.num_faces(),
+                    topo.num_shells(),
+                    topo.num_solids(),
+                    topo.allocated_slot_count(),
+                )
+            );
+            assert_eq!(oriented_edge_snapshot(&topo, w0), w0_before);
+            assert_eq!(oriented_edge_snapshot(&topo, w1), w1_before);
+        }
+    }
+
+    #[test]
+    fn huge_tilted_source_circle_refuses_without_mutating_topology() {
+        let mut topo = Topology::new();
+        let radius = 1e15;
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let x_axis = Vec3::new(1.0, 0.0, 0.0);
+        let base = Circle3D::new_with_ref(center, Z, radius, x_axis).unwrap();
+        let tilted =
+            Circle3D::new_with_ref(center, Vec3::new(0.0, 1e-8, 1.0), radius, x_axis).unwrap();
+        let mut tol = Tolerance::new();
+        tol.linear = 100.0;
+
+        // The circles share their antipodal topological vertices within the
+        // declared tolerance, while their interiors separate by about 1e7.
+        // A relative radius/axis comparison alone cannot certify this merge.
+        let a = topo.add_vertex(Vertex::new(base.evaluate(0.0), tol.linear));
+        let b = topo.add_vertex(Vertex::new(base.evaluate(std::f64::consts::PI), tol.linear));
+        let e0 = arc(&mut topo, a, b, &base);
+        let e1 = arc(&mut topo, b, a, &tilted);
+        let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
+        let counts_before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+            topo.allocated_slot_count(),
+        );
+        let w0_before = oriented_edge_snapshot(&topo, w0);
+        let w1_before = oriented_edge_snapshot(&topo, w1);
+
+        let error = merge_split_rim_arcs(&mut topo, solid, tol).unwrap_err();
+        assert!(
+            matches!(error, HealError::UpgradeFailed(ref message) if message.contains("replacement-deviation bound"))
+        );
+        assert_eq!(
+            counts_before,
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+                topo.allocated_slot_count(),
+            )
+        );
+        assert_eq!(oriented_edge_snapshot(&topo, w0), w0_before);
+        assert_eq!(oriented_edge_snapshot(&topo, w1), w1_before);
     }
 
     #[test]

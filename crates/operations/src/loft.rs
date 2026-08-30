@@ -8,7 +8,7 @@ use remus_math::nurbs::surface_fitting::interpolate_surface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
@@ -352,6 +352,66 @@ struct ProfileEdgeGeom {
     curve: EdgeCurve,
     start: Point3,
     end: Point3,
+    trim: Option<(f64, f64)>,
+    tolerance: f64,
+}
+
+fn circle_trim_through_point(
+    circle: &remus_math::curves::Circle3D,
+    start: Point3,
+    through: Point3,
+    end: Point3,
+    prefer_positive: bool,
+) -> Option<(f64, f64)> {
+    let tau = std::f64::consts::TAU;
+    let t0 = circle.project(start);
+    let end_positive = (circle.project(end) - t0).rem_euclid(tau);
+    let positive_span = if end_positive <= 1e-12 {
+        tau
+    } else {
+        end_positive
+    };
+    let through_positive = (circle.project(through) - t0).rem_euclid(tau);
+    let positive_contains = through_positive <= positive_span + 1e-10;
+    let negative_span = positive_span - tau;
+    let through_negative = -((t0 - circle.project(through)).rem_euclid(tau));
+    let negative_contains = through_negative >= negative_span - 1e-10;
+    match (positive_contains, negative_contains, prefer_positive) {
+        (true, false, _) | (true, true, true) => Some((t0, t0 + positive_span)),
+        (false, true, _) | (true, true, false) => Some((t0, t0 + negative_span)),
+        (false, false, _) => None,
+    }
+}
+
+fn profile_source_domain(
+    edge: &Edge,
+    start: Point3,
+    end: Point3,
+) -> Result<(f64, f64), crate::OperationsError> {
+    match edge.strict_domain() {
+        Ok(range) => Ok(range),
+        Err(EdgeDomainError::Missing { .. }) => {
+            let range = edge.curve().reconstruct_domain_from_endpoints(start, end);
+            let mut probe = Edge::with_tolerance(
+                edge.start(),
+                edge.end(),
+                edge.curve().clone(),
+                edge.tolerance(),
+            );
+            probe.set_trim(Some(range));
+            probe
+                .strict_domain()
+                .map_err(|error| crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "loft raw profile cannot establish parameter authority: {error}"
+                    ),
+                })?;
+            Ok(range)
+        }
+        Err(error) => Err(crate::OperationsError::InvalidInput {
+            reason: format!("loft profile has invalid stored parameter authority: {error}"),
+        }),
+    }
 }
 
 /// Merge consecutive arcs lying on the same circle into a single arc.
@@ -384,7 +444,19 @@ fn merge_cocircular_arcs(edges: Vec<ProfileEdgeGeom>) -> Vec<ProfileEdgeGeom> {
                 )
             });
         if merge && let Some(last) = out.last_mut() {
+            let EdgeCurve::Circle(circle) = &last.curve else {
+                return out;
+            };
+            let prefer_positive = last.trim.is_some_and(|(start, end)| end > start);
+            let Some(trim) =
+                circle_trim_through_point(circle, last.start, e.start, e.end, prefer_positive)
+            else {
+                out.push(e);
+                continue;
+            };
             last.end = e.end;
+            last.trim = Some(trim);
+            last.tolerance = last.tolerance.max(e.tolerance);
         } else {
             out.push(e);
         }
@@ -400,7 +472,23 @@ fn merge_cocircular_arcs(edges: Vec<ProfileEdgeGeom>) -> Vec<ProfileEdgeGeom> {
             && let Some(last) = out.pop()
             && let Some(first) = out.first_mut()
         {
-            first.start = last.start;
+            let EdgeCurve::Circle(circle) = &first.curve else {
+                return out;
+            };
+            let prefer_positive = first.trim.is_some_and(|(start, end)| end > start);
+            if let Some(trim) = circle_trim_through_point(
+                circle,
+                last.start,
+                first.start,
+                first.end,
+                prefer_positive,
+            ) {
+                first.start = last.start;
+                first.trim = Some(trim);
+                first.tolerance = first.tolerance.max(last.tolerance);
+            } else {
+                out.push(last);
+            }
         }
     }
     out
@@ -416,41 +504,118 @@ fn merge_cocircular_arcs(edges: Vec<ProfileEdgeGeom>) -> Vec<ProfileEdgeGeom> {
 /// and the polygon path facets the corners — the gridfinity socket loses
 /// ~1-2.5% of its volume to chord wedges and every downstream boolean sees
 /// all-plane socket operands.
-fn profile_oriented_edges(topo: &Topology, fid: FaceId) -> Option<Vec<ProfileEdgeGeom>> {
-    let face = topo.face(fid).ok()?;
+fn profile_oriented_edges(
+    topo: &Topology,
+    fid: FaceId,
+) -> Result<Option<Vec<ProfileEdgeGeom>>, crate::OperationsError> {
+    let face = topo.face(fid)?;
     if !matches!(face.surface(), FaceSurface::Plane { .. }) || !face.inner_wires().is_empty() {
-        return None;
+        return Ok(None);
     }
-    let wire = topo.wire(face.outer_wire()).ok()?;
+    let wire = topo.wire(face.outer_wire())?;
     let oes = wire.edges();
     if oes.len() < 3 {
-        return None;
+        return Ok(None);
     }
     let recog_tol = Tolerance::new().linear * 100.0;
     let mut out = Vec::with_capacity(oes.len());
     for oe in oes {
-        let edge = topo.edge(oe.edge()).ok()?;
-        let s = topo.vertex(edge.start()).ok()?.point();
-        let e = topo.vertex(edge.end()).ok()?.point();
+        let edge = topo.edge(oe.edge())?;
+        let start_vertex = topo.vertex(edge.start())?;
+        let end_vertex = topo.vertex(edge.end())?;
+        let tolerances = [start_vertex.tolerance(), end_vertex.tolerance()];
+        if tolerances
+            .into_iter()
+            .any(|value| !value.is_finite() || value < 0.0)
+            || edge
+                .tolerance()
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "loft profile edge has invalid tolerance authority".into(),
+            });
+        }
+        let tolerance =
+            edge.effective_tolerance(start_vertex.tolerance().max(end_vertex.tolerance()));
+        let s = start_vertex.point();
+        let e = end_vertex.point();
         let (start, end) = if oe.is_forward() { (s, e) } else { (e, s) };
-        let curve = match edge.curve() {
+        let source_trim = if matches!(edge.curve(), EdgeCurve::Line) {
+            None
+        } else {
+            let range = profile_source_domain(edge, s, e)?;
+            Some(if oe.is_forward() {
+                range
+            } else {
+                (range.1, range.0)
+            })
+        };
+        let (curve, trim) = match edge.curve() {
             EdgeCurve::NurbsCurve(nc) => {
                 match remus_geometry::convert::recognize_curve(nc, recog_tol) {
                     remus_geometry::convert::RecognizedCurve::Circle {
                         center,
                         normal,
                         radius,
-                    } => remus_math::curves::Circle3D::new(center, normal, radius)
-                        .map_or_else(|_| edge.curve().clone(), EdgeCurve::Circle),
-                    remus_geometry::convert::RecognizedCurve::Line { .. } => EdgeCurve::Line,
-                    _ => edge.curve().clone(),
+                    } => {
+                        let circle = remus_math::curves::Circle3D::new(center, normal, radius)
+                            .map_err(crate::OperationsError::Math)?;
+                        let source_range =
+                            source_trim.ok_or_else(|| crate::OperationsError::InvalidInput {
+                                reason: "recognized loft circle lost its source trim".into(),
+                            })?;
+                        let source_midpoint = edge.curve().evaluate_with_endpoints(
+                            f64::midpoint(source_range.0, source_range.1),
+                            s,
+                            e,
+                        );
+                        let trim = circle_trim_through_point(
+                            &circle,
+                            start,
+                            source_midpoint,
+                            end,
+                            source_range.1 > source_range.0,
+                        )
+                        .ok_or_else(|| {
+                            crate::OperationsError::InvalidInput {
+                                reason: "recognized loft circle cannot retain its source branch"
+                                    .into(),
+                            }
+                        })?;
+                        for (label, parameter, expected) in [
+                            ("start", trim.0, start),
+                            ("midpoint", f64::midpoint(trim.0, trim.1), source_midpoint),
+                            ("end", trim.1, end),
+                        ] {
+                            let residual = (circle.evaluate(parameter) - expected).length();
+                            if !residual.is_finite() || residual > tolerance {
+                                return Err(crate::OperationsError::InvalidInput {
+                                    reason: format!(
+                                        "recognized loft circle {label} changes source geometry \
+                                         by {residual} (tolerance {tolerance})"
+                                    ),
+                                });
+                            }
+                        }
+                        (EdgeCurve::Circle(circle), Some(trim))
+                    }
+                    remus_geometry::convert::RecognizedCurve::Line { .. } => {
+                        (EdgeCurve::Line, None)
+                    }
+                    _ => (edge.curve().clone(), source_trim),
                 }
             }
-            c => c.clone(),
+            c => (c.clone(), source_trim),
         };
-        out.push(ProfileEdgeGeom { curve, start, end });
+        out.push(ProfileEdgeGeom {
+            curve,
+            start,
+            end,
+            trim,
+            tolerance,
+        });
     }
-    Some(merge_cocircular_arcs(out))
+    Ok(Some(merge_cocircular_arcs(out)))
 }
 
 /// When two corner arcs are coaxial (same axis direction, centers differing
@@ -496,23 +661,18 @@ fn coaxial_corner_surface(
     Some(FaceSurface::Cone(cone))
 }
 
-/// Build a degree-(1, p) ruled NURBS surface between two circular arcs, each
-/// reconstructed from its oriented endpoints (via the same `domain_with_endpoints`
-/// the ring edges use, so the surface matches them exactly). Returns `None` if
+/// Build a degree-(1, p) ruled NURBS surface between two circular arcs using
+/// their exact stored parameter authority. Returns `None` if
 /// the two arcs convert to incompatible NURBS (different degree or
 /// control-point count) — the caller then falls back to the polygon loft.
 fn ruled_arc_surface(
     c0: &remus_math::curves::Circle3D,
-    p0s: Point3,
-    p0e: Point3,
+    range0: (f64, f64),
     c1: &remus_math::curves::Circle3D,
-    p1s: Point3,
-    p1e: Point3,
+    range1: (f64, f64),
 ) -> Option<NurbsSurface> {
-    let (a0, a0e) = EdgeCurve::Circle(c0.clone()).domain_with_endpoints(p0s, p0e);
-    let (a1, a1e) = EdgeCurve::Circle(c1.clone()).domain_with_endpoints(p1s, p1e);
-    let mut nc0 = remus_geometry::convert::circle_to_nurbs(c0, a0, a0e).ok()?;
-    let mut nc1 = remus_geometry::convert::circle_to_nurbs(c1, a1, a1e).ok()?;
+    let mut nc0 = remus_geometry::convert::circle_to_nurbs(c0, range0.0, range0.1).ok()?;
+    let mut nc1 = remus_geometry::convert::circle_to_nurbs(c1, range1.0, range1.1).ok()?;
     if nc0.control_points().len() != nc1.control_points().len() {
         // Same-shape arcs can still segment differently when their spans sit
         // on opposite sides of the π/2-multiple ceil boundary (float jitter);
@@ -521,8 +681,10 @@ fn ruled_arc_surface(
         // per-segment invariant; the conversion itself rejects a count too
         // small for either span.
         let segs = ((nc0.control_points().len() - 1) / 2).max((nc1.control_points().len() - 1) / 2);
-        nc0 = remus_geometry::convert::circle_to_nurbs_with_segments(c0, a0, a0e, segs).ok()?;
-        nc1 = remus_geometry::convert::circle_to_nurbs_with_segments(c1, a1, a1e, segs).ok()?;
+        nc0 = remus_geometry::convert::circle_to_nurbs_with_segments(c0, range0.0, range0.1, segs)
+            .ok()?;
+        nc1 = remus_geometry::convert::circle_to_nurbs_with_segments(c1, range1.0, range1.1, segs)
+            .ok()?;
     }
     if nc0.degree() != nc1.degree() || nc0.control_points().len() != nc1.control_points().len() {
         return None;
@@ -566,7 +728,7 @@ fn try_loft_matching_curved_profiles(
     // 1. Extract every profile's ordered oriented edges.
     let mut profs: Vec<Vec<ProfileEdgeGeom>> = Vec::with_capacity(num_profiles);
     for &fid in profiles {
-        match profile_oriented_edges(topo, fid) {
+        match profile_oriented_edges(topo, fid)? {
             Some(edges) => profs.push(edges),
             None => return Ok(None),
         }
@@ -652,12 +814,30 @@ fn try_loft_matching_curved_profiles(
                 // around); flip the circle normal so the same minor arc is
                 // traced in the opposite direction.
                 if let EdgeCurve::Circle(c) = &e.curve {
+                    let source_midpoint = e
+                        .trim
+                        .map(|(start, end)| c.evaluate(f64::midpoint(start, end)));
                     match remus_math::curves::Circle3D::new(
                         c.center(),
                         c.normal() * -1.0,
                         c.radius(),
                     ) {
-                        Ok(flipped) => e.curve = EdgeCurve::Circle(flipped),
+                        Ok(flipped) => {
+                            let Some(source_midpoint) = source_midpoint else {
+                                return Ok(None);
+                            };
+                            let Some(trim) = circle_trim_through_point(
+                                &flipped,
+                                e.start,
+                                source_midpoint,
+                                e.end,
+                                true,
+                            ) else {
+                                return Ok(None);
+                            };
+                            e.curve = EdgeCurve::Circle(flipped);
+                            e.trim = Some(trim);
+                        }
                         Err(_) => return Ok(None),
                     }
                 }
@@ -665,6 +845,53 @@ fn try_loft_matching_curved_profiles(
         }
     } else if windings.iter().any(|&w| w < 0.0) {
         return Ok(None);
+    }
+
+    // Ring edges are allocated from each edge start and the following edge's
+    // start. Prove and then canonicalize every junction before any result
+    // allocation so the stored trim is certified against the exact vertex the
+    // result edge will actually use, not merely against a nearby predecessor
+    // endpoint from a disconnected raw wire.
+    for (profile_index, profile) in profs.iter_mut().enumerate() {
+        let canonical_ends: Vec<(Point3, f64)> = (0..profile.len())
+            .map(|index| {
+                let next = &profile[(index + 1) % profile.len()];
+                (next.start, next.tolerance)
+            })
+            .collect();
+        for (edge_index, (edge, (canonical_end, next_tolerance))) in
+            profile.iter_mut().zip(canonical_ends).enumerate()
+        {
+            let junction_tolerance = edge.tolerance.max(next_tolerance);
+            let gap = (edge.end - canonical_end).length();
+            if !gap.is_finite() || gap > junction_tolerance {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "loft profile {profile_index} junction after edge {edge_index} is \
+                         disconnected by {gap} (tolerance {junction_tolerance})"
+                    ),
+                });
+            }
+            if let Some((_, end_parameter)) = edge.trim {
+                let residual =
+                    (edge
+                        .curve
+                        .evaluate_with_endpoints(end_parameter, edge.start, canonical_end)
+                        - canonical_end)
+                        .length();
+                if !residual.is_finite() || residual > junction_tolerance {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "loft profile {profile_index} edge {edge_index} cannot use its \
+                             canonical junction without changing authority by {residual} \
+                             (tolerance {junction_tolerance})"
+                        ),
+                    });
+                }
+            }
+            edge.end = canonical_end;
+            edge.tolerance = junction_tolerance;
+        }
     }
 
     // 3b. Pre-compute every side face's surface BEFORE mutating `topo`. A
@@ -689,6 +916,12 @@ fn try_loft_matching_curved_profiles(
                     )
                 }
                 (EdgeCurve::Circle(c0), EdgeCurve::Circle(c1)) => {
+                    let (Some(range0), Some(range1)) = (profs[s][i].trim, profs[s + 1][i].trim)
+                    else {
+                        return Err(crate::OperationsError::InvalidInput {
+                            reason: "loft circle side lacks parameter authority".into(),
+                        });
+                    };
                     if let Some(surface) = coaxial_corner_surface(c0, c1, tol) {
                         // Radial-outward equals solid-outward only for a
                         // CONVEX corner arc (material inside the arc). A
@@ -704,11 +937,9 @@ fn try_loft_matching_curved_profiles(
                         // stacking direction, so material-outward is the
                         // TRAVERSAL TANGENT crossed with the connect
                         // direction, sampled at the arc midpoint.
-                        let curve = EdgeCurve::Circle(c0.clone());
-                        let (t0, t1) = curve.domain_with_endpoints(p0s, p0e);
-                        let t_mid = f64::midpoint(t0, t1);
-                        let mid = curve.evaluate_with_endpoints(t_mid, p0s, p0e);
-                        let tan = curve.tangent_with_endpoints(t_mid, p0s, p0e);
+                        let t_mid = f64::midpoint(range0.0, range0.1);
+                        let mid = c0.evaluate(t_mid);
+                        let tan = c0.tangent(t_mid);
                         // The connect direction along a COAXIAL band is the
                         // shared axis (the radial-difference part is
                         // orthogonal to the tested radial normal), so use
@@ -730,8 +961,7 @@ fn try_loft_matching_curved_profiles(
                             .unwrap_or(false);
                         (surface, inward)
                     } else {
-                        let p1e = profs[s + 1][i].end;
-                        let Some(surf) = ruled_arc_surface(c0, p0s, p0e, c1, p1s, p1e) else {
+                        let Some(surf) = ruled_arc_surface(c0, range0, c1, range1) else {
                             return Ok(None);
                         };
                         let inward = surf
@@ -744,7 +974,7 @@ fn try_loft_matching_curved_profiles(
                             // flag (and downstream consumers never see a
                             // reversed-wound loft wall). Fall back to the
                             // reversal flag if the swapped build fails.
-                            match ruled_arc_surface(c1, p1s, p1e, c0, p0s, p0e) {
+                            match ruled_arc_surface(c1, range1, c0, range0) {
                                 Some(flipped) => (FaceSurface::Nurbs(flipped), false),
                                 None => (FaceSurface::Nurbs(surf), true),
                             }
@@ -760,11 +990,50 @@ fn try_loft_matching_curved_profiles(
     }
 
     // 4. Ring vertices, ring edges (curve-preserving), connecting edges.
+    for (profile_index, profile) in profs.iter().enumerate() {
+        for (edge_index, edge) in profile.iter().enumerate() {
+            if let Some(trim) = edge.trim {
+                for (label, parameter, expected) in [
+                    ("start", trim.0, edge.start),
+                    (
+                        "midpoint",
+                        f64::midpoint(trim.0, trim.1),
+                        edge.curve.evaluate_with_endpoints(
+                            f64::midpoint(trim.0, trim.1),
+                            edge.start,
+                            edge.end,
+                        ),
+                    ),
+                    ("end", trim.1, edge.end),
+                ] {
+                    let actual = edge
+                        .curve
+                        .evaluate_with_endpoints(parameter, edge.start, edge.end);
+                    let residual = (actual - expected).length();
+                    if !residual.is_finite() || residual > edge.tolerance {
+                        return Err(crate::OperationsError::InvalidInput {
+                            reason: format!(
+                                "loft profile {profile_index} edge {edge_index} {label} misses \
+                                 its authority by {residual} (tolerance {})",
+                                edge.tolerance
+                            ),
+                        });
+                    }
+                }
+            } else if !matches!(edge.curve, EdgeCurve::Line) {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "loft profile {profile_index} edge {edge_index} lacks parameter authority"
+                    ),
+                });
+            }
+        }
+    }
     let ring_vids: Vec<Vec<VertexId>> = profs
         .iter()
         .map(|p| {
             p.iter()
-                .map(|e| topo.add_vertex(Vertex::new(e.start, tol.linear)))
+                .map(|e| topo.add_vertex(Vertex::new(e.start, e.tolerance)))
                 .collect()
         })
         .collect();
@@ -772,15 +1041,24 @@ fn try_loft_matching_curved_profiles(
         .map(|s| {
             (0..n)
                 .map(|i| {
-                    topo.add_edge(Edge::new(
+                    let mut edge = Edge::with_tolerance(
                         ring_vids[s][i],
                         ring_vids[s][(i + 1) % n],
                         profs[s][i].curve.clone(),
-                    ))
+                        Some(profs[s][i].tolerance),
+                    );
+                    edge.set_trim(profs[s][i].trim);
+                    edge.strict_domain()
+                        .map_err(|error| crate::OperationsError::InvalidInput {
+                            reason: format!(
+                                "loft result ring has invalid parameter authority: {error}"
+                            ),
+                        })?;
+                    Ok(topo.add_edge(edge))
                 })
-                .collect()
+                .collect::<Result<Vec<_>, crate::OperationsError>>()
         })
-        .collect();
+        .collect::<Result<Vec<_>, crate::OperationsError>>()?;
     let conn_eids: Vec<Vec<EdgeId>> = (0..num_profiles - 1)
         .map(|s| {
             (0..n)
@@ -907,6 +1185,53 @@ fn rodrigues_rotation(axis: Vec3, angle: f64) -> remus_math::mat::Mat4 {
     ])
 }
 
+/// Mint one seam-anchored full-turn rim only after its curve authority agrees
+/// with the exact seam and antipode oracles.
+fn add_certified_coaxial_ring(
+    topo: &mut Topology,
+    center: Point3,
+    axis: Vec3,
+    radius: f64,
+    tolerance: f64,
+) -> Result<(VertexId, EdgeId), crate::OperationsError> {
+    let circle = remus_math::curves::Circle3D::new(center, axis, radius)
+        .map_err(crate::OperationsError::Math)?;
+    let seam = Point3::new(center.x() + radius, center.y(), center.z());
+    let range = (
+        circle.project(seam),
+        circle.project(seam) + std::f64::consts::TAU,
+    );
+    let antipode = center - (seam - center);
+    for (label, parameter, expected) in [
+        ("start seam", range.0, seam),
+        ("antipode", f64::midpoint(range.0, range.1), antipode),
+        ("end seam", range.1, seam),
+    ] {
+        let residual = (circle.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "coaxial loft ring {label} misses its exact oracle by {residual} mm"
+                ),
+            });
+        }
+    }
+
+    let seam_vertex = topo.add_vertex(Vertex::new(seam, tolerance));
+    let mut edge = Edge::with_tolerance(
+        seam_vertex,
+        seam_vertex,
+        EdgeCurve::Circle(circle),
+        Some(tolerance),
+    );
+    edge.set_trim(Some(range));
+    edge.strict_domain()
+        .map_err(|error| crate::OperationsError::InvalidInput {
+            reason: format!("coaxial loft ring has no authoritative full-turn domain: {error}"),
+        })?;
+    Ok((seam_vertex, topo.add_edge(edge)))
+}
+
 /// Build a watertight stack of analytic cylinder/cone bands along +Z.
 ///
 /// `axial[k]` is the z-height of ring `k`, `radii[k]` its circle radius.
@@ -922,14 +1247,24 @@ fn build_coaxial_band_stack(
     let tol = Tolerance::new();
     let z_axis = Vec3::new(0.0, 0.0, 1.0);
 
+    if axial.len() != radii.len()
+        || axial.len() < 2
+        || axial.iter().any(|value| !value.is_finite())
+        || radii
+            .iter()
+            .any(|radius| !radius.is_finite() || *radius <= 0.0)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "coaxial loft stack requires at least two finite positive-radius rings".into(),
+        });
+    }
+
     // One shared circle edge per ring (degenerate seam vertex at angle 0).
     let mut ring_edges = Vec::with_capacity(axial.len());
     let mut ring_seam_verts = Vec::with_capacity(axial.len());
     for (&z, &r) in axial.iter().zip(radii.iter()) {
-        let circle = remus_math::curves::Circle3D::new(Point3::new(0.0, 0.0, z), z_axis, r)
-            .map_err(crate::OperationsError::Math)?;
-        let seam_v = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, z), tol.linear));
-        let e = topo.add_edge(Edge::new(seam_v, seam_v, EdgeCurve::Circle(circle)));
+        let (seam_v, e) =
+            add_certified_coaxial_ring(topo, Point3::new(0.0, 0.0, z), z_axis, r, tol.linear)?;
         ring_edges.push(e);
         ring_seam_verts.push(seam_v);
     }
@@ -1256,12 +1591,21 @@ mod rounded_l_loft_tests {
         let mut t_in = Vec::new();
         let mut t_out = Vec::new();
         let mut centers = Vec::new();
+        let axis_sign = |value: f64| {
+            if value > 0.0 {
+                1.0
+            } else if value < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        };
         for k in 0..n {
             let (px, py, _) = vs[(k + n - 1) % n];
             let (vx, vy, concave) = vs[k];
             let (nx, ny, _) = vs[(k + 1) % n];
-            let din = ((vx - px).signum(), (vy - py).signum());
-            let dout = ((nx - vx).signum(), (ny - vy).signum());
+            let din = (axis_sign(vx - px), axis_sign(vy - py));
+            let dout = (axis_sign(nx - vx), axis_sign(ny - vy));
             let ti = (vx - din.0 * r, vy - din.1 * r);
             let to = (vx + dout.0 * r, vy + dout.1 * r);
             let c = if concave {

@@ -1232,9 +1232,16 @@ fn make_cylinder(
     .unwrap();
     let cyl_surface =
         CylindricalSurface::new(Point3::new(cx, cy, z0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+    let bottom_seam = bot_circle.project(Point3::new(cx + radius, cy, z0));
+    let top_seam = top_circle.project(Point3::new(cx + radius, cy, z0 + height));
 
-    let e_bot = topo.add_edge(Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot_circle)));
-    let e_top = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+    let mut bottom_rim =
+        Edge::with_tolerance(v_bot, v_bot, EdgeCurve::Circle(bot_circle), Some(1e-7));
+    bottom_rim.set_trim(Some((bottom_seam, bottom_seam + std::f64::consts::TAU)));
+    let e_bot = topo.add_edge(bottom_rim);
+    let mut top_rim = Edge::with_tolerance(v_top, v_top, EdgeCurve::Circle(top_circle), Some(1e-7));
+    top_rim.set_trim(Some((top_seam, top_seam + std::f64::consts::TAU)));
+    let e_top = topo.add_edge(top_rim);
     let e_seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
 
     let lateral_wire = Wire::new(
@@ -1311,12 +1318,17 @@ fn make_cylinder_with_seam_u(
     let v_bottom = topo.add_vertex(Vertex::new(bottom_circle.evaluate(seam_u), 1e-7));
     let v_top = topo.add_vertex(Vertex::new(top_circle.evaluate(seam_u), 1e-7));
 
-    let e_bottom = topo.add_edge(Edge::new(
+    let mut bottom_rim = Edge::with_tolerance(
         v_bottom,
         v_bottom,
         EdgeCurve::Circle(bottom_circle),
-    ));
-    let e_top = topo.add_edge(Edge::new(v_top, v_top, EdgeCurve::Circle(top_circle)));
+        Some(1e-7),
+    );
+    bottom_rim.set_trim(Some((seam_u, seam_u + std::f64::consts::TAU)));
+    let e_bottom = topo.add_edge(bottom_rim);
+    let mut top_rim = Edge::with_tolerance(v_top, v_top, EdgeCurve::Circle(top_circle), Some(1e-7));
+    top_rim.set_trim(Some((seam_u, seam_u + std::f64::consts::TAU)));
+    let e_top = topo.add_edge(top_rim);
     let e_seam = topo.add_edge(Edge::new(v_bottom, v_top, EdgeCurve::Line));
 
     let lateral_wire = topo.add_wire(

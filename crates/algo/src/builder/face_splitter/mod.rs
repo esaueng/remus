@@ -3049,9 +3049,19 @@ fn arrangement_regions_from_inputs(
                 let cd = inp.b - inp.a;
                 let cl2 = cd.dot(cd).max(1e-24);
                 let same_dir = (su - inp.a).dot(cd) / cl2 <= (eu - inp.a).dot(cd) / cl2;
+                // `sub_trim` accepts child endpoints in the input edge's wire
+                // traversal order.  Arrangement half-edges can request the
+                // opposite direction; derive the native child interval from
+                // the input order, then express traversal solely through the
+                // oriented-use flag below.
+                let trim = if same_dir {
+                    inp.edge.sub_trim(s3, e3)
+                } else {
+                    inp.edge.sub_trim(e3, s3)
+                };
                 return Some(OrientedPCurveEdge {
                     curve_3d: inp.edge.curve_3d.clone(),
-                    trim: inp.edge.sub_trim(s3, e3),
+                    trim,
                     pcurve,
                     start_uv: su,
                     end_uv: eu,
@@ -4005,8 +4015,13 @@ fn split_cylinder_band_by_arrangement(
                     .ok()?;
             let curve = EdgeCurve::Circle(circle);
             let forward = tu > fu;
+            let trim = if forward {
+                (s_uv.x(), e_uv.x())
+            } else {
+                (e_uv.x(), s_uv.x())
+            };
             Some(OrientedPCurveEdge {
-                trim: None,
+                trim: Some(trim),
                 curve_3d: curve,
                 pcurve,
                 start_uv: s_uv,

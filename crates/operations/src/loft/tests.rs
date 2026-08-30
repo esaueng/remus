@@ -1143,3 +1143,33 @@ fn loft_rounded_rect_nurbs_arcs_stays_analytic() {
         );
     }
 }
+
+#[test]
+fn ruled_circle_rails_follow_reversed_major_seam_authority() {
+    use std::f64::consts::FRAC_PI_2;
+
+    let c0 = remus_math::curves::Circle3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        2.0,
+    )
+    .unwrap();
+    let c1 = remus_math::curves::Circle3D::new(
+        Point3::new(0.75, -0.25, 3.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        3.0,
+    )
+    .unwrap();
+
+    for range in [(5.5, 5.5 + 3.0 * FRAC_PI_2), (5.5, 5.5 - 3.0 * FRAC_PI_2)] {
+        let surface = ruled_arc_surface(&c0, range, &c1, range).unwrap();
+        for (v, angle) in [
+            (0.0, range.0),
+            (0.5, f64::midpoint(range.0, range.1)),
+            (1.0, range.1),
+        ] {
+            assert!((surface.evaluate(0.0, v) - c0.evaluate(angle)).length() < 1e-9);
+            assert!((surface.evaluate(1.0, v) - c1.evaluate(angle)).length() < 1e-9);
+        }
+    }
+}
