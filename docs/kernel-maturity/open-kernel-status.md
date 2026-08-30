@@ -19,7 +19,7 @@ that flips them; agents do not flip them autonomously.
 | O1.2a Head-to-head protocol + runners | B | Pending | — |
 | O1.2b Head-to-head scenario set | B | Pending | — |
 | O1.2c Head-to-head results page | B | Pending | — |
-| O1.3a Fillet torture corpus + runner | A | Pending | — |
+| O1.3a Fillet torture corpus + runner | A | Complete — 10 named cases built-and-verified or transactionally refused with stable codes | [#139](https://github.com/esaueng/remus/pull/139) |
 | O1.3b Fillet torture publication | C | Pending | — |
 | O1.4a STEP validation properties | A | Pending | — |
 | O1.4b CAx-IF test-round manifest | B | Pending | — |
