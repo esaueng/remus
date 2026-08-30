@@ -2218,30 +2218,15 @@ fn algebraic_cylinder_cylinder(
     };
 
     if samples.iter().all(Option::is_some) {
-        // Equal-radius perpendicular cylinders whose axes cross: the exact
-        // Steinmetz arm replaces the 128-sample quadratic sweep with the two
-        // bisector-plane ellipses (the figure-eight seam). The sampled path
-        // below remains for every other configuration.
-        if let Some(exacts) = exact_cylinder_cylinder(c1, c2)? {
-            for exact in exacts {
-                let ExactIntersectionCurve::Ellipse(ellipse) = exact else {
-                    continue;
-                };
-                let n_samples = 33;
-                let mut pts: Vec<Point3> = Vec::with_capacity(n_samples + 1);
-                #[allow(clippy::cast_precision_loss)]
-                for i in 0..n_samples {
-                    let theta = TAU * i as f64 / (n_samples - 1) as f64;
-                    pts.push(crate::traits::ParametricCurve::evaluate(&ellipse, theta));
-                }
-                push_curve(&pts);
-            }
-            return Ok(Some(curves));
-        }
-
         // Cylinder 2 reaches every angle of cylinder 1 (equal radii, or an
         // axis separation small enough that the sweep never leaves it): the two
         // algebraic branches are each a closed loop over the full period.
+        // NOTE (issue 2.3): the exact Steinmetz arm `exact_cylinder_cylinder`
+        // below is proven and tested but deliberately NOT wired here yet —
+        // its figure-eight seam must be split at the pinch points before the
+        // boolean weave can consume it (the cross-drilled-bore corpus
+        // regresses on the unsplit emission). The wiring lands with the
+        // phase-FF integration stage.
         let mut curve_plus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
         let mut curve_minus: Vec<Point3> = Vec::with_capacity(n_samples + 1);
         for (i, roots) in samples.iter().enumerate() {
