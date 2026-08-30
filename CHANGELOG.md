@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **operations:** refuse overlapping linear, circular, and grid pattern
+  instances transactionally instead of returning a compound that double-counts
+  material.
+
 ## 2.130.0
 
 ### Licensing

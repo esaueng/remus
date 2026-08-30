@@ -627,4 +627,30 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         assert!(parsed[1]["error"].is_string());
     }
+
+    #[test]
+    fn linear_pattern_overlap_is_a_structured_typed_refusal() {
+        let mut k = BrepKernel::new();
+        let response = k.execute_batch_v2(
+            r#"[
+                {"op": "makeBox", "args": {"width": 20, "height": 20, "depth": 20}},
+                {"op": "linearPattern", "args": {
+                    "solid": 0, "dx": 1, "dy": 0, "dz": 0,
+                    "spacing": 10, "count": 2
+                }},
+                {"op": "volume", "args": {"solid": 0, "deflection": 0.1}}
+            ]"#,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let error = &parsed[1]["error"];
+        assert_eq!(error["code"], "operation_failed");
+        assert_eq!(error["category"], "unsupported");
+        assert_eq!(error["details"]["kernelCode"], "pattern_instances_overlap");
+        assert_eq!(error["details"]["firstInstance"], 0);
+        assert_eq!(error["details"]["secondInstance"], 1);
+        let overlap = error["details"]["overlapVolume"].as_f64().unwrap();
+        assert!((overlap - 4000.0).abs() <= 1e-6, "overlap volume {overlap}");
+        let source = parsed[2]["ok"].as_f64().unwrap();
+        assert!((source - 8000.0).abs() <= 1e-6, "source volume {source}");
+    }
 }
