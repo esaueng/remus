@@ -17,6 +17,17 @@ are living documents: update the relevant row in the same PR that changes
 its state. Before claiming anything: `gh pr list --state open` (R6).
 
 - **Drafted:** 2026-08-29, baseline `main` @ `3c232e8`.
+- **External K-S1 disposition — tangent-boss operand drop: done (PR #143,
+  2026-08-30).** The historical pre-fix sequence returned the unchanged plate
+  (19,200 instead of 21,713.274 cubic millimetres); current native and WASM
+  contracts retain the operand across the ratio/scale matrix, with exact-only
+  refusal and explicit approximation provenance where the exact path is unavailable.
+- **External K-S1 disposition — cross-drilled render/measure:** done in PR
+  #144. The OpenZCAD operation sequence now has a deterministic replay bundle,
+  independent volume oracles, ratio/scale display-mesh qualification, and a
+  non-vacuous WASM `meshQuality` contract. Follow-ups remain for the separate
+  face-orientation inconsistency and the sub-millimeter fine-mesh boundary
+  residue; neither is hidden by this disposition.
 
 ## §H Horizons
 
@@ -100,6 +111,16 @@ duplicate-edge merge key (proven unbuildable), mesh co-refinement
 watertightness (below the chase filter until a live case routes there),
 kumiko lattice family (probe only per the roadmap skill's engine-side
 question), v1-fillet API migration (product decision, owner's).
+
+## §D External roadmap dispositions
+
+- **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
+  circular, and grid patterns now refuse measured material overlap with the
+  typed `pattern_instances_overlap` contract and full rollback across native,
+  direct WASM, and `executeBatchV2` repro coverage. Touching and disjoint
+  instances remain supported across a 1e-3/1/1e3 scale sweep. Exact instance
+  fusing is intentionally deferred until the separately queued
+  pattern-through-fuse provenance work can make its evolution claims truthful.
 
 ## §S Session playbook
 

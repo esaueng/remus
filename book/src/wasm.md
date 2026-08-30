@@ -14,6 +14,15 @@ const volume = kernel.volume(box, 0.05);
 const inertia = kernel.inertiaTensor(box); // row-major 3x3, about the CoM
 ```
 
+`meshQuality(solid, deflection, angularTolerance?)` inspects the same
+tessellation controls as `tessellateSolid` and `tessellateSolidGrouped`.
+Pass the render/export angular tolerance when checking that mesh; otherwise
+both methods use the historical `0.35` radian default. The JSON result contains
+`triangleCount`, `boundaryEdges`, `nonManifoldEdges`, `eulerCharacteristic`,
+and `isWatertight`. Watertightness requires at least one non-degenerate
+triangle, so an empty mesh never passes vacuously. Batch `meshQuality` accepts
+the same optional `angularTolerance` field.
+
 JavaScript receives opaque numeric handles. A handle is valid only for the
 kernel instance that created it. Methods throw JavaScript errors for invalid
 input or failed kernel operations; do not continue with a missing handle.
@@ -34,6 +43,13 @@ with a machine code.
 Call `executeBatchV2` when code needs to branch on failures. It accepts the
 same input and returns the same bare array and success envelopes, but errors
 are structured:
+
+`booleanWithQuality` is available in both batch versions and mirrors the
+direct method. Its args are `operation`, `solidA`, `solidB`, and optional
+`exactOnly`; success returns `{solid, quality, deflection?}`. With
+`exactOnly: true`, a configuration needing mesh fallback returns an
+`operation_failed` envelope whose category is `quality_refused` and whose
+`details.kernelCode` is `exact_only_unattainable`.
 
 ```ts
 type BatchResultV2 =
@@ -86,10 +102,10 @@ Each error also carries `category`, the kernel-wide coarse classification
 from the failure taxonomy (`invalid_input`, `invalid_topology`,
 `unsupported`, `nonconvergence`, `resource_limit`, `tolerance_violation`,
 `quality_refused`, `cancelled`, `internal`). Today's ten codes project onto
-`invalid_input`, `invalid_topology`, `resource_limit`, and `internal`; the
-remaining categories are reserved for codes that arrive with the operation
-contract. Branch on `category` for coarse handling and on `code` for
-specific cases.
+`invalid_input`, `invalid_topology`, `resource_limit`, `quality_refused`, and
+`internal`; the remaining categories are reserved for codes that arrive with
+the operation contract. Branch on `category` for coarse handling and on
+`code` for specific cases.
 
 When the failure originated in a typed native error with a kernel registry
 entry, `details.kernelCode` carries that fine-grained stable code (e.g.

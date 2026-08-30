@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "name": "thin-wall-coaxial-blind-bore",
+  "description": "K-S1 regression: a blind coaxial bore in the bottle-cap thin-wall band must keep its exact closed-form volume, validate, and tessellate as a watertight closed mesh.",
+  "revision": "6ba6946d",
+  "operations": [
+    {"op": "makeCylinder", "args": {"radius": 32.9, "height": 25.0}},
+    {"op": "makeCylinder", "args": {"radius": 30.4, "height": 21.5}},
+    {"op": "transform", "args": {"solid": 1, "matrix": [1,0,0,0, 0,1,0,0, 0,0,1,3.5, 0,0,0,1]}},
+    {"op": "cut", "args": {"solidA": 0, "solidB": 1}},
+    {"op": "volume", "args": {"solid": 2, "deflection": 0.05}},
+    {"op": "validateSolid", "args": {"solid": 2}},
+    {"op": "solidEdges", "args": {"solid": 2}},
+    {"op": "meshQuality", "args": {"solid": 2, "deflection": 0.05}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"ok": 1},
+    null,
+    {"ok": 2},
+    {"okNear": 22590.595869360004, "tol": 1e-6},
+    {"ok": 0},
+    {"ok": [6, 7, 8, 9, 10, 11]},
+    {"ok": {"boundaryEdges": 0, "nonManifoldEdges": 0, "eulerCharacteristic": 2, "isWatertight": true, "triangleCount": 444}}
+  ]
+}
