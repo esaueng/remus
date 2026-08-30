@@ -90,6 +90,8 @@ same PR that changes its state. The DEFERRED items formerly tracked only in
 this file are now §B rows there; this file remains authoritative for
 TERMINAL/REFUTED history and the campaign lessons.
 
+- O1.1a gauntlet pipeline — BLOCKED 2026-08-29: mandatory workspace registration changes `Cargo.lock`, claimed by open PR #131; see `docs/kernel-maturity/open-kernel-status.md`.
+
 ## The priority filters (rules with reasons)
 
 1. **Chase operations that RE-CREATE an existing analytic surface type. Do NOT chase
