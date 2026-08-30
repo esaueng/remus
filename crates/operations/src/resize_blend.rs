@@ -1338,6 +1338,57 @@ fn oriented_replacement(
     ))
 }
 
+/// Add the exact full-circle edge recovered where two periodic supports meet.
+///
+/// The explicit reference direction places the seam vertex at parameter zero,
+/// so one positive turn is the authoritative traversal.  Certify the two seam
+/// evaluations and the antipodal midpoint before the edge enters topology.
+fn add_certified_closed_circle_edge(
+    topo: &mut Topology,
+    seam_vertex: remus_topology::vertex::VertexId,
+    circle: Circle3D,
+) -> Result<EdgeId, OperationsError> {
+    let vertex = topo.vertex(seam_vertex)?;
+    let seam = vertex.point();
+    let vertex_tolerance = vertex.tolerance();
+    if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+        return Err(reconstruction(format!(
+            "sharp circle seam has invalid tolerance {vertex_tolerance}"
+        )));
+    }
+    let tolerance = vertex_tolerance.max(Tolerance::new().linear);
+
+    let range = (0.0, std::f64::consts::TAU);
+    let antipode = circle.center() - circle.u_axis() * circle.radius();
+    for (label, parameter, expected) in [
+        ("start seam", range.0, seam),
+        ("antipodal midpoint", std::f64::consts::PI, antipode),
+        ("end seam", range.1, seam),
+    ] {
+        let residual = (circle.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(reconstruction(format!(
+                "sharp circle {label} misses its exact oracle by {residual} mm \
+                 (tolerance {tolerance} mm)"
+            )));
+        }
+    }
+
+    let mut edge = Edge::with_tolerance(
+        seam_vertex,
+        seam_vertex,
+        EdgeCurve::Circle(circle),
+        Some(tolerance),
+    );
+    edge.set_trim(Some(range));
+    edge.strict_domain().map_err(|error| {
+        reconstruction(format!(
+            "sharp circle does not have an exportable full-turn domain: {error}"
+        ))
+    })?;
+    Ok(topo.add_edge(edge))
+}
+
 #[allow(clippy::too_many_lines)]
 fn heal_plane_cylinder_band(
     topo: &mut Topology,
@@ -1451,11 +1502,7 @@ fn heal_plane_cylinder_band(
     )
     .map_err(|error| reconstruction(format!("sharp circle construction failed: {error}")))?;
     let circle_normal = circle.normal();
-    let sharp_edge = topo.add_edge(Edge::new(
-        sharp_vertex,
-        sharp_vertex,
-        EdgeCurve::Circle(circle),
-    ));
+    let sharp_edge = add_certified_closed_circle_edge(topo, sharp_vertex, circle)?;
 
     let plane_oriented = oriented_replacement(topo, plane_wire[0], sharp_edge, circle_normal)?;
     let plane_new_wire = topo.add_wire(Wire::new(vec![plane_oriented], true)?);
@@ -1846,11 +1893,7 @@ fn heal_cylinder_cone_band(
     let sharp_vertex = topo.add_vertex(Vertex::new(sharp_point, Tolerance::new().linear));
     let circle = Circle3D::new_with_ref(center, axis, cylinder_surface.radius(), direction)
         .map_err(|error| reconstruction(format!("sharp circle failed: {error}")))?;
-    let sharp_edge = topo.add_edge(Edge::new(
-        sharp_vertex,
-        sharp_vertex,
-        EdgeCurve::Circle(circle),
-    ));
+    let sharp_edge = add_certified_closed_circle_edge(topo, sharp_vertex, circle)?;
     rebuild_closed_periodic_support(
         topo,
         cylinder,
@@ -2030,9 +2073,45 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn recovered_closed_circle_has_certified_full_turn_authority() {
+        let mut topo = Topology::new();
+        let center = remus_math::vec::Point3::new(1.0e6, -2.0e6, 3.0e6);
+        let circle = Circle3D::new_with_ref(
+            center,
+            Vec3::new(0.0, 0.0, 1.0),
+            25.0,
+            Vec3::new(0.6, 0.8, 0.0),
+        )
+        .unwrap();
+        let seam = circle.evaluate(0.0);
+        let seam_vertex = topo.add_vertex(Vertex::new(seam, Tolerance::new().linear));
+
+        let edge_id = add_certified_closed_circle_edge(&mut topo, seam_vertex, circle).unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let range = edge.strict_domain().unwrap();
+        assert_eq!(range.0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(range.1.to_bits(), std::f64::consts::TAU.to_bits());
+
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("expected exact circle");
+        };
+        let antipode = circle.center() - circle.u_axis() * circle.radius();
+        for (parameter, expected) in [
+            (range.0, seam),
+            (std::f64::consts::PI, antipode),
+            (range.1, seam),
+        ] {
+            assert!(
+                (circle.evaluate(parameter) - expected).length() <= Tolerance::new().linear,
+                "parameter {parameter} missed its closed-form circle oracle"
+            );
+        }
+    }
 
     #[test]
     fn sweep_exemption_only_includes_actual_boundary_carriers() {

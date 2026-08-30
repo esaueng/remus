@@ -214,9 +214,9 @@ impl BrepKernel {
 
     /// Export a solid as a JSON-encoded BREP representation.
     ///
-    /// Returns a JSON string with vertices, edges (with curve parameters),
-    /// and faces (with surface parameters). This is a remus-specific format
-    /// that preserves all analytic geometry types.
+    /// Returns a JSON string with vertices, edges (with curve parameters and
+    /// authoritative trims), and faces (with surface parameters). This is a
+    /// remus-specific format that preserves all analytic geometry types.
     #[wasm_bindgen(js_name = "toBrepJson")]
     #[allow(clippy::too_many_lines)]
     pub fn to_brep_json(&self, solid: u32) -> Result<JsValue, JsError> {
@@ -290,6 +290,7 @@ impl BrepKernel {
                     "id": edge_id_to_u32(eid),
                     "curveType": curve_type,
                     "curveParams": curve_params,
+                    "trim": e.trim().map(|(start, end)| [start, end]),
                     "startVertex": vertex_id_to_u32(e.start()),
                     "endVertex": vertex_id_to_u32(e.end()),
                 }))

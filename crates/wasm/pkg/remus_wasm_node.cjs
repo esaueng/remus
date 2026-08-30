@@ -6368,9 +6368,9 @@ class BrepKernel {
     /**
      * Export a solid as a JSON-encoded BREP representation.
      *
-     * Returns a JSON string with vertices, edges (with curve parameters),
-     * and faces (with surface parameters). This is a remus-specific format
-     * that preserves all analytic geometry types.
+     * Returns a JSON string with vertices, edges (with curve parameters and
+     * authoritative trims), and faces (with surface parameters). This is a
+     * remus-specific format that preserves all analytic geometry types.
      * @param {number} solid
      * @returns {any}
      */
