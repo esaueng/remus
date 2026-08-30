@@ -101,7 +101,9 @@ fn wall_face(flags: Flags) -> FaceContribution {
     // The bore rim: one closed circle edge on a single seam vertex.
     let circle = Circle3D::new(Point3::new(CX, Y, CZ), Vec3::new(0.0, -1.0, 0.0), R).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
-    let rim = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+    let mut rim_edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+    rim_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let rim = topo.add_edge(rim_edge);
     let inner = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
 
     let face = topo.add_face(Face::new(

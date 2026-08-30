@@ -309,7 +309,9 @@ fn compute_pcurve_deviation(
     let face = topo.face(face_id)?;
     let surface = face.surface();
 
-    let (t0_3d, t1_3d) = edge.domain_with_endpoints(start_pos, end_pos);
+    let (t0_3d, t1_3d) = edge
+        .strict_domain()
+        .map_err(crate::error::fix_edge_domain)?;
     let t0_pc = pcurve.t_start();
     let t1_pc = pcurve.t_end();
 
@@ -441,7 +443,9 @@ mod repair_budget_tests {
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
         let p0 = ParametricCurve::evaluate(&circle, 0.0);
         let v = topo.add_vertex(Vertex::new(p0, 1e-7));
-        let rim = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let mut rim_edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        rim_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let rim = topo.add_edge(rim_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
         let face = topo.add_face(Face::new(
             wire,

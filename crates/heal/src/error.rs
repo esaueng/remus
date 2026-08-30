@@ -41,3 +41,15 @@ pub enum HealError {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 }
+
+pub(crate) fn analysis_edge_domain(error: remus_topology::edge::EdgeDomainError) -> HealError {
+    HealError::AnalysisFailed(error.to_string())
+}
+
+pub(crate) fn fix_edge_domain(error: remus_topology::edge::EdgeDomainError) -> HealError {
+    HealError::FixFailed(error.to_string())
+}
+
+pub(crate) fn upgrade_edge_domain(error: remus_topology::edge::EdgeDomainError) -> HealError {
+    HealError::UpgradeFailed(error.to_string())
+}
