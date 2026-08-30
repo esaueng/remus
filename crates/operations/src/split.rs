@@ -867,6 +867,54 @@ fn close_gap(
     })
 }
 
+/// Add a square cylinder section as one seam-anchored full circle after its
+/// start, antipode, and end agree with the cut construction.
+fn add_certified_section_ring(
+    topo: &mut Topology,
+    seam_vertex: VertexId,
+    circle: Circle3D,
+    radial: Vec3,
+) -> Result<EdgeId, OperationsError> {
+    let vertex = topo.vertex(seam_vertex)?;
+    let seam = vertex.point();
+    let vertex_tolerance = vertex.tolerance();
+    if !vertex_tolerance.is_finite() || vertex_tolerance.is_sign_negative() {
+        return Err(unsupported(format!(
+            "the section ring seam has invalid vertex tolerance {vertex_tolerance}"
+        )));
+    }
+    let tolerance = vertex_tolerance.max(Tolerance::new().linear);
+    let range = (0.0, std::f64::consts::TAU);
+    let antipode = circle.center() - radial;
+    for (label, parameter, expected) in [
+        ("start seam", range.0, seam),
+        ("antipode", f64::midpoint(range.0, range.1), antipode),
+        ("end seam", range.1, seam),
+    ] {
+        let residual = (circle.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(unsupported(format!(
+                "the section ring {label} misses its exact oracle by {residual} mm \
+                 (tolerance {tolerance} mm)"
+            )));
+        }
+    }
+
+    let mut edge = Edge::with_tolerance(
+        seam_vertex,
+        seam_vertex,
+        EdgeCurve::Circle(circle),
+        Some(tolerance),
+    );
+    edge.set_trim(Some(range));
+    edge.strict_domain().map_err(|error| {
+        unsupported(format!(
+            "the section ring has no authoritative full-turn domain: {error}"
+        ))
+    })?;
+    Ok(topo.add_edge(edge))
+}
+
 /// The circle the cutting plane cuts out of a cylindrical wall, standing in
 /// for the rim the cut dropped: same axis, same radius, passing through the
 /// point where the wall's seam met the plane.
@@ -922,7 +970,7 @@ fn section_ring(
     // single vertex really is where its curve starts. Keeping the rim's own
     // axis keeps the section turning the same way the rim did.
     let circle = Circle3D::new_with_ref(center, rim.normal(), rim.radius(), radial)?;
-    Ok(topo.add_edge(Edge::new(through, through, EdgeCurve::Circle(circle))))
+    add_certified_section_ring(topo, through, circle, radial)
 }
 
 /// Build the planar cap that closes one half.

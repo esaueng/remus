@@ -41,7 +41,7 @@ use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
-use remus_topology::vertex::Vertex;
+use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::IoError;
@@ -87,7 +87,7 @@ pub fn read_step_with_limits(
     let snapshot = topo.clone();
     let result = (|| {
         let solids = {
-            let mut builder = StepBuilder::new(topo, &entities, units);
+            let mut builder = StepBuilder::new(topo, &entities, units)?;
             builder.build_all_solids()?
         };
         for &solid_id in &solids {
@@ -422,34 +422,35 @@ fn unit_si_factor(
 
     if let Some(group) = balanced_group_after(&text, "CONVERSION_BASED_UNIT") {
         // CONVERSION_BASED_UNIT(<name>, #measure)
-        let measure_ref =
-            parse_refs(group)
-                .first()
-                .copied()
-                .ok_or_else(|| IoError::ParseError {
-                    reason: format!(
-                        "CONVERSION_BASED_UNIT #{unit_ref} has no conversion factor reference"
-                    ),
-                })?;
+        let slots = split_attr_slots(group);
+        let measure_ref = required_reference_attribute(
+            "CONVERSION_BASED_UNIT",
+            unit_ref,
+            &slots,
+            1,
+            "conversion_factor",
+        )?;
         let measure = entities
             .get(&measure_ref)
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("conversion factor entity #{measure_ref} not found"),
             })?;
         let measure_attrs = measure.attrs.clone();
-        let value = parse_floats(&measure_attrs)?
-            .first()
-            .copied()
-            .ok_or_else(|| IoError::ParseError {
-                reason: format!("MEASURE_WITH_UNIT #{measure_ref} has no numeric value"),
-            })?;
-        let base_ref =
-            parse_refs(&measure_attrs)
-                .first()
-                .copied()
-                .ok_or_else(|| IoError::ParseError {
-                    reason: format!("MEASURE_WITH_UNIT #{measure_ref} has no unit reference"),
-                })?;
+        let measure_slots = split_attr_slots(&measure_attrs);
+        let value = required_typed_measure_attribute(
+            "MEASURE_WITH_UNIT",
+            measure_ref,
+            &measure_slots,
+            0,
+            "value_component",
+        )?;
+        let base_ref = required_reference_attribute(
+            "MEASURE_WITH_UNIT",
+            measure_ref,
+            &measure_slots,
+            1,
+            "unit_component",
+        )?;
         let (base_factor, base_name) = unit_si_factor(entities, base_ref, depth + 1)?;
         return Ok((value * base_factor, base_name));
     }
@@ -524,7 +525,10 @@ fn resolve_unit_scale(
             reason: format!("{MARKER} #{ctx_id} has no unit list"),
         })?;
 
-        for unit_ref in parse_refs(group) {
+        let unit_refs = exact_reference_list(group).map_err(|reason| IoError::ParseError {
+            reason: format!("{MARKER} #{ctx_id} has an invalid unit list: {reason}"),
+        })?;
+        for unit_ref in unit_refs {
             let unit_entity = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
                 reason: format!("unit entity #{unit_ref} not found"),
             })?;
@@ -674,6 +678,38 @@ struct PeriodicUvDomain {
     v_scale: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DeclaredCurveTrim {
+    trim_1: Point3,
+    trim_2: Point3,
+    parameters: Option<(f64, f64)>,
+    periodic_span: Option<f64>,
+    /// Whether the imported NURBS carrier mirrors the basis-curve parameter
+    /// named by `parameters`. This composes `TRIMMED_CURVE.sense_agreement`
+    /// with `EDGE_CURVE.same_sense` without re-projecting a declared bound.
+    nurbs_parameters_reversed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrimMaster {
+    Cartesian,
+    Parameter,
+    Unspecified,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedTrimSelect {
+    point_ref: Option<u64>,
+    parameter: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedTrimmedCurve {
+    trim_1: ParsedTrimSelect,
+    trim_2: ParsedTrimSelect,
+    master: TrimMaster,
+}
+
 impl PeriodicUvDomain {
     fn scale(self, point: Point2) -> Point2 {
         Point2::new(point.x() * self.u_scale, point.y() * self.v_scale)
@@ -694,6 +730,12 @@ struct StepBuilder<'a> {
     /// Conversion from the file's declared units into millimetres/radians,
     /// applied to every length- and angle-valued quantity as it is read.
     units: UnitScale,
+    /// Largest uncertainty explicitly declared by the STEP representation,
+    /// converted to millimetres and floored at the kernel tolerance.
+    model_tolerance_cap: f64,
+    /// Per-solid tolerance caps resolved through the shape representation
+    /// that owns each B-Rep item.
+    brep_tolerance_caps: HashMap<u64, f64>,
     vertex_cache: HashMap<u64, remus_topology::vertex::VertexId>,
     edge_cache: HashMap<u64, remus_topology::edge::EdgeId>,
 }
@@ -703,14 +745,17 @@ impl<'a> StepBuilder<'a> {
         topo: &'a mut Topology,
         entities: &'a HashMap<u64, StepEntity>,
         units: UnitScale,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, IoError> {
+        let brep_tolerance_caps = representation_model_tolerances(entities)?;
+        Ok(Self {
             topo,
             entities,
             units,
+            model_tolerance_cap: Tolerance::new().linear,
+            brep_tolerance_caps,
             vertex_cache: HashMap::new(),
             edge_cache: HashMap::new(),
-        }
+        })
     }
 
     fn build_all_solids(&mut self) -> Result<Vec<SolidId>, IoError> {
@@ -726,6 +771,20 @@ impl<'a> StepBuilder<'a> {
 
         let mut solid_ids = Vec::new();
         for brep_id in brep_ids {
+            self.model_tolerance_cap =
+                self.brep_tolerance_caps
+                    .get(&brep_id)
+                    .copied()
+                    .ok_or_else(|| IoError::ParseError {
+                        reason: format!(
+                            "solid B-Rep #{brep_id} has no unambiguous shape-representation context"
+                        ),
+                    })?;
+            // A topology item reused by two representations must be rebuilt
+            // under the owning representation's cap, never inherited from
+            // whichever solid happened to be visited first.
+            self.vertex_cache.clear();
+            self.edge_cache.clear();
             let solid_id = self.build_solid(brep_id)?;
             solid_ids.push(solid_id);
         }
@@ -741,20 +800,68 @@ impl<'a> StepBuilder<'a> {
     /// hollow part into a filled one with no diagnostic.
     fn build_solid(&mut self, brep_id: u64) -> Result<SolidId, IoError> {
         let entity = self.get_entity(brep_id)?;
-        let with_voids =
-            entity.entity_type == "BREP_WITH_VOIDS" || entity.attrs.contains("BREP_WITH_VOIDS");
         let attrs = entity.attrs.clone();
-        let refs = parse_refs(&attrs);
-
-        let mut refs = refs.into_iter();
-        let shell_ref = refs.next().ok_or_else(|| IoError::ParseError {
-            reason: format!("solid B-Rep #{brep_id} missing its outer shell reference"),
-        })?;
+        let is_complex = entity.entity_type.is_empty();
+        let complex_manifold = is_complex
+            .then(|| find_exact_composite_component(&attrs, "MANIFOLD_SOLID_BREP"))
+            .flatten();
+        let complex_voids = is_complex
+            .then(|| find_exact_composite_component(&attrs, "BREP_WITH_VOIDS"))
+            .flatten();
+        let with_voids = entity.entity_type == "BREP_WITH_VOIDS" || complex_voids.is_some();
+        let manifold_attrs = if is_complex {
+            complex_manifold.ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "complex solid B-Rep #{brep_id} has no MANIFOLD_SOLID_BREP component"
+                ),
+            })?
+        } else {
+            attrs.as_str()
+        };
+        let manifold_slots = split_attr_slots(manifold_attrs);
+        // A decomposed complex leaf carries only the attribute introduced by
+        // MANIFOLD_SOLID_BREP (`#outer`). Some writers flatten inherited
+        // attributes into that leaf (`'name', #outer`), matching a simple
+        // instance. Both are positional within the component itself.
+        let outer_slot = usize::from(matches!(manifold_slots.first(), Some(AttrSlot::Text(_))));
+        let shell_ref = required_reference_attribute(
+            "MANIFOLD_SOLID_BREP",
+            brep_id,
+            &manifold_slots,
+            outer_slot,
+            "outer shell",
+        )?;
         let shell_id = self.build_shell(shell_ref, false)?;
 
         let mut inner_shells = Vec::new();
         if with_voids {
-            for void_ref in refs {
+            let void_attrs = complex_voids.unwrap_or(attrs.as_str());
+            let void_slots = split_attr_slots(void_attrs);
+            // The decomposed subtype leaf carries only `voids`; a flattened
+            // leaf repeats the inherited name and outer-shell attributes.
+            let void_slot = if matches!(void_slots.first(), Some(AttrSlot::Text(_))) {
+                2
+            } else {
+                0
+            };
+            let void_refs = match void_slots.get(void_slot) {
+                Some(AttrSlot::List(list)) => {
+                    exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                        reason: format!(
+                            "BREP_WITH_VOIDS #{brep_id} has an invalid void-shell list: {reason}"
+                        ),
+                    })?
+                }
+                other => {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "BREP_WITH_VOIDS #{brep_id} needs a void-shell list, got {}",
+                            describe_slot(other)
+                        ),
+                    });
+                }
+            };
+            for void_ref in void_refs {
                 inner_shells.push(self.build_shell(void_ref, false)?);
             }
             if inner_shells.is_empty() {
@@ -765,7 +872,14 @@ impl<'a> StepBuilder<'a> {
         }
 
         let solid_id = self.topo.add_solid(Solid::new(shell_id, inner_shells));
-        if let Some(name) = leading_name(&self.get_entity(brep_id)?.attrs) {
+        let name = if is_complex {
+            find_exact_composite_component(&attrs, "REPRESENTATION_ITEM")
+                .and_then(leading_name)
+                .or_else(|| leading_name(manifold_attrs))
+        } else {
+            leading_name(&attrs)
+        };
+        if let Some(name) = name {
             let attributes = remus_topology::attributes::EntityAttributes {
                 name: Some(name),
                 ..Default::default()
@@ -802,21 +916,42 @@ impl<'a> StepBuilder<'a> {
                 });
             }
             let attrs = entity.attrs.clone();
-            let reversed = orientation_is_reversed(&attrs);
-            let base = parse_refs(&attrs)
-                .first()
-                .copied()
-                .ok_or_else(|| IoError::ParseError {
-                    reason: format!(
-                        "ORIENTED_CLOSED_SHELL #{shell_ref} missing its closed shell reference"
-                    ),
-                })?;
+            let slots = split_attr_slots(&attrs);
+            let base = required_reference_attribute(
+                "ORIENTED_CLOSED_SHELL",
+                shell_ref,
+                &slots,
+                2,
+                "closed_shell_element",
+            )?;
+            let reversed = !required_logical_attribute(
+                "ORIENTED_CLOSED_SHELL",
+                shell_ref,
+                &slots,
+                3,
+                "orientation",
+            )?;
             shell_ref = base;
             flip = flip != reversed;
         };
 
         let attrs = entity.attrs.clone();
-        let face_refs = parse_list_refs(&attrs);
+        let slots = split_attr_slots(&attrs);
+        let face_refs = match slots.get(1) {
+            Some(AttrSlot::List(list)) => {
+                exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                    reason: format!("shell #{shell_ref} has an invalid face list: {reason}"),
+                })?
+            }
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "shell #{shell_ref} needs a face list, got {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
 
         let mut face_ids = Vec::new();
         for face_ref in face_refs {
@@ -838,13 +973,27 @@ impl<'a> StepBuilder<'a> {
         flip: bool,
     ) -> Result<remus_topology::face::FaceId, IoError> {
         let attrs = self.get_entity(face_ref)?.attrs.clone();
-        // Check for reversed face orientation (.F. flag at end of ADVANCED_FACE),
-        // then apply the enclosing shell's orientation on top of it.
-        let orient_tail = attrs.trim_end_matches(')').trim();
-        let surface_reversed = orient_tail.ends_with(".F.") || orient_tail.ends_with(".FALSE.");
+        let slots = split_attr_slots(&attrs);
+        let surface_reversed =
+            !required_logical_attribute("ADVANCED_FACE", face_ref, &slots, 3, "same_sense")?;
         let face_reversed = surface_reversed != flip;
-        let all_refs = parse_refs(&attrs);
-        let list_refs = parse_list_refs(&attrs);
+        let list_refs = match slots.get(1) {
+            Some(AttrSlot::List(list)) => {
+                exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} has an invalid bound list: {reason}"
+                    ),
+                })?
+            }
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ADVANCED_FACE #{face_ref} needs a bound list, got {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
 
         ensure_limit(
             "STEP bounds per ADVANCED_FACE",
@@ -852,16 +1001,8 @@ impl<'a> StepBuilder<'a> {
             MAX_FACE_BOUND_CANDIDATES,
         )?;
 
-        // Surface ref is the last #ref that's not in the bounds list.
-        let list_set: std::collections::HashSet<u64> = list_refs.iter().copied().collect();
-        let surface_ref = all_refs
-            .iter()
-            .rev()
-            .find(|r| !list_set.contains(r))
-            .copied()
-            .ok_or_else(|| IoError::ParseError {
-                reason: format!("ADVANCED_FACE #{face_ref} missing surface reference"),
-            })?;
+        let surface_ref =
+            required_reference_attribute("ADVANCED_FACE", face_ref, &slots, 2, "face_geometry")?;
 
         let surface = self.build_surface(surface_ref)?;
 
@@ -871,13 +1012,14 @@ impl<'a> StepBuilder<'a> {
             let bound_entity = self.get_entity(bound_ref)?;
             let is_outer = bound_entity.entity_type == "FACE_OUTER_BOUND";
             let bound_attrs = bound_entity.attrs.clone();
-            let bound_refs = parse_refs(&bound_attrs);
-            let loop_ref = bound_refs
-                .first()
-                .copied()
-                .ok_or_else(|| IoError::ParseError {
-                    reason: format!("face bound #{bound_ref} has no loop reference"),
-                })?;
+            let bound_slots = split_attr_slots(&bound_attrs);
+            let loop_ref = required_reference_attribute(
+                &bound_entity.entity_type,
+                bound_ref,
+                &bound_slots,
+                1,
+                "bound",
+            )?;
 
             // STEP stores an EDGE_LOOP in the face's topological sense,
             // while remus stores wire directions relative to the
@@ -894,7 +1036,13 @@ impl<'a> StepBuilder<'a> {
             // `flip` belongs to an enclosing ORIENTED_CLOSED_SHELL and
             // must not participate here: that wrapper reverses the whole
             // face after its own bounds have been interpreted.
-            let bound_reversed = orientation_is_reversed(&bound_attrs);
+            let bound_reversed = !required_logical_attribute(
+                &bound_entity.entity_type,
+                bound_ref,
+                &bound_slots,
+                2,
+                "orientation",
+            )?;
             let wire = self.build_edge_loop(loop_ref, surface_reversed != bound_reversed)?;
             candidates.push(FaceBoundCandidate {
                 bound_ref,
@@ -1007,13 +1155,23 @@ impl<'a> StepBuilder<'a> {
             if !edge.is_closed() {
                 continue;
             }
-            let reversed = match edge.curve() {
-                EdgeCurve::Circle(circle) => EdgeCurve::Circle(circle.reversed()),
-                EdgeCurve::Ellipse(ellipse) => EdgeCurve::Ellipse(ellipse.reversed()),
-                EdgeCurve::NurbsCurve(nurbs) => EdgeCurve::NurbsCurve(nurbs.reversed()),
-                EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => continue,
-            };
-            self.topo.edge_mut(edge_id)?.set_curve(reversed);
+            if matches!(
+                edge.curve(),
+                EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)
+            ) {
+                continue;
+            }
+            let start = self.topo.vertex(edge.start())?;
+            let end = self.topo.vertex(edge.end())?;
+            let vertex_tolerance = start.tolerance().max(end.tolerance());
+            let replacement = reversed_closed_edge_with_authority(
+                face_ref,
+                edge,
+                start.point(),
+                end.point(),
+                vertex_tolerance,
+            )?;
+            *self.topo.edge_mut(edge_id)? = replacement;
         }
 
         Ok(())
@@ -1653,17 +1811,9 @@ impl<'a> StepBuilder<'a> {
             return Ok(vec![start, end]);
         }
 
-        let (t_start, t_end) = edge.trim().unwrap_or_else(|| match edge.curve() {
-            EdgeCurve::Circle(circle) if edge.is_closed() => {
-                let start_parameter = circle.project(start);
-                (start_parameter, start_parameter + std::f64::consts::TAU)
-            }
-            EdgeCurve::Ellipse(ellipse) if edge.is_closed() => {
-                let start_parameter = ellipse.project(start);
-                (start_parameter, start_parameter + std::f64::consts::TAU)
-            }
-            _ => edge.domain_with_endpoints(start, end),
-        });
+        let (t_start, t_end) = edge.strict_domain().map_err(|error| IoError::ParseError {
+            reason: format!("FACE_BOUND edge has no authoritative curve range: {error}"),
+        })?;
         let parameter_scale = t_start.abs().max(t_end.abs()).max(1.0);
         if !(t_start.is_finite() && t_end.is_finite())
             || (t_end - t_start).abs() <= 16.0 * f64::EPSILON * parameter_scale
@@ -1722,23 +1872,29 @@ impl<'a> StepBuilder<'a> {
 
         match entity_type.as_str() {
             "PLANE" => {
-                let refs = parse_refs(&attrs);
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("PLANE #{surface_ref} missing axis reference"),
-                })?;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref =
+                    required_reference_attribute("PLANE", surface_ref, &slots, 1, "position")?;
                 let (origin, normal, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let d = normal.dot(Vec3::new(origin.x(), origin.y(), origin.z()));
                 Ok(FaceSurface::Plane { normal, d })
             }
             "CYLINDRICAL_SURFACE" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CYLINDRICAL_SURFACE #{surface_ref} missing axis"),
-                })?;
-                let radius = floats.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CYLINDRICAL_SURFACE #{surface_ref} missing radius"),
-                })?;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref = required_reference_attribute(
+                    "CYLINDRICAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    1,
+                    "position",
+                )?;
+                let radius = required_real_attribute(
+                    "CYLINDRICAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    2,
+                    "radius",
+                )?;
                 let radius = radius * self.units.length;
                 let (origin, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let cyl = remus_math::surfaces::CylindricalSurface::new(origin, axis, radius)
@@ -1748,11 +1904,14 @@ impl<'a> StepBuilder<'a> {
                 Ok(FaceSurface::Cylinder(cyl))
             }
             "CONICAL_SURFACE" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CONICAL_SURFACE #{surface_ref} missing axis"),
-                })?;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref = required_reference_attribute(
+                    "CONICAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    1,
+                    "position",
+                )?;
                 // STEP: CONICAL_SURFACE('', #axis, base_radius, semi_angle)
                 // The semi angle is a plane-angle measure, so it is stated in
                 // whatever PLANE_ANGLE_UNIT the file declared (radians for
@@ -1763,23 +1922,30 @@ impl<'a> StepBuilder<'a> {
                 // plane. They are complements and coincide only at 45 degrees,
                 // so this conversion is what makes a foreign cone import at
                 // the angle its author actually meant.
-                let semi_angle = floats.last().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CONICAL_SURFACE #{surface_ref} missing semi_angle"),
-                })? * self.units.angle;
-                let half_angle = std::f64::consts::FRAC_PI_2 - semi_angle;
-                // `base_radius` is a length measure, so it takes the file's
-                // length scale like every other radius here.
-                //
-                // Counted from the END, like the semi_angle above, because
-                // `parse_floats` does not skip the entity's name: it strips
-                // the quotes and parses what is inside, so a cone labelled
-                // '2' contributes a leading 2.0 that shifts every index
-                // counted from the front. A statement carrying one number
-                // states a semi_angle and no radius.
-                let base_radius = match floats.as_slice() {
-                    [.., radius, _] => radius * self.units.length,
-                    _ => 0.0,
+                let (base_radius, semi_angle_slot) = if slots.get(3).is_some() {
+                    (
+                        required_real_attribute(
+                            "CONICAL_SURFACE",
+                            surface_ref,
+                            &slots,
+                            2,
+                            "radius",
+                        )? * self.units.length,
+                        3,
+                    )
+                } else {
+                    // Preserve the historical tolerance for a truncated
+                    // statement that carries only the semi-angle.
+                    (0.0, 2)
                 };
+                let semi_angle = required_real_attribute(
+                    "CONICAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    semi_angle_slot,
+                    "semi_angle",
+                )? * self.units.angle;
+                let half_angle = std::f64::consts::FRAC_PI_2 - semi_angle;
                 let (origin, axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let apex = cone_apex(origin, axis, base_radius, half_angle);
                 let cone = remus_math::surfaces::ConicalSurface::new(apex, axis, half_angle)
@@ -1789,14 +1955,16 @@ impl<'a> StepBuilder<'a> {
                 Ok(FaceSurface::Cone(cone))
             }
             "SPHERICAL_SURFACE" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("SPHERICAL_SURFACE #{surface_ref} missing axis"),
-                })?;
-                let radius = floats.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("SPHERICAL_SURFACE #{surface_ref} missing radius"),
-                })?;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref = required_reference_attribute(
+                    "SPHERICAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    1,
+                    "position",
+                )?;
+                let radius =
+                    required_real_attribute("SPHERICAL_SURFACE", surface_ref, &slots, 2, "radius")?;
                 let radius = radius * self.units.length;
                 let (center, _axis, _ref_dir) = self.build_axis2_placement(axis_ref)?;
                 let sphere =
@@ -1808,17 +1976,28 @@ impl<'a> StepBuilder<'a> {
                 Ok(FaceSurface::Sphere(sphere))
             }
             "TOROIDAL_SURFACE" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("TOROIDAL_SURFACE #{surface_ref} missing axis"),
-                })?;
-                let major_r = floats.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("TOROIDAL_SURFACE #{surface_ref} missing major_radius"),
-                })?;
-                let minor_r = floats.get(1).copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("TOROIDAL_SURFACE #{surface_ref} missing minor_radius"),
-                })?;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref = required_reference_attribute(
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    1,
+                    "position",
+                )?;
+                let major_r = required_real_attribute(
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    2,
+                    "major_radius",
+                )?;
+                let minor_r = required_real_attribute(
+                    "TOROIDAL_SURFACE",
+                    surface_ref,
+                    &slots,
+                    3,
+                    "minor_radius",
+                )?;
                 let major_r = major_r * self.units.length;
                 let minor_r = minor_r * self.units.length;
                 let (center, axis, ref_dir) = self.build_axis2_placement(axis_ref)?;
@@ -1835,11 +2014,13 @@ impl<'a> StepBuilder<'a> {
                 self.build_surface_of_linear_extrusion(surface_ref, &attrs)
             }
             "B_SPLINE_SURFACE_WITH_KNOTS" | "BOUNDED_SURFACE" | "B_SPLINE_SURFACE" => {
-                let is_rational = attrs.contains("RATIONAL");
+                let is_rational =
+                    find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_SURFACE").is_some();
                 self.build_bspline_surface(surface_ref, &attrs, is_rational)
             }
             _ if entity_type.is_empty() || attrs.contains("B_SPLINE_SURFACE_WITH_KNOTS") => {
-                let is_rational = attrs.contains("RATIONAL");
+                let is_rational =
+                    find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_SURFACE").is_some();
                 let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_SURFACE")
                     .or_else(|| {
                         find_composite_bspline_attrs(&attrs, "B_SPLINE_SURFACE").map(str::to_string)
@@ -1884,15 +2065,14 @@ impl<'a> StepBuilder<'a> {
 
         match entity_type.as_str() {
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" | "TRIMMED_CURVE" => {
-                let basis =
-                    parse_refs(&attrs)
-                        .first()
-                        .copied()
-                        .ok_or_else(|| IoError::ParseError {
-                            reason: format!(
-                                "{entity_type} #{curve_ref} missing its basis curve reference"
-                            ),
-                        })?;
+                let slots = split_attr_slots(&attrs);
+                let basis = required_reference_attribute(
+                    &entity_type,
+                    curve_ref,
+                    &slots,
+                    1,
+                    "basis curve",
+                )?;
                 self.build_swept_profile(basis, depth + 1)
             }
             "LINE" => Ok(SweptProfile::Line(self.build_line(curve_ref, &attrs)?)),
@@ -1928,12 +2108,10 @@ impl<'a> StepBuilder<'a> {
         curve_ref: u64,
         attrs: &str,
     ) -> Result<remus_math::curves::Line3D, IoError> {
-        let refs = parse_refs(attrs);
-        let [point_ref, vector_ref, ..] = refs[..] else {
-            return Err(IoError::ParseError {
-                reason: format!("LINE #{curve_ref} needs a point and a direction vector"),
-            });
-        };
+        let slots = split_attr_slots(attrs);
+        let point_ref = required_reference_attribute("LINE", curve_ref, &slots, 1, "point")?;
+        let vector_ref =
+            required_reference_attribute("LINE", curve_ref, &slots, 2, "direction vector")?;
         let origin = self.build_cartesian_point(point_ref)?;
         let (direction, _) = self.build_vector(vector_ref)?;
         remus_math::curves::Line3D::new(origin, direction).map_err(|e| IoError::ParseError {
@@ -1946,23 +2124,11 @@ impl<'a> StepBuilder<'a> {
     fn build_vector(&self, vector_ref: u64) -> Result<(Vec3, f64), IoError> {
         let entity = self.get_entity(vector_ref)?;
         let attrs = entity.attrs.clone();
-        let dir_ref = parse_refs(&attrs)
-            .first()
-            .copied()
-            .ok_or_else(|| IoError::ParseError {
-                reason: format!("VECTOR #{vector_ref} missing its direction reference"),
-            })?;
+        let slots = split_attr_slots(&attrs);
+        let dir_ref = required_reference_attribute("VECTOR", vector_ref, &slots, 1, "orientation")?;
         let direction = self.build_direction(dir_ref)?;
-        // The magnitude is the only float on the VECTOR itself; the
-        // direction's components live on the referenced DIRECTION.
-        let magnitude =
-            parse_floats(&attrs)?
-                .first()
-                .copied()
-                .ok_or_else(|| IoError::ParseError {
-                    reason: format!("VECTOR #{vector_ref} missing its magnitude"),
-                })?
-                * self.units.length;
+        let magnitude = required_real_attribute("VECTOR", vector_ref, &slots, 2, "magnitude")?
+            * self.units.length;
         Ok((direction, magnitude))
     }
 
@@ -2078,14 +2244,21 @@ impl<'a> StepBuilder<'a> {
         surface_ref: u64,
         attrs: &str,
     ) -> Result<FaceSurface, IoError> {
-        let refs = parse_refs(attrs);
-        let [curve_ref, axis_ref, ..] = refs[..] else {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "SURFACE_OF_REVOLUTION #{surface_ref} needs a swept curve and an axis"
-                ),
-            });
-        };
+        let slots = split_attr_slots(attrs);
+        let curve_ref = required_reference_attribute(
+            "SURFACE_OF_REVOLUTION",
+            surface_ref,
+            &slots,
+            1,
+            "swept_curve",
+        )?;
+        let axis_ref = required_reference_attribute(
+            "SURFACE_OF_REVOLUTION",
+            surface_ref,
+            &slots,
+            2,
+            "axis_position",
+        )?;
         let profile = self.build_swept_profile(curve_ref, 0)?;
         let (axis_pt, axis_raw) = self.build_axis1_placement(axis_ref)?;
         let axis = axis_raw.normalize().map_err(|e| IoError::ParseError {
@@ -2127,15 +2300,21 @@ impl<'a> StepBuilder<'a> {
         surface_ref: u64,
         attrs: &str,
     ) -> Result<FaceSurface, IoError> {
-        let refs = parse_refs(attrs);
-        let [curve_ref, vector_ref, ..] = refs[..] else {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "SURFACE_OF_LINEAR_EXTRUSION #{surface_ref} needs a swept curve and an \
-                     extrusion vector"
-                ),
-            });
-        };
+        let slots = split_attr_slots(attrs);
+        let curve_ref = required_reference_attribute(
+            "SURFACE_OF_LINEAR_EXTRUSION",
+            surface_ref,
+            &slots,
+            1,
+            "swept_curve",
+        )?;
+        let vector_ref = required_reference_attribute(
+            "SURFACE_OF_LINEAR_EXTRUSION",
+            surface_ref,
+            &slots,
+            2,
+            "extrusion_axis",
+        )?;
         let profile = self.build_swept_profile(curve_ref, 0)?;
         let (direction, magnitude) = self.build_vector(vector_ref)?;
         let direction = direction.normalize().map_err(|e| IoError::ParseError {
@@ -2178,7 +2357,22 @@ impl<'a> StepBuilder<'a> {
         reverse: bool,
     ) -> Result<remus_topology::wire::WireId, IoError> {
         let attrs = self.get_entity(loop_ref)?.attrs.clone();
-        let oe_refs = parse_list_refs(&attrs);
+        let slots = split_attr_slots(&attrs);
+        let oe_refs = match slots.get(1) {
+            Some(AttrSlot::List(list)) => {
+                exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                    reason: format!("EDGE_LOOP #{loop_ref} has an invalid edge list: {reason}"),
+                })?
+            }
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "EDGE_LOOP #{loop_ref} needs an edge list, got {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
 
         let mut oriented_edges = Vec::new();
         for oe_ref in oe_refs {
@@ -2201,12 +2395,11 @@ impl<'a> StepBuilder<'a> {
 
     fn build_oriented_edge(&mut self, oe_ref: u64) -> Result<OrientedEdge, IoError> {
         let attrs = self.get_entity(oe_ref)?.attrs.clone();
-        let refs = parse_refs(&attrs);
-        let forward = attrs.contains(".T.");
-
-        let edge_curve_ref = refs.last().copied().ok_or_else(|| IoError::ParseError {
-            reason: format!("ORIENTED_EDGE #{oe_ref} missing edge curve reference"),
-        })?;
+        let slots = split_attr_slots(&attrs);
+        let edge_curve_ref =
+            required_reference_attribute("ORIENTED_EDGE", oe_ref, &slots, 3, "edge_element")?;
+        let forward =
+            required_logical_attribute("ORIENTED_EDGE", oe_ref, &slots, 4, "orientation")?;
 
         let edge_id = self.build_edge_curve(edge_curve_ref)?;
         Ok(OrientedEdge::new(edge_id, forward))
@@ -2218,31 +2411,536 @@ impl<'a> StepBuilder<'a> {
         }
 
         let attrs = self.get_entity(ec_ref)?.attrs.clone();
-        let refs = parse_refs(&attrs);
-        if refs.len() < 3 {
-            return Err(IoError::ParseError {
-                reason: format!("EDGE_CURVE #{ec_ref} needs at least 3 references"),
-            });
-        }
+        let slots = split_attr_slots(&attrs);
+        let start_ref =
+            required_reference_attribute("EDGE_CURVE", ec_ref, &slots, 1, "edge_start")?;
+        let end_ref = required_reference_attribute("EDGE_CURVE", ec_ref, &slots, 2, "edge_end")?;
+        let curve_ref =
+            required_reference_attribute("EDGE_CURVE", ec_ref, &slots, 3, "edge_geometry")?;
 
-        let start_vp = self.build_vertex_point(refs[0])?;
-        let end_vp = self.build_vertex_point(refs[1])?;
+        let start_vp = self.build_vertex_point(start_ref)?;
+        let end_vp = self.build_vertex_point(end_ref)?;
 
-        let curve = self.build_curve_geometry(refs[2])?;
+        let mut declared_curve_trim = self.declared_curve_trim(curve_ref, 0)?;
+        let curve = self.build_curve_geometry(curve_ref)?;
         // EDGE_CURVE's fifth attribute, `same_sense`, is the trailing
         // .T./.F. flag. `.F.` means the edge runs start → end AGAINST its
         // curve's own parameterization, so the curve is canonicalized to
         // remus's orientation convention here. See `canonicalize_sense`.
-        let curve = if orientation_is_reversed(&attrs) {
-            canonicalize_sense(curve)
-        } else {
+        let same_sense = required_logical_attribute("EDGE_CURVE", ec_ref, &slots, 4, "same_sense")?;
+        let curve = if same_sense {
             curve
+        } else {
+            if let Some(declared) = &mut declared_curve_trim {
+                std::mem::swap(&mut declared.trim_1, &mut declared.trim_2);
+                if let Some((first, second)) = &mut declared.parameters {
+                    std::mem::swap(first, second);
+                }
+                if matches!(&curve, EdgeCurve::NurbsCurve(_)) {
+                    declared.nurbs_parameters_reversed = !declared.nurbs_parameters_reversed;
+                }
+            }
+            canonicalize_sense(curve)
         };
 
-        let edge_id = self.topo.add_edge(Edge::new(start_vp, end_vp, curve));
+        let edge =
+            self.import_edge_with_authority(ec_ref, start_vp, end_vp, curve, declared_curve_trim)?;
+        let edge_id = self.topo.add_edge(edge);
 
         self.edge_cache.insert(ec_ref, edge_id);
         Ok(edge_id)
+    }
+
+    /// Validate and store the parameter authority declared by an imported edge.
+    ///
+    /// STEP carries curve geometry and topological endpoints separately. This
+    /// is the one named reconstruction boundary where those endpoints may be
+    /// projected onto a carrier. The resulting interval is checked before the
+    /// edge enters topology so later readers never have to infer it again.
+    fn import_edge_with_authority(
+        &self,
+        ec_ref: u64,
+        start_id: VertexId,
+        end_id: VertexId,
+        curve: EdgeCurve,
+        declared_curve_trim: Option<DeclaredCurveTrim>,
+    ) -> Result<Edge, IoError> {
+        let start_vertex = self.topo.vertex(start_id)?;
+        let end_vertex = self.topo.vertex(end_id)?;
+        let start = start_vertex.point();
+        let end = end_vertex.point();
+        let tolerance_cap = start_vertex
+            .tolerance()
+            .max(end_vertex.tolerance())
+            .max(self.model_tolerance_cap);
+        let mut measured_tolerance = start_vertex
+            .tolerance()
+            .max(end_vertex.tolerance())
+            .max(Tolerance::new().linear);
+
+        let endpoint_error = |label: &str, distance: f64| IoError::ParseError {
+            reason: format!(
+                "EDGE_CURVE #{ec_ref} {label} endpoint misses its carrier by \
+                 {distance:.6e} mm (declared cap {tolerance_cap:.6e} mm)"
+            ),
+        };
+
+        if let Some(declared) = declared_curve_trim {
+            for (label, actual, expected) in [
+                ("start", start, declared.trim_1),
+                ("end", end, declared.trim_2),
+            ] {
+                let residual = (actual - expected).length();
+                if !residual.is_finite() || residual > tolerance_cap {
+                    return Err(endpoint_error(label, residual));
+                }
+                measured_tolerance = measured_tolerance.max(residual);
+            }
+        }
+
+        if matches!(curve, EdgeCurve::Line) {
+            return Ok(Edge::new(start_id, end_id, curve));
+        }
+
+        let range = match &curve {
+            EdgeCurve::Line => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "EDGE_CURVE #{ec_ref} reached the curved import adapter with a Line"
+                    ),
+                });
+            }
+            EdgeCurve::Circle(circle) => {
+                let t0 = circle.project(start);
+                let start_residual = (circle.evaluate(t0) - start).length();
+                if !start_residual.is_finite() || start_residual > tolerance_cap {
+                    return Err(endpoint_error("start", start_residual));
+                }
+                measured_tolerance = measured_tolerance.max(start_residual);
+                if let Some(span) = declared_curve_trim.and_then(|trim| trim.periodic_span) {
+                    (t0, t0 + span)
+                } else if start_id == end_id {
+                    (t0, t0 + std::f64::consts::TAU)
+                } else {
+                    let projected_end = circle.project(end);
+                    let end_residual = (circle.evaluate(projected_end) - end).length();
+                    if !end_residual.is_finite() || end_residual > tolerance_cap {
+                        return Err(endpoint_error("end", end_residual));
+                    }
+                    measured_tolerance = measured_tolerance.max(end_residual);
+                    (
+                        t0,
+                        t0 + (projected_end - t0).rem_euclid(std::f64::consts::TAU),
+                    )
+                }
+            }
+            EdgeCurve::Ellipse(ellipse) => {
+                let t0 = ellipse.project(start);
+                let start_residual = (ellipse.evaluate(t0) - start).length();
+                if !start_residual.is_finite() || start_residual > tolerance_cap {
+                    return Err(endpoint_error("start", start_residual));
+                }
+                measured_tolerance = measured_tolerance.max(start_residual);
+                if let Some(span) = declared_curve_trim.and_then(|trim| trim.periodic_span) {
+                    (t0, t0 + span)
+                } else if start_id == end_id {
+                    (t0, t0 + std::f64::consts::TAU)
+                } else {
+                    let projected_end = ellipse.project(end);
+                    let end_residual = (ellipse.evaluate(projected_end) - end).length();
+                    if !end_residual.is_finite() || end_residual > tolerance_cap {
+                        return Err(endpoint_error("end", end_residual));
+                    }
+                    measured_tolerance = measured_tolerance.max(end_residual);
+                    (
+                        t0,
+                        t0 + (projected_end - t0).rem_euclid(std::f64::consts::TAU),
+                    )
+                }
+            }
+            EdgeCurve::Hyperbola(hyperbola) => {
+                let (t0, t1) = declared_curve_trim
+                    .and_then(|trim| trim.parameters)
+                    .unwrap_or_else(|| (hyperbola.project(start), hyperbola.project(end)));
+                for (label, point, parameter) in [("start", start, t0), ("end", end, t1)] {
+                    let residual = (hyperbola.evaluate(parameter) - point).length();
+                    if !residual.is_finite() || residual > tolerance_cap {
+                        return Err(endpoint_error(label, residual));
+                    }
+                    measured_tolerance = measured_tolerance.max(residual);
+                }
+                (t0, t1)
+            }
+            EdgeCurve::Parabola(parabola) => {
+                let (t0, t1) = declared_curve_trim
+                    .and_then(|trim| trim.parameters)
+                    .unwrap_or_else(|| (parabola.project(start), parabola.project(end)));
+                for (label, point, parameter) in [("start", start, t0), ("end", end, t1)] {
+                    let residual = (parabola.evaluate(parameter) - point).length();
+                    if !residual.is_finite() || residual > tolerance_cap {
+                        return Err(endpoint_error(label, residual));
+                    }
+                    measured_tolerance = measured_tolerance.max(residual);
+                }
+                (t0, t1)
+            }
+            EdgeCurve::NurbsCurve(nurbs) => {
+                let (domain_start, domain_end) = nurbs.domain();
+                if let Some(declared) = declared_curve_trim
+                    && let Some((mut t0, mut t1)) = declared.parameters
+                {
+                    if declared.nurbs_parameters_reversed {
+                        t0 = domain_start + (domain_end - t0);
+                        t1 = domain_start + (domain_end - t1);
+                    }
+                    let roundoff =
+                        1024.0 * f64::EPSILON * domain_start.abs().max(domain_end.abs()).max(1.0);
+                    for parameter in [&mut t0, &mut t1] {
+                        if *parameter < domain_start && domain_start - *parameter <= roundoff {
+                            *parameter = domain_start;
+                        } else if *parameter > domain_end && *parameter - domain_end <= roundoff {
+                            *parameter = domain_end;
+                        }
+                    }
+                    if t0 < domain_start || t0 > domain_end || t1 < domain_start || t1 > domain_end
+                    {
+                        return Err(IoError::ParseError {
+                            reason: format!(
+                                "EDGE_CURVE #{ec_ref} declares NURBS parameters [{t0}, {t1}] \
+                                 outside [{domain_start}, {domain_end}]"
+                            ),
+                        });
+                    }
+                    for (label, point, parameter) in [("start", start, t0), ("end", end, t1)] {
+                        let residual = (nurbs.evaluate(parameter) - point).length();
+                        if !residual.is_finite() || residual > tolerance_cap {
+                            return Err(endpoint_error(label, residual));
+                        }
+                        measured_tolerance = measured_tolerance.max(residual);
+                    }
+                    (t0, t1)
+                } else {
+                    let natural_start = nurbs.evaluate(domain_start);
+                    let natural_end = nurbs.evaluate(domain_end);
+                    let forward_residuals = [
+                        (natural_start - start).length(),
+                        (natural_end - end).length(),
+                    ];
+                    let reverse_residuals = [
+                        (natural_end - start).length(),
+                        (natural_start - end).length(),
+                    ];
+                    let forward_matches = forward_residuals
+                        .iter()
+                        .all(|residual| residual.is_finite() && *residual <= tolerance_cap);
+                    let reverse_matches = reverse_residuals
+                        .iter()
+                        .all(|residual| residual.is_finite() && *residual <= tolerance_cap);
+                    if forward_matches && !reverse_matches {
+                        measured_tolerance = measured_tolerance
+                            .max(forward_residuals[0])
+                            .max(forward_residuals[1]);
+                        (domain_start, domain_end)
+                    } else if reverse_matches && !forward_matches {
+                        measured_tolerance = measured_tolerance
+                            .max(reverse_residuals[0])
+                            .max(reverse_residuals[1]);
+                        (domain_end, domain_start)
+                    } else if start_id == end_id && forward_matches && reverse_matches {
+                        measured_tolerance = measured_tolerance
+                            .max(forward_residuals[0])
+                            .max(forward_residuals[1]);
+                        (domain_start, domain_end)
+                    } else if let (Some(t0), Some(t1)) = (
+                        Self::monotone_nurbs_parameter(nurbs, start),
+                        Self::monotone_nurbs_parameter(nurbs, end),
+                    ) {
+                        for (label, point, parameter) in [("start", start, t0), ("end", end, t1)] {
+                            let residual = (nurbs.evaluate(parameter) - point).length();
+                            if !residual.is_finite() || residual > tolerance_cap {
+                                return Err(endpoint_error(label, residual));
+                            }
+                            measured_tolerance = measured_tolerance.max(residual);
+                        }
+                        (t0, t1)
+                    } else {
+                        return Err(IoError::ParseError {
+                            reason: format!(
+                                "EDGE_CURVE #{ec_ref} NURBS endpoints do not uniquely establish \
+                                 the stored curve domain; use a parameter-trimmed carrier"
+                            ),
+                        });
+                    }
+                }
+            }
+        };
+
+        for (label, point, parameter) in [("start", start, range.0), ("end", end, range.1)] {
+            let residual = (curve.evaluate_with_endpoints(parameter, start, end) - point).length();
+            if !residual.is_finite() || residual > tolerance_cap {
+                return Err(endpoint_error(label, residual));
+            }
+            measured_tolerance = measured_tolerance.max(residual);
+        }
+
+        let mut edge = Edge::with_tolerance(start_id, end_id, curve, Some(measured_tolerance));
+        edge.set_trim(Some(range));
+        let _ = edge.strict_domain().map_err(|error| IoError::ParseError {
+            reason: format!("EDGE_CURVE #{ec_ref} has an invalid curve range: {error}"),
+        })?;
+        Ok(edge)
+    }
+
+    /// Recover a unique NURBS parameter only when one polynomial control-point
+    /// coordinate is strictly monotone. In that case the coordinate itself is an
+    /// injective parameter witness, so bisection cannot select a different lobe
+    /// of a self-intersecting or folded curve.
+    fn monotone_nurbs_parameter(
+        curve: &remus_math::nurbs::NurbsCurve,
+        point: Point3,
+    ) -> Option<f64> {
+        let first_weight = *curve.weights().first()?;
+        if !first_weight.is_finite()
+            || first_weight <= 0.0
+            || curve
+                .weights()
+                .iter()
+                .any(|weight| weight.to_bits() != first_weight.to_bits())
+        {
+            return None;
+        }
+
+        let coordinates = [
+            (|point: Point3| point.x()) as fn(Point3) -> f64,
+            (|point: Point3| point.y()) as fn(Point3) -> f64,
+            (|point: Point3| point.z()) as fn(Point3) -> f64,
+        ];
+        let control_points = curve.control_points();
+        let coordinate = coordinates.into_iter().find(|coordinate| {
+            let increasing = control_points
+                .windows(2)
+                .all(|pair| coordinate(pair[1]) > coordinate(pair[0]));
+            let decreasing = control_points
+                .windows(2)
+                .all(|pair| coordinate(pair[1]) < coordinate(pair[0]));
+            increasing || decreasing
+        })?;
+
+        let (mut low, mut high) = curve.domain();
+        let mut low_value = coordinate(curve.evaluate(low));
+        let high_value = coordinate(curve.evaluate(high));
+        let target = coordinate(point);
+        if !low_value.is_finite() || !high_value.is_finite() || !target.is_finite() {
+            return None;
+        }
+        let increasing = high_value > low_value;
+        if if increasing {
+            target < low_value || target > high_value
+        } else {
+            target > low_value || target < high_value
+        } {
+            return None;
+        }
+
+        for _ in 0..96 {
+            let middle = (low + high) * 0.5;
+            if middle.to_bits() == low.to_bits() || middle.to_bits() == high.to_bits() {
+                break;
+            }
+            let middle_value = coordinate(curve.evaluate(middle));
+            if !middle_value.is_finite() {
+                return None;
+            }
+            if (middle_value < target) == increasing {
+                low = middle;
+                low_value = middle_value;
+            } else {
+                high = middle;
+            }
+        }
+        let low_error = (low_value - target).abs();
+        let high_error = (coordinate(curve.evaluate(high)) - target).abs();
+        Some(if low_error <= high_error { low } else { high })
+    }
+
+    /// Recover a curve trim's declared anchors and, where available, exact
+    /// parameter authority without projecting topology endpoints. Wrapper
+    /// entities are transparent; nested trims are rejected because composing
+    /// their parameter spaces is not defined.
+    fn declared_curve_trim(
+        &self,
+        curve_ref: u64,
+        depth: u32,
+    ) -> Result<Option<DeclaredCurveTrim>, IoError> {
+        if depth > MAX_CURVE_INDIRECTION {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "curve reference chain at #{curve_ref} exceeded \
+                     {MAX_CURVE_INDIRECTION} levels (cyclic curve reference?)"
+                ),
+            });
+        }
+        let entity = self.get_entity(curve_ref)?;
+        match entity.entity_type.as_str() {
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
+                let slots = split_attr_slots(&entity.attrs);
+                let basis = required_reference_attribute(
+                    &entity.entity_type,
+                    curve_ref,
+                    &slots,
+                    1,
+                    "basis curve",
+                )?;
+                self.declared_curve_trim(basis, depth + 1)
+            }
+            "TRIMMED_CURVE" => {
+                let slots = split_attr_slots(&entity.attrs);
+                let basis = required_reference_attribute(
+                    "TRIMMED_CURVE",
+                    curve_ref,
+                    &slots,
+                    1,
+                    "basis curve",
+                )?;
+                if self.declared_curve_trim(basis, depth + 1)?.is_some() {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "TRIMMED_CURVE #{curve_ref} nests another parameter-trimmed curve"
+                        ),
+                    });
+                }
+                let parsed = parse_trimmed_curve(curve_ref, &entity.attrs)?;
+                let basis_curve = self.build_curve_geometry_at(basis, depth + 1)?;
+                if matches!(basis_curve, EdgeCurve::Line)
+                    && (parsed.trim_1.parameter.is_some() || parsed.trim_2.parameter.is_some())
+                {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "TRIMMED_CURVE #{curve_ref} uses parameter authority on a LINE, whose carrier parameterization is not retained"
+                        ),
+                    });
+                }
+
+                let convert_parameter = |value: f64| match &basis_curve {
+                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => value * self.units.angle,
+                    EdgeCurve::Parabola(parabola) => value * 2.0 * parabola.focal_length(),
+                    EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::NurbsCurve(_) => value,
+                };
+
+                let first_parameter = parsed.trim_1.parameter.map(convert_parameter);
+                let second_parameter = parsed.trim_2.parameter.map(convert_parameter);
+                let trim_1 = self.resolve_trim_anchor(
+                    curve_ref,
+                    "trim_1",
+                    parsed.trim_1,
+                    parsed.master,
+                    &basis_curve,
+                    first_parameter,
+                )?;
+                let trim_2 = self.resolve_trim_anchor(
+                    curve_ref,
+                    "trim_2",
+                    parsed.trim_2,
+                    parsed.master,
+                    &basis_curve,
+                    second_parameter,
+                )?;
+                let reversed = trimmed_curve_sense_is_reversed(curve_ref, &entity.attrs)?;
+                let explicit_parameters = first_parameter.zip(second_parameter);
+                let projected_open_parameters = match &basis_curve {
+                    EdgeCurve::Hyperbola(hyperbola) => {
+                        Some((hyperbola.project(trim_1), hyperbola.project(trim_2)))
+                    }
+                    EdgeCurve::Parabola(parabola) => {
+                        Some((parabola.project(trim_1), parabola.project(trim_2)))
+                    }
+                    _ => None,
+                };
+                let parameters = match parsed.master {
+                    TrimMaster::Cartesian => projected_open_parameters,
+                    TrimMaster::Parameter => explicit_parameters,
+                    TrimMaster::Unspecified => explicit_parameters.or(projected_open_parameters),
+                };
+                let periodic_span = match (&basis_curve, parameters) {
+                    (EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_), Some((first, second))) => {
+                        Some(periodic_trim_span(curve_ref, first, second, reversed)?)
+                    }
+                    _ => None,
+                };
+                if matches!(
+                    &basis_curve,
+                    EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)
+                ) && let Some((first, second)) = parameters
+                {
+                    validate_open_trim_sense(curve_ref, first, second, reversed)?;
+                }
+
+                Ok(Some(DeclaredCurveTrim {
+                    trim_1,
+                    trim_2,
+                    parameters,
+                    periodic_span,
+                    nurbs_parameters_reversed: reversed
+                        && matches!(&basis_curve, EdgeCurve::NurbsCurve(_)),
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn resolve_trim_anchor(
+        &self,
+        curve_ref: u64,
+        label: &str,
+        select: ParsedTrimSelect,
+        master: TrimMaster,
+        basis: &EdgeCurve,
+        parameter: Option<f64>,
+    ) -> Result<Point3, IoError> {
+        let cartesian = select
+            .point_ref
+            .map(|point_ref| {
+                let entity = self.get_entity(point_ref)?;
+                if entity.entity_type != "CARTESIAN_POINT" {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "TRIMMED_CURVE #{curve_ref} {label} references non-point entity #{point_ref}"
+                        ),
+                    });
+                }
+                self.build_cartesian_point(point_ref)
+            })
+            .transpose()?;
+        let evaluated = parameter.map(|value| {
+            basis.evaluate_with_endpoints(
+                value,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+            )
+        });
+
+        if let (Some(point), Some(expected)) = (cartesian, evaluated) {
+            let residual = (point - expected).length();
+            if !residual.is_finite() || residual > self.model_tolerance_cap {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "TRIMMED_CURVE #{curve_ref} {label} Cartesian and parameter representations differ by {residual:.6e} mm (declared cap {:.6e} mm)",
+                        self.model_tolerance_cap
+                    ),
+                });
+            }
+        }
+
+        match master {
+            TrimMaster::Cartesian => cartesian,
+            TrimMaster::Parameter => evaluated,
+            TrimMaster::Unspecified => cartesian.or(evaluated),
+        }
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} {label} does not provide its selected trim representation"
+            ),
+        })
     }
 
     /// Build the curve geometry for an edge from a curve entity reference.
@@ -2278,44 +2976,30 @@ impl<'a> StepBuilder<'a> {
             // pcurve list is a redundant parametric representation that this
             // reader does not model, so it is not consulted.
             "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" => {
+                let slots = split_attr_slots(&attrs);
                 let basis =
-                    parse_refs(&attrs)
-                        .first()
-                        .copied()
-                        .ok_or_else(|| IoError::ParseError {
-                            reason: format!(
-                                "{entity_type} #{curve_ref} missing its 3-D curve reference"
-                            ),
-                        })?;
+                    required_reference_attribute(&entity_type, curve_ref, &slots, 1, "3-D curve")?;
                 self.build_curve_geometry_at(basis, depth + 1)
             }
             "TRIMMED_CURVE" => self.build_trimmed_curve(curve_ref, &attrs, depth),
             "POLYLINE" => self.build_polyline(curve_ref, &attrs),
             "LINE" => Ok(EdgeCurve::Line),
             "CIRCLE" => {
-                // Reading a placement's OWN attributes by position does not
-                // change how the entities POINTING AT one find it: every call
-                // site here still takes the first `#NNN` token in its text.
-                // That scan cannot see string boundaries, so
-                // `CIRCLE('Bore #9',#4,4.)` resolves placement #9 rather than
-                // #4 — silently, when #9 happens to be a placement too.
-                // Every reference in this reader is found that way, so fixing
-                // it is a change to the reference layer, not to this arm.
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CIRCLE #{curve_ref} missing axis reference"),
-                })?;
-                let radius = floats.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("CIRCLE #{curve_ref} missing radius"),
-                })? * self.units.length;
-                let (center, normal, _u_axis) = self.build_axis2_placement(axis_ref)?;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref =
+                    required_reference_attribute("CIRCLE", curve_ref, &slots, 1, "position")?;
+                let radius = required_real_attribute("CIRCLE", curve_ref, &slots, 2, "radius")?
+                    * self.units.length;
+                // Parameter-authoritative TRIMMED_CURVEs depend on the
+                // placement's ref_direction, not merely on the circle's point
+                // set. Retain that frame so a stored parameter still names the
+                // same endpoint after a STEP round trip.
+                let (center, normal, u_axis) = self.build_axis2_placement(axis_ref)?;
                 let circle =
-                    remus_math::curves::Circle3D::new(center, normal, radius).map_err(|e| {
-                        IoError::ParseError {
+                    remus_math::curves::Circle3D::new_with_ref(center, normal, radius, u_axis)
+                        .map_err(|e| IoError::ParseError {
                             reason: format!("CIRCLE #{curve_ref}: {e}"),
-                        }
-                    })?;
+                        })?;
                 Ok(EdgeCurve::Circle(circle))
             }
             // ELLIPSE('name', #axis2_placement_3d, semi_axis_1, semi_axis_2)
@@ -2331,22 +3015,19 @@ impl<'a> StepBuilder<'a> {
             // projects ref_direction off the normal before normalizing — so
             // the raw direction is what belongs here, unprojected.
             "ELLIPSE" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("ELLIPSE #{curve_ref} missing axis reference"),
-                })?;
-                if floats.len() < 2 {
-                    return Err(IoError::ParseError {
-                        reason: format!("ELLIPSE #{curve_ref} needs semi_major and semi_minor"),
-                    });
-                }
+                let slots = split_attr_slots(&attrs);
+                let axis_ref =
+                    required_reference_attribute("ELLIPSE", curve_ref, &slots, 1, "position")?;
+                let semi_major =
+                    required_real_attribute("ELLIPSE", curve_ref, &slots, 2, "semi_axis_1")?;
+                let semi_minor =
+                    required_real_attribute("ELLIPSE", curve_ref, &slots, 3, "semi_axis_2")?;
                 let (center, normal, u_axis) = self.build_axis2_placement(axis_ref)?;
                 let ellipse = remus_math::curves::Ellipse3D::new_with_ref(
                     center,
                     normal,
-                    floats[0] * self.units.length,
-                    floats[1] * self.units.length,
+                    semi_major * self.units.length,
+                    semi_minor * self.units.length,
                     u_axis,
                 )
                 .map_err(|e| IoError::ParseError {
@@ -2362,25 +3043,20 @@ impl<'a> StepBuilder<'a> {
             // (`with_axes`, not `new`): `Hyperbola3D::new` would pick an
             // arbitrary in-plane axis and rotate the branch inside its plane.
             "HYPERBOLA" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("HYPERBOLA #{curve_ref} missing axis reference"),
-                })?;
-                if floats.len() < 2 {
-                    return Err(IoError::ParseError {
-                        reason: format!(
-                            "HYPERBOLA #{curve_ref} needs semi_axis and imaginary_semi_axis"
-                        ),
-                    });
-                }
+                let slots = split_attr_slots(&attrs);
+                let axis_ref =
+                    required_reference_attribute("HYPERBOLA", curve_ref, &slots, 1, "position")?;
+                let semi_axis =
+                    required_real_attribute("HYPERBOLA", curve_ref, &slots, 2, "semi_axis")?;
+                let imaginary_semi_axis =
+                    required_real_attribute("HYPERBOLA", curve_ref, &slots, 3, "semi_imag_axis")?;
                 let (center, normal, u_axis) = self.build_axis2_placement(axis_ref)?;
                 let hyp = remus_math::curves::Hyperbola3D::with_axes(
                     center,
                     normal,
                     u_axis,
-                    floats[0] * self.units.length,
-                    floats[1] * self.units.length,
+                    semi_axis * self.units.length,
+                    imaginary_semi_axis * self.units.length,
                 )
                 .map_err(|e| IoError::ParseError {
                     reason: format!("HYPERBOLA #{curve_ref}: {e}"),
@@ -2396,14 +3072,12 @@ impl<'a> StepBuilder<'a> {
             // under `t = 2f·u` — the same point SET, which is what the edge's
             // vertices trim.
             "PARABOLA" => {
-                let refs = parse_refs(&attrs);
-                let floats = parse_floats(&attrs)?;
-                let axis_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("PARABOLA #{curve_ref} missing axis reference"),
-                })?;
-                let focal = floats.first().copied().ok_or_else(|| IoError::ParseError {
-                    reason: format!("PARABOLA #{curve_ref} missing focal_dist"),
-                })? * self.units.length;
+                let slots = split_attr_slots(&attrs);
+                let axis_ref =
+                    required_reference_attribute("PARABOLA", curve_ref, &slots, 1, "position")?;
+                let focal =
+                    required_real_attribute("PARABOLA", curve_ref, &slots, 2, "focal_dist")?
+                        * self.units.length;
                 let (vertex, normal, ref_dir) = self.build_axis2_placement(axis_ref)?;
                 // ISO's `first_proj_axis(z, ref_direction)` — ref_direction
                 // with its component along the normal removed — has to be
@@ -2438,7 +3112,8 @@ impl<'a> StepBuilder<'a> {
             }
             "B_SPLINE_CURVE_WITH_KNOTS" => self.build_bspline_curve(curve_ref, &attrs, false),
             _ if entity_type.is_empty() || attrs.contains("B_SPLINE_CURVE_WITH_KNOTS") => {
-                let is_rational = attrs.contains("RATIONAL");
+                let is_rational =
+                    find_exact_composite_component(&attrs, "RATIONAL_B_SPLINE_CURVE").is_some();
                 let bspline_attrs = canonical_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE")
                     .or_else(|| {
                         find_composite_bspline_attrs(&attrs, "B_SPLINE_CURVE").map(str::to_string)
@@ -2460,14 +3135,10 @@ impl<'a> StepBuilder<'a> {
     /// master_representation)`, where each trim is a select carrying a
     /// `PARAMETER_VALUE`, a `CARTESIAN_POINT`, or both.
     ///
-    /// How much of the trim needs to survive depends on the basis, because
-    /// [`EdgeCurve`] stores no parameter range: an edge's extent is recovered
-    /// from its own vertices by
-    /// [`EdgeCurve::parameter_range_with_endpoints`][pr]. For `Line`,
-    /// `Circle` and `Ellipse` that recovery is exact — remus already models
-    /// an arc as the complete circle plus its two vertices, which is how a
-    /// bare `CIRCLE` inside an `EDGE_CURVE` is read — so the basis is
-    /// returned unchanged and the trim is carried by the edge.
+    /// How much of the trim needs to survive depends on the basis. For
+    /// `Line`, `Circle` and `Ellipse`, the basis is returned unchanged and
+    /// [`StepBuilder::import_edge_with_authority`] validates the topological
+    /// endpoints and stores their exact carrier interval on the edge.
     ///
     /// A B-spline is different: its parameterization is the knot vector, and
     /// recovering the span means projecting the endpoints, which is
@@ -2478,37 +3149,48 @@ impl<'a> StepBuilder<'a> {
     /// Trim parameters on a B-spline are knot-space values and carry no
     /// unit, so no unit scaling applies here.
     ///
-    /// [pr]: remus_topology::edge::EdgeCurve::parameter_range_with_endpoints
     fn build_trimmed_curve(
         &self,
         curve_ref: u64,
         attrs: &str,
         depth: u32,
     ) -> Result<EdgeCurve, IoError> {
-        let basis_ref = parse_refs(attrs)
-            .first()
-            .copied()
-            .ok_or_else(|| IoError::ParseError {
-                reason: format!("TRIMMED_CURVE #{curve_ref} missing its basis curve reference"),
-            })?;
+        let slots = split_attr_slots(attrs);
+        let basis_ref =
+            required_reference_attribute("TRIMMED_CURVE", curve_ref, &slots, 1, "basis curve")?;
         let basis = self.build_curve_geometry_at(basis_ref, depth + 1)?;
-        let params = parse_parameter_values(attrs)?;
+        let reverse = trimmed_curve_sense_is_reversed(curve_ref, attrs)?;
+        let parsed = parse_trimmed_curve(curve_ref, attrs)?;
+        let params = match parsed.master {
+            TrimMaster::Cartesian => None,
+            TrimMaster::Parameter | TrimMaster::Unspecified => {
+                parsed.trim_1.parameter.zip(parsed.trim_2.parameter)
+            }
+        };
 
         let EdgeCurve::NurbsCurve(nurbs) = basis else {
             // Line, Circle and Ellipse are stored complete; the edge's
-            // vertices already express the trim.
-            return Ok(basis);
+            // vertices express the trim while sense_agreement orients the
+            // carrier that the edge authority will validate.
+            return Ok(if reverse {
+                canonicalize_sense(basis)
+            } else {
+                basis
+            });
         };
 
-        let [t0, t1] = params[..] else {
+        let Some((t0, t1)) = params else {
             // A .CARTESIAN. trim states its ends as points, which are the
             // edge's own vertices; nothing further to apply.
-            return Ok(EdgeCurve::NurbsCurve(nurbs));
+            return Ok(EdgeCurve::NurbsCurve(if reverse {
+                nurbs.reversed()
+            } else {
+                nurbs
+            }));
         };
 
-        // `sense_agreement` only says whether the trim runs along or against
-        // the basis. Direction is carried by the edge's vertices, so order
-        // the span and let the edge decide which way it is traversed.
+        // Split on ascending knot values, then orient the resulting carrier
+        // from trim_1 toward trim_2 according to sense_agreement.
         let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
         let (d0, d1) = nurbs.domain();
         let span = d1 - d0;
@@ -2529,7 +3211,11 @@ impl<'a> StepBuilder<'a> {
         }
         if lo <= d0 + tol && hi >= d1 - tol {
             // The trim is the whole curve.
-            return Ok(EdgeCurve::NurbsCurve(nurbs));
+            return Ok(EdgeCurve::NurbsCurve(if reverse {
+                nurbs.reversed()
+            } else {
+                nurbs
+            }));
         }
 
         let split = |curve: &remus_math::nurbs::NurbsCurve, u: f64| {
@@ -2548,7 +3234,11 @@ impl<'a> StepBuilder<'a> {
         } else {
             split(&nurbs, hi)?.0
         };
-        Ok(EdgeCurve::NurbsCurve(trimmed))
+        Ok(EdgeCurve::NurbsCurve(if reverse {
+            trimmed.reversed()
+        } else {
+            trimmed
+        }))
     }
 
     /// Build a `POLYLINE('name', (#p1, #p2, …))` as a degree-1 curve.
@@ -2564,10 +3254,25 @@ impl<'a> StepBuilder<'a> {
     /// [`EdgeCurve::Line`], whose geometry the edge's vertices already
     /// determine.
     fn build_polyline(&self, curve_ref: u64, attrs: &str) -> Result<EdgeCurve, IoError> {
-        let point_refs = parse_list_refs(attrs);
+        let slots = split_attr_slots(attrs);
+        let point_refs = match slots.get(1) {
+            Some(AttrSlot::List(list)) => {
+                exact_reference_list(list).map_err(|reason| IoError::ParseError {
+                    reason: format!("POLYLINE #{curve_ref} has an invalid point list: {reason}"),
+                })?
+            }
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "POLYLINE #{curve_ref} needs a point aggregate, got {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
         if point_refs.is_empty() {
             return Err(IoError::ParseError {
-                reason: format!("POLYLINE #{curve_ref} has no point list"),
+                reason: format!("POLYLINE #{curve_ref} has no points"),
             });
         }
 
@@ -2647,7 +3352,7 @@ impl<'a> StepBuilder<'a> {
 
         // Extract weights from RATIONAL_B_SPLINE section if present.
         let weights = if is_rational {
-            extract_rational_weights(attrs, control_points.len())
+            extract_rational_curve_weights(attrs, control_points.len(), curve_ref)?
         } else {
             vec![1.0; control_points.len()]
         };
@@ -2695,7 +3400,7 @@ impl<'a> StepBuilder<'a> {
         let n_cols = cp_grid.first().map_or(0, Vec::len);
 
         let weights = if is_rational {
-            extract_rational_weight_grid(attrs, n_rows, n_cols)
+            extract_rational_surface_weights(attrs, n_rows, n_cols, surface_ref)?
         } else {
             vec![vec![1.0; n_cols]; n_rows]
         };
@@ -2718,13 +3423,14 @@ impl<'a> StepBuilder<'a> {
         }
 
         let attrs = self.get_entity(vp_ref)?.attrs.clone();
-        let refs = parse_refs(&attrs);
-        let cp_ref = refs.first().copied().ok_or_else(|| IoError::ParseError {
-            reason: format!("VERTEX_POINT #{vp_ref} missing point reference"),
-        })?;
+        let slots = split_attr_slots(&attrs);
+        let cp_ref =
+            required_reference_attribute("VERTEX_POINT", vp_ref, &slots, 1, "vertex_geometry")?;
 
         let point = self.build_cartesian_point(cp_ref)?;
-        let vid = self.topo.add_vertex(Vertex::new(point, 1e-7));
+        let vid = self
+            .topo
+            .add_vertex(Vertex::new(point, Tolerance::new().linear));
 
         self.vertex_cache.insert(vp_ref, vid);
         Ok(vid)
@@ -2732,7 +3438,9 @@ impl<'a> StepBuilder<'a> {
 
     fn build_cartesian_point(&self, cp_ref: u64) -> Result<Point3, IoError> {
         let attrs = &self.get_entity(cp_ref)?.attrs;
-        let coords = parse_floats(attrs)?;
+        let slots = split_attr_slots(attrs);
+        let coords =
+            exact_real_attribute_list("CARTESIAN_POINT", cp_ref, &slots, 1, "coordinates")?;
         if coords.len() < 3 {
             return Err(IoError::ParseError {
                 reason: format!(
@@ -2747,7 +3455,9 @@ impl<'a> StepBuilder<'a> {
 
     fn build_direction(&self, dir_ref: u64) -> Result<Vec3, IoError> {
         let attrs = &self.get_entity(dir_ref)?.attrs;
-        let coords = parse_floats(attrs)?;
+        let slots = split_attr_slots(attrs);
+        let coords =
+            exact_real_attribute_list("DIRECTION", dir_ref, &slots, 1, "direction_ratios")?;
         if coords.len() < 3 {
             return Err(IoError::ParseError {
                 reason: format!(
@@ -3987,13 +4697,8 @@ fn is_solid_brep(entity: &StepEntity) -> bool {
     matches!(
         entity.entity_type.as_str(),
         "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS"
-    ) || (entity.entity_type.is_empty() && entity.attrs.contains("MANIFOLD_SOLID_BREP"))
-}
-
-/// Read the trailing `.T.` / `.F.` orientation flag of an oriented entity.
-fn orientation_is_reversed(attrs: &str) -> bool {
-    let tail = attrs.trim_end_matches(')').trim();
-    tail.ends_with(".F.") || tail.ends_with(".FALSE.")
+    ) || (entity.entity_type.is_empty()
+        && find_exact_composite_component(&entity.attrs, "MANIFOLD_SOLID_BREP").is_some())
 }
 
 /// Re-express a curve read from a `same_sense = .F.` `EDGE_CURVE` in
@@ -4035,6 +4740,543 @@ fn canonicalize_sense(curve: EdgeCurve) -> EdgeCurve {
         EdgeCurve::NurbsCurve(n) => EdgeCurve::NurbsCurve(n.reversed()),
         other @ (EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_)) => other,
     }
+}
+
+/// Reverse a closed edge's physical traversal without dropping its parameter
+/// authority.
+///
+/// Reversing the carrier changes how parameters name points. Both bounds are
+/// mapped into the new parameterization in reverse order, which retains the
+/// source interval's signed span while making increasing traversal follow the
+/// old carrier backwards. The replacement is completely validated before the
+/// caller swaps it into topology.
+fn reversed_closed_edge_with_authority(
+    face_ref: u64,
+    source: &Edge,
+    start: Point3,
+    end: Point3,
+    vertex_tolerance: f64,
+) -> Result<Edge, IoError> {
+    let (t0, t1) = source.strict_domain().map_err(|error| IoError::ParseError {
+        reason: format!(
+            "ADVANCED_FACE #{face_ref} cannot reverse a closed edge without valid parameter authority: {error}"
+        ),
+    })?;
+    let (curve, trim) = match source.curve() {
+        EdgeCurve::Circle(circle) => (EdgeCurve::Circle(circle.reversed()), (-t1, -t0)),
+        EdgeCurve::Ellipse(ellipse) => (EdgeCurve::Ellipse(ellipse.reversed()), (-t1, -t0)),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let (domain_start, domain_end) = nurbs.domain();
+            let mapped_start = domain_start + (domain_end - t1);
+            let mapped_end = domain_start + (domain_end - t0);
+            (
+                EdgeCurve::NurbsCurve(nurbs.reversed()),
+                (mapped_start, mapped_end),
+            )
+        }
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} cannot reverse a closed {} edge",
+                    source.curve().type_tag()
+                ),
+            });
+        }
+    };
+
+    let mut replacement = source.clone();
+    replacement.set_curve(curve);
+    replacement.set_trim(Some(trim));
+    let (new_t0, new_t1) =
+        replacement
+            .strict_domain()
+            .map_err(|error| IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} reversed a closed edge to an invalid parameter range: {error}"
+                ),
+            })?;
+    let tolerance = replacement
+        .effective_tolerance(vertex_tolerance)
+        .max(Tolerance::new().linear);
+    for (label, point, parameter) in [("start", start, new_t0), ("end", end, new_t1)] {
+        let residual = (replacement
+            .curve()
+            .evaluate_with_endpoints(parameter, start, end)
+            - point)
+            .length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ADVANCED_FACE #{face_ref} reversed closed-edge {label} misses its vertex by {residual:.6e} mm (tolerance {tolerance:.6e} mm)"
+                ),
+            });
+        }
+    }
+    Ok(replacement)
+}
+
+fn trimmed_curve_sense_is_reversed(curve_ref: u64, attrs: &str) -> Result<bool, IoError> {
+    match split_attr_slots(attrs).get(4) {
+        Some(AttrSlot::Enum(".T.")) => Ok(false),
+        Some(AttrSlot::Enum(".F.")) => Ok(true),
+        other => Err(IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} has invalid sense_agreement {}",
+                describe_slot(other)
+            ),
+        }),
+    }
+}
+
+/// Resolve the uncertainty cap for every imported solid through the
+/// `SHAPE_REPRESENTATION` that names the B-Rep and its representation context.
+/// An uncertainty context elsewhere in the file is unrelated authority and
+/// must not broaden the accepted residuals of this representation.
+fn representation_model_tolerances(
+    entities: &HashMap<u64, StepEntity>,
+) -> Result<HashMap<u64, f64>, IoError> {
+    let solid_refs: HashSet<u64> = entities
+        .iter()
+        .filter(|(_, entity)| is_solid_brep(entity))
+        .map(|(&id, _)| id)
+        .collect();
+    if solid_refs.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut representation_tolerances = HashMap::new();
+    let mut representation_contexts = HashMap::new();
+    let mut representation_solids: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut representation_items: HashMap<u64, HashSet<u64>> = HashMap::new();
+    for (&representation_ref, entity) in entities {
+        let attrs = if matches!(
+            entity.entity_type.as_str(),
+            "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION"
+        ) {
+            Some(entity.attrs.as_str())
+        } else if entity.entity_type.is_empty()
+            && (find_exact_composite_component(&entity.attrs, "SHAPE_REPRESENTATION").is_some()
+                || find_exact_composite_component(
+                    &entity.attrs,
+                    "ADVANCED_BREP_SHAPE_REPRESENTATION",
+                )
+                .is_some())
+        {
+            find_exact_composite_component(&entity.attrs, "REPRESENTATION")
+        } else {
+            None
+        };
+        let Some(attrs) = attrs else {
+            continue;
+        };
+        let slots = split_attr_slots(attrs);
+        let item_refs = match slots.get(1) {
+            Some(AttrSlot::List(items)) => {
+                exact_reference_list(items).map_err(|reason| IoError::ParseError {
+                    reason: format!(
+                        "SHAPE_REPRESENTATION #{representation_ref} has invalid item list: {reason}"
+                    ),
+                })?
+            }
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "SHAPE_REPRESENTATION #{representation_ref} has invalid item list {}",
+                        describe_slot(other)
+                    ),
+                });
+            }
+        };
+        let owned_solids: Vec<_> = item_refs
+            .iter()
+            .copied()
+            .filter(|item_ref| solid_refs.contains(item_ref))
+            .collect();
+        let context_ref =
+            slots
+                .get(2)
+                .and_then(AttrSlot::as_ref_id)
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!(
+                        "SHAPE_REPRESENTATION #{representation_ref} has invalid context {}",
+                        describe_slot(slots.get(2))
+                    ),
+                })?;
+        let tolerance = context_model_tolerance(entities, context_ref)?;
+        representation_tolerances.insert(representation_ref, tolerance);
+        representation_contexts.insert(representation_ref, context_ref);
+        representation_items.insert(representation_ref, item_refs.into_iter().collect());
+        representation_solids.insert(representation_ref, owned_solids);
+    }
+
+    // A schema-valid shape occurrence carries the assembly-side cap back to
+    // the component representation. Some exporters, including the Hammer
+    // corpus file, put the B-Rep and the occurrence coordinate system in two
+    // same-context representations joined by an explicit shape relationship.
+    // Context identity alone is not connectivity: another representation can
+    // reuse that context while participating in an unrelated occurrence.
+    let mut related_representations: HashMap<u64, Vec<u64>> = HashMap::new();
+    for entity in entities.values() {
+        let relationship_attrs = if entity.entity_type == "SHAPE_REPRESENTATION_RELATIONSHIP" {
+            Some(entity.attrs.as_str())
+        } else if entity.entity_type.is_empty()
+            && find_exact_composite_component(
+                &entity.attrs,
+                "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
+            )
+            .is_none()
+            && find_exact_composite_component(&entity.attrs, "SHAPE_REPRESENTATION_RELATIONSHIP")
+                .is_some()
+        {
+            find_exact_composite_component(&entity.attrs, "REPRESENTATION_RELATIONSHIP")
+        } else {
+            None
+        };
+        let Some(relationship_attrs) = relationship_attrs else {
+            continue;
+        };
+        let slots = split_attr_slots(relationship_attrs);
+        let Some(first) = slots
+            .get(2)
+            .and_then(AttrSlot::as_ref_id)
+            .filter(|reference| representation_tolerances.contains_key(reference))
+        else {
+            continue;
+        };
+        let Some(second) = slots
+            .get(3)
+            .and_then(AttrSlot::as_ref_id)
+            .filter(|reference| representation_tolerances.contains_key(reference))
+        else {
+            continue;
+        };
+        if representation_contexts[&first] == representation_contexts[&second] {
+            related_representations
+                .entry(first)
+                .or_default()
+                .push(second);
+            related_representations
+                .entry(second)
+                .or_default()
+                .push(first);
+        }
+    }
+    let mut occurrence_parent: HashMap<u64, Vec<u64>> = HashMap::new();
+    for entity in entities
+        .values()
+        .filter(|entity| entity.entity_type.is_empty())
+    {
+        let Some(transform_attrs) = find_exact_composite_component(
+            &entity.attrs,
+            "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
+        ) else {
+            continue;
+        };
+        if find_exact_composite_component(&entity.attrs, "SHAPE_REPRESENTATION_RELATIONSHIP")
+            .is_none()
+        {
+            return Err(IoError::ParseError {
+                reason:
+                    "transformed representation relationship has no shape-relationship component"
+                        .to_string(),
+            });
+        }
+        let relationship_attrs =
+            find_exact_composite_component(&entity.attrs, "REPRESENTATION_RELATIONSHIP")
+                .ok_or_else(|| IoError::ParseError {
+                    reason: "transformed representation relationship has no base relationship"
+                        .to_string(),
+                })?;
+        let relationship_slots = split_attr_slots(relationship_attrs);
+        let component_rep = relationship_slots
+            .get(2)
+            .and_then(AttrSlot::as_ref_id)
+            .filter(|reference| representation_tolerances.contains_key(reference))
+            .ok_or_else(|| IoError::ParseError {
+                reason: "transformed representation relationship has invalid rep_1".to_string(),
+            })?;
+        let assembly_rep = relationship_slots
+            .get(3)
+            .and_then(AttrSlot::as_ref_id)
+            .filter(|reference| representation_tolerances.contains_key(reference))
+            .ok_or_else(|| IoError::ParseError {
+                reason: "transformed representation relationship has invalid rep_2".to_string(),
+            })?;
+        if representation_contexts[&component_rep] == representation_contexts[&assembly_rep] {
+            return Err(IoError::ParseError {
+                reason: "transformed representation relationship uses one context on both sides"
+                    .to_string(),
+            });
+        }
+
+        let transformation_ref = split_attr_slots(transform_attrs)
+            .first()
+            .and_then(AttrSlot::as_ref_id)
+            .ok_or_else(|| IoError::ParseError {
+                reason: "transformed representation relationship has no transformation reference"
+                    .to_string(),
+            })?;
+        let transformation = entities.get(&transformation_ref).ok_or_else(|| {
+            IoError::ParseError {
+                reason: format!(
+                    "transformed representation relationship references missing transformation #{transformation_ref}"
+                ),
+            }
+        })?;
+        if transformation.entity_type != "ITEM_DEFINED_TRANSFORMATION" {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "transformed representation relationship references unsupported transformation #{transformation_ref}"
+                ),
+            });
+        }
+        let transformation_slots = split_attr_slots(&transformation.attrs);
+        // ITEM_DEFINED_TRANSFORMATION names the rep_2 (assembly) placement
+        // first and the rep_1 (component) placement second. The Hammer corpus
+        // occurrence uses this canonical ordering.
+        let assembly_item = transformation_slots
+            .get(2)
+            .and_then(AttrSlot::as_ref_id)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} has no first placement"
+                ),
+            })?;
+        let component_item = transformation_slots
+            .get(3)
+            .and_then(AttrSlot::as_ref_id)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} has no second placement"
+                ),
+            })?;
+        for placement_ref in [component_item, assembly_item] {
+            let placement = entities.get(&placement_ref).ok_or_else(|| IoError::ParseError {
+                reason: format!(
+                    "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} references missing placement #{placement_ref}"
+                ),
+            })?;
+            if placement.entity_type != "AXIS2_PLACEMENT_3D"
+                && !(placement.entity_type.is_empty()
+                    && find_exact_composite_component(&placement.attrs, "AXIS2_PLACEMENT_3D")
+                        .is_some())
+            {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} references invalid placement #{placement_ref}"
+                    ),
+                });
+            }
+        }
+        if !representation_items[&component_rep].contains(&component_item) {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} component placement #{component_item} is not an item of representation #{component_rep}"
+                ),
+            });
+        }
+        if !representation_items[&assembly_rep].contains(&assembly_item) {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} assembly placement #{assembly_item} is not an item of representation #{assembly_rep}"
+                ),
+            });
+        }
+        occurrence_parent
+            .entry(component_rep)
+            .or_default()
+            .push(assembly_rep);
+    }
+    let mut result = HashMap::new();
+    for (&representation_ref, owned_solids) in &representation_solids {
+        if owned_solids.is_empty() {
+            continue;
+        }
+        let mut component = vec![representation_ref];
+        let mut visited = HashSet::new();
+        let mut tolerance = Tolerance::new().linear;
+        while let Some(current) = component.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            tolerance = tolerance.max(representation_tolerances[&current]);
+            component.extend(
+                related_representations
+                    .get(&current)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+            component.extend(
+                occurrence_parent
+                    .get(&current)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+        }
+        for solid_ref in owned_solids {
+            match result.get(solid_ref).copied() {
+                None => {
+                    result.insert(*solid_ref, tolerance);
+                }
+                Some(existing) if !approx_same_factor(existing, tolerance) => {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "solid B-Rep #{solid_ref} is assigned conflicting representation-context uncertainties ({existing} vs {tolerance} mm)"
+                        ),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    let mut missing: Vec<_> = solid_refs
+        .into_iter()
+        .filter(|solid_ref| !result.contains_key(solid_ref))
+        .collect();
+    missing.sort_unstable();
+    if let Some(solid_ref) = missing.first() {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "solid B-Rep #{solid_ref} is not an item of a SHAPE_REPRESENTATION with a representation context"
+            ),
+        });
+    }
+    Ok(result)
+}
+
+fn context_model_tolerance(
+    entities: &HashMap<u64, StepEntity>,
+    context_ref: u64,
+) -> Result<f64, IoError> {
+    const MARKER: &str = "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT";
+    let context = entities
+        .get(&context_ref)
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!("representation context #{context_ref} not found"),
+        })?;
+    let group = if context.entity_type == MARKER {
+        Some(context.attrs.as_str())
+    } else if context.entity_type.is_empty() {
+        find_exact_composite_component(&context.attrs, MARKER)
+    } else {
+        None
+    };
+    let Some(group) = group else {
+        return Ok(Tolerance::new().linear);
+    };
+    let uncertainty_refs = match split_attr_slots(group).first() {
+        Some(AttrSlot::List(list)) => exact_reference_list(list).map_err(|reason| {
+            IoError::ParseError {
+                reason: format!(
+                    "{MARKER} in representation context #{context_ref} has an invalid uncertainty list: {reason}"
+                ),
+            }
+        })?,
+        other => {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{MARKER} in representation context #{context_ref} has invalid uncertainties {}",
+                    describe_slot(other)
+                ),
+            });
+        }
+    };
+    if uncertainty_refs.is_empty() {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "{MARKER} in representation context #{context_ref} has an empty uncertainty list"
+            ),
+        });
+    }
+
+    let mut declared = None;
+    for uncertainty_ref in uncertainty_refs {
+        let uncertainty = entities
+            .get(&uncertainty_ref)
+            .ok_or_else(|| IoError::ParseError {
+                reason: format!("uncertainty entity #{uncertainty_ref} not found"),
+            })?;
+        if uncertainty.entity_type != "UNCERTAINTY_MEASURE_WITH_UNIT" {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT in representation context #{context_ref} references \
+                         non-uncertainty entity #{uncertainty_ref}"
+                ),
+            });
+        }
+        let uncertainty_slots = split_attr_slots(&uncertainty.attrs);
+        let value = required_typed_measure_attribute(
+            "UNCERTAINTY_MEASURE_WITH_UNIT",
+            uncertainty_ref,
+            &uncertainty_slots,
+            0,
+            "value_component",
+        )?;
+        if value < 0.0 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} has negative value {value}"
+                ),
+            });
+        }
+        let unit_ref = required_reference_attribute(
+            "UNCERTAINTY_MEASURE_WITH_UNIT",
+            uncertainty_ref,
+            &uncertainty_slots,
+            1,
+            "unit_component",
+        )?;
+        let unit = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
+            reason: format!("uncertainty unit entity #{unit_ref} not found"),
+        })?;
+        if unit_kind(&entity_text(unit)) != UnitKind::Length {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} does not reference a length unit"
+                ),
+            });
+        }
+        let (factor, base) = unit_si_factor(entities, unit_ref, 0)?;
+        if base != ".METRE." {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "uncertainty unit #{unit_ref} resolves to base `{base}`, expected `.METRE.`"
+                ),
+            });
+        }
+        if !factor.is_finite() || factor <= 0.0 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "uncertainty unit #{unit_ref} has a non-positive conversion factor {factor}"
+                ),
+            });
+        }
+        let millimetres = value * factor * 1e3;
+        if !millimetres.is_finite() {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} overflows in millimetres"
+                ),
+            });
+        }
+        match declared {
+            None => declared = Some(millimetres),
+            Some(existing) if !approx_same_factor(existing, millimetres) => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "representation context #{context_ref} declares conflicting length uncertainties ({existing} vs {millimetres} mm)"
+                    ),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(declared
+        .unwrap_or(Tolerance::new().linear)
+        .max(Tolerance::new().linear))
 }
 
 /// Extract all `#NNN` references from an attribute string.
@@ -4278,6 +5520,206 @@ fn parse_ref_token(text: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Read one schema-positioned attribute as an exact entity reference.
+///
+/// A substring scan is not safe at a topology or geometry authority boundary:
+/// STEP names are arbitrary strings and may themselves contain `#NNN` text.
+fn required_reference_attribute(
+    entity_type: &str,
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<u64, IoError> {
+    slots
+        .get(index)
+        .and_then(AttrSlot::as_ref_id)
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!(
+                "{entity_type} #{entity_ref} needs a reference for {label}, got {}",
+                describe_slot(slots.get(index))
+            ),
+        })
+}
+
+/// Read one schema-positioned STEP logical without letting text elsewhere in
+/// the statement stand in for it.
+fn required_logical_attribute(
+    entity_type: &str,
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<bool, IoError> {
+    match slots.get(index) {
+        Some(AttrSlot::Enum(".T." | ".TRUE.")) => Ok(true),
+        Some(AttrSlot::Enum(".F." | ".FALSE.")) => Ok(false),
+        other => Err(IoError::ParseError {
+            reason: format!(
+                "{entity_type} #{entity_ref} needs a logical for {label}, got {}",
+                describe_slot(other)
+            ),
+        }),
+    }
+}
+
+/// Read one schema-positioned attribute as a finite real literal.
+///
+/// Unlike [`parse_floats`], this never treats a numeric entity name as
+/// geometry and never discovers a number inside another attribute.
+fn required_real_attribute(
+    entity_type: &str,
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<f64, IoError> {
+    let Some(AttrSlot::Other(raw)) = slots.get(index) else {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "{entity_type} #{entity_ref} needs a real for {label}, got {}",
+                describe_slot(slots.get(index))
+            ),
+        });
+    };
+    let value = raw.parse::<f64>().map_err(|_| IoError::ParseError {
+        reason: format!(
+            "{entity_type} #{entity_ref} has a non-numeric {label} {}",
+            AttrSlot::Other(raw).describe()
+        ),
+    })?;
+    if !value.is_finite() {
+        return Err(IoError::ParseError {
+            reason: format!("{entity_type} #{entity_ref} has a non-finite {label}"),
+        });
+    }
+    Ok(value)
+}
+
+/// Read one schema-positioned aggregate whose members must all be finite
+/// real literals.
+fn exact_real_attribute_list(
+    entity_type: &str,
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<Vec<f64>, IoError> {
+    let Some(AttrSlot::List(list)) = slots.get(index) else {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "{entity_type} #{entity_ref} needs a real aggregate for {label}, got {}",
+                describe_slot(slots.get(index))
+            ),
+        });
+    };
+    let inner = list
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!("{entity_type} #{entity_ref} has a malformed {label} aggregate"),
+        })?;
+    let members = split_attr_slots(inner);
+    let mut values = Vec::with_capacity(members.len());
+    for member in members {
+        let AttrSlot::Other(raw) = member else {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{entity_type} #{entity_ref} has a non-real {label} member {}",
+                    member.describe()
+                ),
+            });
+        };
+        let value = raw.parse::<f64>().map_err(|_| IoError::ParseError {
+            reason: format!(
+                "{entity_type} #{entity_ref} has a non-numeric {label} member {}",
+                AttrSlot::Other(raw).describe()
+            ),
+        })?;
+        if !value.is_finite() {
+            return Err(IoError::ParseError {
+                reason: format!("{entity_type} #{entity_ref} has a non-finite {label} member"),
+            });
+        }
+        values.push(value);
+    }
+    Ok(values)
+}
+
+/// Read a schema-positioned `*_MEASURE(real)` select as one finite value.
+fn required_typed_measure_attribute(
+    entity_type: &str,
+    entity_ref: u64,
+    slots: &[AttrSlot<'_>],
+    index: usize,
+    label: &str,
+) -> Result<f64, IoError> {
+    let Some(AttrSlot::Other(raw)) = slots.get(index) else {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "{entity_type} #{entity_ref} needs a typed measure for {label}, got {}",
+                describe_slot(slots.get(index))
+            ),
+        });
+    };
+    let raw = raw.trim();
+    let Some(open) = raw.find('(') else {
+        return Err(IoError::ParseError {
+            reason: format!("{entity_type} #{entity_ref} has a malformed {label}"),
+        });
+    };
+    let measure_type = &raw[..open];
+    let measure_type_is_valid = measure_type
+        .get(measure_type.len().saturating_sub("_MEASURE".len())..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("_MEASURE"))
+        && !measure_type.is_empty()
+        && measure_type
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    let literal = raw[open + 1..]
+        .strip_suffix(')')
+        .filter(|_| measure_type_is_valid)
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!("{entity_type} #{entity_ref} has a malformed {label}"),
+        })?
+        .trim();
+    let value = literal.parse::<f64>().map_err(|_| IoError::ParseError {
+        reason: format!("{entity_type} #{entity_ref} has a non-numeric {label}"),
+    })?;
+    if !value.is_finite() {
+        return Err(IoError::ParseError {
+            reason: format!("{entity_type} #{entity_ref} has a non-finite {label}"),
+        });
+    }
+    Ok(value)
+}
+
+/// Parse one STEP aggregate whose members must each be a whole entity
+/// reference. Strings and typed values are syntax, not places to discover a
+/// `#NNN` substring.
+fn exact_reference_list(list: &str) -> Result<Vec<u64>, String> {
+    let trimmed = list.trim();
+    let inner = trimmed
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .ok_or_else(|| "expected a parenthesized reference aggregate".to_string())?;
+    let members = inner.trim();
+    let members = members.strip_suffix(',').map_or(members, str::trim_end);
+    let mut references = Vec::new();
+    for slot in split_attr_slots(members) {
+        match slot {
+            AttrSlot::Ref(reference) => references.push(reference),
+            other => {
+                return Err(format!(
+                    "expected an entity reference, got {}",
+                    other.describe()
+                ));
+            }
+        }
+    }
+    Ok(references)
+}
+
 /// Strip a STEP string literal's delimiting quotes and collapse its `''`
 /// escape to a single apostrophe.
 /// Extracts an entity's leading name string (`'name', ...`), unescaped;
@@ -4309,6 +5751,171 @@ fn unescape_step_string(literal: &str) -> String {
     inner.replace("''", "'")
 }
 
+fn parse_trimmed_curve(curve_ref: u64, attrs: &str) -> Result<ParsedTrimmedCurve, IoError> {
+    let slots = split_attr_slots(attrs);
+    let trim_1 = parse_trim_select(curve_ref, "trim_1", slots.get(2))?;
+    let trim_2 = parse_trim_select(curve_ref, "trim_2", slots.get(3))?;
+    let master = match slots.get(5) {
+        Some(AttrSlot::Enum(".CARTESIAN.")) => TrimMaster::Cartesian,
+        Some(AttrSlot::Enum(".PARAMETER.")) => TrimMaster::Parameter,
+        Some(AttrSlot::Enum(".UNSPECIFIED.")) => TrimMaster::Unspecified,
+        other => {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "TRIMMED_CURVE #{curve_ref} has invalid master_representation {}",
+                    describe_slot(other)
+                ),
+            });
+        }
+    };
+
+    for (label, select) in [("trim_1", trim_1), ("trim_2", trim_2)] {
+        let selected_is_present = match master {
+            TrimMaster::Cartesian => select.point_ref.is_some(),
+            TrimMaster::Parameter => select.parameter.is_some(),
+            TrimMaster::Unspecified => select.point_ref.is_some() || select.parameter.is_some(),
+        };
+        if !selected_is_present {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "TRIMMED_CURVE #{curve_ref} {label} does not provide its selected trim representation"
+                ),
+            });
+        }
+    }
+
+    Ok(ParsedTrimmedCurve {
+        trim_1,
+        trim_2,
+        master,
+    })
+}
+
+fn parse_trim_select(
+    curve_ref: u64,
+    label: &str,
+    slot: Option<&AttrSlot<'_>>,
+) -> Result<ParsedTrimSelect, IoError> {
+    let Some(AttrSlot::List(text)) = slot else {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} {label} must be a trim-select list, got {}",
+                describe_slot(slot)
+            ),
+        });
+    };
+    let inner = text
+        .trim()
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!("TRIMMED_CURVE #{curve_ref} {label} has a malformed trim-select list"),
+        })?;
+    let mut point_refs = Vec::new();
+    let mut parameters = Vec::new();
+    for item in split_attr_slots(inner) {
+        match item {
+            AttrSlot::Ref(reference) => point_refs.push(reference),
+            AttrSlot::Other(raw) => match parse_parameter_value_token(raw)? {
+                Some(parameter) => parameters.push(parameter),
+                None => {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "TRIMMED_CURVE #{curve_ref} {label} contains unsupported trim value {}",
+                            AttrSlot::Other(raw).describe()
+                        ),
+                    });
+                }
+            },
+            other => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "TRIMMED_CURVE #{curve_ref} {label} contains unsupported trim value {}",
+                        other.describe()
+                    ),
+                });
+            }
+        }
+    }
+    if point_refs.len() > 1 || parameters.len() > 1 {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} {label} contains more than one Cartesian point or parameter value"
+            ),
+        });
+    }
+    let select = ParsedTrimSelect {
+        point_ref: point_refs.first().copied(),
+        parameter: parameters.first().copied(),
+    };
+    if select.point_ref.is_none() && select.parameter.is_none() {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} {label} contains no supported trim representation"
+            ),
+        });
+    }
+    Ok(select)
+}
+
+fn periodic_trim_span(
+    curve_ref: u64,
+    first: f64,
+    second: f64,
+    reversed: bool,
+) -> Result<f64, IoError> {
+    let signed_delta = if reversed {
+        first - second
+    } else {
+        second - first
+    };
+    // The semantic boundary is one turn, so its comparison band is measured
+    // at TAU rather than at the absolute parameter anchors. Scaling this band
+    // by a large anchor can turn several real revolutions into one.
+    let roundoff = 32.0 * f64::EPSILON * std::f64::consts::TAU;
+    if signed_delta.abs() > std::f64::consts::TAU + roundoff {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} declares unsupported multi-turn periodic span {signed_delta}"
+            ),
+        });
+    }
+    if (signed_delta.abs() - std::f64::consts::TAU).abs() <= roundoff {
+        Ok(std::f64::consts::TAU)
+    } else if signed_delta > roundoff {
+        Ok(signed_delta)
+    } else if signed_delta < -roundoff {
+        Ok(signed_delta + std::f64::consts::TAU)
+    } else {
+        Err(IoError::ParseError {
+            reason: format!("TRIMMED_CURVE #{curve_ref} declares an ambiguous zero periodic span"),
+        })
+    }
+}
+
+fn validate_open_trim_sense(
+    curve_ref: u64,
+    first: f64,
+    second: f64,
+    reversed: bool,
+) -> Result<(), IoError> {
+    let oriented_delta = if reversed {
+        first - second
+    } else {
+        second - first
+    };
+    let roundoff = 32.0 * f64::EPSILON * first.abs().max(second.abs()).max(1.0);
+    if oriented_delta > roundoff {
+        Ok(())
+    } else {
+        Err(IoError::ParseError {
+            reason: format!(
+                "TRIMMED_CURVE #{curve_ref} parameter order disagrees with sense_agreement"
+            ),
+        })
+    }
+}
+
 /// Extract every `PARAMETER_VALUE(x)` from an attribute string, in order.
 ///
 /// A `TRIMMED_CURVE`'s two trim selects each hold a `CARTESIAN_POINT`, a
@@ -4322,29 +5929,55 @@ fn unescape_step_string(literal: &str) -> String {
 /// a NaN trim passed straight through and became the edge's parameter range.
 /// An explicitly malformed parameter must fail closed rather than silently
 /// changing the file's geometry by falling back to the untrimmed basis curve.
+#[cfg(test)]
 fn parse_parameter_values(attrs: &str) -> Result<Vec<f64>, IoError> {
-    const MARKER: &str = "PARAMETER_VALUE(";
     let mut values = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = attrs[from..].find(MARKER) {
-        let open = from + rel + MARKER.len();
-        let Some(close) = attrs[open..].find(')') else {
-            break;
-        };
-        if let Ok(value) = attrs[open..open + close].trim().parse::<f64>() {
-            if !value.is_finite() {
-                return Err(IoError::ParseError {
-                    reason: "TRIMMED_CURVE PARAMETER_VALUE must be finite".to_string(),
-                });
-            }
+    for slot in split_attr_slots(attrs) {
+        if let AttrSlot::Other(raw) = slot
+            && let Some(value) = parse_parameter_value_token(raw)?
+        {
             values.push(value);
         }
-        from = open + close;
     }
     Ok(values)
 }
 
+/// Parse one whole `PARAMETER_VALUE(real)` select member. A marker embedded in
+/// a longer identifier or a STEP string is not a parameter declaration.
+fn parse_parameter_value_token(raw: &str) -> Result<Option<f64>, IoError> {
+    const NAME: &str = "PARAMETER_VALUE";
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed.strip_prefix(NAME) else {
+        return Ok(None);
+    };
+    if rest
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return Ok(None);
+    }
+    let group = rest.trim_start();
+    let literal = group
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .ok_or_else(|| IoError::ParseError {
+            reason: "TRIMMED_CURVE PARAMETER_VALUE is malformed".to_string(),
+        })?
+        .trim();
+    let value = literal.parse::<f64>().map_err(|_| IoError::ParseError {
+        reason: format!("TRIMMED_CURVE PARAMETER_VALUE `{literal}` is not numeric"),
+    })?;
+    if !value.is_finite() {
+        return Err(IoError::ParseError {
+            reason: "TRIMMED_CURVE PARAMETER_VALUE must be finite".to_string(),
+        });
+    }
+    Ok(Some(value))
+}
+
 /// Extract `#NNN` references from the first parenthesized list in attrs.
+#[cfg(test)]
 fn parse_list_refs(attrs: &str) -> Vec<u64> {
     if let Some(start) = attrs.find('(')
         && let Some(end) = attrs[start..].find(')')
@@ -4452,18 +6085,28 @@ fn canonical_composite_bspline_attrs(attrs: &str, base_name: &str) -> Option<Str
 /// a suffix of `RATIONAL_B_SPLINE_*`.
 fn find_exact_composite_component<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
     let needle = format!("{name}(");
-    let mut from = 0usize;
-    while let Some(relative) = attrs[from..].find(&needle) {
-        let start = from + relative;
-        let is_boundary = start == 0
-            || attrs[..start]
-                .chars()
-                .next_back()
-                .is_some_and(|ch| !ch.is_ascii_alphanumeric() && ch != '_');
-        if is_boundary {
-            return balanced_group_after(&attrs[start..], name);
+    let bytes = attrs.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut index = 0usize;
+    let mut in_string = false;
+    while index < bytes.len() {
+        if bytes[index] == b'\'' {
+            if in_string && bytes.get(index + 1) == Some(&b'\'') {
+                index += 2;
+                continue;
+            }
+            in_string = !in_string;
+            index += 1;
+            continue;
         }
-        from = start + needle.len();
+        if !in_string
+            && bytes[index..].starts_with(needle_bytes)
+            && (index == 0
+                || (!bytes[index - 1].is_ascii_alphanumeric() && bytes[index - 1] != b'_'))
+        {
+            return balanced_group_after(&attrs[index..], name);
+        }
+        index += 1;
     }
     None
 }
@@ -4480,95 +6123,122 @@ fn parse_ints_in_parens(s: &str) -> Vec<u32> {
     result
 }
 
-/// Extract weights from a RATIONAL_B_SPLINE section in composite entity attrs.
-///
-/// Looks for `RATIONAL_B_SPLINE_CURVE((...weights...))` or
-/// `RATIONAL_B_SPLINE_SURFACE((...weights...))` and parses the weight list.
-/// Falls back to uniform weights if parsing fails.
-fn extract_rational_weights(attrs: &str, expected_count: usize) -> Vec<f64> {
-    let marker = if attrs.contains("RATIONAL_B_SPLINE_SURFACE") {
-        "RATIONAL_B_SPLINE_SURFACE"
-    } else {
-        "RATIONAL_B_SPLINE_CURVE"
-    };
-
-    if let Some(pos) = attrs.find(marker) {
-        let after = &attrs[pos + marker.len()..];
-        if let Some(paren_start) = after.find('(') {
-            let rest = &after[paren_start + 1..];
-            let weights = parse_weight_list(rest);
-            if weights.len() >= expected_count {
-                return weights[..expected_count].to_vec();
-            }
-            // Partial parse (fewer than expected): fall back to uniform
-            // weights rather than propagating a dimension-mismatch error.
-        }
+/// Return the one weight aggregate declared by a rational B-spline component.
+/// Exact component lookup keeps marker text inside entity names opaque.
+fn rational_weight_aggregate<'a>(
+    attrs: &'a str,
+    component: &str,
+    entity_ref: u64,
+) -> Result<&'a str, IoError> {
+    let component_attrs =
+        find_exact_composite_component(attrs, component).ok_or_else(|| IoError::ParseError {
+            reason: format!("{component} #{entity_ref} has no weight declaration"),
+        })?;
+    let slots = split_attr_slots(component_attrs);
+    match slots.as_slice() {
+        [AttrSlot::List(weights)] => Ok(*weights),
+        _ => Err(IoError::ParseError {
+            reason: format!("{component} #{entity_ref} has a malformed weight aggregate"),
+        }),
     }
-
-    vec![1.0; expected_count]
 }
 
-/// Parse a (possibly nested) list of weights from RATIONAL_B_SPLINE attrs.
-/// Handles both flat `(w1, w2, w3)` and nested `((w1, w2), (w3, w4))` forms,
-/// as well as no-paren format `w1, w2, w3)`.
-fn parse_weight_list(s: &str) -> Vec<f64> {
-    let mut weights = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-
-    for ch in s.chars() {
-        match ch {
-            '(' => {
-                depth += 1;
-            }
-            ')' => {
-                depth -= 1;
-                if depth < 0 {
-                    // Closing paren of the outer RATIONAL section.
-                    let trimmed = current.trim();
-                    if let Ok(v) = trimmed.parse::<f64>() {
-                        weights.push(v);
-                    }
-                    break;
-                }
-            }
-            ',' if depth <= 1 => {
-                let trimmed = current.trim();
-                if let Ok(v) = trimmed.parse::<f64>() {
-                    weights.push(v);
-                }
-                current.clear();
-                continue;
-            }
-            ',' => {
-                // Comma inside a nested sub-list (depth > 1) — flush token
-                // without accumulating the comma character.
-                let trimmed = current.trim();
-                if let Ok(v) = trimmed.parse::<f64>() {
-                    weights.push(v);
-                }
-                current.clear();
-                continue;
-            }
-            _ => {}
+fn exact_weight_row(
+    aggregate: &str,
+    component: &str,
+    entity_ref: u64,
+) -> Result<Vec<f64>, IoError> {
+    let inner = aggregate
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!("{component} #{entity_ref} has a malformed weight aggregate"),
+        })?;
+    let members = split_attr_slots(inner);
+    let mut weights = Vec::with_capacity(members.len());
+    for member in members {
+        let AttrSlot::Other(raw) = member else {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{component} #{entity_ref} has a non-real weight member {}",
+                    member.describe()
+                ),
+            });
+        };
+        let weight = raw.parse::<f64>().map_err(|_| IoError::ParseError {
+            reason: format!("{component} #{entity_ref} has a non-numeric weight"),
+        })?;
+        if !weight.is_finite() {
+            return Err(IoError::ParseError {
+                reason: format!("{component} #{entity_ref} has a non-finite weight"),
+            });
         }
-        if depth >= 0 && ch != '(' && ch != ')' {
-            current.push(ch);
-        }
+        weights.push(weight);
     }
-
-    weights
+    Ok(weights)
 }
 
-/// Extract a 2D weight grid from RATIONAL_B_SPLINE_SURFACE attrs.
-/// Returns uniform weights if parsing fails.
-fn extract_rational_weight_grid(attrs: &str, n_rows: usize, n_cols: usize) -> Vec<Vec<f64>> {
-    let flat = extract_rational_weights(attrs, n_rows * n_cols);
-    if n_cols > 0 && flat.len() == n_rows * n_cols {
-        flat.chunks(n_cols).map(<[f64]>::to_vec).collect()
-    } else {
-        vec![vec![1.0; n_cols]; n_rows]
+fn extract_rational_curve_weights(
+    attrs: &str,
+    expected_count: usize,
+    curve_ref: u64,
+) -> Result<Vec<f64>, IoError> {
+    const COMPONENT: &str = "RATIONAL_B_SPLINE_CURVE";
+    let aggregate = rational_weight_aggregate(attrs, COMPONENT, curve_ref)?;
+    let weights = exact_weight_row(aggregate, COMPONENT, curve_ref)?;
+    if weights.len() != expected_count {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "{COMPONENT} #{curve_ref} declares {} weights for {expected_count} control points",
+                weights.len()
+            ),
+        });
     }
+    Ok(weights)
+}
+
+fn extract_rational_surface_weights(
+    attrs: &str,
+    n_rows: usize,
+    n_cols: usize,
+    surface_ref: u64,
+) -> Result<Vec<Vec<f64>>, IoError> {
+    const COMPONENT: &str = "RATIONAL_B_SPLINE_SURFACE";
+    let aggregate = rational_weight_aggregate(attrs, COMPONENT, surface_ref)?;
+    let inner = aggregate
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .ok_or_else(|| IoError::ParseError {
+            reason: format!("{COMPONENT} #{surface_ref} has a malformed weight grid"),
+        })?;
+    let rows = split_attr_slots(inner);
+    if rows.len() != n_rows {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "{COMPONENT} #{surface_ref} declares {} weight rows for {n_rows} control-point rows",
+                rows.len()
+            ),
+        });
+    }
+    let mut weights = Vec::with_capacity(n_rows);
+    for row in rows {
+        let AttrSlot::List(row) = row else {
+            return Err(IoError::ParseError {
+                reason: format!("{COMPONENT} #{surface_ref} has a malformed weight row"),
+            });
+        };
+        let row = exact_weight_row(row, COMPONENT, surface_ref)?;
+        if row.len() != n_cols {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "{COMPONENT} #{surface_ref} declares {} weights in a row for {n_cols} control points",
+                    row.len()
+                ),
+            });
+        }
+        weights.push(row);
+    }
+    Ok(weights)
 }
 
 /// Parse a B_SPLINE_SURFACE_WITH_KNOTS attribute string into its components.
@@ -4943,6 +6613,42 @@ mod tests {
     }
 
     #[test]
+    fn decomposed_complex_manifold_solid_uses_component_local_attributes() {
+        let mut write_topo = Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut write_topo, 2.0, 3.0, 4.0).unwrap();
+        let step = writer::write_step(&write_topo, &[solid]).unwrap();
+        let solid_line = step
+            .lines()
+            .find(|line| line.contains("= MANIFOLD_SOLID_BREP("))
+            .unwrap();
+        let solid_ref = parse_entity_id(solid_line.split_once('=').unwrap().0.trim()).unwrap();
+        let outer_shell_ref = parse_refs(solid_line)[1];
+        let hostile_name = "complex BREP_WITH_VOIDS(#999) MANIFOLD_SOLID_BREP(#998)";
+        let complex = format!(
+            "#{solid_ref} = ( GEOMETRIC_REPRESENTATION_ITEM() \
+             MANIFOLD_SOLID_BREP(#{outer_shell_ref}) \
+             REPRESENTATION_ITEM('{hostile_name}') SOLID_MODEL() );"
+        );
+        let step = step.replace(solid_line, &complex);
+
+        let mut read_topo = Topology::new();
+        let read_solids = read_step(&step, &mut read_topo).unwrap();
+        assert_eq!(read_solids.len(), 1);
+        let read_solid = read_topo.solid(read_solids[0]).unwrap();
+        assert!(read_solid.inner_shells().is_empty());
+        assert_eq!(
+            read_topo
+                .attributes()
+                .solid(read_solids[0])
+                .and_then(|attributes| attributes.name.as_deref()),
+            Some(hostile_name)
+        );
+        let volume =
+            remus_operations::measure::solid_volume(&read_topo, read_solids[0], 0.01).unwrap();
+        assert!((volume - 24.0).abs() < 1e-9, "{volume}");
+    }
+
+    #[test]
     fn failed_multi_solid_import_is_transactional() {
         let mut write_topo = Topology::new();
         let first = remus_operations::primitives::make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
@@ -5085,16 +6791,30 @@ mod tests {
         assert_eq!(refs, vec![10, 20, 30]);
     }
 
-    /// `EDGE_CURVE.same_sense` is read with the same trailing-flag helper as
-    /// `ORIENTED_EDGE.orientation`, so it has to survive the way real
-    /// exporters write the statement — compact, without spaces.
     #[test]
-    fn edge_curve_same_sense_flag() {
-        assert!(orientation_is_reversed("'',#1,#2,#3,.F.)"));
-        assert!(orientation_is_reversed("'', #1, #2, #3, .F.)"));
-        assert!(!orientation_is_reversed("'',#1,#2,#3,.T.)"));
-        // A name that happens to end in the flag's text is not the flag.
-        assert!(!orientation_is_reversed("'arc.F.',#1,#2,#3,.T.)"));
+    fn oriented_edge_name_tokens_cannot_override_edge_or_orientation() {
+        let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2=CARTESIAN_POINT('',(1.,0.,0.));\n\
+                    #3=VERTEX_POINT('',#1);\n\
+                    #4=VERTEX_POINT('',#2);\n\
+                    #5=LINE('',#1,#6);\n\
+                    #6=VECTOR('',#7,1.);\n\
+                    #7=DIRECTION('',(1.,0.,0.));\n\
+                    #10=EDGE_CURVE('',#3,#4,#5,.T.);\n\
+                    #11=ORIENTED_EDGE('hostile .T. #99',*,*,#10,.F.);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let oriented = {
+            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            builder.build_oriented_edge(11).unwrap()
+        };
+        assert!(!oriented.is_forward());
+        let edge = topo.edge(oriented.edge()).unwrap();
+        assert_eq!(
+            topo.vertex(edge.start()).unwrap().point(),
+            Point3::new(0.0, 0.0, 0.0)
+        );
     }
 
     #[test]
@@ -5119,6 +6839,1132 @@ mod tests {
             canonicalize_sense(EdgeCurve::Line),
             EdgeCurve::Line
         ));
+    }
+
+    #[test]
+    fn planar_hole_winding_repair_reorients_shared_carrier_coherently() {
+        let mut topo = Topology::new();
+        let square_points = [
+            Point3::new(-2.0, -2.0, 0.0),
+            Point3::new(2.0, -2.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(-2.0, 2.0, 0.0),
+        ];
+        let square_vertices: Vec<_> = square_points
+            .into_iter()
+            .map(|point| topo.add_vertex(Vertex::new(point, Tolerance::new().linear)))
+            .collect();
+        let mut outer_edges = Vec::new();
+        for index in 0..square_vertices.len() {
+            let edge = topo.add_edge(Edge::new(
+                square_vertices[index],
+                square_vertices[(index + 1) % square_vertices.len()],
+                EdgeCurve::Line,
+            ));
+            outer_edges.push(OrientedEdge::new(edge, true));
+        }
+        let outer_wire = topo.add_wire(Wire::new(outer_edges, true).unwrap());
+
+        let circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut circle_edge = Edge::with_tolerance(
+            seam,
+            seam,
+            EdgeCurve::Circle(circle),
+            Some(Tolerance::new().linear),
+        );
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let circle_edge = topo.add_edge(circle_edge);
+        let inner_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(circle_edge, true)], true).unwrap());
+        let neighbour_wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(circle_edge, false)], true).unwrap());
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let neighbour_face = topo.add_face(Face::new(
+            neighbour_wire,
+            vec![],
+            FaceSurface::Cylinder(cylinder),
+        ));
+        let oriented_quarter = |topology: &Topology, wire_id| {
+            let oriented = topology.wire(wire_id).unwrap().edges()[0];
+            let edge = topology.edge(oriented.edge()).unwrap();
+            let (t0, t1) = edge.strict_domain().unwrap();
+            let fraction = if oriented.is_forward() { 0.25 } else { 0.75 };
+            let parameter = (t1 - t0).mul_add(fraction, t0);
+            let seam = topology.vertex(edge.start()).unwrap().point();
+            edge.curve().evaluate_with_endpoints(parameter, seam, seam)
+        };
+        let inner_before = oriented_quarter(&topo, inner_wire);
+        let neighbour_before = oriented_quarter(&topo, neighbour_wire);
+
+        let candidates = [
+            FaceBoundCandidate {
+                bound_ref: 1,
+                wire: outer_wire,
+                explicit_outer: true,
+                source_position: 0,
+            },
+            FaceBoundCandidate {
+                bound_ref: 2,
+                wire: inner_wire,
+                explicit_outer: false,
+                source_position: 1,
+            },
+        ];
+        let plane = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let entities = HashMap::new();
+        {
+            let mut builder = StepBuilder::new(
+                &mut topo,
+                &entities,
+                UnitScale {
+                    length: 1.0,
+                    angle: 1.0,
+                },
+            )
+            .unwrap();
+            builder
+                .normalize_planar_inner_winding(42, &plane, outer_wire, &[inner_wire], &candidates)
+                .unwrap();
+
+            let frame =
+                Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
+            let mut sampled_points = 0;
+            let outer = builder
+                .sample_planar_bound(42, candidates[0], &frame, &mut sampled_points)
+                .unwrap();
+            let inner = builder
+                .sample_planar_bound(42, candidates[1], &frame, &mut sampled_points)
+                .unwrap();
+            assert_ne!(
+                polygon_signed_area(&outer).is_sign_positive(),
+                polygon_signed_area(&inner).is_sign_positive()
+            );
+        }
+
+        let planar_face = topo.add_face(Face::new(outer_wire, vec![inner_wire], plane));
+        assert_eq!(topo.face(planar_face).unwrap().inner_wires(), &[inner_wire]);
+        assert!(topo.wire(inner_wire).unwrap().edges()[0].is_forward());
+        let neighbour_wire = topo.face(neighbour_face).unwrap().outer_wire();
+        assert!(!topo.wire(neighbour_wire).unwrap().edges()[0].is_forward());
+        let inner_after = oriented_quarter(&topo, inner_wire);
+        let neighbour_after = oriented_quarter(&topo, neighbour_wire);
+        assert!((inner_after - neighbour_before).length() < 1e-12);
+        assert!((neighbour_after - inner_before).length() < 1e-12);
+        assert!((inner_after - inner_before).length() > 1.0);
+
+        let shell = topo.add_shell(Shell::new(vec![planar_face, neighbour_face]).unwrap());
+        assert!(
+            remus_check::validate::shell::check_shell_orientation(&topo, shell)
+                .unwrap()
+                .is_empty(),
+            "global carrier canonicalization must preserve opposite effective uses"
+        );
+    }
+
+    #[test]
+    fn imported_closed_circle_stores_anchored_full_turn_authority() {
+        let circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(3.0, -2.0, 5.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let seam_parameter = 1.1;
+        let seam = circle.evaluate(seam_parameter);
+        let center = circle.center();
+        let (topo, edge_id) = imported_edge(EdgeCurve::Circle(circle), seam, seam, true).unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!((t0 - seam_parameter).abs() < 1e-12);
+        assert!((t1 - t0 - std::f64::consts::TAU).abs() < 1e-12);
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        assert!((edge.curve().evaluate_with_endpoints(t0, start, end) - seam).length() < 1e-12);
+        assert!((edge.curve().evaluate_with_endpoints(t1, start, end) - seam).length() < 1e-12);
+        let midpoint = edge
+            .curve()
+            .evaluate_with_endpoints((t0 + t1) * 0.5, start, end);
+        assert!((midpoint - (center + (center - seam))).length() < 1e-12);
+    }
+
+    #[test]
+    fn imported_reversed_circle_preserves_the_complementary_branch() {
+        let circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let start = circle.evaluate(0.2);
+        let end = circle.evaluate(1.0);
+        let (topo, edge_id) = imported_edge(
+            canonicalize_sense(EdgeCurve::Circle(circle.clone())),
+            start,
+            end,
+            false,
+        )
+        .unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!((t1 - t0 - (std::f64::consts::TAU - 0.8)).abs() < 1e-12);
+        let edge_start = topo.vertex(edge.start()).unwrap().point();
+        let edge_end = topo.vertex(edge.end()).unwrap().point();
+        let midpoint = edge
+            .curve()
+            .evaluate_with_endpoints((t0 + t1) * 0.5, edge_start, edge_end);
+        assert!((midpoint - circle.evaluate(0.6)).length() > 3.0);
+        assert!(
+            (edge
+                .curve()
+                .evaluate_with_endpoints(t0, edge_start, edge_end)
+                - start)
+                .length()
+                < 1e-12
+        );
+        assert!(
+            (edge
+                .curve()
+                .evaluate_with_endpoints(t1, edge_start, edge_end)
+                - end)
+                .length()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn step_trimmed_circle_false_sense_preserves_the_declared_major_branch() {
+        let first = 1.0_f64;
+        let second = 3.0_f64;
+        let radius = 2.0;
+        let carrier = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            radius,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let start = carrier.evaluate(first);
+        let end = carrier.evaluate(second);
+        let body = format!(
+            "#1=CARTESIAN_POINT('',({},{},0.));\n\
+             #2=CARTESIAN_POINT('',({},{},0.));\n\
+             #3=VERTEX_POINT('',#1);\n\
+             #4=VERTEX_POINT('',#2);\n\
+             #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #6=DIRECTION('',(0.,0.,1.));\n\
+             #7=DIRECTION('',(1.,0.,0.));\n\
+             #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+             #9=CIRCLE('',#8,{radius});\n\
+             #10=TRIMMED_CURVE('',#9,(PARAMETER_VALUE({first})),\
+                  (PARAMETER_VALUE({second})),.F.,.PARAMETER.);\n\
+             #11=EDGE_CURVE('',#3,#4,#10,.T.);",
+            start.x(),
+            start.y(),
+            end.x(),
+            end.y(),
+        );
+        let (topo, edge_id) = edge_geometry(&body, 11).unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        let expected_span = (first - second).rem_euclid(std::f64::consts::TAU);
+        assert!((t1 - t0 - expected_span).abs() < 1e-12);
+        let edge_start = topo.vertex(edge.start()).unwrap().point();
+        let edge_end = topo.vertex(edge.end()).unwrap().point();
+        let midpoint = edge
+            .curve()
+            .evaluate_with_endpoints((t0 + t1) * 0.5, edge_start, edge_end);
+        let expected_midpoint = carrier.evaluate(first - expected_span * 0.5);
+        assert!((midpoint - expected_midpoint).length() < 1e-12);
+        assert!((midpoint - carrier.evaluate(2.0)).length() > 3.0);
+    }
+
+    #[test]
+    fn step_trimmed_circle_refuses_shifted_same_span_anchors() {
+        let carrier = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let shifted_start = carrier.evaluate(0.5);
+        let shifted_end = carrier.evaluate(1.5);
+        let body = format!(
+            "#1=CARTESIAN_POINT('',({},{},0.));\n\
+             #2=CARTESIAN_POINT('',({},{},0.));\n\
+             #3=VERTEX_POINT('',#1);\n\
+             #4=VERTEX_POINT('',#2);\n\
+             #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #6=DIRECTION('',(0.,0.,1.));\n\
+             #7=DIRECTION('',(1.,0.,0.));\n\
+             #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+             #9=CIRCLE('',#8,2.);\n\
+             #10=TRIMMED_CURVE('',#9,(PARAMETER_VALUE(0.)),\
+                  (PARAMETER_VALUE(1.)),.T.,.PARAMETER.);\n\
+             #11=EDGE_CURVE('',#3,#4,#10,.T.);",
+            shifted_start.x(),
+            shifted_start.y(),
+            shifted_end.x(),
+            shifted_end.y(),
+        );
+        let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = {
+            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            builder.build_edge_curve(11).unwrap_err()
+        };
+        assert!(error.to_string().contains("endpoint misses its carrier"));
+        assert_eq!(topo.num_edges(), 0);
+    }
+
+    fn open_conic_point(kind: &str, parameter: f64) -> Point3 {
+        match kind {
+            "HYPERBOLA" => Point3::new(2.0 * parameter.cosh(), parameter.sinh(), 0.0),
+            "PARABOLA" => Point3::new(2.0 * parameter * parameter, 4.0 * parameter, 0.0),
+            _ => unreachable!("test fixture only uses the two open conics"),
+        }
+    }
+
+    fn open_conic_entity(kind: &str) -> &'static str {
+        match kind {
+            "HYPERBOLA" => "HYPERBOLA('',#8,2.,1.)",
+            "PARABOLA" => "PARABOLA('',#8,2.)",
+            _ => unreachable!("test fixture only uses the two open conics"),
+        }
+    }
+
+    #[test]
+    fn step_trimmed_open_conics_preserve_forward_and_reverse_parameter_authority() {
+        for kind in ["HYPERBOLA", "PARABOLA"] {
+            for (first, second, sense, edge_sense, start_parameter, end_parameter) in [
+                (0.2, 0.8, ".T.", ".T.", 0.2, 0.8),
+                (0.8, 0.2, ".F.", ".T.", 0.8, 0.2),
+                (0.2, 0.8, ".T.", ".F.", 0.8, 0.2),
+            ] {
+                let start = open_conic_point(kind, start_parameter);
+                let end = open_conic_point(kind, end_parameter);
+                let body = format!(
+                    "#1=CARTESIAN_POINT('',({},{},0.));\n\
+                     #2=CARTESIAN_POINT('',({},{},0.));\n\
+                     #3=VERTEX_POINT('',#1);\n\
+                     #4=VERTEX_POINT('',#2);\n\
+                     #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                     #6=DIRECTION('',(0.,0.,1.));\n\
+                     #7=DIRECTION('',(1.,0.,0.));\n\
+                     #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+                     #9={};\n\
+                     #10=TRIMMED_CURVE('',#9,(PARAMETER_VALUE({first})),\
+                          (PARAMETER_VALUE({second})),{sense},.PARAMETER.);\n\
+                     #11=EDGE_CURVE('',#3,#4,#10,{edge_sense});",
+                    start.x(),
+                    start.y(),
+                    end.x(),
+                    end.y(),
+                    open_conic_entity(kind),
+                );
+                let (topo, edge_id) = edge_geometry(&body, 11).unwrap();
+                let edge = topo.edge(edge_id).unwrap();
+                let (t0, t1) = edge.strict_domain().unwrap();
+                let scale = if kind == "PARABOLA" { 4.0 } else { 1.0 };
+                assert!(
+                    (t0 - start_parameter * scale).abs() < 1e-12,
+                    "{kind} {sense} {edge_sense}"
+                );
+                assert!(
+                    (t1 - end_parameter * scale).abs() < 1e-12,
+                    "{kind} {sense} {edge_sense}"
+                );
+                let midpoint = edge
+                    .curve()
+                    .evaluate_with_endpoints((t0 + t1) * 0.5, start, end);
+                let expected_midpoint =
+                    open_conic_point(kind, (start_parameter + end_parameter) * 0.5);
+                assert!(
+                    (midpoint - expected_midpoint).length() < 1e-12,
+                    "{kind} {sense} {edge_sense}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn step_trimmed_open_conics_refuse_shifted_forward_and_reverse_anchors() {
+        for kind in ["HYPERBOLA", "PARABOLA"] {
+            for (first, second, sense, edge_sense, start_parameter, end_parameter) in [
+                (0.2, 0.8, ".T.", ".T.", 0.2, 0.8),
+                (0.8, 0.2, ".F.", ".T.", 0.8, 0.2),
+                (0.2, 0.8, ".T.", ".F.", 0.8, 0.2),
+            ] {
+                let shifted_start = open_conic_point(kind, start_parameter + 0.25);
+                let shifted_end = open_conic_point(kind, end_parameter + 0.25);
+                let body = format!(
+                    "#1=CARTESIAN_POINT('',({},{},0.));\n\
+                     #2=CARTESIAN_POINT('',({},{},0.));\n\
+                     #3=VERTEX_POINT('',#1);\n\
+                     #4=VERTEX_POINT('',#2);\n\
+                     #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                     #6=DIRECTION('',(0.,0.,1.));\n\
+                     #7=DIRECTION('',(1.,0.,0.));\n\
+                     #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+                     #9={};\n\
+                     #10=TRIMMED_CURVE('',#9,(PARAMETER_VALUE({first})),\
+                          (PARAMETER_VALUE({second})),{sense},.PARAMETER.);\n\
+                     #11=EDGE_CURVE('',#3,#4,#10,{edge_sense});",
+                    shifted_start.x(),
+                    shifted_start.y(),
+                    shifted_end.x(),
+                    shifted_end.y(),
+                    open_conic_entity(kind),
+                );
+                let entities =
+                    parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+                let units = required_unit_scale(&entities).unwrap();
+                let mut topo = Topology::new();
+                let error = {
+                    let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+                    builder.build_edge_curve(11).unwrap_err()
+                };
+                assert!(error.to_string().contains("endpoint misses its carrier"));
+                assert_eq!(topo.num_edges(), 0, "{kind} {sense} {edge_sense}");
+            }
+        }
+    }
+
+    #[test]
+    fn cartesian_and_dual_trim_authority_refuse_mismatched_circle_anchors() {
+        let carrier = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let declared_start = carrier.evaluate(0.0);
+        let declared_end = carrier.evaluate(1.0);
+        let shifted_start = carrier.evaluate(0.5);
+        let shifted_end = carrier.evaluate(1.5);
+        for (trim_1, trim_2, master, expected) in [
+            ("#20", "#21", ".CARTESIAN.", "endpoint misses its carrier"),
+            (
+                "#20,PARAMETER_VALUE(0.5)",
+                "#21,PARAMETER_VALUE(1.5)",
+                ".CARTESIAN.",
+                "Cartesian and parameter representations differ",
+            ),
+        ] {
+            let (edge_start, edge_end) = if trim_1 == "#20" {
+                (shifted_start, shifted_end)
+            } else {
+                (declared_start, declared_end)
+            };
+            let body = format!(
+                "#1=CARTESIAN_POINT('',({},{},0.));\n\
+                 #2=CARTESIAN_POINT('',({},{},0.));\n\
+                 #3=VERTEX_POINT('',#1);\n\
+                 #4=VERTEX_POINT('',#2);\n\
+                 #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                 #6=DIRECTION('',(0.,0.,1.));\n\
+                 #7=DIRECTION('',(1.,0.,0.));\n\
+                 #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+                 #9=CIRCLE('',#8,2.);\n\
+                 #20=CARTESIAN_POINT('',({},{},0.));\n\
+                 #21=CARTESIAN_POINT('',({},{},0.));\n\
+                 #10=TRIMMED_CURVE('',#9,({trim_1}),({trim_2}),.T.,{master});\n\
+                 #11=EDGE_CURVE('',#3,#4,#10,.T.);",
+                edge_start.x(),
+                edge_start.y(),
+                edge_end.x(),
+                edge_end.y(),
+                declared_start.x(),
+                declared_start.y(),
+                declared_end.x(),
+                declared_end.y(),
+            );
+            let error = edge_geometry(&body, 11).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn cartesian_and_consistent_dual_trim_authority_preserve_the_circle_branch() {
+        let carrier = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let first = 0.2;
+        let second = 1.0;
+        let start = carrier.evaluate(first);
+        let end = carrier.evaluate(second);
+        for (trim_1, trim_2) in [
+            ("#20", "#21"),
+            ("#20,PARAMETER_VALUE(0.2)", "#21,PARAMETER_VALUE(1.0)"),
+        ] {
+            let body = format!(
+                "#1=CARTESIAN_POINT('',({},{},0.));\n\
+                 #2=CARTESIAN_POINT('',({},{},0.));\n\
+                 #3=VERTEX_POINT('',#1);\n\
+                 #4=VERTEX_POINT('',#2);\n\
+                 #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                 #6=DIRECTION('',(0.,0.,1.));\n\
+                 #7=DIRECTION('',(1.,0.,0.));\n\
+                 #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+                 #9=CIRCLE('',#8,2.);\n\
+                 #20=CARTESIAN_POINT('',({},{},0.));\n\
+                 #21=CARTESIAN_POINT('',({},{},0.));\n\
+                 #10=TRIMMED_CURVE('',#9,({trim_1}),({trim_2}),.T.,.CARTESIAN.);\n\
+                 #11=EDGE_CURVE('',#3,#4,#10,.T.);",
+                start.x(),
+                start.y(),
+                end.x(),
+                end.y(),
+                start.x(),
+                start.y(),
+                end.x(),
+                end.y(),
+            );
+            let (topo, edge_id) = edge_geometry(&body, 11).unwrap();
+            let edge = topo.edge(edge_id).unwrap();
+            let (t0, t1) = edge.strict_domain().unwrap();
+            let midpoint = edge
+                .curve()
+                .evaluate_with_endpoints((t0 + t1) * 0.5, start, end);
+            assert!((midpoint - carrier.evaluate(0.6)).length() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn degree_trim_and_edge_reverse_preserve_anchors_and_full_turn() {
+        let carrier = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let first = carrier.evaluate(30.0_f64.to_radians());
+        let second = carrier.evaluate(120.0_f64.to_radians());
+        let seam = carrier.evaluate(0.0);
+        let body = format!(
+            "#1=CARTESIAN_POINT('',({},{},0.));\n\
+             #2=CARTESIAN_POINT('',({},{},0.));\n\
+             #3=VERTEX_POINT('',#1);\n\
+             #4=VERTEX_POINT('',#2);\n\
+             #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #6=DIRECTION('',(0.,0.,1.));\n\
+             #7=DIRECTION('',(1.,0.,0.));\n\
+             #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+             #9=CIRCLE('',#8,2.);\n\
+             #10=TRIMMED_CURVE('',#9,(PARAMETER_VALUE(30.)),\
+                  (PARAMETER_VALUE(120.)),.T.,.PARAMETER.);\n\
+             #11=EDGE_CURVE('',#4,#3,#10,.F.);\n\
+             #12=CARTESIAN_POINT('',({},{},0.));\n\
+             #13=VERTEX_POINT('',#12);\n\
+             #14=TRIMMED_CURVE('',#9,(PARAMETER_VALUE(0.)),\
+                  (PARAMETER_VALUE(360.)),.T.,.PARAMETER.);\n\
+             #15=EDGE_CURVE('',#13,#13,#14,.T.);\n\
+             #70=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));\n\
+             #71=(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n\
+             #72=PLANE_ANGLE_MEASURE_WITH_UNIT(\
+                  PLANE_ANGLE_MEASURE(0.017453292519943295),#71);\n\
+             #73=(CONVERSION_BASED_UNIT('DEGREE',#72)NAMED_UNIT(#74)\
+                  PLANE_ANGLE_UNIT());\n\
+             #74=DIMENSIONAL_EXPONENTS(0.,0.,0.,0.,0.,0.,0.);\n\
+             #75=(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT());\n\
+             #76=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                  GLOBAL_UNIT_ASSIGNED_CONTEXT((#70,#73,#75))\
+                  REPRESENTATION_CONTEXT('','degree context'));",
+            first.x(),
+            first.y(),
+            second.x(),
+            second.y(),
+            seam.x(),
+            seam.y(),
+        );
+        let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        assert!((units.angle - std::f64::consts::PI / 180.0).abs() < 1e-15);
+        let mut topo = Topology::new();
+        let (arc_id, full_id) = {
+            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            (
+                builder.build_edge_curve(11).unwrap(),
+                builder.build_edge_curve(15).unwrap(),
+            )
+        };
+        let arc = topo.edge(arc_id).unwrap();
+        let arc_domain = arc.strict_domain().unwrap();
+        assert!((arc_domain.1 - arc_domain.0 - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        let arc_start = topo.vertex(arc.start()).unwrap().point();
+        let arc_end = topo.vertex(arc.end()).unwrap().point();
+        let midpoint = arc.curve().evaluate_with_endpoints(
+            (arc_domain.0 + arc_domain.1) * 0.5,
+            arc_start,
+            arc_end,
+        );
+        assert!((midpoint - carrier.evaluate(75.0_f64.to_radians())).length() < 1e-12);
+
+        let full = topo.edge(full_id).unwrap();
+        let full_domain = full.strict_domain().unwrap();
+        assert!((full_domain.1 - full_domain.0 - std::f64::consts::TAU).abs() < 1e-12);
+        let full_seam = topo.vertex(full.start()).unwrap().point();
+        let opposite = full.curve().evaluate_with_endpoints(
+            (full_domain.0 + full_domain.1) * 0.5,
+            full_seam,
+            full_seam,
+        );
+        assert!((opposite - (carrier.center() + (carrier.center() - seam))).length() < 1e-12);
+    }
+
+    #[test]
+    fn large_periodic_anchors_cannot_hide_a_multi_turn_span() {
+        let error = periodic_trim_span(77, 1e15, 1e15 + 12.0, false).unwrap_err();
+        assert!(error.to_string().contains("unsupported multi-turn"));
+    }
+
+    #[test]
+    fn imported_monotone_nurbs_subspan_recovers_unique_parameter_authority() {
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(4.0, 0.0, 0.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        let (topo, edge_id) = imported_edge(
+            EdgeCurve::NurbsCurve(curve.clone()),
+            curve.evaluate(0.25),
+            curve.evaluate(0.75),
+            false,
+        )
+        .unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!((t0 - 0.25).abs() < 1e-12);
+        assert!((t1 - 0.75).abs() < 1e-12);
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        assert!(
+            (edge.curve().evaluate_with_endpoints(0.5, start, end) - curve.evaluate(0.5)).length()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn imported_folded_nurbs_subspan_without_declared_parameters_is_refused() {
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0],
+            vec![
+                Point3::new(-1.0, -1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(-1.0, 1.0, 0.0),
+                Point3::new(1.0, -1.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let error = imported_edge(
+            EdgeCurve::NurbsCurve(curve.clone()),
+            curve.evaluate(0.5),
+            curve.evaluate(1.5),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("do not uniquely establish"));
+    }
+
+    #[test]
+    fn shared_folded_nurbs_trims_preserve_declared_parameters_and_use_sense() {
+        const FIRST: f64 = 2e-9;
+        const LAST: f64 = 0.75;
+        let start = Point3::new(-1.0 + 2.0 * FIRST, -1.0 + 2.0 * FIRST, 0.0);
+        let end = Point3::new(0.5, 0.5, 0.0);
+        let body = format!(
+            "#1=CARTESIAN_POINT('',(-1.,-1.,0.));\n\
+             #2=CARTESIAN_POINT('',(1.,1.,0.));\n\
+             #3=CARTESIAN_POINT('',(-1.,1.,0.));\n\
+             #4=CARTESIAN_POINT('',(1.,-1.,0.));\n\
+             #5=B_SPLINE_CURVE_WITH_KNOTS('',1,(#1,#2,#3,#4),\
+                  .UNSPECIFIED.,.F.,.F.,(2,1,1,2),(0.,1.,2.,3.),.UNSPECIFIED.);\n\
+             #6=CARTESIAN_POINT('',({},{},0.));\n\
+             #7=CARTESIAN_POINT('',({},{},0.));\n\
+             #8=VERTEX_POINT('',#6);\n\
+             #9=VERTEX_POINT('',#7);\n\
+             #10=TRIMMED_CURVE('',#5,(PARAMETER_VALUE({FIRST})),\
+                  (PARAMETER_VALUE({LAST})),.T.,.PARAMETER.);\n\
+             #11=EDGE_CURVE('',#8,#9,#10,.T.);\n\
+             #12=TRIMMED_CURVE('',#5,(PARAMETER_VALUE({LAST})),\
+                  (PARAMETER_VALUE({FIRST})),.F.,.PARAMETER.);\n\
+             #13=EDGE_CURVE('',#8,#9,#12,.F.);\n\
+             #14=ORIENTED_EDGE('',*,*,#11,.T.);\n\
+             #15=ORIENTED_EDGE('',*,*,#13,.F.);",
+            start.x(),
+            start.y(),
+            end.x(),
+            end.y(),
+        );
+        let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let (forward, reverse_use) = {
+            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            (
+                builder.build_oriented_edge(14).unwrap(),
+                builder.build_oriented_edge(15).unwrap(),
+            )
+        };
+
+        assert!(forward.is_forward());
+        assert!(!reverse_use.is_forward());
+        for edge_id in [forward.edge(), reverse_use.edge()] {
+            let edge = topo.edge(edge_id).unwrap();
+            let domain = edge.strict_domain().unwrap();
+            assert!((domain.0 - FIRST).abs() < 1e-15, "{domain:?}");
+            assert!((domain.1 - LAST).abs() < 1e-15, "{domain:?}");
+            let edge_start = topo.vertex(edge.start()).unwrap().point();
+            let edge_end = topo.vertex(edge.end()).unwrap().point();
+            assert!((edge_start - start).length() < 1e-15);
+            assert!((edge_end - end).length() < 1e-15);
+            let midpoint_parameter = f64::midpoint(FIRST, LAST);
+            let midpoint =
+                edge.curve()
+                    .evaluate_with_endpoints(midpoint_parameter, edge_start, edge_end);
+            let expected = Point3::new(
+                -1.0 + 2.0 * midpoint_parameter,
+                -1.0 + 2.0 * midpoint_parameter,
+                0.0,
+            );
+            assert!((midpoint - expected).length() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn representation_scoped_uncertainty_does_not_cross_authorize_an_edge() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-06),\
+                    #60,'distance','declared tolerance');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','small'));\n\
+                    #52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(9.E+00),\
+                    #9001,'distance','unrelated huge tolerance');\n\
+                    #53=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#52))\
+                    REPRESENTATION_CONTEXT('','large'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #41=MANIFOLD_SOLID_BREP('',#998);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);\n\
+                    #43=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#41),#53);\n\
+                    #44=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#42,#43);\n\
+                    #45=DESCRIPTIVE_REPRESENTATION_ITEM(\
+                    'REPRESENTATION_RELATIONSHIP',(#42,#43));\n\
+                    #46=(DESCRIPTIVE_REPRESENTATION_ITEM(\
+                    'SHAPE_REPRESENTATION')REPRESENTATION('',(#40),#53));\n\
+                    #47=(DESCRIPTIVE_REPRESENTATION_ITEM(\
+                    'REPRESENTATION_RELATIONSHIP(#42,#43)')DUMMY());\n\
+                    #60=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.METRE.));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(
+            circle.evaluate(0.0) + Vec3::new(0.0, 0.0, 1e-2),
+            Tolerance::new().linear,
+        ));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
+        let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        assert!((builder.brep_tolerance_caps[&40] - 1e-3).abs() < 1e-15);
+        assert!((builder.brep_tolerance_caps[&41] - 9.0).abs() < 1e-12);
+        builder.model_tolerance_cap = builder.brep_tolerance_caps[&40];
+        let error = builder
+            .import_edge_with_authority(77, start, end, EdgeCurve::Circle(circle), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("declared cap 1.000000e-3"));
+    }
+
+    #[test]
+    fn valid_shape_occurrence_contributes_its_assembly_uncertainty() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-08),\
+                    #9001,'distance','part tolerance');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','part'));\n\
+                    #52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-05),\
+                    #9001,'distance','occurrence tolerance');\n\
+                    #53=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#52))\
+                    REPRESENTATION_CONTEXT('','root'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #45=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #46=DIRECTION('',(0.,0.,1.));\n\
+                    #47=DIRECTION('',(1.,0.,0.));\n\
+                    #48=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+                    #15=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+                    #49=ITEM_DEFINED_TRANSFORMATION('','',#48,#15);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40,#15),#51);\n\
+                    #43=SHAPE_REPRESENTATION('',(#15),#51);\n\
+                    #54=SHAPE_REPRESENTATION('',(#48),#53);\n\
+                    #61=SHAPE_REPRESENTATION_RELATIONSHIP('','',#42,#43);\n\
+                    #44=(REPRESENTATION_RELATIONSHIP('','',#43,#54)\
+                    REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
+                    SHAPE_REPRESENTATION_RELATIONSHIP());";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
+    }
+
+    #[test]
+    fn same_context_sibling_occurrence_does_not_widen_unrelated_brep() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-08),\
+                    #9001,'distance','part tolerance');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','part'));\n\
+                    #52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-05),\
+                    #9001,'distance','unrelated occurrence tolerance');\n\
+                    #53=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#52))\
+                    REPRESENTATION_CONTEXT('','root'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #45=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #46=DIRECTION('',(0.,0.,1.));\n\
+                    #47=DIRECTION('',(1.,0.,0.));\n\
+                    #48=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+                    #15=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+                    #49=ITEM_DEFINED_TRANSFORMATION('','',#48,#15);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);\n\
+                    #43=SHAPE_REPRESENTATION('',(#15),#51);\n\
+                    #54=SHAPE_REPRESENTATION('',(#48),#53);\n\
+                    #44=(REPRESENTATION_RELATIONSHIP('','',#43,#54)\
+                    REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
+                    SHAPE_REPRESENTATION_RELATIONSHIP());";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        assert_eq!(
+            builder.brep_tolerance_caps[&40].to_bits(),
+            Tolerance::new().linear.to_bits()
+        );
+    }
+
+    #[test]
+    fn occurrence_placements_must_belong_to_their_representations() {
+        let body = "#51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    REPRESENTATION_CONTEXT('','part'));\n\
+                    #53=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    REPRESENTATION_CONTEXT('','root'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #45=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #46=DIRECTION('',(0.,0.,1.));\n\
+                    #47=DIRECTION('',(1.,0.,0.));\n\
+                    #48=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+                    #15=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+                    #49=ITEM_DEFINED_TRANSFORMATION('','',#48,#15);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40,#15),#51);\n\
+                    #54=SHAPE_REPRESENTATION('',(),#53);\n\
+                    #44=(REPRESENTATION_RELATIONSHIP('','',#42,#54)\
+                    REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
+                    SHAPE_REPRESENTATION_RELATIONSHIP());";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = StepBuilder::new(&mut topo, &entities, units)
+            .err()
+            .expect("an unrelated placement must not widen authority");
+        assert!(error.to_string().contains("assembly placement #48"));
+        assert_eq!(topo.num_vertices(), 0);
+        assert_eq!(topo.num_edges(), 0);
+    }
+
+    #[test]
+    fn shape_representation_item_strings_and_partial_tokens_are_not_references() {
+        for items in ["('#40')", "(#40abc)"] {
+            let body = format!(
+                "#51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                 REPRESENTATION_CONTEXT('','part'));\n\
+                 #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                 #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',{items},#51);"
+            );
+            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            let error = StepBuilder::new(&mut topo, &entities, units)
+                .err()
+                .expect("non-reference representation items must fail closed");
+            assert!(error.to_string().contains("invalid item list"));
+            assert_eq!(topo.num_vertices(), 0);
+            assert_eq!(topo.num_edges(), 0);
+        }
+    }
+
+    #[test]
+    fn uncertainty_marker_in_context_name_does_not_grant_authority() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(9.E+00),\
+                    #9001,'distance','unreferenced');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    REPRESENTATION_CONTEXT(\
+                    'GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))','hostile'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+        assert_eq!(
+            builder.brep_tolerance_caps[&40].to_bits(),
+            Tolerance::new().linear.to_bits()
+        );
+    }
+
+    #[test]
+    fn uncertainty_reference_strings_do_not_grant_authority() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(9.E+00),\
+                    #9001,'distance','unreferenced');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(('#50'))\
+                    REPRESENTATION_CONTEXT('','hostile'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = StepBuilder::new(&mut topo, &entities, units)
+            .err()
+            .expect("a quoted uncertainty reference must fail closed");
+        assert!(error.to_string().contains("invalid uncertainty list"));
+        assert_eq!(topo.num_vertices(), 0);
+        assert_eq!(topo.num_edges(), 0);
+    }
+
+    #[test]
+    fn uncertainty_missing_unit_cannot_take_a_reference_from_its_description() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(9.E+00),\
+                    $,'distance #9001','hostile missing unit');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','part'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = StepBuilder::new(&mut topo, &entities, units)
+            .err()
+            .expect("a missing uncertainty unit must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("needs a reference for unit_component")
+        );
+        assert_eq!(topo.num_vertices(), 0);
+        assert_eq!(topo.num_edges(), 0);
+    }
+
+    #[test]
+    fn malformed_uncertainty_measure_cannot_take_a_numeric_description_as_value() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(nope),\
+                    #9001,'123','hostile malformed value');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','part'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = StepBuilder::new(&mut topo, &entities, units)
+            .err()
+            .expect("a malformed uncertainty value must fail closed");
+        assert!(error.to_string().contains("non-numeric value_component"));
+        assert_eq!(topo.num_vertices(), 0);
+        assert_eq!(topo.num_edges(), 0);
+    }
+
+    #[test]
+    fn malformed_transformed_relationship_cannot_widen_authority() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-08),\
+                    #9001,'distance','part tolerance');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','part'));\n\
+                    #52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-05),\
+                    #9001,'distance','occurrence tolerance');\n\
+                    #53=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#52))\
+                    REPRESENTATION_CONTEXT('','root'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);\n\
+                    #43=SHAPE_REPRESENTATION('',(),#53);\n\
+                    #44=(REPRESENTATION_RELATIONSHIP('','',#42,#43)\
+                    REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
+                    SHAPE_REPRESENTATION_RELATIONSHIP());";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = StepBuilder::new(&mut topo, &entities, units)
+            .err()
+            .expect("malformed occurrence must fail");
+        assert!(error.to_string().contains("missing transformation #49"));
+        assert_eq!(topo.num_vertices(), 0);
+        assert_eq!(topo.num_edges(), 0);
+    }
+
+    #[test]
+    fn malformed_assigned_uncertainty_is_typed_before_topology_mutation() {
+        for literal in ["-1.E-03", "NAN", "INF"] {
+            let body = format!(
+                "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({literal}),\
+                 #9001,'distance','invalid');\n\
+                 #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                 GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                 REPRESENTATION_CONTEXT('','invalid'));\n\
+                 #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                 #41=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);"
+            );
+            let entities = parse_step_entities(&step_file(&body), ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            assert!(StepBuilder::new(&mut topo, &entities, units).is_err());
+            assert_eq!(topo.num_vertices(), 0);
+        }
+    }
+
+    #[test]
+    fn conflicting_uncertainties_in_one_representation_context_are_refused() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),\
+                    #9001,'distance','first');\n\
+                    #52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(2.E-07),\
+                    #9001,'distance','second');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50,#52))\
+                    REPRESENTATION_CONTEXT('','conflicting'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #41=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let error = match StepBuilder::new(&mut topo, &entities, units) {
+            Ok(_) => panic!("conflicting uncertainties must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting length uncertainties")
+        );
+        assert_eq!(topo.num_vertices(), 0);
+    }
+
+    #[test]
+    fn imported_curved_edge_refuses_off_carrier_endpoint_before_edge_allocation() {
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let start_id = topo.add_vertex(Vertex::new(
+            circle.evaluate(0.0) + Vec3::new(0.0, 0.0, 1e-3),
+            Tolerance::new().linear,
+        ));
+        let end_id = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
+        let edge_count = topo.num_edges();
+        let error = {
+            let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            builder
+                .import_edge_with_authority(77, start_id, end_id, EdgeCurve::Circle(circle), None)
+                .unwrap_err()
+        };
+        assert!(matches!(error, IoError::ParseError { .. }));
+        assert_eq!(topo.num_edges(), edge_count);
+    }
+
+    #[test]
+    fn imported_edge_records_measured_residual_not_the_model_uncertainty_cap() {
+        let body = "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-03),\
+                    #9001,'distance','declared tolerance');\n\
+                    #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+                    GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+                    REPRESENTATION_CONTEXT('','measured'));\n\
+                    #40=MANIFOLD_SOLID_BREP('',#999);\n\
+                    #41=ADVANCED_BREP_SHAPE_REPRESENTATION('',(#40),#51);";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let residual = 3e-5;
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(
+            circle.evaluate(0.0) + Vec3::new(0.0, 0.0, residual),
+            Tolerance::new().linear,
+        ));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), Tolerance::new().linear));
+        let edge = {
+            let mut builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            builder.model_tolerance_cap = builder.brep_tolerance_caps[&40];
+            builder
+                .import_edge_with_authority(78, start, end, EdgeCurve::Circle(circle), None)
+                .unwrap()
+        };
+        assert!((edge.tolerance().unwrap() - residual).abs() < 1e-15);
+        assert!((topo.vertex(start).unwrap().tolerance() - 1e-7).abs() < f64::EPSILON);
+        edge.strict_domain().unwrap();
+    }
+
+    #[test]
+    fn face_bound_sampling_refuses_a_trimless_curved_edge() {
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let entities = parse_step_entities(&step_file(""), ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(1.0), 1e-7));
+        let edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        let error = {
+            let builder = StepBuilder::new(&mut topo, &entities, units).unwrap();
+            builder.sample_bound_edge(&edge).unwrap_err()
+        };
+        assert!(error.to_string().contains("authoritative curve range"));
     }
 
     #[test]
@@ -5374,6 +8220,38 @@ mod tests {
                 error.to_string().contains("PARAMETER_VALUE must be finite"),
                 "unexpected error for `{attrs}`: {error}"
             );
+        }
+
+        for attrs in [
+            "PARAMETER_VALUE(nope), PARAMETER_VALUE(0.75)",
+            "PARAMETER_VALUE, PARAMETER_VALUE(0.75)",
+            "PARAMETER_VALUE(0.25, PARAMETER_VALUE(0.75)",
+        ] {
+            let error = parse_parameter_values(attrs).expect_err("malformed trim must fail");
+            assert!(
+                error.to_string().contains("PARAMETER_VALUE"),
+                "unexpected error for `{attrs}`: {error}"
+            );
+        }
+
+        assert!(
+            parse_parameter_values("'PARAMETER_VALUE(0.25)', FAKE_PARAMETER_VALUE(0.75)")
+                .expect("opaque tokens must not be interpreted")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn trim_select_strings_and_partial_tokens_do_not_grant_authority() {
+        for attrs in [
+            "'',#9,('PARAMETER_VALUE(0.25)'),(PARAMETER_VALUE(0.75)),.T.,.PARAMETER.)",
+            "'',#9,(FAKE_PARAMETER_VALUE(0.25)),(PARAMETER_VALUE(0.75)),.T.,.PARAMETER.)",
+            "'',#9,('#20'),(#21),.T.,.CARTESIAN.)",
+            "'',#9,(#20abc),(#21),.T.,.CARTESIAN.)",
+        ] {
+            let error = parse_trimmed_curve(10, attrs)
+                .expect_err("embedded syntax must not become trim authority");
+            assert!(error.to_string().contains("unsupported trim value"));
         }
     }
 
@@ -5668,9 +8546,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_weight_list_nested() {
-        // Nested format: ((w1, w2, w3))
-        let weights = parse_weight_list("(1.0, 0.707, 1.0))");
+    fn parse_weight_row() {
+        let weights = exact_weight_row("(1.0, 0.707, 1.0)", "RATIONAL_B_SPLINE_CURVE", 1).unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights[0] - 1.0).abs() < 1e-10);
         assert!((weights[1] - 0.707).abs() < 1e-10);
@@ -5678,33 +8555,66 @@ mod tests {
     }
 
     #[test]
-    fn parse_weight_list_flat() {
-        // Flat format: (w1, w2, w3) — no inner parens
-        let weights = parse_weight_list("1.0, 0.707, 1.0)");
-        assert_eq!(weights.len(), 3);
-        assert!((weights[0] - 1.0).abs() < 1e-10);
-        assert!((weights[1] - 0.707).abs() < 1e-10);
-        assert!((weights[2] - 1.0).abs() < 1e-10);
+    fn rational_weight_row_requires_its_declared_aggregate() {
+        let error = exact_weight_row("1.0, 0.707, 1.0", "RATIONAL_B_SPLINE_CURVE", 1).unwrap_err();
+        assert!(error.to_string().contains("malformed weight aggregate"));
     }
 
     #[test]
-    fn parse_weight_list_scientific() {
-        // Scientific notation
-        let weights = parse_weight_list("(1.000000E+00, 7.071068E-01))");
+    fn parse_weight_row_scientific() {
+        let weights =
+            exact_weight_row("(1.000000E+00, 7.071068E-01)", "RATIONAL_B_SPLINE_CURVE", 1).unwrap();
         assert_eq!(weights.len(), 2);
         assert!((weights[0] - 1.0).abs() < 1e-5);
         assert!((weights[1] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-5);
     }
 
     #[test]
-    fn parse_weight_list_2d_nested() {
-        // 2D nested format: ((w1, w2), (w3, w4)) — real STEP has double nesting
-        let weights = parse_weight_list("((1.0, 0.5), (0.5, 1.0)))");
-        assert_eq!(weights.len(), 4);
-        assert!((weights[0] - 1.0).abs() < 1e-10);
-        assert!((weights[1] - 0.5).abs() < 1e-10);
-        assert!((weights[2] - 0.5).abs() < 1e-10);
-        assert!((weights[3] - 1.0).abs() < 1e-10);
+    fn parse_rational_weight_grid() {
+        let weights = extract_rational_surface_weights(
+            "RATIONAL_B_SPLINE_SURFACE(((1.0, 0.5), (0.5, 1.0)))",
+            2,
+            2,
+            1,
+        )
+        .unwrap();
+        assert_eq!(weights, vec![vec![1.0, 0.5], vec![0.5, 1.0]]);
+    }
+
+    #[test]
+    fn explicit_rational_curve_weights_are_exact_or_refused() {
+        let EdgeCurve::NurbsCurve(valid) =
+            curve_geometry(&rational_curve_fixture("(1.,0.5,1.)"), 4).unwrap()
+        else {
+            panic!("expected a rational NURBS curve");
+        };
+        assert_eq!(valid.weights(), [1.0, 0.5, 1.0]);
+
+        for weights in ["(1.,0.5)", "(1.,BROKEN,1.)", "$"] {
+            let error = curve_geometry(&rational_curve_fixture(weights), 4).unwrap_err();
+            assert!(
+                error.to_string().contains("RATIONAL_B_SPLINE_CURVE #4"),
+                "{weights}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_rational_surface_weight_grid_is_exact_or_refused() {
+        let FaceSurface::Nurbs(valid) =
+            surface_geometry(&rational_surface_fixture("((1.,1.),(0.5,1.))"), 5).unwrap()
+        else {
+            panic!("expected a rational NURBS surface");
+        };
+        assert_eq!(valid.weights(), [vec![1.0, 1.0], vec![0.5, 1.0]]);
+
+        for weights in ["((1.,1.),(1.))", "((1.,BROKEN),(1.,1.))", "$"] {
+            let error = surface_geometry(&rational_surface_fixture(weights), 5).unwrap_err();
+            assert!(
+                error.to_string().contains("RATIONAL_B_SPLINE_SURFACE #5"),
+                "{weights}: {error}"
+            );
+        }
     }
 
     // ── SURFACE_CURVE family ───────────────────────────────────────
@@ -5738,6 +8648,33 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         )
     }
 
+    fn rational_curve_fixture(weights: &str) -> String {
+        format!(
+            "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2=CARTESIAN_POINT('',(1.,2.,0.));\n\
+             #3=CARTESIAN_POINT('',(2.,0.,0.));\n\
+             #4=(BOUNDED_CURVE() B_SPLINE_CURVE(2,(#1,#2,#3),\
+                 .UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(\
+                 (3,3),(0.,1.),.UNSPECIFIED.) CURVE()\
+                 GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE({weights})\
+                 REPRESENTATION_ITEM(''));"
+        )
+    }
+
+    fn rational_surface_fixture(weights: &str) -> String {
+        format!(
+            "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #2=CARTESIAN_POINT('',(0.,1.,0.));\n\
+             #3=CARTESIAN_POINT('',(1.,0.,0.));\n\
+             #4=CARTESIAN_POINT('',(1.,1.,1.));\n\
+             #5=(BOUNDED_SURFACE() B_SPLINE_SURFACE(1,1,((#1,#2),(#3,#4)),\
+                 .UNSPECIFIED.,.F.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS(\
+                 (2,2),(2,2),(0.,1.),(0.,1.),.UNSPECIFIED.)\
+                 GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE({weights})\
+                 REPRESENTATION_ITEM('') SURFACE());"
+        )
+    }
+
     /// Resolve units the way an import that is about to read geometry does:
     /// the length unit is mandatory, so a scale always comes back.
     fn required_unit_scale(entities: &HashMap<u64, StepEntity>) -> Result<UnitScale, IoError> {
@@ -5745,13 +8682,183 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             .expect("a required length unit always resolves to a scale"))
     }
 
+    fn imported_edge(
+        curve: EdgeCurve,
+        start: Point3,
+        end: Point3,
+        closed: bool,
+    ) -> Result<(Topology, remus_topology::edge::EdgeId), IoError> {
+        let entities = parse_step_entities(&step_file(""), ImportLimits::default())?;
+        let units = required_unit_scale(&entities)?;
+        let mut topo = Topology::new();
+        let start_id = topo.add_vertex(Vertex::new(start, Tolerance::new().linear));
+        let end_id = if closed {
+            start_id
+        } else {
+            topo.add_vertex(Vertex::new(end, Tolerance::new().linear))
+        };
+        let edge = {
+            let builder = StepBuilder::new(&mut topo, &entities, units)?;
+            builder.import_edge_with_authority(42, start_id, end_id, curve, None)?
+        };
+        let edge_id = topo.add_edge(edge);
+        Ok((topo, edge_id))
+    }
+
     /// Resolve one curve entity through the real parse + dispatch path.
     fn curve_geometry(body: &str, curve_id: u64) -> Result<EdgeCurve, IoError> {
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units);
+        let builder = StepBuilder::new(&mut topo, &entities, units)?;
         builder.build_curve_geometry(curve_id)
+    }
+
+    fn edge_geometry(
+        body: &str,
+        edge_id: u64,
+    ) -> Result<(Topology, remus_topology::edge::EdgeId), IoError> {
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
+        let units = required_unit_scale(&entities)?;
+        let mut topo = Topology::new();
+        let built = {
+            let mut builder = StepBuilder::new(&mut topo, &entities, units)?;
+            builder.build_edge_curve(edge_id)?
+        };
+        Ok((topo, built))
+    }
+
+    #[test]
+    fn edge_curve_name_references_cannot_rebind_its_schema_attributes() {
+        let body = "#1=CARTESIAN_POINT('',(2.,0.,0.));\n\
+                    #2=CARTESIAN_POINT('',(0.,2.,0.));\n\
+                    #3=VERTEX_POINT('#22',#1);\n\
+                    #4=VERTEX_POINT('#23',#2);\n\
+                    #5=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #6=DIRECTION('',(0.,0.,1.));\n\
+                    #7=DIRECTION('',(1.,0.,0.));\n\
+                    #8=AXIS2_PLACEMENT_3D('',#5,#6,#7);\n\
+                    #9=CIRCLE('',#8,2.);\n\
+                    #20=CARTESIAN_POINT('',(99.,0.,0.));\n\
+                    #21=CARTESIAN_POINT('',(0.,99.,0.));\n\
+                    #22=VERTEX_POINT('',#20);\n\
+                    #23=VERTEX_POINT('',#21);\n\
+                    #24=CIRCLE('',#8,99.);\n\
+                    #10=EDGE_CURVE('#22,#23,#24',#3,#4,#9,.T.);";
+        let (topo, edge_id) = edge_geometry(body, 10).unwrap();
+        let edge = topo.edge(edge_id).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("expected circle");
+        };
+        assert!((circle.radius() - 2.0).abs() < 1e-12);
+        assert_eq!(
+            topo.vertex(edge.start()).unwrap().point(),
+            Point3::new(2.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            topo.vertex(edge.end()).unwrap().point(),
+            Point3::new(0.0, 2.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn wrapper_and_trim_names_cannot_rebind_their_basis_curves() {
+        let circle = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                      #2=DIRECTION('',(0.,0.,1.));\n\
+                      #3=DIRECTION('',(1.,0.,0.));\n\
+                      #4=AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+                      #5=CIRCLE('',#4,4.);\n";
+
+        let trimmed = format!(
+            "{circle}#6=TRIMMED_CURVE('#99',#5,(PARAMETER_VALUE(0.)),\
+             (PARAMETER_VALUE(1.)),.T.,.PARAMETER.);"
+        );
+        let EdgeCurve::Circle(trimmed_circle) = curve_geometry(&trimmed, 6).unwrap() else {
+            panic!("expected the declared trim basis circle");
+        };
+        assert!((trimmed_circle.radius() - 4.0).abs() < 1e-12);
+
+        let wrapped = format!("{circle}#6=SURFACE_CURVE('#99',#5,(),.CURVE_3D.);");
+        let EdgeCurve::Circle(wrapped_circle) = curve_geometry(&wrapped, 6).unwrap() else {
+            panic!("expected the wrapper's declared 3-D circle");
+        };
+        assert!((wrapped_circle.radius() - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn numeric_analytic_curve_names_are_not_geometry() {
+        let head = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2=DIRECTION('',(0.,0.,1.));\n\
+                    #3=DIRECTION('',(1.,0.,0.));\n\
+                    #4=AXIS2_PLACEMENT_3D('',#1,#2,#3);\n";
+
+        let EdgeCurve::Circle(circle) =
+            curve_geometry(&format!("{head}#5=CIRCLE('123',#4,4.);"), 5).unwrap()
+        else {
+            panic!("expected circle");
+        };
+        assert!((circle.radius() - 4.0).abs() < 1e-12);
+
+        let EdgeCurve::Ellipse(ellipse) =
+            curve_geometry(&format!("{head}#5=ELLIPSE('123',#4,4.,2.);"), 5).unwrap()
+        else {
+            panic!("expected ellipse");
+        };
+        assert!((ellipse.semi_major() - 4.0).abs() < 1e-12);
+        assert!((ellipse.semi_minor() - 2.0).abs() < 1e-12);
+
+        let EdgeCurve::Hyperbola(hyperbola) =
+            curve_geometry(&format!("{head}#5=HYPERBOLA('123',#4,4.,2.);"), 5).unwrap()
+        else {
+            panic!("expected hyperbola");
+        };
+        assert!((hyperbola.semi_major() - 4.0).abs() < 1e-12);
+        assert!((hyperbola.semi_minor() - 2.0).abs() < 1e-12);
+
+        let EdgeCurve::Parabola(parabola) =
+            curve_geometry(&format!("{head}#5=PARABOLA('123',#4,4.);"), 5).unwrap()
+        else {
+            panic!("expected parabola");
+        };
+        assert!((parabola.focal_length() - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn analytic_surface_names_are_opaque_to_references_and_numbers() {
+        let body = "#1=CARTESIAN_POINT('(50.,0.,0.)',(0.,0.,0.));\n\
+                    #2=DIRECTION('(1.,0.,0.)',(0.,0.,1.));\n\
+                    #3=DIRECTION('',(1.,0.,0.));\n\
+                    #4=AXIS2_PLACEMENT_3D('',#1,#2,#3);\n\
+                    #90=CARTESIAN_POINT('',(0.,0.,50.));\n\
+                    #91=AXIS2_PLACEMENT_3D('',#90,#2,#3);\n\
+                    #5=PLANE('hostile #91',#4);\n\
+                    #6=CYLINDRICAL_SURFACE('123',#4,4.);\n\
+                    #7=CONICAL_SURFACE('123',#4,4.,7.853981633974483E-1);\n\
+                    #8=SPHERICAL_SURFACE('123',#4,4.);\n\
+                    #9=TOROIDAL_SURFACE('123',#4,5.,1.);";
+
+        let FaceSurface::Plane { d, .. } = surface_geometry(body, 5).unwrap() else {
+            panic!("expected plane");
+        };
+        assert_eq!(d.to_bits(), 0.0_f64.to_bits());
+        let FaceSurface::Cylinder(cylinder) = surface_geometry(body, 6).unwrap() else {
+            panic!("expected cylinder");
+        };
+        assert!((cylinder.radius() - 4.0).abs() < 1e-12);
+        assert_eq!(cylinder.axis(), Vec3::new(0.0, 0.0, 1.0));
+        let FaceSurface::Cone(cone) = surface_geometry(body, 7).unwrap() else {
+            panic!("expected cone");
+        };
+        assert!((cone.apex().z() + 4.0).abs() < 1e-12);
+        let FaceSurface::Sphere(sphere) = surface_geometry(body, 8).unwrap() else {
+            panic!("expected sphere");
+        };
+        assert!((sphere.radius() - 4.0).abs() < 1e-12);
+        let FaceSurface::Torus(torus) = surface_geometry(body, 9).unwrap() else {
+            panic!("expected torus");
+        };
+        assert!((torus.major_radius() - 5.0).abs() < 1e-12);
+        assert!((torus.minor_radius() - 1.0).abs() < 1e-12);
     }
 
     /// Resolve one surface entity through the real parse + dispatch path.
@@ -5759,7 +8866,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units);
+        let builder = StepBuilder::new(&mut topo, &entities, units)?;
         builder.build_surface(surface_id)
     }
 
@@ -5769,7 +8876,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units);
+        let builder = StepBuilder::new(&mut topo, &entities, units)?;
         builder.build_axis2_placement(placement_id)
     }
 
@@ -5778,7 +8885,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let entities = parse_step_entities(&step_file(body), ImportLimits::default())?;
         let units = required_unit_scale(&entities)?;
         let mut topo = Topology::new();
-        let builder = StepBuilder::new(&mut topo, &entities, units);
+        let builder = StepBuilder::new(&mut topo, &entities, units)?;
         builder.build_axis1_placement(placement_id)
     }
 
@@ -5880,7 +8987,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let body = "#1 = SURFACE_CURVE('',$,(),.PCURVE_S1.);";
         let err = curve_geometry(body, 1).unwrap_err();
         assert!(
-            err.to_string().contains("missing its 3-D curve reference"),
+            err.to_string().contains("needs a reference for 3-D curve"),
             "unexpected error: {err}"
         );
     }
@@ -7100,6 +10207,26 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     }
 
     #[test]
+    fn polyline_name_reference_text_cannot_rebind_its_point_aggregate() {
+        let body = "#1=CARTESIAN_POINT('',(0.,0.,0.));\n\
+                    #2=CARTESIAN_POINT('',(2.,0.,0.));\n\
+                    #3=CARTESIAN_POINT('',(2.,3.,0.));\n\
+                    #4=POLYLINE('profile (#99), O''Brien',(#1,#2,#3));";
+        let EdgeCurve::NurbsCurve(curve) = curve_geometry(body, 4).unwrap() else {
+            panic!("expected a degree-one NURBS carrier");
+        };
+        assert_eq!(
+            curve.control_points(),
+            [
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(2.0, 3.0, 0.0),
+            ]
+        );
+        assert!((curve.evaluate(3.5) - Point3::new(2.0, 1.5, 0.0)).length() < 1e-12);
+    }
+
+    #[test]
     fn two_point_polyline_is_a_line() {
         let body = "#1 = CARTESIAN_POINT('',(0.,0.,0.));\n\
                     #2 = CARTESIAN_POINT('',(1.,2.,3.));\n\
@@ -7716,6 +10843,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     /// every CONICAL_SURFACE semi-angle in the file to match.
     fn declare_angle_unit_degrees(step: &str) -> String {
         const RAD: &str = "( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) )";
+        const PARAMETER: &str = "PARAMETER_VALUE(";
         assert!(
             step.contains(RAD),
             "writer no longer emits the expected radian unit"
@@ -7744,6 +10872,19 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
                     .expect("semi-angle literal");
                 let _ = writeln!(out, "{head}, {});", radians.to_degrees());
                 rewrote += 1;
+            } else if line.contains("= TRIMMED_CURVE(") {
+                let mut rest = line;
+                let mut converted = String::new();
+                while let Some(marker) = rest.find(PARAMETER) {
+                    converted.push_str(&rest[..marker + PARAMETER.len()]);
+                    rest = &rest[marker + PARAMETER.len()..];
+                    let close = rest.find(')').expect("parameter value terminator");
+                    let radians: f64 = rest[..close].parse().expect("parameter value literal");
+                    let _ = write!(converted, "{}", radians.to_degrees());
+                    rest = &rest[close..];
+                }
+                converted.push_str(rest);
+                let _ = writeln!(out, "{converted}");
             } else {
                 let _ = writeln!(out, "{line}");
             }
@@ -8164,6 +11305,29 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     }
 
     #[test]
+    fn typed_measure_keywords_remain_case_insensitive() {
+        let body = "\
+#1 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+#2 = length_measure_with_unit(length_measure(25.4),#1);\n\
+#3 = ( CONVERSION_BASED_UNIT('INCH',#2) LENGTH_UNIT() NAMED_UNIT(#1) );\n\
+#4 = GLOBAL_UNIT_ASSIGNED_CONTEXT((#3));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let scale = required_unit_scale(&entities).unwrap();
+        assert!((scale.length - 25.4).abs() < 1e-12, "{scale:?}");
+    }
+
+    #[test]
+    fn malformed_conversion_measure_cannot_take_a_numeric_description_as_value() {
+        let body = "#1=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n\
+                    #2=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(nope),#1,'123');\n\
+                    #3=(CONVERSION_BASED_UNIT('INCH',#2) LENGTH_UNIT() NAMED_UNIT(#1));\n\
+                    #4=GLOBAL_UNIT_ASSIGNED_CONTEXT((#3));";
+        let entities = parse_step_entities(&step_file(body), ImportLimits::default()).unwrap();
+        let error = required_unit_scale(&entities).unwrap_err();
+        assert!(error.to_string().contains("non-numeric value_component"));
+    }
+
+    #[test]
     fn resolve_unit_scale_reads_si_prefixes() {
         for (prefix, expected_mm) in [
             (".MILLI.", 1.0),
@@ -8445,6 +11609,44 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
     }
 
     #[test]
+    fn decomposed_complex_brep_with_voids_uses_each_component_schema() {
+        let mut write_topo = Topology::new();
+        let hollow = make_hollow_cube(&mut write_topo);
+        let source_volume =
+            remus_operations::measure::solid_volume(&write_topo, hollow, 0.01).unwrap();
+        let step = writer::write_step(&write_topo, &[hollow]).unwrap();
+        let solid_line = step
+            .lines()
+            .find(|line| line.contains("= BREP_WITH_VOIDS("))
+            .unwrap();
+        let solid_ref = parse_entity_id(solid_line.split_once('=').unwrap().0.trim()).unwrap();
+        let references = parse_refs(solid_line);
+        assert_eq!(references.len(), 3);
+        let complex = format!(
+            "#{solid_ref} = ( BREP_WITH_VOIDS((#{})) \
+             GEOMETRIC_REPRESENTATION_ITEM() MANIFOLD_SOLID_BREP(#{}) \
+             REPRESENTATION_ITEM('complex void') SOLID_MODEL() );",
+            references[2], references[1]
+        );
+        let step = step.replace(solid_line, &complex);
+
+        let mut read_topo = Topology::new();
+        let read_solids = read_step(&step, &mut read_topo).unwrap();
+        assert_eq!(read_solids.len(), 1);
+        assert_eq!(
+            read_topo
+                .solid(read_solids[0])
+                .unwrap()
+                .inner_shells()
+                .len(),
+            1
+        );
+        let read_volume =
+            remus_operations::measure::solid_volume(&read_topo, read_solids[0], 0.01).unwrap();
+        assert!((read_volume - source_volume).abs() < 1e-6);
+    }
+
+    #[test]
     fn solid_without_voids_still_exports_as_manifold_solid_brep() {
         let mut topo = Topology::new();
         let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
@@ -8470,13 +11672,21 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
             })
             .and_then(|id| id.parse().ok())
             .expect("writer emits a CLOSED_SHELL");
+        let representation_context_id: u64 = step_str
+            .lines()
+            .find(|line| line.contains("= ADVANCED_BREP_SHAPE_REPRESENTATION("))
+            .and_then(|line| line.rsplit_once('#'))
+            .and_then(|(_, tail)| tail.trim_end_matches(");").parse().ok())
+            .expect("writer emits a shape-representation context reference");
 
         let mut senses = Vec::new();
         for (orientation, expect_flip) in [(".T.", false), (".F.", true)] {
             let idx = step_str.rfind("ENDSEC;").unwrap();
             let rerooted = format!(
                 "{}#90001 = ORIENTED_CLOSED_SHELL('',*,#{closed_shell_id},{orientation});\n\
-                 #90002 = MANIFOLD_SOLID_BREP('',#90001);\n{}",
+                 #90002 = MANIFOLD_SOLID_BREP('',#90001);\n\
+                 #90003 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#90002),\
+                 #{representation_context_id});\n{}",
                 &step_str[..idx],
                 &step_str[idx..]
             );
@@ -8518,11 +11728,19 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let mut write_topo = Topology::new();
         let solid = remus_operations::primitives::make_box(&mut write_topo, 1.0, 1.0, 1.0).unwrap();
         let step_str = writer::write_step(&write_topo, &[solid]).unwrap();
+        let representation_context_id: u64 = step_str
+            .lines()
+            .find(|line| line.contains("= ADVANCED_BREP_SHAPE_REPRESENTATION("))
+            .and_then(|line| line.rsplit_once('#'))
+            .and_then(|(_, tail)| tail.trim_end_matches(");").parse().ok())
+            .expect("writer emits a shape-representation context reference");
         let idx = step_str.rfind("ENDSEC;").unwrap();
         let cyclic = format!(
             "{}#90001 = ORIENTED_CLOSED_SHELL('',*,#90002,.T.);\n\
              #90002 = ORIENTED_CLOSED_SHELL('',*,#90001,.F.);\n\
-             #90003 = MANIFOLD_SOLID_BREP('',#90001);\n{}",
+             #90003 = MANIFOLD_SOLID_BREP('',#90001);\n\
+             #90004 = ADVANCED_BREP_SHAPE_REPRESENTATION('',(#90003),\
+             #{representation_context_id});\n{}",
             &step_str[..idx],
             &step_str[idx..]
         );
@@ -8548,7 +11766,7 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let attrs = "BOUNDED_CURVE() B_SPLINE_CURVE(2, (#1, #2, #3)) \
                      B_SPLINE_CURVE_WITH_KNOTS((3,3), (0.0, 1.0)) \
                      RATIONAL_B_SPLINE_CURVE((1.0, 0.707, 1.0))";
-        let weights = extract_rational_weights(attrs, 3);
+        let weights = extract_rational_curve_weights(attrs, 3, 1).unwrap();
         assert_eq!(weights.len(), 3);
         assert!((weights[1] - 0.707).abs() < 1e-10);
     }

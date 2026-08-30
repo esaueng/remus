@@ -7,12 +7,10 @@ use wasm_bindgen::prelude::*;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::Point3;
-use remus_topology::edge::{Edge, EdgeCurve};
-use remus_topology::vertex::Vertex;
 
 use crate::error::{WasmError, validate_finite, validate_work_count, validate_work_product};
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
-use crate::helpers::{TOL, parse_point_grid, parse_points};
+use crate::helpers::{parse_point_grid, parse_points};
 use crate::kernel::BrepKernel;
 
 /// Weights within this absolute distance of `1.0` are treated as unit.
@@ -194,13 +192,7 @@ impl BrepKernel {
         let deg = std::cmp::min(degree as usize, points.len() - 1);
         let curve = remus_math::nurbs::fitting::interpolate(&points, deg)?;
 
-        let start = points[0];
-        let end = points[points.len() - 1];
-        let v_start = self.topo_mut().add_vertex(Vertex::new(start, TOL));
-        let v_end = self.topo_mut().add_vertex(Vertex::new(end, TOL));
-        let eid = self
-            .topo_mut()
-            .add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve)));
+        let eid = self.nurbs_curve_to_edge(curve)?;
         Ok(edge_id_to_u32(eid))
     }
 
@@ -225,7 +217,7 @@ impl BrepKernel {
         let num_control_points = validate_work_count(num_control_points, "num_control_points")?;
         let deg = std::cmp::min(degree as usize, points.len() - 1);
         let curve = remus_math::nurbs::fitting::approximate(&points, deg, num_control_points)?;
-        Ok(edge_id_to_u32(self.nurbs_curve_to_edge(&points, curve)))
+        Ok(edge_id_to_u32(self.nurbs_curve_to_edge(curve)?))
     }
 
     /// Approximate a curve through points using LSPIA (progressive iteration).
@@ -259,7 +251,7 @@ impl BrepKernel {
             tolerance,
             max_iterations,
         )?;
-        Ok(edge_id_to_u32(self.nurbs_curve_to_edge(&points, curve)))
+        Ok(edge_id_to_u32(self.nurbs_curve_to_edge(curve)?))
     }
 
     /// Interpolate a grid of points into a NURBS surface.
@@ -336,7 +328,7 @@ impl BrepKernel {
         let times = validate_work_count(times, "times")?;
         let refined = remus_math::nurbs::knot_ops::curve_knot_insert(&curve, knot, times)?;
         Ok(edge_id_to_u32(
-            self.nurbs_curve_to_edge_from_curve(&refined),
+            self.nurbs_curve_to_edge_from_curve(&refined)?,
         ))
     }
 
@@ -355,7 +347,7 @@ impl BrepKernel {
         let curve = self.extract_nurbs_curve(edge)?;
         let simplified = remus_math::nurbs::knot_ops::curve_knot_remove(&curve, knot, tolerance)?;
         Ok(edge_id_to_u32(
-            self.nurbs_curve_to_edge_from_curve(&simplified),
+            self.nurbs_curve_to_edge_from_curve(&simplified)?,
         ))
     }
 
@@ -367,8 +359,8 @@ impl BrepKernel {
         validate_finite(u, "u")?;
         let curve = self.extract_nurbs_curve(edge)?;
         let (left, right) = remus_math::nurbs::knot_ops::curve_split(&curve, u)?;
-        let e1 = self.nurbs_curve_to_edge_from_curve(&left);
-        let e2 = self.nurbs_curve_to_edge_from_curve(&right);
+        let e1 = self.nurbs_curve_to_edge_from_curve(&left)?;
+        let e2 = self.nurbs_curve_to_edge_from_curve(&right)?;
         Ok(vec![edge_id_to_u32(e1), edge_id_to_u32(e2)])
     }
 
@@ -381,7 +373,7 @@ impl BrepKernel {
         let elevate_by = validate_work_count(elevate_by, "elevate_by")?;
         let elevated = remus_math::nurbs::decompose::curve_degree_elevate(&curve, elevate_by)?;
         Ok(edge_id_to_u32(
-            self.nurbs_curve_to_edge_from_curve(&elevated),
+            self.nurbs_curve_to_edge_from_curve(&elevated)?,
         ))
     }
 
@@ -456,6 +448,8 @@ mod tests {
     use remus_math::nurbs::surface_fitting::interpolate_surface;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::builder::{make_nurbs_edge_from_curve, make_nurbs_face};
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
 
     use crate::handles::{edge_id_to_u32, face_id_to_u32};
     use crate::helpers::TOL;

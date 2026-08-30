@@ -20,6 +20,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::BlendError;
+use crate::builder_utils::add_certified_curve_edge;
 use crate::section::CircSection;
 use crate::spherical_triangle::{
     SphericalCornerResult, VertexContactData, build_n_edge_corner, build_spherical_corner,
@@ -429,10 +430,52 @@ fn finish_corner_results(
         let n_curves = sr.boundary_curves.len();
         let mut new_vertices = Vec::with_capacity(n_curves);
         let mut new_edges = Vec::with_capacity(n_curves);
+        let mut domains = Vec::with_capacity(n_curves);
+        let mut starts = Vec::with_capacity(n_curves);
+        let mut ends = Vec::with_capacity(n_curves);
 
         for curve in &sr.boundary_curves {
-            let pt = curve.evaluate(0.0);
-            let vid = topo.add_vertex(Vertex::new(pt, TOL));
+            let domain = curve.domain();
+            if !domain.0.is_finite()
+                || !domain.1.is_finite()
+                || domain.0.partial_cmp(&domain.1) != Some(std::cmp::Ordering::Less)
+            {
+                return Err(BlendError::InvalidInput {
+                    reason: format!(
+                        "corner boundary has invalid NURBS domain [{}, {}]",
+                        domain.0, domain.1
+                    ),
+                });
+            }
+            let start = curve.evaluate(domain.0);
+            let midpoint = curve.evaluate(f64::midpoint(domain.0, domain.1));
+            let end = curve.evaluate(domain.1);
+            if [start, midpoint, end]
+                .into_iter()
+                .flat_map(|point| point.0)
+                .any(|coordinate| !coordinate.is_finite())
+            {
+                return Err(BlendError::InvalidInput {
+                    reason: "corner boundary contains non-finite geometry".to_string(),
+                });
+            }
+            domains.push(domain);
+            starts.push(start);
+            ends.push(end);
+        }
+        for i in 0..n_curves {
+            let residual = (ends[i] - starts[(i + 1) % n_curves]).length();
+            if !residual.is_finite() || residual > TOL {
+                return Err(BlendError::InvalidInput {
+                    reason: format!(
+                        "corner boundary {i} misses its successor by {residual} (tolerance {TOL})"
+                    ),
+                });
+            }
+        }
+
+        for &point in &starts {
+            let vid = topo.add_vertex(Vertex::new(point, TOL));
             new_vertices.push(vid);
         }
 
@@ -440,7 +483,13 @@ fn finish_corner_results(
             let v_start = new_vertices[i];
             let v_end = new_vertices[(i + 1) % n_curves];
             let curve = sr.boundary_curves[i].clone();
-            let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve)));
+            let eid = add_certified_curve_edge(
+                topo,
+                v_start,
+                v_end,
+                EdgeCurve::NurbsCurve(curve),
+                domains[i],
+            )?;
             new_edges.push(eid);
         }
 
@@ -1008,6 +1057,14 @@ mod tests {
             let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
                 panic!("Expected NurbsCurve edge");
             };
+            let range = edge.strict_domain().unwrap();
+            assert_eq!(range, curve.domain());
+            let start = topo.vertex(edge.start()).unwrap().point();
+            let end = topo.vertex(edge.end()).unwrap().point();
+            assert!((curve.evaluate(range.0) - start).length() < 1e-12);
+            assert!((curve.evaluate(range.1) - end).length() < 1e-12);
+            let midpoint = curve.evaluate(f64::midpoint(range.0, range.1));
+            assert!(((midpoint - expected_center).length() - r).abs() < 1e-12);
             for i in 0..=16 {
                 let t = f64::from(i) / 16.0;
                 let pt = curve.evaluate(t);
