@@ -101,18 +101,25 @@ impl<'a> PaveFiller<'a> {
     /// Returns [`AlgoError`] if any topology lookup or intersection fails.
     pub fn perform(&mut self, arena: &mut GfaArena) -> Result<(), AlgoError> {
         let tol = self.context.tolerance;
+        self.context.check_cancelled()?;
         self.init_pave_blocks(arena)?;
 
+        self.context.check_cancelled()?;
         phase_vv::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
         // VV is the only phase that registers same-domain vertices, and
         // `edge_pave_blocks` is fixed at init — so the pave-vertex coincidence
         // index is stable for the remaining phases. Build it once here instead
         // of linear-scanning every pave block per intersection endpoint.
         arena.build_pave_vertex_index(self.topo, tol.linear);
+        self.context.check_cancelled()?;
         phase_ve::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        self.context.check_cancelled()?;
         phase_ee::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        self.context.check_cancelled()?;
         phase_vf::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        self.context.check_cancelled()?;
         phase_ef::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
+        self.context.check_cancelled()?;
         phase_ff::perform_with_context(
             self.topo,
             self.solid_a,
@@ -122,6 +129,7 @@ impl<'a> PaveFiller<'a> {
         )?;
 
         // Coplanar face splitting: parallel planes are skipped by Phase FF.
+        self.context.check_cancelled()?;
         phase_ff_coplanar::perform(self.topo, self.solid_a, self.solid_b, tol, arena)?;
 
         Ok(())
@@ -188,16 +196,22 @@ pub fn run_pave_filler_with_context(
     let tol = context.tolerance;
     // Stage 1: Intersection (may create new vertices for EE/EF/FF crossings)
     {
-        let mut filler = PaveFiller::with_context(topo, solid_a, solid_b, *context);
+        let mut filler = PaveFiller::with_context(topo, solid_a, solid_b, context.clone());
         filler.perform(arena)?;
     }
 
     // Stage 2: Resolution (mutable Topology)
+    context.check_cancelled()?;
     make_blocks::perform(arena)?;
+    context.check_cancelled()?;
     force_interf_ee::perform(topo, tol, arena)?;
+    context.check_cancelled()?;
     link_existing::perform(topo, tol, arena)?;
+    context.check_cancelled()?;
     make_split_edges::perform(topo, arena)?;
+    context.check_cancelled()?;
     make_pcurves::perform(topo, arena)?;
+    context.check_cancelled()?;
     fill_face_info::perform_with_tolerance(topo, arena, tol)?;
 
     Ok(())
@@ -250,6 +264,7 @@ pub fn run_pave_filler_n_with_context(
 ) -> Result<(), AlgoError> {
     const MAX_SOURCE_PAIRS: usize = 4_096;
     let tol = context.tolerance;
+    context.check_cancelled()?;
 
     if sources.is_empty() {
         return Err(AlgoError::AssemblyFailed(
@@ -274,6 +289,7 @@ pub fn run_pave_filler_n_with_context(
     let pairs = source_pairs(sources);
 
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_vv::perform(topo, sources[i], sources[j], tol, arena)?;
     }
     // VV is the only phase that registers same-domain vertices and the edge
@@ -282,30 +298,42 @@ pub fn run_pave_filler_n_with_context(
     // two-solid `PaveFiller::perform`).
     arena.build_pave_vertex_index(topo, tol.linear);
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_ve::perform(topo, sources[i], sources[j], tol, arena)?;
     }
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_ee::perform(topo, sources[i], sources[j], tol, arena)?;
     }
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_vf::perform(topo, sources[i], sources[j], tol, arena)?;
     }
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_ef::perform(topo, sources[i], sources[j], tol, arena)?;
     }
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_ff::perform_with_context(topo, sources[i], sources[j], context, arena)?;
     }
     for &(i, j) in &pairs {
+        context.check_cancelled()?;
         phase_ff_coplanar::perform(topo, sources[i], sources[j], tol, arena)?;
     }
 
     // Stage 2: Resolution (solid-agnostic — reads the accumulated arena).
+    context.check_cancelled()?;
     make_blocks::perform(arena)?;
+    context.check_cancelled()?;
     force_interf_ee::perform(topo, tol, arena)?;
+    context.check_cancelled()?;
     link_existing::perform(topo, tol, arena)?;
+    context.check_cancelled()?;
     make_split_edges::perform(topo, arena)?;
+    context.check_cancelled()?;
     make_pcurves::perform(topo, arena)?;
+    context.check_cancelled()?;
     fill_face_info::perform_with_tolerance(topo, arena, tol)?;
 
     Ok(())
