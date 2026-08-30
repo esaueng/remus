@@ -2,8 +2,16 @@
 
 ## Unreleased
 
+### Features
+
+* Add the `booleanWithQuality` `executeBatch`/`executeBatchV2` operation so
+  batch callers can require exact output or receive explicit approximation
+  provenance.
+
 ### Bug Fixes
 
+* Keep exact-only refusals in the `quality_refused` category with stable
+  `details.kernelCode = "exact_only_unattainable"`.
 * `meshQuality` now reports `triangleCount`, returns `isWatertight: false` for
   an empty mesh, and accepts an optional `angularTolerance` matching
   `tessellateSolid` and `tessellateSolidGrouped`. Batch calls accept the same

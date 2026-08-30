@@ -853,7 +853,7 @@ pub struct GcsDofResult {
 /// Typed result for `booleanWithQuality`: a boolean result with its
 /// disclosed quality, so a consumer can tell an exact result from a
 /// mesh-fallback one instead of silently losing analytic surfaces.
-#[derive(serde::Serialize, Tsify)]
+#[derive(Debug, serde::Serialize, Tsify)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[tsify(into_wasm_abi)]
 pub struct BooleanQualityResult {
@@ -867,4 +867,34 @@ pub struct BooleanQualityResult {
     /// only when `quality` is `"approximate"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deflection: Option<f64>,
+}
+
+/// Terminal state of a cancellable operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(into_wasm_abi)]
+pub enum CancellableOperationStatus {
+    /// The operation committed a result.
+    Completed,
+    /// The operation observed cancellation and rolled back.
+    Cancelled,
+}
+
+/// Typed result for `booleanWithCancellation`.
+///
+/// Cancellation is returned as data rather than an unstructured JavaScript
+/// exception, so callers can distinguish it without parsing prose. Other
+/// operation failures still reject the call normally.
+#[derive(Debug, serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[tsify(into_wasm_abi)]
+pub struct CancellableBooleanResult {
+    /// Discriminates a committed result from a rolled-back cancellation.
+    pub status: CancellableOperationStatus,
+    /// Stable native cancellation code, present only when cancelled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Completed boolean result, absent when cancelled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<BooleanQualityResult>,
 }

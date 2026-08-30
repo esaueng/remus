@@ -1,6 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the
+  wall/radius boundary and scale sweep.
+* **operations:** refuse overlapping linear, circular, and grid pattern
+  instances transactionally instead of returning a compound that double-counts
+  material.
+* **wasm:** preserve the `quality_refused` / `exact_only_unattainable`
+  diagnostic through `executeBatchV2` and expose `booleanWithQuality` through
+  batch dispatch.
+
+### Tests
+
+* **boolean:** qualify the historical tangent-boss operand-loss fix with a
+  versioned WASM repro, closed-form ratio/scale oracles, and exact-or-disclosed
+  fallback policy checks.
+
 ## 2.130.0
+
+### Features
+
+* **context:** add typed, transactional cooperative cancellation for GFA and NURBS SSI, including the WASM `OperationCancellationToken` contract.
 
 ### Bug Fixes
 
@@ -15,6 +38,12 @@
   permissively licensed upstream release.
 * Exclude upstream v3 and later code and regenerate distributable artifacts
   from this source lineage.
+
+### Bug Fixes
+
+* **operations:** rebuild simple analytic cylinders exactly when either cap is
+  pushed or pulled, including inward top-cap edits that previously returned
+  only the removed slab.
 
 ## [3.0.1](https://github.com/esaueng/brepkit/compare/v3.0.0...v3.0.1) (2026-08-08)
 

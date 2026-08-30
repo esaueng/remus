@@ -44,6 +44,13 @@ Call `executeBatchV2` when code needs to branch on failures. It accepts the
 same input and returns the same bare array and success envelopes, but errors
 are structured:
 
+`booleanWithQuality` is available in both batch versions and mirrors the
+direct method. Its args are `operation`, `solidA`, `solidB`, and optional
+`exactOnly`; success returns `{solid, quality, deflection?}`. With
+`exactOnly: true`, a configuration needing mesh fallback returns an
+`operation_failed` envelope whose category is `quality_refused` and whose
+`details.kernelCode` is `exact_only_unattainable`.
+
 ```ts
 type BatchResultV2 =
   | { ok: unknown }
@@ -95,10 +102,10 @@ Each error also carries `category`, the kernel-wide coarse classification
 from the failure taxonomy (`invalid_input`, `invalid_topology`,
 `unsupported`, `nonconvergence`, `resource_limit`, `tolerance_violation`,
 `quality_refused`, `cancelled`, `internal`). Today's ten codes project onto
-`invalid_input`, `invalid_topology`, `resource_limit`, and `internal`; the
-remaining categories are reserved for codes that arrive with the operation
-contract. Branch on `category` for coarse handling and on `code` for
-specific cases.
+`invalid_input`, `invalid_topology`, `resource_limit`, `quality_refused`, and
+`internal`; the remaining categories are reserved for codes that arrive with
+the operation contract. Branch on `category` for coarse handling and on
+`code` for specific cases.
 
 When the failure originated in a typed native error with a kernel registry
 entry, `details.kernelCode` carries that fine-grained stable code (e.g.
