@@ -1261,3 +1261,17 @@ fn tiny_march_budget_bounds_the_trace_and_terminates() {
         "tiny budget must trace fewer points ({bounded_points} vs {full_points})"
     );
 }
+
+#[test]
+fn cancelled_context_refuses_ssi_with_typed_result() {
+    use crate::MathError;
+    use crate::context::{CancellationToken, OperationContext};
+
+    let token = CancellationToken::new();
+    let context = OperationContext::new().with_cancellation(token.clone());
+    token.cancel();
+
+    let result =
+        intersect_nurbs_nurbs_with_context(&flat_surface(), &tilted_surface(), 15, 0.02, &context);
+    assert!(matches!(result, Err(MathError::Cancelled)));
+}

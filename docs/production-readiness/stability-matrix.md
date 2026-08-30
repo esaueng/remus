@@ -29,7 +29,7 @@ passes; rows can remain blocked on broader domain matrices.
 | Drawing | Hidden-line projection | Stable | Evidence pending: public error/performance matrix incomplete. |
 | Geometry | NURBS evaluation and fitting | Stable | Evidence pending: degree-nine direct/cached evaluation, derivatives, and curvature sampling are fixed with a depth-limit regression; imported invariant, fitting, and large-degree budget matrices remain incomplete. |
 | Geometry | Analytic intersections | Stable | Evidence pending: tolerance/domain matrix incomplete. |
-| Geometry | Surface-surface intersection | Stable | Evidence pending: hard iteration budgets incomplete. |
+| Geometry | Surface-surface intersection | Stable | Guarded: NURBS SSI consumes caller marching/queue/segment/branch budgets and cooperatively cancels at phase boundaries plus every marcher/adaptive-step iteration with typed `operation_cancelled`. Newton, subdivision, and parameter-space budgets remain incomplete. |
 | Geometry | Curve-curve intersection | Stable | Evidence pending: termination/property matrix incomplete. |
 | Tessellation | Adaptive/CDT/analytic optimization | Stable | Local blocker cleared: any face failure aborts solid tessellation; malformed-face regression passes. Broader scale/performance evidence remains pending. |
 | Repair | Healing, sewing, validation | Stable | Blocked: permissive healing can mask invalid result semantics. |
