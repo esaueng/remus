@@ -126,6 +126,7 @@ pub mod cdt;
 pub mod chord;
 pub mod context;
 pub mod convex_hull;
+pub mod curvature;
 pub mod curves;
 pub mod curves2d;
 pub mod det_hash;
