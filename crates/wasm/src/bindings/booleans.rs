@@ -22,13 +22,13 @@ use crate::types::{BooleanQualityResult, CancellableBooleanResult, CancellableOp
 /// touching topology. A single-threaded browser worker cannot process a new
 /// JS call while WASM is running, so active browser cancellation still needs
 /// the app's worker/shared-memory transport.
-#[wasm_bindgen(js_name = "OperationCancellationToken")]
-pub struct WasmCancellationToken {
+#[wasm_bindgen]
+pub struct OperationCancellationToken {
     inner: CancellationToken,
 }
 
 #[wasm_bindgen]
-impl WasmCancellationToken {
+impl OperationCancellationToken {
     /// Creates an uncancelled token.
     #[wasm_bindgen(constructor)]
     #[must_use]
@@ -51,7 +51,7 @@ impl WasmCancellationToken {
     }
 }
 
-impl Default for WasmCancellationToken {
+impl Default for OperationCancellationToken {
     fn default() -> Self {
         Self::new()
     }
@@ -149,7 +149,7 @@ impl BrepKernel {
         op: &str,
         a: u32,
         b: u32,
-        token: &WasmCancellationToken,
+        token: &OperationCancellationToken,
         exact_only: Option<bool>,
     ) -> Result<CancellableBooleanResult, JsError> {
         match self.boolean_with_cancellation_impl(op, a, b, token, exact_only) {
@@ -513,7 +513,7 @@ impl BrepKernel {
         op: &str,
         a: u32,
         b: u32,
-        token: &WasmCancellationToken,
+        token: &OperationCancellationToken,
         exact_only: Option<bool>,
     ) -> Result<BooleanQualityResult, WasmError> {
         let boolean_op = match op.to_ascii_lowercase().as_str() {
@@ -573,7 +573,7 @@ mod tests {
     use remus_math::MathError;
     use remus_operations::OperationsError;
 
-    use super::WasmCancellationToken;
+    use super::OperationCancellationToken;
     use crate::error::StructuredWasmError;
     use crate::kernel::BrepKernel;
     use crate::types::CancellableOperationStatus;
@@ -628,7 +628,7 @@ mod tests {
         );
         let slots_before = kernel.topo().allocated_slot_count();
 
-        let token = WasmCancellationToken::new();
+        let token = OperationCancellationToken::new();
         token.cancel();
         let error = kernel
             .boolean_with_cancellation_impl("fuse", a, b, &token, Some(true))
@@ -673,7 +673,7 @@ mod tests {
         let mut kernel = BrepKernel::new();
         let a = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
-        let token = WasmCancellationToken::new();
+        let token = OperationCancellationToken::new();
 
         let public = kernel
             .boolean_with_cancellation("fuse", a, b, &token, Some(true))
