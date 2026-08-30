@@ -133,7 +133,8 @@ question), v1-fillet API migration (product decision, owner's).
   bounded, and rejection paths. Default behavior remains the historical 20
   iterations. Its then-remaining subdivision slice is closed immediately
   below; parameter-space budgeting remains queued under P-Class 2.8.
-- **K-S3 SSI subdivision budget — done (this PR, 2026-08-30):**
+- **K-S3 SSI subdivision budget — done
+  ([PR #160](https://github.com/esaueng/remus/pull/160), 2026-08-30):**
   `WorkBudgets::subdivision_depth` replaces the seed finder's hard-coded
   recursion depth and is authoritative before every recursive Bezier-patch
   split. The default depth 6 reproduces prior behavior; depth 0 performs no

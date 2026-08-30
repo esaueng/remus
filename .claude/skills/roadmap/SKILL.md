@@ -94,7 +94,7 @@ TERMINAL/REFUTED history and the campaign lessons.
 - O1.3a fillet torture corpus — CLOSED 2026-08-30: built-or-typed dispositions and the support-width cliff are pinned by `crates/operations/tests/fillet_torture.rs` in PR #139.
 - K-S2 planar face-area slice — PARTIAL 2026-08-30: exact line/circle/parabola boundary moments (including holes) are production-routed and pinned in `crates/operations/src/measure/mod.rs`; ellipse/hyperbola/NURBS boundaries and curved-body volume remain.
 - P2.8 SSI Newton budget — CLOSED 2026-08-30 in PR #147: `WorkBudgets::newton_iterations` governs all coupled SSI refinements and cancellation is polled inside the loop; the subdivision slice is closed separately below and parameter-space budgets remain in `docs/kernel-maturity/p-class-status.md`.
-- P2.8 SSI subdivision budget — CLOSED 2026-08-30 in this PR: `WorkBudgets::subdivision_depth` governs recursive Bezier seed discovery and is JS-callable through direct/batch quality booleans; parameter-space budgets remain in `docs/kernel-maturity/p-class-status.md`.
+- P2.8 SSI subdivision budget — CLOSED 2026-08-30 in PR #160: `WorkBudgets::subdivision_depth` governs recursive Bezier seed discovery and is JS-callable through direct/batch quality booleans; parameter-space budgets remain in `docs/kernel-maturity/p-class-status.md`.
 
 ## The priority filters (rules with reasons)
 
