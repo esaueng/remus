@@ -475,6 +475,10 @@ pub fn push_pull_face(
 
     ensure_face_in_solid(topo, solid, face)?;
 
+    if let Some(result) = push_pull_simple_cylinder_cap(topo, solid, face, distance)? {
+        return Ok(result);
+    }
+
     let face_data = topo.face(face)?;
     let normal =
         face_data
@@ -518,6 +522,138 @@ pub fn push_pull_face(
     ensure_closed_shell(topo, result, "push/pull")?;
     ensure_volume(topo, result, expected, "push/pull")?;
     Ok(result)
+}
+
+/// Rebuild a three-face analytic cylinder when either cap moves.
+///
+/// The generic cut path can select the swept cap slab instead of the
+/// remaining cylinder when the top cap moves inward. Restrict this exact
+/// construction to a fully proved primitive topology; every decorated or
+/// trimmed cylinder continues through the general push/pull path.
+fn push_pull_simple_cylinder_cap(
+    topo: &mut Topology,
+    solid: SolidId,
+    selected: FaceId,
+    distance: f64,
+) -> Result<Option<SolidId>, crate::OperationsError> {
+    let faces = solid_faces(topo, solid)?;
+    if faces.len() != 3 {
+        return Ok(None);
+    }
+
+    let mut cylinder = None;
+    let mut caps = Vec::with_capacity(2);
+    for candidate in faces {
+        let data = topo.face(candidate)?;
+        match data.surface() {
+            FaceSurface::Cylinder(surface)
+                if cylinder.is_none() && !data.is_reversed() && data.inner_wires().is_empty() =>
+            {
+                cylinder = Some((candidate, surface.clone()));
+            }
+            FaceSurface::Plane { .. } if data.inner_wires().is_empty() => caps.push(candidate),
+            _ => return Ok(None),
+        }
+    }
+    let Some((cylinder_face, cylinder)) = cylinder else {
+        return Ok(None);
+    };
+    if caps.len() != 2 || !caps.contains(&selected) {
+        return Ok(None);
+    }
+
+    let axis = unit(cylinder.axis())?;
+    let (base, height) = axial_extent(topo, cylinder_face, &cylinder)?;
+    let scale = cylinder.radius().max(height).max(1.0);
+    let tolerance = Tolerance::new();
+    let match_tolerance = tolerance.linear.max(scale * 1e-9);
+
+    let mut bottom = None;
+    let mut top = None;
+    for cap in caps {
+        let Some(position) =
+            simple_cylinder_cap_position(topo, cap, &cylinder, base, axis, match_tolerance)?
+        else {
+            return Ok(None);
+        };
+        if position.abs() <= match_tolerance && bottom.replace(cap).is_none() {
+            continue;
+        }
+        if (position - height).abs() <= match_tolerance && top.replace(cap).is_none() {
+            continue;
+        }
+        return Ok(None);
+    }
+    let (Some(bottom), Some(top)) = (bottom, top) else {
+        return Ok(None);
+    };
+
+    let new_height = height + distance;
+    if new_height <= tolerance.linear {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "push/pull distance {distance} would collapse cylinder height {height}"
+            ),
+        });
+    }
+
+    let new_base = if selected == bottom {
+        base - axis * distance
+    } else if selected == top {
+        base
+    } else {
+        return Ok(None);
+    };
+    let seam_direction = cylinder_seam_direction(topo, cylinder_face, &cylinder)?;
+    place_cylinder(
+        topo,
+        new_base,
+        axis,
+        seam_direction,
+        cylinder.radius(),
+        new_height,
+    )
+    .map(Some)
+}
+
+/// Return a cap's axial coordinate from `base` when its topology proves that
+/// it is the untrimmed circular boundary of `cylinder`.
+fn simple_cylinder_cap_position(
+    topo: &Topology,
+    face: FaceId,
+    cylinder: &CylindricalSurface,
+    base: Point3,
+    axis: Vec3,
+    match_tolerance: f64,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let data = topo.face(face)?;
+    let Some(normal) = data.effective_plane_normal() else {
+        return Ok(None);
+    };
+    if normal.dot(axis).abs() < 1.0 - Tolerance::new().angular {
+        return Ok(None);
+    }
+    let wire = topo.wire(data.outer_wire())?;
+    let [oriented] = wire.edges() else {
+        return Ok(None);
+    };
+    let edge = topo.edge(oriented.edge())?;
+    let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve() else {
+        return Ok(None);
+    };
+    if edge.start() != edge.end()
+        || (circle.radius() - cylinder.radius()).abs() > match_tolerance
+        || circle.normal().dot(axis).abs() < 1.0 - Tolerance::new().angular
+    {
+        return Ok(None);
+    }
+
+    let center_offset = circle.center() - cylinder.origin();
+    let radial_offset = center_offset - axis * center_offset.dot(axis);
+    if radial_offset.length() > match_tolerance {
+        return Ok(None);
+    }
+    Ok(Some((circle.center() - base).dot(axis)))
 }
 
 /// Change the radius of a cylindrical face of `solid`.
@@ -1347,6 +1483,81 @@ mod tests {
     }
 
     // --- push_pull_face -------------------------------------------------
+
+    #[test]
+    fn simple_cylinder_cap_moves_stay_exact_across_offset_and_scale_bands() {
+        for scale in [1e-3, 1.0, 1e3] {
+            for distance in [-0.001, -5.0, -20.0, 5.0].map(|value| value * scale) {
+                for direction in [Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 1.0)] {
+                    let mut topo = Topology::new();
+                    let radius = 10.0 * scale;
+                    let height = 30.0 * scale;
+                    let cylinder = make_cylinder(&mut topo, radius, height).unwrap();
+                    let cap = face_facing(&topo, cylinder, direction);
+
+                    let result = push_pull_face(&mut topo, cylinder, cap, distance).unwrap();
+                    let expected = PI * radius * radius * (height + distance);
+                    let actual = solid_volume(&topo, result, DEFLECTION * scale).unwrap();
+                    let relative = (actual - expected).abs() / expected;
+
+                    assert!(
+                        relative < 1e-12,
+                        "scale {scale}, distance {distance}, direction {direction:?}: \
+                         volume {actual} vs {expected} ({relative:e})"
+                    );
+                    assert_eq!(face_count(&topo, result, "cylinder"), 1);
+                    assert_eq!(face_count(&topo, result, "plane"), 2);
+                    assert_watertight(&topo, result);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn simple_cylinder_cap_move_preserves_a_noncanonical_frame() {
+        let mut topo = Topology::new();
+        let axis = Vec3::new(1.0, 2.0, 3.0).normalize().unwrap();
+        let cylinder = place_cylinder(
+            &mut topo,
+            Point3::new(4.0, -7.0, 2.0),
+            axis,
+            Vec3::new(0.0, 3.0, -2.0),
+            10.0,
+            30.0,
+        )
+        .unwrap();
+        let top = face_facing(&topo, cylinder, axis);
+
+        let result = push_pull_face(&mut topo, cylinder, top, -5.0).unwrap();
+
+        let actual = solid_volume(&topo, result, DEFLECTION).unwrap();
+        let expected = PI * 10.0 * 10.0 * 25.0;
+        assert!((actual - expected).abs() / expected < 1e-12);
+        assert_eq!(face_count(&topo, result, "cylinder"), 1);
+        assert_eq!(face_count(&topo, result, "plane"), 2);
+        assert_watertight(&topo, result);
+    }
+
+    #[test]
+    fn simple_cylinder_cap_move_refuses_height_collapse_boundary() {
+        for distance in [-30.0, -31.0] {
+            let mut topo = Topology::new();
+            let cylinder = make_cylinder(&mut topo, 10.0, 30.0).unwrap();
+            let top = face_facing(&topo, cylinder, Vec3::new(0.0, 0.0, 1.0));
+            let error = push_pull_face(&mut topo, cylinder, top, distance).unwrap_err();
+            assert!(
+                matches!(error, crate::OperationsError::InvalidInput { .. }),
+                "distance {distance}: {error}"
+            );
+        }
+
+        let mut topo = Topology::new();
+        let cylinder = make_cylinder(&mut topo, 10.0, 30.0).unwrap();
+        let top = face_facing(&topo, cylinder, Vec3::new(0.0, 0.0, 1.0));
+        let result = push_pull_face(&mut topo, cylinder, top, -29.0).unwrap();
+        assert_eq!(face_count(&topo, result, "cylinder"), 1);
+        assert_eq!(face_count(&topo, result, "plane"), 2);
+    }
 
     #[test]
     fn pulling_a_box_face_adds_a_slab() {
