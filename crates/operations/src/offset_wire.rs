@@ -277,6 +277,66 @@ fn build_arc_wire(
         corner_coincident.push((offset_ends[i] - offset_starts[next]).length() < tol.linear);
     }
 
+    // Preflight the exact minor join branch before allocating any result
+    // vertices. The corner endpoints own the angular interval; reconstructing
+    // it later can silently select the complementary arc across the seam.
+    let mut arc_plans = Vec::with_capacity(n);
+    for i in 0..n {
+        if corner_coincident[i] {
+            arc_plans.push(None);
+            continue;
+        }
+        let next = (i + 1) % n;
+        let center = verts[next];
+        let circle =
+            Circle3D::new(center, face_normal, radius).map_err(crate::OperationsError::Math)?;
+        let start = offset_ends[i];
+        let end = offset_starts[next];
+        let start_parameter = circle.project(start);
+        let positive_span =
+            (circle.project(end) - start_parameter).rem_euclid(std::f64::consts::TAU);
+        let signed_span = if positive_span <= std::f64::consts::PI {
+            positive_span
+        } else {
+            positive_span - std::f64::consts::TAU
+        };
+        if signed_span.abs() <= tol.angular {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "arc-join offset produced a degenerate angular span".into(),
+            });
+        }
+        let range = (start_parameter, start_parameter + signed_span);
+        let radial_sum = (start - center) + (end - center);
+        let midpoint = center
+            + radial_sum
+                .normalize()
+                .map_err(|_| crate::OperationsError::InvalidInput {
+                    reason: "arc-join offset has antipodal endpoints with no minor bisector".into(),
+                })?
+                * radius;
+        for (label, parameter, expected) in [
+            ("start", range.0, start),
+            (
+                "minor-arc midpoint",
+                f64::midpoint(range.0, range.1),
+                midpoint,
+            ),
+            ("end", range.1, end),
+        ] {
+            let residual = (circle.evaluate(parameter) - expected).length();
+            if !residual.is_finite() || residual > tol.linear {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "arc-join offset {label} misses its exact oracle by {residual} \
+                         (tolerance {})",
+                        tol.linear
+                    ),
+                });
+            }
+        }
+        arc_plans.push(Some((circle, range)));
+    }
+
     // Second pass: create vertices. For each edge i we need a start and end vertex.
     // The start vertex of edge i is either:
     //   - A new vertex at offset_starts[i] (if the previous corner had an arc, the
@@ -329,15 +389,24 @@ fn build_arc_wire(
             continue;
         }
 
-        let center = verts[next];
-        let circle =
-            Circle3D::new(center, face_normal, radius).map_err(crate::OperationsError::Math)?;
-
-        let arc_edge = topo.add_edge(Edge::new(
+        let (circle, range) =
+            arc_plans[i]
+                .clone()
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "arc-join offset lost a preflighted corner plan".into(),
+                })?;
+        let mut arc = Edge::with_tolerance(
             line_end_vids[i],
             line_start_vids[next],
             EdgeCurve::Circle(circle),
-        ));
+            Some(tol.linear),
+        );
+        arc.set_trim(Some(range));
+        arc.strict_domain()
+            .map_err(|error| crate::OperationsError::InvalidInput {
+                reason: format!("arc-join offset has invalid parameter authority: {error}"),
+            })?;
+        let arc_edge = topo.add_edge(arc);
         oriented_edges.push(OrientedEdge::new(arc_edge, true));
     }
 
@@ -679,6 +748,11 @@ mod tests {
                     perimeter += (e - s).length();
                 }
                 EdgeCurve::Circle(c) => {
+                    let range = edge.strict_domain().expect("arc join trim authority");
+                    assert!(
+                        ((range.1 - range.0).abs() - PI / 2.0).abs() < 1e-12,
+                        "arc join must retain the quarter-turn minor branch: {range:?}"
+                    );
                     // Quarter-circle arc: pi/2 * radius.
                     perimeter += (PI / 2.0) * c.radius();
                 }

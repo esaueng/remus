@@ -422,9 +422,100 @@ fn split_edge_at(
     let start_vid = oe.oriented_start(edge);
     let end_vid = oe.oriented_end(edge);
     let curve = edge.curve().clone();
+    let source_start = topo.vertex(edge.start())?;
+    let source_end = topo.vertex(edge.end())?;
+    let split = topo.vertex(split_vertex)?;
+    for (label, tolerance) in [
+        ("start vertex", source_start.tolerance()),
+        ("end vertex", source_end.tolerance()),
+        ("split vertex", split.tolerance()),
+    ] {
+        if !tolerance.is_finite() || tolerance.is_sign_negative() {
+            return Err(invalid_split(format!(
+                "edge {:?} has invalid {label} tolerance {tolerance}",
+                oe.edge()
+            )));
+        }
+    }
+    if let Some(tolerance) = edge.tolerance()
+        && (!tolerance.is_finite() || tolerance.is_sign_negative())
+    {
+        return Err(invalid_split(format!(
+            "edge {:?} has invalid explicit tolerance {tolerance}",
+            oe.edge()
+        )));
+    }
+    let effective_tolerance = edge.effective_tolerance(
+        source_start
+            .tolerance()
+            .max(source_end.tolerance())
+            .max(split.tolerance()),
+    );
+    let (source_t0, source_t1) = edge
+        .strict_domain()
+        .map_err(|error| invalid_split(format!("edge {:?}: {error}", oe.edge())))?;
+    let source_start_point = source_start.point();
+    let source_end_point = source_end.point();
+    for (label, parameter, expected) in [
+        ("start", source_t0, source_start_point),
+        ("end", source_t1, source_end_point),
+    ] {
+        let residual =
+            (curve.evaluate_with_endpoints(parameter, source_start_point, source_end_point)
+                - expected)
+                .length();
+        if !residual.is_finite() || residual > effective_tolerance {
+            return Err(invalid_split(format!(
+                "edge {:?} {label} parameter misses its vertex by {residual} (tolerance {effective_tolerance})",
+                oe.edge()
+            )));
+        }
+    }
 
-    let e1_id = topo.add_edge(Edge::new(start_vid, split_vertex, curve.clone()));
-    let e2_id = topo.add_edge(Edge::new(split_vertex, end_vid, curve));
+    // Lines are endpoint-local and carry no parameter authority. Preserve the
+    // established endpoint/near-endpoint split behavior exactly; the strict
+    // projected-interior certification below is only needed for stored curved
+    // domains, where choosing the wrong parameter changes the kept arc.
+    if matches!(curve, EdgeCurve::Line) {
+        let e1_id = topo.add_edge(Edge::new(start_vid, split_vertex, EdgeCurve::Line));
+        let e2_id = topo.add_edge(Edge::new(split_vertex, end_vid, EdgeCurve::Line));
+        propagate_split(topo, oe.edge(), oe.is_forward(), e1_id, e2_id)?;
+        return Ok((
+            OrientedEdge::new(e1_id, true),
+            OrientedEdge::new(e2_id, true),
+        ));
+    }
+    let (oriented_t0, oriented_t1) = if oe.is_forward() {
+        (source_t0, source_t1)
+    } else {
+        (source_t1, source_t0)
+    };
+    let split_parameter = split_parameter_on_curve(
+        &curve,
+        oriented_t0,
+        oriented_t1,
+        topo.vertex(start_vid)?.point(),
+        topo.vertex(end_vid)?.point(),
+        split.point(),
+        effective_tolerance,
+    )?;
+
+    let mut e1 = Edge::with_tolerance(
+        start_vid,
+        split_vertex,
+        curve.clone(),
+        Some(effective_tolerance),
+    );
+    let mut e2 = Edge::with_tolerance(split_vertex, end_vid, curve, Some(effective_tolerance));
+    e1.set_trim(Some((oriented_t0, split_parameter)));
+    e2.set_trim(Some((split_parameter, oriented_t1)));
+    e1.strict_domain()
+        .map_err(|error| invalid_split(error.to_string()))?;
+    e2.strict_domain()
+        .map_err(|error| invalid_split(error.to_string()))?;
+
+    let e1_id = topo.add_edge(e1);
+    let e2_id = topo.add_edge(e2);
 
     propagate_split(topo, oe.edge(), oe.is_forward(), e1_id, e2_id)?;
 
@@ -434,6 +525,98 @@ fn split_edge_at(
         OrientedEdge::new(e1_id, true),
         OrientedEdge::new(e2_id, true),
     ))
+}
+
+fn invalid_split(reason: String) -> BlendError {
+    BlendError::InvalidInput { reason }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_parameter_on_curve(
+    curve: &EdgeCurve,
+    t0: f64,
+    t1: f64,
+    start: Point3,
+    end: Point3,
+    split: Point3,
+    tolerance: f64,
+) -> Result<f64, BlendError> {
+    let parameter = match curve {
+        EdgeCurve::Line => {
+            let chord = end - start;
+            let length_squared = chord.dot(chord);
+            if !length_squared.is_finite() || length_squared <= 0.0 {
+                return Err(invalid_split("cannot split a degenerate line edge".into()));
+            }
+            let fraction = (split - start).dot(chord) / length_squared;
+            let residual = (start + chord * fraction - split).length();
+            if !residual.is_finite() || residual > tolerance {
+                return Err(invalid_split(format!(
+                    "line split vertex misses the segment by {residual} (tolerance {tolerance})"
+                )));
+            }
+            t0 + (t1 - t0) * fraction
+        }
+        EdgeCurve::Circle(circle) => periodic_split_parameter(circle.project(split), t0, t1)?,
+        EdgeCurve::Ellipse(ellipse) => periodic_split_parameter(ellipse.project(split), t0, t1)?,
+        EdgeCurve::Hyperbola(hyperbola) => hyperbola.project(split),
+        EdgeCurve::Parabola(parabola) => parabola.project(split),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let projection = remus_math::nurbs::projection::project_point_to_curve(
+                nurbs,
+                split,
+                tolerance.max(1e-12),
+            )
+            .map_err(|error| invalid_split(format!("NURBS split projection failed: {error}")))?;
+            if !projection.distance.is_finite() || projection.distance > tolerance {
+                return Err(invalid_split(format!(
+                    "NURBS split vertex misses the curve by {} (tolerance {tolerance})",
+                    projection.distance
+                )));
+            }
+            projection.parameter
+        }
+    };
+
+    let scale = t0.abs().max(t1.abs()).max(1.0);
+    let parameter_epsilon = 32.0 * f64::EPSILON * scale;
+    let inside = if t0 < t1 {
+        parameter > t0 + parameter_epsilon && parameter < t1 - parameter_epsilon
+    } else {
+        parameter < t0 - parameter_epsilon && parameter > t1 + parameter_epsilon
+    };
+    if !parameter.is_finite() || !inside {
+        return Err(invalid_split(format!(
+            "split parameter {parameter} is not strictly inside [{t0}, {t1}]"
+        )));
+    }
+
+    let residual = (curve.evaluate_with_endpoints(parameter, start, end) - split).length();
+    if !residual.is_finite() || residual > tolerance {
+        return Err(invalid_split(format!(
+            "split parameter misses its vertex by {residual} (tolerance {tolerance})"
+        )));
+    }
+    Ok(parameter)
+}
+
+fn periodic_split_parameter(projected: f64, t0: f64, t1: f64) -> Result<f64, BlendError> {
+    let low = t0.min(t1);
+    let high = t0.max(t1);
+    let mut matches = Vec::new();
+    for turn in -2..=2 {
+        let candidate = projected + f64::from(turn) * std::f64::consts::TAU;
+        if candidate > low && candidate < high {
+            matches.push(candidate);
+        }
+    }
+    if matches.len() == 1 {
+        Ok(matches[0])
+    } else {
+        Err(invalid_split(format!(
+            "periodic split projection is ambiguous in [{t0}, {t1}]"
+        )))
+    }
 }
 
 /// Rewrite every wire referencing the split edge to use its two sub-edges.
@@ -885,6 +1068,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+    use remus_math::curves::Circle3D;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
 
@@ -1301,5 +1485,59 @@ mod tests {
         // Non-parallel but non-overlapping segments.
         let t = segment_intersect_2d((0.0, 0.0), (1.0, 0.0), (2.0, -1.0), (2.0, 1.0));
         assert!(t.is_none());
+    }
+
+    #[test]
+    fn curved_split_subdivides_authoritative_domain_in_oriented_order() {
+        let circle =
+            Circle3D::new(Point3::new(2.0, -3.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), VERTEX_TOL));
+        let end = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::PI),
+            VERTEX_TOL,
+        ));
+        let split = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::FRAC_PI_2),
+            VERTEX_TOL,
+        ));
+        let mut source = Edge::new(start, end, EdgeCurve::Circle(circle));
+        source.set_trim(Some((0.0, std::f64::consts::PI)));
+        let source_id = topo.add_edge(source);
+
+        let (before, after) =
+            split_edge_at(&mut topo, &OrientedEdge::new(source_id, false), split).unwrap();
+        assert_eq!(
+            topo.edge(before.edge()).unwrap().strict_domain().unwrap(),
+            (std::f64::consts::PI, std::f64::consts::FRAC_PI_2)
+        );
+        assert_eq!(
+            topo.edge(after.edge()).unwrap().strict_domain().unwrap(),
+            (std::f64::consts::FRAC_PI_2, 0.0)
+        );
+    }
+
+    #[test]
+    fn curved_split_refuses_missing_authority_before_allocating_edges() {
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), VERTEX_TOL));
+        let end = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::PI),
+            VERTEX_TOL,
+        ));
+        let split = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::FRAC_PI_2),
+            VERTEX_TOL,
+        ));
+        let source_id = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+        let edge_count = topo.num_edges();
+
+        assert!(matches!(
+            split_edge_at(&mut topo, &OrientedEdge::new(source_id, true), split),
+            Err(BlendError::InvalidInput { .. })
+        ));
+        assert_eq!(topo.num_edges(), edge_count);
     }
 }

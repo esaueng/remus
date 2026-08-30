@@ -812,10 +812,19 @@ fn merge_collinear_edges(
         start_pos: remus_math::vec::Point3,
         end_pos: remus_math::vec::Point3,
         kind: EdgeKind,
+        domain: (f64, f64),
+        effective_tolerance: f64,
     }
 
     let lin = options.linear_tolerance;
     let ang = options.angular_tolerance;
+    for (label, value) in [("linear", lin), ("angular", ang)] {
+        if !value.is_finite() || value.is_sign_negative() {
+            return Err(HealError::InvalidConfig(format!(
+                "invalid {label} unification tolerance {value}"
+            )));
+        }
+    }
 
     let circles_match = |a: &Circle3D, b: &Circle3D| -> bool {
         (a.center() - b.center()).length() < lin
@@ -867,6 +876,49 @@ fn merge_collinear_edges(
         let end_vid = oe.oriented_end(edge);
         let start_pos = topo.vertex(start_vid)?.point();
         let end_pos = topo.vertex(end_vid)?.point();
+        let source_start = topo.vertex(edge.start())?;
+        let source_end = topo.vertex(edge.end())?;
+        for (label, value) in [
+            ("start vertex", source_start.tolerance()),
+            ("end vertex", source_end.tolerance()),
+        ] {
+            if !value.is_finite() || value.is_sign_negative() {
+                return Err(HealError::UpgradeFailed(format!(
+                    "edge {:?} has invalid {label} tolerance {value}",
+                    oe.edge()
+                )));
+            }
+        }
+        if let Some(value) = edge.tolerance()
+            && (!value.is_finite() || value.is_sign_negative())
+        {
+            return Err(HealError::UpgradeFailed(format!(
+                "edge {:?} has invalid explicit tolerance {value}",
+                oe.edge()
+            )));
+        }
+        let domain = edge.strict_domain().map_err(|error| {
+            HealError::UpgradeFailed(format!("edge {:?} cannot be merged: {error}", oe.edge()))
+        })?;
+        let effective_tolerance =
+            edge.effective_tolerance(source_start.tolerance().max(source_end.tolerance()));
+        for (label, parameter, expected) in [
+            ("start", domain.0, source_start.point()),
+            ("end", domain.1, source_end.point()),
+        ] {
+            let residual = (edge.curve().evaluate_with_endpoints(
+                parameter,
+                source_start.point(),
+                source_end.point(),
+            ) - expected)
+                .length();
+            if !residual.is_finite() || residual > effective_tolerance {
+                return Err(HealError::UpgradeFailed(format!(
+                    "edge {:?} {label} parameter misses its vertex by {residual} (tolerance {effective_tolerance})",
+                    oe.edge()
+                )));
+            }
+        }
         data.push(EdgeData {
             oe: *oe,
             start_vid,
@@ -874,6 +926,8 @@ fn merge_collinear_edges(
             start_pos,
             end_pos,
             kind,
+            domain,
+            effective_tolerance,
         });
     }
 
@@ -920,6 +974,9 @@ fn merge_collinear_edges(
         };
 
         let mut run_end_vid = head.end_vid;
+        let mut run_tolerance = head.effective_tolerance;
+        let mut run_span = head.domain.1 - head.domain.0;
+        let run_is_positive = run_span.is_sign_positive();
         let mut j = i + 1;
         while j < n {
             let next = &data[j];
@@ -932,6 +989,20 @@ fn merge_collinear_edges(
             }
             if next.start_vid != run_end_vid {
                 break;
+            }
+
+            if !matches!(head.kind, EdgeKind::Line) {
+                let next_span = next.domain.1 - next.domain.0;
+                if next_span.is_sign_positive() != run_is_positive {
+                    break;
+                }
+                let candidate_span = run_span + next_span;
+                if candidate_span.abs()
+                    > std::f64::consts::TAU + 4.0 * f64::EPSILON * std::f64::consts::TAU
+                {
+                    break;
+                }
+                run_span = candidate_span;
             }
 
             // Line-specific parallelism check: same direction along the run.
@@ -949,6 +1020,7 @@ fn merge_collinear_edges(
             }
 
             run_end_vid = next.end_vid;
+            run_tolerance = run_tolerance.max(next.effective_tolerance);
             j += 1;
         }
 
@@ -959,7 +1031,31 @@ fn merge_collinear_edges(
             continue;
         }
 
-        let new_edge = Edge::new(head.start_vid, run_end_vid, merged_curve);
+        let mut new_edge = Edge::with_tolerance(
+            head.start_vid,
+            run_end_vid,
+            merged_curve,
+            Some(run_tolerance),
+        );
+        if !matches!(new_edge.curve(), EdgeCurve::Line) {
+            let merged_end = head.domain.0 + run_span;
+            new_edge.set_trim(Some((head.domain.0, merged_end)));
+            new_edge.strict_domain().map_err(|error| {
+                HealError::UpgradeFailed(format!("merged edge has invalid domain: {error}"))
+            })?;
+            let end_point = topo.vertex(run_end_vid)?.point();
+            let residual =
+                (new_edge
+                    .curve()
+                    .evaluate_with_endpoints(merged_end, head.start_pos, end_point)
+                    - end_point)
+                    .length();
+            if !residual.is_finite() || residual > run_tolerance {
+                return Err(HealError::UpgradeFailed(format!(
+                    "merged edge end parameter misses its vertex by {residual} (tolerance {run_tolerance})"
+                )));
+            }
+        }
         let new_edge_id = topo.add_edge(new_edge);
         new_edges.push(OrientedEdge::new(new_edge_id, true));
         merged_count += run_length - 1;
@@ -1225,6 +1321,20 @@ mod merge_tests {
         topo.add_vertex(Vertex::new(p, 1e-7))
     }
 
+    fn curved_edge(
+        topo: &mut Topology,
+        start: VertexId,
+        end: VertexId,
+        curve: EdgeCurve,
+    ) -> remus_topology::edge::EdgeId {
+        let start_point = topo.vertex(start).unwrap().point();
+        let end_point = topo.vertex(end).unwrap().point();
+        let trim = curve.reconstruct_domain_from_endpoints(start_point, end_point);
+        let mut edge = Edge::new(start, end, curve);
+        edge.set_trim(Some(trim));
+        topo.add_edge(edge)
+    }
+
     /// Build a wire from a sequence of edges, all forward-oriented.
     fn build_wire_from_edges(
         topo: &mut Topology,
@@ -1249,9 +1359,9 @@ mod merge_tests {
         let v1 = add_vertex(&mut topo, p_at(2.0 * std::f64::consts::PI / 3.0));
         let v2 = add_vertex(&mut topo, p_at(4.0 * std::f64::consts::PI / 3.0));
 
-        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(circle.clone())));
-        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Circle(circle.clone())));
-        let e2 = topo.add_edge(Edge::new(v2, v0, EdgeCurve::Circle(circle.clone())));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::Circle(circle.clone()));
+        let e1 = curved_edge(&mut topo, v1, v2, EdgeCurve::Circle(circle.clone()));
+        let e2 = curved_edge(&mut topo, v2, v0, EdgeCurve::Circle(circle.clone()));
         let wire = build_wire_from_edges(&mut topo, &[e0, e1, e2], true);
 
         let merged = merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()).unwrap();
@@ -1265,20 +1375,53 @@ mod merge_tests {
         assert!(matches!(merged_edge.curve(), EdgeCurve::Circle(_)));
         // Closed-loop arc should reduce to a single closed circle edge.
         assert_eq!(merged_edge.start(), merged_edge.end());
+        let (start, end) = merged_edge.strict_domain().unwrap();
+        assert!(((end - start).abs() - std::f64::consts::TAU).abs() < 1e-12);
+    }
+
+    #[test]
+    fn arc_merge_refuses_missing_authority_before_mutating_topology() {
+        let mut topo = Topology::default();
+        let circle = Circle3D::new(origin(), z_axis(), 1.0).unwrap();
+        let v0 = add_vertex(&mut topo, circle.evaluate(0.0));
+        let v1 = add_vertex(&mut topo, circle.evaluate(std::f64::consts::PI));
+        let v2 = add_vertex(&mut topo, circle.evaluate(1.5 * std::f64::consts::PI));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::Circle(circle.clone()));
+        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Circle(circle)));
+        let wire = build_wire_from_edges(&mut topo, &[e0, e1], false);
+        let edge_count = topo.num_edges();
+        let original_edges = topo.wire(wire).unwrap().edges().to_vec();
+
+        assert!(matches!(
+            merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()),
+            Err(HealError::UpgradeFailed(_))
+        ));
+        assert_eq!(topo.num_edges(), edge_count);
+        let after = topo.wire(wire).unwrap().edges();
+        assert_eq!(after.len(), original_edges.len());
+        assert!(
+            after
+                .iter()
+                .zip(original_edges)
+                .all(|(actual, expected)| actual.edge() == expected.edge()
+                    && actual.is_forward() == expected.is_forward())
+        );
     }
 
     #[test]
     fn arcs_on_different_circles_do_not_merge() {
         let mut topo = Topology::default();
         let circle_a = Circle3D::new(origin(), z_axis(), 1.0).unwrap();
-        let circle_b = Circle3D::new(Point3::new(1.0, 0.0, 0.0), z_axis(), 1.0).unwrap();
+        let circle_b = Circle3D::new(Point3::new(2.0, 0.0, 0.0), z_axis(), 1.0).unwrap();
+        let shared = Point3::new(1.0, 0.0, 0.0);
+        let ta = circle_a.project(shared);
+        let tb = circle_b.project(shared);
+        let v0 = add_vertex(&mut topo, circle_a.evaluate(ta - 0.5));
+        let v1 = add_vertex(&mut topo, shared);
+        let v2 = add_vertex(&mut topo, circle_b.evaluate(tb + 0.5));
 
-        let v0 = add_vertex(&mut topo, circle_a.evaluate(0.0));
-        let v1 = add_vertex(&mut topo, circle_a.evaluate(std::f64::consts::PI));
-        let v2 = add_vertex(&mut topo, circle_b.evaluate(std::f64::consts::PI));
-
-        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(circle_a)));
-        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Circle(circle_b)));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::Circle(circle_a));
+        let e1 = curved_edge(&mut topo, v1, v2, EdgeCurve::Circle(circle_b));
         let wire = build_wire_from_edges(&mut topo, &[e0, e1], false);
 
         let merged = merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()).unwrap();
@@ -1297,8 +1440,8 @@ mod merge_tests {
         let v1 = add_vertex(&mut topo, c_up.evaluate(std::f64::consts::PI));
         let v2 = add_vertex(&mut topo, c_up.evaluate(std::f64::consts::PI * 1.5));
 
-        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(c_up)));
-        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Circle(c_down)));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::Circle(c_up));
+        let e1 = curved_edge(&mut topo, v1, v2, EdgeCurve::Circle(c_down));
         let wire = build_wire_from_edges(&mut topo, &[e0, e1], false);
 
         let merged = merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()).unwrap();
@@ -1316,8 +1459,8 @@ mod merge_tests {
         let v0 = add_vertex(&mut topo, circle.evaluate(0.0));
         let v1 = add_vertex(&mut topo, circle.evaluate(std::f64::consts::PI));
 
-        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(circle.clone())));
-        let e1 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Circle(circle)));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::Circle(circle.clone()));
+        let e1 = curved_edge(&mut topo, v0, v1, EdgeCurve::Circle(circle));
 
         let wire = topo.add_wire(
             Wire::new(
@@ -1341,8 +1484,8 @@ mod merge_tests {
         let v1 = add_vertex(&mut topo, p(std::f64::consts::PI));
         let v2 = add_vertex(&mut topo, p(2.0 * std::f64::consts::PI - 1e-9));
 
-        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Ellipse(ellipse.clone())));
-        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Ellipse(ellipse.clone())));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::Ellipse(ellipse.clone()));
+        let e1 = curved_edge(&mut topo, v1, v2, EdgeCurve::Ellipse(ellipse.clone()));
         let wire = build_wire_from_edges(&mut topo, &[e0, e1], false);
 
         let merged = merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()).unwrap();
@@ -1369,11 +1512,18 @@ mod merge_tests {
             vec![1.0, 1.0],
         )
         .unwrap();
+        let nurbs_next = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
         let v0 = add_vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
         let v1 = add_vertex(&mut topo, Point3::new(1.0, 0.0, 0.0));
         let v2 = add_vertex(&mut topo, Point3::new(2.0, 0.0, 0.0));
-        let e0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(nurbs.clone())));
-        let e1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::NurbsCurve(nurbs)));
+        let e0 = curved_edge(&mut topo, v0, v1, EdgeCurve::NurbsCurve(nurbs));
+        let e1 = curved_edge(&mut topo, v1, v2, EdgeCurve::NurbsCurve(nurbs_next));
         let wire = build_wire_from_edges(&mut topo, &[e0, e1], false);
 
         let merged = merge_collinear_edges(&mut topo, wire, &UnifyOptions::default()).unwrap();
@@ -1402,8 +1552,8 @@ mod merge_tests {
         let l0 = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
         let l1 = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line));
         let l2 = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
-        let a0 = topo.add_edge(Edge::new(v3, v4, EdgeCurve::Circle(circle.clone())));
-        let a1 = topo.add_edge(Edge::new(v4, v5, EdgeCurve::Circle(circle)));
+        let a0 = curved_edge(&mut topo, v3, v4, EdgeCurve::Circle(circle.clone()));
+        let a1 = curved_edge(&mut topo, v4, v5, EdgeCurve::Circle(circle));
 
         let wire = build_wire_from_edges(&mut topo, &[l0, l1, l2, a0, a1], false);
 

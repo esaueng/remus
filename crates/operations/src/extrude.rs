@@ -14,7 +14,7 @@ use remus_math::tolerance::Tolerance;
 pub const DEFAULT_DEFLECTION: f64 = 0.1;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
@@ -301,6 +301,108 @@ fn winding_sample_points(
     Ok(pts)
 }
 
+fn validated_edge_tolerance(
+    topo: &Topology,
+    edge: &Edge,
+    label: &str,
+) -> Result<f64, crate::OperationsError> {
+    let start_tolerance = topo.vertex(edge.start())?.tolerance();
+    let end_tolerance = topo.vertex(edge.end())?.tolerance();
+    let edge_tolerance = edge.tolerance();
+    if !start_tolerance.is_finite()
+        || start_tolerance < 0.0
+        || !end_tolerance.is_finite()
+        || end_tolerance < 0.0
+        || edge_tolerance.is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "{label} has invalid tolerance authority (start {start_tolerance}, end \
+                 {end_tolerance}, edge {edge_tolerance:?})"
+            ),
+        });
+    }
+    Ok(edge.effective_tolerance(start_tolerance.max(end_tolerance)))
+}
+
+/// Use stored authority when present. At this public raw-wire construction
+/// boundary only, a missing interval is established once from the vertices
+/// and immediately validated; malformed stored authority is never replaced.
+fn source_curve_domain(
+    edge: &Edge,
+    start: Point3,
+    end: Point3,
+    label: &str,
+) -> Result<(f64, f64), crate::OperationsError> {
+    match edge.strict_domain() {
+        Ok(range) => Ok(range),
+        Err(EdgeDomainError::Missing { .. }) => {
+            let range = edge.curve().reconstruct_domain_from_endpoints(start, end);
+            let mut probe = Edge::with_tolerance(
+                edge.start(),
+                edge.end(),
+                edge.curve().clone(),
+                edge.tolerance(),
+            );
+            probe.set_trim(Some(range));
+            probe
+                .strict_domain()
+                .map_err(|error| crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "{label} cannot establish raw-construction parameter authority: {error}"
+                    ),
+                })?;
+            Ok(range)
+        }
+        Err(error) => Err(crate::OperationsError::InvalidInput {
+            reason: format!("{label} has invalid stored parameter authority: {error}"),
+        }),
+    }
+}
+
+fn reversed_curve_trim(curve: &EdgeCurve, trim: (f64, f64)) -> (f64, f64) {
+    match curve {
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let knots = nurbs.knots();
+            let span = knots[0] + knots[knots.len() - 1];
+            (span - trim.1, span - trim.0)
+        }
+        EdgeCurve::Line => (0.0, 1.0),
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => (-trim.1, -trim.0),
+    }
+}
+
+fn certify_curve_authority(
+    curve: &EdgeCurve,
+    trim: (f64, f64),
+    expected_start: Point3,
+    expected_midpoint: Point3,
+    expected_end: Point3,
+    tolerance: f64,
+    label: &str,
+) -> Result<(), crate::OperationsError> {
+    for (site, parameter, expected) in [
+        ("start", trim.0, expected_start),
+        ("midpoint", f64::midpoint(trim.0, trim.1), expected_midpoint),
+        ("end", trim.1, expected_end),
+    ] {
+        let actual = curve.evaluate_with_endpoints(parameter, expected_start, expected_end);
+        let residual = (actual - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "{label} {site} misses its parameter-authority oracle by {residual} \
+                     (tolerance {tolerance})"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Extract vertices, create offset (top) vertices and edges for a wire.
 ///
 /// Returns: `(input_verts, input_positions, input_oriented, input_edge_ids,
@@ -350,28 +452,45 @@ fn extrude_wire_vertices_with(
 
     let n = verts.len();
 
-    let positions: Vec<Point3> = verts
+    let vertex_data: Vec<(Point3, f64)> = verts
         .iter()
-        .map(|&vid| topo.vertex(vid).map(remus_topology::vertex::Vertex::point))
-        .collect::<Result<_, _>>()?;
-
-    let top_verts: Vec<VertexId> = positions
-        .iter()
-        .map(|p| {
-            let top_point = *p + offset;
-            topo.add_vertex(Vertex::new(top_point, tol.linear))
+        .map(|&vid| {
+            let vertex = topo.vertex(vid)?;
+            let tolerance = vertex.tolerance();
+            if !tolerance.is_finite() || tolerance < 0.0 {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!("extrude profile vertex has invalid tolerance {tolerance}"),
+                });
+            }
+            Ok((vertex.point(), tolerance))
         })
-        .collect();
+        .collect::<Result<_, crate::OperationsError>>()?;
+    let positions: Vec<Point3> = vertex_data.iter().map(|(point, _)| *point).collect();
 
     let edge_ids: Vec<EdgeId> = oriented
         .iter()
         .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
 
-    let mut top_edge_ids = Vec::with_capacity(n);
+    // Preflight every translated nonlinear edge before allocating any top
+    // topology. Translation preserves the source parameterization; reversing
+    // the curve for a backward wire use remaps the interval exactly.
+    let mut top_plans = Vec::with_capacity(n);
     for i in 0..n {
         let next = (i + 1) % n;
-        let bottom_curve = topo.edge(edge_ids[i])?.curve().clone();
+        let bottom_edge = topo.edge(edge_ids[i])?;
+        let bottom_curve = bottom_edge.curve().clone();
+        let authority_tolerance = validated_edge_tolerance(topo, bottom_edge, "extrude edge")?;
+        let source_trim = if matches!(bottom_curve, EdgeCurve::Line) {
+            None
+        } else {
+            Some(source_curve_domain(
+                bottom_edge,
+                topo.vertex(bottom_edge.start())?.point(),
+                topo.vertex(bottom_edge.end())?.point(),
+                "extrude source edge",
+            )?)
+        };
         let mut top_curve = translate_edge_curve(&bottom_curve, offset)?;
         // The top edge's stored vertices (top_verts[i], top_verts[next]) follow
         // wire-traversal order. For a reversed edge those are swapped relative
@@ -379,10 +498,48 @@ fn extrude_wire_vertices_with(
         // would resolve to the complementary sub-arc — and a NURBS curve's
         // endpoints would not match the stored vertices. Reverse the
         // translated curve's parameterization so it stays consistent.
-        if !oriented[i].is_forward() {
+        let top_trim = if oriented[i].is_forward() {
+            source_trim
+        } else {
             top_curve = reverse_edge_curve(&top_curve)?;
+            source_trim.map(|range| reversed_curve_trim(&bottom_curve, range))
+        };
+        if let (Some(source_range), Some(top_range)) = (source_trim, top_trim) {
+            let source_midpoint = bottom_curve.evaluate_with_endpoints(
+                f64::midpoint(source_range.0, source_range.1),
+                topo.vertex(bottom_edge.start())?.point(),
+                topo.vertex(bottom_edge.end())?.point(),
+            );
+            certify_curve_authority(
+                &top_curve,
+                top_range,
+                positions[i] + offset,
+                source_midpoint + offset,
+                positions[next] + offset,
+                authority_tolerance,
+                "translated extrude edge",
+            )?;
         }
-        let top_edge = topo.add_edge(Edge::new(top_verts[i], top_verts[next], top_curve));
+        top_plans.push((top_curve, top_trim, bottom_edge.tolerance()));
+    }
+
+    let top_verts: Vec<VertexId> = vertex_data
+        .iter()
+        .map(|(point, tolerance)| topo.add_vertex(Vertex::new(*point + offset, *tolerance)))
+        .collect();
+
+    let mut top_edge_ids = Vec::with_capacity(n);
+    for (i, (top_curve, top_trim, edge_tolerance)) in top_plans.into_iter().enumerate() {
+        let next = (i + 1) % n;
+        let mut top_edge =
+            Edge::with_tolerance(top_verts[i], top_verts[next], top_curve, edge_tolerance);
+        top_edge.set_trim(top_trim);
+        top_edge
+            .strict_domain()
+            .map_err(|error| crate::OperationsError::InvalidInput {
+                reason: format!("translated extrude edge has invalid parameter authority: {error}"),
+            })?;
+        let top_edge = topo.add_edge(top_edge);
         top_edge_ids.push(top_edge);
     }
 
@@ -644,13 +801,16 @@ fn normalize_profile_wire_curves(
         .iter()
         .map(remus_topology::wire::OrientedEdge::edge)
         .collect();
+    let mut replacements = Vec::new();
     for eid in edge_ids {
         let edge = topo.edge(eid)?;
         let EdgeCurve::NurbsCurve(nc) = edge.curve() else {
             continue;
         };
+        let authority_tolerance = validated_edge_tolerance(topo, edge, "extrude profile edge")?;
         let s3 = topo.vertex(edge.start())?.point();
         let e3 = topo.vertex(edge.end())?.point();
+        let source_range = source_curve_domain(edge, s3, e3, "extrude profile NURBS")?;
         let (d0, d1) = nc.domain();
         let a3 = nc.evaluate(d0);
         let b3 = nc.evaluate(d1);
@@ -711,8 +871,82 @@ fn normalize_profile_wire_curves(
             _ => None,
         };
         if let Some(c) = new_curve {
-            topo.edge_mut(eid)?.set_curve(c);
+            let new_trim = match &c {
+                EdgeCurve::Line => None,
+                EdgeCurve::Circle(circle) => {
+                    let source_midpoint =
+                        nc.evaluate(f64::midpoint(source_range.0, source_range.1));
+                    let start_parameter = circle.project(s3);
+                    let range = if (s3 - e3).length() <= authority_tolerance {
+                        let source_tangent = nc
+                            .tangent(source_range.0)
+                            .map_err(crate::OperationsError::Math)?;
+                        let direction: f64 =
+                            if circle.tangent(start_parameter).dot(source_tangent) >= 0.0 {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                        (
+                            start_parameter,
+                            direction.mul_add(std::f64::consts::TAU, start_parameter),
+                        )
+                    } else {
+                        let positive_span = (circle.project(e3) - start_parameter)
+                            .rem_euclid(std::f64::consts::TAU);
+                        let positive = (start_parameter, start_parameter + positive_span);
+                        let negative = (
+                            start_parameter,
+                            (positive_span - std::f64::consts::TAU).mul_add(1.0, start_parameter),
+                        );
+                        let residual = |range: (f64, f64)| {
+                            (circle.evaluate(f64::midpoint(range.0, range.1)) - source_midpoint)
+                                .length()
+                        };
+                        if residual(positive) <= residual(negative) {
+                            positive
+                        } else {
+                            negative
+                        }
+                    };
+                    certify_curve_authority(
+                        &c,
+                        range,
+                        s3,
+                        source_midpoint,
+                        e3,
+                        authority_tolerance,
+                        "recognized extrude circle",
+                    )?;
+                    Some(range)
+                }
+                EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::NurbsCurve(_) => {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "extrude profile recognition produced an unexpected curve type"
+                            .into(),
+                    });
+                }
+            };
+            let mut probe =
+                Edge::with_tolerance(edge.start(), edge.end(), c.clone(), edge.tolerance());
+            probe.set_trim(new_trim);
+            probe
+                .strict_domain()
+                .map_err(|error| crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "recognized extrude profile has invalid parameter authority: {error}"
+                    ),
+                })?;
+            replacements.push((eid, c, new_trim));
         }
+    }
+    for (eid, curve, trim) in replacements {
+        let edge = topo.edge_mut(eid)?;
+        edge.set_curve(curve);
+        edge.set_trim(trim);
     }
     Ok(())
 }
@@ -788,6 +1022,18 @@ fn nurbs_is_quadratic_circle(
 /// or the face surface is not a plane.
 #[allow(clippy::too_many_lines)]
 pub fn extrude(
+    topo: &mut Topology,
+    face: FaceId,
+    direction: Vec3,
+    distance: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        extrude_impl(topo, face, direction, distance)
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn extrude_impl(
     topo: &mut Topology,
     face: FaceId,
     direction: Vec3,

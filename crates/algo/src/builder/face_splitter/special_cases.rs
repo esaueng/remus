@@ -450,8 +450,13 @@ fn build_seam_arcs(
     let mut arcs: Vec<OrientedPCurveEdge> = Vec::new();
     let m = by_angle.len();
     for i in 0..m {
-        let (_, start_3d) = by_angle[i];
-        let (_, end_3d) = by_angle[(i + 1) % m];
+        let (start_parameter, start_3d) = by_angle[i];
+        let (raw_end_parameter, end_3d) = by_angle[(i + 1) % m];
+        let end_parameter = if i + 1 == m {
+            raw_end_parameter + std::f64::consts::TAU
+        } else {
+            raw_end_parameter
+        };
         if (start_3d - end_3d).length() < tol * 100.0 {
             continue;
         }
@@ -469,7 +474,7 @@ fn build_seam_arcs(
         let end_uv =
             super::super::pcurve_compute::project_point_on_surface(end_3d, surface, &[], None);
         arcs.push(OrientedPCurveEdge {
-            trim: None,
+            trim: Some((start_parameter, end_parameter)),
             curve_3d: curve,
             pcurve,
             start_uv,
@@ -1196,7 +1201,7 @@ pub(super) fn split_closed_torus_into_bands(
             let dir = Vec2::new(0.0, if b > a { 1.0 } else { -1.0 });
             out.push(OrientedPCurveEdge {
                 curve_3d: EdgeCurve::Circle(meridian.clone()),
-                trim: None,
+                trim: Some(if b > a { (a, b) } else { (b, a) }),
                 pcurve: Curve2D::Line(Line2D::new(Point2::new(seam_u, a), dir).ok()?),
                 start_uv: Point2::new(seam_u, a),
                 end_uv: Point2::new(seam_u, b),
@@ -1423,11 +1428,14 @@ pub(super) fn split_periodic_face_into_sectors(
         let traversal_tan = near - pa;
         let circle_tan = circle.tangent(circle.project(pa));
         let forward = traversal_tan.dot(circle_tan) > 0.0;
+        let stored_start = if forward { pa } else { pb };
+        let trim_start = circle.project(stored_start);
+        let trim = (trim_start, trim_start + (to - from).abs());
         let dir = Vec2::new(if to > from { 1.0 } else { -1.0 }, 0.0);
         let pcurve = Curve2D::Line(Line2D::new(Point2::new(seam_u + from, v), dir).ok()?);
         let curve = EdgeCurve::Circle(circle.clone());
         Some(OrientedPCurveEdge {
-            trim: None,
+            trim: Some(trim),
             curve_3d: curve,
             pcurve,
             start_uv: Point2::new(seam_u + from, v),
@@ -3576,9 +3584,15 @@ pub(super) fn try_split_disk_by_chords(
                 } else {
                     EdgeCurve::Circle(aligned_rev.clone())
                 };
+                let trim = if ccw {
+                    (from_phi, to_phi)
+                } else {
+                    let start_parameter = aligned_rev.project(s3);
+                    (start_parameter, start_parameter + (from_phi - to_phi))
+                };
                 let pcurve = compute_pcurve_on_surface(&curve, s3, e3, surface, &[], Some(frame));
                 Some(OrientedPCurveEdge {
-                    trim: None,
+                    trim: Some(trim),
                     curve_3d: curve,
                     pcurve,
                     start_uv: frame.project(s3),

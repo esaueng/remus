@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use remus_math::curves::Circle3D;
 use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -373,6 +374,87 @@ fn corner_of(
 /// Key for the joint arc of source edge `e` at source vertex `v`.
 type ArcKey = (usize, usize);
 
+/// Build one positively oriented minor arc of a source edge's normal cone.
+///
+/// The circle's explicit reference direction puts `from` at parameter zero;
+/// the second face normal therefore determines the positive cone angle.
+/// Certify both corners and the radial-bisector midpoint before allocating the
+/// shared edge.
+fn add_certified_joint_arc(
+    topo: &mut Topology,
+    center: remus_math::vec::Point3,
+    circle: Circle3D,
+    from: VertexId,
+    to: VertexId,
+    to_direction: Vec3,
+) -> Result<EdgeId, OffsetError> {
+    let from_vertex = topo.vertex(from)?;
+    let to_vertex = topo.vertex(to)?;
+    let from_point = from_vertex.point();
+    let to_point = to_vertex.point();
+    let from_tolerance = from_vertex.tolerance();
+    let to_tolerance = to_vertex.tolerance();
+    if !from_tolerance.is_finite()
+        || from_tolerance < 0.0
+        || !to_tolerance.is_finite()
+        || to_tolerance < 0.0
+    {
+        return Err(OffsetError::AssemblyFailed {
+            reason: format!(
+                "joint arc corners have invalid tolerances {from_tolerance} and {to_tolerance}"
+            ),
+        });
+    }
+    let tolerance = from_tolerance
+        .max(to_tolerance)
+        .max(Tolerance::new().linear);
+
+    let end_parameter = to_direction
+        .dot(circle.v_axis())
+        .atan2(to_direction.dot(circle.u_axis()))
+        .rem_euclid(std::f64::consts::TAU);
+    let angular_roundoff = 32.0 * f64::EPSILON * std::f64::consts::PI;
+    if !end_parameter.is_finite()
+        || end_parameter <= angular_roundoff
+        || end_parameter > std::f64::consts::PI + angular_roundoff
+    {
+        return Err(OffsetError::AssemblyFailed {
+            reason: format!(
+                "joint arc does not define a positive minor normal-cone angle: {end_parameter}"
+            ),
+        });
+    }
+
+    let from_radial = (from_point - center).normalize()?;
+    let to_radial = (to_point - center).normalize()?;
+    let midpoint_radial = (from_radial + to_radial).normalize()?;
+    let midpoint = center + midpoint_radial * circle.radius();
+    let range = (0.0, end_parameter);
+    for (label, parameter, expected) in [
+        ("start", range.0, from_point),
+        ("midpoint", end_parameter * 0.5, midpoint),
+        ("end", range.1, to_point),
+    ] {
+        let residual = (circle.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(OffsetError::AssemblyFailed {
+                reason: format!(
+                    "joint arc {label} misses its exact normal-cone oracle by {residual} \
+                     (tolerance {tolerance})"
+                ),
+            });
+        }
+    }
+
+    let mut edge = Edge::with_tolerance(from, to, EdgeCurve::Circle(circle), Some(tolerance));
+    edge.set_trim(Some(range));
+    edge.strict_domain()
+        .map_err(|error| OffsetError::AssemblyFailed {
+            reason: format!("joint arc has invalid parameter authority: {error}"),
+        })?;
+    Ok(topo.add_edge(edge))
+}
+
 /// The end arcs of each edge's cylinder: at each of the edge's two vertices, a
 /// circular arc of radius `d` about the edge direction, running from the
 /// `face_a` corner to the `face_b` corner the short way.
@@ -389,6 +471,7 @@ fn build_joint_arcs(
     let mut arcs = BTreeMap::new();
     for joint in joint_edges {
         let n_a = normal_of(normals, joint.face_a)?;
+        let n_b = normal_of(normals, joint.face_b)?;
         for vertex_id in [joint.start, joint.end] {
             let center = topo.vertex(vertex_id)?.point();
             // `face_a` was ordered so the turn about `axis` from its normal to
@@ -398,7 +481,7 @@ fn build_joint_arcs(
             let circle = Circle3D::new_with_ref(center, joint.axis, distance, n_a)?;
             let from = corner_of(corners, vertex_id, joint.face_a)?;
             let to = corner_of(corners, vertex_id, joint.face_b)?;
-            let edge_id = topo.add_edge(Edge::new(from, to, EdgeCurve::Circle(circle)));
+            let edge_id = add_certified_joint_arc(topo, center, circle, from, to, n_b)?;
             arcs.insert((joint.edge.index(), vertex_id.index()), edge_id);
         }
     }
@@ -726,4 +809,50 @@ fn check_oriented_manifold(topo: &Topology, faces: &[FaceId]) -> Result<(), Offs
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::*;
+    use remus_math::vec::Point3;
+    use remus_topology::vertex::Vertex;
+
+    #[test]
+    fn joint_arc_records_the_positive_minor_cone_range() {
+        let mut topo = Topology::new();
+        let center = Point3::new(1.0e6, -2.0e6, 3.0e6);
+        let circle = Circle3D::new_with_ref(
+            center,
+            Vec3::new(0.0, 0.0, 1.0),
+            0.75,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let expected_end = 1.25;
+        let from = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1.0e-10));
+        let to = topo.add_vertex(Vertex::new(circle.evaluate(expected_end), 1.0e-10));
+
+        let end_direction = Vec3::new(expected_end.cos(), expected_end.sin(), 0.0);
+        let edge_id =
+            add_certified_joint_arc(&mut topo, center, circle.clone(), from, to, end_direction)
+                .expect("normal-cone arc");
+        let edge = topo.edge(edge_id).unwrap();
+        let range = edge.strict_domain().expect("explicit arc authority");
+        assert!(range.0.abs() <= f64::EPSILON);
+        assert!((range.1 - expected_end).abs() <= 4.0 * f64::EPSILON);
+        assert!(range.1 > range.0 && range.1 < std::f64::consts::PI);
+
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        let midpoint = edge
+            .curve()
+            .evaluate_with_endpoints((range.0 + range.1) * 0.5, start, end);
+        assert!(
+            (edge.curve().evaluate_with_endpoints(range.0, start, end) - start).length() < 1e-9
+        );
+        assert!((edge.curve().evaluate_with_endpoints(range.1, start, end) - end).length() < 1e-9);
+        assert!((midpoint - circle.evaluate(expected_end * 0.5)).length() < 1e-9);
+    }
 }
