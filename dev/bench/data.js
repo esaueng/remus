@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788113995421,
+  "lastUpdate": 1788114821866,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4805,6 +4805,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39613460,
             "range": "± 94473",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b3005d6b99412c69d60db1425dbeaf819ab04e97",
+          "message": "ci: temporarily remove Windows tests (#155)\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-30T14:30:01-04:00",
+          "tree_id": "5d3dc36afa7738feb5430273e55dd5dfc7270fc3",
+          "url": "https://github.com/esaueng/remus/commit/b3005d6b99412c69d60db1425dbeaf819ab04e97"
+        },
+        "date": 1788114821210,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1390038,
+            "range": "± 1743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1488345,
+            "range": "± 2372",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15598,
+            "range": "± 203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1028005,
+            "range": "± 10616",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 42012320,
+            "range": "± 171926",
             "unit": "ns/iter"
           }
         ]
