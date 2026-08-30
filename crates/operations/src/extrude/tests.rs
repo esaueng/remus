@@ -29,6 +29,90 @@ fn extrude_square_creates_box() {
 }
 
 #[test]
+fn later_inner_wire_refusal_rolls_back_profile_normalization() {
+    use remus_math::curves::Circle3D;
+    use remus_math::nurbs::NurbsCurve;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let mut topo = Topology::new();
+    let points = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(2.0, 0.0, 0.0),
+        Point3::new(2.0, 2.0, 0.0),
+        Point3::new(0.0, 2.0, 0.0),
+    ];
+    let vertices: Vec<_> = points
+        .iter()
+        .map(|&point| topo.add_vertex(Vertex::new(point, 1e-7)))
+        .collect();
+    let nurbs_line = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![points[0], points[1]],
+        vec![1.0, 1.0],
+    )
+    .unwrap();
+    let first = topo.add_edge(Edge::new(
+        vertices[0],
+        vertices[1],
+        EdgeCurve::NurbsCurve(nurbs_line),
+    ));
+    let mut outer_edges = vec![OrientedEdge::new(first, true)];
+    for index in 1..4 {
+        let edge = topo.add_edge(Edge::new(
+            vertices[index],
+            vertices[(index + 1) % 4],
+            EdgeCurve::Line,
+        ));
+        outer_edges.push(OrientedEdge::new(edge, true));
+    }
+    let outer = topo.add_wire(Wire::new(outer_edges, true).unwrap());
+
+    let circle = Circle3D::new(Point3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.25).unwrap();
+    let off_curve_seam = topo.add_vertex(Vertex::new(Point3::new(1.0, 1.0, 0.0), 1e-7));
+    let malformed = topo.add_edge(Edge::new(
+        off_curve_seam,
+        off_curve_seam,
+        EdgeCurve::Circle(circle),
+    ));
+    let inner = topo.add_wire(Wire::new(vec![OrientedEdge::new(malformed, true)], true).unwrap());
+    let face = topo.add_face(Face::new(
+        outer,
+        vec![inner],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let before = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+    );
+
+    assert!(extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 1.0).is_err());
+    assert!(matches!(
+        topo.edge(first).unwrap().curve(),
+        EdgeCurve::NurbsCurve(_)
+    ));
+    assert!(topo.edge(first).unwrap().trim().is_none());
+    assert_eq!(
+        before,
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+        )
+    );
+}
+
+#[test]
 fn extrude_triangle_creates_prism() {
     let mut topo = Topology::new();
     let face = make_unit_triangle_face(&mut topo);

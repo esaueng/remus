@@ -36,14 +36,22 @@ pub fn offset_face(
     samples: usize,
 ) -> Result<FaceId, OperationsError> {
     let tol = Tolerance::new();
-    if distance.abs() < tol.linear {
-        return copy_face(topo, face_id);
-    }
-
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
     let outer_wire = face.outer_wire();
     let inner_wires: Vec<_> = face.inner_wires().to_vec();
+
+    // Refuse malformed tolerance/domain authority before any result entity is
+    // allocated, including malformed inner boundaries that would otherwise be
+    // discovered only after the outer wire had already been copied.
+    validate_wire_source(topo, outer_wire)?;
+    for &inner_wire in &inner_wires {
+        validate_wire_source(topo, inner_wire)?;
+    }
+
+    if distance.abs() < tol.linear {
+        return copy_face(topo, face_id);
+    }
 
     match surface {
         FaceSurface::Plane { normal, d } => {
@@ -565,6 +573,181 @@ fn estimate_curvature(nurbs: &remus_math::nurbs::NurbsSurface, u: f64, v: f64) -
     (h.abs() + disc).abs()
 }
 
+fn validate_wire_source(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+) -> Result<(), OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    for oriented in topo.wire(wire_id)?.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let start = topo.vertex(edge.start())?;
+        let end = topo.vertex(edge.end())?;
+        let tolerances = [start.tolerance(), end.tolerance()];
+        if tolerances
+            .into_iter()
+            .any(|value| !value.is_finite() || value < 0.0)
+            || edge
+                .tolerance()
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err(OperationsError::InvalidInput {
+                reason: format!(
+                    "offset_face source edge has invalid tolerance authority (start {}, end {}, \
+                     edge {:?})",
+                    start.tolerance(),
+                    end.tolerance(),
+                    edge.tolerance()
+                ),
+            });
+        }
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            let range = edge
+                .strict_domain()
+                .map_err(|error| OperationsError::InvalidInput {
+                    reason: format!("offset_face source edge lacks parameter authority: {error}"),
+                })?;
+            let tolerance = edge.effective_tolerance(start.tolerance().max(end.tolerance()));
+            for (label, parameter, expected) in [
+                ("start", range.0, start.point()),
+                (
+                    "midpoint",
+                    f64::midpoint(range.0, range.1),
+                    edge.curve().evaluate_with_endpoints(
+                        f64::midpoint(range.0, range.1),
+                        start.point(),
+                        end.point(),
+                    ),
+                ),
+                ("end", range.1, end.point()),
+            ] {
+                let actual =
+                    edge.curve()
+                        .evaluate_with_endpoints(parameter, start.point(), end.point());
+                let residual = (actual - expected).length();
+                if !residual.is_finite() || residual > tolerance {
+                    return Err(OperationsError::InvalidInput {
+                        reason: format!(
+                            "offset_face source edge {label} misses its authority by {residual} \
+                             (tolerance {tolerance})"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn translated_edge_curve(
+    curve: &remus_topology::edge::EdgeCurve,
+    offset: Vec3,
+) -> Result<remus_topology::edge::EdgeCurve, OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    Ok(match curve {
+        EdgeCurve::Line => EdgeCurve::Line,
+        EdgeCurve::Circle(circle) => EdgeCurve::Circle(
+            remus_math::curves::Circle3D::with_axes(
+                circle.center() + offset,
+                circle.normal(),
+                circle.radius(),
+                circle.u_axis(),
+                circle.v_axis(),
+            )
+            .map_err(OperationsError::Math)?,
+        ),
+        EdgeCurve::Ellipse(ellipse) => EdgeCurve::Ellipse(
+            remus_math::curves::Ellipse3D::with_axes(
+                ellipse.center() + offset,
+                ellipse.normal(),
+                ellipse.semi_major(),
+                ellipse.semi_minor(),
+                ellipse.u_axis(),
+                ellipse.v_axis(),
+            )
+            .map_err(OperationsError::Math)?,
+        ),
+        EdgeCurve::Hyperbola(hyperbola) => EdgeCurve::Hyperbola(
+            remus_math::curves::Hyperbola3D::with_axes(
+                hyperbola.center() + offset,
+                hyperbola.normal(),
+                hyperbola.u_axis(),
+                hyperbola.semi_major(),
+                hyperbola.semi_minor(),
+            )
+            .map_err(OperationsError::Math)?,
+        ),
+        EdgeCurve::Parabola(parabola) => EdgeCurve::Parabola(
+            remus_math::curves::Parabola3D::with_axes(
+                parabola.vertex() + offset,
+                parabola.axis_dir(),
+                parabola.u_axis(),
+                parabola.focal_length(),
+            )
+            .map_err(OperationsError::Math)?,
+        ),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let control_points = nurbs
+                .control_points()
+                .iter()
+                .map(|point| *point + offset)
+                .collect();
+            EdgeCurve::NurbsCurve(
+                remus_math::nurbs::NurbsCurve::new(
+                    nurbs.degree(),
+                    nurbs.knots().to_vec(),
+                    control_points,
+                    nurbs.weights().to_vec(),
+                )
+                .map_err(OperationsError::Math)?,
+            )
+        }
+    })
+}
+
+fn certify_remapped_curve(
+    curve: &remus_topology::edge::EdgeCurve,
+    trim: (f64, f64),
+    expected_start: Point3,
+    expected_midpoint: Point3,
+    expected_end: Point3,
+    tolerance: f64,
+    label: &str,
+) -> Result<(), OperationsError> {
+    for (site, parameter, expected) in [
+        ("start", trim.0, expected_start),
+        ("midpoint", f64::midpoint(trim.0, trim.1), expected_midpoint),
+        ("end", trim.1, expected_end),
+    ] {
+        let residual = (curve.evaluate_with_endpoints(parameter, expected_start, expected_end)
+            - expected)
+            .length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(OperationsError::InvalidInput {
+                reason: format!(
+                    "offset_face {label} {site} changed curve authority by {residual} \
+                     (tolerance {tolerance})"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+struct WireEdgeSnapshot {
+    start_id: remus_topology::vertex::VertexId,
+    start: Point3,
+    start_tolerance: f64,
+    end_id: remus_topology::vertex::VertexId,
+    end: Point3,
+    end_tolerance: f64,
+    edge_tolerance: Option<f64>,
+    curve: remus_topology::edge::EdgeCurve,
+    trim: Option<(f64, f64)>,
+    forward: bool,
+}
+
 /// Offset all vertices in a wire using a position-dependent function.
 fn offset_wire_by_fn(
     topo: &mut Topology,
@@ -579,21 +762,57 @@ fn offset_wire_by_fn(
     let edges = wire.edges().to_vec();
 
     // Snapshot then allocate.
-    let mut snaps: Vec<(Point3, Point3, EdgeCurve, bool)> = Vec::new();
+    let mut snaps = Vec::new();
     for oe in &edges {
         let edge = topo.edge(oe.edge())?;
-        let start_pt = topo.vertex(edge.start())?.point();
-        let end_pt = topo.vertex(edge.end())?.point();
-        snaps.push((start_pt, end_pt, edge.curve().clone(), oe.is_forward()));
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Err(OperationsError::Unsupported {
+                operation: "offset_face",
+                reason: format!(
+                    "non-affine analytic-surface boundary remapping for `{}` edges is not exact",
+                    edge.curve().type_tag()
+                ),
+            });
+        }
+        let start = topo.vertex(edge.start())?;
+        let end = topo.vertex(edge.end())?;
+        snaps.push(WireEdgeSnapshot {
+            start_id: edge.start(),
+            start: start.point(),
+            start_tolerance: start.tolerance(),
+            end_id: edge.end(),
+            end: end.point(),
+            end_tolerance: end.tolerance(),
+            edge_tolerance: edge.tolerance(),
+            curve: edge.curve().clone(),
+            trim: None,
+            forward: oe.is_forward(),
+        });
     }
 
-    let tol = Tolerance::new();
     let mut new_oriented = Vec::new();
-    for (start_pt, end_pt, curve, forward) in snaps {
-        let new_start = topo.add_vertex(Vertex::new(offset_fn(start_pt), tol.linear));
-        let new_end = topo.add_vertex(Vertex::new(offset_fn(end_pt), tol.linear));
-        let new_edge = topo.add_edge(Edge::new(new_start, new_end, curve));
-        new_oriented.push(OrientedEdge::new(new_edge, forward));
+    let mut vertex_map = std::collections::HashMap::new();
+    for snapshot in snaps {
+        let new_start = *vertex_map
+            .entry(snapshot.start_id.index())
+            .or_insert_with(|| {
+                topo.add_vertex(Vertex::new(
+                    offset_fn(snapshot.start),
+                    snapshot.start_tolerance,
+                ))
+            });
+        let new_end = *vertex_map
+            .entry(snapshot.end_id.index())
+            .or_insert_with(|| {
+                topo.add_vertex(Vertex::new(offset_fn(snapshot.end), snapshot.end_tolerance))
+            });
+        let new_edge = topo.add_edge(Edge::with_tolerance(
+            new_start,
+            new_end,
+            snapshot.curve,
+            snapshot.edge_tolerance,
+        ));
+        new_oriented.push(OrientedEdge::new(new_edge, snapshot.forward));
     }
 
     let new_wire = topo.add_wire(Wire::new(new_oriented, true)?);
@@ -633,27 +852,55 @@ fn copy_wire(
     let edges = wire.edges().to_vec();
 
     // Snapshot edge data before allocating (borrow checker).
-    let mut edge_snaps: Vec<(Point3, f64, Point3, f64, EdgeCurve, bool)> = Vec::new();
+    let mut edge_snaps = Vec::new();
     for oe in &edges {
         let edge = topo.edge(oe.edge())?;
         let start = topo.vertex(edge.start())?;
         let end = topo.vertex(edge.end())?;
-        edge_snaps.push((
-            start.point(),
-            start.tolerance(),
-            end.point(),
-            end.tolerance(),
-            edge.curve().clone(),
-            oe.is_forward(),
-        ));
+        let trim = if matches!(edge.curve(), EdgeCurve::Line) {
+            None
+        } else {
+            Some(
+                edge.strict_domain()
+                    .map_err(|error| OperationsError::InvalidInput {
+                        reason: format!("offset_face copy lacks parameter authority: {error}"),
+                    })?,
+            )
+        };
+        edge_snaps.push(WireEdgeSnapshot {
+            start_id: edge.start(),
+            start: start.point(),
+            start_tolerance: start.tolerance(),
+            end_id: edge.end(),
+            end: end.point(),
+            end_tolerance: end.tolerance(),
+            edge_tolerance: edge.tolerance(),
+            curve: edge.curve().clone(),
+            trim,
+            forward: oe.is_forward(),
+        });
     }
 
     let mut new_oriented = Vec::new();
-    for (start_pt, start_tol, end_pt, end_tol, curve, forward) in edge_snaps {
-        let new_start = topo.add_vertex(Vertex::new(start_pt, start_tol));
-        let new_end = topo.add_vertex(Vertex::new(end_pt, end_tol));
-        let new_edge = topo.add_edge(Edge::new(new_start, new_end, curve));
-        new_oriented.push(OrientedEdge::new(new_edge, forward));
+    let mut vertex_map = std::collections::HashMap::new();
+    for snapshot in edge_snaps {
+        let new_start = *vertex_map
+            .entry(snapshot.start_id.index())
+            .or_insert_with(|| {
+                topo.add_vertex(Vertex::new(snapshot.start, snapshot.start_tolerance))
+            });
+        let new_end = *vertex_map
+            .entry(snapshot.end_id.index())
+            .or_insert_with(|| topo.add_vertex(Vertex::new(snapshot.end, snapshot.end_tolerance)));
+        let mut edge =
+            Edge::with_tolerance(new_start, new_end, snapshot.curve, snapshot.edge_tolerance);
+        edge.set_trim(snapshot.trim);
+        edge.strict_domain()
+            .map_err(|error| OperationsError::InvalidInput {
+                reason: format!("offset_face copy has invalid parameter authority: {error}"),
+            })?;
+        let new_edge = topo.add_edge(edge);
+        new_oriented.push(OrientedEdge::new(new_edge, snapshot.forward));
     }
 
     let new_wire = topo.add_wire(Wire::new(new_oriented, true)?);
@@ -674,21 +921,78 @@ fn offset_wire_vertices(
     let edges = wire.edges().to_vec();
 
     // Snapshot then allocate.
-    let mut edge_snaps: Vec<(Point3, Point3, EdgeCurve, bool)> = Vec::new();
+    let mut edge_snaps = Vec::new();
     for oe in &edges {
         let edge = topo.edge(oe.edge())?;
-        let start_pt = topo.vertex(edge.start())?.point();
-        let end_pt = topo.vertex(edge.end())?.point();
-        edge_snaps.push((start_pt, end_pt, edge.curve().clone(), oe.is_forward()));
+        let start = topo.vertex(edge.start())?;
+        let end = topo.vertex(edge.end())?;
+        let trim = if matches!(edge.curve(), EdgeCurve::Line) {
+            None
+        } else {
+            Some(
+                edge.strict_domain()
+                    .map_err(|error| OperationsError::InvalidInput {
+                        reason: format!("planar offset edge lacks parameter authority: {error}"),
+                    })?,
+            )
+        };
+        let translated = translated_edge_curve(edge.curve(), offset)?;
+        if let Some(range) = trim {
+            let tolerance = edge.effective_tolerance(start.tolerance().max(end.tolerance()));
+            let source_midpoint = edge.curve().evaluate_with_endpoints(
+                f64::midpoint(range.0, range.1),
+                start.point(),
+                end.point(),
+            );
+            certify_remapped_curve(
+                &translated,
+                range,
+                start.point() + offset,
+                source_midpoint + offset,
+                end.point() + offset,
+                tolerance,
+                "translated boundary",
+            )?;
+        }
+        edge_snaps.push(WireEdgeSnapshot {
+            start_id: edge.start(),
+            start: start.point(),
+            start_tolerance: start.tolerance(),
+            end_id: edge.end(),
+            end: end.point(),
+            end_tolerance: end.tolerance(),
+            edge_tolerance: edge.tolerance(),
+            curve: translated,
+            trim,
+            forward: oe.is_forward(),
+        });
     }
 
-    let tol = Tolerance::new();
     let mut new_oriented = Vec::new();
-    for (start_pt, end_pt, curve, forward) in edge_snaps {
-        let new_start = topo.add_vertex(Vertex::new(start_pt + offset, tol.linear));
-        let new_end = topo.add_vertex(Vertex::new(end_pt + offset, tol.linear));
-        let new_edge = topo.add_edge(Edge::new(new_start, new_end, curve));
-        new_oriented.push(OrientedEdge::new(new_edge, forward));
+    let mut vertex_map = std::collections::HashMap::new();
+    for snapshot in edge_snaps {
+        let new_start = *vertex_map
+            .entry(snapshot.start_id.index())
+            .or_insert_with(|| {
+                topo.add_vertex(Vertex::new(
+                    snapshot.start + offset,
+                    snapshot.start_tolerance,
+                ))
+            });
+        let new_end = *vertex_map
+            .entry(snapshot.end_id.index())
+            .or_insert_with(|| {
+                topo.add_vertex(Vertex::new(snapshot.end + offset, snapshot.end_tolerance))
+            });
+        let mut edge =
+            Edge::with_tolerance(new_start, new_end, snapshot.curve, snapshot.edge_tolerance);
+        edge.set_trim(snapshot.trim);
+        edge.strict_domain()
+            .map_err(|error| OperationsError::InvalidInput {
+                reason: format!("planar offset edge has invalid parameter authority: {error}"),
+            })?;
+        let new_edge = topo.add_edge(edge);
+        new_oriented.push(OrientedEdge::new(new_edge, snapshot.forward));
     }
 
     let new_wire = topo.add_wire(Wire::new(new_oriented, true)?);
@@ -711,22 +1015,34 @@ fn offset_wire_along_nurbs(
     let edges = wire.edges().to_vec();
 
     // Snapshot then compute offsets.
-    let mut snaps: Vec<(Point3, Point3, bool)> = Vec::new();
+    let mut snaps = Vec::new();
     for oe in &edges {
         let edge = topo.edge(oe.edge())?;
-        let start_pt = topo.vertex(edge.start())?.point();
-        let end_pt = topo.vertex(edge.end())?.point();
-        snaps.push((start_pt, end_pt, oe.is_forward()));
+        let start = topo.vertex(edge.start())?;
+        let end = topo.vertex(edge.end())?;
+        snaps.push((
+            edge.start(),
+            start.point(),
+            start.tolerance(),
+            edge.end(),
+            end.point(),
+            end.tolerance(),
+            oe.is_forward(),
+        ));
     }
 
-    let tol = Tolerance::new();
     let mut new_oriented = Vec::new();
-    for (start_pt, end_pt, forward) in snaps {
+    let mut vertex_map = std::collections::HashMap::new();
+    for (start_id, start_pt, start_tol, end_id, end_pt, end_tol, forward) in snaps {
         let new_start_pt = offset_point_on_surface(nurbs, start_pt, distance)?;
         let new_end_pt = offset_point_on_surface(nurbs, end_pt, distance)?;
 
-        let new_start = topo.add_vertex(Vertex::new(new_start_pt, tol.linear));
-        let new_end = topo.add_vertex(Vertex::new(new_end_pt, tol.linear));
+        let new_start = *vertex_map
+            .entry(start_id.index())
+            .or_insert_with(|| topo.add_vertex(Vertex::new(new_start_pt, start_tol)));
+        let new_end = *vertex_map
+            .entry(end_id.index())
+            .or_insert_with(|| topo.add_vertex(Vertex::new(new_end_pt, end_tol)));
         let new_edge = topo.add_edge(Edge::new(new_start, new_end, EdgeCurve::Line));
         new_oriented.push(OrientedEdge::new(new_edge, forward));
     }
@@ -835,6 +1151,51 @@ mod tests {
             }
             _ => panic!("expected both planar"),
         }
+    }
+
+    #[test]
+    fn offset_zero_preflights_all_inner_wires_atomically() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let base_face = make_unit_square_face(&mut topo);
+        let outer = topo.face(base_face).unwrap().outer_wire();
+        let circle =
+            Circle3D::new(Point3::new(0.5, 0.5, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.2).unwrap();
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let trimless = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+        let inner =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(trimless, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![inner],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+        );
+
+        let error = offset_face(&mut topo, face, 0.0, 8).unwrap_err();
+        assert!(error.to_string().contains("parameter authority"));
+        assert_eq!(
+            before,
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+            )
+        );
     }
 
     #[test]

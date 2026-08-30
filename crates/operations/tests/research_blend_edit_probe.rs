@@ -73,6 +73,53 @@ fn all_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     out
 }
 
+fn assert_curved_edge_authority(topo: &Topology, solid: SolidId) -> usize {
+    let mut curved = 0;
+    for edge_id in all_edges(topo, solid) {
+        let edge = topo.edge(edge_id).unwrap();
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            continue;
+        }
+        curved += 1;
+        let range = edge.strict_domain().unwrap();
+        let start = topo.vertex(edge.start()).unwrap();
+        let end = topo.vertex(edge.end()).unwrap();
+        let tolerance = edge
+            .effective_tolerance(start.tolerance().max(end.tolerance()))
+            .max(1e-7);
+        for (parameter, expected) in [(range.0, start.point()), (range.1, end.point())] {
+            let residual =
+                (edge
+                    .curve()
+                    .evaluate_with_endpoints(parameter, start.point(), end.point())
+                    - expected)
+                    .length();
+            assert!(
+                residual <= tolerance,
+                "edge {edge_id:?} endpoint residual {residual} exceeds {tolerance}"
+            );
+        }
+
+        let midpoint = edge.curve().evaluate_with_endpoints(
+            f64::midpoint(range.0, range.1),
+            start.point(),
+            end.point(),
+        );
+        assert!(
+            [midpoint.x(), midpoint.y(), midpoint.z()]
+                .into_iter()
+                .all(f64::is_finite),
+            "edge {edge_id:?} midpoint is non-finite"
+        );
+        if let EdgeCurve::Circle(circle) = edge.curve() {
+            let radial = midpoint - circle.center();
+            assert!((radial.length() - circle.radius()).abs() <= tolerance);
+            assert!(radial.dot(circle.normal()).abs() <= tolerance);
+        }
+    }
+    curved
+}
+
 fn vertex_point(topo: &Topology, e: EdgeId, which: bool) -> Point3 {
     let edge = topo.edge(e).unwrap();
     topo.vertex(if which { edge.start() } else { edge.end() })
@@ -266,6 +313,41 @@ fn e3_boss_base_fillet_structure() {
 
 // E4: STEP round-trip of E1 and E3 bodies.
 #[test]
+fn e4_open_plane_plane_step_roundtrip_preserves_end_arc_authority() {
+    let mut topo = Topology::new();
+    let sharp = make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
+    let sharp_edge = find_vertical_edge(&topo, sharp, 40.0, 40.0);
+    let filleted = fillet_v2(&mut topo, sharp, &[sharp_edge], 3.0)
+        .unwrap()
+        .solid;
+    let curved_before = assert_curved_edge_authority(&topo, filleted);
+    assert_eq!(curved_before, 2, "the two fillet end arcs");
+    let volume_before = remus_operations::measure::solid_volume(&topo, filleted, 0.01).unwrap();
+
+    let step = remus_io::step::write_step(&topo, &[filleted]).unwrap();
+    let mut reread_topology = Topology::new();
+    let reread = remus_io::step::read_step(&step, &mut reread_topology).unwrap()[0];
+    let report = remus_operations::validate::validate_solid(&reread_topology, reread).unwrap();
+    assert!(report.is_valid(), "roundtrip issues: {:?}", report.issues);
+    assert_eq!(
+        assert_curved_edge_authority(&reread_topology, reread),
+        curved_before
+    );
+    let cylinder = solid_faces(&reread_topology, reread)
+        .unwrap()
+        .into_iter()
+        .find_map(|face| match reread_topology.face(face).unwrap().surface() {
+            FaceSurface::Cylinder(cylinder) => Some(cylinder),
+            _ => None,
+        })
+        .expect("fillet cylinder survives STEP roundtrip");
+    assert!((cylinder.radius() - 3.0).abs() < 1e-9);
+    let volume_after =
+        remus_operations::measure::solid_volume(&reread_topology, reread, 0.01).unwrap();
+    assert!((volume_after - volume_before).abs() <= 1e-7 * volume_before.abs().max(1.0));
+}
+
+#[test]
 fn e4_step_roundtrip_preserves_analytics() {
     let mut topo = Topology::new();
     let (fused, ridgeline) = drilled_plate(&mut topo);
@@ -294,6 +376,47 @@ fn e4_step_roundtrip_preserves_analytics() {
     );
     assert!((torus.minor_radius() - 3.0).abs() < 1e-9);
     assert!((torus.major_radius() - 13.0).abs() < 1e-9);
+}
+
+#[test]
+fn e4_positive_resize_step_roundtrip_preserves_authority_and_analytics() {
+    let mut topo = Topology::new();
+    let (sharp, rim) = drilled_plate(&mut topo);
+    let filleted = fillet_v2(&mut topo, sharp, &[rim], 3.0).unwrap().solid;
+    let band = solid_faces(&topo, filleted)
+        .unwrap()
+        .into_iter()
+        .find(|face| matches!(topo.face(*face).unwrap().surface(), FaceSurface::Torus(_)))
+        .expect("closed-rim torus band");
+    let resized = remus_operations::resize_blend::resize_blend(&mut topo, filleted, band, 3.0, 2.0)
+        .unwrap()
+        .solid;
+    let curved_before = assert_curved_edge_authority(&topo, resized);
+    assert!(curved_before >= 3, "expected closed-rim curved boundaries");
+    let volume_before = remus_operations::measure::solid_volume(&topo, resized, 0.01).unwrap();
+
+    let step = remus_io::step::writer::write_step(&topo, &[resized]).unwrap();
+    let mut reread_topo = Topology::new();
+    let reread = remus_io::step::reader::read_step(&step, &mut reread_topo).unwrap()[0];
+    let report = remus_operations::validate::validate_solid(&reread_topo, reread).unwrap();
+    assert!(report.is_valid(), "roundtrip issues: {:?}", report.issues);
+    assert_eq!(
+        assert_curved_edge_authority(&reread_topo, reread),
+        curved_before
+    );
+
+    let torus = solid_faces(&reread_topo, reread)
+        .unwrap()
+        .into_iter()
+        .find_map(|face| match reread_topo.face(face).unwrap().surface() {
+            FaceSurface::Torus(torus) => Some(torus),
+            _ => None,
+        })
+        .expect("resized torus survives STEP roundtrip");
+    assert!((torus.minor_radius() - 2.0).abs() < 1e-9);
+    assert!((torus.major_radius() - 12.0).abs() < 1e-9);
+    let volume_after = remus_operations::measure::solid_volume(&reread_topo, reread, 0.01).unwrap();
+    assert!((volume_after - volume_before).abs() <= 1e-7 * volume_before.abs().max(1.0));
 }
 
 // E5: inverse-analytic recognition check on the E3 band.

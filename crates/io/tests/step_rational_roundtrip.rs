@@ -24,7 +24,9 @@ fn one_edge_solid(topo: &mut Topology, curve: NurbsCurve) -> SolidId {
     let (start, end) = curve.domain();
     let v0 = topo.add_vertex(Vertex::new(curve.evaluate(start), 1e-7));
     let v1 = topo.add_vertex(Vertex::new(curve.evaluate(end), 1e-7));
-    let edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::NurbsCurve(curve)));
+    let mut edge = Edge::new(v0, v1, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((start, end)));
+    let edge = topo.add_edge(edge);
     let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
     let face = topo.add_face(Face::new(
         wire,
@@ -165,7 +167,7 @@ fn near_unity_surface_weight_survives_step_round_trip_exactly() {
 
     let step = write_step(&topo, &[solid]).unwrap();
     assert!(step.contains("RATIONAL_B_SPLINE_SURFACE"));
-    assert!(step.contains("1.000000010000000E0"));
+    assert!(step.contains("1.00000000999999994E0"));
 
     let mut back = Topology::new();
     let solids = read_step(&step, &mut back).unwrap();

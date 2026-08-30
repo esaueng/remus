@@ -250,6 +250,13 @@ fn exact_plane_cylinder_edge(
     let source_start = source.start();
     let source_end = source.end();
     let source_tolerance = source.tolerance();
+    let source_range = source
+        .strict_domain()
+        .map_err(|error| OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: format!("source edge has no valid parameter authority: {error}"),
+        })?;
 
     if matches!(source_curve, EdgeCurve::Line) {
         return parallel_plane_cylinder_edge(
@@ -289,9 +296,12 @@ fn exact_plane_cylinder_edge(
     };
     Ok(Some(add_projected_curve_edge(
         topo,
+        source_edge,
         source_start,
         source_end,
         source_tolerance,
+        &source_curve,
+        source_range,
         curve,
         shift,
         tolerance,
@@ -333,8 +343,23 @@ fn parallel_plane_cylinder_edge(
         foot + branch_direction * half_span,
         foot - branch_direction * half_span,
     ];
-    let source_start_point = topo.vertex(source_start)?.point() + shift;
-    let source_end_point = topo.vertex(source_end)?.point() + shift;
+    let source_start_vertex = topo.vertex(source_start)?;
+    let source_start_point = source_start_vertex.point() + shift;
+    let source_start_tolerance = source_start_vertex.tolerance();
+    let source_end_vertex = topo.vertex(source_end)?;
+    let source_end_point = source_end_vertex.point() + shift;
+    let source_end_tolerance = source_end_vertex.tolerance();
+    let vertex_tolerance = replacement_vertex_tolerance(
+        source_start_tolerance,
+        source_end_tolerance,
+        edge_tolerance,
+        tolerance,
+    )
+    .map_err(|reason| OffsetError::TopologyChange {
+        face: None,
+        edge: None,
+        reason,
+    })?;
     let midpoint = source_start_point + (source_end_point - source_start_point) * 0.5;
     let branch = branches
         .into_iter()
@@ -348,7 +373,6 @@ fn parallel_plane_cylinder_edge(
             reason: "plane-cylinder intersection has no line branch".into(),
         })?;
     let project = |point: Point3| branch + axis * (point - branch).dot(axis);
-    let vertex_tolerance = edge_tolerance.unwrap_or(tolerance);
     let start = topo.add_vertex(Vertex::new(project(source_start_point), vertex_tolerance));
     let end = topo.add_vertex(Vertex::new(project(source_end_point), vertex_tolerance));
     Ok(Some(topo.add_edge(Edge::with_tolerance(
@@ -359,35 +383,132 @@ fn parallel_plane_cylinder_edge(
     ))))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_projected_curve_edge(
     topo: &mut Topology,
+    source_edge: EdgeId,
     source_start: VertexId,
     source_end: VertexId,
     edge_tolerance: Option<f64>,
+    source_curve: &EdgeCurve,
+    source_range: (f64, f64),
     curve: EdgeCurve,
     shift: Vec3,
     tolerance: f64,
 ) -> Result<EdgeId, OffsetError> {
-    let source_start_point = topo.vertex(source_start)?.point() + shift;
-    let start_point = project_to_curve(&curve, source_start_point);
-    let vertex_tolerance = edge_tolerance.unwrap_or(tolerance);
+    let source_start_vertex = topo.vertex(source_start)?;
+    let source_end_vertex = topo.vertex(source_end)?;
+    let source_start_point = source_start_vertex.point();
+    let source_end_point = source_end_vertex.point();
+    let vertex_tolerance = replacement_vertex_tolerance(
+        source_start_vertex.tolerance(),
+        source_end_vertex.tolerance(),
+        edge_tolerance,
+        tolerance,
+    )
+    .map_err(|reason| OffsetError::TopologyChange {
+        face: None,
+        edge: Some(source_edge),
+        reason,
+    })?;
+
+    let midpoint_parameter = (source_range.1 - source_range.0).mul_add(0.5, source_range.0);
+    if !midpoint_parameter.is_finite() {
+        return Err(OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: "source analytic edge midpoint parameter is not finite".into(),
+        });
+    }
+    for (label, parameter, expected) in [
+        ("start", source_range.0, source_start_point),
+        ("end", source_range.1, source_end_point),
+    ] {
+        let actual =
+            source_curve.evaluate_with_endpoints(parameter, source_start_point, source_end_point);
+        let residual = (actual - expected).length();
+        if !residual.is_finite() || residual > vertex_tolerance {
+            return Err(OffsetError::TopologyChange {
+                face: None,
+                edge: Some(source_edge),
+                reason: format!(
+                    "source analytic edge {label} misses its parameter authority by {residual} \
+                     (tolerance {vertex_tolerance})"
+                ),
+            });
+        }
+    }
+    let start_point = curve.evaluate_with_endpoints(
+        source_range.0,
+        source_start_point + shift,
+        source_end_point + shift,
+    );
+    let midpoint = curve.evaluate_with_endpoints(
+        midpoint_parameter,
+        source_start_point + shift,
+        source_end_point + shift,
+    );
+    let end_point = curve.evaluate_with_endpoints(
+        source_range.1,
+        source_start_point + shift,
+        source_end_point + shift,
+    );
+    for (label, point) in [
+        ("start", start_point),
+        ("midpoint", midpoint),
+        ("end", end_point),
+    ] {
+        if point.0.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(OffsetError::TopologyChange {
+                face: None,
+                edge: Some(source_edge),
+                reason: format!("projected analytic edge {label} is not finite"),
+            });
+        }
+    }
+
+    let mut authority_probe =
+        Edge::with_tolerance(source_start, source_end, curve.clone(), edge_tolerance);
+    authority_probe.set_trim(Some(source_range));
+    authority_probe
+        .strict_domain()
+        .map_err(|error| OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: format!("projected analytic edge has invalid parameter authority: {error}"),
+        })?;
+
     let start = topo.add_vertex(Vertex::new(start_point, vertex_tolerance));
     let end = if source_start == source_end {
         start
     } else {
-        let source_end_point = topo.vertex(source_end)?.point() + shift;
-        let end_point = project_to_curve(&curve, source_end_point);
         topo.add_vertex(Vertex::new(end_point, vertex_tolerance))
     };
-    Ok(topo.add_edge(Edge::with_tolerance(start, end, curve, edge_tolerance)))
+    let mut edge = Edge::with_tolerance(start, end, curve, edge_tolerance);
+    edge.set_trim(Some(source_range));
+    Ok(topo.add_edge(edge))
 }
 
-fn project_to_curve(curve: &EdgeCurve, point: Point3) -> Point3 {
-    match curve {
-        EdgeCurve::Circle(circle) => circle.evaluate(circle.project(point)),
-        EdgeCurve::Ellipse(ellipse) => ellipse.evaluate(ellipse.project(point)),
-        _ => point,
+fn replacement_vertex_tolerance(
+    start_tolerance: f64,
+    end_tolerance: f64,
+    edge_tolerance: Option<f64>,
+    operation_floor: f64,
+) -> Result<f64, String> {
+    if !start_tolerance.is_finite()
+        || start_tolerance < 0.0
+        || !end_tolerance.is_finite()
+        || end_tolerance < 0.0
+        || edge_tolerance.is_some_and(|value| !value.is_finite() || value < 0.0)
+        || !operation_floor.is_finite()
+        || operation_floor < 0.0
+    {
+        return Err(format!(
+            "source edge has invalid tolerance authority (start {start_tolerance}, end \
+             {end_tolerance}, edge {edge_tolerance:?}, operation floor {operation_floor})"
+        ));
     }
+    Ok(edge_tolerance.unwrap_or_else(|| start_tolerance.max(end_tolerance).max(operation_floor)))
 }
 
 fn distance_to_line(point: Point3, origin: Point3, direction: Vec3) -> f64 {
@@ -1021,4 +1142,197 @@ fn wire_shape(topo: &Topology, face: FaceId) -> Result<Vec<usize>, OffsetError> 
         .collect::<Result<Vec<_>, OffsetError>>()?;
     shape.sort_unstable();
     Ok(shape)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::*;
+
+    fn assert_edge_oracles(topo: &Topology, edge_id: EdgeId, expected_range: (f64, f64)) {
+        let edge = topo.edge(edge_id).unwrap();
+        let range = edge.strict_domain().expect("explicit projected authority");
+        assert_eq!(range.0.to_bits(), expected_range.0.to_bits());
+        assert_eq!(range.1.to_bits(), expected_range.1.to_bits());
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        assert!(
+            (edge.curve().evaluate_with_endpoints(range.0, start, end) - start).length() < 1e-9
+        );
+        assert!((edge.curve().evaluate_with_endpoints(range.1, start, end) - end).length() < 1e-9);
+    }
+
+    #[test]
+    fn projected_curves_preserve_anchored_seam_and_reversed_branch() {
+        let shift = Vec3::new(7.0, -3.0, 2.0);
+
+        let mut topo = Topology::new();
+        let source_circle = Circle3D::new_with_ref(
+            Point3::new(10.0, 20.0, 30.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            4.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let circle_range = (2.8, 2.8 + std::f64::consts::TAU);
+        let seam = topo.add_vertex(Vertex::new(source_circle.evaluate(circle_range.0), 1e-9));
+        let mut source =
+            Edge::with_tolerance(seam, seam, EdgeCurve::Circle(source_circle.clone()), None);
+        source.set_trim(Some(circle_range));
+        let source_id = topo.add_edge(source);
+        let result_circle = Circle3D::new_with_ref(
+            source_circle.center() + shift,
+            source_circle.normal(),
+            6.0,
+            source_circle.u_axis(),
+        )
+        .unwrap();
+        let result_curve = EdgeCurve::Circle(result_circle);
+        let projected = add_projected_curve_edge(
+            &mut topo,
+            source_id,
+            seam,
+            seam,
+            None,
+            &EdgeCurve::Circle(source_circle),
+            circle_range,
+            result_curve,
+            shift,
+            1e-7,
+        )
+        .expect("anchored closed circle");
+        assert_edge_oracles(&topo, projected, circle_range);
+        let projected_circle_edge = topo.edge(projected).unwrap();
+        assert_eq!(projected_circle_edge.tolerance(), None);
+        assert_eq!(
+            topo.vertex(projected_circle_edge.start())
+                .unwrap()
+                .tolerance()
+                .to_bits(),
+            1e-7_f64.to_bits(),
+            "an inherited edge must retain the operation tolerance floor"
+        );
+        let circle_midpoint = (circle_range.0 + circle_range.1) * 0.5;
+        let expected_circle_midpoint = Point3::new(
+            17.0 + 6.0 * circle_midpoint.cos(),
+            17.0 + 6.0 * circle_midpoint.sin(),
+            32.0,
+        );
+        let projected_edge = topo.edge(projected).unwrap();
+        let projected_start = topo.vertex(projected_edge.start()).unwrap().point();
+        assert!(
+            (projected_start
+                - Point3::new(
+                    17.0 + 6.0 * circle_range.0.cos(),
+                    17.0 + 6.0 * circle_range.0.sin(),
+                    32.0,
+                ))
+            .length()
+                < 1e-12
+        );
+        assert!(
+            (projected_edge.curve().evaluate_with_endpoints(
+                circle_midpoint,
+                projected_start,
+                projected_start,
+            ) - expected_circle_midpoint)
+                .length()
+                < 1e-12
+        );
+
+        let source_ellipse = Ellipse3D::with_axes(
+            Point3::new(-8.0, 5.0, 1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            5.0,
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap();
+        let ellipse_range = (2.4, 0.6);
+        let ellipse_start =
+            topo.add_vertex(Vertex::new(source_ellipse.evaluate(ellipse_range.0), 5e-4));
+        let ellipse_end =
+            topo.add_vertex(Vertex::new(source_ellipse.evaluate(ellipse_range.1), 2e-4));
+        let mut source = Edge::with_tolerance(
+            ellipse_start,
+            ellipse_end,
+            EdgeCurve::Ellipse(source_ellipse.clone()),
+            None,
+        );
+        source.set_trim(Some(ellipse_range));
+        let source_id = topo.add_edge(source);
+        let result_ellipse = Ellipse3D::with_axes(
+            source_ellipse.center() + shift,
+            source_ellipse.normal(),
+            7.5,
+            3.0,
+            source_ellipse.u_axis(),
+            source_ellipse.v_axis(),
+        )
+        .unwrap();
+        let result_curve = EdgeCurve::Ellipse(result_ellipse);
+        let projected = add_projected_curve_edge(
+            &mut topo,
+            source_id,
+            ellipse_start,
+            ellipse_end,
+            None,
+            &EdgeCurve::Ellipse(source_ellipse),
+            ellipse_range,
+            result_curve,
+            shift,
+            1e-7,
+        )
+        .expect("reversed ellipse branch");
+        assert_edge_oracles(&topo, projected, ellipse_range);
+        let projected_ellipse_edge = topo.edge(projected).unwrap();
+        assert_eq!(projected_ellipse_edge.tolerance(), None);
+        for vertex in [projected_ellipse_edge.start(), projected_ellipse_edge.end()] {
+            assert_eq!(
+                topo.vertex(vertex).unwrap().tolerance().to_bits(),
+                5e-4_f64.to_bits(),
+                "an inherited edge must retain the maximum endpoint tolerance"
+            );
+        }
+        let ellipse_midpoint = (ellipse_range.0 + ellipse_range.1) * 0.5;
+        let expected_ellipse_midpoint = Point3::new(
+            -1.0 + 7.5 * ellipse_midpoint.cos(),
+            2.0 + 3.0 * ellipse_midpoint.sin(),
+            3.0,
+        );
+        let projected_edge = topo.edge(projected).unwrap();
+        let projected_start = topo.vertex(projected_edge.start()).unwrap().point();
+        let projected_end = topo.vertex(projected_edge.end()).unwrap().point();
+        assert!(
+            (projected_start
+                - Point3::new(
+                    -1.0 + 7.5 * ellipse_range.0.cos(),
+                    2.0 + 3.0 * ellipse_range.0.sin(),
+                    3.0,
+                ))
+            .length()
+                < 1e-12
+        );
+        assert!(
+            (projected_end
+                - Point3::new(
+                    -1.0 + 7.5 * ellipse_range.1.cos(),
+                    2.0 + 3.0 * ellipse_range.1.sin(),
+                    3.0,
+                ))
+            .length()
+                < 1e-12
+        );
+        assert!(
+            (projected_edge.curve().evaluate_with_endpoints(
+                ellipse_midpoint,
+                projected_start,
+                projected_end,
+            ) - expected_ellipse_midpoint)
+                .length()
+                < 1e-12
+        );
+    }
 }

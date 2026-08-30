@@ -640,23 +640,40 @@ impl BrepKernel {
         Ok((v_min, v_max))
     }
 
-    /// Create an edge from a `NurbsCurve`, using its endpoints.
+    /// Create an edge over the `NurbsCurve`'s authoritative native domain.
     pub(crate) fn nurbs_curve_to_edge(
         &mut self,
-        points: &[Point3],
         curve: NurbsCurve,
-    ) -> remus_topology::edge::EdgeId {
-        let start = points[0];
-        let end = points[points.len() - 1];
-        remus_topology::builder::make_nurbs_edge(self.topo_mut(), start, end, curve, TOL)
+    ) -> Result<remus_topology::edge::EdgeId, WasmError> {
+        let (t0, t1) = curve.domain();
+        let start = curve.evaluate(t0);
+        let end = curve.evaluate(t1);
+        self.add_certified_curve_edge(
+            EdgeCurve::NurbsCurve(curve),
+            (t0, t1),
+            start,
+            end,
+            (start - end).length() <= TOL,
+            TOL,
+        )
     }
 
     /// Create an edge from a `NurbsCurve`, evaluating its endpoints.
     pub(crate) fn nurbs_curve_to_edge_from_curve(
         &mut self,
         curve: &NurbsCurve,
-    ) -> remus_topology::edge::EdgeId {
-        remus_topology::builder::make_nurbs_edge_from_curve(self.topo_mut(), curve, TOL)
+    ) -> Result<remus_topology::edge::EdgeId, WasmError> {
+        let (t0, t1) = curve.domain();
+        let start = curve.evaluate(t0);
+        let end = curve.evaluate(t1);
+        self.add_certified_curve_edge(
+            EdgeCurve::NurbsCurve(curve.clone()),
+            (t0, t1),
+            start,
+            end,
+            (start - end).length() <= TOL,
+            TOL,
+        )
     }
 
     /// Create a face from a `NurbsSurface` with a rectangular domain wire.

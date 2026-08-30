@@ -387,7 +387,11 @@ fn materialize_spine(topo: &mut Topology, spine: &GeometricSpine, tolerance: Tol
     } else {
         topo.add_vertex(Vertex::new(end, tolerance.linear))
     };
-    topo.add_edge(Edge::new(start_vertex, end_vertex, curve))
+    let mut edge = Edge::with_tolerance(start_vertex, end_vertex, curve, Some(tolerance.linear));
+    if matches!(spine, GeometricSpine::Circle(_)) {
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    }
+    topo.add_edge(edge)
 }
 
 fn axis_distance(origin: Point3, point: Point3, axis: Vec3) -> f64 {
@@ -429,6 +433,23 @@ mod tests {
     use remus_math::vec::Vec3;
     use remus_topology::explorer::{solid_edges, solid_faces};
     use remus_topology::test_utils::make_unit_cube_manifold;
+
+    #[test]
+    fn materialized_circle_spine_has_full_turn_parameter_authority() {
+        let circle =
+            Circle3D::new(Point3::new(3.0, -2.0, 5.0), Vec3::new(0.0, 0.0, 1.0), 4.0).unwrap();
+        let mut topo = Topology::new();
+        let edge_id = materialize_spine(
+            &mut topo,
+            &GeometricSpine::Circle(circle.clone()),
+            Tolerance::new(),
+        );
+        let edge = topo.edge(edge_id).unwrap();
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, std::f64::consts::TAU));
+        let seam = circle.evaluate(0.0);
+        assert_eq!(topo.vertex(edge.start()).unwrap().point(), seam);
+        assert_eq!(edge.start(), edge.end());
+    }
 
     fn adjacent_faces(
         topo: &Topology,

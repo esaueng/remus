@@ -994,27 +994,53 @@ fn replay_document_into(
         attributes,
     } = document;
 
+    for (index, vertex) in vertices.iter().enumerate() {
+        validate_arena_point(vertex.point, &format!("vertex {index}"))?;
+        validate_arena_tolerance(vertex.tolerance, &format!("vertex {index}"))?;
+    }
+
     let mut vertex_ids = Vec::with_capacity(vertices.len());
-    for v in vertices {
+    for v in &vertices {
         vertex_ids.push(topo.add_vertex(Vertex::new(v.point, v.tolerance)));
     }
 
     let mut edge_ids = Vec::with_capacity(edges.len());
-    for e in edges {
+    for (index, e) in edges.into_iter().enumerate() {
         let start = *vertex_ids
             .get(e.start)
             .ok_or_else(|| index_err("vertex", e.start))?;
         let end = *vertex_ids
             .get(e.end)
             .ok_or_else(|| index_err("vertex", e.end))?;
+        let start_vertex = vertices
+            .get(e.start)
+            .ok_or_else(|| index_err("vertex", e.start))?;
+        let end_vertex = vertices
+            .get(e.end)
+            .ok_or_else(|| index_err("vertex", e.end))?;
+        if let Some(tolerance) = e.tolerance {
+            validate_arena_tolerance(tolerance, &format!("edge {index}"))?;
+        }
         if let SerEdgeCurve::NurbsCurve(curve) = &e.curve {
             curve.validate().map_err(|err| IoError::ParseError {
                 reason: format!("invalid arena NURBS curve: {err}"),
             })?;
         }
+        let curve = e.curve.into_curve();
+        let trim = legacy_arena_edge_trim_adapter(
+            index,
+            &curve,
+            e.trim,
+            start == end,
+            start_vertex.point,
+            end_vertex.point,
+            start_vertex.tolerance,
+            end_vertex.tolerance,
+            e.tolerance,
+        )?;
         edge_ids.push(topo.add_edge({
-            let mut restored = Edge::with_tolerance(start, end, e.curve.into_curve(), e.tolerance);
-            restored.set_trim(e.trim);
+            let mut restored = Edge::with_tolerance(start, end, curve, e.tolerance);
+            restored.set_trim(trim);
             restored
         }));
     }
@@ -1157,6 +1183,279 @@ fn replay_document_into(
     })
 }
 
+/// Import-only compatibility boundary for arena documents written before
+/// non-linear edges carried explicit parameter authority.
+#[allow(clippy::too_many_arguments)]
+fn legacy_arena_edge_trim_adapter(
+    edge_index: usize,
+    curve: &EdgeCurve,
+    stored_trim: Option<(f64, f64)>,
+    closed: bool,
+    start: Point3,
+    end: Point3,
+    start_tolerance: f64,
+    end_tolerance: f64,
+    edge_tolerance: Option<f64>,
+) -> Result<Option<(f64, f64)>, IoError> {
+    if matches!(curve, EdgeCurve::Line) {
+        if let Some((trim_start, trim_end)) = stored_trim
+            && (!trim_start.is_finite() || !trim_end.is_finite())
+        {
+            return Err(arena_edge_error(
+                edge_index,
+                "a line carried a non-finite legacy trim",
+            ));
+        }
+        return Ok(None);
+    }
+
+    let tolerance = edge_tolerance.unwrap_or_else(|| start_tolerance.max(end_tolerance));
+    let trim = match stored_trim {
+        Some(trim) => trim,
+        None => reconstruct_legacy_arena_trim(edge_index, curve, closed, start, end, tolerance)?,
+    };
+
+    let mut scratch = Topology::new();
+    let scratch_start = scratch.add_vertex(Vertex::new(start, start_tolerance));
+    let scratch_end = if closed {
+        scratch_start
+    } else {
+        scratch.add_vertex(Vertex::new(end, end_tolerance))
+    };
+    let mut candidate =
+        Edge::with_tolerance(scratch_start, scratch_end, curve.clone(), edge_tolerance);
+    candidate.set_trim(Some(trim));
+    let authority = candidate.strict_domain().map_err(|error| {
+        arena_edge_error(
+            edge_index,
+            &format!("invalid parameter authority {trim:?}: {error}"),
+        )
+    })?;
+    certify_arena_edge_authority(edge_index, curve, authority, start, end, tolerance)?;
+    Ok(Some(authority))
+}
+
+fn reconstruct_legacy_arena_trim(
+    edge_index: usize,
+    curve: &EdgeCurve,
+    closed: bool,
+    start: Point3,
+    end: Point3,
+    tolerance: f64,
+) -> Result<(f64, f64), IoError> {
+    let trim = match curve {
+        EdgeCurve::Line => return Ok((0.0, 1.0)),
+        EdgeCurve::Circle(circle) => {
+            legacy_periodic_trim(circle.project(start), circle.project(end), closed)
+        }
+        EdgeCurve::Ellipse(ellipse) => {
+            legacy_periodic_trim(ellipse.project(start), ellipse.project(end), closed)
+        }
+        EdgeCurve::Hyperbola(hyperbola) => (hyperbola.project(start), hyperbola.project(end)),
+        EdgeCurve::Parabola(parabola) => (parabola.project(start), parabola.project(end)),
+        EdgeCurve::NurbsCurve(nurbs) => {
+            legacy_nurbs_trim(edge_index, nurbs, closed, start, end, tolerance)?
+        }
+    };
+    if !trim.0.is_finite() || !trim.1.is_finite() {
+        return Err(arena_edge_error(
+            edge_index,
+            "legacy endpoint reconstruction produced a non-finite range",
+        ));
+    }
+    Ok(trim)
+}
+
+fn legacy_periodic_trim(start: f64, end: f64, closed: bool) -> (f64, f64) {
+    let span = if closed {
+        std::f64::consts::TAU
+    } else {
+        let projected = (end - start).rem_euclid(std::f64::consts::TAU);
+        if projected <= 4.0 * f64::EPSILON * std::f64::consts::TAU {
+            std::f64::consts::TAU
+        } else {
+            projected
+        }
+    };
+    (start, start + span)
+}
+
+fn legacy_nurbs_trim(
+    edge_index: usize,
+    curve: &NurbsCurve,
+    closed: bool,
+    start: Point3,
+    end: Point3,
+    tolerance: f64,
+) -> Result<(f64, f64), IoError> {
+    let domain = curve.domain();
+    let natural_start = curve.evaluate(domain.0);
+    let natural_end = curve.evaluate(domain.1);
+    let forward = [
+        (natural_start - start).length(),
+        (natural_end - end).length(),
+    ];
+    let reverse = [
+        (natural_end - start).length(),
+        (natural_start - end).length(),
+    ];
+    let forward_matches = residuals_within(forward, tolerance);
+    let reverse_matches = residuals_within(reverse, tolerance);
+    if forward_matches && !reverse_matches {
+        return Ok(domain);
+    }
+    if reverse_matches && !forward_matches {
+        return Ok((domain.1, domain.0));
+    }
+    if closed && forward_matches && reverse_matches {
+        return Ok(domain);
+    }
+    if let (Some(trim_start), Some(trim_end)) = (
+        monotone_nurbs_parameter(curve, start, tolerance),
+        monotone_nurbs_parameter(curve, end, tolerance),
+    ) && trim_start.partial_cmp(&trim_end) != Some(std::cmp::Ordering::Equal)
+    {
+        return Ok((trim_start, trim_end));
+    }
+    Err(arena_edge_error(
+        edge_index,
+        "legacy NURBS endpoints do not uniquely establish a parameter range",
+    ))
+}
+
+fn monotone_nurbs_parameter(curve: &NurbsCurve, point: Point3, tolerance: f64) -> Option<f64> {
+    let first_weight = *curve.weights().first()?;
+    if !first_weight.is_finite()
+        || first_weight <= 0.0
+        || curve
+            .weights()
+            .iter()
+            .any(|weight| weight.to_bits() != first_weight.to_bits())
+    {
+        return None;
+    }
+    let coordinates = [
+        (|point: Point3| point.x()) as fn(Point3) -> f64,
+        (|point: Point3| point.y()) as fn(Point3) -> f64,
+        (|point: Point3| point.z()) as fn(Point3) -> f64,
+    ];
+    let coordinate = coordinates.into_iter().find(|coordinate| {
+        let control_points = curve.control_points();
+        control_points
+            .windows(2)
+            .all(|pair| coordinate(pair[1]) > coordinate(pair[0]))
+            || control_points
+                .windows(2)
+                .all(|pair| coordinate(pair[1]) < coordinate(pair[0]))
+    })?;
+    let (mut low, mut high) = curve.domain();
+    let mut low_value = coordinate(curve.evaluate(low));
+    let high_value = coordinate(curve.evaluate(high));
+    let target = coordinate(point);
+    if !low_value.is_finite() || !high_value.is_finite() || !target.is_finite() {
+        return None;
+    }
+    let increasing = high_value > low_value;
+    if increasing {
+        if target < low_value {
+            return (low_value - target <= tolerance).then_some(low);
+        }
+        if target > high_value {
+            return (target - high_value <= tolerance).then_some(high);
+        }
+    } else {
+        if target > low_value {
+            return (target - low_value <= tolerance).then_some(low);
+        }
+        if target < high_value {
+            return (high_value - target <= tolerance).then_some(high);
+        }
+    }
+    for _ in 0..96 {
+        let middle = f64::midpoint(low, high);
+        if middle.to_bits() == low.to_bits() || middle.to_bits() == high.to_bits() {
+            break;
+        }
+        let middle_value = coordinate(curve.evaluate(middle));
+        if !middle_value.is_finite() {
+            return None;
+        }
+        if (middle_value < target) == increasing {
+            low = middle;
+            low_value = middle_value;
+        } else {
+            high = middle;
+        }
+    }
+    let low_error = (low_value - target).abs();
+    let high_error = (coordinate(curve.evaluate(high)) - target).abs();
+    Some(if low_error <= high_error { low } else { high })
+}
+
+fn residuals_within(residuals: [f64; 2], tolerance: f64) -> bool {
+    residuals
+        .into_iter()
+        .all(|residual| residual.is_finite() && residual <= tolerance)
+}
+
+fn certify_arena_edge_authority(
+    edge_index: usize,
+    curve: &EdgeCurve,
+    trim: (f64, f64),
+    start: Point3,
+    end: Point3,
+    tolerance: f64,
+) -> Result<(), IoError> {
+    for (label, parameter, expected) in [("start", trim.0, start), ("end", trim.1, end)] {
+        let actual = curve.evaluate_with_endpoints(parameter, start, end);
+        validate_arena_point(actual, &format!("edge {edge_index} {label} evaluation"))?;
+        let residual = (actual - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(arena_edge_error(
+                edge_index,
+                &format!("{label} residual {residual} exceeds effective tolerance {tolerance}"),
+            ));
+        }
+    }
+    let midpoint = f64::midpoint(trim.0, trim.1);
+    validate_arena_point(
+        curve.evaluate_with_endpoints(midpoint, start, end),
+        &format!("edge {edge_index} midpoint evaluation"),
+    )?;
+    let tangent = curve.tangent_with_endpoints(midpoint, start, end);
+    if tangent.0.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(arena_edge_error(
+            edge_index,
+            "the authoritative range has a non-finite interior tangent",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_arena_tolerance(tolerance: f64, subject: &str) -> Result<(), IoError> {
+    if !tolerance.is_finite() || tolerance.is_sign_negative() {
+        return Err(IoError::ParseError {
+            reason: format!("arena {subject} has invalid tolerance {tolerance}"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_arena_point(point: Point3, subject: &str) -> Result<(), IoError> {
+    if point.0.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Err(IoError::ParseError {
+            reason: format!("arena {subject} is non-finite"),
+        });
+    }
+    Ok(())
+}
+
+fn arena_edge_error(edge_index: usize, reason: &str) -> IoError {
+    IoError::ParseError {
+        reason: format!("arena edge {edge_index}: {reason}"),
+    }
+}
+
 fn decode_attributes(
     encoded: SerEntityAttributes,
 ) -> Result<remus_topology::attributes::EntityAttributes, IoError> {
@@ -1285,6 +1584,65 @@ mod tests {
     use super::*;
     use remus_operations::primitives::{make_box, make_cylinder};
     use remus_topology::explorer::solid_faces;
+
+    fn single_edge_document(
+        curve: SerEdgeCurve,
+        start: Point3,
+        end: Point3,
+        closed: bool,
+        tolerance: Option<f64>,
+        trim: Option<(f64, f64)>,
+    ) -> Vec<u8> {
+        let mut vertices = vec![SerVertex {
+            point: start,
+            tolerance: 1e-9,
+        }];
+        let end_index = if closed {
+            0
+        } else {
+            vertices.push(SerVertex {
+                point: end,
+                tolerance: 1e-9,
+            });
+            1
+        };
+        serde_json::to_vec(&SerializedDocumentV2 {
+            version: FORMAT_VERSION,
+            vertices,
+            edges: vec![SerEdge {
+                start: 0,
+                end: end_index,
+                curve,
+                tolerance,
+                trim,
+            }],
+            wires: Vec::new(),
+            faces: Vec::new(),
+            shells: vec![SerShell { faces: Vec::new() }],
+            solids: vec![SerSolid {
+                outer_shell: 0,
+                inner_shells: Vec::new(),
+            }],
+            solid_roots: vec![0],
+            compounds: Vec::new(),
+            pcurves: Vec::new(),
+            journal: None,
+            attributes: None,
+        })
+        .unwrap()
+    }
+
+    fn restored_edge(bytes: &[u8]) -> (Topology, EdgeId) {
+        let mut topology = Topology::new();
+        deserialize_solid(bytes, &mut topology).unwrap();
+        let edge = topology.edge_id_from_index(0).unwrap();
+        (topology, edge)
+    }
+
+    fn assert_trim_near(actual: (f64, f64), expected: (f64, f64)) {
+        assert!((actual.0 - expected.0).abs() < 1e-12, "{actual:?}");
+        assert!((actual.1 - expected.1).abs() < 1e-12, "{actual:?}");
+    }
 
     fn face_type_histogram(
         topo: &Topology,
@@ -1450,6 +1808,270 @@ mod tests {
         assert_eq!(destination.num_vertices(), 0);
         assert_eq!(destination.num_edges(), 0);
         assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
+    }
+
+    #[test]
+    fn legacy_arena_reconstructs_every_non_line_curve_class() {
+        let circle =
+            Circle3D::new(Point3::new(2.0, -1.0, 3.0), Vec3::new(0.0, 0.0, 1.0), 4.0).unwrap();
+        let circle_range = (1.1, 0.35 + std::f64::consts::TAU);
+        let bytes = single_edge_document(
+            SerEdgeCurve::Circle(circle.clone()),
+            circle.evaluate(circle_range.0),
+            circle.evaluate(circle_range.1),
+            false,
+            None,
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_trim_near(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            circle_range,
+        );
+
+        let ellipse = Ellipse3D::new(
+            Point3::new(-3.0, 2.0, 1.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            5.0,
+            2.0,
+        )
+        .unwrap();
+        let seam = 1.35;
+        let seam_point = ellipse.evaluate(seam);
+        let bytes = single_edge_document(
+            SerEdgeCurve::Ellipse(ellipse),
+            seam_point,
+            seam_point,
+            true,
+            Some(1e-9),
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_trim_near(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            (seam, seam + std::f64::consts::TAU),
+        );
+
+        let hyperbola = Hyperbola3D::new(
+            Point3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            1.5,
+        )
+        .unwrap();
+        let hyperbola_range = (-0.8, 1.2);
+        let bytes = single_edge_document(
+            SerEdgeCurve::Hyperbola(hyperbola.clone()),
+            hyperbola.evaluate(hyperbola_range.0),
+            hyperbola.evaluate(hyperbola_range.1),
+            false,
+            None,
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_trim_near(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            hyperbola_range,
+        );
+
+        let parabola =
+            Parabola3D::new(Point3::new(-2.0, 1.0, 4.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+        let parabola_range = (3.0, -2.0);
+        let bytes = single_edge_document(
+            SerEdgeCurve::Parabola(parabola.clone()),
+            parabola.evaluate(parabola_range.0),
+            parabola.evaluate(parabola_range.1),
+            false,
+            None,
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_trim_near(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            parabola_range,
+        );
+
+        let nurbs = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 1.0, 0.0),
+                Point3::new(4.0, 0.0, 0.0),
+            ],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let nurbs_range = (0.2, 0.8);
+        let bytes = single_edge_document(
+            SerEdgeCurve::NurbsCurve(nurbs.clone()),
+            nurbs.evaluate(nurbs_range.0),
+            nurbs.evaluate(nurbs_range.1),
+            false,
+            Some(1e-9),
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_trim_near(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            nurbs_range,
+        );
+
+        // Legacy exporters rounded a natural endpoint independently from the
+        // NURBS control point. A monotone carrier still gives one unique
+        // branch; clamp only within the declared model tolerance and let the
+        // full 3D residual certificate below enforce that bound.
+        let rounded_start_range = (nurbs.domain().0, 0.8);
+        let rounded_start =
+            nurbs.evaluate(rounded_start_range.0) + remus_math::vec::Vec3::new(-5.0e-10, 0.0, 0.0);
+        let bytes = single_edge_document(
+            SerEdgeCurve::NurbsCurve(nurbs.clone()),
+            rounded_start,
+            nurbs.evaluate(rounded_start_range.1),
+            false,
+            Some(1e-7),
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_trim_near(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            rounded_start_range,
+        );
+
+        let natural_reverse = (nurbs.domain().1, nurbs.domain().0);
+        let bytes = single_edge_document(
+            SerEdgeCurve::NurbsCurve(nurbs.clone()),
+            nurbs.evaluate(natural_reverse.0),
+            nurbs.evaluate(natural_reverse.1),
+            false,
+            Some(1e-9),
+            None,
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_eq!(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            natural_reverse
+        );
+
+        let line = single_edge_document(
+            SerEdgeCurve::Line,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 3.0),
+            false,
+            None,
+            Some((42.0, -17.0)),
+        );
+        let (topology, edge) = restored_edge(&line);
+        assert_eq!(topology.edge(edge).unwrap().trim(), None);
+        assert_eq!(
+            topology.edge(edge).unwrap().strict_domain().unwrap(),
+            (0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn explicit_arena_trim_is_certified_before_replay() {
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0).unwrap();
+        let trim = (-0.4, 0.7);
+        let bytes = single_edge_document(
+            SerEdgeCurve::Circle(circle.clone()),
+            circle.evaluate(trim.0),
+            circle.evaluate(trim.1),
+            false,
+            Some(1e-9),
+            Some(trim),
+        );
+        let (topology, edge) = restored_edge(&bytes);
+        assert_eq!(topology.edge(edge).unwrap().strict_domain().unwrap(), trim);
+
+        let invalid = single_edge_document(
+            SerEdgeCurve::Circle(circle.clone()),
+            circle.evaluate(trim.0),
+            circle.evaluate(trim.1),
+            false,
+            Some(1e-9),
+            Some((0.1, 0.1)),
+        );
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+        assert!(deserialize_solid(&invalid, &mut destination).is_err());
+        assert_eq!(destination.num_edges(), 0);
+        assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
+    }
+
+    #[test]
+    fn ambiguous_legacy_nurbs_and_corrupt_tolerance_rollback() {
+        let folded = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            ],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let ambiguous = single_edge_document(
+            SerEdgeCurve::NurbsCurve(folded.clone()),
+            folded.evaluate(0.2),
+            folded.evaluate(0.4),
+            false,
+            Some(1e-9),
+            None,
+        );
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+        let error = deserialize_solid(&ambiguous, &mut destination).unwrap_err();
+        assert!(error.to_string().contains("do not uniquely establish"));
+        assert_eq!(destination.num_edges(), 0);
+        assert!(destination.is_empty_solid(sentinel));
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let mut corrupt: serde_json::Value = serde_json::from_slice(&single_edge_document(
+            SerEdgeCurve::Circle(circle.clone()),
+            circle.evaluate(0.0),
+            circle.evaluate(1.0),
+            false,
+            None,
+            None,
+        ))
+        .unwrap();
+        corrupt["vertices"][1]["tolerance"] = serde_json::json!(-1.0);
+        let corrupt = serde_json::to_vec(&corrupt).unwrap();
+        let error = deserialize_solid(&corrupt, &mut destination).unwrap_err();
+        assert!(error.to_string().contains("invalid tolerance"));
+        assert_eq!(destination.num_edges(), 0);
+        assert_eq!(destination.num_solids(), 1);
+        assert!(destination.is_empty_solid(sentinel));
+    }
+
+    #[test]
+    fn nonfinite_legacy_line_trim_is_rejected_atomically() {
+        let bytes = single_edge_document(
+            SerEdgeCurve::Line,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            false,
+            None,
+            None,
+        );
+        let mut document = parse_document(&bytes, ImportLimits::default()).unwrap();
+        document.edges[0].trim = Some((f64::NAN, 1.0));
+
+        let mut destination = Topology::new();
+        let sentinel = destination.add_empty_solid();
+        let before = destination.clone();
+        let error = replay_document(document, &mut destination).unwrap_err();
+
+        assert!(error.to_string().contains("non-finite legacy trim"));
+        assert_eq!(destination.num_vertices(), before.num_vertices());
+        assert_eq!(destination.num_edges(), before.num_edges());
+        assert_eq!(destination.num_solids(), before.num_solids());
         assert!(destination.is_empty_solid(sentinel));
     }
 

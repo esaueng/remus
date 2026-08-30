@@ -21,6 +21,21 @@ use crate::test_helpers::assert_volume_near;
 
 use super::*;
 
+fn add_test_circle_edge(
+    topo: &mut Topology,
+    start: remus_topology::vertex::VertexId,
+    end: remus_topology::vertex::VertexId,
+    circle: remus_math::curves::Circle3D,
+) -> EdgeId {
+    let start_point = topo.vertex(start).unwrap().point();
+    let end_point = topo.vertex(end).unwrap().point();
+    let t0 = circle.project(start_point);
+    let delta = (circle.project(end_point) - t0).rem_euclid(std::f64::consts::TAU);
+    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((t0, t0 + delta)));
+    topo.add_edge(edge)
+}
+
 /// Helper: get the face count and validate manifoldness.
 fn check_result(topo: &Topology, solid: SolidId) -> usize {
     let s = topo.solid(solid).unwrap();
@@ -3744,22 +3759,22 @@ fn fuse_shelled_box_with_socket_loft() {
         edges.push(topo.add_edge(Edge::new(vids[7], vids[0], EdgeCurve::Line)));
         // BR arc: BR_start → BR_end
         let br_circle = Circle3D::new(corner_centers[0], axis, r).unwrap();
-        edges.push(topo.add_edge(Edge::new(vids[0], vids[1], EdgeCurve::Circle(br_circle))));
+        edges.push(add_test_circle_edge(topo, vids[0], vids[1], br_circle));
         // Right line: BR_end → TR_start
         edges.push(topo.add_edge(Edge::new(vids[1], vids[2], EdgeCurve::Line)));
         // TR arc: TR_start → TR_end
         let tr_circle = Circle3D::new(corner_centers[1], axis, r).unwrap();
-        edges.push(topo.add_edge(Edge::new(vids[2], vids[3], EdgeCurve::Circle(tr_circle))));
+        edges.push(add_test_circle_edge(topo, vids[2], vids[3], tr_circle));
         // Top line: TR_end → TL_start
         edges.push(topo.add_edge(Edge::new(vids[3], vids[4], EdgeCurve::Line)));
         // TL arc: TL_start → TL_end
         let tl_circle = Circle3D::new(corner_centers[2], axis, r).unwrap();
-        edges.push(topo.add_edge(Edge::new(vids[4], vids[5], EdgeCurve::Circle(tl_circle))));
+        edges.push(add_test_circle_edge(topo, vids[4], vids[5], tl_circle));
         // Left line: TL_end → BL_start
         edges.push(topo.add_edge(Edge::new(vids[5], vids[6], EdgeCurve::Line)));
         // BL arc: BL_start → BL_end
         let bl_circle = Circle3D::new(corner_centers[3], axis, r).unwrap();
-        edges.push(topo.add_edge(Edge::new(vids[6], vids[7], EdgeCurve::Circle(bl_circle))));
+        edges.push(add_test_circle_edge(topo, vids[6], vids[7], bl_circle));
 
         let wire = Wire::new(
             edges
@@ -4021,11 +4036,12 @@ fn fuse_coincident_rrect_cap_with_frustum() {
         let mut e = Vec::new();
         e.push(topo.add_edge(Edge::new(v[7], v[0], EdgeCurve::Line)));
         for i in 0..4 {
-            e.push(topo.add_edge(Edge::new(
+            e.push(add_test_circle_edge(
+                topo,
                 v[2 * i],
                 v[2 * i + 1],
-                EdgeCurve::Circle(Circle3D::new(cc[i], axis, r).unwrap()),
-            )));
+                Circle3D::new(cc[i], axis, r).unwrap(),
+            ));
             if i < 3 {
                 e.push(topo.add_edge(Edge::new(v[2 * i + 1], v[2 * i + 2], EdgeCurve::Line)));
             }
@@ -5008,7 +5024,9 @@ fn make_rounded_rect_arc_face(topo: &mut Topology, hw: f64, hd: f64, r: f64, z: 
         let u_axis = Vec3::new(radial.x() / r, radial.y() / r, radial.z() / r);
         let v_axis = normal.cross(u_axis);
         let circle = Circle3D::with_axes(center, normal, r, u_axis, v_axis).unwrap();
-        eids.push(topo.add_edge(Edge::new(arc_start, arc_end, EdgeCurve::Circle(circle))));
+        let mut arc = Edge::new(arc_start, arc_end, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((0.0, std::f64::consts::FRAC_PI_2)));
+        eids.push(topo.add_edge(arc));
     }
 
     let wire = Wire::new(

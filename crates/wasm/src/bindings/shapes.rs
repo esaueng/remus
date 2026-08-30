@@ -466,15 +466,12 @@ impl BrepKernel {
                 reason: format!("invalid circle: {e}"),
             })?;
 
-        let v_start = self.topo_mut().add_vertex(Vertex::new(start_pt, TOL));
-        let v_end = if (start_pt - end_pt).length() < TOL * 100.0 {
-            v_start
-        } else {
-            self.topo_mut().add_vertex(Vertex::new(end_pt, TOL))
-        };
-        let eid = self
-            .topo_mut()
-            .add_edge(Edge::new(v_start, v_end, EdgeCurve::Circle(circle)));
+        let curve = EdgeCurve::Circle(circle);
+        let closed = (start_pt - end_pt).length() < TOL * 100.0;
+        let authoritative_end = if closed { start_pt } else { end_pt };
+        let trim = Self::periodic_trim_from_endpoints(&curve, start_pt, authoritative_end, closed)?;
+        let eid =
+            self.add_certified_curve_edge(curve, trim, start_pt, authoritative_end, closed, TOL)?;
         Ok(edge_id_to_u32(eid))
     }
 
@@ -939,17 +936,19 @@ impl BrepKernel {
 
         let start_pt = Point3::new(start_x, start_y, start_z);
         let end_pt = Point3::new(end_x, end_y, end_z);
-        let v_start = self.topo_mut().add_vertex(Vertex::new(start_pt, TOL));
-        // When start ≈ end (closed curve), reuse the same vertex so
-        // downstream code correctly identifies the edge as closed.
-        let v_end = if (start_pt - end_pt).length() < TOL * 100.0 {
-            v_start
-        } else {
-            self.topo_mut().add_vertex(Vertex::new(end_pt, TOL))
-        };
-        let eid = self
-            .topo_mut()
-            .add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(curve)));
+        let closure_tolerance = TOL * 100.0;
+        let closed = (start_pt - end_pt).length() < closure_tolerance;
+        let authoritative_end = if closed { start_pt } else { end_pt };
+        let tolerance = if closed { closure_tolerance } else { TOL };
+        let trim = Self::native_nurbs_trim(&curve, start_pt, authoritative_end, tolerance)?;
+        let eid = self.add_certified_curve_edge(
+            EdgeCurve::NurbsCurve(curve),
+            trim,
+            start_pt,
+            authoritative_end,
+            closed,
+            tolerance,
+        )?;
         Ok(edge_id_to_u32(eid))
     }
 
@@ -966,7 +965,8 @@ impl BrepKernel {
             .map(|&h| self.resolve_edge(h))
             .collect::<Result<_, WasmError>>()?;
 
-        // Merge coincident vertices between adjacent edges.
+        // Plan coincident-vertex merges before changing any source edge.
+        let mut start_replacements = Vec::new();
         // When edge[i].end is at the same position as edge[i+1].start,
         // replace edge[i+1].start with edge[i].end so they share a vertex.
         if edge_ids.len() > 1 {
@@ -994,8 +994,31 @@ impl BrepKernel {
 
                 let dist = (end_pos - start_pos).length();
                 if dist < tol.linear {
-                    // Merge: replace the next edge's start with the current edge's end
-                    self.topo_mut().edge_mut(edge_ids[next])?.set_start(end_vid);
+                    let edge = self.topo.edge(edge_ids[next])?;
+                    if !matches!(edge.curve(), EdgeCurve::Line) {
+                        let (t0, t1) = edge.strict_domain().map_err(|error| {
+                            WasmError::InvalidInput {
+                                reason: format!(
+                                    "cannot merge a curved wire edge without authoritative trim: {error}"
+                                ),
+                            }
+                        })?;
+                        let edge_end = self.topo.vertex(edge.end())?.point();
+                        let vertex_tolerance = self
+                            .topo
+                            .vertex(end_vid)?
+                            .tolerance()
+                            .max(self.topo.vertex(edge.end())?.tolerance());
+                        Self::certify_curve_trim(
+                            edge.curve(),
+                            (t0, t1),
+                            end_pos,
+                            edge_end,
+                            end_vid == edge.end(),
+                            edge.tolerance().unwrap_or(vertex_tolerance),
+                        )?;
+                    }
+                    start_replacements.push((edge_ids[next], end_vid));
                 }
             }
         }
@@ -1005,6 +1028,9 @@ impl BrepKernel {
             .map(|&eid| OrientedEdge::new(eid, true))
             .collect();
         let wire = Wire::new(oriented, closed)?;
+        for (edge_id, start) in start_replacements {
+            self.topo_mut().edge_mut(edge_id)?.set_start(start);
+        }
         let wid = self.topo_mut().add_wire(wire);
         Ok(wire_id_to_u32(wid))
     }
@@ -1045,6 +1071,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::face::FaceSurface;
 
     // ── non-finite input rejection ────────────────────────────────
@@ -1129,6 +1156,116 @@ mod tests {
             ),
             "expected the control-point refusal naming index 1, got {err:?}"
         );
+    }
+
+    #[test]
+    fn make_nurbs_edge_rejects_mismatched_endpoints_atomically() {
+        let mut kernel = BrepKernel::new();
+        let before = (kernel.topo().num_vertices(), kernel.topo().num_edges());
+        let error = kernel
+            .make_nurbs_edge_impl(
+                0.0,
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+                0.0,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                vec![1.0, 1.0],
+            )
+            .expect_err("off-curve endpoint must not create trimless topology");
+        assert!(error.to_string().contains("native domain"));
+        assert_eq!(
+            before,
+            (kernel.topo().num_vertices(), kernel.topo().num_edges())
+        );
+    }
+
+    #[test]
+    fn circle_arc_preserves_historical_near_closed_snap_with_authority() {
+        let mut kernel = BrepKernel::new();
+        let edge = kernel
+            .make_circle_arc_3d(
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                TOL * 50.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            )
+            .unwrap();
+        let edge = kernel.resolve_edge(edge).unwrap();
+        let edge = kernel.topo().edge(edge).unwrap();
+        assert!(edge.is_closed());
+        let trim = edge.strict_domain().unwrap();
+        assert!((trim.1 - trim.0 - std::f64::consts::TAU).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nurbs_edge_preserves_historical_near_closed_snap_with_authority() {
+        let mut kernel = BrepKernel::new();
+        let near = TOL * 50.0;
+        let edge = kernel
+            .make_nurbs_edge_impl(
+                0.0,
+                0.0,
+                0.0,
+                near,
+                0.0,
+                0.0,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 0.0, near, 0.0, 0.0],
+                vec![1.0, 1.0],
+            )
+            .unwrap();
+        let edge = kernel.resolve_edge(edge).unwrap();
+        let edge = kernel.topo().edge(edge).unwrap();
+        assert!(edge.is_closed());
+        assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
+    }
+
+    #[test]
+    fn make_wire_refuses_trimless_curved_merge_without_mutation() {
+        let mut kernel = BrepKernel::new();
+        let line = remus_topology::builder::make_line_edge(
+            kernel.topo_mut(),
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0 + TOL / 2.0, 0.0, 0.0),
+            TOL,
+        )
+        .unwrap();
+        let circle = remus_math::curves::Circle3D::new(
+            Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+        )
+        .unwrap();
+        let start = kernel
+            .topo_mut()
+            .add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), TOL));
+        let end = kernel
+            .topo_mut()
+            .add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), TOL));
+        let curved = kernel
+            .topo_mut()
+            .add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+        let before_wires = kernel.topo().num_wires();
+
+        let error = kernel
+            .make_wire_impl(&[edge_id_to_u32(line), edge_id_to_u32(curved)], false)
+            .expect_err("a merge must not bless a trimless curved edge");
+        assert!(error.to_string().contains("authoritative trim"));
+        assert_eq!(kernel.topo().edge(curved).unwrap().start(), start);
+        assert_eq!(kernel.topo().num_wires(), before_wires);
     }
 
     // ── make_rectangle ────────────────────────────────────────────
