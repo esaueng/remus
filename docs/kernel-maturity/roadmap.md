@@ -114,6 +114,12 @@ question), v1-fillet API migration (product decision, owner's).
 
 ## §D External roadmap dispositions
 
+- **K-S2 exact measurement — partial (PR #151):** production `faceArea` and
+  `surfaceArea` now reuse the exact planar boundary-moment integrator for
+  line/circle/parabola wires, including circular holes, with scale,
+  deflection-independence, direct-WASM, and batch-WASM oracles. Exact ellipse,
+  hyperbola, and NURBS planar boundaries, general curved-face area, and
+  deflection-independent curved-body volume remain.
 - **K-S3 SSI Newton budget — done
   ([PR #147](https://github.com/esaueng/remus/pull/147), 2026-08-30):**
   `WorkBudgets::newton_iterations` is authoritative across NURBS×NURBS seed,

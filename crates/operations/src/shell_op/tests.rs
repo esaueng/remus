@@ -734,7 +734,12 @@ fn shell_rounded_rect_watertight() {
     let mk_line = |topo: &mut Topology, s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
     let mk_arc = |topo: &mut Topology, s, e, center: Point3| {
         let circle = Circle3D::new(center, z_axis, r).unwrap();
-        topo.add_edge(Edge::new(s, e, EdgeCurve::Circle(circle)))
+        let start = circle.project(topo.vertex(s).unwrap().point());
+        let span = (circle.project(topo.vertex(e).unwrap().point()) - start)
+            .rem_euclid(std::f64::consts::TAU);
+        let mut edge = Edge::new(s, e, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((start, start + span)));
+        topo.add_edge(edge)
     };
 
     let e_bot = mk_line(&mut topo, vids[7], vids[0]);
