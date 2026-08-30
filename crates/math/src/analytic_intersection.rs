@@ -2019,7 +2019,7 @@ fn algebraic_torus_cylinder(
 /// Returns `Some(vec![E₁, E₂])` for the gated case and `None` for every
 /// other configuration (parallel or oblique axes, unequal radii, skew axes
 /// whose lines do not cross), which defers to the sampled quadratic path in
-/// [`algebraic_cylinder_cylinder`]. Phase FF can call this directly and mint
+/// `algebraic_cylinder_cylinder`. Phase FF can call this directly and mint
 /// exact `EdgeCurve::Ellipse` section edges, as it already does for the
 /// plane-analytic ellipse arm.
 ///
