@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::{solid_edges, solid_vertices};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
@@ -77,9 +78,36 @@ pub fn write_step_with_options(
         });
     }
 
+    let mut uncertainty = 1e-7_f64;
+    for &solid_id in solids {
+        for vertex_id in solid_vertices(topo, solid_id)? {
+            let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
+            if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+                return Err(IoError::InvalidTopology {
+                    reason: format!(
+                        "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
+                    ),
+                });
+            }
+            uncertainty = uncertainty.max(vertex_tolerance);
+        }
+        for edge_id in solid_edges(topo, solid_id)? {
+            if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
+                if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
+                        ),
+                    });
+                }
+                uncertainty = uncertainty.max(edge_tolerance);
+            }
+        }
+    }
+
     let mut ctx = StepWriteContext::new(options.clone());
 
-    let repr_context_id = ctx.write_geometric_context();
+    let repr_context_id = ctx.write_geometric_context(uncertainty)?;
     let product_ids = ctx.write_product_structure();
 
     let mut brep_ids = Vec::new();
@@ -198,7 +226,7 @@ impl StepWriteContext {
     }
 
     /// Write geometric context (units, representation context).
-    fn write_geometric_context(&mut self) -> u64 {
+    fn write_geometric_context(&mut self, uncertainty_value: f64) -> Result<u64, IoError> {
         let len_unit = self.next_id();
         let _ = writeln!(
             self.entities,
@@ -218,11 +246,16 @@ impl StepWriteContext {
         );
 
         let uncertainty = self.next_id();
+        let uncertainty_text = if uncertainty_value <= 1e-7 {
+            "1.E-07".to_string()
+        } else {
+            fmt_authority_f64(uncertainty_value)?
+        };
         self.write_entity(
             uncertainty,
             "UNCERTAINTY_MEASURE_WITH_UNIT",
             &format!(
-                "LENGTH_MEASURE(1.E-07), #{len_unit}, 'distance_accuracy_value', \
+                "LENGTH_MEASURE({uncertainty_text}), #{len_unit}, 'distance_accuracy_value', \
                  'confusion accuracy')"
             ),
         );
@@ -236,7 +269,7 @@ impl StepWriteContext {
              REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );"
         );
 
-        ctx
+        Ok(ctx)
     }
 
     /// Write product structure entities.
@@ -317,6 +350,42 @@ impl StepWriteContext {
         }
 
         let edge = topo.edge(eid).map_err(topo_err)?;
+        let authoritative_range = if matches!(edge.curve(), EdgeCurve::Line) {
+            None
+        } else {
+            Some(
+                edge.strict_domain()
+                    .map_err(|error| IoError::InvalidTopology {
+                        reason: format!(
+                            "edge {eid:?} has no exportable parameter authority: {error}"
+                        ),
+                    })?,
+            )
+        };
+        if let Some(range) = authoritative_range {
+            let start_vertex = topo.vertex(edge.start()).map_err(topo_err)?;
+            let end_vertex = topo.vertex(edge.end()).map_err(topo_err)?;
+            let endpoint_tolerance =
+                edge.effective_tolerance(start_vertex.tolerance().max(end_vertex.tolerance()));
+            for (label, point, parameter) in [
+                ("start", start_vertex.point(), range.0),
+                ("end", end_vertex.point(), range.1),
+            ] {
+                let residual = (edge.curve().evaluate_with_endpoints(
+                    parameter,
+                    start_vertex.point(),
+                    end_vertex.point(),
+                ) - point)
+                    .length();
+                if !residual.is_finite() || residual > endpoint_tolerance {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "edge {eid:?} authoritative {label} parameter misses its vertex by {residual} (tolerance {endpoint_tolerance})"
+                        ),
+                    });
+                }
+            }
+        }
         let start_vp = self.write_vertex(topo, edge.start())?;
         let end_vp = self.write_vertex(topo, edge.end())?;
 
@@ -408,6 +477,23 @@ impl StepWriteContext {
                 );
                 pid
             }
+        };
+
+        let curve_id = if let Some(range) = authoritative_range {
+            let (trim_start, trim_end, forward) = step_trim_literals(edge.curve(), range)?;
+            let sense = if forward { ".T." } else { ".F." };
+            let trimmed = self.next_id();
+            self.write_entity(
+                trimmed,
+                "TRIMMED_CURVE",
+                &format!(
+                    "'', #{curve_id}, (PARAMETER_VALUE({})), (PARAMETER_VALUE({})), {sense}, .PARAMETER.)",
+                    trim_start, trim_end
+                ),
+            );
+            trimmed
+        } else {
+            curve_id
         };
 
         let edge_curve = self.next_id();
@@ -554,7 +640,7 @@ impl StepWriteContext {
                 self.write_entity(
                     id,
                     "CYLINDRICAL_SURFACE",
-                    &format!("'', #{axis}, {:.15E})", cyl.radius()),
+                    &format!("'', #{axis}, {})", fmt_f64(cyl.radius())),
                 );
                 id
             }
@@ -570,7 +656,7 @@ impl StepWriteContext {
                 self.write_entity(
                     id,
                     "CONICAL_SURFACE",
-                    &format!("'', #{axis}, 0.0E0, {semi_angle:.15E})"),
+                    &format!("'', #{axis}, 0.0E0, {})", fmt_f64(semi_angle)),
                 );
                 id
             }
@@ -582,7 +668,7 @@ impl StepWriteContext {
                 self.write_entity(
                     id,
                     "SPHERICAL_SURFACE",
-                    &format!("'', #{axis}, {:.15E})", sphere.radius()),
+                    &format!("'', #{axis}, {})", fmt_f64(sphere.radius())),
                 );
                 id
             }
@@ -594,9 +680,9 @@ impl StepWriteContext {
                     id,
                     "TOROIDAL_SURFACE",
                     &format!(
-                        "'', #{axis}, {:.15E}, {:.15E})",
-                        torus.major_radius(),
-                        torus.minor_radius()
+                        "'', #{axis}, {}, {})",
+                        fmt_f64(torus.major_radius()),
+                        fmt_f64(torus.minor_radius())
                     ),
                 );
                 id
@@ -798,19 +884,41 @@ fn step_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// Format a float for STEP output with sufficient precision.
+/// Format a finite float for exact STEP round-trip.
 fn fmt_f64(v: f64) -> String {
-    if v.abs() < 1e-15 {
+    if v == 0.0 {
         "0.".to_string()
     } else {
-        format!("{v:.15E}")
+        format!("{v:.17E}")
     }
 }
 
-/// Format a positive projective weight without applying the coordinate-zero
-/// clamp: tiny finite weights remain meaningful in rational B-splines.
+/// Format a positive projective weight for exact STEP round-trip.
 fn fmt_weight(v: f64) -> String {
-    format!("{v:.15E}")
+    format!("{v:.17E}")
+}
+
+/// Format a finite non-negative authority value without rounding it down.
+fn fmt_authority_f64(value: f64) -> Result<String, IoError> {
+    if !value.is_finite() || value.is_sign_negative() {
+        return Err(IoError::InvalidTopology {
+            reason: format!("invalid STEP authority value {value}"),
+        });
+    }
+    let literal = format!("{value:.17E}");
+    let parsed = literal
+        .parse::<f64>()
+        .map_err(|error| IoError::InvalidTopology {
+            reason: format!("invalid serialized STEP authority `{literal}`: {error}"),
+        })?;
+    if !parsed.is_finite() || parsed < value {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "serialized STEP authority `{literal}` is below the required value {value}"
+            ),
+        });
+    }
+    Ok(literal)
 }
 
 /// Compute a reference direction perpendicular to the given normal.
@@ -821,6 +929,75 @@ fn compute_ref_direction(normal: Vec3) -> Vec3 {
     let candidate = if normal.dot(ax).abs() < 0.9 { ax } else { ay };
     let ref_dir = normal.cross(candidate);
     ref_dir.normalize().unwrap_or(ax)
+}
+
+fn step_trim_parameters(curve: &EdgeCurve, range: (f64, f64)) -> Result<(f64, f64), IoError> {
+    let parameters = match curve {
+        // ISO 10303-42 parameterizes a parabola with a dimensionless `u`;
+        // remus stores the corresponding tangent coordinate `t = 2 f u`.
+        EdgeCurve::Parabola(parabola) => {
+            let scale = 2.0 * parabola.focal_length();
+            (range.0 / scale, range.1 / scale)
+        }
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::NurbsCurve(_) => range,
+        EdgeCurve::Line => {
+            return Err(IoError::InvalidTopology {
+                reason: "a Line must not be exported through TRIMMED_CURVE".to_string(),
+            });
+        }
+    };
+    if !parameters.0.is_finite()
+        || !parameters.1.is_finite()
+        || parameters.0.partial_cmp(&parameters.1) == Some(std::cmp::Ordering::Equal)
+    {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "curve range [{}, {}] cannot be represented as distinct finite STEP trim parameters",
+                range.0, range.1
+            ),
+        });
+    }
+    Ok(parameters)
+}
+
+/// Serialize authoritative trim parameters without the coordinate formatter's
+/// near-zero clamp, then prove that STEP parsing recovers the same two values.
+fn step_trim_literals(
+    curve: &EdgeCurve,
+    range: (f64, f64),
+) -> Result<(String, String, bool), IoError> {
+    let parameters = step_trim_parameters(curve, range)?;
+    let start = format!("{:.17E}", parameters.0);
+    let end = format!("{:.17E}", parameters.1);
+    let parse = |literal: &str| {
+        literal
+            .parse::<f64>()
+            .map_err(|error| IoError::InvalidTopology {
+                reason: format!(
+                    "curve range [{}, {}] produced an invalid STEP trim parameter `{literal}`: {error}",
+                    range.0, range.1
+                ),
+            })
+    };
+    let parsed_start = parse(&start)?;
+    let parsed_end = parse(&end)?;
+    if !parsed_start.is_finite()
+        || !parsed_end.is_finite()
+        || parsed_start.to_bits() != parameters.0.to_bits()
+        || parsed_end.to_bits() != parameters.1.to_bits()
+        || parsed_start.partial_cmp(&parsed_end) == Some(std::cmp::Ordering::Equal)
+    {
+        return Err(IoError::InvalidTopology {
+            reason: format!(
+                "curve range [{}, {}] cannot be serialized as distinct finite STEP trim parameters",
+                range.0, range.1
+            ),
+        });
+    }
+    Ok((start, end, parsed_start < parsed_end))
 }
 
 /// Compute knot multiplicities and unique knot values from a flat knot vector.
@@ -836,7 +1013,7 @@ fn compute_knot_multiplicities(knots: &[f64]) -> (Vec<u32>, Vec<f64>) {
     let mut count = 1u32;
 
     for &k in &knots[1..] {
-        if (k - current).abs() < 1e-10 {
+        if k.partial_cmp(&current) == Some(std::cmp::Ordering::Equal) {
             count += 1;
         } else {
             mults.push(count);
@@ -860,10 +1037,199 @@ fn topo_err(e: remus_topology::TopologyError) -> IoError {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
+    use remus_math::nurbs::NurbsCurve;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::vec::Point3;
     use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::{Solid, SolidId};
     use remus_topology::test_utils::make_unit_cube_non_manifold;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
+
+    fn assert_trimmed_curve_roundtrip(curve: EdgeCurve, range: (f64, f64), tolerance: f64) {
+        let (_, _, expected_forward) = step_trim_literals(&curve, range).unwrap();
+        let expected_start = curve.evaluate_with_endpoints(
+            range.0,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let expected_end = curve.evaluate_with_endpoints(
+            range.1,
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        let expected_midpoint = curve.evaluate_with_endpoints(
+            f64::midpoint(range.0, range.1),
+            expected_start,
+            expected_end,
+        );
+
+        let mut write_topo = Topology::new();
+        let start = write_topo.add_vertex(Vertex::new(expected_start, tolerance));
+        let end = write_topo.add_vertex(Vertex::new(expected_end, tolerance));
+        let mut edge = Edge::with_tolerance(start, end, curve, Some(tolerance));
+        edge.set_trim(Some(range));
+        let edge = write_topo.add_edge(edge);
+        let wire = write_topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(edge, true),
+                    OrientedEdge::new(edge, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = write_topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = write_topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = write_topo.add_solid(Solid::new(shell, vec![]));
+
+        let step = write_step(&write_topo, &[solid]).unwrap();
+        assert!(step.contains("TRIMMED_CURVE("));
+        let expected_sense = if expected_forward { ".T." } else { ".F." };
+        assert!(step.contains(&format!("{expected_sense}, .PARAMETER.)")));
+
+        let mut read_topo = Topology::new();
+        let read_solid = crate::step::reader::read_step(&step, &mut read_topo).unwrap()[0];
+        let read_edges = solid_edges(&read_topo, read_solid).unwrap();
+        assert_eq!(read_edges.len(), 1);
+        let read_edge = read_topo.edge(read_edges[0]).unwrap();
+        let read_start = read_topo.vertex(read_edge.start()).unwrap().point();
+        let read_end = read_topo.vertex(read_edge.end()).unwrap().point();
+        assert!((read_start - expected_start).length() <= tolerance);
+        assert!((read_end - expected_end).length() <= tolerance);
+        let read_range = read_edge.strict_domain().unwrap();
+        let actual_midpoint = read_edge.curve().evaluate_with_endpoints(
+            f64::midpoint(read_range.0, read_range.1),
+            read_start,
+            read_end,
+        );
+        assert!(
+            (actual_midpoint - expected_midpoint).length() <= tolerance,
+            "midpoint changed by {} for {}",
+            (actual_midpoint - expected_midpoint).length(),
+            read_edge.curve().type_tag()
+        );
+    }
+
+    fn doubled_edge_solid(topo: &mut Topology, edge: EdgeId) -> SolidId {
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(edge, true),
+                    OrientedEdge::new(edge, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        topo.add_solid(Solid::new(shell, vec![]))
+    }
+
+    #[test]
+    fn public_nurbs_builder_interior_span_round_trips() {
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, -1.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let range = (0.35, 1.65);
+        let expected_midpoint = curve.evaluate(f64::midpoint(range.0, range.1));
+        let mut topo = Topology::new();
+        let edge = remus_topology::builder::make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(range.0),
+            curve.evaluate(range.1),
+            curve,
+            1e-7,
+        );
+        let stored = topo.edge(edge).unwrap().strict_domain().unwrap();
+        assert!((stored.0 - range.0).abs() < 1e-8);
+        assert!((stored.1 - range.1).abs() < 1e-8);
+        let solid = doubled_edge_solid(&mut topo, edge);
+
+        let step = write_step(&topo, &[solid]).unwrap();
+        let mut imported = Topology::new();
+        let imported_solid = crate::step::reader::read_step(&step, &mut imported).unwrap()[0];
+        let imported_edge = solid_edges(&imported, imported_solid).unwrap()[0];
+        let imported_edge = imported.edge(imported_edge).unwrap();
+        let imported_range = imported_edge.strict_domain().unwrap();
+        let start = imported.vertex(imported_edge.start()).unwrap().point();
+        let end = imported.vertex(imported_edge.end()).unwrap().point();
+        let midpoint = imported_edge.curve().evaluate_with_endpoints(
+            f64::midpoint(imported_range.0, imported_range.1),
+            start,
+            end,
+        );
+        assert!((midpoint - expected_midpoint).length() < 1e-7);
+    }
+
+    #[test]
+    fn public_nurbs_builder_off_curve_compatibility_is_typed_refusal() {
+        let curve = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let supplied_start = Point3::new(0.0, 1.0, 0.0);
+        let supplied_end = Point3::new(1.0, 1.0, 0.0);
+        let edge = remus_topology::builder::make_nurbs_edge(
+            &mut topo,
+            supplied_start,
+            supplied_end,
+            curve,
+            1e-7,
+        );
+        assert_eq!(
+            topo.vertex(topo.edge(edge).unwrap().start())
+                .unwrap()
+                .point(),
+            supplied_start
+        );
+        assert_eq!(
+            topo.vertex(topo.edge(edge).unwrap().end()).unwrap().point(),
+            supplied_end
+        );
+        assert!(topo.edge(edge).unwrap().strict_domain().is_err());
+        let solid = doubled_edge_solid(&mut topo, edge);
+
+        assert!(matches!(
+            write_step(&topo, &[solid]),
+            Err(IoError::InvalidTopology { ref reason }) if reason.contains("parameter authority")
+        ));
+    }
 
     #[test]
     fn write_step_unit_cube() {
@@ -950,6 +1316,285 @@ mod tests {
     }
 
     #[test]
+    fn step_uncertainty_covers_exported_entity_tolerances() {
+        const MARKER: &str = "UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(";
+        for tolerance in [7.5e-5, 1.000_000_000_000_000_2e-4, 10_000_000_000_000_002.0] {
+            let mut topo = Topology::new();
+            let solid = make_unit_cube_non_manifold(&mut topo);
+            let edge_id = solid_edges(&topo, solid).unwrap()[0];
+            topo.edge_mut(edge_id)
+                .unwrap()
+                .set_tolerance(Some(tolerance))
+                .unwrap();
+            let vertex_id = solid_vertices(&topo, solid).unwrap()[0];
+            let point = topo.vertex(vertex_id).unwrap().point();
+            *topo.vertex_mut(vertex_id).unwrap() = Vertex::new(point, tolerance * 0.5);
+
+            let step = write_step(&topo, &[solid]).unwrap();
+            let literal = step
+                .split_once(MARKER)
+                .unwrap()
+                .1
+                .split_once(')')
+                .unwrap()
+                .0;
+            let declared = literal.parse::<f64>().unwrap();
+            assert!(declared >= tolerance);
+            assert!(declared >= topo.vertex(vertex_id).unwrap().tolerance());
+        }
+    }
+
+    #[test]
+    fn invalid_exported_entity_tolerances_are_refused() {
+        for invalid in [f64::NAN, f64::INFINITY, -1.0] {
+            let mut topo = Topology::new();
+            let solid = make_unit_cube_non_manifold(&mut topo);
+            let edge_id = solid_edges(&topo, solid).unwrap()[0];
+            // Rebuild the edge through `with_tolerance` (an unchecked stored
+            // claim): `set_tolerance` refuses invalid values (RFC 0004), and
+            // this test needs the invalid value stored so the writer's own
+            // refusal path is exercised.
+            let (e_start, e_end, e_curve, e_trim) = {
+                let e = topo.edge(edge_id).unwrap();
+                (e.start(), e.end(), e.curve().clone(), e.trim())
+            };
+            let mut invalid_edge =
+                remus_topology::edge::Edge::with_tolerance(e_start, e_end, e_curve, Some(invalid));
+            invalid_edge.set_trim(e_trim);
+            *topo.edge_mut(edge_id).unwrap() = invalid_edge;
+
+            assert!(matches!(
+                write_step(&topo, &[solid]),
+                Err(IoError::InvalidTopology { ref reason })
+                    if reason.contains("invalid tolerance")
+            ));
+        }
+
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_non_manifold(&mut topo);
+        let vertex_id = solid_vertices(&topo, solid).unwrap()[0];
+        let point = topo.vertex(vertex_id).unwrap().point();
+        *topo.vertex_mut(vertex_id).unwrap() = remus_topology::vertex::Vertex::new(point, f64::NAN);
+        assert!(matches!(
+            write_step(&topo, &[solid]),
+            Err(IoError::InvalidTopology { ref reason })
+                if reason.contains("invalid tolerance")
+        ));
+    }
+
+    #[test]
+    fn reversed_analytic_trims_roundtrip_the_intended_branch() {
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let curves = [
+            (
+                EdgeCurve::Circle(Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, 4.0).unwrap()),
+                (1.2, -0.6),
+            ),
+            (
+                EdgeCurve::Ellipse(
+                    Ellipse3D::new(Point3::new(0.0, 0.0, 0.0), normal, 5.0, 2.0).unwrap(),
+                ),
+                (2.2, -1.0),
+            ),
+            (
+                EdgeCurve::Hyperbola(
+                    Hyperbola3D::new(Point3::new(0.0, 0.0, 0.0), normal, 3.0, 2.0).unwrap(),
+                ),
+                (1.1, -0.8),
+            ),
+            (
+                EdgeCurve::Parabola(
+                    Parabola3D::new(Point3::new(0.0, 0.0, 0.0), normal, 2.0).unwrap(),
+                ),
+                (3.0, -2.0),
+            ),
+        ];
+
+        for (curve, range) in curves {
+            assert_trimmed_curve_roundtrip(curve, range, 1e-7);
+        }
+    }
+
+    #[test]
+    fn tiny_nonzero_hyperbola_and_parabola_trim_parameters_roundtrip() {
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let curves = [
+            (
+                EdgeCurve::Hyperbola(
+                    Hyperbola3D::new(Point3::new(0.0, 0.0, 0.0), normal, 2.0, 1e15).unwrap(),
+                ),
+                (-5e-16, 1e-14),
+            ),
+            (
+                EdgeCurve::Parabola(
+                    Parabola3D::new(Point3::new(0.0, 0.0, 0.0), normal, 1e15).unwrap(),
+                ),
+                (-1.0, 20.0),
+            ),
+        ];
+
+        for (curve, range) in curves {
+            let (start, end, _) = step_trim_literals(&curve, range).unwrap();
+            assert_ne!(start, "0.");
+            assert_ne!(end, "0.");
+            assert_trimmed_curve_roundtrip(curve, range, 1e-7);
+        }
+    }
+
+    #[test]
+    fn huge_circle_geometry_roundtrips_without_exceeding_edge_authority() {
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let huge = 10_000_000_000_000_002.0;
+
+        assert_trimmed_curve_roundtrip(
+            EdgeCurve::Circle(Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, huge).unwrap()),
+            (0.0, 1.0),
+            1e-7,
+        );
+        assert_trimmed_curve_roundtrip(
+            EdgeCurve::Circle(Circle3D::new(Point3::new(huge, -huge, 0.0), normal, 4.0).unwrap()),
+            (0.0, 1.0),
+            1e-7,
+        );
+    }
+
+    #[test]
+    fn huge_analytic_surface_reals_roundtrip_exactly() {
+        let huge = 10_000_000_000_000_002.0;
+        let origin = Point3::new(huge, -huge, 0.0);
+        let cylinder = CylindricalSurface::new(origin, Vec3::new(0.0, 0.0, 1.0), huge).unwrap();
+
+        let mut write_topo = Topology::new();
+        let solid = remus_operations::primitives::make_cylinder(&mut write_topo, 4.0, 3.0).unwrap();
+        let cylinder_face = remus_topology::explorer::solid_faces(&write_topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face_id| {
+                matches!(
+                    write_topo.face(face_id).unwrap().surface(),
+                    FaceSurface::Cylinder(_)
+                )
+            })
+            .unwrap();
+        write_topo
+            .face_mut(cylinder_face)
+            .unwrap()
+            .set_surface(FaceSurface::Cylinder(cylinder));
+
+        let step = write_step(&write_topo, &[solid]).unwrap();
+        let mut read_topo = Topology::new();
+        let read_solid = crate::step::reader::read_step(&step, &mut read_topo).unwrap()[0];
+        let read_cylinder = remus_topology::explorer::solid_faces(&read_topo, read_solid)
+            .unwrap()
+            .into_iter()
+            .find_map(|face_id| match read_topo.face(face_id).unwrap().surface() {
+                FaceSurface::Cylinder(cylinder) => Some(cylinder),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(read_cylinder.origin().x().to_bits(), origin.x().to_bits());
+        assert_eq!(read_cylinder.origin().y().to_bits(), origin.y().to_bits());
+        assert_eq!(read_cylinder.radius().to_bits(), huge.to_bits());
+    }
+
+    #[test]
+    fn rational_nurbs_weight_roundtrips_with_midpoint_oracle() {
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(-1e16, 0.0, 0.0),
+                Point3::new(0.0, 1e16, 0.0),
+                Point3::new(1e16, 0.0, 0.0),
+            ],
+            vec![1.0, 1.000_000_000_000_000_2, 1.0],
+        )
+        .unwrap();
+
+        assert_trimmed_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (0.0, 1.0), 1e-7);
+    }
+
+    #[test]
+    fn nearby_distinct_nurbs_knots_roundtrip_with_midpoint_oracle() {
+        let lower = 0.5 - 2.5e-11;
+        let upper = 0.5 + 2.5e-11;
+        let curve = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, lower, upper, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, 1.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+
+        assert_trimmed_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (0.0, 1.0), 1e-7);
+    }
+
+    #[test]
+    fn mismatched_authoritative_trim_endpoint_is_refused() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 4.0).unwrap();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(
+            circle.evaluate(std::f64::consts::FRAC_PI_2),
+            1e-7,
+        ));
+        let mut source = Edge::with_tolerance(start, end, EdgeCurve::Circle(circle), Some(1e-7));
+        source.set_trim(Some((0.0, std::f64::consts::PI)));
+        let edge = topo.add_edge(source);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(edge, true),
+                    OrientedEdge::new(edge, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+        assert!(matches!(
+            write_step(&topo, &[solid]),
+            Err(IoError::InvalidTopology { ref reason })
+                if reason.contains("authoritative end parameter misses its vertex")
+        ));
+    }
+
+    #[test]
+    fn reversed_folded_nurbs_subspan_roundtrips_with_parameter_authority() {
+        let curve = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0],
+            vec![
+                Point3::new(-1.0, -1.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(-1.0, 1.0, 0.0),
+                Point3::new(1.0, -1.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+
+        assert_trimmed_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (1.5, 0.5), 1e-7);
+    }
+
+    #[test]
     fn step_unit_cube_has_six_faces() {
         let mut topo = Topology::new();
         let solid = make_unit_cube_non_manifold(&mut topo);
@@ -1033,10 +1678,13 @@ mod tests {
     #[test]
     fn fmt_f64_output() {
         assert_eq!(fmt_f64(0.0), "0.");
-        assert_eq!(fmt_f64(1e-20), "0.");
+        assert_eq!(fmt_f64(-0.0), "0.");
 
-        let result = fmt_f64(1.5);
-        assert!(result.contains("1.5"));
+        for value in [1e-20, 1.5, 10_000_000_000_000_002.0] {
+            let result = fmt_f64(value);
+            let parsed = result.parse::<f64>().unwrap();
+            assert_eq!(parsed.to_bits(), value.to_bits());
+        }
     }
 
     #[test]
@@ -1049,6 +1697,17 @@ mod tests {
         assert!((vals[0]).abs() < 1e-10);
         assert!((vals[1] - 0.5).abs() < 1e-10);
         assert!((vals[2] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn knot_multiplicities_preserve_nearby_distinct_values() {
+        let lower = 0.5 - 2.5e-11;
+        let upper = 0.5 + 2.5e-11;
+        let knots = vec![0.0, 0.0, lower, upper, 1.0, 1.0];
+        let (mults, vals) = compute_knot_multiplicities(&knots);
+
+        assert_eq!(mults, vec![2, 1, 1, 2]);
+        assert_eq!(vals, vec![0.0, lower, upper, 1.0]);
     }
 
     #[test]

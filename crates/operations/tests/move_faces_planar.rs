@@ -9,7 +9,7 @@
 )]
 
 use std::collections::HashMap;
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_math::analytic_intersection::{
@@ -227,16 +227,17 @@ fn obliquely_capped_cylinder(topo: &mut Topology) -> (SolidId, FaceId, f64) {
     let top_point = seam_at(&top_ellipse, top_d / normal.z());
     let bottom_vertex = topo.add_vertex(Vertex::new(bottom_point, 1e-7));
     let top_vertex = topo.add_vertex(Vertex::new(top_point, 1e-7));
-    let bottom_edge = topo.add_edge(Edge::new(
-        bottom_vertex,
-        bottom_vertex,
-        EdgeCurve::Ellipse(bottom_ellipse),
-    ));
-    let top_edge = topo.add_edge(Edge::new(
-        top_vertex,
-        top_vertex,
-        EdgeCurve::Ellipse(top_ellipse),
-    ));
+    let add_ellipse_rim =
+        |topo: &mut Topology, vertex, point: Point3, ellipse: remus_math::curves::Ellipse3D| {
+            let seam = ellipse.project(point);
+            let mut edge =
+                Edge::with_tolerance(vertex, vertex, EdgeCurve::Ellipse(ellipse), Some(1e-7));
+            edge.set_trim(Some((seam, seam + TAU)));
+            edge.strict_domain().expect("certified ellipse rim");
+            topo.add_edge(edge)
+        };
+    let bottom_edge = add_ellipse_rim(topo, bottom_vertex, bottom_point, bottom_ellipse);
+    let top_edge = add_ellipse_rim(topo, top_vertex, top_point, top_ellipse);
     let seam = topo.add_edge(Edge::new(bottom_vertex, top_vertex, EdgeCurve::Line));
 
     let lateral_wire = topo.add_wire(
