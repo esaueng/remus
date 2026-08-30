@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "name": "tangent-boss-operand-retention",
+  "description": "OpenZCAD K-S1 historical repro: fusing an r10 h16 boss exactly tangent to the x wall of a 60x40x8 plate must retain the boss material instead of returning the unchanged 19200-cubic-millimetre plate. Exact tangency may use the bounded fallback; volume and validation pin the truthful result.",
+  "revision": "984daad6",
+  "operations": [
+    {"op": "makeBox", "args": {"width": 60.0, "height": 40.0, "depth": 8.0}},
+    {"op": "makeCylinder", "args": {"radius": 10.0, "height": 16.0}},
+    {"op": "transform", "args": {"solid": 1, "matrix": [1,0,0,10, 0,1,0,20, 0,0,1,0, 0,0,0,1]}},
+    {"op": "fuse", "args": {"solidA": 0, "solidB": 1}},
+    {"op": "volume", "args": {"solid": 2, "deflection": 0.01}},
+    {"op": "validateSolid", "args": {"solid": 2}}
+  ],
+  "expect": [
+    {"ok": 0},
+    {"ok": 1},
+    null,
+    {"ok": 2},
+    {"okNear": 21713.274122871835, "tol": 22.0},
+    {"ok": 0}
+  ]
+}
