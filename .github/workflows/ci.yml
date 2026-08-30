@@ -23,24 +23,78 @@ permissions:
 # jobs don't need dtolnay/rust-toolchain.
 
 jobs:
-  apache-lineage:
-    name: Apache Lineage
+  changes:
+    name: Classify Changes
+    runs-on: ubuntu-latest
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+      docs: ${{ steps.classify.outputs.docs }}
+      mode: ${{ steps.classify.outputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: classify
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          base="$PR_BASE"
+          if [ -z "$base" ]; then
+            base="$PUSH_BASE"
+          fi
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]]; then
+            base=$(git rev-parse HEAD^)
+          fi
+          python3 scripts/classify-ci-changes.py \
+            --base "$base" \
+            --head "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+      - name: Summarize selection
+        env:
+          MODE: ${{ steps.classify.outputs.mode }}
+          CHANGED_COUNT: ${{ steps.classify.outputs.changed_count }}
+        run: echo "CI mode is ${MODE} for ${CHANGED_COUNT} changed path(s)." >> "$GITHUB_STEP_SUMMARY"
+
+  repo-policy:
+    name: Repository Policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - run: ./scripts/check-apache-lineage.sh
+      - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
+        with:
+          tool: cargo-machete@0.9.1,taplo-cli@0.9.3
+      - name: Run repository policy checks
+        shell: bash
+        run: |
+          status=0
+          check() {
+            label=$1
+            shift
+            echo "::group::${label}"
+            "$@" || status=1
+            echo "::endgroup::"
+          }
 
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: cargo fmt --all -- --check
+          check "Apache lineage" ./scripts/check-apache-lineage.sh
+          check "Rust format" cargo fmt --all -- --check
+          check "Layer boundaries" ./scripts/check-boundaries.sh
+          check "Edge-domain authority" ./scripts/check-edge-domain-authority.py
+          check "Documentation paths" ./scripts/check-doc-paths.sh
+          check "Documentation module map" ./scripts/check-doc-module-map.py
+          check "Product naming" ./scripts/check-remus-rename.sh
+          check "Publish workflow contract" ./scripts/test-publish-credentials.sh
+          check "CI classifier tests" python3 scripts/test-classify-ci-changes.py
+          check "Unused dependencies" cargo machete
+          check "TOML format" taplo fmt --check
+          exit "$status"
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +105,8 @@ jobs:
 
   test:
     name: Test
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -61,17 +117,19 @@ jobs:
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.62.30
         with:
           tool: nextest
-      - run: cargo nextest run --workspace --no-fail-fast
+      - run: cargo nextest run --workspace --cargo-profile ci-test
       # nextest doesn't run doc tests, so run them separately
-      - run: cargo test --workspace --doc
+      - run: cargo test --workspace --profile ci-test --doc
       # Complexity-regression guards: deterministic work-counter tests that fail
       # if a boolean hot path regresses to O(N²) (issue #987). Gated behind the
       # `perf-counters` feature, so they need an explicit run.
       - name: Complexity guards
-        run: cargo nextest run -p remus-operations --features perf-counters -E 'test(scaling_)'
+        run: cargo nextest run -p remus-operations --features perf-counters --cargo-profile ci-test -E 'test(scaling_)'
 
   approx-census:
     name: Approximation Census
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -86,6 +144,8 @@ jobs:
 
   platform-test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -98,11 +158,19 @@ jobs:
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: nextest
-      - run: cargo nextest run --workspace --no-fail-fast
+      - run: cargo nextest run --workspace --cargo-profile ci-test
 
   coverage:
     name: Coverage
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
@@ -110,28 +178,23 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.62.30
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov,nextest
       - name: Generate coverage
         run: |
-          cargo llvm-cov --workspace --no-report
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest --workspace --no-report
           cargo llvm-cov report --lcov --output-path lcov.info
-          COVERAGE=$(cargo llvm-cov report --json | jq -r '.data[0].totals.lines.percent // empty')
-          if [ -z "$COVERAGE" ]; then
-            echo "::error::Failed to extract coverage percentage from report"
-            exit 1
-          fi
-          echo "Line coverage: ${COVERAGE}%"
-          if (( $(echo "$COVERAGE < 60" | bc -l) )); then
-            echo "::error::Coverage ${COVERAGE}% is below the 60% threshold"
-            exit 1
-          fi
+          cargo llvm-cov report --fail-under-lines 60
       - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         if: always()
         with:
           files: lcov.info
+          use_oidc: true
 
   msrv:
     name: MSRV (1.88)
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -147,6 +210,8 @@ jobs:
 
   wasm:
     name: WASM Build & Validate
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,6 +223,22 @@ jobs:
           tool: wasm-pack
       - name: Build and validate WASM
         run: cargo xtask wasm-build --skip-opt
+      - name: Prepare WASM size artifact
+        if: github.event_name == 'pull_request'
+        run: |
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/crates/wasm/Cargo.toml")) | .name' <<< "$metadata")
+          wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
+          test -n "$wasm_target"
+          mkdir -p "$RUNNER_TEMP/wasm-size"
+          cp "target/wasm32-unknown-unknown/release/${wasm_target}.wasm" "$RUNNER_TEMP/wasm-size/pr.wasm"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          name: wasm-size-pr
+          path: ${{ runner.temp }}/wasm-size/pr.wasm
+          if-no-files-found: error
+          retention-days: 1
       - name: Validate npm package contents
         working-directory: crates/wasm/pkg
         run: npm pack --dry-run
@@ -168,6 +249,8 @@ jobs:
 
   fuzz-check:
     name: Fuzz Targets Compile
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -176,6 +259,8 @@ jobs:
 
   render:
     name: Software Rendering
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     env:
       WGPU_BACKEND: vulkan
@@ -191,38 +276,30 @@ jobs:
 
   wasm-size:
     name: WASM Size Report
-    if: github.event_name == 'pull_request'
+    needs: [changes, wasm]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build WASM (PR)
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-size-pr
+          path: ${{ runner.temp }}/wasm-size
+      - name: Read WASM size (PR)
         run: |
-          # Derive the package and cdylib target names from the manifest
-          # rather than hardcoding them. The base checkout below may predate a
-          # package rename, in which case a hardcoded -p would not resolve and
-          # the size job would fail on the renaming PR itself.
-          metadata=$(cargo metadata --no-deps --format-version 1)
-          wasm_package=$(jq -r '.packages[] | select(.manifest_path | endswith("/crates/wasm/Cargo.toml")) | .name' <<< "$metadata")
-          wasm_target=$(jq -r '.packages[] | select(.name == $package) | .targets[] | select(.crate_types | index("cdylib")) | .name' --arg package "$wasm_package" <<< "$metadata")
-          test -n "$wasm_package"
-          test -n "$wasm_target"
-          cargo build -p "$wasm_package" --target wasm32-unknown-unknown --release
-          PR_SIZE=$(stat --printf="%s" "target/wasm32-unknown-unknown/release/${wasm_target}.wasm")
+          PR_SIZE=$(stat --printf="%s" "$RUNNER_TEMP/wasm-size/pr.wasm")
           echo "PR_SIZE=$PR_SIZE" >> "$GITHUB_ENV"
           echo "PR_SIZE_MB=$(echo "scale=2; $PR_SIZE / 1048576" | bc)" >> "$GITHUB_ENV"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.base_ref }}
-          clean: false
-          path: base
       - name: Build WASM (base)
+        env:
+          RUSTFLAGS: -Dwarnings -C target-feature=+simd128
         run: |
-          cd base
           # Derive the package and cdylib target names from the manifest
           # rather than hardcoding them. The base checkout below may predate a
           # package rename, in which case a hardcoded -p would not resolve and
@@ -290,38 +367,10 @@ jobs:
           body: ${{ env.COMMENT_BODY }}
           edit-mode: replace
 
-  boundaries:
-    name: Layer Boundaries
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check-boundaries.sh
-      - run: ./scripts/check-edge-domain-authority.py
-
-  doc-paths:
-    name: Doc Paths
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check-doc-paths.sh
-      - run: ./scripts/check-doc-module-map.py
-
-  naming:
-    name: Product Naming
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/check-remus-rename.sh
-
-  workflow-contracts:
-    name: Workflow Contracts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./scripts/test-publish-credentials.sh
-
   deny:
     name: Cargo Deny
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -329,6 +378,8 @@ jobs:
 
   audit:
     name: Security Audit
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -340,6 +391,8 @@ jobs:
 
   docs:
     name: Documentation
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -353,15 +406,6 @@ jobs:
         with:
           tool: mdbook@0.4.52
       - run: mdbook build book
-
-  machete:
-    name: Unused Dependencies
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install cargo-machete
-        run: cargo install cargo-machete --version 0.9.1 --locked
-      - run: cargo machete
 
   secrets-scan:
     name: Secrets Scan
@@ -387,24 +431,10 @@ jobs:
       # --redact keeps any match's secret material out of the job log.
       - run: gitleaks git --log-opts="--all" --redact .
 
-  taplo:
-    name: TOML Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install taplo
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL https://github.com/tamasfe/taplo/releases/download/0.9.3/taplo-full-linux-x86_64.gz \
-            | gunzip > "$HOME/.local/bin/taplo"
-          chmod +x "$HOME/.local/bin/taplo"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: taplo fmt --check
-
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [fmt, clippy, test, approx-census, platform-test, coverage, msrv, wasm, fuzz-check, render, boundaries, naming, workflow-contracts, deny, audit, docs, machete, secrets-scan, taplo, apache-lineage, doc-paths]
+    needs: [changes, repo-policy, clippy, test, approx-census, platform-test, coverage, msrv, wasm, fuzz-check, render, deny, audit, docs, secrets-scan]
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
