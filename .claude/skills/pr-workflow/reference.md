@@ -119,7 +119,7 @@ What actually runs, verified against the workflow file and a live merge
 
 ## CI failures you did not cause
 
-Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock` is committed (tracked; dependabot updates it), so most jobs build the pinned resolution reproducibly — but the `audit` job runs `cargo generate-lockfile` explicitly, deliberately discarding the committed pins to judge the freshest resolvable set, and both `deny` and `audit` fetch the advisory database live. So a newly published advisory, or (for `audit` only) a newly released dep version, changes the verdict with zero diff on your branch.
+Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock` is committed (tracked; dependabot updates it), and all jobs — including `audit` — build and audit the pinned resolution reproducibly. But `deny` and `audit` fetch the advisory database live, so a newly published advisory against a pinned version changes the verdict with zero diff on your branch. A new dep release alone does not (it only reaches CI through a lockfile bump).
 
 ### cargo-deny / audit / OSV advisories
 
@@ -174,7 +174,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
 | Expecting a release PR after merging | There is no release-please in this fork; the leftover config files are inert | Nothing to wait for — the package-refresh auto-commit on `main` is the release (see "Committed-package refresh") |
 | No `chore(wasm): refresh...` commit landed on `main` after a kernel merge | Either the rebuilt package was byte-identical (docs/test-only diffs), or the write-back credentials are missing (open PR #48) | Diff `crates/wasm/pkg` expectations first; if the kernel changed and no commit came, check the refresh run's write step and `REMUS_BOT_*` secrets |
-| `deny` or `audit` fails on a PR that never touched deps | A newly published advisory (both jobs fetch the advisory DB live), or — `audit` only — a newly released dep (`audit` runs `cargo generate-lockfile`, discarding the committed pins) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
+| `deny` or `audit` fails on a PR that never touched deps | A newly published advisory against a version pinned in the committed `Cargo.lock` (both jobs fetch the advisory DB live) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | The committed `Cargo.lock` now pins a dep version requiring Rust newer than 1.88 — usually after a dependabot lock bump | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |
 | You pushed straight to `main` and it succeeded | There is no branch protection to stop you | Nothing rejects this — do not rely on the server. Branch and open a PR; if you already pushed, say so immediately |
