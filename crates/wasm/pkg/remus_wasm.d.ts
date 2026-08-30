@@ -379,6 +379,11 @@ export interface MassPropertiesResult {
  */
 export interface MeshQualityResult {
     /**
+     * Non-degenerate triangles retained after position welding. A value of
+     * zero is never watertight.
+     */
+    triangleCount: number;
+    /**
      * Edges used by exactly one triangle after position welding (0 for a
      * watertight mesh).
      */
@@ -393,7 +398,8 @@ export interface MeshQualityResult {
      */
     eulerCharacteristic: number;
     /**
-     * True when the welded mesh has no boundary and no non-manifold edges.
+     * True when the welded mesh is non-empty and has no boundary or
+     * non-manifold edges.
      */
     isWatertight: boolean;
 }
@@ -2565,16 +2571,17 @@ export class BrepKernel {
      * Tessellate a solid and report position-welded mesh quality metrics.
      *
      * Returns a JSON string containing
-     * `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+     * `{ triangleCount, boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
      * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
      * 1 µm grid before counting, so position-duplicate vertices cannot mask
-     * a leak. Use before export to verify the mesh is watertight.
+     * a leak. Pass the same optional angular tolerance used for rendering or
+     * export so the quality report describes that exact tessellation.
      *
      * # Errors
      *
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
-    meshQuality(solid: number, deflection: number): any;
+    meshQuality(solid: number, deflection: number, angular_tolerance?: number | null): any;
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
      *

@@ -648,6 +648,9 @@ pub struct MassPropertiesResult {
 #[serde(rename_all = "camelCase")]
 #[tsify(into_wasm_abi)]
 pub struct MeshQualityResult {
+    /// Non-degenerate triangles retained after position welding. A value of
+    /// zero is never watertight.
+    pub triangle_count: u32,
     /// Edges used by exactly one triangle after position welding (0 for a
     /// watertight mesh).
     pub boundary_edges: u32,
@@ -656,7 +659,8 @@ pub struct MeshQualityResult {
     /// Euler characteristic `V - E + F` of the welded mesh (2 for a single
     /// closed genus-0 shell).
     pub euler_characteristic: i32,
-    /// True when the welded mesh has no boundary and no non-manifold edges.
+    /// True when the welded mesh is non-empty and has no boundary or
+    /// non-manifold edges.
     pub is_watertight: bool,
 }
 
