@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788117418585,
+  "lastUpdate": 1788119033128,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4967,6 +4967,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39099292,
             "range": "± 143183",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0feb68589fe3f9c4a581d384e52bc97a1ddd94ce",
+          "message": "docs(skills): correct pr-workflow's stale Cargo.lock claims (#157)\n\n* docs(skills): correct pr-workflow's stale gitignored-Cargo.lock claims\n\nCargo.lock is tracked (dependabot updates it), so most CI jobs build the\ncommitted resolution. Only audit re-resolves (explicit generate-lockfile),\nand deny/audit fetch the advisory DB live — those are the remaining\nzero-diff failure sources. Fixes the wasm-size and MSRV symptom rows to\nmatch.\n\n* docs(ci): correct stale gitignored-lockfile comment on the audit job\n\n* docs(skills): describe audit's fresh resolution as deliberate",
+          "timestamp": "2026-08-30T15:41:11-04:00",
+          "tree_id": "a13c1e1d64b9b37150764d901aa62952031d0cf5",
+          "url": "https://github.com/esaueng/remus/commit/0feb68589fe3f9c4a581d384e52bc97a1ddd94ce"
+        },
+        "date": 1788119031874,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1317879,
+            "range": "± 11124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1405330,
+            "range": "± 2156",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14466,
+            "range": "± 164",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 987200,
+            "range": "± 1583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39115692,
+            "range": "± 658335",
             "unit": "ns/iter"
           }
         ]
