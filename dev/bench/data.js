@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788099770965,
+  "lastUpdate": 1788102682929,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4373,6 +4373,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39055301,
             "range": "± 397131",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ec23f5a63d8e55d45f2c424edc730e56dba63f9a",
+          "message": "ci: ratchet approximation census (#140)\n\n* ci: ratchet approximation census\n\n* docs: record K-S4 disposition\n\n* fix(operations): refuse overlapping patterns\n\n* docs(kernel-maturity): record K-S1 disposition\n\n* fix(wasm): qualify tangent-boss operand retention\n\n* docs(roadmap): record tangent-boss PR\n\n* fix(wasm): qualify cross-drilled mesh quality\n\n* docs(kernel-maturity): link cross-drilled disposition\n\n* test(wasm): pin triangleCount in blind-bore repro bundle after meshQuality change\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-30T11:08:38-04:00",
+          "tree_id": "51971bffeb67f0ce771ac9f98cc1a0b565427681",
+          "url": "https://github.com/esaueng/remus/commit/ec23f5a63d8e55d45f2c424edc730e56dba63f9a"
+        },
+        "date": 1788102682081,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1314469,
+            "range": "± 1764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1401235,
+            "range": "± 21824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14697,
+            "range": "± 66",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 985405,
+            "range": "± 2025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39111165,
+            "range": "± 220647",
             "unit": "ns/iter"
           }
         ]
