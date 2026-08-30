@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788105580286,
+  "lastUpdate": 1788107074860,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4535,6 +4535,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41751831,
             "range": "± 44741",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8962fdf1301b230e0a461d443f0267738c27f275",
+          "message": "fix(topology): preserve curved edge authority (#141)\n\n* fix(topology): preserve curved edge authority\n\n* fix(blend): hoist closed-rim curved-seam refusal before any mutation\n\nThe fillet assembler's non-Line seam check fired after the cap face and\nface_replacements insert had landed, and the caller swallows the error to\nfall back to the trim path — leaving poisoned replacements and orphan\ntopology. Share the chamfer builder's preflight via builder_utils and run\nit before the first allocation in both builders.\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-30T12:20:59-04:00",
+          "tree_id": "624fd678e4d09ec2c217e2c7d2a66207f51cf792",
+          "url": "https://github.com/esaueng/remus/commit/8962fdf1301b230e0a461d443f0267738c27f275"
+        },
+        "date": 1788107074120,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1696979,
+            "range": "± 43263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1786751,
+            "range": "± 44242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14656,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 990382,
+            "range": "± 3511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 48089187,
+            "range": "± 191587",
             "unit": "ns/iter"
           }
         ]
