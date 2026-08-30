@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788047934950,
+  "lastUpdate": 1788061528110,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -3995,6 +3995,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41548333,
             "range": "± 54373",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7abd69aa04ae1ac422341b64feefd42efefd548f",
+          "message": "docs(kernel-maturity): record gauntlet lockfile blocker (#135)\n\nCo-authored-by: Codex Review <codex-review@localhost>",
+          "timestamp": "2026-08-29T23:42:41-04:00",
+          "tree_id": "ffcb6d951058335bf5e2ec881445f4dde0e6a836",
+          "url": "https://github.com/esaueng/remus/commit/7abd69aa04ae1ac422341b64feefd42efefd548f"
+        },
+        "date": 1788061527501,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1313224,
+            "range": "± 24933",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1405061,
+            "range": "± 2727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14525,
+            "range": "± 824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 986117,
+            "range": "± 30831",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39418769,
+            "range": "± 650087",
             "unit": "ns/iter"
           }
         ]
