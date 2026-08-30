@@ -756,9 +756,26 @@ mod tests {
         let seam =
             Circle3D::new(Point3::new(0.0, 0.0, -rho), Vec3::new(0.0, 0.0, 1.0), big_r).unwrap();
 
-        let e_rim1 = topo.add_edge(Edge::new(v1, v1, EdgeCurve::Circle(rim1)));
-        let e_rim2 = topo.add_edge(Edge::new(v2, v2, EdgeCurve::Circle(rim2)));
-        let e_seam = topo.add_edge(Edge::new(v1, v2, EdgeCurve::Circle(seam)));
+        let mut rim1_edge = Edge::new(v1, v1, EdgeCurve::Circle(rim1.clone()));
+        let rim1_anchor = rim1.project(topo.vertex(v1).unwrap().point());
+        rim1_edge.set_trim(Some((rim1_anchor, rim1_anchor + std::f64::consts::TAU)));
+        let e_rim1 = topo.add_edge(rim1_edge);
+
+        let mut rim2_edge = Edge::new(v2, v2, EdgeCurve::Circle(rim2.clone()));
+        let rim2_anchor = rim2.project(topo.vertex(v2).unwrap().point());
+        rim2_edge.set_trim(Some((rim2_anchor, rim2_anchor + std::f64::consts::TAU)));
+        let e_rim2 = topo.add_edge(rim2_edge);
+
+        let mut seam_edge = Edge::new(v1, v2, EdgeCurve::Circle(seam.clone()));
+        let seam_start = seam.project(topo.vertex(v1).unwrap().point());
+        let canonical_seam_end = seam.project(topo.vertex(v2).unwrap().point());
+        let seam_end = if canonical_seam_end <= seam_start {
+            canonical_seam_end + std::f64::consts::TAU
+        } else {
+            canonical_seam_end
+        };
+        seam_edge.set_trim(Some((seam_start, seam_end)));
+        let e_seam = topo.add_edge(seam_edge);
 
         let band_wire = topo.add_wire(
             Wire::new(

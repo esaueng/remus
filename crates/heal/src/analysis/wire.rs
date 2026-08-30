@@ -97,7 +97,9 @@ pub fn analyze_wire(
 
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t_min, t_max) = edge.domain_with_endpoints(start_pos, end_pos);
+        let (t_min, t_max) = edge
+            .strict_domain()
+            .map_err(crate::error::analysis_edge_domain)?;
         let samples = 16;
         let mut len = 0.0;
         let mut prev = edge
@@ -200,7 +202,9 @@ fn detect_self_intersections(
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t_min, t_max) = edge.domain_with_endpoints(start_pos, end_pos);
+        let (t_min, t_max) = edge
+            .strict_domain()
+            .map_err(crate::error::analysis_edge_domain)?;
 
         let mut samples = Vec::with_capacity(SELF_INTERSECT_SAMPLES);
         for j in 0..SELF_INTERSECT_SAMPLES {
