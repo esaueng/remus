@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788108474114,
+  "lastUpdate": 1788109096914,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4643,6 +4643,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 31673022,
             "range": "± 1550322",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01b55b0cc17d022a8cb7e5c94c8fc203f77df8b0",
+          "message": "docs(check): correct min_radius_of_curvature conservativity claim (#150)\n\nBoundary sampling can miss the true parameter extreme, so the reported\nminimum radius may overstate the true minimum — the anti-conservative\ndirection for feasibility checks. The old sentence claimed the opposite.",
+          "timestamp": "2026-08-30T12:55:03-04:00",
+          "tree_id": "ad43aa4a966b4d799c9d156ff50e47adf9d22a6c",
+          "url": "https://github.com/esaueng/remus/commit/01b55b0cc17d022a8cb7e5c94c8fc203f77df8b0"
+        },
+        "date": 1788109096234,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1386570,
+            "range": "± 1554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1487681,
+            "range": "± 2809",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15575,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1027141,
+            "range": "± 85081",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41879985,
+            "range": "± 2331302",
             "unit": "ns/iter"
           }
         ]
