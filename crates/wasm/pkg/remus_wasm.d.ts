@@ -114,8 +114,8 @@ export interface GcsConstraintResidual {
      */
     constraint: number;
     /**
-     * Largest absolute residual across the constraint\'s equations, measured
-     * at the solver\'s final iterate — its best attempt, before any rollback.
+     * Largest absolute residual across the constraint's equations, measured
+     * at the solver's final iterate — its best attempt, before any rollback.
      * Constraints the system could satisfy read ~0 here, so a magnitude that
      * survives marks where it could not.
      */
@@ -188,14 +188,14 @@ export interface BooleanQualityResult {
      */
     solid: number;
     /**
-     * `\"exact\"` when the exact pipeline produced the result; `\"approximate\"`
+     * `"exact"` when the exact pipeline produced the result; `"approximate"`
      * when the mesh (co-refinement) fallback ran and analytic surface types
      * were lost.
      */
     quality: string;
     /**
      * Tessellation deflection the fallback ran at, in model units. Present
-     * only when `quality` is `\"approximate\"`.
+     * only when `quality` is `"approximate"`.
      */
     deflection?: number;
 }
@@ -259,10 +259,10 @@ export interface GcsDofResult {
 /**
  * Typed result for `gcsSolveDetailed`.
  *
- * Kernel-internal constraints (an arc\'s centre–endpoint tie) carry no
+ * Kernel-internal constraints (an arc's centre–endpoint tie) carry no
  * `gcsAddConstraint` handle. They are excluded from `constraintResiduals`
  * entirely and summarised by `internalMaxResidual` instead, so no internal
- * equation is ever attributed to a caller\'s constraint.
+ * equation is ever attributed to a caller's constraint.
  */
 export interface GcsSolveDiagnostics {
     /**
@@ -274,7 +274,7 @@ export interface GcsSolveDiagnostics {
      */
     iterations: number;
     /**
-     * Maximum absolute residual at the solver\'s final iterate.
+     * Maximum absolute residual at the solver's final iterate.
      */
     maxResidual: number;
     /**
@@ -349,8 +349,8 @@ export interface GcsSolveResult {
 /**
  * Typed result for `getFaceCurvature`.
  *
- * Principal curvatures at `(u, v)` on a face\'s surface, sorted `k1 >= k2`,
- * signed positive for convex-outward relative to the face\'s effective
+ * Principal curvatures at `(u, v)` on a face's surface, sorted `k1 >= k2`,
+ * signed positive for convex-outward relative to the face's effective
  * outward normal (flipping the face orientation flips `k1`, `k2`, `mean`;
  * `gaussian` is orientation-independent). `directions` is `null` at
  * umbilic points (sphere, plane, near-umbilic NURBS regions), where every
