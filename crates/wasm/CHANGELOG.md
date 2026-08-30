@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Add the `booleanWithQuality` `executeBatch`/`executeBatchV2` operation so
+  batch callers can require exact output or receive explicit approximation
+  provenance.
+
+### Bug Fixes
+
+* Keep exact-only refusals in the `quality_refused` category with stable
+  `details.kernelCode = "exact_only_unattainable"`.
+
 ## [0.4.0](https://github.com/andymai/brepkit/compare/v0.3.1...v0.4.0) (2026-03-04)
 
 
