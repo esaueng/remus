@@ -146,6 +146,28 @@ pub enum OperationsError {
         reason: String,
     },
 
+    /// A pattern would place two instances over the same material volume.
+    ///
+    /// Returning the instances as an ordinary compound would double-count
+    /// mass and present intersecting bodies as a valid pattern. Until pattern
+    /// fusing can also preserve truthful face evolution, the exact operation
+    /// refuses this configuration instead.
+    #[error(
+        "pattern instances {first} and {second} overlap by {overlap_volume:e} \
+         model-unit^3 (material-overlap floor {threshold:e}); exact instance \
+         fusing with face evolution is not yet supported"
+    )]
+    PatternInstancesOverlap {
+        /// Zero-based index of the first overlapping pattern instance.
+        first: usize,
+        /// Zero-based index of the second overlapping pattern instance.
+        second: usize,
+        /// Measured volume of their exact intersection.
+        overlap_volume: f64,
+        /// Scale-relative volume below which contact is non-material.
+        threshold: f64,
+    },
+
     /// A referenced topology entity was not found.
     #[error(transparent)]
     Topology(#[from] remus_topology::TopologyError),
