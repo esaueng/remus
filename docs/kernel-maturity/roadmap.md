@@ -18,7 +18,7 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
 
 - **Drafted:** 2026-08-29, baseline `main` @ `3c232e8`.
 - **External K-S1 disposition — cross-drilled render/measure:** done in PR
-  #TBD. The OpenZCAD operation sequence now has a deterministic replay bundle,
+  #144. The OpenZCAD operation sequence now has a deterministic replay bundle,
   independent volume oracles, ratio/scale display-mesh qualification, and a
   non-vacuous WASM `meshQuality` contract. Follow-ups remain for the separate
   face-orientation inconsistency and the sub-millimeter fine-mesh boundary
