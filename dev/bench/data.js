@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788102949694,
+  "lastUpdate": 1788105580286,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4481,6 +4481,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41502434,
             "range": "± 92038",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "016689d80b4cc6b2f8b548af87709055c7b042c7",
+          "message": "feat(topology): validated tolerance setters and RFC 0004 entity-tolerance validators (#148)\n\n* feat(math): max_entity_tolerance cap on OperationContext\n\nRFC 0004 Stage 1 (issue 3.2): the growth-discipline cap on per-entity\ntolerance raises, additively on the non_exhaustive context. Defaults to\nDEFAULT_MAX_ENTITY_TOLERANCE (1000x the global linear tolerance,\nmirroring the widest boolean acceptance band); with_max_entity_tolerance\nbuilder replaces only the cap. The cap is consumed by the raise paths in\nlater stages; this stage plumbs and pins it.\n\n* feat(topology): validated tolerance setters and RFC 0004 entity-tolerance validators\n\nStage 1 substrate (issue 3.2):\n\n- Vertex gains set_tolerance and Edge::set_tolerance becomes validating:\n  finite and non-negative, else TopologyError::InvalidToleranceValue.\n  The setter guards sanity only; the deeper claim checks are validators.\n- Two new checks in the tolerance_violation diagnostic family, both\n  entity-bound from the start and vacuous at default tolerances:\n  validate_vertex_ball (invariant 1: every incident edge end's curve\n  evaluation within the vertex's ball as claimed, code\n  vertex_ball_violation) and validate_edge_tube (invariant 2: sampled\n  3D<->p-curve deviation, reusing the check_same_parameter /\n  check_same_range measurements, within\n  max(global floor, effective_tolerance(max(ball_start, ball_end))),\n  code edge_tube_violation). validate_same_parameter / validate_same_range\n  keep their caller-supplied bounds this stage (pinned).\n- A tolerance raise is recordable as EntityEvent::Modified; the journal\n  machinery already supports it, pinned by a round-trip test.\n- Call-site ripple: the two existing Edge::set_tolerance test callers\n  unwrap the new Result; wasm's structured error mapping covers the three\n  new TopologyError variants.\n\n* test(algo): pin the VV ball-sum band and the global-only EE crossing band\n\nRFC 0004 Stage 1 characterization pins (issue 3.1 exit gate), test-only:\n\n- phase_vv: two overlapping quads offset by 1e-6 (10x global) put four\n  corner pairs inside ball_a + ball_b + tol.linear - they merge; with\n  default balls the same pairs stay unmerged. Pins the VV band formula\n  at phase_vv.rs and the program doc 3.3 exit-gate fixture as a passing\n  pin (VV already satisfies it; no later stage flips it).\n- phase_ee: two segments whose infinite lines cross with closest\n  approach 5x the global tolerance produce no crossing even with\n  declared tube tolerances 100x wider - the crossing band is global-only\n  (the dist <= tol.linear gate); the sub-band side is accepted. Flips at\n  Stage 2 when the band becomes tube_a + tube_b + tol.linear.\n\n* test(io): pin the STEP vertex stamp and arena tolerance round-trip stability\n\nRFC 0004 Stage 1 characterization + exit gate:\n\n- STEP import stamps the fixed 1e-7 vertex tolerance on every imported\n  vertex regardless of measured gaps (flips at Stage 4).\n- A tolerance-bearing document (raised vertex balls, declared edge\n  tolerances) round-trips byte-identically through arena_io with values\n  restored bit-for-bit - the legacy-document stability exit gate. No\n  format change in this stage.\n\n* docs(kernel-maturity): record P-class 3.2 substrate in review\n\nLedger row only: RFC 0004 Stage 1 (validated setters, vertex-ball /\nedge-tube validators, context cap, journal recordability, characterization\npins) is implemented on this branch.\n\n* test(algo): register the vertex-ball validator's trim-aware domain reader\n\n* test(algo): raise the domain-reader baseline count for the registered validator site",
+          "timestamp": "2026-08-30T11:53:32-04:00",
+          "tree_id": "42c80e282cd70aed93f696e8315979d68929c8c9",
+          "url": "https://github.com/esaueng/remus/commit/016689d80b4cc6b2f8b548af87709055c7b042c7"
+        },
+        "date": 1788105579067,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1388219,
+            "range": "± 1726",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1486839,
+            "range": "± 2508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15956,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1028026,
+            "range": "± 1721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41751831,
+            "range": "± 44741",
             "unit": "ns/iter"
           }
         ]
