@@ -54,6 +54,16 @@ fn get_deflection(args: &serde_json::Value) -> Result<f64, StructuredWasmError> 
     validate_deflection(deflection)
 }
 
+fn get_angular_tolerance(args: &serde_json::Value) -> Result<f64, StructuredWasmError> {
+    let angular_tolerance = match args.get("angularTolerance") {
+        None => remus_math::chord::DEFAULT_ANGULAR_TOL,
+        Some(_) => get_f64(args, "angularTolerance")?,
+    };
+    crate::error::validate_positive(angular_tolerance, "angularTolerance")
+        .map_err(StructuredWasmError::from)?;
+    Ok(angular_tolerance)
+}
+
 #[wasm_bindgen(typescript_custom_section)]
 const BATCH_V2_TYPES: &str = r#"
 /** Stable error codes returned by `executeBatchV2`. */
@@ -962,13 +972,18 @@ impl BrepKernel {
             "meshQuality" => {
                 let s = get_u32(args, "solid")?;
                 let deflection = get_deflection(args)?;
+                let angular_tolerance = get_angular_tolerance(args)?;
                 let solid_id = self.resolve_solid(s).map_err(StructuredWasmError::from)?;
-                let mesh = remus_operations::tessellate::tessellate_solid(
-                    &self.topo, solid_id, deflection,
+                let mesh = remus_operations::tessellate::tessellate_solid_with_tolerance(
+                    &self.topo,
+                    solid_id,
+                    deflection,
+                    angular_tolerance,
                 )
                 .map_err(StructuredWasmError::from)?;
                 let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
                 Ok(serde_json::json!({
+                    "triangleCount": quality.triangle_count,
                     "boundaryEdges": quality.boundary_edges,
                     "nonManifoldEdges": quality.non_manifold_edges,
                     "eulerCharacteristic": quality.euler_characteristic,

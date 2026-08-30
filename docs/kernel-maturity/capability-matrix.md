@@ -97,7 +97,11 @@ does not itself promote or demote anything.
   (as fast paths under the contract) or retired.
 - Known qualified evidence: cavity semantics regressions, fail-closed bounded
   mesh fallback, 64-cut determinism gate, analytic cylinder-crossing-plane
-  overlap sweep with operand-loss acceptance gate.
+  overlap sweep with operand-loss acceptance gate. The OpenZCAD cross-drilled
+  shaft sequence is qualified at bore/shaft radius ratios 1, 2/3, and 1/3 and
+  scales 0.1, 1, and 10: independent orthogonal-cylinder volume oracles match,
+  and coarse/fine display meshes are non-empty, closed, and manifold through
+  the deterministic WASM batch path and a versioned replay bundle.
 - Known Unsupported-untyped / Partial cells: exact tangency (falls over to the
   approximate path; pinch vertex not built), sliver crossings (~1e-5 to
   0.05 mm on r = 10) fall over to approximate; general torus pairs limited;
@@ -172,12 +176,17 @@ does not itself promote or demote anything.
 
 - Ledger rows: "Bounding box, area, center of mass", "Distance and
   classification" (evidence pending). Inner-shell regressions pass;
-  curved-cavity and scale matrices incomplete.
+  cross-drilled volume now has a WASM ratio/scale matrix against independent
+  orthogonal-cylinder oracles. Other curved-cavity and scale cells remain
+  incomplete.
 
 ### Tessellation
 
 - Ledger row: "Adaptive/CDT/analytic optimization". Face-failure abort is
-  qualified; broader scale/performance cells Unqualified.
+  qualified. Cross-drilled display tessellation is qualified at two relative
+  deflections, three bore ratios, and scales 0.1 through 10; `meshQuality`
+  accepts the render angular tolerance and cannot label an empty mesh
+  watertight. Broader scale/performance cells remain Unqualified.
 
 ### Validation and healing
 

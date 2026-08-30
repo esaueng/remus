@@ -4682,20 +4682,22 @@ class BrepKernel {
      * Tessellate a solid and report position-welded mesh quality metrics.
      *
      * Returns a JSON string containing
-     * `{ boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+     * `{ triangleCount, boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
      * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
      * 1 µm grid before counting, so position-duplicate vertices cannot mask
-     * a leak. Use before export to verify the mesh is watertight.
+     * a leak. Pass the same optional angular tolerance used for rendering or
+     * export so the quality report describes that exact tessellation.
      *
      * # Errors
      *
      * Returns an error if the solid handle is invalid or tessellation fails.
      * @param {number} solid
      * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
      * @returns {any}
      */
-    meshQuality(solid, deflection) {
-        const ret = wasm.brepkernel_meshQuality(this.__wbg_ptr, solid, deflection);
+    meshQuality(solid, deflection, angular_tolerance) {
+        const ret = wasm.brepkernel_meshQuality(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

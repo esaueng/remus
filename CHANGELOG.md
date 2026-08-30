@@ -2,6 +2,12 @@
 
 ## 2.130.0
 
+### Bug Fixes
+
+* **wasm,tessellate:** make mesh-quality reports non-vacuous and honor the
+  render tessellation's angular tolerance, with cross-drilled ratio/scale
+  qualification.
+
 ### Licensing
 
 * Establish the permanent Apache-2.0 line from the last pre-AGPL fork state.

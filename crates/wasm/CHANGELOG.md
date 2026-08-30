@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* `meshQuality` now reports `triangleCount`, returns `isWatertight: false` for
+  an empty mesh, and accepts an optional `angularTolerance` matching
+  `tessellateSolid` and `tessellateSolidGrouped`. Batch calls accept the same
+  additive `angularTolerance` argument.
+
 ## [0.4.0](https://github.com/andymai/brepkit/compare/v0.3.1...v0.4.0) (2026-03-04)
 
 
