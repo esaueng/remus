@@ -440,6 +440,7 @@ mod tests {
     use super::*;
     use remus_math::curves::Circle3D;
     use remus_math::vec::Vec3;
+    use remus_topology::edge::Edge;
 
     fn line_data(start: Point3, end: Point3) -> EdgeData {
         EdgeData {
@@ -546,5 +547,60 @@ mod tests {
 
         let hits = line_circle_intersection(&line, &arc, &circle, tol, false);
         assert!(hits.is_empty(), "line far from circle should not intersect");
+    }
+
+    /// CHARACTERIZATION (RFC 0004 Stage 1, flips at Stage 2): the crossing
+    /// acceptance band is the global linear tolerance alone — the
+    /// `dist <= tol.linear` gate in `line_line_intersection` and the
+    /// segment-pair equivalent — so declared edge tolerances (tube radii)
+    /// contribute nothing to it. Two line segments whose infinite lines
+    /// cross but whose closest approach is 5× the global tolerance produce
+    /// no crossing, even with declared tube radii 100× wider than the gap.
+    /// Stage 2 widens the band to `tube_a + tube_b + tol.linear` and this
+    /// pin flips.
+    #[test]
+    fn crossing_band_is_global_only_despite_declared_edge_tolerances() {
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.5, -0.5, 5e-7), 1e-7));
+        let v3 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.5, 5e-7), 1e-7));
+        let ea = topo.add_edge(Edge::with_tolerance(v0, v1, EdgeCurve::Line, Some(1e-4)));
+        let eb = topo.add_edge(Edge::with_tolerance(v2, v3, EdgeCurve::Line, Some(1e-4)));
+
+        let ea_data = line_data(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let eb_data = line_data(Point3::new(0.5, -0.5, 5e-7), Point3::new(0.5, 0.5, 5e-7));
+        let tol = Tolerance::default();
+
+        let crossings = find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol).unwrap();
+        assert!(
+            crossings.is_empty(),
+            "closest approach 5× global with declared tubes 100× wider must still \
+             produce no crossing while the band is global-only"
+        );
+    }
+
+    #[test]
+    fn crossing_band_catches_approaches_inside_the_global_band() {
+        // The other side of the pin: a closest approach *below* the global
+        // tolerance is accepted.
+        let mut topo = Topology::new();
+        let v0 = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(Point3::new(0.5, -0.5, 5e-8), 1e-7));
+        let v3 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.5, 5e-8), 1e-7));
+        let ea = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+        let eb = topo.add_edge(Edge::new(v2, v3, EdgeCurve::Line));
+
+        let ea_data = line_data(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+        let eb_data = line_data(Point3::new(0.5, -0.5, 5e-8), Point3::new(0.5, 0.5, 5e-8));
+        let tol = Tolerance::default();
+
+        let crossings = find_edge_edge_crossings(&topo, ea, &ea_data, eb, &eb_data, tol).unwrap();
+        assert_eq!(
+            crossings.len(),
+            1,
+            "5e-8 closest approach is inside the band"
+        );
     }
 }

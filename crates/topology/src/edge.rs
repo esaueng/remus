@@ -6,6 +6,7 @@ use remus_math::tolerance::Tolerance;
 use remus_math::traits::ParametricCurve;
 use remus_math::vec::{Point3, Vec3};
 
+use crate::TopologyError;
 use crate::arena;
 use crate::vertex::VertexId;
 
@@ -464,11 +465,36 @@ impl Edge {
         self.tolerance
     }
 
-    /// Sets the edge-specific tolerance.
+    /// Sets the edge-specific tolerance (RFC 0004, Stage 1).
     ///
-    /// Pass `None` to revert to inheriting the vertex tolerance.
-    pub fn set_tolerance(&mut self, tol: Option<f64>) {
+    /// Pass `None` to revert to inheriting the vertex tolerance; `None` is
+    /// always accepted. A stored value is a claim, and this setter guards
+    /// only its sanity: it must be finite and non-negative.
+    ///
+    /// The deeper rule — that a declared value must be no smaller than the
+    /// measured 3D↔p-curve deviation it claims to cover — needs the p-curve
+    /// registry and the bounding vertices' balls, neither of which a bare
+    /// [`Edge`] can see, so it lives in
+    /// [`crate::validation::validate_edge_tube`] instead of here. Callers
+    /// raising a tolerance should record it in the journal as an
+    /// [`EntityEvent::Modified`](crate::journal::EntityEvent::Modified).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError::InvalidToleranceValue`] when `tol` is
+    /// `Some` with a non-finite or negative value; the previous value is
+    /// left unchanged.
+    pub fn set_tolerance(&mut self, tol: Option<f64>) -> Result<(), TopologyError> {
+        if let Some(value) = tol
+            && (!value.is_finite() || value.is_sign_negative())
+        {
+            return Err(TopologyError::InvalidToleranceValue {
+                entity: "edge",
+                value,
+            });
+        }
         self.tolerance = tol;
+        Ok(())
     }
 
     /// Returns the effective tolerance for this edge.
@@ -602,11 +628,41 @@ mod tests {
         let (v0, v1) = make_test_vertices();
         let mut edge = Edge::new(v0, v1, EdgeCurve::Line);
 
-        edge.set_tolerance(Some(0.001));
+        edge.set_tolerance(Some(0.001)).unwrap();
         assert_eq!(edge.tolerance(), Some(0.001));
 
-        edge.set_tolerance(None);
+        edge.set_tolerance(None).unwrap();
         assert!(edge.tolerance().is_none());
+    }
+
+    #[test]
+    fn set_tolerance_rejects_non_finite_and_negative_raises() {
+        // Flipped from "set_tolerance accepts arbitrary values" (RFC 0004,
+        // Stage 1): the setter is checked, not asserted. `with_tolerance`
+        // stays a stored claim — the arena deserializer replays legacy
+        // documents through it byte-identically — but the setter refuses
+        // to *record* a new value that no predicate could honor honestly.
+        let (v0, v1) = make_test_vertices();
+        let mut edge = Edge::new(v0, v1, EdgeCurve::Line);
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-9] {
+            let err = edge.set_tolerance(Some(bad)).unwrap_err();
+            assert!(matches!(
+                err,
+                crate::TopologyError::InvalidToleranceValue { .. }
+            ));
+            assert_eq!(edge.tolerance(), None, "a rejected raise is not stored");
+        }
+
+        // `None` always reverts to inheriting the vertex tolerance.
+        edge.set_tolerance(None).unwrap();
+        assert!(edge.tolerance().is_none());
+
+        // Zero and positive values are sanity-clean and stored.
+        edge.set_tolerance(Some(0.0)).unwrap();
+        assert_eq!(edge.tolerance(), Some(0.0));
+        edge.set_tolerance(Some(3.5e-8)).unwrap();
+        assert_eq!(edge.tolerance(), Some(3.5e-8));
     }
 
     #[test]

@@ -26,7 +26,7 @@ Issue 2.0's measured baseline is
 | 2.7 Tangency and sliver contacts | Pending | — |
 | 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation; Newton and parameter-space budgets remain | [PR #138](https://github.com/esaueng/remus/pull/138) |
 | 3.1 RFC 0004 | Pending | — |
-| 3.2 Topology substrate | Pending | — |
+| 3.2 Topology substrate | In review — RFC 0004 Stage 1: validated setters, vertex-ball/edge-tube validators, context cap, journal recordability | — |
 | 3.3 Predicate plumbing | Pending | — |
 | 3.4 GFA integration | Pending | — |
 | 3.5 Import and sew integration | Pending | — |

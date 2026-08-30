@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use remus_math::tolerance::Tolerance;
+
 use crate::Topology;
 use crate::TopologyError;
 use crate::shell::Shell;
@@ -1045,6 +1047,232 @@ pub fn validate_same_range(
     Ok(())
 }
 
+// ── Entity-tolerance checks (RFC 0004, Stage 1) ─────────────────────────
+//
+// Two validator-enforced containment invariants, in the existing
+// `tolerance_violation` diagnostic family:
+//
+// 1. **Ball containment** — every incident edge end's curve evaluation lies
+//    within its vertex's ball (`vertex_ball_violation`).
+// 2. **Tube containment** — every stored pcurve use's sampled 3D↔p-curve
+//    deviation is within the edge's effective tolerance
+//    (`edge_tube_violation`), measured with the same machinery as
+//    `check_same_parameter`/`check_same_range` rather than duplicated.
+//
+// Both checks derive their bound from **entity tolerance** from the start
+// (the vertex ball / the edge's effective tolerance), unlike
+// `validate_same_parameter`/`validate_same_range`, whose bound stays
+// caller-supplied this stage and flips to the entity-derived bound in a
+// later stage. Both pass vacuously at default tolerances on exact geometry.
+
+/// One incident edge end's distance from the vertex's tolerance ball.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VertexBallReport {
+    /// The incident edge whose end was measured.
+    pub edge: crate::edge::EdgeId,
+    /// Whether the measured end is the edge's start (`true`) or end (`false`).
+    pub at_start: bool,
+    /// Distance from the curve's endpoint evaluation to the vertex point,
+    /// in model units. Non-finite curve evaluations report [`f64::MAX`].
+    pub deviation: f64,
+}
+
+/// Measures the ball-containment invariant (RFC 0004, invariant 1) for one
+/// vertex.
+///
+/// Every incident edge end's curve evaluation, at that end's parameter
+/// under the edge's domain, must lie within the vertex's ball —
+/// `|curve(t_end) − vertex.point()| ≤ vertex.tolerance()`.
+///
+/// The vertex's ball is checked as **claimed** (no floor clamp): the
+/// validator's job is to prove the claim, and a ball that does not cover
+/// its measured gap is exactly what a later raise must fix. A vertex with
+/// no incident edges passes vacuously.
+///
+/// # Errors
+///
+/// Returns a not-found error when the vertex or an incident edge's
+/// vertices are stale.
+pub fn check_vertex_ball(
+    topo: &Topology,
+    vertex_id: crate::vertex::VertexId,
+) -> Result<Vec<VertexBallReport>, TopologyError> {
+    let point = topo.vertex(vertex_id)?.point();
+    let mut reports = Vec::new();
+    for (edge_id, edge) in topo.edges().iter() {
+        let at_start = edge.start() == vertex_id;
+        if !at_start && edge.end() != vertex_id {
+            continue;
+        }
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let (d0, d1) = edge.domain_with_endpoints(start, end);
+        let t_end = if at_start { d0 } else { d1 };
+        let on_curve = edge.curve().evaluate_with_endpoints(t_end, start, end);
+        let deviation = if t_end.is_finite() && on_curve.0.iter().all(|value| value.is_finite()) {
+            (on_curve - point).length()
+        } else {
+            f64::MAX
+        };
+        reports.push(VertexBallReport {
+            edge: edge_id,
+            at_start,
+            deviation,
+        });
+    }
+    reports.sort_by_key(|report| (report.edge.index(), report.at_start));
+    Ok(reports)
+}
+
+/// Enforces the ball-containment invariant (RFC 0004, invariant 1).
+///
+/// Every incident edge end's curve evaluation must lie within the vertex's
+/// ball as claimed. A violation is a claim the stored tolerance cannot
+/// cover — the honest fix is a validated raise
+/// ([`Vertex::set_tolerance`](crate::vertex::Vertex::set_tolerance)), not a
+/// silent widening.
+///
+/// Vacuously passes when every incident edge end's curve evaluation is
+/// exactly on the vertex point, as for primitives and line edges.
+///
+/// # Errors
+///
+/// Returns [`TopologyError::VertexBallExceeded`] for the first (in arena
+/// edge order) incident edge end whose curve evaluation lies outside the
+/// ball, or a not-found error for stale entities.
+pub fn validate_vertex_ball(
+    topo: &Topology,
+    vertex_id: crate::vertex::VertexId,
+) -> Result<(), TopologyError> {
+    let ball = topo.vertex(vertex_id)?.tolerance();
+    for report in check_vertex_ball(topo, vertex_id)? {
+        if report.deviation > ball {
+            return Err(TopologyError::VertexBallExceeded {
+                vertex: vertex_id,
+                edge: report.edge,
+                deviation: report.deviation,
+                tolerance: ball,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Result of the edge-tube containment check (RFC 0004, invariant 2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeTubeReport {
+    /// Largest measured 3D↔p-curve deviation: the larger of the
+    /// `SameParameter` interior deviation and the `SameRange` endpoint
+    /// deviation, in model units.
+    pub max_deviation: f64,
+    /// Witness parameter of the SameParameter deviation.
+    pub at_parameter: f64,
+    /// Evaluation points used for the sampled measurement.
+    pub samples: usize,
+    /// The deviation from the SameParameter measurement alone.
+    pub parameter_deviation: f64,
+    /// The endpoint deviation from the SameRange measurement, when it
+    /// applies (`0.0` otherwise).
+    pub range_deviation: f64,
+    /// The effective tube tolerance this use claims: the edge's declared
+    /// tolerance, falling back to the wider of its bounding vertices' balls,
+    /// clamped below by the global floor (RFC 0004, floor rule) — an entity
+    /// tolerance only widens bands, never narrows them below the floor.
+    pub effective_tolerance: f64,
+}
+
+/// Measures the edge-tube containment invariant (RFC 0004, invariant 2)
+/// for one oriented edge use with a stored pcurve.
+///
+/// Reuses the [`check_same_parameter`] and [`check_same_range`]
+/// measurements rather than duplicating them: the reported deviation is the
+/// larger of the two, and the effective tube bound is
+/// `max(global floor, edge.effective_tolerance(max(ball_start, ball_end)))`
+/// — the entity-tolerance rule with the global default as the passed
+/// tolerance. Returns `Ok(None)` when the check does not apply (no stored
+/// pcurve for that use).
+///
+/// Unlike the strict proof path, this uses the sampled
+/// [`check_same_parameter`]/[`check_same_range`] measurements, so a use
+/// whose proof combination is unsupported is measured by sampling (and
+/// reported at its measured deviation) rather than refused.
+///
+/// # Errors
+///
+/// Returns a not-found error when the edge, face, or a bounding vertex is
+/// stale.
+pub fn check_edge_tube(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+    samples: usize,
+) -> Result<Option<EdgeTubeReport>, TopologyError> {
+    let edge = topo.edge(edge_id)?;
+    let ball_start = topo.vertex(edge.start())?.tolerance();
+    let ball_end = topo.vertex(edge.end())?.tolerance();
+    let vertex_tol = ball_start.max(ball_end);
+    let effective = edge
+        .effective_tolerance(vertex_tol)
+        .max(Tolerance::new().linear);
+
+    let Some(parameter) = check_same_parameter(topo, edge_id, face_id, forward, samples)? else {
+        return Ok(None);
+    };
+    let range_deviation = check_same_range(topo, edge_id, face_id, forward)?.unwrap_or(0.0);
+    let max_deviation = parameter.max_deviation.max(range_deviation);
+    Ok(Some(EdgeTubeReport {
+        max_deviation,
+        at_parameter: parameter.at_parameter,
+        samples: parameter.samples,
+        parameter_deviation: parameter.max_deviation,
+        range_deviation,
+        effective_tolerance: effective,
+    }))
+}
+
+/// Enforces the edge-tube containment invariant (RFC 0004, invariant 2):
+/// the use's sampled 3D↔p-curve deviation must lie within the edge's
+/// effective tolerance.
+///
+/// The bound is entity-derived from the start:
+/// `max(global floor, edge.effective_tolerance(max(ball_start, ball_end)))` —
+/// the edge's declared tolerance when present, its bounding vertices' balls
+/// otherwise, never below the global floor. This is the RFC's
+/// `validate_same_parameter` bound rule with the global default as the
+/// caller-supplied tolerance; the existing [`validate_same_parameter`] keeps
+/// its caller-supplied bound unchanged this stage.
+///
+/// Not-applicable configurations (no stored pcurve, planar face) pass
+/// vacuously, exactly like [`validate_same_parameter`].
+///
+/// # Errors
+///
+/// Returns [`TopologyError::EdgeTubeExceeded`] when the measured deviation
+/// exceeds the effective tolerance, or a not-found error for stale
+/// entities.
+pub fn validate_edge_tube(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+    samples: usize,
+) -> Result<(), TopologyError> {
+    let Some(report) = check_edge_tube(topo, edge_id, face_id, forward, samples)? else {
+        return Ok(());
+    };
+    if report.max_deviation > report.effective_tolerance {
+        return Err(TopologyError::EdgeTubeExceeded {
+            edge: edge_id,
+            face: face_id,
+            max_deviation: report.max_deviation,
+            at_parameter: report.at_parameter,
+            tolerance: report.effective_tolerance,
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1769,5 +1997,392 @@ mod same_parameter_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::ToleranceViolation);
         assert_eq!(d.code(), "same_range_exceeded");
+    }
+}
+
+/// RFC 0004 Stage 1: the entity-tolerance validators.
+///
+/// `check_vertex_ball` / `validate_vertex_ball` enforce invariant 1 (ball
+/// containment); `check_edge_tube` / `validate_edge_tube` enforce invariant
+/// 2 (tube containment) with an entity-derived bound. Both pass vacuously
+/// at default tolerances on exact geometry, and both sides of each bound
+/// are pinned here so a later stage's flips are visible diffs.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::panic, clippy::float_cmp)]
+mod tolerant_checks_tests {
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::diagnostic::{FailureCategory, ToDiagnostic};
+    use remus_math::traits::ParametricCurve;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+
+    use crate::TopologyError;
+    use crate::edge::{Edge, EdgeCurve, EdgeId};
+    use crate::face::{Face, FaceId, FaceSurface};
+    use crate::pcurve::PCurve;
+    use crate::vertex::{Vertex, VertexId};
+    use crate::wire::{OrientedEdge, Wire};
+
+    use super::{
+        Topology, check_edge_tube, check_vertex_ball, validate_edge_tube, validate_same_parameter,
+        validate_vertex_ball,
+    };
+
+    const TAU: f64 = std::f64::consts::TAU;
+
+    /// A vertical seam edge on a unit cylinder (bottom (1,0,0) to top
+    /// (1,0,1)) with its side face.
+    fn cylinder_seam() -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let bottom = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let top = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 1.0), 1e-7));
+        let seam = topo.add_edge(Edge::new(bottom, top, EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Cylinder(
+                remus_math::surfaces::CylindricalSurface::with_ref_dir(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    1.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap(),
+            ),
+        ));
+        (topo, seam, face)
+    }
+
+    /// The seam's pcurve at horizontal offset `u`: the surface image is a
+    /// chord `2*sin(u/2)` away from the 3D seam edge.
+    fn seam_pcurve(u: f64) -> PCurve {
+        PCurve::new(
+            Curve2D::Line(Line2D::new(Point2::new(u, 0.0), Vec2::new(0.0, 1.0)).unwrap()),
+            0.0,
+            1.0,
+        )
+    }
+
+    /// Vertex V anchors at curve(0) = (1, 0, 0) but the edge's trim starts
+    /// at `gap_angle`, so the curve's endpoint evaluation misses V's point
+    /// by the chord `2*sin(gap_angle/2)`.
+    fn circle_arc_edge(gap_angle: f64) -> (Topology, VertexId, EdgeId) {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let anchor = ParametricCurve::evaluate(&circle, 0.0);
+        let v = topo.add_vertex(Vertex::new(anchor, 1e-7));
+        let v2 = topo.add_vertex(Vertex::new(ParametricCurve::evaluate(&circle, 0.5), 1e-7));
+        let mut edge = Edge::new(v, v2, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((gap_angle, 0.5)));
+        let edge_id = topo.add_edge(edge);
+        (topo, v, edge_id)
+    }
+
+    #[test]
+    fn vertex_ball_passes_vacuously_for_exact_endpoints() {
+        // A full-circle rim anchored at its own zero-angle point: the curve
+        // endpoint evaluations land exactly on the vertex point, so the
+        // default ball is vacuously sufficient.
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let anchor = ParametricCurve::evaluate(&circle, 0.0);
+        let v = topo.add_vertex(Vertex::new(anchor, 1e-7));
+        let mut rim = Edge::new(v, v, EdgeCurve::Circle(circle));
+        rim.set_trim(Some((0.0, TAU)));
+        topo.add_edge(rim);
+
+        validate_vertex_ball(&topo, v).unwrap();
+        let reports = check_vertex_ball(&topo, v).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].deviation < 1e-12);
+    }
+
+    #[test]
+    fn vertex_ball_passes_for_an_isolated_vertex() {
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        validate_vertex_ball(&topo, v).unwrap();
+        assert!(check_vertex_ball(&topo, v).unwrap().is_empty());
+    }
+
+    #[test]
+    fn vertex_ball_violation_fires_when_the_ball_understates_the_curve_gap() {
+        let (topo, v, edge) = circle_arc_edge(1e-3);
+        let deviation = 2.0 * (5e-4_f64).sin();
+
+        let reports = check_vertex_ball(&topo, v).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].edge, edge);
+        assert!(reports[0].at_start);
+        assert!((reports[0].deviation - deviation).abs() < 1e-9);
+
+        let err = validate_vertex_ball(&topo, v).unwrap_err();
+        let TopologyError::VertexBallExceeded {
+            vertex, deviation, ..
+        } = err
+        else {
+            panic!("expected VertexBallExceeded, got {err:?}")
+        };
+        assert_eq!(vertex.index(), v.index());
+        assert!((deviation - 2.0 * (5e-4_f64).sin()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_raise_that_covers_the_gap_clears_the_ball_violation() {
+        // Both sides of the ball bound: a raise just below the measured gap
+        // still fails (the claim does not cover the deviation it papers
+        // over), and a raise at the measured gap passes.
+        let (mut topo, v, _edge) = circle_arc_edge(1e-3);
+        let deviation = 2.0 * (5e-4_f64).sin();
+        assert!(validate_vertex_ball(&topo, v).is_err());
+
+        let undersized = deviation * 0.999;
+        topo.vertex_mut(v)
+            .unwrap()
+            .set_tolerance(undersized)
+            .unwrap();
+        assert!(validate_vertex_ball(&topo, v).is_err());
+
+        topo.vertex_mut(v)
+            .unwrap()
+            .set_tolerance(deviation)
+            .unwrap();
+        validate_vertex_ball(&topo, v).unwrap();
+    }
+
+    #[test]
+    fn vertex_ball_checks_each_incident_edge_end() {
+        // Two incident edges: one exact (a closed rim anchored on the
+        // vertex), one with a gap. The report carries both ends and the
+        // validator fires on the gappy one.
+        let (mut topo, v, gappy) = circle_arc_edge(1e-3);
+        // The rim must share the gappy edge's frame so its zero-angle point
+        // is the same (1, 0, 0) anchor the vertex sits on.
+        let rim_circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let mut rim = Edge::new(v, v, EdgeCurve::Circle(rim_circle));
+        rim.set_trim(Some((0.0, TAU)));
+        topo.add_edge(rim);
+
+        let reports = check_vertex_ball(&topo, v).unwrap();
+        assert_eq!(reports.len(), 2, "both incident ends are measured");
+        let gappy_report = reports.iter().find(|r| r.edge == gappy).unwrap();
+        assert!((gappy_report.deviation - 2.0 * (5e-4_f64).sin()).abs() < 1e-9);
+        let exact_report = reports.iter().find(|r| r.edge != gappy).unwrap();
+        assert!(exact_report.deviation < 1e-12);
+        assert!(validate_vertex_ball(&topo, v).is_err());
+    }
+
+    // ── Edge tube (invariant 2) ─────────────────────────────────────────
+
+    #[test]
+    fn edge_tube_passes_vacuously_without_a_stored_pcurve() {
+        let (topo, seam, face) = cylinder_seam();
+        assert!(
+            check_edge_tube(&topo, seam, face, true, 32)
+                .unwrap()
+                .is_none()
+        );
+        validate_edge_tube(&topo, seam, face, true, 32).unwrap();
+    }
+
+    #[test]
+    fn edge_tube_passes_vacuously_at_default_tolerances() {
+        // An exact pcurve (the seam's true image): the sampled deviation is
+        // round-off only, far below the default bound.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.0));
+
+        let report = check_edge_tube(&topo, seam, face, true, 32)
+            .unwrap()
+            .unwrap();
+        assert!(report.max_deviation < 1e-12);
+        assert_eq!(
+            report.effective_tolerance, 1e-7,
+            "default bound = the floor"
+        );
+        validate_edge_tube(&topo, seam, face, true, 32).unwrap();
+        validate_edge_tube(&topo, seam, face, false, 32).unwrap();
+    }
+
+    #[test]
+    fn edge_tube_violation_fires_beyond_the_effective_tolerance() {
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        let deviation = 2.0 * (0.15_f64).sin();
+
+        let report = check_edge_tube(&topo, seam, face, true, 32)
+            .unwrap()
+            .unwrap();
+        assert!((report.parameter_deviation - deviation).abs() < 1e-9);
+        assert!((report.range_deviation - deviation).abs() < 1e-9);
+        assert!((report.max_deviation - deviation).abs() < 1e-9);
+        assert!((report.effective_tolerance - 1e-7).abs() < 1e-18);
+
+        let err = validate_edge_tube(&topo, seam, face, true, 32).unwrap_err();
+        let TopologyError::EdgeTubeExceeded {
+            edge, tolerance, ..
+        } = err
+        else {
+            panic!("expected EdgeTubeExceeded, got {err:?}")
+        };
+        assert_eq!(edge.index(), seam.index());
+        assert!((tolerance - 1e-7).abs() < 1e-20);
+    }
+
+    #[test]
+    fn a_declared_tolerance_must_cover_the_deviation_it_claims() {
+        // The checked-not-asserted rule: a raise past the measured
+        // deviation clears the validator; a raise that still understates
+        // the deviation is rejected by the validator, not papered over.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        let deviation = 2.0 * (0.15_f64).sin();
+
+        assert!(validate_edge_tube(&topo, seam, face, true, 32).is_err());
+
+        topo.edge_mut(seam)
+            .unwrap()
+            .set_tolerance(Some(0.31))
+            .unwrap();
+        validate_edge_tube(&topo, seam, face, true, 32).unwrap();
+
+        topo.edge_mut(seam)
+            .unwrap()
+            .set_tolerance(Some(0.1))
+            .unwrap();
+        let err = validate_edge_tube(&topo, seam, face, true, 32).unwrap_err();
+        assert!(matches!(err, TopologyError::EdgeTubeExceeded { .. }));
+        assert!(deviation > 0.29);
+    }
+
+    #[test]
+    fn edge_tube_bound_falls_back_to_the_bounding_vertex_balls() {
+        // No edge-declared tolerance: the effective bound is the wider
+        // bounding ball, floored at the global linear tolerance.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+
+        for vid in [
+            topo.edge(seam).unwrap().start(),
+            topo.edge(seam).unwrap().end(),
+        ] {
+            topo.vertex_mut(vid).unwrap().set_tolerance(0.2).unwrap();
+        }
+        assert!(validate_edge_tube(&topo, seam, face, true, 32).is_err());
+
+        for vid in [
+            topo.edge(seam).unwrap().start(),
+            topo.edge(seam).unwrap().end(),
+        ] {
+            topo.vertex_mut(vid).unwrap().set_tolerance(0.35).unwrap();
+        }
+        validate_edge_tube(&topo, seam, face, true, 32).unwrap();
+    }
+
+    #[test]
+    fn edge_tube_clamps_sub_floor_claims_to_the_global_floor() {
+        // A sub-floor declared tube (extra precision, like sewing's 3.5e-8)
+        // never narrows the check below the global floor — but it also
+        // cannot cover a deviation above the floor.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(5e-8));
+        topo.edge_mut(seam)
+            .unwrap()
+            .set_tolerance(Some(1e-8))
+            .unwrap();
+
+        // Deviation ~5e-8: above the declared 1e-8 claim, but the floor
+        // rule clamps the acting bound to 1e-7, so the use passes.
+        let report = check_edge_tube(&topo, seam, face, true, 32)
+            .unwrap()
+            .unwrap();
+        assert!((report.effective_tolerance - 1e-7).abs() < 1e-20);
+        assert!(report.max_deviation > 1e-8, "the claim alone would fail");
+        validate_edge_tube(&topo, seam, face, true, 32).unwrap();
+
+        // A deviation above the floor fires even against the widened bound.
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(3e-7));
+        assert!(validate_edge_tube(&topo, seam, face, true, 32).is_err());
+    }
+
+    #[test]
+    fn validate_same_parameter_bound_stays_caller_supplied() {
+        // CHARACTERIZATION (flips at RFC 0004 Stage 2): the existing
+        // SameParameter validator takes its bound purely from the caller's
+        // argument — a declared edge tolerance does not widen it. The
+        // entity-derived bound is the new `validate_edge_tube`'s job.
+        let (mut topo, seam, face) = cylinder_seam();
+        topo.set_pcurve_oriented(seam, face, true, seam_pcurve(0.3));
+        topo.edge_mut(seam)
+            .unwrap()
+            .set_tolerance(Some(0.5))
+            .unwrap();
+
+        assert!(
+            matches!(
+                validate_same_parameter(&topo, seam, face, true, 1e-7, 32),
+                Err(TopologyError::SameParameterExceeded { .. })
+            ),
+            "the caller-supplied bound alone governs validate_same_parameter today"
+        );
+        validate_same_parameter(&topo, seam, face, true, 0.31, 32).unwrap();
+    }
+
+    #[test]
+    fn entity_tolerance_diagnostics_are_pinned() {
+        let (topo, seam, face) = cylinder_seam();
+        let bottom = topo.edge(seam).unwrap().start();
+        let d = TopologyError::EdgeTubeExceeded {
+            edge: seam,
+            face,
+            max_deviation: 0.3,
+            at_parameter: 0.5,
+            tolerance: 1e-7,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::ToleranceViolation);
+        assert_eq!(d.code(), "edge_tube_violation");
+
+        let d = TopologyError::VertexBallExceeded {
+            vertex: bottom,
+            edge: seam,
+            deviation: 0.3,
+            tolerance: 1e-7,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::ToleranceViolation);
+        assert_eq!(d.code(), "vertex_ball_violation");
+
+        let d = TopologyError::InvalidToleranceValue {
+            entity: "vertex",
+            value: f64::NAN,
+        }
+        .diagnostic();
+        assert_eq!(d.category(), FailureCategory::InvalidInput);
+        assert_eq!(d.code(), "entity_tolerance_invalid");
     }
 }
