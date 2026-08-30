@@ -426,12 +426,13 @@ pub fn fillet_rolling_ball_with_origins(
                         }
                     }
                 }
-                if radius > min_adj && min_adj < f64::MAX {
-                    return Err(crate::OperationsError::InvalidInput {
-                        reason: format!(
-                            "fillet radius {radius:.6} exceeds adjacent edge length {min_adj:.6}"
-                        ),
-                    });
+                if radius >= min_adj && min_adj < f64::MAX {
+                    return Err(crate::OperationsError::Blend(
+                        remus_blend::BlendError::RadiusTooLarge {
+                            edge: edge_id,
+                            max_radius: min_adj,
+                        },
+                    ));
                 }
             }
         }
