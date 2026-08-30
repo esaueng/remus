@@ -303,6 +303,13 @@ impl From<remus_topology::TopologyError> for StructuredWasmError {
                 ("face", Some(face.index()))
             }
             remus_topology::TopologyError::Empty { entity } => (*entity, None),
+            remus_topology::TopologyError::InvalidToleranceValue { entity, .. } => (*entity, None),
+            remus_topology::TopologyError::VertexBallExceeded { vertex, .. } => {
+                ("vertex", Some(vertex.index()))
+            }
+            remus_topology::TopologyError::EdgeTubeExceeded { face, .. } => {
+                ("face", Some(face.index()))
+            }
             remus_topology::TopologyError::NonManifold { .. } => ("topology", None),
         };
         let mut structured = Self::new(WasmErrorCode::TopologyError, message);

@@ -26,4 +26,10 @@ pub enum CheckError {
     /// Distance computation could not find a result.
     #[error("distance computation failed: {0}")]
     DistanceFailed(String),
+
+    /// Curvature analysis failed: the surface is degenerate at the queried
+    /// parameters (apex, pole, spindle parallel) or no valid sample could be
+    /// evaluated.
+    #[error("curvature analysis failed: {0}")]
+    CurvatureFailed(String),
 }

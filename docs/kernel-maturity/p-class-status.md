@@ -26,7 +26,7 @@ Issue 2.0's measured baseline is
 | 2.7 Tangency and sliver contacts | Pending | — |
 | 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation and coupled SSI Newton budget complete; subdivision and parameter-space budgets remain | [PR #138](https://github.com/esaueng/remus/pull/138) + [PR #147](https://github.com/esaueng/remus/pull/147) |
 | 3.1 RFC 0004 | Pending | — |
-| 3.2 Topology substrate | Pending | — |
+| 3.2 Topology substrate | In review — RFC 0004 Stage 1: validated setters, vertex-ball/edge-tube validators, context cap, journal recordability | — |
 | 3.3 Predicate plumbing | Pending | — |
 | 3.4 GFA integration | Pending | — |
 | 3.5 Import and sew integration | Pending | — |
@@ -54,7 +54,7 @@ Issue 2.0's measured baseline is
 | 7.2 Loft continuity and periodic lofts | Pending | — |
 | 7.3 Constrained N-sided fill | Pending | — |
 | 7.4 Surface extension and curve imprint | Pending | — |
-| 7.5 Interrogation | Pending | — |
+| 7.5 Interrogation | Partial — curvature analysis slice (`analyze::curvature` + `getFaceCurvature`/`getFaceMinRadius`); clash, silhouettes, draft pending | — |
 | 8.1 Differential testing harness | Pending | — |
 | 8.2 Performance budget gates | Pending | — |
 | 8.3 Parallel tessellation | Pending | — |
