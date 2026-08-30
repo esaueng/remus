@@ -17,14 +17,14 @@ Issue 2.0's measured baseline is
 | 2.0e Physical Loop/Coedge p-curve authority | Pending | — |
 | 2.0f STEP per-use deterministic round-trip | Pending | — |
 | 2.0g Integration, zero gate, corpus, and docs | Pending | — |
-| 2.1 Honest-failure hygiene | Pending | — |
+| 2.1 Honest-failure hygiene | In review — part 1 (phase-FF unsupported-pair typed refusal); part 2 (pcurve UV-projection refusals) sequenced behind 2.0c's reader migration (same files) | #129 |
 | 2.2 Sphere in general position | Pending | — |
 | 2.3 Steinmetz ellipses | Pending | — |
 | 2.4 Quadric × quadric transversal | Pending | — |
 | 2.5 NURBS × NURBS booleans | Pending | — |
 | 2.6 Scale-relative band audit | Pending | — |
 | 2.7 Tangency and sliver contacts | Pending | — |
-| 2.8 OperationContext budgets and cancellation | Pending | — |
+| 2.8 OperationContext budgets and cancellation | Partial — boolean/SSI cancellation; Newton and parameter-space budgets remain | [PR #138](https://github.com/esaueng/remus/pull/138) |
 | 3.1 RFC 0004 | Pending | — |
 | 3.2 Topology substrate | Pending | — |
 | 3.3 Predicate plumbing | Pending | — |
@@ -54,7 +54,7 @@ Issue 2.0's measured baseline is
 | 7.2 Loft continuity and periodic lofts | Pending | — |
 | 7.3 Constrained N-sided fill | Pending | — |
 | 7.4 Surface extension and curve imprint | Pending | — |
-| 7.5 Interrogation | Pending | — |
+| 7.5 Interrogation | Partial — curvature analysis slice (`analyze::curvature` + `getFaceCurvature`/`getFaceMinRadius`); clash, silhouettes, draft pending | — |
 | 8.1 Differential testing harness | Pending | — |
 | 8.2 Performance budget gates | Pending | — |
 | 8.3 Parallel tessellation | Pending | — |

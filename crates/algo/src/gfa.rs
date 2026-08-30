@@ -105,6 +105,7 @@ fn boolean_with_context_impl(
     solid_b: SolidId,
     context: &OperationContext,
 ) -> Result<SolidId, AlgoError> {
+    context.check_cancelled()?;
     let tol = context.tolerance;
     // Refuse unsupported curve types up front, by name. The pave filler,
     // face splitter and classifier all lack hyperbola/parabola support;
@@ -121,6 +122,7 @@ fn boolean_with_context_impl(
     let mut store = crate::ds::GfaShapeStore::new(topo, solid_a, solid_b)?;
 
     // Stage 1: PaveFiller — intersection + pave block construction
+    context.check_cancelled()?;
     let mut arena = GfaArena::new();
     pave_filler::run_pave_filler_with_context(
         &mut store.topo,
@@ -131,6 +133,7 @@ fn boolean_with_context_impl(
     )?;
 
     // Stage 2: Builder — face splitting + classification
+    context.check_cancelled()?;
     let mut builder = Builder::with_tolerance(
         std::mem::take(&mut store.topo),
         arena,
@@ -141,11 +144,15 @@ fn boolean_with_context_impl(
     builder.perform()?;
 
     // Stage 3: BOP selection + assembly
+    context.check_cancelled()?;
     let (store_topo, store_result) = builder.build_result(op)?;
     store.topo = store_topo;
 
     // Export result solid back to the caller's topology
+    context.check_cancelled()?;
     let result = store.export_solid(topo, store_result)?;
+
+    context.check_cancelled()?;
 
     Ok(result)
 }
