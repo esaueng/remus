@@ -19,7 +19,7 @@ use super::surface_marching::{
 };
 use crate::context::{OperationContext, WorkBudgets};
 
-use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER};
+use super::{IntersectionCurve, IntersectionPoint};
 
 /// Intersect two NURBS surfaces.
 ///
@@ -57,9 +57,10 @@ pub fn intersect_nurbs_nurbs(
 
 /// Intersect two NURBS surfaces under an explicit [`OperationContext`].
 ///
-/// Identical to [`intersect_nurbs_nurbs`], but the marching work budgets
-/// (steps, queue, segments, branches) come from `context.budgets` instead of
-/// module constants. The default context reproduces
+/// Identical to [`intersect_nurbs_nurbs`], but marching and coupled-Newton
+/// work budgets come from `context.budgets` instead of module constants.
+/// Seed discovery, Newton refinement, and marching also poll the context's
+/// cancellation token. The default context reproduces
 /// [`intersect_nurbs_nurbs`] exactly.
 ///
 /// # Errors
@@ -100,9 +101,10 @@ pub fn intersect_nurbs_nurbs_with_context(
     // Phase 1: Find seed points using Bezier subdivision (robust, can't miss branches).
     // Falls back to grid sampling if decomposition fails.
     let seeds = {
-        let sub_seeds = find_ssi_seeds_subdivision(surface1, surface2, tolerance);
+        let sub_seeds =
+            find_ssi_seeds_subdivision_with_context(surface1, surface2, tolerance, context)?;
         if sub_seeds.is_empty() {
-            find_ssi_seeds_grid(surface1, surface2, n, tolerance)
+            find_ssi_seeds_grid_with_context(surface1, surface2, n, tolerance, context)?
         } else {
             sub_seeds
         }
@@ -303,18 +305,30 @@ fn refit_from_samples(ic: &IntersectionCurve) -> IntersectionCurve {
 /// 4. Small overlapping pairs -> seed from centroid + `refine_ssi_point`
 /// 5. Large pairs -> subdivide and recurse (max depth limit)
 #[allow(clippy::cast_precision_loss)]
+#[cfg(test)]
 pub(super) fn find_ssi_seeds_subdivision(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     tolerance: f64,
 ) -> Vec<IntersectionPoint> {
+    find_ssi_seeds_subdivision_with_context(s1, s2, tolerance, &OperationContext::new())
+        .unwrap_or_default()
+}
+
+fn find_ssi_seeds_subdivision_with_context(
+    s1: &NurbsSurface,
+    s2: &NurbsSurface,
+    tolerance: f64,
+    context: &OperationContext,
+) -> Result<Vec<IntersectionPoint>, MathError> {
+    context.check_cancelled()?;
     let patches_a = match surface_to_bezier_patches(s1) {
         Ok(p) => p,
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
     };
     let patches_b = match surface_to_bezier_patches(s2) {
         Ok(p) => p,
-        Err(_) => return Vec::new(),
+        Err(_) => return Ok(Vec::new()),
     };
 
     // Build BVH over B's patches.
@@ -351,9 +365,10 @@ pub(super) fn find_ssi_seeds_subdivision(
         0,
         tolerance,
         &mut seeds,
-    );
+        context,
+    )?;
 
-    seeds
+    Ok(seeds)
 }
 
 /// Recursive helper: subdivide overlapping Bezier patch pairs to find SSI seeds.
@@ -367,15 +382,17 @@ fn subdivide_for_seeds(
     depth: usize,
     tolerance: f64,
     seeds: &mut Vec<IntersectionPoint>,
-) {
+    context: &OperationContext,
+) -> Result<(), MathError> {
     // Cap seed count: marching only needs a few seeds per intersection branch.
     // Near-tangential cases can generate thousands of subdivision candidates,
     // most of which converge to the same curve. 50 seeds is plenty.
     const MAX_SEEDS: usize = 50;
 
     for (pa, pb) in pairs {
+        context.check_cancelled()?;
         if seeds.len() >= MAX_SEEDS {
-            return;
+            return Ok(());
         }
 
         let diag_a = pa.diagonal();
@@ -398,7 +415,9 @@ fn subdivide_for_seeds(
             let u2 = pb.u_mid();
             let v2 = pb.v_mid();
 
-            if let Some(refined) = refine_ssi_point(s1, s2, u1, v1, u2, v2, tolerance) {
+            if let Some(refined) =
+                refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context)?
+            {
                 // 100x dedup: multiple patches may converge to the same intersection
                 let is_dup = seeds
                     .iter()
@@ -425,7 +444,9 @@ fn subdivide_for_seeds(
             let u2 = pb.u_mid();
             let v2 = pb.v_mid();
 
-            if let Some(refined) = refine_ssi_point(s1, s2, u1, v1, u2, v2, tolerance) {
+            if let Some(refined) =
+                refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context)?
+            {
                 // 100x dedup: multiple patches may converge to the same intersection
                 let is_dup = seeds
                     .iter()
@@ -450,7 +471,8 @@ fn subdivide_for_seeds(
                 depth + 1,
                 tolerance,
                 seeds,
-            );
+                context,
+            )?;
         } else {
             // Subdivide patch B.
             let sub_pairs = subdivide_patch_b_check_overlap(pa, pb);
@@ -463,9 +485,12 @@ fn subdivide_for_seeds(
                 depth + 1,
                 tolerance,
                 seeds,
-            );
+                context,
+            )?;
         }
     }
+
+    Ok(())
 }
 
 /// Subdivide patch A at its midpoint and return sub-pairs that overlap with B.
@@ -698,12 +723,25 @@ fn find_split_row(knots: &[f64], split_val: f64, degree: usize, n_cps: usize) ->
 /// refinement for all cell-center pairs whose 3D positions are within
 /// a generous distance threshold.
 #[allow(clippy::cast_precision_loss)]
+#[cfg(test)]
 pub(super) fn find_ssi_seeds_grid(
     s1: &NurbsSurface,
     s2: &NurbsSurface,
     n: usize,
     tolerance: f64,
 ) -> Vec<IntersectionPoint> {
+    find_ssi_seeds_grid_with_context(s1, s2, n, tolerance, &OperationContext::new())
+        .unwrap_or_default()
+}
+
+fn find_ssi_seeds_grid_with_context(
+    s1: &NurbsSurface,
+    s2: &NurbsSurface,
+    n: usize,
+    tolerance: f64,
+    context: &OperationContext,
+) -> Result<Vec<IntersectionPoint>, MathError> {
+    context.check_cancelled()?;
     let (u1_min, u1_max) = s1.domain_u();
     let (v1_min, v1_max) = s1.domain_v();
     let (u2_min, u2_max) = s2.domain_u();
@@ -725,6 +763,7 @@ pub(super) fn find_ssi_seeds_grid(
     let mut pts2: Vec<(f64, f64, Point3)> = Vec::with_capacity(n * n);
 
     for i in 0..n {
+        context.check_cancelled()?;
         let u1 = u1_min + i as f64 * u1_step;
         for j in 0..n {
             let v1 = v1_min + j as f64 * v1_step;
@@ -733,6 +772,7 @@ pub(super) fn find_ssi_seeds_grid(
     }
 
     for i in 0..n {
+        context.check_cancelled()?;
         let u2 = u2_min + i as f64 * u2_step;
         for j in 0..n {
             let v2 = v2_min + j as f64 * v2_step;
@@ -748,10 +788,12 @@ pub(super) fn find_ssi_seeds_grid(
     let threshold = ((diag1.max(diag2) / n as f64) * 3.0).max(0.1);
 
     for &(u1, v1, p1) in &pts1 {
+        context.check_cancelled()?;
         for &(u2, v2, p2) in &pts2 {
             let dist = (p1 - p2).length();
             if dist < threshold
-                && let Some(refined) = refine_ssi_point(s1, s2, u1, v1, u2, v2, tolerance)
+                && let Some(refined) =
+                    refine_ssi_point_with_context(s1, s2, u1, v1, u2, v2, tolerance, context)?
             {
                 // 100x dedup: multiple grid samples may converge to the same intersection
                 let dup = seeds.iter().any(|s: &IntersectionPoint| {
@@ -764,10 +806,11 @@ pub(super) fn find_ssi_seeds_grid(
         }
     }
 
-    seeds
+    Ok(seeds)
 }
 
 #[allow(clippy::similar_names)]
+#[cfg(test)]
 /// Refine an SSI point using coupled 4D Newton iteration.
 ///
 /// Solves `S1(u1,v1) - S2(u2,v2) = 0` directly as a 3x4 system via
@@ -783,10 +826,36 @@ pub(super) fn refine_ssi_point(
     v2_guess: f64,
     tolerance: f64,
 ) -> Option<IntersectionPoint> {
+    refine_ssi_point_with_context(
+        s1,
+        s2,
+        u1_guess,
+        v1_guess,
+        u2_guess,
+        v2_guess,
+        tolerance,
+        &OperationContext::new(),
+    )
+    .ok()
+    .flatten()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn refine_ssi_point_with_context(
+    s1: &NurbsSurface,
+    s2: &NurbsSurface,
+    u1_guess: f64,
+    v1_guess: f64,
+    u2_guess: f64,
+    v2_guess: f64,
+    tolerance: f64,
+    context: &OperationContext,
+) -> Result<Option<IntersectionPoint>, MathError> {
     let mut state = [u1_guess, v1_guess, u2_guess, v2_guess];
     let mut prev_residual = f64::MAX;
 
-    for iteration in 0..MAX_NEWTON_ITER {
+    for iteration in 0..context.budgets.newton_iterations {
+        context.check_cancelled()?;
         let cstate = constrain_state(&state, s1, s2);
         let p1 = s1.evaluate(cstate[0], cstate[1]);
         let p2 = s2.evaluate(cstate[2], cstate[3]);
@@ -794,18 +863,18 @@ pub(super) fn refine_ssi_point(
         let residual = r.length();
 
         if residual < tolerance {
-            return Some(IntersectionPoint {
+            return Ok(Some(IntersectionPoint {
                 point: p1,
                 param1: (cstate[0], cstate[1]),
                 param2: (cstate[2], cstate[3]),
-            });
+            }));
         }
 
         // Early bail-out: if residual isn't decreasing after initial iterations,
         // the surfaces likely don't intersect near this guess. Saves ~25 wasted
         // iterations per non-intersecting patch pair in near-tangential cases.
         if iteration >= 5 && residual > prev_residual * 0.5 {
-            return None;
+            return Ok(None);
         }
         prev_residual = residual;
 
@@ -866,17 +935,18 @@ pub(super) fn refine_ssi_point(
 
     // Final check with relaxed tolerance.
     // 10x relaxation: seed points may be imprecise
+    context.check_cancelled()?;
     let cstate = constrain_state(&state, s1, s2);
     let p1 = s1.evaluate(cstate[0], cstate[1]);
     let p2 = s2.evaluate(cstate[2], cstate[3]);
     if (p1 - p2).length() < tolerance * 10.0 {
-        Some(IntersectionPoint {
+        Ok(Some(IntersectionPoint {
             point: p1,
             param1: (cstate[0], cstate[1]),
             param2: (cstate[2], cstate[3]),
-        })
+        }))
     } else {
-        None
+        Ok(None)
     }
 }
 

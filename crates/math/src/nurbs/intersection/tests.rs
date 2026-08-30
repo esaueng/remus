@@ -5,7 +5,10 @@ use crate::vec::{Point3, Vec3};
 
 use super::surface_marching::march_intersection;
 use super::surface_marching::{near_existing_segment, second_order_tangent};
-use super::surface_seeding::{find_ssi_seeds_grid, find_ssi_seeds_subdivision, refine_ssi_point};
+use super::surface_seeding::{
+    find_ssi_seeds_grid, find_ssi_seeds_subdivision, refine_ssi_point,
+    refine_ssi_point_with_context,
+};
 use super::*;
 
 /// Create a simple bilinear NURBS surface (flat plane at z=0, from (0,0) to (1,1)).
@@ -1232,6 +1235,57 @@ fn with_context_default_matches_legacy_entry_point() {
             );
         }
     }
+}
+
+#[test]
+fn caller_newton_budget_is_authoritative_for_ssi_refinement() {
+    use crate::context::{OperationContext, WorkBudgets};
+
+    let s1 = flat_surface();
+    let s2 = tilted_surface();
+    let full = refine_ssi_point_with_context(
+        &s1,
+        &s2,
+        0.5263,
+        0.5,
+        0.5263,
+        0.5,
+        1e-6,
+        &OperationContext::new(),
+    )
+    .unwrap();
+    assert!(full.is_some(), "default Newton budget must converge");
+
+    let disabled =
+        OperationContext::new().with_budgets(WorkBudgets::new().with_newton_iterations(0));
+    let bounded =
+        refine_ssi_point_with_context(&s1, &s2, 0.5263, 0.5, 0.5263, 0.5, 1e-6, &disabled).unwrap();
+    assert!(
+        bounded.is_none(),
+        "a zero-iteration caller budget must perform no Newton step"
+    );
+}
+
+#[test]
+fn cancellation_is_polled_inside_ssi_newton_refinement() {
+    use crate::MathError;
+    use crate::context::{CancellationToken, OperationContext};
+
+    let token = CancellationToken::new();
+    let context = OperationContext::new().with_cancellation(token.clone());
+    token.cancel();
+
+    let result = refine_ssi_point_with_context(
+        &flat_surface(),
+        &tilted_surface(),
+        0.5263,
+        0.5,
+        0.5263,
+        0.5,
+        1e-6,
+        &context,
+    );
+    assert!(matches!(result, Err(MathError::Cancelled)));
 }
 
 #[test]

@@ -115,7 +115,7 @@ The actual release channel is the committed package: `.github/workflows/publish.
 
 ## CI failures you did not cause
 
-`Cargo.lock` is gitignored, so deny, audit, and MSRV re-resolve dependencies on every CI run; a new advisory or dep release can fail an unrelated PR with zero diff. Never widen `deny.toml` to get green. Triage order, the MSRV and wasm-bindgen pins, and scheduled workflows: see [reference.md](reference.md), "CI failures you did not cause".
+`Cargo.lock` is committed (tracked, not in `.gitignore` — dependabot updates it), so test, clippy, MSRV, wasm, and deny build against the committed resolution. Two jobs can still fail an unrelated PR with zero diff: `audit` runs `cargo generate-lockfile` explicitly (fresh resolution, so a newly released or newly advisoried dep can flip it), and `deny`/`audit` both fetch the advisory database live (a new advisory fails without any re-resolution). Never widen `deny.toml` to get green. Triage order, the MSRV and wasm-bindgen pins, and scheduled workflows: see [reference.md](reference.md), "CI failures you did not cause".
 
 ## Symptoms
 

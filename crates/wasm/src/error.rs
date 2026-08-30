@@ -526,6 +526,31 @@ pub fn validate_work_product(left: u32, right: u32, name: &str) -> Result<usize,
     Ok(work as usize)
 }
 
+/// Validate a JS-supplied iteration budget (a non-negative integer count).
+///
+/// Zero is legal — it disables the governed refinement entirely, matching the
+/// Rust-side `WorkBudgets` semantics. The upper bound reuses the public work
+/// budget so a JS caller cannot buy unbounded per-refinement work.
+///
+/// # Errors
+///
+/// Returns [`WasmError::InvalidInput`] if `value` is NaN, infinite, negative,
+/// fractional, or exceeds the public work budget.
+pub fn validate_iteration_budget(value: f64, name: &str) -> Result<usize, WasmError> {
+    validate_finite(value, name)?;
+    if value < 0.0 || value.fract() != 0.0 {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} must be a non-negative integer, got {value}"),
+        });
+    }
+    if value > f64::from(MAX_WASM_WORK_ITEMS) {
+        return Err(WasmError::InvalidInput {
+            reason: format!("{name} must be at most {MAX_WASM_WORK_ITEMS}, got {value}"),
+        });
+    }
+    Ok(value as usize)
+}
+
 /// Bound a potentially quadratic face-pair query before topology work starts.
 ///
 /// # Errors

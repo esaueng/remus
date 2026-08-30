@@ -126,6 +126,9 @@ pub struct WorkBudgets {
     pub segments: usize,
     /// Maximum branch points detected per march direction.
     pub branches_per_direction: usize,
+    /// Maximum coupled Newton iterations for one NURBS surface-surface
+    /// intersection refinement.
+    pub newton_iterations: usize,
 }
 
 impl WorkBudgets {
@@ -137,6 +140,7 @@ impl WorkBudgets {
             queue_size: 100,
             segments: 50,
             branches_per_direction: 10,
+            newton_iterations: 20,
         }
     }
 
@@ -165,6 +169,13 @@ impl WorkBudgets {
     #[must_use]
     pub const fn with_branches_per_direction(mut self, value: usize) -> Self {
         self.branches_per_direction = value;
+        self
+    }
+
+    /// Returns budgets with the given coupled-Newton iteration cap.
+    #[must_use]
+    pub const fn with_newton_iterations(mut self, value: usize) -> Self {
+        self.newton_iterations = value;
         self
     }
 }
@@ -304,6 +315,7 @@ mod tests {
         assert_eq!(b.queue_size, 100);
         assert_eq!(b.segments, 50);
         assert_eq!(b.branches_per_direction, 10);
+        assert_eq!(b.newton_iterations, 20);
     }
 
     #[test]
