@@ -886,7 +886,17 @@ mod tests {
             let b = vertex(&mut topo, &c, std::f64::consts::PI);
             let e0 = arc(&mut topo, a, b, &c);
             let e1 = arc(&mut topo, b, a, &c);
-            topo.edge_mut(e0).unwrap().set_tolerance(edge_tolerance);
+            // Rebuild the edge through `with_tolerance` (an unchecked stored
+            // claim): `set_tolerance` refuses invalid values (RFC 0004), and
+            // this test needs the invalid value stored to exercise the
+            // downstream refusal.
+            let (e0_start, e0_end, e0_curve, e0_trim) = {
+                let e = topo.edge(e0).unwrap();
+                (e.start(), e.end(), e.curve().clone(), e.trim())
+            };
+            let mut invalid_edge = Edge::with_tolerance(e0_start, e0_end, e0_curve, edge_tolerance);
+            invalid_edge.set_trim(e0_trim);
+            *topo.edge_mut(e0).unwrap() = invalid_edge;
             let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
             let counts_before = (
                 topo.num_vertices(),
