@@ -247,7 +247,7 @@ disclosed, not silent.
 
 — partial: boolean/NURBS-SSI cooperative cancellation is typed,
 transactional, and WASM-bound; Newton and parameter-space budgets plus wider
-operation-family adoption remain (this PR).
+operation-family adoption remain ([PR #138](https://github.com/esaueng/remus/pull/138)).
 
 `crates/math/src/context.rs` · `crates/algo/src/pave_filler/` ·
 `crates/math/src/nurbs/intersection/` · `crates/wasm/src/bindings/`
