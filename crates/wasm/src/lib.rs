@@ -35,10 +35,12 @@ pub use types::FaceEvolutionPayloadV1;
 ///
 /// Returns an error if `json` is malformed or violates the version-1 contract.
 #[wasm_bindgen(js_name = "decodeEvolutionPayload")]
-pub fn decode_evolution_payload(json: &str) -> Result<FaceEvolutionPayloadV1, JsError> {
+pub fn decode_evolution_payload(json: &str) -> Result<tsify::Ts<FaceEvolutionPayloadV1>, JsError> {
+    use tsify::Tsify as _;
     const MAX_EVOLUTION_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
     if json.len() > MAX_EVOLUTION_PAYLOAD_BYTES {
         return Err(JsError::new("evolution payload exceeds the 4 MiB limit"));
     }
-    FaceEvolutionPayloadV1::decode(json).map_err(|error| JsError::new(&error))
+    let payload = FaceEvolutionPayloadV1::decode(json).map_err(|error| JsError::new(&error))?;
+    Ok(payload.into_ts()?)
 }

@@ -1324,7 +1324,8 @@ mod tests {
             let edge_id = solid_edges(&topo, solid).unwrap()[0];
             topo.edge_mut(edge_id)
                 .unwrap()
-                .set_tolerance(Some(tolerance));
+                .set_tolerance(Some(tolerance))
+                .unwrap();
             let vertex_id = solid_vertices(&topo, solid).unwrap()[0];
             let point = topo.vertex(vertex_id).unwrap().point();
             *topo.vertex_mut(vertex_id).unwrap() = Vertex::new(point, tolerance * 0.5);
@@ -1349,7 +1350,18 @@ mod tests {
             let mut topo = Topology::new();
             let solid = make_unit_cube_non_manifold(&mut topo);
             let edge_id = solid_edges(&topo, solid).unwrap()[0];
-            topo.edge_mut(edge_id).unwrap().set_tolerance(Some(invalid));
+            // Rebuild the edge through `with_tolerance` (an unchecked stored
+            // claim): `set_tolerance` refuses invalid values (RFC 0004), and
+            // this test needs the invalid value stored so the writer's own
+            // refusal path is exercised.
+            let (e_start, e_end, e_curve, e_trim) = {
+                let e = topo.edge(edge_id).unwrap();
+                (e.start(), e.end(), e.curve().clone(), e.trim())
+            };
+            let mut invalid_edge =
+                remus_topology::edge::Edge::with_tolerance(e_start, e_end, e_curve, Some(invalid));
+            invalid_edge.set_trim(e_trim);
+            *topo.edge_mut(edge_id).unwrap() = invalid_edge;
 
             assert!(matches!(
                 write_step(&topo, &[solid]),
