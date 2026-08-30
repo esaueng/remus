@@ -109,6 +109,14 @@ starting with one high-risk intersection path and one boolean path) carrying:
 - determinism options;
 - diagnostics sink.
 
+Current implementation: public booleans consume tolerance and fallback policy;
+NURBS SSI consumes marching/queue/segment/branch budgets; both consume the
+optional monotonic `CancellationToken`. GFA polls between phases and face
+pairs, and SSI polls at phase boundaries plus every marcher/adaptive-step
+iteration. Cancellation returns typed `operation_cancelled` and the boolean
+transaction restores the pre-operation topology. The other fields above remain
+the target contract, not a claim of complete implementation.
+
 The kernel's millimetre/radian convention is retained. Algorithm-local magic
 epsilons in high-risk paths are replaced by named, scale-aware policy values
 derived from the context — classified as physical-space tolerance,

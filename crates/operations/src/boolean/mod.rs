@@ -265,8 +265,11 @@ fn boolean_with_operation_context(
     opts: &BooleanOptions,
     used_fallback: &mut bool,
 ) -> Result<SolidId, crate::OperationsError> {
+    context.check_cancelled()?;
     let result = boolean_with_context_impl(topo, op, a, b, context, opts, used_fallback)?;
+    context.check_cancelled()?;
     normalize_hole_windings(topo, result)?;
+    context.check_cancelled()?;
     Ok(result)
 }
 
@@ -1212,6 +1215,9 @@ fn boolean_with_context_impl(
         Err(e @ remus_algo::error::AlgoError::UnsupportedCurve { .. }) => {
             return Err(crate::OperationsError::Algo(e));
         }
+        Err(e @ remus_algo::error::AlgoError::Math(remus_math::MathError::Cancelled)) => {
+            return Err(crate::OperationsError::Algo(e));
+        }
         Err(e) => {
             log::warn!(
                 "GFA boolean failed in {:.1}ms ({e}), falling back",
@@ -1219,6 +1225,8 @@ fn boolean_with_context_impl(
             );
         }
     }
+
+    context.check_cancelled()?;
 
     // When the input solid carries multiple disjoint pieces (a previous
     // cut split a solid into N parts), GFA's pavefiller can't process

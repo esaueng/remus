@@ -289,6 +289,7 @@ pub fn perform_with_context(
     context: &OperationContext,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    context.check_cancelled()?;
     let tol = context.tolerance;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
@@ -358,10 +359,12 @@ pub fn perform_with_context(
     let ff_trace = ff_trace_x();
 
     for (idx_a, &fa) in faces_a.iter().enumerate() {
+        context.check_cancelled()?;
         let bbox_a = &bboxes_a[idx_a];
         let surf_a = &surfs_a[idx_a];
 
         for (idx_b, &fb) in faces_b.iter().enumerate() {
+            context.check_cancelled()?;
             let bbox_b = &bboxes_b[idx_b];
 
             let traced = ff_trace.is_some_and(|x| {
@@ -3584,6 +3587,7 @@ fn compute_raw_curves(
     v_range_b: Option<(f64, f64)>,
     context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
+    context.check_cancelled()?;
     match (surf_a, surf_b) {
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
             plane_plane_intersection(*na, *da, *nb, *db, bbox_a, bbox_b)
