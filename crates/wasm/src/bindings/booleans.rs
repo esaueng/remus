@@ -14,6 +14,7 @@ use crate::helpers::{build_triangle_mesh, panic_message, parse_boolean_op, trian
 use crate::kernel::BrepKernel;
 use crate::shapes::JsMesh;
 use crate::types::{BooleanQualityResult, CancellableBooleanResult, CancellableOperationStatus};
+use tsify::Tsify as _;
 
 /// A one-shot cooperative cancellation signal for a modeling operation.
 ///
@@ -112,6 +113,21 @@ impl BrepKernel {
         a: u32,
         b: u32,
         exact_only: Option<bool>,
+    ) -> Result<tsify::Ts<crate::types::BooleanQualityResult>, JsError> {
+        Ok(self
+            .boolean_with_quality_impl(op, a, b, exact_only)?
+            .into_ts()?)
+    }
+}
+
+/// Natively-testable boolean bodies (`Ts` cannot be inspected off-wasm).
+impl BrepKernel {
+    pub(crate) fn boolean_with_quality_impl(
+        &mut self,
+        op: &str,
+        a: u32,
+        b: u32,
+        exact_only: Option<bool>,
     ) -> Result<crate::types::BooleanQualityResult, JsError> {
         use remus_math::context::{FallbackPolicy, OperationContext};
         use remus_operations::boolean::{BooleanQuality, boolean_with_context};
@@ -143,8 +159,7 @@ impl BrepKernel {
     /// Cancellation is typed (`operation_cancelled`) and transactional: no
     /// partial topology is retained. Result quality follows
     /// `booleanWithQuality`, including the optional exact-only policy.
-    #[wasm_bindgen(js_name = "booleanWithCancellation")]
-    pub fn boolean_with_cancellation(
+    pub(crate) fn boolean_with_cancellation_typed(
         &mut self,
         op: &str,
         a: u32,
@@ -165,6 +180,28 @@ impl BrepKernel {
             }),
             Err(error) => Err(JsError::new(&error.to_string())),
         }
+    }
+}
+
+#[wasm_bindgen]
+impl BrepKernel {
+    /// Performs a boolean governed by a cooperative cancellation token.
+    ///
+    /// Cancellation is typed (`operation_cancelled`) and transactional: no
+    /// partial topology is retained. Result quality follows
+    /// `booleanWithQuality`, including the optional exact-only policy.
+    #[wasm_bindgen(js_name = "booleanWithCancellation")]
+    pub fn boolean_with_cancellation(
+        &mut self,
+        op: &str,
+        a: u32,
+        b: u32,
+        token: &OperationCancellationToken,
+        exact_only: Option<bool>,
+    ) -> Result<tsify::Ts<CancellableBooleanResult>, JsError> {
+        Ok(self
+            .boolean_with_cancellation_typed(op, a, b, token, exact_only)?
+            .into_ts()?)
     }
 
     /// Fuse (union) two solids into one.
@@ -661,7 +698,7 @@ mod tests {
         assert_eq!(structured["details"]["kernelCode"], "operation_cancelled");
 
         let public = kernel
-            .boolean_with_cancellation("fuse", a, b, &token, Some(true))
+            .boolean_with_cancellation_typed("fuse", a, b, &token, Some(true))
             .unwrap();
         assert_eq!(public.status, CancellableOperationStatus::Cancelled);
         assert_eq!(public.code.as_deref(), Some("operation_cancelled"));
@@ -676,7 +713,7 @@ mod tests {
         let token = OperationCancellationToken::new();
 
         let public = kernel
-            .boolean_with_cancellation("fuse", a, b, &token, Some(true))
+            .boolean_with_cancellation_typed("fuse", a, b, &token, Some(true))
             .unwrap();
 
         assert_eq!(public.status, CancellableOperationStatus::Completed);
@@ -1075,7 +1112,7 @@ mod tests {
         let mut k = BrepKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
-        let out = k.boolean_with_quality("fuse", a, b, None).unwrap();
+        let out = k.boolean_with_quality_impl("fuse", a, b, None).unwrap();
         assert_eq!(out.quality, "exact");
         assert!(out.deflection.is_none());
         let volume = k.volume(out.solid, 0.05).unwrap();
@@ -1087,7 +1124,9 @@ mod tests {
         let mut k = BrepKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
-        let out = k.boolean_with_quality("cut", a, b, Some(true)).unwrap();
+        let out = k
+            .boolean_with_quality_impl("cut", a, b, Some(true))
+            .unwrap();
         assert_eq!(out.quality, "exact");
     }
 }
