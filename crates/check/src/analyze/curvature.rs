@@ -162,8 +162,10 @@ pub fn surface_curvature(
 /// boundary samples into surface parameters. For primitive-style boundaries
 /// (circles at constant parameter, rulings, seams) those projections are
 /// exact; for exotic trims whose parameter extremes fall between boundary
-/// samples the result can only overstate the curvature, i.e. understate the
-/// radius (the conservative direction).
+/// samples the sampled extreme can miss the true one, so the result may
+/// overstate the minimum radius (understate the curvature). Callers using
+/// this as a safety bound ("is radius X feasible everywhere?") must treat it
+/// as an upper estimate of the true minimum, not a guaranteed floor.
 ///
 /// # Errors
 ///
