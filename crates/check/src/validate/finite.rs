@@ -57,7 +57,18 @@ pub fn check_edge_finite(
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.domain_with_endpoints(start, end);
+    let (t0, t1) = match edge.strict_domain() {
+        Ok(domain) => domain,
+        Err(error) => {
+            return Ok(vec![ValidationIssue {
+                check: CheckId::GeometryFinite,
+                severity: Severity::Error,
+                entity: EntityRef::Edge(edge_id),
+                description: error.to_string(),
+                deviation: None,
+            }]);
+        }
+    };
     if !t0.is_finite() || !t1.is_finite() {
         return Ok(vec![ValidationIssue {
             check: CheckId::GeometryFinite,
@@ -147,4 +158,39 @@ pub fn check_face_finite(
     }
 
     Ok(vec![])
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    use super::*;
+
+    #[test]
+    fn finite_check_requires_authority_and_accepts_a_reversed_major_range() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let range = (5.5, 0.5);
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(range.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(range.1), 1e-7));
+        let edge_id = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
+
+        let issues = check_edge_finite(&topo, edge_id).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].check, CheckId::GeometryFinite);
+        assert!(
+            issues[0]
+                .description
+                .contains("no authoritative parameter range")
+        );
+
+        topo.edge_mut(edge_id).unwrap().set_trim(Some(range));
+        assert!(check_edge_finite(&topo, edge_id).unwrap().is_empty());
+    }
 }

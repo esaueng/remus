@@ -134,6 +134,12 @@ pub enum BlendError {
     Math(#[from] remus_math::MathError),
 }
 
+pub(crate) fn edge_domain_input(error: remus_topology::edge::EdgeDomainError) -> BlendError {
+    BlendError::InvalidInput {
+        reason: error.to_string(),
+    }
+}
+
 /// Exact face provenance, recorded by the builder while it assembled the
 /// result rather than inferred from the result's geometry afterwards.
 ///

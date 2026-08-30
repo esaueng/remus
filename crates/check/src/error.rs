@@ -33,3 +33,7 @@ pub enum CheckError {
     #[error("curvature analysis failed: {0}")]
     CurvatureFailed(String),
 }
+
+pub(crate) fn edge_domain_validation(error: remus_topology::edge::EdgeDomainError) -> CheckError {
+    CheckError::ValidationFailed(error.to_string())
+}

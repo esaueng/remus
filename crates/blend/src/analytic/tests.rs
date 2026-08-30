@@ -1,16 +1,34 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
-use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::edge::EdgeCurve;
 use remus_topology::face::Face;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
+
+fn authoritative_edge(
+    start: remus_topology::vertex::VertexId,
+    end: remus_topology::vertex::VertexId,
+    curve: EdgeCurve,
+) -> remus_topology::edge::Edge {
+    let trim = match &curve {
+        EdgeCurve::Line => None,
+        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => Some((0.0, std::f64::consts::TAU)),
+        EdgeCurve::NurbsCurve(curve) => Some(curve.domain()),
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            panic!("analytic blend fixture requires an explicit open-conic range")
+        }
+    };
+    let mut edge = remus_topology::edge::Edge::new(start, end, curve);
+    edge.set_trim(trim);
+    edge
+}
 
 /// Create a spine along a single edge from `a` to `b`, plus two dummy faces.
 fn make_spine(topo: &mut Topology, a: Point3, b: Point3) -> (Spine, FaceId, FaceId) {
     let v0 = topo.add_vertex(Vertex::new(a, 1e-7));
     let v1 = topo.add_vertex(Vertex::new(b, 1e-7));
-    let eid = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+    let eid = topo.add_edge(authoritative_edge(v0, v1, EdgeCurve::Line));
 
     let oe = OrientedEdge::new(eid, true);
     let w1 = topo.add_wire(Wire::new(vec![oe], false).unwrap());
@@ -237,7 +255,7 @@ fn non_analytic_returns_none() {
 fn plane_cylinder_fillet_concave_emits_torus_with_smaller_major() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -250,7 +268,7 @@ fn plane_cylinder_fillet_concave_emits_torus_with_smaller_major() {
     // sharing a single vertex (start == end) since the spine wraps.
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Plate face — non-reversed, normal = +z (top of plate).
@@ -339,7 +357,7 @@ fn plane_cylinder_fillet_concave_emits_torus_with_smaller_major() {
 fn plane_cylinder_fillet_rim_emits_torus_with_smaller_major() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -350,7 +368,7 @@ fn plane_cylinder_fillet_rim_emits_torus_with_smaller_major() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -427,7 +445,7 @@ fn plane_cylinder_fillet_rim_emits_torus_with_smaller_major() {
 fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -438,7 +456,7 @@ fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
         let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, 0.0), 1e-7));
         let circle =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
-        let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+        let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
         let spine = Spine::from_single_edge(topo, eid).unwrap();
         let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
         let face_plate = topo.add_face(Face::new(
@@ -542,7 +560,7 @@ fn plane_cylinder_fillet_inward_is_bounded_by_the_cylinder_radius() {
 fn plane_cone_fillet_concave_emits_torus_with_smaller_major() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -556,7 +574,7 @@ fn plane_cone_fillet_concave_emits_torus_with_smaller_major() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Plate face: outward = +z (top of plate, plate material below).
@@ -636,7 +654,7 @@ fn plane_cone_fillet_concave_emits_torus_with_smaller_major() {
 fn plane_cone_fillet_concave_rejects_spindle_radius() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -651,7 +669,7 @@ fn plane_cone_fillet_concave_rejects_spindle_radius() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
     let face_plate = topo.add_face(Face::new(
@@ -734,7 +752,7 @@ fn plane_cone_fillet_concave_rejects_spindle_radius() {
 fn plane_cylinder_chamfer_concave_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -745,7 +763,7 @@ fn plane_cylinder_chamfer_concave_emits_cone() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Plate top face: outward = +z (raw — chamfer dispatcher passes
@@ -851,7 +869,7 @@ fn plane_cylinder_chamfer_concave_emits_cone() {
 fn plane_sphere_fillet_convex_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -865,7 +883,7 @@ fn plane_sphere_fillet_convex_emits_torus() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Plate top face at z=0 with raw outward = +z (away from plate
@@ -984,7 +1002,7 @@ fn plane_sphere_fillet_convex_emits_torus() {
 fn plane_sphere_fillet_concave_emits_torus_with_smaller_major() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -998,7 +1016,7 @@ fn plane_sphere_fillet_concave_emits_torus_with_smaller_major() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1110,7 +1128,7 @@ fn plane_sphere_fillet_concave_emits_torus_with_smaller_major() {
 fn plane_sphere_fillet_concave_rejects_spindle_radius() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1123,7 +1141,7 @@ fn plane_sphere_fillet_concave_rejects_spindle_radius() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1171,7 +1189,7 @@ fn plane_sphere_fillet_concave_rejects_spindle_radius() {
     let mut topo2 = Topology::new();
     let v2 = topo2.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle2 = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid2 = topo2.add_edge(Edge::new(v2, v2, EdgeCurve::Circle(circle2)));
+    let eid2 = topo2.add_edge(authoritative_edge(v2, v2, EdgeCurve::Circle(circle2)));
     let spine2 = Spine::from_single_edge(&topo2, eid2).unwrap();
     let w1b = topo2.add_wire(Wire::new(vec![OrientedEdge::new(eid2, true)], true).unwrap());
     let face_plate2 = topo2.add_face(Face::new(
@@ -1222,7 +1240,7 @@ fn plane_sphere_fillet_concave_rejects_spindle_radius() {
 fn plane_sphere_chamfer_convex_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1236,7 +1254,7 @@ fn plane_sphere_chamfer_convex_emits_cone() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1357,7 +1375,7 @@ fn plane_sphere_chamfer_convex_emits_cone() {
 fn plane_sphere_chamfer_concave_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1371,7 +1389,7 @@ fn plane_sphere_chamfer_concave_emits_cone() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1504,7 +1522,7 @@ fn plane_sphere_chamfer_concave_emits_cone() {
 fn sphere_sphere_fillet_convex_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1529,7 +1547,7 @@ fn sphere_sphere_fillet_convex_emits_torus() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1627,7 +1645,7 @@ fn sphere_sphere_fillet_convex_emits_torus() {
 fn sphere_sphere_fillet_both_concave_emits_smaller_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1647,7 +1665,7 @@ fn sphere_sphere_fillet_both_concave_emits_smaller_torus() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1742,7 +1760,7 @@ fn sphere_sphere_fillet_both_concave_emits_smaller_torus() {
 fn sphere_sphere_fillet_concave_rejects_collapsing_q() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1762,7 +1780,7 @@ fn sphere_sphere_fillet_concave_rejects_collapsing_q() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1788,7 +1806,7 @@ fn sphere_sphere_fillet_concave_rejects_collapsing_q() {
     let mut topo2 = Topology::new();
     let v2 = topo2.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
     let circle2 = Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid2 = topo2.add_edge(Edge::new(v2, v2, EdgeCurve::Circle(circle2)));
+    let eid2 = topo2.add_edge(authoritative_edge(v2, v2, EdgeCurve::Circle(circle2)));
     let spine2 = Spine::from_single_edge(&topo2, eid2).unwrap();
     let w1b = topo2.add_wire(Wire::new(vec![OrientedEdge::new(eid2, true)], true).unwrap());
     let face1b = topo2.add_face(Face::new(w1b, vec![], FaceSurface::Sphere(s1.clone())));
@@ -1820,7 +1838,7 @@ fn sphere_sphere_fillet_concave_rejects_collapsing_q() {
 fn sphere_sphere_fillet_mixed_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1840,7 +1858,7 @@ fn sphere_sphere_fillet_mixed_emits_torus() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -1942,7 +1960,7 @@ fn sphere_sphere_fillet_mixed_emits_torus() {
 fn sphere_sphere_chamfer_convex_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -1962,7 +1980,7 @@ fn sphere_sphere_chamfer_convex_emits_cone() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2061,7 +2079,7 @@ fn sphere_sphere_chamfer_convex_emits_cone() {
 fn sphere_cylinder_fillet_convex_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2080,7 +2098,7 @@ fn sphere_cylinder_fillet_convex_emits_torus() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, h_s), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, h_s), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2177,7 +2195,7 @@ fn sphere_cylinder_fillet_convex_emits_torus() {
 fn sphere_cylinder_chamfer_convex_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2195,7 +2213,7 @@ fn sphere_cylinder_chamfer_convex_emits_cone() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, h_s), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, h_s), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2295,7 +2313,7 @@ fn sphere_cylinder_chamfer_convex_emits_cone() {
 fn sphere_sphere_chamfer_both_concave_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2315,7 +2333,7 @@ fn sphere_sphere_chamfer_both_concave_emits_cone() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2404,7 +2422,7 @@ fn sphere_sphere_chamfer_both_concave_emits_cone() {
 fn sphere_sphere_chamfer_mixed_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::SphericalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2434,7 +2452,7 @@ fn sphere_sphere_chamfer_mixed_emits_cone() {
         let spine_circle =
             Circle3D::new(Point3::new(0.0, 0.0, a0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
         let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, a0), 1e-7));
-        let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+        let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
         let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
         let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2530,7 +2548,7 @@ fn sphere_sphere_chamfer_mixed_emits_cone() {
 fn sphere_cylinder_chamfer_both_concave_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2547,7 +2565,7 @@ fn sphere_cylinder_chamfer_both_concave_emits_cone() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, h_s), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, h_s), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2628,7 +2646,7 @@ fn sphere_cylinder_chamfer_both_concave_emits_cone() {
 fn sphere_cylinder_chamfer_mixed_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2645,7 +2663,7 @@ fn sphere_cylinder_chamfer_mixed_emits_cone() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, h_s), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, h_s), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Sphere convex (NOT reversed), cyl concave (REVERSED).
@@ -2727,7 +2745,7 @@ fn sphere_cylinder_chamfer_mixed_emits_cone() {
 fn try_analytic_chamfer_cylinder_sphere_dispatch_swaps_correctly() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2746,7 +2764,7 @@ fn try_analytic_chamfer_cylinder_sphere_dispatch_swaps_correctly() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, h_s), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, h_s), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Note the ordering: cylinder is FIRST, sphere is SECOND.
@@ -2825,7 +2843,7 @@ fn try_analytic_chamfer_cylinder_sphere_dispatch_swaps_correctly() {
 fn sphere_cone_fillet_convex_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{ConicalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2860,7 +2878,7 @@ fn sphere_cone_fillet_convex_emits_torus() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -2960,7 +2978,7 @@ fn sphere_cone_fillet_convex_emits_torus() {
 fn sphere_cone_fillet_concave_cone_emits_smaller_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{ConicalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -2994,7 +3012,7 @@ fn sphere_cone_fillet_concave_cone_emits_smaller_torus() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Sphere face NOT reversed (convex post); cone face REVERSED
@@ -3100,7 +3118,7 @@ fn sphere_cone_fillet_concave_cone_emits_smaller_torus() {
 fn sphere_cone_fillet_both_concave_emits_smaller_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{ConicalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3134,7 +3152,7 @@ fn sphere_cone_fillet_both_concave_emits_smaller_torus() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED (sphere cavity meets cone cavity).
@@ -3239,7 +3257,7 @@ fn sphere_cone_fillet_both_concave_emits_smaller_torus() {
 fn sphere_cone_chamfer_convex_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{ConicalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3274,7 +3292,7 @@ fn sphere_cone_chamfer_convex_emits_cone() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -3381,7 +3399,7 @@ fn sphere_cone_chamfer_convex_emits_cone() {
 fn sphere_cone_chamfer_both_concave_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{ConicalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3415,7 +3433,7 @@ fn sphere_cone_chamfer_both_concave_emits_cone() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED.
@@ -3510,7 +3528,7 @@ fn sphere_cone_chamfer_both_concave_emits_cone() {
 fn sphere_cone_chamfer_mixed_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{ConicalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3544,7 +3562,7 @@ fn sphere_cone_chamfer_mixed_emits_cone() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Sphere NOT reversed, cone REVERSED.
@@ -3634,7 +3652,7 @@ fn sphere_cone_chamfer_mixed_emits_cone() {
 #[test]
 fn cylinder_cylinder_fillet_parallel_axes_emits_cylinder() {
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3667,7 +3685,11 @@ fn cylinder_cylinder_fillet_parallel_axes_emits_cylinder() {
         vec![1.0, 1.0],
     )
     .unwrap();
-    let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(line)));
+    let eid = topo.add_edge(authoritative_edge(
+        v_start,
+        v_end,
+        EdgeCurve::NurbsCurve(line),
+    ));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], false).unwrap());
@@ -3750,7 +3772,7 @@ fn cylinder_cylinder_fillet_parallel_axes_emits_cylinder() {
 #[test]
 fn cylinder_cylinder_fillet_both_concave_emits_cylinder() {
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3781,7 +3803,11 @@ fn cylinder_cylinder_fillet_both_concave_emits_cylinder() {
         vec![1.0, 1.0],
     )
     .unwrap();
-    let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(line)));
+    let eid = topo.add_edge(authoritative_edge(
+        v_start,
+        v_end,
+        EdgeCurve::NurbsCurve(line),
+    ));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED.
@@ -3889,7 +3915,7 @@ fn cylinder_cylinder_fillet_both_concave_emits_cylinder() {
 #[test]
 fn cylinder_cylinder_fillet_mixed_emits_cylinder() {
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -3922,7 +3948,11 @@ fn cylinder_cylinder_fillet_mixed_emits_cylinder() {
             vec![1.0, 1.0],
         )
         .unwrap();
-        let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(line)));
+        let eid = topo.add_edge(authoritative_edge(
+            v_start,
+            v_end,
+            EdgeCurve::NurbsCurve(line),
+        ));
         let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
         let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], false).unwrap());
@@ -4038,7 +4068,7 @@ fn cylinder_cylinder_fillet_mixed_emits_cylinder() {
 fn cone_cone_coaxial_fillet_convex_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4066,7 +4096,7 @@ fn cone_cone_coaxial_fillet_convex_emits_torus() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -4182,7 +4212,7 @@ fn cone_cone_coaxial_fillet_convex_emits_torus() {
 fn cone_cone_coaxial_fillet_both_concave_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4209,7 +4239,7 @@ fn cone_cone_coaxial_fillet_both_concave_emits_torus() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED.
@@ -4338,7 +4368,7 @@ fn cone_cone_coaxial_fillet_both_concave_emits_torus() {
 fn cone_cone_coaxial_fillet_mixed_emits_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4366,7 +4396,7 @@ fn cone_cone_coaxial_fillet_mixed_emits_torus() {
         )
         .unwrap();
         let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-        let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+        let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
         let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
         let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -4475,7 +4505,7 @@ fn cone_cone_coaxial_fillet_mixed_emits_torus() {
 #[test]
 fn cylinder_cylinder_chamfer_convex_emits_plane() {
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4506,7 +4536,11 @@ fn cylinder_cylinder_chamfer_convex_emits_plane() {
         vec![1.0, 1.0],
     )
     .unwrap();
-    let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(line)));
+    let eid = topo.add_edge(authoritative_edge(
+        v_start,
+        v_end,
+        EdgeCurve::NurbsCurve(line),
+    ));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], false).unwrap());
@@ -4592,7 +4626,7 @@ fn cylinder_cylinder_chamfer_convex_emits_plane() {
 #[test]
 fn cylinder_cylinder_chamfer_both_concave_negative_y_emits_plane() {
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4623,7 +4657,11 @@ fn cylinder_cylinder_chamfer_both_concave_negative_y_emits_plane() {
         vec![1.0, 1.0],
     )
     .unwrap();
-    let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(line)));
+    let eid = topo.add_edge(authoritative_edge(
+        v_start,
+        v_end,
+        EdgeCurve::NurbsCurve(line),
+    ));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED.
@@ -4726,7 +4764,7 @@ fn cylinder_cylinder_chamfer_both_concave_negative_y_emits_plane() {
 #[test]
 fn cylinder_cylinder_chamfer_mixed_emits_plane() {
     use remus_math::surfaces::CylindricalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4759,7 +4797,11 @@ fn cylinder_cylinder_chamfer_mixed_emits_plane() {
             vec![1.0, 1.0],
         )
         .unwrap();
-        let eid = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::NurbsCurve(line)));
+        let eid = topo.add_edge(authoritative_edge(
+            v_start,
+            v_end,
+            EdgeCurve::NurbsCurve(line),
+        ));
         let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
         let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], false).unwrap());
@@ -4856,7 +4898,7 @@ fn cylinder_cylinder_chamfer_mixed_emits_plane() {
 fn cone_cone_coaxial_chamfer_convex_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -4883,7 +4925,7 @@ fn cone_cone_coaxial_chamfer_convex_emits_cone() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -4992,7 +5034,7 @@ fn cone_cone_coaxial_chamfer_convex_emits_cone() {
 fn cone_cone_coaxial_chamfer_both_concave_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -5019,7 +5061,7 @@ fn cone_cone_coaxial_chamfer_both_concave_emits_cone() {
     )
     .unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED.
@@ -5142,7 +5184,7 @@ fn cone_cone_coaxial_chamfer_both_concave_emits_cone() {
 fn cone_cone_coaxial_chamfer_mixed_emits_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -5170,7 +5212,7 @@ fn cone_cone_coaxial_chamfer_mixed_emits_cone() {
         )
         .unwrap();
         let v = topo.add_vertex(Vertex::new(Point3::new(r_spine, 0.0, z_spine), 1e-7));
-        let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+        let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
         let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
         let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
@@ -5285,7 +5327,7 @@ fn cone_cone_coaxial_chamfer_mixed_emits_cone() {
 fn sphere_cylinder_fillet_both_concave_emits_smaller_torus() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -5302,7 +5344,7 @@ fn sphere_cylinder_fillet_both_concave_emits_smaller_torus() {
     let spine_circle =
         Circle3D::new(Point3::new(0.0, 0.0, h_s), Vec3::new(0.0, 0.0, 1.0), r_c).unwrap();
     let v = topo.add_vertex(Vertex::new(Point3::new(r_c, 0.0, h_s), 1e-7));
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(spine_circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(spine_circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     // Both faces REVERSED.
@@ -5428,7 +5470,7 @@ fn sphere_cylinder_fillet_both_concave_emits_smaller_torus() {
 fn plane_cone_chamfer_concave_emits_chamfer_cone() {
     use remus_math::curves::Circle3D;
     use remus_math::surfaces::ConicalSurface;
-    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::edge::EdgeCurve;
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
@@ -5441,7 +5483,7 @@ fn plane_cone_chamfer_concave_emits_chamfer_cone() {
 
     let v = topo.add_vertex(Vertex::new(Point3::new(r_p, 0.0, 0.0), 1e-7));
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r_p).unwrap();
-    let eid = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+    let eid = topo.add_edge(authoritative_edge(v, v, EdgeCurve::Circle(circle)));
     let spine = Spine::from_single_edge(&topo, eid).unwrap();
 
     let w1 = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, true)], true).unwrap());
