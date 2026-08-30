@@ -223,7 +223,7 @@ export const brepkernel_mergeCoincidentVertices: (a: number, b: number, c: numbe
 export const brepkernel_meshBoolean: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
 export const brepkernel_meshEdges: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_meshEdgesAll: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-export const brepkernel_meshQuality: (a: number, b: number, c: number) => [number, number, number];
+export const brepkernel_meshQuality: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_minkowskiSum: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const brepkernel_moveFaces: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
