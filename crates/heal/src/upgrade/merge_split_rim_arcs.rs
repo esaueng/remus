@@ -886,7 +886,15 @@ mod tests {
             let b = vertex(&mut topo, &c, std::f64::consts::PI);
             let e0 = arc(&mut topo, a, b, &c);
             let e1 = arc(&mut topo, b, a, &c);
-            topo.edge_mut(e0).unwrap().set_tolerance(edge_tolerance);
+            let original = topo.edge(e0).unwrap().clone();
+            let mut replacement = Edge::with_tolerance(
+                original.start(),
+                original.end(),
+                original.curve().clone(),
+                edge_tolerance,
+            );
+            replacement.set_trim(original.trim());
+            *topo.edge_mut(e0).unwrap() = replacement;
             let (solid, w0, w1) = solid_with_two_arc_wires(&mut topo, &[e0, e1]);
             let counts_before = (
                 topo.num_vertices(),
