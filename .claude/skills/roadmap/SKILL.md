@@ -92,6 +92,7 @@ TERMINAL/REFUTED history and the campaign lessons.
 
 - O1.1a gauntlet pipeline — BLOCKED 2026-08-29: mandatory workspace registration changes `Cargo.lock`, claimed by open PR #131; see `docs/kernel-maturity/open-kernel-status.md`.
 - O1.3a fillet torture corpus — CLOSED 2026-08-30: built-or-typed dispositions and the support-width cliff are pinned by `crates/operations/tests/fillet_torture.rs` in PR #139.
+- K-S2 planar face-area slice — PARTIAL 2026-08-30: exact line/circle/parabola boundary moments (including holes) are production-routed and pinned in `crates/operations/src/measure/mod.rs`; ellipse/hyperbola/NURBS boundaries and curved-body volume remain.
 
 ## The priority filters (rules with reasons)
 

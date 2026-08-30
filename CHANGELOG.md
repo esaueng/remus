@@ -4,6 +4,9 @@
 
 ### Bug Fixes
 
+* **measure:** integrate planar faces bounded by lines, circles, and parabolas
+  exactly, including circular inner wires, instead of reporting a fixed
+  256-segment polygon area.
 * **algo:** keep thin-wall coaxial blind-bore cylinder seams unsplit across the
   wall/radius boundary and scale sweep.
 * **operations:** refuse overlapping linear, circular, and grid pattern

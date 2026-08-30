@@ -114,6 +114,12 @@ question), v1-fillet API migration (product decision, owner's).
 
 ## §D External roadmap dispositions
 
+- **K-S2 exact measurement — partial (PR #TBD):** production `faceArea` and
+  `surfaceArea` now reuse the exact planar boundary-moment integrator for
+  line/circle/parabola wires, including circular holes, with scale,
+  deflection-independence, direct-WASM, and batch-WASM oracles. Exact ellipse,
+  hyperbola, and NURBS planar boundaries, general curved-face area, and
+  deflection-independent curved-body volume remain.
 - **K-S1 pattern overlap — done (PR #142, 2026-08-30):** linear,
   circular, and grid patterns now refuse measured material overlap with the
   typed `pattern_instances_overlap` contract and full rollback across native,

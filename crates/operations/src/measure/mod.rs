@@ -506,7 +506,161 @@ mod tests {
         let area = solid_surface_area(&topo, solid, 0.01).unwrap();
         // SA = 2*pi*r^2 + 2*pi*r*h = 2*pi*(9 + 30) = 78*pi ~ 245.04
         let expected = 2.0 * PI * (9.0 + 30.0);
-        assert_rel(area, expected, 1e-4, "cylinder r=3 h=10 surface area");
+        assert_rel(area, expected, 1e-12, "cylinder r=3 h=10 surface area");
+    }
+
+    /// A planar cap bounded by an exact circle must not inherit the fixed
+    /// polygon sampling error of its display-independent measurement path.
+    /// The three scales also guard against an absolute error window masking
+    /// the defect at either end of the model-size range.
+    #[test]
+    fn circular_planar_cap_area_is_exact_across_scale_and_deflection() {
+        use crate::primitives::make_cylinder;
+        use std::f64::consts::PI;
+
+        for scale in [1e-3_f64, 1.0, 1e3] {
+            let radius = 3.0 * scale;
+            let mut topo = Topology::new();
+            let solid = make_cylinder(&mut topo, radius, 10.0 * scale).unwrap();
+            let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+            let caps: Vec<_> = faces
+                .into_iter()
+                .filter(|&fid| {
+                    matches!(topo.face(fid).unwrap().surface(), FaceSurface::Plane { .. })
+                })
+                .collect();
+            assert_eq!(caps.len(), 2, "cylinder must have two planar caps");
+
+            let expected = PI * radius * radius;
+            for deflection in [scale * 1e-6, scale * 1e3] {
+                for &cap in &caps {
+                    assert_rel(
+                        face_area(&topo, cap, deflection).unwrap(),
+                        expected,
+                        1e-12,
+                        "exact circular cap area",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Archimedes' parabolic segment gives an independent closed form for
+    /// the other curved edge family admitted by the exact boundary path:
+    /// area between y = x^2 / w and y = w on [-w, w] is 4w^2 / 3.
+    #[test]
+    fn parabolic_planar_face_area_matches_archimedes_at_every_scale() {
+        use remus_math::curves::Parabola3D;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::builder::make_planar_face_from_wire;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        for w in [1e-3_f64, 1.0, 1e3] {
+            let parabola = Parabola3D::with_axes(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                0.25 * w,
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let left = topo.add_vertex(Vertex::new(parabola.evaluate(-w), 1e-9 * w));
+            let right = topo.add_vertex(Vertex::new(parabola.evaluate(w), 1e-9 * w));
+            let arc = topo.add_edge(Edge::new(left, right, EdgeCurve::Parabola(parabola)));
+            let chord = topo.add_edge(Edge::new(right, left, EdgeCurve::Line));
+            let wire = Wire::new(
+                vec![OrientedEdge::new(arc, true), OrientedEdge::new(chord, true)],
+                true,
+            )
+            .unwrap();
+            let wire_id = topo.add_wire(wire);
+            let face = make_planar_face_from_wire(&mut topo, wire_id).unwrap();
+            let expected = 4.0 * w * w / 3.0;
+
+            for deflection in [w * 1e-6, w * 1e3] {
+                assert_rel(
+                    face_area(&topo, face, deflection).unwrap(),
+                    expected,
+                    1e-12,
+                    "exact parabolic segment area",
+                );
+            }
+        }
+    }
+
+    /// A circular inner wire is subtracted by the same exact boundary
+    /// integral as the outer region. The oracle is the closed-form area of a
+    /// 10x10 plate minus the through bore's radius-2 disk.
+    #[test]
+    fn planar_face_with_circular_hole_subtracts_exact_area() {
+        use crate::boolean::{BooleanOp, boolean};
+        use crate::primitives::{make_box, make_cylinder};
+        use crate::transform::transform_solid;
+        use remus_math::mat::Mat4;
+        use std::f64::consts::PI;
+
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 10.0, 10.0, 2.0).unwrap();
+        let bore = make_cylinder(&mut topo, 2.0, 4.0).unwrap();
+        transform_solid(&mut topo, bore, &Mat4::translation(5.0, 5.0, -1.0)).unwrap();
+        let drilled = boolean(&mut topo, BooleanOp::Cut, plate, bore).unwrap();
+        let expected = 100.0 - PI * 4.0;
+
+        let holed_caps: Vec<_> = remus_topology::explorer::solid_faces(&topo, drilled)
+            .unwrap()
+            .into_iter()
+            .filter(|&fid| {
+                let face = topo.face(fid).unwrap();
+                matches!(face.surface(), FaceSurface::Plane { .. }) && face.inner_wires().len() == 1
+            })
+            .collect();
+        assert_eq!(
+            holed_caps.len(),
+            2,
+            "drilled plate must have two holed caps"
+        );
+        for cap in holed_caps {
+            assert_rel(
+                face_area(&topo, cap, 1e6).unwrap(),
+                expected,
+                1e-12,
+                "rectangle minus circular hole",
+            );
+        }
+    }
+
+    /// Ellipse moments are not yet on the exact boundary path. Preserve the
+    /// established high-resolution fallback rather than accidentally routing
+    /// them through the check crate's coarser generic polygon outline.
+    #[test]
+    fn elliptical_planar_face_keeps_high_resolution_fallback() {
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::builder::{make_ellipse_edge, make_planar_face_from_wire};
+        use remus_topology::wire::{OrientedEdge, Wire};
+        use std::f64::consts::PI;
+
+        let mut topo = Topology::new();
+        let edge = make_ellipse_edge(
+            &mut topo,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            5.0,
+            2.0,
+            1e-7,
+        )
+        .unwrap();
+        let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
+        let wire_id = topo.add_wire(wire);
+        let face = make_planar_face_from_wire(&mut topo, wire_id).unwrap();
+
+        assert_rel(
+            face_area(&topo, face, 1e6).unwrap(),
+            PI * 5.0 * 2.0,
+            2e-4,
+            "sampled ellipse area compatibility",
+        );
     }
 
     /// Sphere surface area = 4*pi*r^2. r=5 -> SA = 100*pi ~ 314.16.
@@ -847,7 +1001,7 @@ mod tests {
         let slant = 2.0_f64.sqrt();
         assert_rel(lateral_area, PI * slant, 1e-8, "cone r=1 h=1 lateral area");
         // Cap (base disk) = pi*r^2 = pi ~ 3.1416
-        assert_rel(cap_area, PI, 2e-4, "cone r=1 h=1 base cap area");
+        assert_rel(cap_area, PI, 1e-12, "cone r=1 h=1 base cap area");
     }
 
     /// Torus total surface area = 4*pi^2*R*r.
@@ -899,9 +1053,8 @@ mod tests {
             1e-4,
             "cylinder lateral area",
         );
-        // Two caps = 2*pi*r^2 = 2*pi*(9) = 18*pi ~ 56.549
-        // Cap area uses Newell's method on 256-sample polygon of circle edge,
-        // so discretization error is O(1/n^2) ~ 2e-5 per cap.
-        assert_rel(cap_area, 2.0 * PI * 9.0, 2e-4, "cylinder cap area");
+        // Two caps = 2*pi*r^2 = 2*pi*(9) = 18*pi ~ 56.549. Circular planar
+        // boundaries use the exact Green-theorem path.
+        assert_rel(cap_area, 2.0 * PI * 9.0, 1e-12, "cylinder cap area");
     }
 }
