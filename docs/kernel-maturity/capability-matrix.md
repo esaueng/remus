@@ -214,8 +214,12 @@ does not itself promote or demote anything.
 - Ledger rows: "Bounding box, area, center of mass", "Distance and
   classification" (evidence pending). Inner-shell regressions pass;
   cross-drilled volume now has a WASM ratio/scale matrix against independent
-  orthogonal-cylinder oracles. Other curved-cavity and scale cells remain
-  incomplete.
+  orthogonal-cylinder oracles. Planar face area is exact and independent of
+  caller deflection when every boundary is made from lines, circles, or
+  parabolas; closed-form scale and circular-hole oracles cover native, direct
+  WASM, and batch WASM paths. Ellipse, hyperbola, and NURBS planar boundaries,
+  general curved-face area, exact curved-body volume, and the remaining
+  curved-cavity and scale cells remain incomplete.
 
 ### Tessellation
 

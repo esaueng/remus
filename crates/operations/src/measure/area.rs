@@ -11,8 +11,11 @@ use super::helpers::{collect_solid_face_ids, collect_wire_positions, compute_ang
 
 /// Compute the area of a single face.
 ///
-/// For planar faces, uses Newell's method (exact, no tessellation).
-/// For NURBS faces, tessellates and sums triangle areas.
+/// Line-only planar faces use exact Newell integration. Planar faces whose
+/// otherwise-supported boundaries contain circles or parabolas use the exact
+/// Green-theorem boundary integrator, including inner wires. Other planar
+/// boundaries retain the established 256-sample polygon path. NURBS faces
+/// tessellate and sum triangle areas.
 ///
 /// # Errors
 ///
@@ -25,7 +28,17 @@ pub fn face_area(
     let face = topo.face(face_id)?;
 
     match face.surface() {
-        FaceSurface::Plane { .. } => planar_face_area(topo, face_id),
+        FaceSurface::Plane { .. } => {
+            if planar_boundary_needs_curve_integral(topo, face_id)? {
+                Ok(
+                    remus_check::properties::face_integrator::integrate_face(topo, face_id, 5)?
+                        .area
+                        .abs(),
+                )
+            } else {
+                planar_face_area(topo, face_id)
+            }
+        }
         FaceSurface::Cylinder(cyl) => {
             // Cylinder lateral area: integrate r * du * dv over the face domain.
             // Use face_polygon to sample curved edges (circle caps give 32 points).
@@ -112,6 +125,38 @@ pub fn face_area(
             Ok(triangle_mesh_area(&mesh))
         }
     }
+}
+
+/// Whether the boundary needs and supports the exact curved-edge planar
+/// moment integrator in `remus-check`.
+///
+/// Keep this list deliberately identical to
+/// `face_integrator::planar_wire_monomial_moments`: routing an unsupported
+/// edge through `integrate_face` would silently replace this module's
+/// established 256-sample fallback with the check crate's coarser generic
+/// polygon path. A line-only boundary stays on the cheaper exact Newell path.
+fn planar_boundary_needs_curve_integral(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<bool, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+
+    let face = topo.face(face_id)?;
+    let mut has_supported_curve = false;
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id)?;
+        for oriented in wire.edges() {
+            let curve = topo.edge(oriented.edge())?.curve();
+            match curve {
+                EdgeCurve::Line => {}
+                EdgeCurve::Circle(_) | EdgeCurve::Parabola(_) => has_supported_curve = true,
+                EdgeCurve::Hyperbola(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_) => {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(has_supported_curve)
 }
 
 /// Angular sweep of a cylindrical face derived from its boundary arc edges.
@@ -353,8 +398,9 @@ fn analytic_torus_face_area(
     Ok(area.abs())
 }
 
-/// Newell's method: compute the area of a planar polygon from its
-/// boundary vertices, subtracting inner wire (hole) areas.
+/// Sampled fallback for a planar boundary the exact moment integrator does
+/// not support. Computes the Newell area of a 256-sample polygon and
+/// subtracts sampled inner-wire areas.
 fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
     let outer_wire = topo.wire(face.outer_wire())?;
