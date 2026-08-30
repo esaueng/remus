@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788109096914,
+  "lastUpdate": 1788111259492,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4697,6 +4697,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 41879985,
             "range": "± 2331302",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f4fb5cf58f5aebe2c72692800422d9b4240b6d71",
+          "message": "fix(wasm): migrate tsify typed returns to the Ts wrapper (leak fix) (#149)\n\n* fix(wasm): migrate typed returns off deprecated tsify into_wasm_abi to Ts wrapper\n\nThe #[tsify(into_wasm_abi)] attribute leaks memory when serialization\nfails (madonoharu/tsify#65) and is deprecated as of tsify 0.5.8. All 26\nannotated result types in crates/wasm/src/types.rs now derive plain\nTsify; the seven JS-exported functions that returned such a struct by\nABI (booleanWithQuality, booleanWithCancellation, decodeEvolutionPayload,\nand the four *WithEvolution bindings) now return tsify::Ts<T> wrappers\nserialized via into_ts(). JS-visible object shapes and .d.ts signatures\nare unchanged; native tests call the extracted *_impl bodies.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(wasm): update fuzz workspace lockfile to tsify 0.5.8\n\nThe fuzz workspace resolves its own Cargo.lock; its pinned tsify 0.5.6\nlacks the Ts wrapper API and broke the Fuzz Targets Compile job.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(heal,io): adapt invalid-tolerance tests to RFC 0004 checked setter\n\nPre-existing breakage on main, unrelated to the tsify migration: #148\nmade Edge::set_tolerance return Result and refuse invalid values, while\ntests from #141 (whose CI ran against pre-#148 main) still called it to\nstore invalid tolerances. Under -D warnings the unused Result fails\nclippy, and the refusal also means the invalid value was never stored.\nTests that need an invalid tolerance now rebuild the edge through the\nunchecked with_tolerance constructor (preserving trim); the valid-value\nsite unwraps the Ok.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-30T13:31:23-04:00",
+          "tree_id": "36b3de3cee7bb33a3c20eb58efa526ca77216fd4",
+          "url": "https://github.com/esaueng/remus/commit/f4fb5cf58f5aebe2c72692800422d9b4240b6d71"
+        },
+        "date": 1788111258174,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1450031,
+            "range": "± 27168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1485552,
+            "range": "± 2740",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15772,
+            "range": "± 32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 1027112,
+            "range": "± 2580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 41555949,
+            "range": "± 118217",
             "unit": "ns/iter"
           }
         ]
