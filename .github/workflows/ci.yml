@@ -383,7 +383,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Cargo.lock is gitignored (library crate), generate it for audit
+      # Deliberately discard the committed Cargo.lock: audit should judge the
+      # freshest resolvable dependency set, not just the pinned one.
       - run: cargo generate-lockfile
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
