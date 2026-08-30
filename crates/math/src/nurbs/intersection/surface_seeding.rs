@@ -73,6 +73,7 @@ pub fn intersect_nurbs_nurbs_with_context(
     march_step: f64,
     context: &OperationContext,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
+    context.check_cancelled()?;
     let budgets: &WorkBudgets = &context.budgets;
     let n = samples.max(5);
     let tolerance = 1e-6;
@@ -107,6 +108,8 @@ pub fn intersect_nurbs_nurbs_with_context(
         }
     };
 
+    context.check_cancelled()?;
+
     if seeds.is_empty() {
         return Ok(Vec::new());
     }
@@ -120,6 +123,7 @@ pub fn intersect_nurbs_nurbs_with_context(
     let mut work_queue: VecDeque<IntersectionPoint> = seeds.into();
 
     while let Some(seed) = work_queue.pop_front() {
+        context.check_cancelled()?;
         if traced_segments.len() >= budgets.segments {
             break;
         }
@@ -133,7 +137,7 @@ pub fn intersect_nurbs_nurbs_with_context(
         }
 
         let (traced, branch_seeds) =
-            march_with_branches(surface1, surface2, &seed, march_step, tolerance, budgets);
+            march_with_branches(surface1, surface2, &seed, march_step, tolerance, context)?;
 
         if !traced.is_empty() {
             traced_segments.push(traced);
@@ -149,12 +153,16 @@ pub fn intersect_nurbs_nurbs_with_context(
 
     let all_points: Vec<IntersectionPoint> = traced_segments.into_iter().flatten().collect();
 
+    context.check_cancelled()?;
+
     if all_points.is_empty() {
         return Ok(Vec::new());
     }
 
     // Phase 3: Build curves from collected points.
     let curves = build_curves_from_points(&all_points)?;
+
+    context.check_cancelled()?;
 
     // Phase 4: Validate fitted curves against both surfaces.
     // Reject or refit curves whose NURBS approximation deviates too far

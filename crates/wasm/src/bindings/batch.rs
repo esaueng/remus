@@ -66,6 +66,7 @@ export type BatchErrorCodeV2 =
   | "invalid_handle"
   | "topology_error"
   | "operation_failed"
+  | "cancelled"
   | "resource_limit_exceeded"
   | "internal_error";
 

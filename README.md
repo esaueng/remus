@@ -110,7 +110,7 @@ Four mechanisms carry that contract in code:
 
 | Mechanism | Where | What it gives you |
 | --- | --- | --- |
-| **Operation context** | `remus_math::context::OperationContext` ([RFC 0001](docs/design/rfc-0001-operation-context.md)) | Tolerances and hard work budgets as an explicit, caller-visible argument instead of module-local constants. Defaults reproduce prior behavior exactly; budgets terminate bounded work rather than looping. |
+| **Operation context** | `remus_math::context::OperationContext` ([RFC 0001](docs/design/rfc-0001-operation-context.md)) | Tolerances, hard work budgets, fallback policy, and cooperative cancellation as explicit caller-visible policy. Defaults reproduce prior behavior exactly; cancellation is typed and transactional. |
 | **Structured diagnostics** | `remus_math::diagnostic` | Every failure carries a stable category plus a stable code, independent of the Rust error type. Codes are explicit literals, never derived from type or variant names, and the registry is additive only. |
 | **Coedges and per-use p-curves** | `remus_topology` ([RFC 0002](docs/design/rfc-0002-coedge-architecture.md)) | First-class edge *uses*, so seams, poles, and periodic surfaces are represented correctly. Seam p-curve access is fail-closed rather than silently picking one side. |
 | **Reproduction bundles** | `remus_wasm::repro` | Versioned JSON that replays an operation sequence and its expected results through the batch dispatch path — identically on native and WASM. Bundles are the canonical carrier for new regressions; expected *failures* are first-class. |
