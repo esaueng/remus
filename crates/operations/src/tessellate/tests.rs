@@ -3108,7 +3108,20 @@ fn welded_mesh_quality_rejects_out_of_range_indices_without_panicking() {
     };
     let quality = welded_mesh_quality(&mesh);
     assert!(!quality.is_watertight());
+    assert_eq!(quality.triangle_count, 0);
     assert_eq!(quality.boundary_edges, usize::MAX);
+}
+
+#[test]
+fn empty_mesh_is_not_watertight() {
+    let mesh = TriangleMesh::default();
+    let quality = welded_mesh_quality(&mesh);
+
+    assert_eq!(quality.triangle_count, 0);
+    assert_eq!(quality.boundary_edges, 0);
+    assert_eq!(quality.non_manifold_edges, 0);
+    assert!(!quality.is_watertight());
+    assert!(!is_watertight(&mesh));
 }
 
 /// A converted all-B-spline cylinder: the wall is a closed-u NURBS surface
