@@ -198,6 +198,29 @@ fn fuse_parallel_cylinder_cluster(
     topo: &mut Topology,
     solids: &[SolidId],
 ) -> Result<Option<SolidId>, crate::OperationsError> {
+    enum AttemptError {
+        NotApplicable,
+        Operation(crate::OperationsError),
+    }
+
+    let attempt = remus_topology::transaction::run_transacted(topo, |topo| {
+        match fuse_parallel_cylinder_cluster_impl(topo, solids) {
+            Ok(Some(solid)) => Ok(solid),
+            Ok(None) => Err(AttemptError::NotApplicable),
+            Err(error) => Err(AttemptError::Operation(error)),
+        }
+    });
+    match attempt {
+        Ok(solid) => Ok(Some(solid)),
+        Err(AttemptError::NotApplicable) => Ok(None),
+        Err(AttemptError::Operation(error)) => Err(error),
+    }
+}
+
+fn fuse_parallel_cylinder_cluster_impl(
+    topo: &mut Topology,
+    solids: &[SolidId],
+) -> Result<Option<SolidId>, crate::OperationsError> {
     use remus_math::curves::Circle3D;
     use remus_math::vec::Vec3;
     use remus_topology::edge::{Edge, EdgeCurve};
@@ -351,8 +374,10 @@ fn fuse_parallel_cylinder_cluster(
         #[allow(clippy::cast_possible_truncation)]
         ((x / tol).round() as i64, (y / tol).round() as i64)
     };
-    let mut vertices = std::collections::HashMap::<(i64, i64), VertexId>::new();
-    let mut arc_edges = Vec::with_capacity(arcs.len());
+    // Establish every analytic arc's parameter authority before allocating
+    // the union profile. The visible-interval sweep already owns the exact
+    // angular bounds; endpoint reconstruction would lose seam-crossing arcs.
+    let mut arc_plans = Vec::with_capacity(arcs.len());
     for arc in &arcs {
         let start_xy = (
             arc.center.0 + arc.radius * arc.start.cos(),
@@ -362,12 +387,6 @@ fn fuse_parallel_cylinder_cluster(
             arc.center.0 + arc.radius * arc.end.cos(),
             arc.center.1 + arc.radius * arc.end.sin(),
         );
-        let start_vertex = *vertices
-            .entry(key(start_xy.0, start_xy.1))
-            .or_insert_with(|| topo.add_vertex(Vertex::new(point3(start_xy.0, start_xy.1), tol)));
-        let end_vertex = *vertices
-            .entry(key(end_xy.0, end_xy.1))
-            .or_insert_with(|| topo.add_vertex(Vertex::new(point3(end_xy.0, end_xy.1), tol)));
         let circle = Circle3D::with_axes(
             point3(arc.center.0, arc.center.1),
             first.axis,
@@ -375,12 +394,69 @@ fn fuse_parallel_cylinder_cluster(
             u_axis,
             v_axis,
         )?;
-        let edge = topo.add_edge(Edge::new(
+        for (label, parameter, expected) in [
+            ("start", arc.start, point3(start_xy.0, start_xy.1)),
+            (
+                "midpoint",
+                f64::midpoint(arc.start, arc.end),
+                point3(
+                    arc.center.0 + arc.radius * f64::midpoint(arc.start, arc.end).cos(),
+                    arc.center.1 + arc.radius * f64::midpoint(arc.start, arc.end).sin(),
+                ),
+            ),
+            ("end", arc.end, point3(end_xy.0, end_xy.1)),
+        ] {
+            let residual = (circle.evaluate(parameter) - expected).length();
+            if !residual.is_finite() || residual > tol {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "parallel-cylinder union arc {label} misses its angular oracle by \
+                         {residual} (tolerance {tol})"
+                    ),
+                });
+            }
+        }
+        arc_plans.push((*arc, start_xy, end_xy, circle));
+    }
+
+    let mut vertices = std::collections::HashMap::<(i64, i64), VertexId>::new();
+    let mut arc_edges = Vec::with_capacity(arc_plans.len());
+    for (arc, start_xy, end_xy, circle) in arc_plans {
+        let start_vertex = *vertices
+            .entry(key(start_xy.0, start_xy.1))
+            .or_insert_with(|| topo.add_vertex(Vertex::new(point3(start_xy.0, start_xy.1), tol)));
+        let end_vertex = *vertices
+            .entry(key(end_xy.0, end_xy.1))
+            .or_insert_with(|| topo.add_vertex(Vertex::new(point3(end_xy.0, end_xy.1), tol)));
+        let stored_start = topo.vertex(start_vertex)?.point();
+        let stored_end = topo.vertex(end_vertex)?.point();
+        for (label, actual, expected) in [
+            ("start", stored_start, point3(start_xy.0, start_xy.1)),
+            ("end", stored_end, point3(end_xy.0, end_xy.1)),
+        ] {
+            let residual = (actual - expected).length();
+            if !residual.is_finite() || residual > tol {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "parallel-cylinder union welded {label} changes arc authority by \
+                         {residual} (tolerance {tol})"
+                    ),
+                });
+            }
+        }
+        let mut edge = Edge::with_tolerance(
             start_vertex,
             end_vertex,
             EdgeCurve::Circle(circle),
-        ));
-        arc_edges.push((start_vertex, end_vertex, edge, *arc));
+            Some(tol),
+        );
+        edge.set_trim(Some((arc.start, arc.end)));
+        edge.strict_domain()
+            .map_err(|error| crate::OperationsError::InvalidInput {
+                reason: format!("parallel-cylinder union arc has invalid authority: {error}"),
+            })?;
+        let edge = topo.add_edge(edge);
+        arc_edges.push((start_vertex, end_vertex, edge, arc));
     }
 
     let mut by_start = std::collections::HashMap::<usize, Vec<usize>>::new();
@@ -699,6 +775,44 @@ mod tests {
         let cid = topo.add_compound(Compound::new(vec![s1]));
 
         assert_eq!(solid_count(&topo, cid).unwrap(), 1);
+    }
+
+    #[test]
+    fn disjoint_parallel_cylinder_exact_attempt_rolls_back() {
+        let mut topo = Topology::new();
+        let first = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let second = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            second,
+            &remus_math::mat::Mat4::translation(4.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let before = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        );
+
+        assert!(
+            fuse_parallel_cylinder_cluster(&mut topo, &[first, second])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            before,
+            (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_shells(),
+                topo.num_solids(),
+            )
+        );
     }
 
     #[test]
