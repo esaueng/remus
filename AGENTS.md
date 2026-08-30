@@ -95,9 +95,11 @@ Quick reference — find the right file for any task:
 | 2D polygon ops (clip, fillet, chamfer) | `polygon2d.rs` |
 | Parametric geometry traits | `traits.rs` |
 | NURBS basis function evaluation | `nurbs/basis.rs` |
+| NURBS curvature (fundamental forms) | `nurbs/curvature.rs` |
 | Surface evaluator (power-basis cache) | `nurbs/evaluator.rs` |
 | Polynomial power-basis (Horner evaluation) | `nurbs/power_basis.rs` |
 | Orthonormal reference frame | `frame.rs` |
+| Surface curvature primitives (sign convention) | `curvature.rs` |
 | Oriented bounding box (PCA + SAT) | `obb.rs` |
 | Chord deviation arc discretization | `chord.rs` |
 | Gauss-Legendre quadrature | `quadrature.rs` |
@@ -273,6 +275,7 @@ Quick reference — find the right file for any task:
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
+| Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
 
 ### L2: offset (`crates/offset/src/`)
 | Task | File(s) |
