@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788117200139,
+  "lastUpdate": 1788117418585,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -4913,6 +4913,60 @@ window.BENCHMARK_DATA = {
             "name": "boolean/perforated_cut_36",
             "value": 39392179,
             "range": "± 161115",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petergstfsn@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petergstfsn"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4424d89b114b54b1160ad35ae95f2eedaa5e70c3",
+          "message": "feat(context): govern SSI Newton refinement (#147)\n\n* feat(context): govern SSI Newton refinement\n\n* docs(kernel-maturity): link SSI Newton disposition\n\n* feat(wasm): expose SSI Newton budget on quality booleans and batch\n\nStanding rule R8 completion for the caller-owned Newton cap: additive\noptional newton_iterations argument on booleanWithQuality and\nbooleanWithCancellation, a newtonIterations field on the executeBatch\nbooleanWithQuality op, JS-value validation (non-negative integer within\nthe public work budget; 0 legally disables refinement), a shared\nquality_context builder so every JS entry point constructs an identical\ncontext, and contract tests pinning the default, bounded, and rejection\npaths. Committed package rebuilt from source.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* chore(wasm): rebuild committed package from merged source\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* chore(wasm): rebuild committed package from merged source\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Codex Review <codex-review@localhost>\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-30T15:14:18-04:00",
+          "tree_id": "2de03215db74664c60b0262d26c41e6e0d488a01",
+          "url": "https://github.com/esaueng/remus/commit/4424d89b114b54b1160ad35ae95f2eedaa5e70c3"
+        },
+        "date": 1788117417868,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1309748,
+            "range": "± 1086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1395197,
+            "range": "± 2026",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 14277,
+            "range": "± 873",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 980793,
+            "range": "± 1536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 39099292,
+            "range": "± 143183",
             "unit": "ns/iter"
           }
         ]
