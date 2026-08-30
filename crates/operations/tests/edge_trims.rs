@@ -164,7 +164,11 @@ fn trims_survive_arena_round_trip() {
         .iter()
         .filter_map(|(_, e)| e.trim())
         .collect();
-    assert_eq!(trims, vec![expected]);
+    assert_eq!(
+        trims,
+        vec![expected, expected],
+        "the legacy missing rim range must be reconstructed during replay"
+    );
 }
 
 #[test]
