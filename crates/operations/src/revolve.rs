@@ -53,7 +53,8 @@ fn validate_cap_wires_planar(
             let edge = topo.edge(oriented.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "revolve cap-planarity validation")?;
             for index in 0..=CURVE_INTERVALS {
                 #[allow(clippy::cast_precision_loss)]
                 let fraction = index as f64 / CURVE_INTERVALS as f64;
@@ -781,7 +782,8 @@ fn try_analytic_full_revolution(
         // — sampling with traversal endpoints directly would pick the CCW
         // complement of a reversed arc.
         let interior = if matches!(class, RevEdge::Torus { .. }) {
-            let (t0, t1) = edge.domain_with_endpoints(ns, ne);
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "analytic revolve profile sampling")?;
             let mut pts: Vec<Point3> = [0.25, 0.5, 0.75]
                 .iter()
                 .map(|f| curve.evaluate_with_endpoints((t1 - t0).mul_add(*f, t0), ns, ne))
@@ -1320,7 +1322,8 @@ fn profile_chart_is_ccw(
         pts.push(if oe.is_forward() { ns } else { ne });
         if !matches!(edge.curve(), EdgeCurve::Line) {
             let curve = edge.curve();
-            let (t0, t1) = edge.domain_with_endpoints(ns, ne);
+            let (t0, t1) =
+                crate::authoritative_edge_domain(edge, "revolve profile winding sampling")?;
             // Sample in the curve's NATURAL direction, then reverse to traversal
             // order — sampling from traversal endpoints picks the CCW complement
             // of a reversed arc.
@@ -1393,8 +1396,20 @@ fn profile_chart_is_ccw(
 ///
 /// Returns an error if the axis is zero-length, the angle is out of range, or a
 /// partial revolution is requested for a non-planar profile boundary.
-#[allow(clippy::too_many_lines)]
 pub fn revolve(
+    topo: &mut Topology,
+    face: FaceId,
+    axis_origin: Point3,
+    axis_direction: Vec3,
+    angle_radians: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        revolve_impl(topo, face, axis_origin, axis_direction, angle_radians)
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn revolve_impl(
     topo: &mut Topology,
     face: FaceId,
     axis_origin: Point3,
@@ -1433,6 +1448,18 @@ pub fn revolve(
     };
     let input_wire_id = face_data.outer_wire();
     let inner_wire_ids: Vec<remus_topology::wire::WireId> = face_data.inner_wires().to_vec();
+
+    for wire_id in std::iter::once(input_wire_id).chain(inner_wire_ids.iter().copied()) {
+        let edge_ids: Vec<_> = topo
+            .wire(wire_id)?
+            .edges()
+            .iter()
+            .map(OrientedEdge::edge)
+            .collect();
+        for edge_id in edge_ids {
+            crate::normalize_legacy_edge_domain(topo, edge_id, "revolve raw profile edge")?;
+        }
+    }
 
     // Fast exact path: a revolution of a single circular profile that clears
     // the axis is a torus (full turn: one doubly-periodic face; partial turn:
