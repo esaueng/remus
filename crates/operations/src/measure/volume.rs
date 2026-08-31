@@ -49,7 +49,9 @@ fn sphere_outer_wire_constant_v(
             return false;
         };
         let (sp, ep) = (sv.point(), ev.point());
-        let (t0, t1) = edge.domain_with_endpoints(sp, ep);
+        let Ok((t0, t1)) = edge.strict_domain() else {
+            return false;
+        };
         // Sample ALONG each edge, not just its start vertex: a great-circle arc
         // has both endpoints on the seam latitude yet bulges away from it, so
         // endpoint-only sampling would mis-read a scalloped collar floor as a
@@ -1357,6 +1359,9 @@ pub fn solid_volume(
     solid: SolidId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    crate::preflight_face_edge_domains(topo, &faces, "solid-volume measurement")?;
+
     // Fast path: exact analytic formula for known primitives.
     if let Some(v) = try_analytic_solid_volume(topo, solid) {
         if std::env::var("BK_VOL_TRACE").is_ok() {
@@ -1943,7 +1948,10 @@ fn planar_wire_signed_area2(
                     // [0,1]) to disambiguate the signed sweep > π for a major arc.
                     let nat_start = topo.vertex(edge.start())?.point();
                     let nat_end = topo.vertex(edge.end())?.point();
-                    let (t0, t1) = edge.domain_with_endpoints(nat_start, nat_end);
+                    let (t0, t1) = crate::authoritative_edge_domain(
+                        edge,
+                        "planar curved-boundary volume integration",
+                    )?;
                     let mid_pt = edge.curve().evaluate_with_endpoints(
                         f64::midpoint(t0, t1),
                         nat_start,

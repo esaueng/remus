@@ -344,13 +344,14 @@ fn chamfer_core(
     // planar construction supports both material-removing convex bevels and
     // material-filling concave notch bevels; its closing sign gate must not
     // misclassify the latter as a folded result.
-    let convexity_by_edge: HashMap<usize, bool> = filtered_edges
-        .iter()
-        .filter_map(|&edge| {
-            crate::blend_ops::edge_is_convex(topo, solid, edge, distances.max_distance() * 0.25)
-                .map(|convex| (edge.index(), convex))
-        })
-        .collect();
+    let mut convexity_by_edge: HashMap<usize, bool> = HashMap::default();
+    for &edge in &filtered_edges {
+        if let Some(convex) =
+            crate::blend_ops::edge_is_convex(topo, solid, edge, distances.max_distance() * 0.25)?
+        {
+            convexity_by_edge.insert(edge.index(), convex);
+        }
+    }
     let all_convex = convexity_by_edge.len() == filtered_edges.len()
         && convexity_by_edge.values().all(|&convex| convex);
     let all_concave = convexity_by_edge.len() == filtered_edges.len()

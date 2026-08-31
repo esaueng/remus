@@ -244,7 +244,7 @@ fn edge_samples(topo: &Topology, edge: EdgeId) -> Result<Vec<Point3>, Operations
     let edge_data = topo.edge(edge)?;
     let start = topo.vertex(edge_data.start())?.point();
     let end = topo.vertex(edge_data.end())?.point();
-    let (t0, t1) = edge_data.domain_with_endpoints(start, end);
+    let (t0, t1) = crate::authoritative_edge_domain(edge_data, "edge query sampling")?;
     Ok([0.25, 0.5, 0.75]
         .into_iter()
         .map(|fraction| {
@@ -289,7 +289,7 @@ fn edge_curve_span(topo: &Topology, edge: EdgeId) -> Result<f64, OperationsError
     let edge_data = topo.edge(edge)?;
     let start = topo.vertex(edge_data.start())?.point();
     let end = topo.vertex(edge_data.end())?.point();
-    let (t0, t1) = edge_data.domain_with_endpoints(start, end);
+    let (t0, t1) = crate::authoritative_edge_domain(edge_data, "edge span query")?;
     let mut bounds: Option<(Point3, Point3)> = None;
     for i in 0..=16 {
         let t = t0 + (t1 - t0) * f64::from(i) / 16.0;
