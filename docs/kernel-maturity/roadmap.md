@@ -33,6 +33,17 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
   scheduled fuzz campaign against an independent plane oracle; topology
   mutation, native serialization, curve-intersection, and offset-specific
   campaigns remain S4 follow-ups.
+- **Remus K-S4 disposition — topology-mutation fuzz slice:** done in PR #170.
+  Derivation, validated/transactional rollback, checkpoint restore, and
+  solid-deletion sequences now run in the scheduled campaign over a bounded
+  box against exact-state, stale-handle, atomic-refusal, closed-manifold
+  census, and closed-form volume oracles. The campaign's first run found the
+  rollback/restore contract split fixed in the same PR: transactional
+  rollback now undoes in-window retirements (`restore_for_rollback`), and the
+  checkpoint barrier no longer leaves a dangling face-loop derivation map.
+  Native serialization, curve-intersection, and offset-specific campaigns
+  remain S4 follow-ups; migrating ad-hoc snapshot/restore call sites off the
+  checkpoint-barrier primitive is flagged for the W5 contract work.
 
 ## §H Horizons
 
