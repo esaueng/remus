@@ -192,9 +192,13 @@ fn face_area_estimate(topo: &Topology, fid: FaceId) -> f64 {
     (outer - inner).max(0.0)
 }
 
-fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::SelectedFace]) {
+fn log_subfaces_in_box(
+    topo: &Topology,
+    subs: &[SubFace],
+    selected: &[bop::SelectedFace],
+) -> Result<(), AlgoError> {
     let Ok(spec) = std::env::var("BK_SUBFACE_BOX") else {
-        return;
+        return Ok(());
     };
     let v: Vec<f64> = spec
         .split(',')
@@ -202,7 +206,7 @@ fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::Selec
         .collect();
     if v.len() != 6 {
         log::debug!("BK_SUBFACE_BOX needs x0,x1,y0,y1,z0,z1");
-        return;
+        return Ok(());
     }
     let (lo, hi) = ([v[0], v[2], v[4]], [v[1], v[3], v[5]]);
     let chosen: std::collections::HashSet<FaceId> = selected.iter().map(|s| s.face_id).collect();
@@ -269,7 +273,13 @@ fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::Selec
                             continue;
                         };
                         let (p, q) = (a.point(), b.point());
-                        let (d0, d1) = e.curve().domain_with_endpoints(p, q);
+                        let (d0, d1) = e.strict_domain().map_err(|error| {
+                            AlgoError::AssemblyFailed(format!(
+                                "debug sub-face {:?} edge {:?} lacks authoritative parameter range: {error}",
+                                sf.face_id,
+                                oe.edge()
+                            ))
+                        })?;
                         let span =
                             if matches!(e.curve(), remus_topology::edge::EdgeCurve::Circle(_)) {
                                 format!("{:.1}deg", (d1 - d0).to_degrees())
@@ -295,6 +305,7 @@ fn log_subfaces_in_box(topo: &Topology, subs: &[SubFace], selected: &[bop::Selec
             }
         }
     }
+    Ok(())
 }
 
 /// Builder — orchestrates face splitting and classification.
@@ -398,7 +409,7 @@ impl Builder {
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
         }
-        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
         let solid_id = assemble::assemble_solid(
@@ -435,7 +446,7 @@ impl Builder {
         if op == BooleanOp::Fuse {
             orient_selected_fuse_analytic_holes(&mut self.topo, &self.sub_faces, &selected);
         }
-        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected);
+        log_subfaces_in_box(&self.topo, &self.sub_faces, &selected)?;
         log_source_face_partition(&self.topo, &self.sub_faces, &selected);
         let cap_planes = self.partial_overlap_cap_planes(&selected);
         let (solid_id, origins) = assemble::assemble_solid_with_origins(
@@ -1046,14 +1057,22 @@ fn sample_closed_boundary_interior(
         let e = topo.edge(oe.edge())?;
         let sp = topo.vertex(e.start())?.point();
         let ep = topo.vertex(e.end())?.point();
-        pcurve_compute::sample_edge_uniform(
-            e.curve(),
-            sp,
-            ep,
-            RING_SAMPLES,
-            oe.is_forward(),
-            &mut pts,
-        );
+        let (t0, t1) = e.strict_domain().map_err(|error| {
+            AlgoError::FaceSplitFailed(format!(
+                "face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                oe.edge()
+            ))
+        })?;
+        let (from, to) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
+        for index in 0..RING_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let fraction = index as f64 / RING_SAMPLES as f64;
+            pts.push(e.curve().evaluate_with_endpoints(
+                (to - from).mul_add(fraction, from),
+                sp,
+                ep,
+            ));
+        }
     }
     if pts.len() < 3 {
         return Ok(None);
@@ -1085,7 +1104,12 @@ fn sample_holed_face_interior(
             let ep = topo.vertex(e.end())?.point();
             pts.push(sp);
             if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
-                let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+                let (t0, t1) = e.strict_domain().map_err(|error| {
+                    AlgoError::FaceSplitFailed(format!(
+                        "face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                        oe.edge()
+                    ))
+                })?;
                 for k in 1..CURVE_SAMPLES {
                     let t = f64::from(k).mul_add((t1 - t0) / f64::from(CURVE_SAMPLES), t0);
                     pts.push(e.curve().evaluate_with_endpoints(t, sp, ep));
@@ -1193,7 +1217,12 @@ fn sample_face_interior(
             let e = topo.edge(oe.edge())?;
             let sp = topo.vertex(e.start())?.point();
             let ep = topo.vertex(e.end())?.point();
-            let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) = e.strict_domain().map_err(|error| {
+                AlgoError::FaceSplitFailed(format!(
+                    "face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                    oe.edge()
+                ))
+            })?;
             let mid = e
                 .curve()
                 .evaluate_with_endpoints(0.5_f64.mul_add(t1 - t0, t0), sp, ep);
@@ -1234,7 +1263,12 @@ fn sample_face_interior(
         // coincident wall, where the ray cast is a coin flip.
         let mut pts = vec![sp, ep];
         if !matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) {
-            let (t0, t1) = e.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) = e.strict_domain().map_err(|error| {
+                AlgoError::FaceSplitFailed(format!(
+                    "face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+                    oe.edge()
+                ))
+            })?;
             for k in 1..4 {
                 let t = f64::from(k).mul_add((t1 - t0) / 4.0, t0);
                 pts.push(e.curve().evaluate_with_endpoints(t, sp, ep));
@@ -1281,7 +1315,12 @@ fn sample_face_interior(
     let edge = topo.edge(first_oe.edge())?;
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+    let (t0, t1) = edge.strict_domain().map_err(|error| {
+        AlgoError::FaceSplitFailed(format!(
+            "face {face_id:?} edge {:?} lacks authoritative parameter range: {error}",
+            first_oe.edge()
+        ))
+    })?;
     let t_mid = 0.5_f64.mul_add(t1 - t0, t0);
     let mid_pt = edge
         .curve()

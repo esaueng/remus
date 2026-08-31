@@ -134,7 +134,12 @@ fn face_aabb(topo: &Topology, fid: FaceId) -> Result<Aabb3, crate::error::AlgoEr
         include(end, &mut any);
 
         let curve = edge.curve();
-        let (t0, t1) = edge.domain_with_endpoints(start, end);
+        let (t0, t1) = edge.strict_domain().map_err(|error| {
+            crate::error::AlgoError::AssemblyFailed(format!(
+                "face {fid:?} edge {:?} lacks authoritative parameter range: {error}",
+                oe.edge()
+            ))
+        })?;
         for i in 1..=EDGE_INTERIOR_SAMPLES {
             #[allow(clippy::cast_precision_loss)]
             let frac = i as f64 / (EDGE_INTERIOR_SAMPLES as f64 + 1.0);
@@ -305,7 +310,9 @@ mod tests {
         let v0 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
         let circle =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
-        let edge = topo.add_edge(Edge::new(v0, v0, EdgeCurve::Circle(circle)));
+        let mut circle_edge = Edge::new(v0, v0, EdgeCurve::Circle(circle));
+        circle_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let edge = topo.add_edge(circle_edge);
         let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
         let face = topo.add_face(Face::new(
             wire,
@@ -332,6 +339,65 @@ mod tests {
             dy > 1.7,
             "circle edge AABB y-span = {dy}, expected close to 2 (chord-only would be 0)",
         );
+    }
+
+    #[test]
+    fn curve_edge_face_aabb_refuses_missing_parameter_authority() {
+        use remus_math::curves::Circle3D;
+
+        let mut topo = Topology::default();
+        let vertex = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Circle(circle)));
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let error = face_aabb(&topo, face).unwrap_err();
+        assert!(
+            matches!(&error, crate::error::AlgoError::AssemblyFailed(message) if message.contains("lacks authoritative parameter range")),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn curve_edge_face_aabb_uses_reversed_major_circle_authority() {
+        use remus_math::curves::Circle3D;
+        let mut topo = Topology::default();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let trim = (0.0, -1.5 * std::f64::consts::PI);
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(trim.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(trim.1), 1e-7));
+        let mut circle_edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        circle_edge.set_trim(Some(trim));
+        let edge = topo.add_edge(circle_edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+
+        let bbox = face_aabb(&topo, face).unwrap();
+        assert!(bbox.min.x() < -0.8, "major branch missed -x: {bbox:?}");
+        assert!(bbox.min.y() < -0.8, "major branch missed -y: {bbox:?}");
+        assert!(bbox.max.x() > 0.8, "major branch missed +x: {bbox:?}");
     }
 
     #[test]
