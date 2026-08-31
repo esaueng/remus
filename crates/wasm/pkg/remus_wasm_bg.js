@@ -268,20 +268,21 @@ export class BrepKernel {
      * Cancellation is typed (`operation_cancelled`) and transactional: no
      * partial topology is retained. Result quality follows
      * `booleanWithQuality`, including the optional exact-only policy and the
-     * optional `newton_iterations` refinement cap.
+     * optional Newton and subdivision caps.
      * @param {string} op
      * @param {number} a
      * @param {number} b
      * @param {OperationCancellationToken} token
      * @param {boolean | null} [exact_only]
      * @param {number | null} [newton_iterations]
+     * @param {number | null} [subdivision_depth]
      * @returns {CancellableBooleanResult}
      */
-    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations) {
+    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         _assertClass(token, OperationCancellationToken);
-        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations);
+        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -302,24 +303,27 @@ export class BrepKernel {
      * iterations of every NURBS surface-surface intersection inside the
      * operation (a non-negative integer; `0` disables refinement). Omitted
      * or `null` keeps the kernel default, reproducing prior behavior.
+     * `subdivision_depth` likewise caps recursive SSI seed subdivision
+     * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
      *
      * # Errors
      *
      * Returns an error if a handle is invalid, the op string is unknown,
      * `newton_iterations` is not a non-negative integer within the public
-     * work budget, or (under `exact_only`) the exact pipeline cannot
-     * produce the result.
+     * work budget, `subdivision_depth` is invalid under the same rules, or
+     * (under `exact_only`) the exact pipeline cannot produce the result.
      * @param {string} op
      * @param {number} a
      * @param {number} b
      * @param {boolean | null} [exact_only]
      * @param {number | null} [newton_iterations]
+     * @param {number | null} [subdivision_depth]
      * @returns {BooleanQualityResult}
      */
-    booleanWithQuality(op, a, b, exact_only, newton_iterations) {
+    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth) {
         const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations);
+        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

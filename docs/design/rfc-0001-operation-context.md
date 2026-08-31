@@ -22,7 +22,7 @@ iteration limits, ad-hoc epsilons). Consequences:
 - `tolerance: Tolerance` — the existing linear/angular/relative model.
 - `budgets: WorkBudgets` — hard upper bounds for iterative and exploratory
   work. v1 fields: `march_steps`, `queue_size`, `segments`,
-  `branches_per_direction`.
+  `branches_per_direction`, `newton_iterations`, `subdivision_depth`.
 
 It lives in L0 `math` so every layer can consume it without new workspace
 dependencies. Both structs are `#[non_exhaustive]` with `new()` +
@@ -56,7 +56,7 @@ only policy values move into the context; mathematical constants stay put:
 | Parameter-space tolerance | SSI refinement `1e-6` in seeding | context, as a derived parameter-space policy (future field; unchanged today) |
 | Numerical floor | `1e-12` degeneracy guards | stays local, named, documented |
 | Convergence threshold | Newton step acceptance | stays local unless caller-meaningful |
-| Resource budget | march steps, queue, segments, branches, Newton iteration caps | `context.budgets` |
+| Resource budget | march steps, queue, segments, branches, Newton iteration and subdivision-depth caps | `context.budgets` |
 
 ## Landed in this slice
 
@@ -70,8 +70,10 @@ only policy values move into the context; mathematical constants stay put:
 - `intersect_nurbs_nurbs_with_context`: the four marching/exploration
   budgets threaded through seeding and marching; module constants
   `MAX_QUEUE_SIZE` / `MAX_SEGMENTS` / `MAX_BRANCHES_PER_DIRECTION` deleted
-  (their values live only in `WorkBudgets::new()`). Differential and
-  tiny-budget regression tests.
+  (their values live only in `WorkBudgets::new()`). Coupled Newton refinement
+  and recursive Bezier seed subdivision likewise consume caller-owned caps;
+  their defaults preserve the historical 20 iterations and depth 6.
+  Differential and tiny-budget regression tests pin the authority chain.
 - `algo::gfa::boolean_with_context`: context entry point for the GFA
   pipeline. The caller's tolerance reaches pave filling, face splitting,
   classification, assembly, and validation; NURBS face-face intersection
@@ -90,9 +92,10 @@ only policy values move into the context; mathematical constants stay put:
 
 ## Migration queue (dependency order)
 
-1. `MAX_NEWTON_ITER` (`refine_ssi_point` and the line/plane/curve-surface
-   Newton loops) — one `max_newton_iterations` budget field, threaded
-   through the ~7 call sites in one change.
+1. ~~SSI coupled Newton and subdivision limits~~ — **landed** as
+   `newton_iterations` and `subdivision_depth`, threaded through seed finding,
+   branch refinement, and marching. Other line/plane/curve-surface Newton
+   loops remain local until their owning operation adopts the context.
 2. ~~Pave-filler propagation~~ — **landed**: NURBS face-face intersection
    receives the context's existing work budgets. Other iterative limits gain
    context fields only alongside a real consumer, per ground rule 3.

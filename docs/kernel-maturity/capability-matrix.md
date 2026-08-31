@@ -135,10 +135,10 @@ does not itself promote or demote anything.
 - Known gaps: remaining surface pairs delegate to the legacy path and are
   wrapped as Unclassified/incomplete (declared, not silent); curve-curve
   and curve-surface qualification pending. NURBS SSI consumes caller-owned
-  march/queue/segment/branch and coupled-Newton budgets, and is cooperatively
-  cancellable through seed discovery, Newton refinement, and marching via
-  `OperationContext`; subdivision budgets remain incomplete. Conic curve cells (hyperbola,
-  parabola) Unqualified;
+  march/queue/segment/branch, coupled-Newton, and recursive seed-subdivision
+  budgets, and is cooperatively cancellable through seed discovery, Newton
+  refinement, and marching via `OperationContext`; parameter-space budgets
+  remain incomplete. Conic curve cells (hyperbola, parabola) Unqualified;
   periodic seam parameter reporting and pole cells Unqualified.
 
 ### Blends (fillet, chamfer, blend resize/removal)
@@ -410,8 +410,9 @@ claim, and they are the first implementation targets of the program:
 3. **Face-only, one-level evolution.** No vertex/edge events, no lineage
    graph, no persistent references.
 4. **Partial operation-context coverage.** Public booleans carry tolerance,
-   fallback policy, NURBS marching and coupled-Newton budgets, and cooperative
-   cancellation explicitly. Subdivision/generated-topology/memory budgets,
+   fallback policy, NURBS marching, coupled-Newton, and recursive
+   seed-subdivision budgets, and cooperative cancellation explicitly.
+   Generated-topology/memory budgets,
    parameter-space tolerance, determinism policy, and non-boolean operation
    families remain local or unmigrated.
 
