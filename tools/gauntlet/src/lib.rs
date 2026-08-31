@@ -872,9 +872,15 @@ fn run_isolated_model(executable: &Path, model: &Path, config: RunConfig) -> Mod
         );
     }
 
-    loop {
+    // Drain both pipes on background threads while polling: a worker whose
+    // JSON row outgrows the OS pipe buffer would otherwise block on write,
+    // never exit, and be misreported as a wall-clock budget failure.
+    let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
+    let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
+
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= config.model_timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -902,22 +908,12 @@ fn run_isolated_model(executable: &Path, model: &Path, config: RunConfig) -> Mod
                 );
             }
         }
-    }
-
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(error) => {
-            return isolated_failure(
-                model,
-                started,
-                FailureCategory::Internal,
-                "worker_output_failed",
-                error.to_string(),
-            );
-        }
     };
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let stdout = join_pipe_reader(stdout_reader);
+    let stderr = join_pipe_reader(stderr_reader);
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         return isolated_failure(
             model,
             started,
@@ -926,7 +922,7 @@ fn run_isolated_model(executable: &Path, model: &Path, config: RunConfig) -> Mod
             stderr.trim(),
         );
     }
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+    serde_json::from_slice(&stdout).unwrap_or_else(|error| {
         isolated_failure(
             model,
             started,
@@ -935,6 +931,20 @@ fn run_isolated_model(executable: &Path, model: &Path, config: RunConfig) -> Mod
             error.to_string(),
         )
     })
+}
+
+fn spawn_pipe_reader<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+fn join_pipe_reader(reader: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
 }
 
 fn read_limited_utf8(path: &Path, max_bytes: usize) -> Result<String, DiagnosticRecord> {
