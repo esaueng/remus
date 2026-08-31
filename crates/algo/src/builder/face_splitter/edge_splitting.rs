@@ -5,7 +5,8 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 
 use super::super::pcurve_compute::{
-    compute_pcurve_on_surface, evaluate_edge_at_t, project_point_on_surface, shorter_arc_delta,
+    compute_pcurve_on_surface_in_domain, evaluate_edge_at_t, project_point_on_surface,
+    shorter_arc_delta,
 };
 use super::super::plane_frame::PlaneFrame;
 use super::super::split_types::OrientedPCurveEdge;
@@ -94,7 +95,13 @@ pub(super) fn split_boundary_edges_at_3d_points(
             ) {
                 pt
             } else {
-                evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, t)
+                evaluate_edge_at_t(
+                    &edge.curve_3d,
+                    edge.start_3d,
+                    edge.end_3d,
+                    edge.traversal_domain(),
+                    t,
+                )
             };
             let split_uv = if let Some(f) = frame {
                 f.project(split_3d)
@@ -115,8 +122,16 @@ pub(super) fn split_boundary_edges_at_3d_points(
             } else {
                 project_point_on_surface(split_3d, surface, &[], None)
             };
-            let pcurve =
-                compute_pcurve_on_surface(&edge.curve_3d, prev_3d, split_3d, surface, &[], frame);
+            let child_domain = edge.sub_traversal_domain_fraction(prev_t, t);
+            let pcurve = compute_pcurve_on_surface_in_domain(
+                &edge.curve_3d,
+                prev_3d,
+                split_3d,
+                child_domain,
+                surface,
+                &[],
+                frame,
+            );
             result.push(OrientedPCurveEdge {
                 curve_3d: edge.curve_3d.clone(),
                 trim: edge.sub_trim_fraction(prev_t, t),
@@ -134,8 +149,16 @@ pub(super) fn split_boundary_edges_at_3d_points(
             prev_3d = split_3d;
             prev_t = t;
         }
-        let pcurve =
-            compute_pcurve_on_surface(&edge.curve_3d, prev_3d, edge.end_3d, surface, &[], frame);
+        let tail_domain = edge.sub_traversal_domain_fraction(prev_t, 1.0);
+        let pcurve = compute_pcurve_on_surface_in_domain(
+            &edge.curve_3d,
+            prev_3d,
+            edge.end_3d,
+            tail_domain,
+            surface,
+            &[],
+            frame,
+        );
         // The stored `end_uv` of a closed rim follows the CURVE's direction
         // (`sample_edge_to_uv` ignores orientation), so a reverse-traversed ring
         // would close a period on the wrong side of its own start.
@@ -296,9 +319,7 @@ pub(super) fn find_splits_on_circle(
             // into the outer boundary is walked CW — its section crossings
             // never split it). Normalize in the physical span and map back
             // to traversal order.
-            let (p0, p1) = edge
-                .curve_3d
-                .domain_with_endpoints(edge.end_3d, edge.start_3d);
+            let (p0, p1) = edge.native_domain();
             let pspan = p1 - p0;
             if pspan.abs() < 1e-14 {
                 continue;
@@ -668,7 +689,15 @@ mod tests {
     #[test]
     fn nurbs_section_splits_ordered_along_forward_edge() {
         let edge = parabola_section_edge(false);
-        let eval = |t: f64| evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, t);
+        let eval = |t: f64| {
+            evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                t,
+            )
+        };
         let (sp_a, sp_b) = (eval(0.3), eval(0.7));
         let splits = find_splits_on_nurbs_section(&edge, &[sp_b, sp_a], 1e-3);
         assert_eq!(splits.len(), 2);
@@ -733,7 +762,13 @@ mod tests {
 
             let real = find_splits_on_section_ellipse(&edge, &[junction], 1e-7);
             assert_eq!(real.len(), 1);
-            let minted = evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, real[0].0);
+            let minted = evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                real[0].0,
+            );
             assert!(
                 (minted - junction).length() < 1e-9,
                 "split evaluator must mint the junction point on both twins"
@@ -895,7 +930,15 @@ mod tests {
         // back ordered from `start_3d` (nearest first) or the piece-building
         // loop emits overlapping pieces.
         let edge = parabola_section_edge(true);
-        let eval = |t: f64| evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, t);
+        let eval = |t: f64| {
+            evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                t,
+            )
+        };
         let (sp_a, sp_b) = (eval(0.3), eval(0.7));
         let splits = find_splits_on_nurbs_section(&edge, &[sp_a, sp_b], 1e-3);
         assert_eq!(splits.len(), 2);

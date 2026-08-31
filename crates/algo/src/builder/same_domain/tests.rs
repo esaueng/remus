@@ -666,9 +666,23 @@ fn cylinder_patch(
     let circ_top = Circle3D::new(Point3::new(cx, cy, z1), axis, r).unwrap();
 
     // bottom arc v00 -> v10, right seam v10 -> v11, top arc v11 -> v01, left seam v01 -> v00
-    let e_bot = topo.add_edge(Edge::new(v00, v10, EdgeCurve::Circle(circ_bot)));
+    let bot_start = circ_bot.project(pt(u0, z0));
+    let bot_end = circ_bot.project(pt(u1, z0));
+    let mut bot = Edge::new(v00, v10, EdgeCurve::Circle(circ_bot));
+    bot.set_trim(Some((
+        bot_start,
+        bot_start + (bot_end - bot_start).rem_euclid(std::f64::consts::TAU),
+    )));
+    let e_bot = topo.add_edge(bot);
     let e_right = topo.add_edge(Edge::new(v10, v11, EdgeCurve::Line));
-    let e_top = topo.add_edge(Edge::new(v11, v01, EdgeCurve::Circle(circ_top)));
+    let top_start = circ_top.project(pt(u1, z1));
+    let top_end = circ_top.project(pt(u0, z1));
+    let mut top = Edge::new(v11, v01, EdgeCurve::Circle(circ_top));
+    top.set_trim(Some((
+        top_start,
+        top_start - (top_start - top_end).rem_euclid(std::f64::consts::TAU),
+    )));
+    let e_top = topo.add_edge(top);
     let e_left = topo.add_edge(Edge::new(v01, v00, EdgeCurve::Line));
 
     let wire = Wire::new(
@@ -739,9 +753,23 @@ fn cone_patch(
     let circ_bot = Circle3D::new(Point3::new(0.0, 0.0, z0), axis, radius_at_z(z0)).unwrap();
     let circ_top = Circle3D::new(Point3::new(0.0, 0.0, z1), axis, radius_at_z(z1)).unwrap();
 
-    let e_bot = topo.add_edge(Edge::new(v00, v10, EdgeCurve::Circle(circ_bot)));
+    let bot_start = circ_bot.project(pt(u0, z0));
+    let bot_end = circ_bot.project(pt(u1, z0));
+    let mut bot = Edge::new(v00, v10, EdgeCurve::Circle(circ_bot));
+    bot.set_trim(Some((
+        bot_start,
+        bot_start + (bot_end - bot_start).rem_euclid(std::f64::consts::TAU),
+    )));
+    let e_bot = topo.add_edge(bot);
     let e_right = topo.add_edge(Edge::new(v10, v11, EdgeCurve::Line));
-    let e_top = topo.add_edge(Edge::new(v11, v01, EdgeCurve::Circle(circ_top)));
+    let top_start = circ_top.project(pt(u1, z1));
+    let top_end = circ_top.project(pt(u0, z1));
+    let mut top = Edge::new(v11, v01, EdgeCurve::Circle(circ_top));
+    top.set_trim(Some((
+        top_start,
+        top_start - (top_start - top_end).rem_euclid(std::f64::consts::TAU),
+    )));
+    let e_top = topo.add_edge(top);
     let e_left = topo.add_edge(Edge::new(v01, v00, EdgeCurve::Line));
 
     let wire = Wire::new(
@@ -1134,7 +1162,17 @@ fn closed_rim_face(topo: &mut Topology, curve: EdgeCurve, seam: Point3) -> FaceI
     use remus_topology::wire::{OrientedEdge, Wire};
 
     let v = topo.add_vertex(Vertex::new(seam, 1e-7));
-    let e = topo.add_edge(Edge::new(v, v, curve));
+    let seam_parameter = match &curve {
+        EdgeCurve::Circle(circle) => circle.project(seam),
+        EdgeCurve::Ellipse(ellipse) => ellipse.project(seam),
+        _ => unreachable!("closed-rim test helper only accepts periodic analytic curves"),
+    };
+    let mut edge = Edge::new(v, v, curve);
+    edge.set_trim(Some((
+        seam_parameter,
+        seam_parameter + std::f64::consts::TAU,
+    )));
+    let e = topo.add_edge(edge);
     let wid = topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap());
     topo.add_face(Face::new(
         wid,
@@ -1250,7 +1288,7 @@ fn closed_edge_centroid_is_the_centre_for_circle_and_ellipse() {
             Ellipse3D::new_with_ref(centre, normal, 5.0, 2.0, reference).unwrap(),
         );
         for curve in [circle, ellipse] {
-            let c = closed_edge_centroid(&curve, seam, seam);
+            let c = closed_edge_centroid(&curve, seam, seam, (0.0, std::f64::consts::TAU));
             assert!(
                 (c - centre).length() <= tol.linear,
                 "{} centroid {c:?} must be the centre {centre:?}",

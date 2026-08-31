@@ -5,7 +5,8 @@ use remus_topology::Topology;
 use remus_topology::face::FaceSurface;
 
 use super::super::pcurve_compute::{
-    compute_pcurve_on_surface, project_point_on_surface, sample_edge_to_uv,
+    compute_pcurve_on_surface_in_domain, project_point_on_surface,
+    reconstruct_structural_sampling_domain, sample_edge_to_uv,
 };
 use super::super::plane_frame::PlaneFrame;
 use super::super::split_types::OrientedPCurveEdge;
@@ -154,9 +155,15 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
             return false;
         };
         let (sp, ep) = (sv.point(), ev.point());
+        if edge.strict_domain().is_err() {
+            return false;
+        }
+        let domain = reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
         let pts: Vec<Point3> = [0.0, 0.25, 0.5, 0.75, 1.0]
             .iter()
-            .map(|&f| super::super::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, f))
+            .map(|&f| {
+                super::super::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, domain, f)
+            })
             .collect();
         let (a, b, c) = (pts[0], pts[2], pts[4]);
         let (u, v) = (b - a, c - a);
@@ -247,16 +254,29 @@ pub(super) fn boundary_edges_to_pcurve_with_images<S: std::hash::BuildHasher>(
         };
         let start_3d = start_v.point();
         let end_3d = end_v.point();
+        if edge.strict_domain().is_err() {
+            continue;
+        }
+        let traversal_domain =
+            reconstruct_structural_sampling_domain(edge.curve(), start_3d, end_3d);
 
-        let pcurve =
-            compute_pcurve_on_surface(edge.curve(), start_3d, end_3d, surface, wire_pts, frame);
+        let pcurve = compute_pcurve_on_surface_in_domain(
+            edge.curve(),
+            start_3d,
+            end_3d,
+            traversal_domain,
+            surface,
+            wire_pts,
+            frame,
+        );
 
         // For closed edges (start_3d approx end_3d, e.g. full circle), projecting
         // start and end to UV gives the same point. Use pcurve sampling to
         // get distinct UV endpoints spanning the full curve.
         let is_closed = (start_3d - end_3d).length() < 1e-10;
         let (start_uv, end_uv) = if is_closed && !matches!(surface, FaceSurface::Plane { .. }) {
-            let uv_samples = sample_edge_to_uv(edge.curve(), start_3d, end_3d, surface);
+            let uv_samples =
+                sample_edge_to_uv(edge.curve(), start_3d, end_3d, traversal_domain, surface);
             let su = uv_samples
                 .first()
                 .copied()
