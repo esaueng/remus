@@ -65,6 +65,9 @@ pub fn perform(
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 
+    super::helpers::validate_edge_domains(topo, &edges_a, "edge-face interference")?;
+    super::helpers::validate_edge_domains(topo, &edges_b, "edge-face interference")?;
+
     // Collect face boundary edge sets to skip edges that are already
     // on the face boundary.
     let face_boundary_edges_b = collect_face_boundary_edges(topo, &faces_b)?;
@@ -164,7 +167,11 @@ fn sample_wire_outline(
         let edge = topo.edge(oe.edge())?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) = super::helpers::authoritative_edge_domain(
+            edge,
+            oe.edge(),
+            "edge-face boundary sampling",
+        )?;
         let is_curved = !matches!(edge.curve(), EdgeCurve::Line);
         let n = N_BOUNDARY_SAMPLES;
         let mut prev_t: Option<f64> = None;
@@ -340,7 +347,8 @@ fn check_edge_face_pairs(
             let edge = topo.edge(eid)?;
             let sp = topo.vertex(edge.start())?.point();
             let ep = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(sp, ep);
+            let (t0, t1) =
+                super::helpers::authoritative_edge_domain(edge, eid, "edge-face intersection")?;
             (edge.curve().clone(), sp, ep, t0, t1)
         };
 

@@ -58,6 +58,9 @@ pub fn perform(
     let edges_a = remus_topology::explorer::solid_edges(topo, solid_a)?;
     let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
 
+    super::helpers::validate_edge_domains(topo, &edges_a, "vertex-edge interference")?;
+    super::helpers::validate_edge_domains(topo, &edges_b, "vertex-edge interference")?;
+
     check_vertex_edge_pairs(topo, &verts_a, &edges_b, tol, arena)?;
     check_vertex_edge_pairs(topo, &verts_b, &edges_a, tol, arena)?;
 
@@ -109,7 +112,8 @@ fn check_vertex_edge_pairs(
 
             let start_pos = topo.vertex(edge.start())?.point();
             let end_pos = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+            let (t0, t1) =
+                super::helpers::authoritative_edge_domain(edge, eid, "vertex-edge interference")?;
 
             let param = project_point_on_edge(topo, eid, pos)?;
 
@@ -165,7 +169,8 @@ fn project_point_on_edge(
     let edge = topo.edge(edge_id)?;
     let start_pos = topo.vertex(edge.start())?.point();
     let end_pos = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+    let (t0, t1) =
+        super::helpers::authoritative_edge_domain(edge, edge_id, "vertex-edge projection")?;
 
     let n_samples: usize = 32;
     let mut best_t = t0;

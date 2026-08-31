@@ -112,7 +112,8 @@ fn collect_edge_data(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<EdgeData>,
         let edge = topo.edge(eid)?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, eid, "edge-edge data collection")?;
 
         let n: usize = 16;
         let mut min = start_pos;
