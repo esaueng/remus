@@ -152,6 +152,98 @@ fn pave_filler_initializes_pave_blocks() {
 }
 
 #[test]
+fn pave_block_initialization_preserves_stored_periodic_and_line_domains() {
+    const SEAM_U: f64 = 1.0;
+    let mut topo = Topology::default();
+    let box_id = make_box(&mut topo, [-2.0, -2.0, -1.0], [2.0, 2.0, 2.0]);
+    let (cylinder_id, _, _) = make_cylinder_with_seam_u(&mut topo, 0.0, 0.0, 0.0, 0.5, 1.0, SEAM_U);
+
+    let mut arena = GfaArena::new();
+    PaveFiller::new(&mut topo, box_id, cylinder_id)
+        .init_pave_blocks(&mut arena)
+        .unwrap();
+
+    let mut curved = 0;
+    let mut lines = 0;
+    for (&edge_id, blocks) in &arena.edge_pave_blocks {
+        assert_eq!(blocks.len(), 1);
+        let edge = topo.edge(edge_id).unwrap();
+        let range = arena.pave_blocks.get(blocks[0]).unwrap().parameter_range();
+        match edge.curve() {
+            EdgeCurve::Line => {
+                lines += 1;
+                assert_eq!(range, (0.0, 1.0));
+                assert_eq!(edge.trim(), None);
+            }
+            EdgeCurve::Circle(_) => {
+                curved += 1;
+                assert_eq!(range, edge.trim().unwrap());
+                assert_eq!(range, (SEAM_U, SEAM_U + std::f64::consts::TAU));
+                assert!(range.1 > std::f64::consts::TAU);
+            }
+            other => panic!("unexpected edge curve in fixture: {}", other.type_tag()),
+        }
+    }
+    assert_eq!(curved, 2);
+    assert_eq!(lines, 13);
+}
+
+#[test]
+fn pave_block_initialization_refuses_missing_curved_authority_atomically() {
+    let mut topo = Topology::default();
+    let box_id = make_box(&mut topo, [-2.0, -2.0, -1.0], [2.0, 2.0, 2.0]);
+    let cylinder_id = make_cylinder(&mut topo, 0.0, 0.0, 0.0, 0.5, 1.0);
+    let circle_id = remus_topology::explorer::solid_edges(&topo, cylinder_id)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    topo.edge_mut(circle_id).unwrap().set_trim(None);
+
+    let mut arena = GfaArena::new();
+    let error = PaveFiller::new(&mut topo, box_id, cylinder_id)
+        .init_pave_blocks(&mut arena)
+        .unwrap_err();
+    let crate::error::AlgoError::IntersectionFailed(message) = error else {
+        panic!("expected typed intersection failure");
+    };
+    assert!(message.contains("pave-block initialization"));
+    assert!(message.contains(&format!("{circle_id:?}")));
+    assert!(arena.pave_blocks.is_empty());
+    assert!(arena.edge_pave_blocks.is_empty());
+    assert!(arena.curves.is_empty());
+    assert!(arena.interference.vv.is_empty());
+    assert!(arena.interference.ve.is_empty());
+    assert!(arena.interference.ee.is_empty());
+    assert!(arena.interference.ef.is_empty());
+    assert!(arena.interference.ff.is_empty());
+}
+
+#[test]
+fn n_way_pave_block_initialization_refuses_late_missing_authority_atomically() {
+    let mut topo = Topology::default();
+    let first = make_box(&mut topo, [-3.0, -3.0, -1.0], [-1.0, -1.0, 1.0]);
+    let second = make_box(&mut topo, [1.0, 1.0, -1.0], [3.0, 3.0, 1.0]);
+    let third = make_cylinder(&mut topo, 0.0, 0.0, 0.0, 0.5, 1.0);
+    let circle_id = remus_topology::explorer::solid_edges(&topo, third)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| matches!(topo.edge(edge_id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    topo.edge_mut(circle_id).unwrap().set_trim(None);
+
+    let mut arena = GfaArena::new();
+    let error = super::init_pave_blocks_n(&topo, &[first, second, third], &mut arena).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::AlgoError::IntersectionFailed(message)
+            if message.contains("N-way pave-block initialization")
+    ));
+    assert!(arena.pave_blocks.is_empty());
+    assert!(arena.edge_pave_blocks.is_empty());
+}
+
+#[test]
 fn vv_detects_no_coincident_vertices_for_offset_boxes() {
     let (_topo, arena) = two_overlapping_boxes();
 
