@@ -6,10 +6,42 @@
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{Edge, EdgeId};
 use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Pave};
+use crate::error::AlgoError;
+
+/// Resolve the stored parameter authority for a topology edge.
+///
+/// PaveFiller must never reconstruct a curved edge's branch from its endpoint
+/// positions: periodic seams and major/reversed spans are not recoverable from
+/// those points alone. Lines retain their intrinsic endpoint-local `[0, 1]`
+/// domain through [`Edge::strict_domain`].
+pub(super) fn authoritative_edge_domain(
+    edge: &Edge,
+    edge_id: EdgeId,
+    stage: &'static str,
+) -> Result<(f64, f64), AlgoError> {
+    edge.strict_domain().map_err(|error| {
+        AlgoError::IntersectionFailed(format!(
+            "{stage} edge {edge_id:?} lacks authoritative parameter range: {error}"
+        ))
+    })
+}
+
+/// Validate a complete edge set before a phase starts mutating its arena.
+pub(super) fn validate_edge_domains(
+    topo: &Topology,
+    edges: &[EdgeId],
+    stage: &'static str,
+) -> Result<(), AlgoError> {
+    for &edge_id in edges {
+        let edge = topo.edge(edge_id)?;
+        authoritative_edge_domain(edge, edge_id, stage)?;
+    }
+    Ok(())
+}
 
 /// Find a vertex near the given point among all pave block vertices.
 ///
@@ -79,11 +111,10 @@ pub(super) fn add_pave_to_edge(arena: &mut GfaArena, edge_id: EdgeId, pave: Pave
     if let Some(pb_ids) = arena.edge_pave_blocks.get(&edge_id) {
         let pb_ids_copy: Vec<_> = pb_ids.clone();
         for pb_id in pb_ids_copy {
-            if let Some(pb) = arena.pave_blocks.get_mut(pb_id) {
-                let (start, end) = pb.parameter_range();
-                if pave.parameter > start + 1e-10 && pave.parameter < end - 1e-10 {
-                    pb.add_extra_pave(pave);
-                }
+            if let Some(pb) = arena.pave_blocks.get_mut(pb_id)
+                && pb.contains_parameter_interior(pave.parameter, 1e-10)
+            {
+                pb.add_extra_pave(pave);
             }
         }
     }

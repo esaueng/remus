@@ -46,20 +46,22 @@ pub fn perform(arena: &mut GfaArena) -> Result<(), AlgoError> {
                 };
 
                 let mut sorted_paves = extra_paves;
-                sorted_paves.sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
+                sorted_paves.retain(|pave| {
+                    let lo = start.parameter.min(end.parameter) + 1e-10;
+                    let hi = start.parameter.max(end.parameter) - 1e-10;
+                    pave.parameter > lo && pave.parameter < hi
+                });
+                if end.parameter >= start.parameter {
+                    sorted_paves.sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
+                } else {
+                    sorted_paves.sort_by(|a, b| b.parameter.total_cmp(&a.parameter));
+                }
                 sorted_paves.dedup_by(|a, b| (a.parameter - b.parameter).abs() < 1e-10);
 
                 let mut prev_pave = start;
                 let mut children = Vec::new();
 
                 for pave in &sorted_paves {
-                    // Skip paves that coincide with the boundaries
-                    if (pave.parameter - start.parameter).abs() < 1e-10
-                        || (pave.parameter - end.parameter).abs() < 1e-10
-                    {
-                        continue;
-                    }
-
                     let child = crate::ds::PaveBlock::new(original_edge, prev_pave, *pave);
                     let child_id = arena.pave_blocks.alloc(child);
                     children.push(child_id);
@@ -90,4 +92,41 @@ pub fn perform(arena: &mut GfaArena) -> Result<(), AlgoError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::vec::Point3;
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    use crate::ds::{GfaArena, Pave};
+
+    #[test]
+    fn descending_block_splits_in_source_traversal_order() {
+        let mut topo = Topology::new();
+        let v_start = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let v_end = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let v_high = topo.add_vertex(Vertex::new(Point3::new(0.25, 0.0, 0.0), 1e-7));
+        let v_low = topo.add_vertex(Vertex::new(Point3::new(0.75, 0.0, 0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(v_start, v_end, EdgeCurve::Line));
+
+        let mut arena = GfaArena::new();
+        arena.init_edge_pave_block(edge, v_start, 5.0, v_end, 1.0);
+        let pb_id = arena.edge_pave_blocks[&edge][0];
+        let pb = arena.pave_blocks.get_mut(pb_id).unwrap();
+        pb.add_extra_pave(Pave::new(v_low, 2.0));
+        pb.add_extra_pave(Pave::new(v_high, 4.0));
+
+        super::perform(&mut arena).unwrap();
+
+        let ranges: Vec<_> = arena.edge_pave_blocks[&edge]
+            .iter()
+            .map(|&id| arena.pave_blocks.get(id).unwrap().parameter_range())
+            .collect();
+        assert_eq!(ranges, vec![(5.0, 4.0), (4.0, 2.0), (2.0, 1.0)]);
+    }
 }

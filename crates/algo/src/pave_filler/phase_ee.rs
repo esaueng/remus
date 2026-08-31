@@ -112,7 +112,8 @@ fn collect_edge_data(topo: &Topology, edges: &[EdgeId]) -> Result<Vec<EdgeData>,
         let edge = topo.edge(eid)?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, eid, "edge-edge data collection")?;
 
         let n: usize = 16;
         let mut min = start_pos;
@@ -226,8 +227,8 @@ fn find_edge_edge_crossings(
         })
         .collect();
 
-    let domain_a = (ea.t0 - tol.linear)..=(ea.t1 + tol.linear);
-    let domain_b = (eb.t0 - tol.linear)..=(eb.t1 + tol.linear);
+    let domain_a = (ea.t0.min(ea.t1) - tol.linear)..=(ea.t0.max(ea.t1) + tol.linear);
+    let domain_b = (eb.t0.min(eb.t1) - tol.linear)..=(eb.t0.max(eb.t1) + tol.linear);
 
     for i in 0..n {
         for j in 0..n {
