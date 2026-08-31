@@ -2463,7 +2463,7 @@ mod batch_contract_tests {
             let wire = kernel.topo().wire(face.outer_wire()).expect("cap wire");
             wire.edges()
                 .iter()
-                .map(|oriented| oriented.edge())
+                .map(remus_topology::wire::OrientedEdge::edge)
                 .find(|&edge_id| {
                     kernel
                         .topo()
