@@ -262,6 +262,13 @@ impl<T: Clone> Arena<T> {
     /// Entries beyond the snapshot's slot range are retained as inaccessible
     /// tombstones. Future allocations append after those tombstones, ensuring
     /// stale raw-index handles cannot resolve to unrelated entities.
+    ///
+    /// A slot retired after the snapshot stays retired: this is the
+    /// *checkpoint barrier* semantics, where a retirement may already have
+    /// been reported to an external handle holder and must never be
+    /// silently undone. Use [`Self::restore_for_rollback`] for the
+    /// transaction semantics, where the retirement was never observed and
+    /// must be undone.
     pub(crate) fn restore_preserving_slots(&mut self, snapshot: &Self) {
         let previous_items = std::mem::take(&mut self.items);
         let previous_live = std::mem::take(&mut self.live);
@@ -272,6 +279,31 @@ impl<T: Clone> Arena<T> {
         for (restored_live, was_live) in self.live.iter_mut().zip(&previous_live) {
             *restored_live &= *was_live;
         }
+
+        if previous_slots > self.items.len() {
+            self.items
+                .extend_from_slice(&previous_items[self.items.len()..]);
+            self.live.resize(previous_slots, false);
+        }
+        self.live_len = self.live.iter().filter(|is_live| **is_live).count();
+    }
+
+    /// Restore the arena to the exact snapshot state without reusing any
+    /// slot that has existed in this arena.
+    ///
+    /// This is the *transaction rollback* semantics: every mutation staged
+    /// inside the rolled-back window is undone, so a slot live in the
+    /// snapshot is live again even if the window retired it — the failed
+    /// operation was never observed by any caller, so its retirements are
+    /// rolled back along with its allocations. Slots allocated after the
+    /// snapshot remain reserved tombstones, so handles issued inside the
+    /// window can never alias a later entity.
+    pub(crate) fn restore_for_rollback(&mut self, snapshot: &Self) {
+        let previous_items = std::mem::take(&mut self.items);
+        let previous_slots = previous_items.len();
+
+        self.items.clone_from(&snapshot.items);
+        self.live.clone_from(&snapshot.live);
 
         if previous_slots > self.items.len() {
             self.items
@@ -399,6 +431,27 @@ mod tests {
         assert!(arena.id_from_index(retired.index()).is_none());
         let fresh = arena.alloc("fresh".to_owned());
         assert!(fresh.index() > retired.index());
+    }
+
+    #[test]
+    fn rollback_restore_undoes_in_window_retirement() {
+        let mut arena = Arena::new();
+        let original = arena.alloc("original".to_owned());
+        let snapshot = arena.clone();
+
+        assert!(arena.retire(original));
+        let staged = arena.alloc("staged".to_owned());
+        arena.restore_for_rollback(&snapshot);
+
+        // The in-window retirement is undone; the staged allocation is a
+        // tombstone that is never reissued.
+        assert_eq!(arena.get(original).map(String::as_str), Some("original"));
+        assert_eq!(arena.len(), 1);
+        assert!(arena.get(staged).is_none());
+        assert!(arena.id_from_index(staged.index()).is_none());
+        let fresh = arena.alloc("fresh".to_owned());
+        assert!(fresh.index() > staged.index());
+        assert_eq!(arena.get(fresh).map(String::as_str), Some("fresh"));
     }
 
     #[test]
