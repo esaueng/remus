@@ -126,24 +126,15 @@ fn create_split_edge(
     // - `Line` carries no stored geometry — the sub-edge's line re-anchors
     //   to its new vertices with domain [0, 1], so parameters measured on
     //   the ORIGINAL edge do not apply to it: no trim.
-    // - Angular curves (circle, ellipse) evaluate any angle, so a block
-    //   that wraps the parameter seam is stored unwrapped by one period
-    //   (t_end + 2π), keeping the span forward.
-    // - Other curves store only a forward span; a wrapped span keeps the
-    //   legacy projection path.
+    // - Every other curve retains the exact directed sub-span. Descending
+    //   ranges are authoritative reverse traversal, not a periodic wrap.
     let trim = match &curve {
         EdgeCurve::Line => None,
-        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
-            let span = if t_end > t_start {
-                t_end
-            } else {
-                t_end + std::f64::consts::TAU
-            };
-            Some((t_start, span))
-        }
-        EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
-            (t_end > t_start).then_some((t_start, t_end))
-        }
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => Some((t_start, t_end)),
     };
     let mut new_edge = Edge::new(start_vertex, end_vertex, curve);
     new_edge.set_trim(trim);
@@ -199,11 +190,10 @@ mod trim_tests {
     }
 
     #[test]
-    fn wrapped_arc_span_is_unwrapped_by_one_period() {
-        const TAU: f64 = std::f64::consts::TAU;
+    fn reversed_arc_span_is_recorded_exactly() {
         let mut topo = arc_split_fixture(5.5, 1.0, circle());
         let eid = split(&mut topo, 5.5, 1.0);
-        assert_eq!(topo.edge(eid).unwrap().trim(), Some((5.5, 1.0 + TAU)));
+        assert_eq!(topo.edge(eid).unwrap().trim(), Some((5.5, 1.0)));
     }
 
     #[test]

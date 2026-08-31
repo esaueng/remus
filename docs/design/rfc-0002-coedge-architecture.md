@@ -391,11 +391,14 @@ Issue 2.0 lands in seven independently reviewable stages:
 The first algorithm-reader continuation after the strict-domain foundation
 migrates 18 stored `Edge` and already-carried section-domain reads. The checked
 ratchet moves from 98 to 80 production readers without adding a reconstruction
-fallback. The remaining algorithm sites are deliberately split: transient
-splitter support/complement semantics and the PaveFiller wave land in later
-2.0c PRs with their own branch and seam oracles. This is progress evidence, not
-the 2.0c exit gate; SameParameter/SameRange boolean-output validation and the
-zero-reader gate remain open.
+fallback. The following PaveFiller continuation migrates all 19 readers in its
+initialization, EE/EF/VE, FF, and coplanar-FF paths, moving the checked ratchet
+from 80 to 61. It preflights complete edge sets before arena mutation, copies
+stored lifted/reversed ranges verbatim, and keeps Lines on their intrinsic
+`[0, 1]` domain. The remaining algorithm sites are the transient splitter
+support/complement wave. This is progress evidence, not the 2.0c exit gate;
+SameParameter/SameRange boolean-output validation and the zero-reader gate
+remain open.
 
 Once Issue 2.0e lands, new code must not construct face boundaries from raw
 `OrientedEdge` lists. Enforcement:
