@@ -20,7 +20,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use super::classify_2d::{sample_interior_point, signed_area_2d};
 use super::pcurve_compute::{
-    compute_pcurve_on_surface, evaluate_edge_at_t, project_point_on_surface,
+    compute_pcurve_on_surface_in_domain, evaluate_edge_at_t, project_point_on_surface,
 };
 use super::plane_frame::PlaneFrame;
 use super::split_types::{OrientedPCurveEdge, SectionEdge, SplitSubFace, SurfaceInfo};
@@ -292,49 +292,71 @@ fn split_sections_at_t_junctions(
 
         let mut prev_3d = edge.start_3d;
         let mut prev_uv = edge.start_uv;
-        let mut push_piece = |s3: Point3, e3: Point3, s_uv: Point2, e_uv: Point2| {
-            let src = *piece_src.entry(key(s3, e3)).or_insert_with(|| {
-                let v = next_src;
-                next_src += 1;
-                v
-            });
-            let pcurve =
-                compute_pcurve_on_surface(&edge.curve_3d, s3, e3, surface, wire_pts, frame);
-            new_sections.push(OrientedPCurveEdge {
-                curve_3d: edge.curve_3d.clone(),
-                trim: edge.sub_trim(s3, e3),
-                pcurve,
-                start_uv: s_uv,
-                end_uv: e_uv,
-                start_3d: s3,
-                end_3d: e3,
-                forward: edge.forward,
-                source_edge_idx: Some(src),
-                // A split piece is a sub-segment of the original section, so
-                // it must not inherit the parent's pave_block_id — vertex
-                // resolution would snap both halves to the PaveBlock's
-                // (un-split) endpoints. Resolve by position instead;
-                // cross-face sharing is recovered by merge_duplicate_edges.
-                pave_block_id: None,
-                source_topo_edge: edge.source_topo_edge,
-            });
-        };
+        let mut prev_t = 0.0;
+        let mut push_piece =
+            |s3: Point3, e3: Point3, s_uv: Point2, e_uv: Point2, from: f64, to: f64| {
+                let src = *piece_src.entry(key(s3, e3)).or_insert_with(|| {
+                    let v = next_src;
+                    next_src += 1;
+                    v
+                });
+                let pcurve = compute_pcurve_on_surface_in_domain(
+                    &edge.curve_3d,
+                    s3,
+                    e3,
+                    edge.sub_traversal_domain_fraction(from, to),
+                    surface,
+                    wire_pts,
+                    frame,
+                );
+                new_sections.push(OrientedPCurveEdge {
+                    curve_3d: edge.curve_3d.clone(),
+                    trim: edge.sub_trim_fraction(from, to),
+                    pcurve,
+                    start_uv: s_uv,
+                    end_uv: e_uv,
+                    start_3d: s3,
+                    end_3d: e3,
+                    forward: edge.forward,
+                    source_edge_idx: Some(src),
+                    // A split piece is a sub-segment of the original section, so
+                    // it must not inherit the parent's pave_block_id — vertex
+                    // resolution would snap both halves to the PaveBlock's
+                    // (un-split) endpoints. Resolve by position instead;
+                    // cross-face sharing is recovered by merge_duplicate_edges.
+                    pave_block_id: None,
+                    source_topo_edge: edge.source_topo_edge,
+                });
+            };
         if let Some(reg) = split_registry.as_deref_mut()
             && let Some(pb_id) = edge.pave_block_id
         {
             for &(t, _) in &splits {
-                let s3 = evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, t);
+                let s3 = evaluate_edge_at_t(
+                    &edge.curve_3d,
+                    edge.start_3d,
+                    edge.end_3d,
+                    edge.traversal_domain(),
+                    t,
+                );
                 reg.entry(pb_id).or_default().push(s3);
             }
         }
         for &(t, _) in &splits {
-            let s3 = evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, t);
+            let s3 = evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                t,
+            );
             let s_uv = project(s3, prev_uv);
-            push_piece(prev_3d, s3, prev_uv, s_uv);
+            push_piece(prev_3d, s3, prev_uv, s_uv, prev_t, t);
             prev_3d = s3;
             prev_uv = s_uv;
+            prev_t = t;
         }
-        push_piece(prev_3d, edge.end_3d, prev_uv, edge.end_uv);
+        push_piece(prev_3d, edge.end_3d, prev_uv, edge.end_uv, prev_t, 1.0);
     }
 
     all_edges.truncate(0);
@@ -431,31 +453,47 @@ fn split_plane_boundary_arcs_at_points(
 
         let mut prev_3d = edge.start_3d;
         let mut prev_uv = edge.start_uv;
-        let mut push_piece = |s3: Point3, e3: Point3, s_uv: Point2, e_uv: Point2| {
-            let pcurve =
-                compute_pcurve_on_surface(&edge.curve_3d, s3, e3, surface, &[], Some(frame));
-            result.push(OrientedPCurveEdge {
-                curve_3d: edge.curve_3d.clone(),
-                trim: edge.sub_trim(s3, e3),
-                pcurve,
-                start_uv: s_uv,
-                end_uv: e_uv,
-                start_3d: s3,
-                end_3d: e3,
-                forward: edge.forward,
-                source_edge_idx: None,
-                pave_block_id: None,
-                source_topo_edge: edge.source_topo_edge,
-            });
-        };
+        let mut prev_t = 0.0;
+        let mut push_piece =
+            |s3: Point3, e3: Point3, s_uv: Point2, e_uv: Point2, from: f64, to: f64| {
+                let pcurve = compute_pcurve_on_surface_in_domain(
+                    &edge.curve_3d,
+                    s3,
+                    e3,
+                    edge.sub_traversal_domain_fraction(from, to),
+                    surface,
+                    &[],
+                    Some(frame),
+                );
+                result.push(OrientedPCurveEdge {
+                    curve_3d: edge.curve_3d.clone(),
+                    trim: edge.sub_trim_fraction(from, to),
+                    pcurve,
+                    start_uv: s_uv,
+                    end_uv: e_uv,
+                    start_3d: s3,
+                    end_3d: e3,
+                    forward: edge.forward,
+                    source_edge_idx: None,
+                    pave_block_id: None,
+                    source_topo_edge: edge.source_topo_edge,
+                });
+            };
         for &t in &splits {
-            let s3 = evaluate_edge_at_t(&edge.curve_3d, edge.start_3d, edge.end_3d, t);
+            let s3 = evaluate_edge_at_t(
+                &edge.curve_3d,
+                edge.start_3d,
+                edge.end_3d,
+                edge.traversal_domain(),
+                t,
+            );
             let s_uv = frame.project(s3);
-            push_piece(prev_3d, s3, prev_uv, s_uv);
+            push_piece(prev_3d, s3, prev_uv, s_uv, prev_t, t);
             prev_3d = s3;
             prev_uv = s_uv;
+            prev_t = t;
         }
-        push_piece(prev_3d, edge.end_3d, prev_uv, edge.end_uv);
+        push_piece(prev_3d, edge.end_3d, prev_uv, edge.end_uv, prev_t, 1.0);
     }
     result
 }
@@ -793,10 +831,11 @@ fn integrate_holes_plane(
         // the 3D arc into `frame`). The stored `pcurve_a` may have been fitted in
         // a different plane frame or on the opposing face, which would disconnect
         // the arc in this UV space — mirror the main section path's plane refit.
-        let arc_pcurve = super::pcurve_compute::compute_pcurve_on_surface(
+        let arc_pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
             &s.curve_3d,
             s.start,
             s.end,
+            s.domain(),
             surface,
             wire_pts,
             Some(frame),
@@ -3038,14 +3077,6 @@ fn arrangement_regions_from_inputs(
                     .get(&to)
                     .copied()
                     .unwrap_or_else(|| frame.evaluate(eu.x(), eu.y()));
-                let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
-                    &inp.edge.curve_3d,
-                    s3,
-                    e3,
-                    surface,
-                    &[],
-                    Some(frame),
-                );
                 let cd = inp.b - inp.a;
                 let cl2 = cd.dot(cd).max(1e-24);
                 let same_dir = (su - inp.a).dot(cd) / cl2 <= (eu - inp.a).dot(cd) / cl2;
@@ -3059,6 +3090,26 @@ fn arrangement_regions_from_inputs(
                 } else {
                     inp.edge.sub_trim(e3, s3)
                 };
+                let forward = if same_dir {
+                    inp.edge.forward
+                } else {
+                    !inp.edge.forward
+                };
+                let domain = match (&inp.edge.curve_3d, trim) {
+                    (EdgeCurve::Line, _) => (0.0, 1.0),
+                    (_, Some((t0, t1))) if forward => (t0, t1),
+                    (_, Some((t0, t1))) => (t1, t0),
+                    _ => return None,
+                };
+                let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
+                    &inp.edge.curve_3d,
+                    s3,
+                    e3,
+                    domain,
+                    surface,
+                    &[],
+                    Some(frame),
+                );
                 return Some(OrientedPCurveEdge {
                     curve_3d: inp.edge.curve_3d.clone(),
                     trim,
@@ -3067,11 +3118,7 @@ fn arrangement_regions_from_inputs(
                     end_uv: eu,
                     start_3d: s3,
                     end_3d: e3,
-                    forward: if same_dir {
-                        inp.edge.forward
-                    } else {
-                        !inp.edge.forward
-                    },
+                    forward,
                     source_edge_idx: None,
                     // A sub-span of the section must not inherit the parent's
                     // pave_block_id — vertex resolution would snap both halves
@@ -4258,6 +4305,7 @@ fn clip_sections_to_outer_region(
                 &s.curve_3d,
                 s.start,
                 s.end,
+                s.domain(),
                 t,
             )));
         }
@@ -4307,7 +4355,7 @@ fn clip_sections_to_outer_region(
             let lo_in = raw_inside(a);
             for _ in 0..48 {
                 let m = f64::midpoint(lo, hi);
-                let p = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, m);
+                let p = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, s.domain(), m);
                 let m_in = inside_at(p).is_some_and(|(i, _)| i);
                 if m_in == lo_in {
                     lo = m;
@@ -4316,7 +4364,7 @@ fn clip_sections_to_outer_region(
                 }
             }
             let tc = f64::midpoint(lo, hi);
-            let pc = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, tc);
+            let pc = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, s.domain(), tc);
             let j = snap_to_boundary(pc).unwrap_or(pc);
             cuts.push((tc, j));
         }
@@ -4336,7 +4384,7 @@ fn clip_sections_to_outer_region(
                 continue;
             }
             let tm = f64::midpoint(*t_a, *t_b);
-            let pm = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, tm);
+            let pm = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, s.domain(), tm);
             let keep_piece = inside_at(pm).is_some_and(|(i, d)| i && d > band);
             if !keep_piece {
                 continue;
@@ -4351,10 +4399,11 @@ fn clip_sections_to_outer_region(
             // keeping them would evaluate (and UV-anchor) the full span.
             // Refit on this face over the piece's own endpoints. Both slots
             // are overwritten — this `sections` vec is face-local.
-            let pc = super::pcurve_compute::compute_pcurve_on_surface(
+            let pc = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
                 &piece.curve_3d,
                 piece.start,
                 piece.end,
+                piece.domain(),
                 surface,
                 wire_pts,
                 None,
@@ -4386,10 +4435,11 @@ fn clip_sections_to_outer_region(
         };
         let (su, eu) = uv_endpoints_from_pcurve(&s.pcurve_a, s.start, s.end, surface, wire_pts);
         if v_bad(s.start, Some(su)) || v_bad(s.end, Some(eu)) {
-            let pc = super::pcurve_compute::compute_pcurve_on_surface(
+            let pc = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
                 &s.curve_3d,
                 s.start,
                 s.end,
+                s.domain(),
                 surface,
                 wire_pts,
                 None,
@@ -4870,10 +4920,19 @@ fn split_face_2d_impl(
                         if (s3 - e3).length() < tol.linear {
                             continue;
                         }
-                        let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
+                        let Ok(native_domain) = e.strict_domain() else {
+                            continue;
+                        };
+                        let traversal_domain = if oe.is_forward() {
+                            native_domain
+                        } else {
+                            (native_domain.1, native_domain.0)
+                        };
+                        let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
                             e.curve(),
                             s3,
                             e3,
+                            traversal_domain,
                             &surface,
                             &wire_pts,
                             Some(frame),
@@ -5021,7 +5080,7 @@ fn split_face_2d_impl(
                 let uniform_in_hole = (0..=HOLE_PROBE_SAMPLES).all(|i| {
                     #[allow(clippy::cast_precision_loss)]
                     let t = i as f64 / HOLE_PROBE_SAMPLES as f64;
-                    let p = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, t);
+                    let p = evaluate_edge_at_t(&s.curve_3d, s.start, s.end, s.domain(), t);
                     to_uv(p).is_some_and(|uv| is_inside_any_hole(&uv, &original_inner_wires))
                 });
                 if !uniform_in_hole {
@@ -5069,7 +5128,13 @@ fn split_face_2d_impl(
                 // arcs sharing endpoints (e.g. the two halves of a split
                 // circle) are not collapsed into one.
                 let (a, b) = (q(s.start), q(s.end));
-                let mid = q(evaluate_edge_at_t(&s.curve_3d, s.start, s.end, 0.5));
+                let mid = q(evaluate_edge_at_t(
+                    &s.curve_3d,
+                    s.start,
+                    s.end,
+                    s.domain(),
+                    0.5,
+                ));
                 seen.insert((if a <= b { (a, b) } else { (b, a) }, mid))
             })
             .cloned()
@@ -5874,10 +5939,11 @@ fn split_face_2d_impl(
         // in UV. Refit it in this face's frame.
         let owned_pcurve;
         let pcurve_on_this_face = if is_plane && !matches!(section.curve_3d, EdgeCurve::Line) {
-            owned_pcurve = super::pcurve_compute::compute_pcurve_on_surface(
+            owned_pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
                 &section.curve_3d,
                 section.start,
                 section.end,
+                section.domain(),
                 &surface,
                 &wire_pts,
                 Some(frame),
@@ -7109,7 +7175,13 @@ fn split_face_2d_impl(
                     EdgeCurve::Hyperbola(_) => 4,
                     EdgeCurve::Parabola(_) => 5,
                 };
-                let midpoint = q(evaluate_edge_at_t(&e.curve_3d, e.start_3d, e.end_3d, 0.5));
+                let midpoint = q(evaluate_edge_at_t(
+                    &e.curve_3d,
+                    e.start_3d,
+                    e.end_3d,
+                    e.traversal_domain(),
+                    0.5,
+                ));
                 (tag, endpoints, midpoint)
             })
             .collect();

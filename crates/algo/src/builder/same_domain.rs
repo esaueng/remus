@@ -863,10 +863,15 @@ fn compute_edge_set_quantized(
         // instances.
         let closed_uniform_angle =
             qs == qe && matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_));
+        let domain = crate::builder::pcurve_compute::reconstruct_structural_sampling_domain(
+            edge.curve(),
+            sp,
+            ep,
+        );
         let disc = if closed_uniform_angle {
-            closed_edge_centroid(edge.curve(), sp, ep)
+            closed_edge_centroid(edge.curve(), sp, ep, domain)
         } else {
-            crate::builder::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, 0.5)
+            crate::builder::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, domain, 0.5)
         };
         // quantize_point MULTIPLIES by the scale, so the 100x-coarser
         // discriminator bucket (fit-error tolerance for marched geometry)
@@ -971,12 +976,13 @@ fn closed_edge_centroid(
     curve: &remus_topology::edge::EdgeCurve,
     sp: remus_math::vec::Point3,
     ep: remus_math::vec::Point3,
+    domain: (f64, f64),
 ) -> remus_math::vec::Point3 {
     let (mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0);
     for k in 0..CLOSED_EDGE_SAMPLES {
         #[allow(clippy::cast_precision_loss)]
         let t = k as f64 / CLOSED_EDGE_SAMPLES as f64;
-        let p = crate::builder::pcurve_compute::evaluate_edge_at_t(curve, sp, ep, t);
+        let p = crate::builder::pcurve_compute::evaluate_edge_at_t(curve, sp, ep, domain, t);
         sx += p.x();
         sy += p.y();
         sz += p.z();
@@ -1038,15 +1044,13 @@ fn planar_faces_overlap(
                 continue;
             };
             let (sp, ep) = (sv.point(), ev.point());
-            // Sample via the shorter-arc evaluator: split faces can store
-            // arc edges whose vertex order opposes the circle's CCW
-            // parameterization, and domain-based sampling would then trace
-            // the complementary (long-way) arc, corrupting the polygon used
-            // for the containment tests below.
+            let domain =
+                super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
             super::pcurve_compute::sample_edge_uniform(
                 edge.curve(),
                 sp,
                 ep,
+                domain,
                 samples_per_edge,
                 oe.is_forward(),
                 &mut pts,
@@ -1378,12 +1382,13 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Option<f64> {
         let sv = topo.vertex(edge.start()).ok()?;
         let ev = topo.vertex(edge.end()).ok()?;
         let (sp, ep) = (sv.point(), ev.point());
-        // Sample each edge so arc boundaries contribute their true swept area,
-        // mirroring `planar_faces_overlap`'s shorter-arc sampling.
+        let domain =
+            super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
         super::pcurve_compute::sample_edge_uniform(
             edge.curve(),
             sp,
             ep,
+            domain,
             SD_EDGE_SAMPLES,
             oe.is_forward(),
             &mut pts,
@@ -1422,10 +1427,13 @@ fn wire_points_3d(topo: &Topology, face_id: FaceId) -> Option<Vec<remus_math::ve
         let sv = topo.vertex(edge.start()).ok()?;
         let ev = topo.vertex(edge.end()).ok()?;
         let (sp, ep) = (sv.point(), ev.point());
+        let domain =
+            super::pcurve_compute::reconstruct_structural_sampling_domain(edge.curve(), sp, ep);
         super::pcurve_compute::sample_edge_uniform(
             edge.curve(),
             sp,
             ep,
+            domain,
             SD_EDGE_SAMPLES,
             oe.is_forward(),
             &mut pts,
@@ -1765,10 +1773,16 @@ fn face_outer_wire_points(topo: &Topology, face_id: FaceId) -> Vec<remus_math::v
         let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
             continue;
         };
+        let domain = super::pcurve_compute::reconstruct_structural_sampling_domain(
+            edge.curve(),
+            sv.point(),
+            ev.point(),
+        );
         super::pcurve_compute::sample_edge_uniform(
             edge.curve(),
             sv.point(),
             ev.point(),
+            domain,
             SD_EDGE_SAMPLES,
             oe.is_forward(),
             &mut pts,

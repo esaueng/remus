@@ -1699,8 +1699,14 @@ fn presplit_closed_winding_loops(
                 ParametricCurve::evaluate(&sub, a1),
             );
             let curve_3d = EdgeCurve::NurbsCurve(sub);
-            let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
-                &curve_3d, start, end, surface, wire_pts, None,
+            let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
+                &curve_3d,
+                start,
+                end,
+                (a0, a1),
+                surface,
+                wire_pts,
+                None,
             );
             let mut piece = s.clone();
             piece.curve_3d = curve_3d;
@@ -2086,10 +2092,12 @@ fn build_section_edges(
                         (!matches!(curve_ds.curve, EdgeCurve::Line)).then_some(curve_ds.t_range),
                     ),
                 };
-                let pcurve = super::pcurve_compute::compute_pcurve_on_surface(
+                let domain = trim.unwrap_or((0.0, 1.0));
+                let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
                     &curve_3d,
                     start,
                     end,
+                    domain,
                     face.surface(),
                     &wire_pts,
                     None,
@@ -2982,7 +2990,7 @@ fn arc_segment_crossings(
     edge_start: Point3,
     edge_end: Point3,
     closed: bool,
-    _trim: Option<(f64, f64)>,
+    trim: Option<(f64, f64)>,
     line_start: Point3,
     line_end: Point3,
     tol: f64,
@@ -3005,13 +3013,12 @@ fn arc_segment_crossings(
             let Some(n) = plane_normal else {
                 return Vec::new();
             };
+            let Some((t0, t1)) = trim else {
+                return Vec::new();
+            };
             let _ = tol;
             let dir = line_end - line_start;
             let side = |p: Point3| (p - line_start).cross(dir).dot(n);
-            // Deriving a trimmed NURBS domain projects both edge endpoints
-            // onto the curve. Hoist that expensive work out of the sampling
-            // and bisection loops so each probe is only a curve evaluation.
-            let (t0, t1) = curve.domain_with_endpoints(edge_start, edge_end);
             let span = t1 - t0;
             let eval =
                 |f: f64| curve.evaluate_with_endpoints(f.mul_add(span, t0), edge_start, edge_end);
@@ -3069,11 +3076,14 @@ fn arc_segment_crossings(
     if hits.is_empty() {
         return hits;
     }
+    let Some(domain) = trim else {
+        return Vec::new();
+    };
     // Angular interval of the arc edge: from start angle to end angle on the
     // side that passes through the edge's geometric midpoint.
     let a_start = circle.project(edge_start);
     let a_end = circle.project(edge_end);
-    let mid = super::pcurve_compute::evaluate_edge_at_t(curve, edge_start, edge_end, 0.5);
+    let mid = super::pcurve_compute::evaluate_edge_at_t(curve, edge_start, edge_end, domain, 0.5);
     let a_mid = circle.project(mid);
     // Normalize so the test is "is `a` between a_start and a_end the short/long
     // way that contains a_mid". Use unsigned angular distances on the circle.
@@ -3342,7 +3352,7 @@ fn clip_line_to_face_boundary(
         let mut poly = Vec::new();
         for (seg_idx, (sp, ep)) in boundary_segments.iter().enumerate() {
             poly.push(frame.project(*sp));
-            if let Some((curve, asp, aep, closed, _trim)) = &boundary_arcs[seg_idx] {
+            if let Some((curve, asp, aep, closed, trim)) = &boundary_arcs[seg_idx] {
                 // Dense sampling: at 12 samples an r=4 quarter-arc's chord
                 // sagitta is ~0.14 — larger than the ~0.1 mm groove-mouth
                 // slivers this polygon must classify. 96 samples keep the
@@ -3369,9 +3379,13 @@ fn clip_line_to_face_boundary(
                         poly.push(frame.project(el.evaluate(a)));
                     }
                 } else {
+                    let Some(domain) = *trim else {
+                        continue;
+                    };
                     for k in 1..96 {
                         let f = f64::from(k) / 96.0;
-                        let p3 = super::pcurve_compute::evaluate_edge_at_t(curve, *asp, *aep, f);
+                        let p3 =
+                            super::pcurve_compute::evaluate_edge_at_t(curve, *asp, *aep, domain, f);
                         poly.push(frame.project(p3));
                     }
                 }
@@ -3472,10 +3486,11 @@ fn face_u_span(topo: &Topology, face: &remus_topology::face::Face) -> Option<f64
         let edge = topo.edge(oe.edge()).ok()?;
         let sp = topo.vertex(edge.start()).ok()?.point();
         let ep = topo.vertex(edge.end()).ok()?.point();
+        let domain = edge.strict_domain().ok()?;
         for i in 0..=8 {
             #[allow(clippy::cast_precision_loss)]
             let t = f64::from(i) / 8.0;
-            let p = super::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, t);
+            let p = super::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, domain, t);
             if let Some((u, _)) = surface.project_point(p) {
                 us.push(u.rem_euclid(TAU));
             }
@@ -4289,7 +4304,9 @@ mod clip_tests {
         let circle =
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), r).unwrap();
         let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
-        let e = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+        let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let e = topo.add_edge(edge);
         let wire = Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap();
         let wid = topo.add_wire(wire);
         topo.add_face(Face::new(
@@ -4847,7 +4864,7 @@ mod tests {
             seam,
             seam,
             true,
-            None,
+            Some((0.0, std::f64::consts::TAU)),
             Point3::new(20.0, 10.0, 0.0),
             Point3::new(0.0, 10.0, 0.0),
             1e-7,
@@ -4880,7 +4897,7 @@ mod tests {
             edge_start,
             edge_end,
             false,
-            None,
+            Some((0.2, 0.8)),
             Point3::new(expected.x(), -10.0, 0.0),
             Point3::new(expected.x(), 10.0, 0.0),
             1e-7,

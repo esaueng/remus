@@ -97,6 +97,7 @@ TERMINAL/REFUTED history and the campaign lessons.
 - P2.8 SSI Newton budget — CLOSED 2026-08-30 in PR #147: `WorkBudgets::newton_iterations` governs all coupled SSI refinements and cancellation is polled inside the loop; the subdivision slice is closed separately below and parameter-space budgets remain in `docs/kernel-maturity/p-class-status.md`.
 - P2.8 SSI subdivision budget — CLOSED 2026-08-30 in PR #160: `WorkBudgets::subdivision_depth` governs recursive Bezier seed discovery and is JS-callable through direct/batch quality booleans; parameter-space budgets remain in `docs/kernel-maturity/p-class-status.md`.
 - Remus K-S4 NURBS fuzz slice — CLOSED 2026-08-30 in PR #163: `fuzz/fuzz_targets/nurbs_surface.rs` checks bounded rational construction/evaluation and SSI against an independent plane; topology mutation, native serialization, curve-intersection, and offset-specific fuzzing remain.
+- Remus K-S4 topology-mutation fuzz slice — CLOSED 2026-08-31 in PR #170: `fuzz/fuzz_targets/topology_mutation.rs` checks derivation, rollback, checkpoint-restore, and deletion contracts against exact-state/stale-handle/atomic-refusal oracles; found and fixed the rollback-vs-checkpoint restore split (transactional rollback now undoes in-window retirements; checkpoint restore no longer dangles the loop-derivation map). Native serialization, curve-intersection, and offset-specific fuzzing remain.
 
 ## The priority filters (rules with reasons)
 
