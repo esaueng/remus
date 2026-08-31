@@ -125,7 +125,8 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId) -> Result<Aabb3, AlgoErro
         let edge = topo.edge(eid)?;
         let start_pos = topo.vertex(edge.start())?.point();
         let end_pos = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start_pos, end_pos);
+        let (t0, t1) =
+            super::helpers::authoritative_edge_domain(edge, eid, "coplanar face bounding box")?;
 
         let n: usize = 8;
         for i in 0..=n {
@@ -255,7 +256,7 @@ fn process_coplanar_pair(
     // face boundary along the chord and orphans the true arc (the rounded-
     // corner cap defect). Skip the chord when its exact arc section exists.
     for &(b_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_b {
-        if matching_arc_section_exists(topo, arena, face_a, face_b, b_eid, tol) {
+        if matching_arc_section_exists(topo, arena, face_a, face_b, b_eid, tol)? {
             continue;
         }
         if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_a, tol.linear)
@@ -268,7 +269,7 @@ fn process_coplanar_pair(
     }
 
     for &(a_eid, p2d_start, p2d_end, p3d_start, p3d_end) in &edges_a {
-        if matching_arc_section_exists(topo, arena, face_a, face_b, a_eid, tol) {
+        if matching_arc_section_exists(topo, arena, face_a, face_b, a_eid, tol)? {
             continue;
         }
         if !is_shared_boundary_edge(p2d_start, p2d_end, &edges_b, tol.linear)
@@ -384,27 +385,24 @@ fn matching_arc_section_exists(
     face_b: FaceId,
     eid: remus_topology::edge::EdgeId,
     tol: Tolerance,
-) -> bool {
-    let Ok(edge) = topo.edge(eid) else {
-        return false;
-    };
+) -> Result<bool, AlgoError> {
+    let edge = topo.edge(eid)?;
     let EdgeCurve::Circle(circle) = edge.curve() else {
-        return false;
+        return Ok(false);
     };
-    let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
-        return false;
-    };
+    let (sv, ev) = (topo.vertex(edge.start())?, topo.vertex(edge.end())?);
     let (p_start, p_end) = (sv.point(), ev.point());
     // Arc midpoint of the boundary edge, so the COMPLEMENTARY arc between the
     // same two endpoints on the same circle does not count as a match (its
     // chord section would then be wrongly suppressed while the true span has
     // no section at all).
-    let (d0, d1) = edge.curve().domain_with_endpoints(p_start, p_end);
+    let (d0, d1) =
+        super::helpers::authoritative_edge_domain(edge, eid, "coplanar matching-arc check")?;
     let edge_mid = edge
         .curve()
         .evaluate_with_endpoints(0.5 * (d0 + d1), p_start, p_end);
     let close = |a: Point3, b: Point3| (a - b).length() < tol.linear * 10.0;
-    arena.curves.iter().any(|c| {
+    Ok(arena.curves.iter().any(|c| {
         let EdgeCurve::Circle(existing) = &c.curve else {
             return false;
         };
@@ -426,7 +424,7 @@ fn matching_arc_section_exists(
         let m = existing.evaluate(0.5 * (c.t_range.0 + c.t_range.1));
         close(m, edge_mid)
             && ((close(s, p_start) && close(e, p_end)) || (close(s, p_end) && close(e, p_start)))
-    })
+    }))
 }
 
 /// True when a boundary edge is a shared boundary segment of the target face:
