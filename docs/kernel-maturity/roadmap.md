@@ -28,6 +28,11 @@ its state. Before claiming anything: `gh pr list --state open` (R6).
   non-vacuous WASM `meshQuality` contract. Follow-ups remain for the separate
   face-orientation inconsistency and the sub-millimeter fine-mesh boundary
   residue; neither is hidden by this disposition.
+- **Remus K-S4 disposition — NURBS fuzz slice:** done in PR #163. Bounded
+  rational-surface construction/evaluation and NURBS SSI now run in the
+  scheduled fuzz campaign against an independent plane oracle; topology
+  mutation, native serialization, curve-intersection, and offset-specific
+  campaigns remain S4 follow-ups.
 
 ## §H Horizons
 
