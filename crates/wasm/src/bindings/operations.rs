@@ -35,7 +35,7 @@ use remus_operations::resize_blend::{blend_region, resize_blend, resize_blend_fa
 use remus_operations::revolve::revolve;
 use remus_operations::sweep::sweep;
 
-pub(crate) fn validate_move_faces_topology_work(
+pub fn validate_move_faces_topology_work(
     topo: &remus_topology::Topology,
     solid: remus_topology::solid::SolidId,
     faces: &[remus_topology::face::FaceId],
