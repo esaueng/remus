@@ -278,7 +278,8 @@ fn geometric_edge_length(topo: &Topology, edge_id: EdgeId) -> Result<f64, Operat
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
-    let (t0, t1) = edge.domain_with_endpoints(start, end);
+    let (t0, t1) =
+        crate::authoritative_edge_domain(edge, "feature-recognition edge-length sampling")?;
     let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
     let mut length = 0.0;
     for i in 1..=16 {

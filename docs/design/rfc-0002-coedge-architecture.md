@@ -395,8 +395,13 @@ fallback. The following PaveFiller continuation migrates all 19 readers in its
 initialization, EE/EF/VE, FF, and coplanar-FF paths, moving the checked ratchet
 from 80 to 61. It preflights complete edge sets before arena mutation, copies
 stored lifted/reversed ranges verbatim, and keeps Lines on their intrinsic
-`[0, 1]` domain. The remaining algorithm sites are the transient splitter
-support/complement wave. This is progress evidence, not the 2.0c exit gate;
+`[0, 1]` domain. The operations/WASM continuation in PR #165 migrates all 24
+non-tessellation operations readers and the final WASM batch reader, moving the
+checked ratchet from 61 to 36. Public raw-profile compatibility is confined to
+named, validated extrude/revolve adapters; stored topology and read-only
+measurements fail closed. The remaining sites are eight algorithm transient
+splitter support/complement readers, 27 tessellation readers, and one topology
+validation reader. This is progress evidence, not the 2.0c exit gate;
 SameParameter/SameRange boolean-output validation and the zero-reader gate
 remain open.
 

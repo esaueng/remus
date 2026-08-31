@@ -459,14 +459,14 @@ fn edge_range(
     Ok(match edge.curve() {
         EdgeCurve::Line => (at(start).min(at(end)), at(start).max(at(end))),
         EdgeCurve::Circle(circle) => {
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "split edge-range query")?;
             circle_range(circle, normal, d, t0, t1)
         }
         curve => {
             // No closed form to hand: sample the trimmed span densely. A
             // curved edge the plane crosses is refused anyway, so this only
             // has to decide which side an edge clear of the plane is on.
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "split edge-range sampling")?;
             let mut lo = f64::INFINITY;
             let mut hi = f64::NEG_INFINITY;
             for i in 0..=RANGE_SAMPLES {
@@ -1097,7 +1097,7 @@ fn outermost_loop(
                 pts.push(project(topo.vertex(oe.oriented_start(edge))?.point()));
             } else {
                 let curve = edge.curve();
-                let (t0, t1) = edge.domain_with_endpoints(start, end);
+                let (t0, t1) = crate::authoritative_edge_domain(edge, "split loop-area sampling")?;
                 for i in 0..LOOP_SAMPLES {
                     let t = (t1 - t0).mul_add(i as f64 / LOOP_SAMPLES as f64, t0);
                     pts.push(project(curve.evaluate_with_endpoints(t, start, end)));

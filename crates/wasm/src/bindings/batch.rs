@@ -594,7 +594,11 @@ impl BrepKernel {
             let start = self.topo.vertex(edge.start())?.point();
             let end = self.topo.vertex(edge.end())?.point();
             let curve = edge.curve();
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let (t0, t1) = edge
+                .strict_domain()
+                .map_err(|error| WasmError::InvalidInput {
+                    reason: format!("batch plane-face UV bounds require edge authority: {error}"),
+                })?;
             for i in 0..=EDGE_SAMPLES {
                 let t = t0 + (t1 - t0) * (i as f64 / EDGE_SAMPLES as f64);
                 let p = curve.evaluate_with_endpoints(t, start, end);
@@ -2433,6 +2437,66 @@ mod batch_contract_tests {
 
     fn parse(response: &str) -> serde_json::Value {
         serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    #[test]
+    fn plane_face_bounds_refuse_missing_curved_authority_without_mutation() {
+        use remus_topology::edge::EdgeCurve;
+        use remus_topology::explorer::solid_faces;
+        use remus_topology::face::FaceSurface;
+
+        let mut kernel = BrepKernel::new();
+        let solid = remus_operations::primitives::make_cylinder(kernel.topo_mut(), 2.0, 3.0)
+            .expect("cylinder fixture");
+        let cap = solid_faces(kernel.topo(), solid)
+            .expect("cylinder faces")
+            .into_iter()
+            .find(|&face_id| {
+                kernel
+                    .topo()
+                    .face(face_id)
+                    .is_ok_and(|face| matches!(face.surface(), FaceSurface::Plane { .. }))
+            })
+            .expect("planar cylinder cap");
+        let rim = {
+            let face = kernel.topo().face(cap).expect("cap");
+            let wire = kernel.topo().wire(face.outer_wire()).expect("cap wire");
+            wire.edges()
+                .iter()
+                .map(remus_topology::wire::OrientedEdge::edge)
+                .find(|&edge_id| {
+                    kernel
+                        .topo()
+                        .edge(edge_id)
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Circle(_)))
+                })
+                .expect("cap rim")
+        };
+        kernel.topo_mut().edge_mut(rim).expect("rim").set_trim(None);
+        let before = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_wires(),
+            kernel.topo().num_faces(),
+        );
+        let face = kernel.topo().face(cap).expect("cap");
+        let FaceSurface::Plane { normal, d } = face.surface() else {
+            unreachable!("selected face must remain planar");
+        };
+
+        let error = kernel
+            .plane_face_uv_bounds(cap, *normal, *d)
+            .expect_err("missing rim authority must refuse");
+        assert!(error.to_string().contains("require edge authority"));
+        assert_eq!(
+            before,
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_wires(),
+                kernel.topo().num_faces(),
+            )
+        );
     }
 
     /// Handle arrays used to be parsed with
